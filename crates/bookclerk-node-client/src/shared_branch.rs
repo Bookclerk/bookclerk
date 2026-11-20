@@ -457,6 +457,18 @@ fn replace_files(files: &[NewFile<'_>], marker: &Path) -> Result<(), JoinError> 
     Ok(())
 }
 
+/// Whether `path` still holds `bytes`: after a failed join, a `master.key`
+/// the rollback could not restore still names the new key, so its keychain
+/// item must stay.
+///
+/// # Arguments
+///
+/// * `path` - the `master.key` path.
+/// * `bytes` - what the join wrote there.
+fn still_published(path: &Path, bytes: &[u8]) -> bool {
+    std::fs::read(path).is_ok_and(|on_disk| on_disk == bytes)
+}
+
 /// The only host a shared branch bootstrap may name as its D1 API origin.
 const D1_API_HOST: &str = "api.cloudflare.com";
 
@@ -923,7 +935,17 @@ pub fn apply_shared_branch_bootstrap(
         replace_files(&files, &files_dir.join(SHARED_BRANCH_JOIN_MARKER))
     };
     if let Err(err) = publish() {
-        master_key.discard();
+        let key_path = bookclerk_library::master_key_path(files_dir);
+        if still_published(&key_path, master_key.bytes()) {
+            // The rollback could not put the old master.key back, so the new
+            // pointer still names the item: keep it, or the key is lost.
+            tracing::warn!(
+                path = %key_path.display(),
+                "kept the new key because master.key still names it after a failed join"
+            );
+        } else {
+            master_key.discard();
+        }
         return Err(err);
     }
     if password.is_none() && !master_key.in_keychain() {
@@ -1322,6 +1344,17 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, ["config.toml", "master.key", "node-identity.json"]);
+    }
+
+    #[test]
+    fn a_key_left_published_by_a_failed_rollback_is_kept() {
+        let files = tempfile::tempdir().unwrap();
+        let key = bookclerk_library::master_key_path(files.path());
+        assert!(!still_published(&key, b"new pointer"), "nothing written");
+        std::fs::write(&key, b"old pointer").unwrap();
+        assert!(!still_published(&key, b"new pointer"), "restored");
+        std::fs::write(&key, b"new pointer").unwrap();
+        assert!(still_published(&key, b"new pointer"), "rollback failed");
     }
 
     #[test]

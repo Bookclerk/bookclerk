@@ -1086,11 +1086,13 @@ pub fn move_master_key(
             Ok(MasterKeyFormat::Keychain)
         }
         (Location::Keychain(pointer), KeyStoreKind::File) => {
-            write_secret_file_atomic(&path, &envelope)?;
-            let reloaded = read_key_snapshot(&path, normalized_password(password));
+            // Stage and verify the file before it replaces the pointer, so a
+            // bad write never leaves master.key without a working key.
+            let staged = staged_master_key_path(&path);
+            write_secret_file_atomic(&staged, &envelope)?;
+            let reloaded = read_key_snapshot(&staged, normalized_password(password));
             if !reloaded.is_ok_and(|(back, _, _)| back.as_bytes() == key.as_bytes()) {
-                // Put the pointer back: the item still holds the key.
-                write_secret_file_atomic(&path, &pointer.encode())?;
+                let _ = std::fs::remove_file(&staged);
                 return Err(LibraryError::Other(anyhow::anyhow!(
                     "master key file {} did not reload to the same key; it still points at \
                      OS keychain item {}",
@@ -1098,6 +1100,7 @@ pub fn move_master_key(
                     pointer.item
                 )));
             }
+            commit_staged_master_key(&staged, &path)?;
             delete_item_logged(
                 pointer.item,
                 "the old keychain item after moving the key to master.key",
@@ -1401,6 +1404,49 @@ fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Where a move stages the new `master.key` before it replaces the old one:
+/// a hidden sibling in the same directory, so the final replace is a rename.
+///
+/// # Arguments
+///
+/// * `path` - the `master.key` path the staged file will replace.
+fn staged_master_key_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(MASTER_KEY_FILE_NAME);
+    parent.join(format!(".{file_name}.staged-{}", std::process::id()))
+}
+
+/// Replaces `path` with the verified `staged` file in one rename.
+///
+/// # Arguments
+///
+/// * `staged` - the file written and reloaded by the caller.
+/// * `path` - the `master.key` path to replace.
+///
+/// # Errors
+///
+/// Returns an error when the replace fails; `path` is then unchanged and the
+/// staged file is removed.
+fn commit_staged_master_key(staged: &Path, path: &Path) -> Result<()> {
+    bookclerk_config::replace_file(staged, path).map_err(|e| {
+        let _ = std::fs::remove_file(staged);
+        LibraryError::Other(anyhow::anyhow!(
+            "failed to replace master key {}: {e}",
+            path.display()
+        ))
+    })?;
+    if let Err(err) = harden_path(path, false) {
+        tracing::warn!("{err}");
+    }
+    if let Ok(dir) = std::fs::File::open(path.parent().unwrap_or_else(|| Path::new("."))) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 /// Sets Unix mode `0700` (dir) or `0600` (file) so only the process owner can read `master.key`.
 fn harden_path(path: &Path, is_dir: bool) -> Result<()> {
     harden_path_io(path, is_dir).map_err(|e| {
@@ -1665,6 +1711,14 @@ mod tests {
         assert!(install_master_key(&blocked, &[3u8; DEK_LEN], None).is_err());
         assert_eq!(scope.vault.len(), 1);
 
+        // The pointer write fails after the item is staged: the staged item
+        // is deleted again and nothing else changes.
+        let other = tempdir().unwrap();
+        std::fs::create_dir(master_key_path(other.path())).unwrap();
+        assert!(install_master_key(other.path(), &[5u8; DEK_LEN], None).is_err());
+        assert_eq!(scope.vault.len(), 1, "the staged item is gone");
+        assert!(resolve_master_key_with(dir.path(), None).is_ok());
+
         let stored = store_master_key(&[4u8; DEK_LEN], None).unwrap();
         assert!(stored.in_keychain());
         assert_eq!(scope.vault.len(), 2);
@@ -1818,6 +1872,35 @@ mod tests {
         scope.vault.fail_with(Some(KeystoreErrorKind::Unavailable));
         assert!(move_master_key(dir.path(), KeyStoreKind::Keychain, None).is_err());
         assert_eq!(std::fs::read(master_key_path(dir.path())).unwrap(), before);
+    }
+
+    #[test]
+    fn a_move_out_of_the_keychain_keeps_the_pointer_until_the_file_is_verified() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let dir = tempdir().unwrap();
+        let scope = KeychainScope::new(keychain(true));
+        let key = resolve_master_key_with(dir.path(), None).unwrap();
+        let path = master_key_path(dir.path());
+        let pointer = std::fs::read(&path).unwrap();
+        // A directory where the staged file goes makes staging fail.
+        let staged = staged_master_key_path(&path);
+        std::fs::create_dir(&staged).unwrap();
+        assert!(move_master_key(dir.path(), KeyStoreKind::File, None).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), pointer, "pointer untouched");
+        assert_eq!(scope.vault.len(), 1, "the item still holds the key");
+        std::fs::remove_dir(&staged).unwrap();
+        assert_eq!(
+            move_master_key(dir.path(), KeyStoreKind::File, None).unwrap(),
+            MasterKeyFormat::Raw
+        );
+        assert!(!staged.exists(), "the staged file became master.key");
+        assert_eq!(
+            resolve_master_key_with(dir.path(), None)
+                .unwrap()
+                .as_bytes(),
+            key.as_bytes()
+        );
     }
 
     #[test]
