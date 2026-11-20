@@ -32,7 +32,7 @@ mod zip_walk;
 
 pub use format::{ArchiveFormat, SNIFF_BYTES};
 pub use limits::Limits;
-pub use path::{EntryPath, FoldedNames, NameClash, PathRefusal};
+pub use path::{EntryPath, FoldedNames, NameClash, PathRefusal, MAX_DEPTH, MAX_PATH_BYTES};
 pub use report::{
     ExtractReport, RefusalReason, RefusedEntry, ReportError, StopReason, WrittenEntry,
     MAX_REFUSED_NAME_CHARS,

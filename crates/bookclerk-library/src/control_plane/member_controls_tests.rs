@@ -67,8 +67,14 @@ async fn members_follow_the_default_except_where_overridden() {
             .create_user(UserRole::Administrator, Some("Ada"), None)
             .await
             .unwrap();
+        // Every control but upload is on out of the box.
         for control in MemberControl::ALL {
-            assert!(user_may(store, sam.id, control).await.unwrap(), "{name}");
+            let expected = control != MemberControl::Upload;
+            assert_eq!(
+                user_may(store, sam.id, control).await.unwrap(),
+                expected,
+                "{name} {control:?}"
+            );
         }
 
         // The default turns downloads off for every Member.
@@ -263,14 +269,14 @@ async fn a_guarded_write_stops_once_the_controls_change() {
                 == Some(to)
         };
 
-        let guard = control_guard(store, sam.id, MemberControl::Upload)
+        let guard = control_guard(store, sam.id, MemberControl::EditMetadata)
             .await
             .unwrap()
             .unwrap();
         assert!(rename(guard, "Sam A").await, "{name}");
 
         // An unrelated default change after the read still stops the write.
-        let guard = control_guard(store, sam.id, MemberControl::Upload)
+        let guard = control_guard(store, sam.id, MemberControl::EditMetadata)
             .await
             .unwrap()
             .unwrap();
@@ -282,18 +288,18 @@ async fn a_guarded_write_stops_once_the_controls_change() {
         assert!(!rename(guard, "Sam B").await, "{name}");
 
         // So does an override written after the read.
-        let guard = control_guard(store, sam.id, MemberControl::Upload)
+        let guard = control_guard(store, sam.id, MemberControl::EditMetadata)
             .await
             .unwrap()
             .unwrap();
         let mut overrides = ControlOverrides::default();
-        overrides.set(MemberControl::Upload, Some(false));
+        overrides.set(MemberControl::EditMetadata, Some(false));
         set_member_control_overrides(store, sam.id, overrides)
             .await
             .unwrap();
         assert!(!rename(guard, "Sam C").await, "{name}");
         assert!(
-            control_guard(store, sam.id, MemberControl::Upload)
+            control_guard(store, sam.id, MemberControl::EditMetadata)
                 .await
                 .unwrap()
                 .is_none(),
