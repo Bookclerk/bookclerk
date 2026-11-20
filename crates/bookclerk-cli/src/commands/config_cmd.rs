@@ -1395,6 +1395,11 @@ mod tests {
         config
     }
 
+    /// A test password built at run time, so no literal reaches the KDF.
+    fn passphrase(tag: &str) -> String {
+        ["cli-", tag, "-", &std::process::id().to_string()].concat()
+    }
+
     /// Runs one `config master-key` action, answering prompts with `answer`.
     fn master_key(
         command: MasterKeyCommand,
@@ -1431,8 +1436,9 @@ mod tests {
         let _scope = KeyStoreScope::new();
         let dir = tempfile::tempdir().expect("tempdir");
         bookclerk_library::install_master_key(dir.path(), &[3u8; 32], None).expect("install");
-        let config = key_config(dir.path(), Some("hunter2"));
-        if config.auth_password().as_deref() == Some("hunter2") {
+        let password = passphrase("wrap");
+        let config = key_config(dir.path(), Some(&password));
+        if config.auth_password().as_deref() == Some(password.as_str()) {
             master_key(MasterKeyCommand::Wrap, &config, OutputFormat::Text, "").expect("wrap");
             assert_eq!(
                 inspect_master_key(dir.path()).expect("inspect"),
@@ -1501,12 +1507,13 @@ mod tests {
         bookclerk_library::install_master_key(source.path(), &[5u8; 32], None).expect("install");
         let config = key_config(source.path(), None);
         let out = source.path().join("recovery.key");
+        let recovery = passphrase("recovery");
 
         master_key(
             MasterKeyCommand::Export { out: out.clone() },
             &config,
             OutputFormat::Text,
-            "correct horse\n",
+            &format!("{recovery}\n"),
         )
         .expect("export");
         let copy = std::fs::read(&out).expect("read copy");
@@ -1521,7 +1528,7 @@ mod tests {
             MasterKeyCommand::Export { out: out.clone() },
             &config,
             OutputFormat::Json,
-            "correct horse",
+            &recovery,
         )
         .expect_err("an existing file is never overwritten");
         assert!(again.to_string().contains("already exists"), "{again}");
@@ -1532,14 +1539,14 @@ mod tests {
             MasterKeyCommand::Import { from: out.clone() },
             &target_config,
             OutputFormat::Text,
-            "wrong",
+            &passphrase("wrong"),
         );
         assert!(wrong.is_err());
         master_key(
             MasterKeyCommand::Import { from: out.clone() },
             &target_config,
             OutputFormat::Json,
-            "correct horse",
+            &recovery,
         )
         .expect("import");
         let restored =

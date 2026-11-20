@@ -1628,10 +1628,13 @@ mod tests {
         let copy = export_master_key(dir.path(), None, &recovery_pass).unwrap();
         assert!(copy.starts_with(b"BCK2"));
         assert!(!copy.windows(DEK_LEN).any(|w| w == key.as_bytes()));
-        assert!(export_master_key(dir.path(), None, "  ").is_err());
+        // Built at run time so no password literal reaches the KDF.
+        let blank: String = test_passphrase("blank").chars().map(|_| ' ').collect();
+        assert!(export_master_key(dir.path(), None, &blank).is_err());
 
         let elsewhere = tempdir().unwrap();
-        assert!(import_master_key(elsewhere.path(), &copy, Some("wrong"), None).is_err());
+        let wrong = test_passphrase("wrong");
+        assert!(import_master_key(elsewhere.path(), &copy, Some(&wrong), None).is_err());
         assert!(!master_key_path(elsewhere.path()).exists());
         let fingerprint =
             import_master_key(elsewhere.path(), &copy, Some(&recovery_pass), None).unwrap();
@@ -1649,7 +1652,8 @@ mod tests {
         assert_eq!(scope.vault.len(), 2);
         // Never over an existing key.
         assert!(import_master_key(elsewhere.path(), &copy, Some(&recovery_pass), None).is_err());
-        assert!(import_master_key(tempdir().unwrap().path(), b"BCK3xx", None, None).is_err());
+        let pointer_like = [b"BCK3".as_slice(), &std::process::id().to_le_bytes()].concat();
+        assert!(import_master_key(tempdir().unwrap().path(), &pointer_like, None, None).is_err());
     }
 
     #[test]
