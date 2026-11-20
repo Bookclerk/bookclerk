@@ -457,6 +457,15 @@ input_from = "store"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.download_resume]
+crate = "bookclerk-plugin-sdk"
+boundary = "A store CDN's Content-Range and status when a download resumes"
+input_from = "store"
+# Storefront guests resume downloads with it, and the host's plugin package
+# installer decides registry download resumes with the same functions.
+side = "host"
+artifacts = ["bookclerk", "rust-sdk"]
+
 [targets.throttle_reason]
 crate = "bookclerk-storefront"
 boundary = "A store's refusal text, classified as a throttle or a plain refusal"
