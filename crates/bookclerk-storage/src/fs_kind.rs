@@ -234,6 +234,32 @@ mod imp {
     }
 }
 
+/// The NTFS/ReFS file index of the file at `path`, Windows' counterpart of
+/// an inode number: a file that replaces another by rename gets a new one.
+///
+/// Returns `None` when the file cannot be opened or Windows does not report
+/// an index. Blocks on the open; call it off the async runtime.
+#[cfg(windows)]
+// One FFI call on a handle `File` owns; the SAFETY note covers it.
+#[allow(unsafe_code)]
+pub(crate) fn file_index(path: &std::path::Path) -> Option<u64> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: an all-zero BY_HANDLE_FILE_INFORMATION is a valid value of
+    // this plain-data struct; the call only writes into it.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: the handle is open for the lifetime of `file` and `info` is a
+    // valid, writable BY_HANDLE_FILE_INFORMATION.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+    if ok == 0 {
+        return None;
+    }
+    Some((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow))
+}
+
 #[cfg(not(any(
     target_os = "linux",
     target_os = "macos",
