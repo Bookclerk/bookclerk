@@ -270,8 +270,11 @@ fn write_libation_context_db(path: &Path, books: &[ExportBook]) -> Result<()> {
             ],
         )?;
 
+        // The purchase time, else when this library first held the title;
+        // the export time only for a title with neither.
         let date_added = book
             .purchased_at
+            .or(book.added_at)
             .unwrap_or(exported_at)
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
