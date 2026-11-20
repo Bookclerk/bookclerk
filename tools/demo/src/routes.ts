@@ -29,6 +29,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/openapi.json", "allow"],
   ["GET", "/api/openapi-3.0.json", "allow"],
   ["GET", "/api/status", "allow"],
+  // Read-only report of the formats this build decodes, reads and writes.
+  ["GET", "/api/status/media", "allow"],
 
   // Sign-in and the visitor's own account. The demo signs the visitor in;
   // signing out, other sign-in methods and credential changes are refused.
