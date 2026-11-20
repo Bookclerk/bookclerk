@@ -1,4 +1,8 @@
 //! Minimal progressive AAC-LC → M4B muxer (single audio track).
+//!
+//! The finished file is faststart (`ftyp`, `moov`, `mdat`), so a player or
+//! the web app can start a book after reading its first bytes instead of
+//! seeking to the end for the sample table.
 
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
@@ -29,8 +33,14 @@ enum AuTiming<'a> {
 /// length is patched in at the end. The alternative is parking the whole encode
 /// somewhere first, which for a book is a second full-size write and a full-size
 /// read back.
+///
+/// [`Self::finish`] then moves `mdat` forward in place by the size of
+/// `moov` and writes `moov` into the gap, so the book is faststart. That is
+/// one more pass over the media, inside the same file, so the disk never
+/// holds two copies.
 pub struct AacM4bWriter {
-    /// Buffered output file; `mdat` is streamed, then `moov` is appended on finish.
+    /// Buffered output file (opened for reading too, for the move in
+    /// [`Self::finish`]); `mdat` is streamed into it.
     out: BufWriter<File>,
     /// Where the `mdat` largesize field sits, to be patched on [`Self::finish`].
     size_field: u64,
@@ -71,7 +81,13 @@ impl AacM4bWriter {
         }
 
         let ftyp = build_m4b_ftyp();
-        let mut out = BufWriter::with_capacity(IO_BUFFER_BYTES, File::create(output)?);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(output)?;
+        let mut out = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
         out.write_all(&ftyp)?;
         // The extended-size form, always: the length is not known yet, and this
         // is the only header that can be corrected without moving the media.
@@ -122,8 +138,10 @@ impl AacM4bWriter {
         self.sizes.len()
     }
 
-    /// Writes `moov`, patches the `mdat` length, and syncs the file; empty input fails.
-    pub fn finish(mut self) -> Result<()> {
+    /// Patches the `mdat` length, moves `mdat` forward to make room for
+    /// `moov` right after `ftyp`, writes `moov` there, and syncs the file;
+    /// empty input fails.
+    pub fn finish(self) -> Result<()> {
         if self.sizes.is_empty() {
             return Err(MediaError::Mp4("no AAC samples to mux".into()));
         }
@@ -132,18 +150,35 @@ impl AacM4bWriter {
             _ => AuTiming::Variable(&self.durations),
         };
         let media_duration = media_duration(timing, self.sizes.len())?;
-        // All samples in one chunk — keeps stco/co64 to a single entry however
-        // long the book runs.
-        let moov = build_moov(
-            self.sample_rate,
-            self.channels,
-            &self.asc,
-            &self.sizes,
-            timing,
-            &[self.first_sample],
-            media_duration,
-        )?;
-        self.out.write_all(&moov)?;
+        // All samples in one chunk keeps stco/co64 to a single entry however
+        // long the book runs. The chunk sits `moov` bytes later than it was
+        // written, and `moov`'s size depends on whether that offset needs
+        // co64, so build until the size settles (at most twice: the offset
+        // only grows, and only once from stco to co64).
+        let mut moov_len = 0u64;
+        let moov = loop {
+            let mut moov = build_moov(
+                self.sample_rate,
+                self.channels,
+                &self.asc,
+                &self.sizes,
+                timing,
+                &[self.first_sample + moov_len],
+                media_duration,
+            )?;
+            // Tags, a cover and the chapter track are written into `moov`
+            // after the media is on disk. The reserved slack takes them in
+            // place; without it every edit rebuilds the whole file beside
+            // the original and renames it over, which a confined worker on
+            // Windows may not be allowed to do.
+            let reserved = moov.len() + bookclerk_mp4::RESERVED_MOOV_SLACK;
+            bookclerk_mp4::pad_moov_to(&mut moov, reserved)?;
+            let len = moov.len() as u64;
+            if len == moov_len {
+                break moov;
+            }
+            moov_len = len;
+        };
 
         let mut file = self
             .out
@@ -151,9 +186,34 @@ impl AacM4bWriter {
             .map_err(std::io::IntoInnerError::into_error)?;
         file.seek(SeekFrom::Start(self.size_field))?;
         file.write_all(&(MDAT_HEADER_BYTES + self.payload).to_be_bytes())?;
+        let mdat_start = self.size_field - 8;
+        let mdat_len = MDAT_HEADER_BYTES + self.payload;
+        shift_forward(&mut file, mdat_start, mdat_len, moov_len)?;
+        file.seek(SeekFrom::Start(mdat_start))?;
+        file.write_all(&moov)?;
         file.sync_all()?;
         Ok(())
     }
+}
+
+/// Moves the `len` bytes at `start` forward by `by` bytes within `file`,
+/// copying blocks from the end backwards so no byte is overwritten before
+/// it has been read. The bytes left at `start..start + by` are stale.
+fn shift_forward(file: &mut File, start: u64, len: u64, by: u64) -> Result<()> {
+    use std::io::Read;
+    let mut buf = vec![0u8; IO_BUFFER_BYTES];
+    let mut remaining = len;
+    while remaining > 0 {
+        let block = remaining.min(buf.len() as u64);
+        let from = start + remaining - block;
+        let chunk = &mut buf[..usize::try_from(block).unwrap_or(IO_BUFFER_BYTES)];
+        file.seek(SeekFrom::Start(from))?;
+        file.read_exact(chunk)?;
+        file.seek(SeekFrom::Start(from + by))?;
+        file.write_all(chunk)?;
+        remaining -= block;
+    }
+    Ok(())
 }
 
 /// A `size == 1` header: the four-byte marker, the type, and the real length.
@@ -574,5 +634,76 @@ mod tests {
         assert_eq!(encode_expandable_length(0).unwrap(), vec![0]);
         assert_eq!(encode_expandable_length(5).unwrap(), vec![5]);
         assert_eq!(encode_expandable_length(127).unwrap(), vec![127]);
+    }
+
+    /// Top-level box types of `bytes`, in order.
+    fn top_level_boxes(bytes: &[u8]) -> Vec<[u8; 4]> {
+        let mut at = 0usize;
+        let mut kinds = Vec::new();
+        while at + 8 <= bytes.len() {
+            let mut size = u64::from(u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()));
+            let kind: [u8; 4] = bytes[at + 4..at + 8].try_into().unwrap();
+            if size == 1 {
+                size = u64::from_be_bytes(bytes[at + 8..at + 16].try_into().unwrap());
+            }
+            kinds.push(kind);
+            at += usize::try_from(size).unwrap().max(8);
+        }
+        assert_eq!(at, bytes.len(), "boxes do not tile the file");
+        kinds
+    }
+
+    #[test]
+    fn finished_files_are_faststart_and_play_the_same_units() {
+        let dir = tempfile::tempdir().unwrap();
+        // Enough units to need several shift blocks.
+        let units: Vec<Vec<u8>> = (0..3_000u32)
+            .map(|i| vec![u8::try_from(i % 251).unwrap(); 500 + (i % 7) as usize])
+            .collect();
+        let path = dir.path().join("fast.m4b");
+        let mut writer = AacM4bWriter::create(&path, 44_100, 2, &[0x12, 0x10]).unwrap();
+        for unit in &units {
+            writer.push(unit, 1024).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(top_level_boxes(&bytes), [*b"ftyp", *b"moov", *b"mdat"]);
+        let (at, _) = bookclerk_mp4::read_moov(&path).unwrap();
+        assert!(
+            at.len > u64::try_from(bookclerk_mp4::RESERVED_MOOV_SLACK).unwrap(),
+            "moov reserves slack for later edits"
+        );
+        let mp4 = bookclerk_mp4::parse_mp4(&path).unwrap();
+        assert_eq!(mp4.audio.samples.len(), units.len());
+        let mut reader = bookclerk_mp4::SampleReader::open(&path).unwrap();
+        let mut buf = Vec::new();
+        for (sample, unit) in mp4.audio.samples.iter().zip(&units) {
+            reader
+                .read_sample(sample.offset, sample.size as usize, &mut buf)
+                .unwrap();
+            assert_eq!(&buf, unit);
+        }
+    }
+
+    #[test]
+    fn shifting_moves_every_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shift.bin");
+        let data: Vec<u8> = (0..(IO_BUFFER_BYTES * 2 + 17))
+            .map(|i| u8::try_from(i % 253).unwrap())
+            .collect();
+        std::fs::write(&path, &data).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        shift_forward(&mut file, 5, data.len() as u64 - 5, 1_000).unwrap();
+        drop(file);
+        let moved = std::fs::read(&path).unwrap();
+        assert_eq!(moved.len(), data.len() + 1_000);
+        assert_eq!(&moved[..5], &data[..5]);
+        assert_eq!(&moved[1_005..], &data[5..]);
     }
 }

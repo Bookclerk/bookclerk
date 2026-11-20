@@ -37,6 +37,7 @@ boundary extends it.
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
+| `media_decode` | Audio the media worker demuxes and decodes before it encodes or repackages it: store downloads, library copies and files on storage, recognised by their bytes, never their names | `bookclerk-media::decode_pcm_bytes` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
@@ -57,7 +58,8 @@ boundary extends it.
 | `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
-| `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
+| `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` and `access_code` join the install's report history | `bookclerk-config::parse_submit_reply` |
+| `diagnostics_lookup_reply` | The diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue and pull request links | `bookclerk-config::parse_lookup_reply`, `parse_delete_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
@@ -211,9 +213,23 @@ only that. The others check:
   refused. Otherwise it is accepted exactly when, read independently as a
   JSON value, it is an object whose `report_id` is a string that is a
   lowercase hyphenated version-4 UUID, checked group by group, and the
-  parser returns that string unchanged. The shared oracle is
+  parser returns that string unchanged. The access code comes back exactly
+  when `access_code` is a string of 16 characters, each a digit or an
+  uppercase letter other than I, L, O and U, and is otherwise dropped
+  without refusing the reply. The shared oracle is
   `fuzz/oracles/diagnostics_submit_reply.rs`, replayed from
   `bookclerk-config`.
+- **`diagnostics_lookup_reply`**: each input goes through both the lookup
+  and the delete reader for one fixed report ID. An answer longer than
+  1 MiB is refused. Otherwise, read independently as a JSON value, it is
+  accepted exactly when it is an object for that report with every field
+  of its type (only `deleted_at_unix_ms`, `report`, `fix` and the fix's
+  fields may be absent or null), issue and pull request links start
+  `https://`, levels are the five upper-case names and states `open` or
+  `closed`. The accepted answer, serialized, equals the expected one
+  rebuilt from the value; another report's ID is `OtherReport`. The
+  shared oracle is `fuzz/oracles/diagnostics_lookup_reply.rs`, replayed
+  from `bookclerk-config`.
 - **`cover_wire`**: the first byte picks the request or the reply decoder.
   An accepted frame re-encodes to exactly its own bytes, and an accepted
   reply carries only JPEG-signed images and a nonzero size. The shared
@@ -232,6 +248,16 @@ only that. The others check:
   `Done` record re-encodes to a frame that decodes to the same record. The
   shared oracle is `fuzz/oracles/tags_wire.rs`, replayed from
   `bookclerk-tags`.
+- **`media_decode`**: the input is a whole audio file. It is decoded at
+  the source's channel count twice and once mixed to mono. An accepted
+  stream has a sample rate from 1 Hz to 768 kHz and one or two channels,
+  and every chunk is whole frames; the same bytes always give the same
+  PCM; and the mono decode accepts exactly the files the source decode
+  does, with the same rate and length. A plain 16-bit PCM WAV must decode
+  to exactly the samples an independent parser in the oracle reads from
+  it. Seeds cover every container and codec the worker reads, including
+  HE-AAC and HE-AAC v2. The shared oracle is
+  `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
   them is the current tag, strong or weak. Any raw header that matches,
@@ -1082,6 +1108,25 @@ The tests and corpora live in `tools/diagnostics-collector/`.
     of JSON naming an object with exactly the five fields, a lowercase
     version-4 UUID checked by position, and version, platform and kind
     tokens checked character by character.
+- **Report lookup body** (`parseLookupInput` in `report-access.ts`). It
+  is the body anyone can post to `/lookup` and `/lookup/delete`, as JSON
+  or a form, and names the report a code is checked against and whether a
+  form confirmed a deletion.
+  - Test and corpus: `report-access.fuzz.test.ts`, `corpus/lookup_input/`
+    (each seed's first line is the `Content-Type`).
+  - Oracle: a request exactly when the body is at most 1,024 characters
+    and is either a JSON object with exactly the string fields `report_id`
+    and `access_code`, or a form (decoded by the test's own reader) with
+    those two once each and at most `confirm=yes` besides; the ID, trimmed
+    and lowercased, is a version-4 UUID checked by position, and the code,
+    normalized by regular expressions, is 16 Crockford base32 characters.
+- **B2 version listing** (`decodeVersionPage` in `dashboard/storage.ts`).
+  It reads B2's `b2_list_file_versions` answer for one object, and its
+  result is every file version a deletion removes.
+  - Test and corpus: `report-access.fuzz.test.ts`, `corpus/b2_versions/`.
+  - Oracle: exactly the string `fileId`s of the entries whose `fileName`
+    is the object's key, in order, and more to read exactly when
+    `nextFileName` is that key and `nextFileId` a string.
 - **Hosted demo run event** (`parseDemoRunEvent` in `demo-runs.ts`). It is
   the value the demo Worker passes to the collector's `DemoRuns`
   entrypoint over its service binding (no public route), and decides what
