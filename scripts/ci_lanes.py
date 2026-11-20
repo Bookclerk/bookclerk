@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Sends each heavy pull request CI job to the lane with the shortest line.
 
-The organization has 20 hosted runners, and GitHub gives a ``merge_group``
+The organization has 60 hosted runners (GitHub Team), and GitHub gives a ``merge_group``
 run no priority over pull request runs. So pull request jobs wait in
 **lanes**: job-level ``concurrency`` groups named ``ci-pr-lane-<n>`` with
 ``queue: max``, one running job per lane. The plan job runs this script on
 a ``pull_request`` event to pick each of its jobs' lanes:
 
 - Lanes ``0`` to ``BASE_LANES - 1`` are always open to pull requests.
-  Together with CodeQL's and ClusterFuzzLite's own slots they make the 12
+  Together with CodeQL's and ClusterFuzzLite's own slots they make the 36
   runners pull requests may always hold, so the merge queue keeps at least
-  8 whatever pull requests do.
+  24 whatever pull requests do.
 - Lanes ``BASE_LANES`` to ``BASE_LANES + BORROWED_LANES - 1`` are lent to
   pull requests only while no ``merge_group`` CI run is active, and only
   when nothing runs or waits in them, so each normally holds one job. When
@@ -61,13 +61,14 @@ CI_WORKFLOW_FILE = "ci.yml"
 # The path the API reports for that workflow.
 CI_WORKFLOW_PATH = ".github/workflows/ci.yml"
 
-# Lanes pull requests may always use. With CodeQL's two slots and
-# ClusterFuzzLite's one they hold at most 12 of the 20 runners.
-BASE_LANES = 9
+# Lanes pull requests may always use. With CodeQL's four slots and
+# ClusterFuzzLite's two they hold at most 36 of the 60 runners, so the merge
+# queue keeps 24: two merge groups' fan-outs at build concurrency 2.
+BASE_LANES = 30
 
 # Lanes lent to pull requests while the merge queue is idle, one job each:
-# with them pull requests can use all 20 runners.
-BORROWED_LANES = 8
+# with them pull requests can use all 60 runners.
+BORROWED_LANES = 24
 
 # Every lane.
 ALL_LANES = BASE_LANES + BORROWED_LANES

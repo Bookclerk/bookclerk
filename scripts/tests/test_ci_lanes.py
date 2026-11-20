@@ -162,7 +162,7 @@ class LaneLoadsTests(unittest.TestCase):
         self.assertEqual(cl.lane_loads(seed("jobs__unlabelled.json")), {})
 
     def test_label_must_end_the_name_and_name_a_lane(self) -> None:
-        for name in ("test · lane 17", "test · lane 03", "test · lane 3 ", "test · lane 3x", "test lane 3", "test · lane -1"):
+        for name in (f"test · lane {cl.ALL_LANES}", "test · lane 03", "test · lane 3 ", "test · lane 3x", "test lane 3", "test · lane -1"):
             raw = json.dumps({"jobs": [{"name": name, "status": "pending"}]}).encode()
             with self.subTest(name=name):
                 self.assertEqual(cl.lane_loads(raw), {})
@@ -212,10 +212,10 @@ class PlannedLegsTests(unittest.TestCase):
 class AssignTests(unittest.TestCase):
     """The shortest open line wins; lanes are lent only to an idle queue."""
 
-    KEYS = [f"job-{i}" for i in range(12)]
+    KEYS = [f"job-{i}" for i in range(cl.BASE_LANES + 3)]
 
     def test_spreads_over_base_lanes_before_lending(self) -> None:
-        picked = cl.assign(self.KEYS[:9], {}, False, 7)
+        picked = cl.assign(self.KEYS[: cl.BASE_LANES], {}, False, 7)
         self.assertEqual(sorted(picked.values()), list(range(cl.BASE_LANES)))
 
     def test_lends_empty_lanes_when_the_queue_is_idle(self) -> None:

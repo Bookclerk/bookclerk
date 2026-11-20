@@ -9,3 +9,13 @@ path = "junit.xml"
 # Codecov shows a failed test's output in its pull request comment.
 store-failure-output = true
 store-success-output = false
+
+# The `ci-os` profile runs `rust_test` on Windows and macOS (the `test-os`
+# job, docs/contributing/ci.md#full-suite-on-windows-and-macos). That job
+# only reports for now, so every test runs, a flaky one gets one retry, and
+# a test still running after five minutes is stopped and named instead of
+# holding the job until its timeout.
+[profile.ci-os]
+fail-fast = false
+retries = 1
+slow-timeout = { period = "60s", terminate-after = 5 }

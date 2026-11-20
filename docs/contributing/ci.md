@@ -80,10 +80,38 @@ request, so reviewers and Codecov see their results before it is queued.
 `CI Gate` in the merge group requires every platform, so a Windows or macOS
 failure ejects the pull request from the queue and keeps it out of `main`.
 
+### Full suite on Windows and macOS
+
+The jobs above run chosen parts of the suite on Windows and macOS, and in
+November 2026 host bugs on both systems reached `main` through the tests
+they leave out (#1228, #1229). The `test-os` job runs the whole
+`rust_test` suite there too, in the merge queue and on the build-only
+`main` push:
+
+- Its legs come from the plan's `os_test_matrix` output (`OS_TEST_PARTS`
+  in `scripts/ci_plan/execute.py`): three parts on `windows-latest` and two
+  on `macos-latest`, split with `--partition` as the Linux
+  [test parts](#test-runner-and-retries) are. Windows takes about twice
+  Linux's time and macOS about 1.3 times, so each part takes about
+  30 minutes. A Linux-only pull request run has no legs; a build-only
+  `main` push has one per OS, which only compiles and saves the job's own
+  cache (see [Caches](#caches)).
+- On Windows and macOS `rust_test` uses the `ci-os` nextest profile
+  (`.config/nextest.toml`) instead of the merge group's retry and
+  fail-fast: every test runs, a failing one gets one retry, and a test
+  still running after five minutes is stopped and named, so a hang fails
+  one test instead of holding the job until its timeout.
+- **It only reports for now.** The job is listed in `REPORT_JOBS`
+  (`scripts/ci_plan/plan.py`), has `continue-on-error`, says "report only"
+  in its name, and `CI Gate` doesn't need it. The merge-queue fail-fast
+  watcher ignores it, so its failure cancels nothing, and a group can land
+  while its legs still run. It becomes required, in place of the curated
+  Windows and macOS legs, once each OS has three green runs in a row.
+
 ### Pull request lanes
 
 GitHub gives a `merge_group` run no priority over pull request runs. Every
-job waits in one queue for the organization's 20 runners, so a burst of
+job waits in one queue for the organization's 60 runners (GitHub Team), so a burst of
 ready pull requests can hold most of them and leave the merge queue waiting
 long enough to hit its status check timeout. To leave room for the queue
 without leaving runners idle, heavy pull request jobs wait in shared
@@ -104,14 +132,16 @@ without leaving runners idle, heavy pull request jobs wait in shared
   active pull request CI run, through the jobs API (the plan job reads it
   with `actions: read`). A base lane wins a tie, so lent lanes fill only
   when every base lane is busy.
-- **Base lanes** 0 to 8 are always open to pull requests. With CodeQL's
-  two slots (`codeql-pr-slot-rust` and `codeql-pr-slot-other`) and
-  ClusterFuzzLite's one (`cflite-pr-slot`), which work the same way,
-  pull requests may always hold 12 runners, so the merge queue keeps at
-  least 8.
-- **Lent lanes** 9 to 16 are open only while no `merge_group` CI run is
+- **Base lanes** 0 to 29 are always open to pull requests. With CodeQL's
+  four slots (`codeql-pr-slot-<rust|other>-<even|odd>`) and
+  ClusterFuzzLite's two (`cflite-pr-slot-<even|odd>`), which work the same
+  way, pull requests may always hold 36 runners, so the merge queue keeps
+  at least 24: enough for two groups' fan-outs at build concurrency 2.
+  Actions expressions have no modulo, so a run picks its CodeQL and
+  ClusterFuzzLite slot from whether its run id ends in an even digit.
+- **Lent lanes** 30 to 53 are open only while no `merge_group` CI run is
   active, and only when nothing runs or waits in them, so each normally
-  holds one job. When the queue is idle, pull requests can use all 20
+  holds one job. When the queue is idle, pull requests can use all 60
   runners. When a group arrives, no new job enters a lent lane, and those
   lanes are back to the queue within one pull request job. There is no
   lock, so two plans that read the jobs API within the same few seconds,
@@ -129,13 +159,18 @@ without leaving runners idle, heavy pull request jobs wait in shared
   of its own from the run id and matrix leg, so it never waits.
 
 `scripts/tests/test_ci_contract.py` fails if a new job runs on pull
-requests without a lane or slot, if the base lanes and slots grow past 12,
-or if every lane and slot together pass 20. `scripts/tests/test_ci_lanes.py`
+requests without a lane or slot, if the base lanes and slots grow past 36,
+or if every lane and slot together pass 60. `scripts/tests/test_ci_lanes.py`
 tests the lane choice and fuzzes the API readers (see
 [Fuzzing](fuzzing.md)).
 
 Nothing is skipped: a pull request still runs every job it ran before,
 only later when the lanes are busy.
+
+The organization moved from GitHub Free (20 runners: 9 base lanes, 8 lent,
+2 CodeQL slots, 1 ClusterFuzzLite slot, so the queue kept 8) to GitHub Team
+(60 runners) on 20 November 2026. macOS stays capped at 5 runners at once
+on both plans.
 
 Lanes replaced one fixed slot per job (`ci-pr-slot-<job>`) in
 November 2026. Measured from 13:00 to 23:40 UTC on 11 November, only
@@ -270,8 +305,8 @@ cargo install cargo-nextest --locked
 
 ### Caches
 
-Rust dependency caches use three shared keys. Each is saved by one job on
-`main` and restored by the others:
+Rust dependency caches use three shared keys, plus one for a report-only
+job. Each is saved by one job on `main` and restored by the others:
 
 - **`lint`**: saved by `check`.
 - **`debug`**: saved by `test` on Linux (its first part), by `native-gateway` on Windows
@@ -279,9 +314,18 @@ Rust dependency caches use three shared keys. Each is saved by one job on
   `confinement`, `tray`, `desktop`, `postgres` and `windows-cluster`.
 - **`release`**: saved by `release` (the job that also runs the
   envelope), once per LTO mode (see [Release build](#release-build)).
+- **`debug-tests`**: saved by the first leg of `test-os` on Windows and on
+  macOS (see [Full suite on Windows and macOS](#full-suite-on-windows-and-macos)).
+  Every test binary of the workspace is far more than the other jobs on
+  those systems compile, and while `test-os` only reports it must not
+  change what they restore. It is keyed by `CI_BUILD_PLAN_DEBUG`, since it
+  compiles a `debug` check.
 
 Fewer entries keep the repository under the Actions cache limit, so jobs
-stop missing their cache.
+stop missing their cache. GitHub Team lets the repository raise that limit
+above the included 10 GB (Settings > Actions > General > Cache settings),
+billed for the storage above it; the limit is about 25 GB since
+20 November 2026, so the `debug-tests` caches fit beside the others.
 
 rust-cache also hashes every installed Rust toolchain into the key, and
 runner images preinstall their own (a Windows image update in November 2026
@@ -1718,7 +1762,7 @@ Queue settings:
 
 - squash;
 - "only merge non-failing pull requests";
-- build concurrency 1;
+- build concurrency 2;
 - merge limits: minimum 1, maximum 5, wait time 5 minutes;
 - status check timeout 300 minutes.
 
@@ -1728,10 +1772,12 @@ the entries ahead of it.
 
 ### Sizing the queue to the runner pool
 
-The organization runs on GitHub Free, which allows 20 hosted jobs at once
-across every workflow, and hosted runners serve queued jobs first come,
-first served. A job from a pull request gets no priority over one from a
-merge group, or the other way round.
+The organization runs on GitHub Team, which allows 60 hosted jobs at once
+across every workflow, 5 of them on macOS, and hosted runners serve queued
+jobs first come, first served. A job from a pull request gets no priority
+over one from a merge group, or the other way round; the
+[pull request lanes](#pull-request-lanes) keep at least 24 runners for the
+queue.
 
 The merge queue starts one `merge_group` run per entry it builds, each
 holding the entries ahead of it. Merge limits don't change that: GitHub
@@ -1739,44 +1785,40 @@ documents that they "do not combine `merge_group` builds" and only decide
 how many passing entries land at once. Build concurrency is the only
 setting that caps how many groups test at the same time.
 
-One merge group asks for about 22 jobs: the 19 CI jobs (17 of them start
-together right after `plan`), plus OSV-Scanner, the CLA check and the
-coverage upload. Most finish within 10 minutes. The unit tests (about
-30 minutes), the fat-LTO release build (about 23), `fmt / clippy / docs`
-(about 16), the two long Windows jobs and `merge-queue fail-fast`, which
-holds a runner until the run ends, keep going. Uncontended, a group takes
-about 35 minutes and averages about 6 runners.
+One merge group asks for about 28 jobs: the CI jobs (most of them start
+together right after `plan`), the five
+[`test-os` legs](#full-suite-on-windows-and-macos), plus OSV-Scanner, the
+CLA check and the coverage upload. Most finish within 10 minutes. The
+`test-os` legs (about 30 minutes each), the fat-LTO release build (about
+26), the three Linux test parts and `fmt / clippy / docs` (about 15 each),
+the long Windows jobs and `merge-queue fail-fast`, which holds a runner
+until the run ends, keep going. A group takes about 350 runner-minutes;
+with its whole fan-out running at once it takes about 35 to 40 minutes.
 
-Those figures predate splitting the unit tests into three parts (see
-[Test runner and retries](#test-runner-and-retries)). A group now asks for
-two more jobs, the tests take about 14 minutes, and the release build is
-the longest job. The [desktop job](#desktop-job) and the
-[UI visual job](#ui-visual-job) add one more short job each.
+| Build concurrency | Merge-group runners (peak, typical) | macOS runners | Left for pull requests |
+| --- | --- | --- | --- |
+| 1 | about 25, then about 10 | 3 | about 35 to 50 |
+| 2 | about 50 when fan-outs overlap, about 20 typical | 6 at overlaps (4 once the macOS job folds into `test-os`) | 36 guaranteed, about 40 typical |
+| 3 or more | the whole pool | 9 or more, over the 5 allowed | 36, the lane floor |
 
-| Build concurrency | Merge-group runners (peak, typical) | Left for pull requests |
-| --- | --- | --- |
-| 1 | about 19, then about 6 after 10 minutes | about 14 most of the time |
-| 2 | up to 20 when fan-outs overlap, about 12 typical | about 8, none at overlaps |
-| 3 or more | the whole pool | none until the groups drain |
+Build concurrency 2 lands about 3 pull requests an hour, against about 1.7
+at 1. It is the highest that fits: the organization may run only 5 macOS jobs
+at once. Each group runs the macOS job and two macOS `test-os` legs, so
+while `test-os` only reports, one of six macOS jobs can wait for a runner
+where two groups overlap. Once `test-os` replaces the macOS job, two groups
+need 4; a third group would always wait.
 
-Build concurrency was 2 on 9 to 10 November 2026, yet up to three runs
-built at once: the third was the leftover run of a group the queue had
-already dropped (see [Superseded merge groups](#superseded-merge-groups)).
+On GitHub Free (20 runners, until 20 November 2026) these docs advised
+build concurrency 1, though the setting was back at 2 by then. Two groups
+then took most of the pool: on the busy night of 9 to
+10 November 2026, with two groups and leftover runs building (see
+[Superseded merge groups](#superseded-merge-groups)), merge-group jobs
+waited 10 to 25 minutes for a runner, runs took about 65 minutes, and the
+queue landed about 1.3 an hour while pull request checks waited behind it.
 
-Build concurrency 1 keeps about two thirds of the pool for pull request
-checks. It caps the queue at one landing about every 35 minutes, about
-1.7 pull requests an hour, so a queue 10 deep takes about 6 hours to drain.
-More concurrency helps only while the pool is idle: on a quiet 9 November
-2026, overlapping groups landed about 3 an hour. On the busy night of
-9 to 10 November, with two groups and leftover runs building, merge-group jobs waited
-10 to 25 minutes for a runner, runs took about 65 minutes, and the queue
-landed about 1.3 an hour while pull request checks waited behind it.
-
-It also makes a failure cheap. With several groups building, a failure
-(including a flaky test) ejects the head entry and rebuilds every group
-behind it. With one group, nothing else was building, so nothing is
-rebuilt. "Jump to the front" likewise restarts only the one group in
-progress.
+A failure costs more with two groups building: a failure (including a
+flaky test) ejects the head entry and rebuilds the group behind it.
+"Jump to the front" likewise restarts the groups in progress.
 
 The status check timeout counts from the moment a group requests its
 checks, including the time its jobs wait for runners. On 10 November 2026,
@@ -1784,8 +1826,9 @@ with pull request jobs holding most of the pool, a green group ran past the
 earlier 120-minute timeout and was ejected, so the timeout is now 300
 minutes.
 
-Raise build concurrency again only when the pool grows, for example a paid
-plan or a self-hosted runner reserved for `merge_group`.
+Raise build concurrency again only when the macOS limit grows, for
+example an Enterprise plan (50 macOS jobs) or a self-hosted macOS runner
+reserved for `merge_group`.
 
 ### Superseded merge groups
 
