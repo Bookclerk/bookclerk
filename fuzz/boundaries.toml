@@ -70,6 +70,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.egress_bridge]
+crate = "bookclerk-workerd"
+boundary = "The workerd egress gate (egress.js) against the Rust EgressPolicy"
+input_from = "plugin package"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.egress_policy]
 crate = "bookclerk-plugin-manifest"
 boundary = "Guest egress allowlist (EgressPolicy JSON wire form)"
@@ -81,13 +88,6 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-plugin-manifest"
 boundary = "plugin.toml parse, validation, derived egress and consent"
 input_from = "plugin package"
-side = "host"
-artifacts = ["bookclerk"]
-
-[targets.https_url_policy]
-crate = "bookclerk-plugin-manifest"
-boundary = "URLs from plugin output the host fetches itself"
-input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
@@ -289,7 +289,14 @@ artifacts = ["bookclerk"]
 
 [targets.diagnostics_submit_reply]
 crate = "bookclerk-config"
-boundary = "the diagnostics collector's reply to an uploaded report, whose report_id joins the install's report history"
+boundary = "the diagnostics collector's reply to an uploaded report, whose report_id and access code join the install's report history"
+input_from = "diagnostics collector"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.diagnostics_lookup_reply]
+crate = "bookclerk-config"
+boundary = "the diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue links"
 input_from = "diagnostics collector"
 side = "host"
 artifacts = ["bookclerk"]
@@ -420,6 +427,13 @@ input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.pace_request]
+crate = "bookclerk-library"
+boundary = "A person's pace for one of their store accounts, from POST /api/portal/sources/{source}/connections/{account_id}/pace"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.window_policy]
 crate = "bookclerk-window-policy"
 boundary = "Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates"
@@ -441,6 +455,14 @@ input_from = "store"
 # The audible guest parses them for Discover, and host enrichment links the
 # same crate.
 side = "host"
+artifacts = ["bookclerk"]
+
+[targets.throttle_reason]
+crate = "bookclerk-storefront"
+boundary = "A store's refusal text, classified as a throttle or a plain refusal"
+input_from = "store"
+# The audible guest classifies refused license requests with it.
+side = "guest"
 artifacts = ["bookclerk"]
 
 [targets.graphicaudio_catalog]

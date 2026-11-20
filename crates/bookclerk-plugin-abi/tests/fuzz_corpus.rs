@@ -49,11 +49,15 @@ fn fuzz_corpus_sql_parse_does_not_panic() {
     }
 }
 
+/// Hand-written decoders `abi_decode` puts ahead of the generated table;
+/// matches `HAND_WRITTEN` in `fuzz/fuzz_targets/abi_decode.rs`.
+const ABI_DECODE_HAND_WRITTEN: u8 = 6;
+
 /// Mirrors `fuzz/fuzz_targets/abi_decode.rs`: the first byte selects the
 /// decoder, the rest is the message.
 #[test]
 fn fuzz_corpus_abi_decode_does_not_panic() {
-    const HAND_WRITTEN: u8 = 4;
+    const HAND_WRITTEN: u8 = ABI_DECODE_HAND_WRITTEN;
     for path in corpus_files("abi_decode") {
         let data = std::fs::read(&path).expect("read");
         let Some((&selector, bytes)) = data.split_first() else {
@@ -71,6 +75,26 @@ fn fuzz_corpus_abi_decode_does_not_panic() {
             }
             3 => {
                 let _ = bookclerk_plugin_abi::decode_db_capabilities_reply_bytes(bytes);
+            }
+            4 => {
+                let _ = bookclerk_plugin_abi::decode_empty_reply_bytes(bytes);
+            }
+            5 => {
+                if let Ok(err) = bookclerk_plugin_abi::decode_plugin_error_bytes(bytes) {
+                    if let Some(details) = &err.details {
+                        let text = serde_json::Value::Object(details.clone()).to_string();
+                        assert_eq!(
+                            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                                &text
+                            )
+                            .ok()
+                            .as_ref(),
+                            Some(details),
+                            "{}: kept details must round-trip",
+                            path.display()
+                        );
+                    }
+                }
             }
             generated => {
                 let _ = bookclerk_plugin_abi::read_any_message(generated - HAND_WRITTEN, bytes);
@@ -527,8 +551,11 @@ fn structured_book_record_seeds_are_current() {
     ] {
         bookclerk_plugin_abi::roundtrip_any_message(selector, bytes)
             .unwrap_or_else(|_| panic!("{name} does not round-trip at selector {selector}"));
-        // `abi_decode` puts four hand-written decoders ahead of the table.
-        for (target, prefix) in [("abi_decode", selector + 4), ("abi_roundtrip", selector)] {
+        // `abi_decode` puts its hand-written decoders ahead of the table.
+        for (target, prefix) in [
+            ("abi_decode", selector + ABI_DECODE_HAND_WRITTEN),
+            ("abi_roundtrip", selector),
+        ] {
             let path = corpus.join(target).join(name);
             let mut seed = vec![prefix];
             seed.extend_from_slice(bytes);
@@ -561,10 +588,10 @@ fn fuzz_corpus_cover_sink_key_holds_invariants() {
     assert!(checked > 0, "no cover_sink_key seed");
 }
 
-/// Seeds for the hand-written envelope decoders that carry a typed
-/// `limit_exceeded` error: an `ExecuteResultReply` whose `err` has
-/// `details`, and a `DbCapabilitiesReply` in both members. Refresh with
-/// `UPDATE_FUZZ_SEEDS=1`.
+/// Seeds for the hand-written decoders that carry a typed `limit_exceeded`
+/// error: an `ExecuteResultReply` whose `err` has `details`, and a
+/// `DbCapabilitiesReply`, an `EmptyReply` and a bare `PluginError` in both
+/// shapes. Refresh with `UPDATE_FUZZ_SEEDS=1`.
 #[test]
 fn limit_error_envelope_seeds_are_current() {
     use bookclerk_plugin_abi::{
@@ -594,7 +621,61 @@ fn limit_error_envelope_seeds_are_current() {
         decode_db_capabilities_reply_bytes(&caps_err)
             .expect_err("err member")
             .limit(),
-        Some(limit)
+        Some(limit.clone())
+    );
+
+    // The reply helpers every payload-free guest reply and guest error goes
+    // through: an `EmptyReply` in both members, and a bare `PluginError`
+    // whose `details` are kept (an object) or dropped (not one).
+    let write_error = |mut b: bookclerk_plugin_abi::plugin_capnp::plugin_error::Builder<'_>,
+                       err: &PluginError,
+                       details: &str| {
+        b.set_code(err.wire_str());
+        b.set_message(&err.message);
+        b.set_details(details);
+    };
+    let limit_err = PluginError::limit_exceeded(limit.clone());
+    let limit_details = serde_json::Value::Object(limit.details()).to_string();
+    let empty_ok = message_bytes(|m| {
+        m.init_root::<bookclerk_plugin_abi::plugin_capnp::empty_reply::Builder<'_>>()
+            .set_ok(());
+    });
+    let empty_err = message_bytes(|m| {
+        let reply = m.init_root::<bookclerk_plugin_abi::plugin_capnp::empty_reply::Builder<'_>>();
+        write_error(reply.init_err(), &limit_err, &limit_details);
+    });
+    let error_details = message_bytes(|m| {
+        write_error(
+            m.init_root::<bookclerk_plugin_abi::plugin_capnp::plugin_error::Builder<'_>>(),
+            &limit_err,
+            &limit_details,
+        );
+    });
+    let error_bad_details = message_bytes(|m| {
+        write_error(
+            m.init_root::<bookclerk_plugin_abi::plugin_capnp::plugin_error::Builder<'_>>(),
+            &PluginError::unavailable("guest restarting"),
+            "[1, 2]",
+        );
+    });
+    assert_eq!(
+        bookclerk_plugin_abi::decode_empty_reply_bytes(&empty_err)
+            .expect_err("err member")
+            .limit(),
+        Some(limit.clone())
+    );
+    assert!(bookclerk_plugin_abi::decode_empty_reply_bytes(&empty_ok).is_ok());
+    assert_eq!(
+        bookclerk_plugin_abi::decode_plugin_error_bytes(&error_details)
+            .expect("plugin error")
+            .limit(),
+        Some(limit.clone())
+    );
+    assert_eq!(
+        bookclerk_plugin_abi::decode_plugin_error_bytes(&error_bad_details)
+            .expect("plugin error")
+            .details,
+        None
     );
 
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/abi_decode");
@@ -602,6 +683,10 @@ fn limit_error_envelope_seeds_are_current() {
         ("limit_error_reply.bin", 1u8, &reply_err),
         ("caps_reply_ok.bin", 3u8, &caps_ok),
         ("caps_reply_limit_error.bin", 3u8, &caps_err),
+        ("empty_reply_ok.bin", 4u8, &empty_ok),
+        ("empty_reply_limit_error.bin", 4u8, &empty_err),
+        ("plugin_error_limit_details.bin", 5u8, &error_details),
+        ("plugin_error_array_details.bin", 5u8, &error_bad_details),
     ] {
         let path = corpus.join(name);
         let mut seed = vec![selector];
@@ -1517,8 +1602,8 @@ fn an_unreadable_error_code_never_decodes_as_success() {
 
 /// Seeds for `storage_reply`: replies each validator accepts and one
 /// breaking each rule. Byte 0 is `0` for a `moveMany` page, `1` for
-/// `deleteMany`, `2` for `headMany`, `3` for `changes` and `4` for a hinted
-/// `list` page. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+/// `deleteMany`, `2` for `headMany`, `3` for `changes`, `4` for a hinted
+/// `list` page and `5` for `translateKeys`. Refresh with `UPDATE_FUZZ_SEEDS=1`.
 // Test code: failed I/O or encoding is the test failing.
 #[allow(clippy::expect_used)]
 #[test]
@@ -1659,6 +1744,24 @@ fn storage_reply_seeds_are_current() {
                     modified_since_applied: true,
                 }),
             ),
+        ),
+        (
+            "translate_keys.bin",
+            seed(
+                5,
+                StorageReply::TranslateKeys(vec!["a/1.m4b".into(), "a_/2_.m4b".into()]),
+            ),
+        ),
+        (
+            "translate_keys_escape.bin",
+            seed(
+                5,
+                StorageReply::TranslateKeys(vec!["a/1.m4b".into(), "a\\..\\x".into()]),
+            ),
+        ),
+        (
+            "translate_keys_short.bin",
+            seed(5, StorageReply::TranslateKeys(vec!["a/1.m4b".into()])),
         ),
     ];
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/storage_reply");

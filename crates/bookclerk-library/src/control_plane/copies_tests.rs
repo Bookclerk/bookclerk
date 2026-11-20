@@ -824,9 +824,8 @@ async fn a_person_is_planned_an_editions_audio_to_play_under_every_profile() {
             .unwrap()
             .is_none());
 
-        // Turning downloads off for Riley ends playing too, for a new
-        // plan and for a session's later check; turning them back on
-        // restores both.
+        // Turning downloads off for Riley stops taking copies, not
+        // listening: a new plan and a session's later check both hold.
         for allowed in [false, true] {
             crate::control_plane::set_member_control_overrides(
                 &store,
@@ -838,20 +837,18 @@ async fn a_person_is_planned_an_editions_audio_to_play_under_every_profile() {
             )
             .await
             .unwrap();
-            assert_eq!(
+            assert!(
                 plan_playback(&store, riley, &edition)
                     .await
                     .unwrap()
                     .is_some(),
-                allowed,
                 "{profile:?}: downloads {allowed}"
             );
-            assert_eq!(
+            assert!(
                 authorize_playback(&store, riley, &edition, "local", &digest)
                     .await
                     .unwrap()
                     .is_some(),
-                allowed,
                 "{profile:?}: downloads {allowed}"
             );
         }

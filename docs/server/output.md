@@ -31,12 +31,35 @@ acquire writes to it like the built-in ones:
   destinations, and an acquire writes to both. Add one with
   `bookclerk plugins instances create s3 --name "Backup bucket"`, then
   deploy it ([plugin instances](plugins.md#instances)).
-- Destinations that name files as paths come first and the rest follow by
-  instance id. The first one is the primary destination: the library
-  records its key as the title's storage key.
-- `local` names files as paths on a file system. Every other destination
-  gets object-store keys: one key of at most 1024 bytes, with the
-  object-store character set (`output.path_sanitization = "auto"`).
+- Destinations are ordered by instance id. The first one is the primary
+  destination: the library records its key as the title's storage key.
+- Every destination receives the same name, and stores it under the key
+  it can hold (see [Keys each destination stores](#keys-each-destination-stores)).
+
+### Keys each destination stores
+
+The naming templates render one **host key** for a file: folder names
+joined by `/`, each one non-empty, never `.` or `..`, with no `\` or
+control characters, at most 1024 bytes in all. The host key doesn't change
+between destinations. Each destination's plugin then turns it into the key
+it actually stores, and that key is what Bookclerk writes, checks for and
+records for that destination:
+
+- `local` stores a path that the host's file system accepts. On Windows it
+  replaces `< > : " | ? *`, trims trailing dots and spaces, and prefixes
+  reserved device names such as `CON` with `_`. Every platform keeps each
+  folder or file name within 255 bytes (255 UTF-16 units on Windows),
+  shortening the name before its extension.
+- `s3` stores an object key without the characters S3 advises against,
+  such as `\`, `{`, `}`, `^`, `%` and `|`, and fits the whole key, its prefix
+  included, into 1024 bytes. It shortens the file name before its
+  extension first, then the longest folder names.
+- A third-party destination translates keys when it declares
+  `storage.translateKeys` ([plugin ABI](../plugins/abi.md#translating-keys)).
+  One that doesn't stores the host key as written.
+
+So the same book can sit at `Ann Author/Dune: Messiah.m4b` in a bucket and
+at `Ann Author/Dune_ Messiah.m4b` on a Windows disk.
 
 ## Local filesystem
 
@@ -318,9 +341,9 @@ this book", before anything is downloaded.
 
 > [!NOTE]
 > A changed filter applies to acquires that start afterwards. Files that
-> are already stored stay where they are. An edition that is already
-> stored on one destination is not acquired again for another destination
-> that takes it; that changes when each destination's copy is tracked.
+> are already stored stay where they are. A destination whose filter now
+> takes an edition it has no copy of gets one from the next acquire run
+> (see [Several destinations](#several-destinations)).
 
 The same holds when a branch acquires a book for the library: the
 library works out the destinations that take each book and the branch
@@ -407,12 +430,49 @@ asks for the library's copy.
 
 ## Several destinations
 
+An acquire writes to every destination that takes the book at the same
+time:
+
+1. Each destination's write is tried up to three times.
+2. The acquire succeeds as soon as one destination holds the complete
+   files. It fails only when no destination stored them.
+3. Bookclerk records each destination's copy of the edition: **stored**,
+   **pending** (the write failed or the destination was unavailable) or
+   **failed** (the copy failed 8 times in a row).
+4. A pending copy is retried in the background, 5 minutes after it
+   failed, then with the delay doubling each time, up to a day. Every few
+   minutes the daemon queues an acquire for each edition with a retry
+   due on a destination it has deployed; the destinations that already
+   hold the edition are left alone. An acquire of one title tries its
+   pending copies at once, without waiting for the delay. A retry that
+   fails counts as an attempt on the copy, and the title stays acquired
+   from the destinations that hold it.
+5. A destination that cannot be listed when an acquire run starts sits
+   that run out. The titles go to the destinations that answer, and the
+   run clears nothing as missing and moves no files, since a title it
+   cannot see may be on the destination that did not answer. Each title
+   the run acquires gets a pending copy there, so the background retry
+   writes it once the destination answers. The run fails only when no
+   destination answers.
+
+An acquire run also visits an edition that is already acquired when a
+destination that takes it has no copy at all: one deployed after the
+acquire, or one whose filter took the edition later. A failed copy is
+left for you: other acquires of the edition write nothing there, and a
+forced acquire of the title (`bookclerk library acquire --force`) tries it
+again.
+
+> [!NOTE]
+> Editions acquired before copies were recorded get their copies from
+> the audio files the acquire recorded on each destination
+> (`edition_files`), the first time an acquire run looks at them.
+
 When some destinations already have a title and others don't,
 `output.multi_destination` decides what an acquire does:
 
 | Policy | What happens |
 | --- | --- |
-| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. This happens while the title is acquired; a title that is already stored is not copied to a destination whose filter now takes it. It copies the main output's copy only, so a destination whose copy rules refuse that copy gets nothing |
+| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. It copies the main output's copy only, so a destination whose copy rules refuse that copy gets nothing. A plain multi-part download is not matched on a destination by name, so it is downloaded again for the destination that lacks it |
 | `refetch_missing` | Downloads and encodes again, and writes only to the destinations missing the title |
 | `refetch_all` | Downloads and encodes again, and writes to every destination |
 
@@ -491,9 +551,13 @@ Copies of one edition on several accounts (the same book bought twice)
 share their files. The edition is downloaded once, and every account's
 copy is marked acquired at its path once each destination holds it.
 
-**Path sanitization** cleans up characters a file system can't store. Set
-`output.path_sanitization` to `auto`, `windows`, `posix`, `s3` or `none`,
-or list your own `output.replacement_characters`.
+**Path sanitization** chooses which characters the templates replace
+before a name reaches any destination. `auto`, the default, replaces only
+what no key can hold (`/` inside a name, and control characters) and leaves
+the rest to each destination ([Keys each destination stores](#keys-each-destination-stores)).
+Set `output.path_sanitization` to `windows`, `posix`, `s3` or `none` to
+apply that set everywhere instead, or list your own
+`output.replacement_characters`.
 
 ## Formats and sidecars
 

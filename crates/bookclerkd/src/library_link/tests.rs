@@ -91,6 +91,7 @@ impl HeartbeatSource for FixedSampler {
             memory_available_bytes: Some(4 << 30),
             files_dir_free_bytes: Some(1 << 40),
             cache: None,
+            public_origin: None,
         }
     }
 }
@@ -2566,7 +2567,7 @@ mod results_and_uploads {
     #[tokio::test]
     async fn each_owner_destination_gets_its_own_key() {
         use crate::node_api::uploads::{set_test_destinations, TestDestination};
-        use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
+        use bookclerk_config::{DestinationId, DestinationNaming};
 
         let _dek = crate::auth::tests::process_dek_lock().await;
         let world = linked().await;
@@ -2577,7 +2578,6 @@ mod results_and_uploads {
             vec![
                 TestDestination {
                     id: DestinationId::new("local").unwrap(),
-                    key_style: DestinationKeyStyle::Filesystem,
                     root: local_out.path().to_path_buf(),
                     naming: DestinationNaming {
                         folder_template: Some("<author>/<title>".into()),
@@ -2587,7 +2587,6 @@ mod results_and_uploads {
                 },
                 TestDestination {
                     id: DestinationId::new("s3").unwrap(),
-                    key_style: DestinationKeyStyle::ObjectStore,
                     root: s3_out.path().to_path_buf(),
                     naming: DestinationNaming {
                         folder_template: Some("library/<asin>".into()),
@@ -2659,14 +2658,13 @@ mod results_and_uploads {
     /// `<author>/<title>/<title>` and `library/<asin>/<asin>`.
     fn two_destinations(world: &Linked, local_out: &Path, s3_out: &Path) {
         use crate::node_api::uploads::{set_test_destinations, TestDestination};
-        use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
+        use bookclerk_config::{DestinationId, DestinationNaming};
 
         set_test_destinations(
             world.owner_files.path(),
             vec![
                 TestDestination {
                     id: DestinationId::new("local").unwrap(),
-                    key_style: DestinationKeyStyle::Filesystem,
                     root: local_out.to_path_buf(),
                     naming: DestinationNaming {
                         folder_template: Some("<author>/<title>".into()),
@@ -2676,7 +2674,6 @@ mod results_and_uploads {
                 },
                 TestDestination {
                     id: DestinationId::new("s3").unwrap(),
-                    key_style: DestinationKeyStyle::ObjectStore,
                     root: s3_out.to_path_buf(),
                     naming: DestinationNaming {
                         folder_template: Some("library/<asin>".into()),
@@ -2757,6 +2754,23 @@ mod results_and_uploads {
             objects(s3_out.path()).is_empty(),
             "the destination that refuses the title gets nothing"
         );
+        // The commit recorded the library's copy on the destination that
+        // took it, under its key there, and none on the other.
+        let title = world
+            .owner
+            .acquire_titles_named(None, "t1")
+            .await
+            .unwrap()
+            .remove(0);
+        let copies = world
+            .owner
+            .copies_of_editions(std::slice::from_ref(&title.edition_id))
+            .await
+            .unwrap();
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert_eq!(copies[0].destination, "local");
+        assert_eq!(copies[0].state, bookclerk_library::CopyState::Stored);
+        assert_eq!(copies[0].storage_key, title.storage_key);
     }
 
     /// The owner's plan lists, for each title, the destinations whose
@@ -3224,7 +3238,7 @@ mod results_and_uploads {
     #[tokio::test]
     async fn an_upload_is_refused_after_the_destinations_change() {
         use crate::node_api::uploads::{set_test_destinations, TestDestination};
-        use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
+        use bookclerk_config::{DestinationId, DestinationNaming};
 
         let _dek = crate::auth::tests::process_dek_lock().await;
         let world = linked().await;
@@ -3235,13 +3249,11 @@ mod results_and_uploads {
             vec![
                 TestDestination {
                     id: DestinationId::new("local").unwrap(),
-                    key_style: DestinationKeyStyle::Filesystem,
                     root: local_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
                 },
                 TestDestination {
                     id: DestinationId::new("s3").unwrap(),
-                    key_style: DestinationKeyStyle::ObjectStore,
                     root: s3_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
                 },
@@ -3359,7 +3371,7 @@ mod results_and_uploads {
     #[tokio::test]
     async fn a_commit_is_refused_after_the_destinations_change() {
         use crate::node_api::uploads::{set_test_destinations, TestDestination};
-        use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
+        use bookclerk_config::{DestinationId, DestinationNaming};
 
         let _dek = crate::auth::tests::process_dek_lock().await;
         let world = linked().await;
@@ -3387,13 +3399,11 @@ mod results_and_uploads {
             vec![
                 TestDestination {
                     id: DestinationId::new("local").unwrap(),
-                    key_style: DestinationKeyStyle::Filesystem,
                     root: owner_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
                 },
                 TestDestination {
                     id: DestinationId::new("s3").unwrap(),
-                    key_style: DestinationKeyStyle::ObjectStore,
                     root: s3_out.path().to_path_buf(),
                     naming: DestinationNaming::default(),
                 },

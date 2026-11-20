@@ -581,13 +581,16 @@ pub async fn find_existing_for_request(
             ..Default::default()
         };
         for alt in planned_extensions() {
-            let key = storage_key_with_rules(
-                &ctx,
-                req.options.folder_template.as_deref(),
-                req.options.file_template.as_deref(),
-                alt,
-                &req.options.replacement_characters,
-            );
+            let key = req
+                .destination_keys
+                .translate(storage_key_with_rules(
+                    &ctx,
+                    req.options.folder_template.as_deref(),
+                    req.options.file_template.as_deref(),
+                    alt,
+                    &req.options.replacement_characters,
+                ))
+                .await;
             if key_present(index, storage, &key).await? {
                 return Ok(Some(key));
             }
@@ -781,6 +784,7 @@ pub(crate) fn request_from_title(
         parent_call_number: None,
         metadata: crate::AcquireMetadata::default(),
         library_copies: crate::LibraryCopySource::default(),
+        destination_keys: crate::DestinationKeys::default(),
     }
 }
 

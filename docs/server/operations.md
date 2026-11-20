@@ -18,8 +18,10 @@ At start, the daemon:
 1. reads the bootstrap settings from `config.toml` (or `BOOKCLERK_CONFIG`);
 2. opens the library database;
 3. enrolls a stable host id (`node-identity.json`);
-4. loads `[events]` and `[output]` from the database. The other sections
-   still come from TOML.
+4. loads the settings the database owns: `core.events`, `core.output`,
+   `core.cache` and every plugin's settings. `[library]`, `[jobs]`,
+   `[media]`, `[plugins]`, `[daemon]` and the other tables still come
+   from TOML.
 
 It then runs two schedules:
 
@@ -29,6 +31,13 @@ It then runs two schedules:
 > [!WARNING]
 > Keep `library.auto_acquire = false` until you are happy with where
 > files land.
+
+Auto-acquire and other downloads the daemon starts itself follow each
+store account's download pace: a daily budget, a gap between downloads
+and a pause after the store throttles. A held job waits without spending
+an attempt and picks up where it stopped. Change one account's pace with
+`bookclerk library set-pace` or from **Accounts**; see
+[Download pacing](../internals/jobs.md#download-pacing).
 
 ### Listen addresses
 
@@ -289,8 +298,17 @@ schema validation is one; it only reads OpenAPI 3.0.
 ### Trusted proxies
 
 List your proxies in `daemon.trusted_proxies` (IP addresses or CIDRs).
-Only then does sign-in throttling honor `X-Forwarded-For`; an empty list
-means the direct TCP peer is always used.
+Only then does sign-in throttling honor `X-Forwarded-For` (or RFC 7239
+`Forwarded` when `X-Forwarded-For` is absent); an empty list means the
+direct TCP peer is always used.
+
+Each proxy appends the address it received the request from, so a client
+can put anything it likes at the left of the header. Bookclerk reads the
+addresses from the right, skips every one that is a trusted proxy, and
+uses the first one that isn't. List every proxy in the chain (for
+example both a CDN's ranges and your own nginx), or the throttle keys on
+the innermost proxy you left out. If a hop it has to read isn't an IP
+address, Bookclerk uses the direct peer instead.
 
 The tray's operator handoff ignores this list. **Open Bookclerk** always
 talks to `http://localhost:<listen-port>` directly. So browse the proxied
@@ -309,10 +327,10 @@ middleware.
 | --- | --- |
 | `daemon.listen` | Rebinds the listeners, after the auth swap. Free ports are bound first, and a failed rebind rolls back to the last good bind |
 | `daemon.auth.*`, operator token | Rebuilds `OperatorAuthState`. Database sessions stay; the old token works for about 60 seconds after a rotation or reload |
-| `sources.*`, `integrations.*`, `output.*` | Rebuilds the registries; integration watchers stop and start again |
+| `sources.*`, `integrations.*` | Rebuilds the registries; integration watchers stop and start again |
 | `database.plugin` | Reopens the library and destinations |
 | `[media]` | Swaps the media worker pool |
-| `[events]` | Compare-and-swap in the database. A reload overlays the committed revision and never copies TOML back over it. Each committed write wakes every node through its `node.<node_id>` queue, with a 60-second backstop for a missed wakeup |
+| `[events]`, `[output]` | Compare-and-swap in the database (`core.events`, `core.output`). A reload overlays the committed revision and never copies TOML back over it. Each committed write wakes every node through its `node.<node_id>` queue, with a 60-second backstop for a missed wakeup |
 
 ## Branch nodes
 

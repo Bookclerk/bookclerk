@@ -9,7 +9,9 @@
 //! `ActiveModel`) for the majority of CRUD.
 
 pub mod account_credential_revisions;
+pub mod account_downloads;
 pub mod account_links;
+pub mod account_pace;
 pub mod account_scan_state;
 pub mod account_shares;
 pub mod accounts;
@@ -35,6 +37,7 @@ pub mod discover_store_calls;
 pub mod discover_tastes;
 pub mod domain_events;
 pub mod edition_acquisitions;
+pub mod edition_copies;
 pub mod edition_files;
 pub mod edition_identifiers;
 pub mod editions;

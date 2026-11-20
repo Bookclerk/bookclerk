@@ -1613,7 +1613,9 @@ pub(super) fn commit_trust_gate(
 /// re-checked just before. A key another title or an acquire took since
 /// the grant refuses the commit (`key_taken`) and records nothing. A repeat
 /// of a commit that already landed answers [`UploadCommit::Committed`]
-/// again without writing.
+/// again without writing. A title's commit also records the store
+/// download in its account's pace ledger (`account_downloads`), in the same
+/// batch.
 ///
 /// # Errors
 ///
@@ -1629,6 +1631,27 @@ pub async fn commit_upload(
         store_committed_probes(store, upload_id).await?;
     }
     Ok(outcome)
+}
+
+/// Each destination the upload wrote the title's primary audio file to,
+/// with that file's key there: the copies of the file whose key on some
+/// destination is the session's primary key.
+fn primary_copies(session: &UploadSession) -> Vec<(&str, &str)> {
+    session
+        .files
+        .iter()
+        .find(|file| {
+            file.copies
+                .iter()
+                .any(|copy| copy.key == session.primary_key)
+        })
+        .map(|file| {
+            file.copies
+                .iter()
+                .map(|copy| (copy.destination.as_str(), copy.key.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// [`commit_upload`] without the probes: every check, and the batch that
@@ -1767,6 +1790,31 @@ async fn commit_upload_checked(
         binds,
     )];
     if let Some(title) = &title {
+        // The title's store download counts toward its account's pace, in
+        // the same batch as the commit so the two never part. Hosts never
+        // run paced acquires (`claimant_may_run`), so the row is a person's.
+        // The id is the upload's, and the gate holds only for the statement
+        // batch that committed it, so a repeated commit records nothing.
+        let mut binds = vec![
+            text(&format!("upload:{upload_id}")),
+            text(&title.plugin_key),
+            text(&title.account_id),
+            batch::int(Utc::now().timestamp_millis()),
+            text(&fence.job_id),
+            text(&title.plugin_key),
+            text(&title.account_id),
+        ];
+        binds.extend(gate());
+        statements.push(exec(
+            &format!(
+                "INSERT OR IGNORE INTO account_downloads \
+                   (id, plugin_key, account_id, started_at_ms, job_id, paced) \
+                 SELECT ?, ?, ?, ?, ?, 0 \
+                  WHERE EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ?) \
+                    AND {gate_sql}"
+            ),
+            binds,
+        ));
         if let Some(model) = &model {
             let mut binds = vec![text(&session.primary_key), text(&now), text(&model.uuid)];
             binds.extend(gate());
@@ -1873,6 +1921,41 @@ async fn commit_upload_checked(
                     binds,
                 ));
             }
+        }
+        // Each destination the primary audio was written to now holds a
+        // stored copy of the edition (`edition_copies`), under its own key
+        // there, so acquire runs on the library see the copies the branch
+        // delivered.
+        for (destination, key) in primary_copies(&session) {
+            let edition = title.edition_id.as_str();
+            let mut binds = vec![
+                text(edition),
+                text(destination),
+                text(key),
+                text(&now),
+                text(edition),
+            ];
+            binds.extend(gate());
+            statements.push(exec(
+                &format!(
+                    "INSERT OR IGNORE INTO edition_copies (\
+                        edition_id, destination, state, storage_key, attempts, \
+                        next_attempt_at, last_error, updated_at\
+                     ) SELECT ?, ?, 'stored', ?, 0, NULL, NULL, ? \
+                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND {gate_sql}"
+                ),
+                binds,
+            ));
+            let mut binds = vec![text(key), text(&now), text(edition), text(destination)];
+            binds.extend(gate());
+            statements.push(exec(
+                &format!(
+                    "UPDATE edition_copies SET state = 'stored', storage_key = ?, \
+                       attempts = 0, next_attempt_at = NULL, last_error = NULL, updated_at = ? \
+                      WHERE edition_id = ? AND destination = ? AND {gate_sql}"
+                ),
+                binds,
+            ));
         }
         // `book_acquired` names the flat row while `books` exists.
         if let Some(model) = &model {

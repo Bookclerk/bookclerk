@@ -120,6 +120,8 @@ paths = [
     "fuzz/oracles/sharing_request.rs",
     "fuzz/corpus/connections_request/**",
     "fuzz/oracles/connections_request.rs",
+    "fuzz/corpus/pace_request/**",
+    "fuzz/oracles/pace_request.rs",
 ]
 
 # The desktop window's custom-scheme oracle, shared the same way.
@@ -148,10 +150,14 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-# The workerd_control, socket_broker and socket_route oracles are shared
-# with the replay tests through `#[path]`.
+# The workerd_control, socket_broker, socket_route and egress_bridge oracles
+# are shared with the replay tests through `#[path]`; the egress_bridge
+# replay compares its result with the SDK's committed vectors.
 paths = [
     "fuzz/corpus/granted_http/**",
+    "fuzz/corpus/egress_bridge/**",
+    "fuzz/oracles/egress_bridge.rs",
+    "packages/plugin-sdk/scripts/egress_bridge_vectors.json",
     "fuzz/corpus/workerd_control/**",
     "fuzz/oracles/workerd_control.rs",
     "fuzz/corpus/socket_broker/**",
@@ -162,15 +168,12 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"
-# The cron and HTTPS URL oracles are shared with the replay test through
-# `#[path]`.
+# The cron oracle is shared with the replay test through `#[path]`.
 paths = [
     "fuzz/corpus/egress_policy/**",
     "fuzz/corpus/plugin_manifest/**",
     "fuzz/corpus/cron_schedule/**",
     "fuzz/oracles/cron_schedule.rs",
-    "fuzz/corpus/https_url_policy/**",
-    "fuzz/oracles/https_url_policy.rs",
 ]
 
 [[test_input]]
@@ -187,6 +190,8 @@ paths = [
     "fuzz/oracles/output_copies.rs",
     "fuzz/corpus/diagnostics_submit_reply/**",
     "fuzz/oracles/diagnostics_submit_reply.rs",
+    "fuzz/corpus/diagnostics_lookup_reply/**",
+    "fuzz/oracles/diagnostics_lookup_reply.rs",
 ]
 
 [[test_input]]
@@ -242,6 +247,11 @@ paths = ["fuzz/corpus/libro_catalog/**", "fuzz/oracles/libro_catalog.rs"]
 package = "bookclerk-audible-catalog"
 # The catalog oracle is shared with the replay test through `#[path]`.
 paths = ["fuzz/corpus/audible_catalog/**", "fuzz/oracles/audible_catalog.rs"]
+
+[[test_input]]
+package = "bookclerk-storefront"
+# The throttle classifier oracle is shared with the replay test through `#[path]`.
+paths = ["fuzz/corpus/throttle_reason/**", "fuzz/oracles/throttle_reason.rs"]
 
 [[test_input]]
 package = "bookclerk-plugin-source-graphicaudio"

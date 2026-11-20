@@ -293,6 +293,18 @@ fn fill_put_result(mut out: crate::plugin_capnp::put_result::Builder<'_>, put: &
     }
 }
 
+/// Decodes a guest's [`PluginError`] leniently: unreadable text becomes
+/// empty, an unknown code maps through [`PluginError::from_wire`], and
+/// `details` that are not one JSON object within the scalar ceiling are
+/// dropped.
+///
+/// # Arguments
+///
+/// * `r` - The wire error, as the guest sent it.
+///
+/// # Returns
+///
+/// The error the host acts on; decoding never fails.
 pub(super) fn read_error(r: plugin_error::Reader<'_>) -> PluginError {
     let code = r.get_code().ok().map(text_of).unwrap_or_default();
     let message = r.get_message().ok().map(text_of).unwrap_or_default();
@@ -1316,6 +1328,30 @@ impl dest_iface::Server for DestinationServer {
         Ok(())
     }
 
+    async fn translate_keys(
+        self: Rc<Self>,
+        params: dest_iface::TranslateKeysParams,
+        mut results: dest_iface::TranslateKeysResults,
+    ) -> capnp::Result<()> {
+        let keys = read_key_list("translateKeys", params.get()?.get_keys()?);
+        let result = results.get().init_result();
+        let outcome = match keys {
+            Ok(keys) => self.inner.translate_keys(keys).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(keys) => {
+                if let Err(err) =
+                    crate::storage_ops::fill_translate_keys_result(result.init_ok(), &keys)
+                {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
     async fn changes(
         self: Rc<Self>,
         params: dest_iface::ChangesParams,
@@ -1661,6 +1697,31 @@ impl Destination for DestinationClient {
         };
         crate::storage_ops::validate_head_many(&keys, &objects)?;
         Ok(objects)
+    }
+
+    async fn translate_keys(&self, keys: Vec<String>) -> Result<Vec<String>> {
+        crate::storage_ops::require_batch_len("translateKeys", keys.len())?;
+        let mut req = self.client.translate_keys_request();
+        fill_key_list(
+            req.get().init_keys(capnp_u32_len(keys.len(), "key list")?),
+            &keys,
+        )?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let translated = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::translate_keys_reply::Ok(r) => {
+                crate::storage_ops::read_translate_keys_result(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::translate_keys_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_translated_keys(&keys, &translated)?;
+        Ok(translated)
     }
 
     async fn changes(&self, request: crate::ChangesRequest) -> Result<crate::ChangesPage> {
@@ -5291,12 +5352,41 @@ impl QueueProducer for QueueProducerClient {
     }
 }
 
+/// Decodes a standalone `EmptyReply` message the way the host decodes a
+/// guest's payload-free reply, for the `abi_decode` fuzz target and its
+/// corpus replay.
+///
+/// # Errors
+///
+/// Returns the guest's [`PluginError`] for an `err` reply, or a decode
+/// failure when the buffer is not a valid unpacked single-segment message.
+pub fn decode_empty_reply_bytes(bytes: &[u8]) -> Result<()> {
+    let reader = crate::db_rpc::read_unpacked_message_within(bytes, crate::MAX_SCALAR_BYTES)?;
+    read_empty(reader.get_root().map_err(from_capnp)?)
+}
+
+/// Decodes a standalone `PluginError` message the way the host decodes a
+/// guest's error, for the `abi_decode` fuzz target and its corpus replay.
+///
+/// # Errors
+///
+/// Returns a decode failure when the buffer is not a valid unpacked
+/// single-segment message; the error itself is the `Ok` value.
+pub fn decode_plugin_error_bytes(bytes: &[u8]) -> Result<PluginError> {
+    let reader = crate::db_rpc::read_unpacked_message_within(bytes, crate::MAX_SCALAR_BYTES)?;
+    Ok(read_error(reader.get_root().map_err(from_capnp)?))
+}
+
 /// Decode an empty success/error union.
+///
+/// Every guest reply without a payload (`RemoteLibrary.start/stop`, event
+/// and queue acknowledgements, destination writes, `revokeAccount`) goes
+/// through here, on the plugin client and the host adapter session alike.
 ///
 /// # Errors
 ///
 /// Returns the nested [`PluginError`] or a Cap'n Proto read failure.
-fn read_empty(result: empty_reply::Reader<'_>) -> Result<()> {
+pub(crate) fn read_empty(result: empty_reply::Reader<'_>) -> Result<()> {
     match result.which().map_err(from_capnp)? {
         empty_reply::Ok(()) => Ok(()),
         empty_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),

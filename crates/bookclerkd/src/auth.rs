@@ -72,7 +72,7 @@ fn resolve_client_ip_key(
     if !peer_is_trusted(peer, trusted_proxies) {
         return peer.to_string();
     }
-    if let Some(client) = forwarded_client_ip(headers) {
+    if let Some(client) = forwarded_client_ip(headers, trusted_proxies) {
         return client;
     }
     peer.to_string()
@@ -202,32 +202,104 @@ fn refuse_non_direct_loopback(addr: SocketAddr, headers: &HeaderMap) -> Result<(
     Err(StatusCode::FORBIDDEN)
 }
 
-/// First parseable client IP from `X-Forwarded-For` or RFC 7239 `Forwarded`.
-fn forwarded_client_ip(headers: &HeaderMap) -> Option<String> {
-    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        let first = xff.split(',').next()?.trim();
-        if !first.is_empty() && first.parse::<IpAddr>().is_ok() {
-            return Some(first.to_string());
-        }
+/// Client IP a chain of trusted reverse proxies reports, read from
+/// `X-Forwarded-For` (preferred) or RFC 7239 `Forwarded`.
+///
+/// Each proxy appends the address it received the request from, so only the
+/// right-hand end of the chain was written by proxies the operator trusts;
+/// anything to the left of that came from the client and may be forged. The
+/// hops are therefore read from right to left, skipping every hop that is
+/// itself a trusted proxy, and the first hop that is not is the client.
+///
+/// # Arguments
+///
+/// * `headers` - request headers; every `X-Forwarded-For` (or `Forwarded`)
+///   line counts, in order, as one chain.
+/// * `trusted_proxies` - `daemon.trusted_proxies` entries (addresses or CIDRs).
+///
+/// # Returns
+///
+/// The client address, the leftmost hop when every hop is a trusted proxy, or
+/// `None` when the header is absent, not text, or a hop that would have to be
+/// read is not an IP address (the caller then keys on the peer).
+fn forwarded_client_ip(headers: &HeaderMap, trusted_proxies: &[String]) -> Option<String> {
+    let xff: Vec<&str> = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .map(|v| v.to_str())
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if !xff.is_empty() {
+        return client_from_hops(
+            xff.iter().flat_map(|line| line.split(',')).map(str::trim),
+            trusted_proxies,
+        );
     }
-    if let Some(fwd) = headers.get(header::FORWARDED).and_then(|v| v.to_str().ok()) {
-        // Take the first `for=` value.
-        for part in fwd.split(';') {
-            let part = part.trim();
-            if let Some(rest) = part
-                .strip_prefix("for=")
-                .or_else(|| part.strip_prefix("For="))
-            {
-                let candidate = rest.trim().trim_matches('"').trim_start_matches('[');
-                let candidate = candidate.trim_end_matches(']');
-                let host = candidate.split(':').next().unwrap_or(candidate);
-                if host.parse::<IpAddr>().is_ok() {
-                    return Some(host.to_string());
-                }
-            }
-        }
+    let fwd: Vec<&str> = headers
+        .get_all(header::FORWARDED)
+        .iter()
+        .map(|v| v.to_str())
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if fwd.is_empty() {
+        return None;
     }
-    None
+    let hops: Vec<&str> = fwd
+        .iter()
+        .flat_map(|line| line.split(','))
+        .map(forwarded_element_for)
+        .collect::<Option<_>>()?;
+    client_from_hops(hops.into_iter(), trusted_proxies)
+}
+
+/// The node of one RFC 7239 `Forwarded` element's `for=` parameter, with any
+/// quotes, IPv6 brackets and port removed; `None` when the element has none.
+fn forwarded_element_for(element: &str) -> Option<&str> {
+    element.split(';').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        if !name.trim().eq_ignore_ascii_case("for") {
+            return None;
+        }
+        let value = value.trim().trim_matches('"');
+        if let Some(rest) = value.strip_prefix('[') {
+            return rest.split_once(']').map(|(inside, _)| inside);
+        }
+        // An IPv4 node may carry `:port`; a bare IPv6 node is not allowed
+        // unbracketed, so a value with more than one `:` is left whole and
+        // fails to parse as an address.
+        match value.split_once(':') {
+            Some((host, port)) if !port.contains(':') => Some(host),
+            _ => Some(value),
+        }
+    })
+}
+
+/// Walk proxy hops (leftmost first) from the right and return the first
+/// address that is not a trusted proxy.
+///
+/// # Arguments
+///
+/// * `hops` - one entry per hop, leftmost (claimed client) first.
+/// * `trusted_proxies` - `daemon.trusted_proxies` entries.
+///
+/// # Returns
+///
+/// The rightmost untrusted address; the leftmost address when every hop is
+/// trusted; `None` when there are no hops or a hop reached before an
+/// untrusted address is not an IP address.
+fn client_from_hops<'a>(
+    hops: impl DoubleEndedIterator<Item = &'a str>,
+    trusted_proxies: &[String],
+) -> Option<String> {
+    let mut leftmost = None;
+    for hop in hops.rev() {
+        let ip = hop.trim().parse::<IpAddr>().ok()?;
+        if !peer_is_trusted(ip, trusted_proxies) {
+            return Some(ip.to_string());
+        }
+        leftmost = Some(ip);
+    }
+    leftmost.map(|ip| ip.to_string())
 }
 
 #[derive(Debug)]
@@ -1754,7 +1826,7 @@ pub async fn require_operator_or_node_owner_auth(
     Err(StatusCode::UNAUTHORIZED)
 }
 
-/// Who is calling a route that acts for a user (host enrollment links).
+/// Who is calling a route that acts for a user (branch enrollment links).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserCaller {
     /// Operator token or session, or auth disabled.
@@ -1997,7 +2069,10 @@ pub async fn caller_portal_identity(
         return None;
     }
     let library = state.library_snapshot().await;
-    timed_portal_identity_from_headers(&library, headers).await
+    optional_portal_identity(&library, headers)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Who an admitted request acts as, for checks that must fail closed.
@@ -2068,10 +2143,15 @@ pub(crate) async fn caller_subject(
 /// Portal callers must resolve to their own prefs key. If the portal-identity
 /// lookup times out or fails after portal auth, this returns an error instead of
 /// falling back to [`OPERATOR_PREFS_KEY`].
+///
+/// # Errors
+///
+/// `CallerRefusal::Status` 401 when the portal session is gone, and
+/// `CallerRefusal::SessionCheckUnavailable` when it could not be checked.
 pub async fn prefs_subject_for_caller(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<(String, Option<i64>), StatusCode> {
+) -> Result<(String, Option<i64>), CallerRefusal> {
     let auth = state.auth_snapshot().await;
     if !auth.enabled {
         return Ok((OPERATOR_PREFS_KEY.to_string(), None));
@@ -2106,11 +2186,11 @@ pub async fn prefs_subject_for_caller(
         }
         PortalLookup::SignedOut => {
             tracing::warn!("portal identity missing for prefs subject");
-            Err(StatusCode::UNAUTHORIZED)
+            Err(CallerRefusal::Status(StatusCode::UNAUTHORIZED))
         }
         PortalLookup::Unavailable => {
             tracing::warn!("portal identity lookup failed or timed out for prefs subject");
-            Err(StatusCode::GATEWAY_TIMEOUT)
+            Err(CallerRefusal::SessionCheckUnavailable)
         }
     }
 }
@@ -2248,14 +2328,106 @@ async fn default_view_for_subject(
     }
 }
 
-/// Resolves a portal identity from cookies within `AUTH_DB_TIMEOUT`; timeout or a disabled user fails closed.
-pub(crate) async fn timed_portal_identity_from_headers(
+/// Why a handler that checks the caller itself refused the request.
+///
+/// A handler that looks the portal session up on its own (a public route,
+/// or one that needs more than its layer checked) answers
+/// [`session_check_unavailable`] when the library did not answer, like the
+/// access layers do, instead of telling the browser it is signed out. A
+/// handler returning `Result<_, CallerRefusal>` still uses `?` on its
+/// plain [`StatusCode`] errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallerRefusal {
+    /// Answer with this bare status; the branded-error middleware writes
+    /// its body.
+    Status(StatusCode),
+    /// The session could not be checked: a 503 with `Retry-After`
+    /// ([`session_check_unavailable`]).
+    SessionCheckUnavailable,
+}
+
+impl CallerRefusal {
+    /// Answers a bare status the way `answer` writes it, and the
+    /// session-check refusal as [`session_check_unavailable`], for a
+    /// handler that words its own refusals.
+    ///
+    /// # Arguments
+    ///
+    /// * `answer` - Builds the handler's response for a bare status.
+    ///
+    /// # Returns
+    ///
+    /// The response to send.
+    pub(crate) fn answer<R: IntoResponse>(self, answer: impl FnOnce(StatusCode) -> R) -> Response {
+        match self {
+            Self::Status(status) => answer(status).into_response(),
+            Self::SessionCheckUnavailable => session_check_unavailable(),
+        }
+    }
+}
+
+impl From<StatusCode> for CallerRefusal {
+    fn from(status: StatusCode) -> Self {
+        Self::Status(status)
+    }
+}
+
+impl IntoResponse for CallerRefusal {
+    fn into_response(self) -> Response {
+        self.answer(|status| status)
+    }
+}
+
+/// Resolves the portal session a handler requires, telling "signed out"
+/// from "the library did not answer".
+///
+/// # Arguments
+///
+/// * `library` - Library store holding portal sessions and users.
+/// * `headers` - Request headers carrying the portal session cookie or
+///   library card.
+///
+/// # Errors
+///
+/// [`CallerRefusal::Status`] 401 when nobody is signed in (or the user is
+/// disabled), and [`CallerRefusal::SessionCheckUnavailable`] when the
+/// session could not be checked.
+pub(crate) async fn require_portal_identity(
     library: &bookclerk_library::LibraryStore,
     headers: &HeaderMap,
-) -> Option<PortalIdentity> {
+) -> Result<PortalIdentity, CallerRefusal> {
     match portal_lookup_from_headers(library, headers).await {
-        PortalLookup::SignedIn(identity) => Some(identity),
-        PortalLookup::SignedOut | PortalLookup::Unavailable => None,
+        PortalLookup::SignedIn(identity) => Ok(identity),
+        PortalLookup::SignedOut => Err(CallerRefusal::Status(StatusCode::UNAUTHORIZED)),
+        PortalLookup::Unavailable => Err(CallerRefusal::SessionCheckUnavailable),
+    }
+}
+
+/// Resolves the portal session when a handler also admits callers without
+/// one, so a library that did not answer is not mistaken for "no session".
+///
+/// # Arguments
+///
+/// * `library` - Library store holding portal sessions and users.
+/// * `headers` - Request headers carrying the portal session cookie or
+///   library card.
+///
+/// # Returns
+///
+/// The identity, or `None` when nobody is signed in.
+///
+/// # Errors
+///
+/// [`CallerRefusal::SessionCheckUnavailable`] when the session could not be
+/// checked.
+pub(crate) async fn optional_portal_identity(
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+) -> Result<Option<PortalIdentity>, CallerRefusal> {
+    match portal_lookup_from_headers(library, headers).await {
+        PortalLookup::SignedIn(identity) => Ok(Some(identity)),
+        PortalLookup::SignedOut => Ok(None),
+        PortalLookup::Unavailable => Err(CallerRefusal::SessionCheckUnavailable),
     }
 }
 
@@ -2432,7 +2604,7 @@ pub(crate) async fn resolve_card_in(
 
 /// Seconds a browser is told to wait before retrying when its session
 /// could not be checked.
-const SESSION_CHECK_RETRY_AFTER_SECS: u64 = 2;
+pub(crate) const SESSION_CHECK_RETRY_AFTER_SECS: u64 = 2;
 
 /// Machine slug of [`session_check_unavailable`]'s body.
 pub(crate) const SESSION_CHECK_UNAVAILABLE: &str = "session_check_unavailable";
@@ -2647,6 +2819,7 @@ pub struct ImpersonateRequest {
         (status = 409, description = "The caller is already an operator."),
         (status = 429, description = "Too many wrong passwords from this client or for this Owner; retry after `Retry-After` seconds.", body = LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
         (status = 500, description = "The password hash could not be read, or the elevated session could not be stored."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub async fn elevate(
@@ -2654,32 +2827,30 @@ pub async fn elevate(
     ClientIp(client_key): ClientIp,
     headers: HeaderMap,
     Json(body): Json<ElevateRequest>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     if !auth.enabled {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
     if authorize_operator(&state, &auth, &headers).await {
-        return Err(StatusCode::CONFLICT);
+        return Err(StatusCode::CONFLICT.into());
     }
     // Locked-out clients are refused before the session or password is checked.
     if let Some(retry_after) = auth.login_throttle_check(&client_key).await {
         return Ok(too_many_requests(retry_after));
     }
     let library = state.library_snapshot().await;
-    let identity = timed_portal_identity_from_headers(&library, &headers)
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let identity = require_portal_identity(&library, &headers).await?;
     let (role, _, user, _) = resolve_portal_caller_identity(&library, &identity).await;
     if role != "owner" {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     let Some(user) = user else {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     };
     let password = body.password.trim();
     if password.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
     let hash = library
         .get_user_password_hash(user.id)
@@ -2693,7 +2864,7 @@ pub async fn elevate(
                 Some(r#"{"reason":"no_password"}"#),
             )
             .await;
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     };
     // The account bucket (shared with every other password re-check) catches
     // guesses spread across addresses; the client bucket is checked above.
@@ -2715,10 +2886,10 @@ pub async fn elevate(
             if let Some(retry_after) = client_locked.max(locked) {
                 return Ok(too_many_requests(retry_after));
             }
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err(StatusCode::UNAUTHORIZED.into());
         }
     }
-    issue_elevation(&state, &library, user.id, &headers).await
+    Ok(issue_elevation(&state, &library, user.id, &headers).await?)
 }
 
 /// Result of re-checking a signed-in user's password under the account throttle.
@@ -3169,12 +3340,13 @@ const USER_LIST_LISTENING_WITHIN: ChronoDuration = ChronoDuration::minutes(30);
         (status = 200, description = "The library's users.", body = UserListResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub async fn list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<UserListResponse>, StatusCode> {
+) -> Result<Json<UserListResponse>, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     authorize_provisioner(&state, &auth, &headers, &library).await?;
@@ -3298,6 +3470,7 @@ fn last_owner_response() -> Response {
         (status = 400, description = "A value is invalid. An invalid email names itself; any other invalid value gets the standard error body.", body = UserChangeInvalid, example = json!({"error": "invalid_email", "message": "Enter a valid email address."})),
         (status = 404, description = "No such user."),
         (status = 409, description = "The change would leave the library without an owner or administrator (`error` names which), or the login name or email is taken by another user (the standard error body).", body = UserChangeConflict, example = json!({"error": "last_owner"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub async fn patch_user(
@@ -3305,7 +3478,7 @@ pub async fn patch_user(
     headers: HeaderMap,
     axum::extract::Path(user_id): axum::extract::Path<i64>,
     Json(body): Json<PatchUserRequest>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let actor = authorize_provisioner(&state, &auth, &headers, &library).await?;
@@ -3315,7 +3488,7 @@ pub async fn patch_user(
         && body.login_name.is_none()
         && body.email.is_none()
     {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
 
     let mut user = library
@@ -3325,21 +3498,21 @@ pub async fn patch_user(
         .ok_or(StatusCode::NOT_FOUND)?;
     let is_self = actor.user_id() == Some(user_id);
     if !actor.can_manage_target(user.role, is_self) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     if let Some(role_raw) = body.role.as_deref() {
         let Some(role) = UserRole::parse(role_raw.trim()) else {
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(StatusCode::BAD_REQUEST.into());
         };
         if !actor.can_assign_role(role) {
-            return Err(StatusCode::FORBIDDEN);
+            return Err(StatusCode::FORBIDDEN.into());
         }
         user = match library.set_user_role(user_id, role).await {
             Ok(u) => u,
             Err(LibraryError::LastOwner) => return Ok(last_owner_response()),
             Err(LibraryError::LastAdministrator) => return Ok(last_administrator_response()),
-            Err(LibraryError::NotFound(_)) => return Err(StatusCode::NOT_FOUND),
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            Err(LibraryError::NotFound(_)) => return Err(StatusCode::NOT_FOUND.into()),
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR.into()),
         };
     }
 
@@ -3347,14 +3520,14 @@ pub async fn patch_user(
         let status = match status_raw.trim() {
             "active" => UserStatus::Active,
             "disabled" => UserStatus::Disabled,
-            _ => return Err(StatusCode::BAD_REQUEST),
+            _ => return Err(StatusCode::BAD_REQUEST.into()),
         };
         user = match library.set_user_status(user_id, status).await {
             Ok(u) => u,
             Err(LibraryError::LastOwner) => return Ok(last_owner_response()),
             Err(LibraryError::LastAdministrator) => return Ok(last_administrator_response()),
-            Err(LibraryError::NotFound(_)) => return Err(StatusCode::NOT_FOUND),
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            Err(LibraryError::NotFound(_)) => return Err(StatusCode::NOT_FOUND.into()),
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR.into()),
         };
         if matches!(status, UserStatus::Disabled) {
             let _ = library.delete_portal_sessions_for_user(user_id).await;
@@ -3388,7 +3561,7 @@ pub async fn patch_user(
                 )
                     .into_response());
             }
-            Err(_) => return Err(StatusCode::CONFLICT),
+            Err(_) => return Err(StatusCode::CONFLICT.into()),
         };
     }
 
@@ -3423,13 +3596,14 @@ pub async fn patch_user(
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 404, description = "No such user."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub async fn create_user_claim_ticket(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Path(user_id): axum::extract::Path<i64>,
-) -> Result<Json<UserClaimTicketResponse>, StatusCode> {
+) -> Result<Json<UserClaimTicketResponse>, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let actor = authorize_provisioner(&state, &auth, &headers, &library).await?;
@@ -3439,10 +3613,10 @@ pub async fn create_user_claim_ticket(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     if !actor.can_provision_target(user.role, user_id) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     if matches!(user.status, UserStatus::Disabled) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     let actor_s = actor.audit_actor();
     let identity = library
@@ -3476,13 +3650,14 @@ pub async fn create_user_claim_ticket(
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
         (status = 404, description = "No such user."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub async fn reset_user_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Path(user_id): axum::extract::Path<i64>,
-) -> Result<Json<UserPasswordResetResponse>, StatusCode> {
+) -> Result<Json<UserPasswordResetResponse>, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let actor = authorize_provisioner(&state, &auth, &headers, &library).await?;
@@ -3492,10 +3667,10 @@ pub async fn reset_user_password(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     if !actor.can_provision_target(user.role, user_id) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     if matches!(user.status, UserStatus::Disabled) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     let actor_s = actor.audit_actor();
     library
@@ -3542,35 +3717,49 @@ pub async fn reset_user_password(
         (status = 403, description = "The caller may not do this."),
         (status = 404, description = "No such user."),
         (status = 409, description = "The user is the last Owner or Administrator."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub async fn delete_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Path(user_id): axum::extract::Path<i64>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
-    let portal_self_id = timed_portal_identity_from_headers(&library, &headers)
+    // A lookup that did not answer is not "self": an operator still goes
+    // ahead, and a portal caller gets the session-check refusal from
+    // `authorize_provisioner`.
+    let portal_self_id = optional_portal_identity(&library, &headers)
         .await
+        .ok()
+        .flatten()
         .and_then(|identity| identity.user_id);
     let is_self = portal_self_id == Some(user_id);
+    // Authorize before reading the target, so a caller whose sign-in could
+    // not be checked gets the session-check refusal rather than a 404 or 500
+    // from the target read, and a caller without rights learns nothing about
+    // which users exist.
+    let provisioner = match authorize_provisioner(&state, &auth, &headers, &library).await {
+        Ok(actor) => Some(actor),
+        Err(CallerRefusal::Status(StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED)) if is_self => {
+            None
+        }
+        Err(other) => return Err(other),
+    };
     let target = library
         .get_user(user_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let actor = match authorize_provisioner(&state, &auth, &headers, &library).await {
-        Ok(actor) => {
+    let actor = match provisioner {
+        Some(actor) => {
             if !actor.can_manage_target(target.role, is_self) {
-                return Err(StatusCode::FORBIDDEN);
+                return Err(StatusCode::FORBIDDEN.into());
             }
             actor.audit_actor()
         }
-        Err(StatusCode::FORBIDDEN) | Err(StatusCode::UNAUTHORIZED) if is_self => {
-            format!("user:{user_id}")
-        }
-        Err(other) => return Err(other),
+        None => format!("user:{user_id}"),
     };
     match library.delete_user(user_id).await {
         Ok(()) => {
@@ -3602,10 +3791,10 @@ pub async fn delete_user(
             }
             Ok(response)
         }
-        Err(LibraryError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
-        Err(LibraryError::LastOwner) => Err(StatusCode::CONFLICT),
-        Err(LibraryError::LastAdministrator) => Err(StatusCode::CONFLICT),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(LibraryError::NotFound(_)) => Err(StatusCode::NOT_FOUND.into()),
+        Err(LibraryError::LastOwner) => Err(StatusCode::CONFLICT.into()),
+        Err(LibraryError::LastAdministrator) => Err(StatusCode::CONFLICT.into()),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR.into()),
     }
 }
 
@@ -3775,21 +3964,22 @@ fn default_true() -> bool {
         (status = 403, description = "The caller may not do this."),
         (status = 400, description = "The request is invalid."),
         (status = 409, description = "The login is taken."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub async fn create_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<CreateUserRequest>,
-) -> Result<Json<UserCreatedResponse>, StatusCode> {
+) -> Result<Json<UserCreatedResponse>, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let actor = authorize_provisioner(&state, &auth, &headers, &library).await?;
     let Some(role) = UserRole::parse(body.role.as_deref().unwrap_or("member")) else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     };
     if !actor.can_assign_role(role) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     let actor_s = actor.audit_actor();
     let password_hash = match body
@@ -3823,8 +4013,8 @@ pub async fn create_user(
         .await
     {
         Ok(user) => user,
-        Err(LibraryError::InvalidEmail) => return Err(StatusCode::BAD_REQUEST),
-        Err(_) => return Err(StatusCode::CONFLICT),
+        Err(LibraryError::InvalidEmail) => return Err(StatusCode::BAD_REQUEST.into()),
+        Err(_) => return Err(StatusCode::CONFLICT.into()),
     };
     let identity = library
         .ensure_local_portal_identity(user.id, display)
@@ -3974,21 +4164,28 @@ pub struct SetPasswordRequest {
         (status = 400, description = "The password is empty (the standard error body)."),
         (status = 404, description = "No such user."),
         (status = 500, description = "The password could not be hashed, or the library could not be read or written."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub async fn set_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<SetPasswordRequest>,
-) -> Result<Json<PasswordSet>, StatusCode> {
+) -> Result<Json<PasswordSet>, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let password = body.password.trim();
     if password.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
-    let portal_uid = timed_portal_identity_from_headers(&library, &headers)
-        .await
+    // An operator naming `user_id` goes ahead when the portal lookup did
+    // not answer (`authorize_provisioner` refuses a portal caller then);
+    // self-service needs the lookup.
+    let portal = optional_portal_identity(&library, &headers).await;
+    let portal_uid = portal
+        .as_ref()
+        .ok()
+        .and_then(|identity| identity.as_ref())
         .and_then(|identity| identity.user_id);
     let (target_id, actor_s, self_service) = if let Some(uid) = body.user_id {
         if portal_uid == Some(uid) {
@@ -4001,14 +4198,17 @@ pub async fn set_password(
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
                 .ok_or(StatusCode::NOT_FOUND)?;
             if !actor.can_provision_target(target.role, uid) {
-                return Err(StatusCode::FORBIDDEN);
+                return Err(StatusCode::FORBIDDEN.into());
             }
             (uid, actor.audit_actor(), false)
         }
     } else if let Some(uid) = portal_uid {
         (uid, format!("user:{uid}"), true)
     } else {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(match portal {
+            Err(refusal) => refusal,
+            Ok(_) => StatusCode::UNAUTHORIZED.into(),
+        });
     };
     if self_service {
         let existing_hash = library
@@ -4143,7 +4343,7 @@ pub(crate) async fn authorize_provisioner(
     auth: &OperatorAuthState,
     headers: &HeaderMap,
     library: &bookclerk_library::LibraryStore,
-) -> Result<Provisioner, StatusCode> {
+) -> Result<Provisioner, CallerRefusal> {
     if !auth.enabled {
         return Ok(Provisioner::Operator);
     }
@@ -4151,7 +4351,7 @@ pub(crate) async fn authorize_provisioner(
         if let Some(target_id) = op.impersonating_user_id {
             let provisioner = provisioner_for_impersonated_user(library, target_id).await?;
             if crate::totp::enrollment_blocks(state, library, target_id, "/api/users").await {
-                return Err(StatusCode::FORBIDDEN);
+                return Err(StatusCode::FORBIDDEN.into());
             }
             return Ok(provisioner);
         }
@@ -4163,18 +4363,16 @@ pub(crate) async fn authorize_provisioner(
     if authorize_operator_bearer_only(auth, headers) {
         return Ok(Provisioner::Operator);
     }
-    let identity = timed_portal_identity_from_headers(library, headers)
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let identity = require_portal_identity(library, headers).await?;
     let (role, _, user, _) = resolve_portal_caller_identity(library, &identity).await;
     let user_id = user.map(|u| u.id).ok_or(StatusCode::FORBIDDEN)?;
     if crate::totp::enrollment_blocks(state, library, user_id, "/api/users").await {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     match role.as_str() {
         "owner" => Ok(Provisioner::Owner { user_id }),
         "administrator" => Ok(Provisioner::Administrator { user_id }),
-        _ => Err(StatusCode::FORBIDDEN),
+        _ => Err(StatusCode::FORBIDDEN.into()),
     }
 }
 
@@ -4196,7 +4394,7 @@ pub(crate) async fn authorize_provisioner(
 pub(crate) async fn library_administrator(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<Option<i64>, StatusCode> {
+) -> Result<Option<i64>, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     Ok(authorize_provisioner(state, &auth, headers, &library)
@@ -4501,7 +4699,7 @@ pub struct UserDeletedResponse {
 pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<SessionsResponse>, StatusCode> {
+) -> Result<Json<SessionsResponse>, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     if let Some(op) = resolve_operator_session(&state, &auth, &headers).await {
@@ -4552,9 +4750,7 @@ pub async fn list_sessions(
             sessions: Vec::new(),
         }));
     }
-    let identity = timed_portal_identity_from_headers(&library, &headers)
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let identity = require_portal_identity(&library, &headers).await?;
     let current_portal = cookie_value(&headers, PORTAL_SESSION_COOKIE)
         .map(|raw| hash_token(&raw))
         .or_else(|| crate::clerk_token::clerk_token_from_headers(&headers).map(hash_token));
@@ -4611,7 +4807,7 @@ pub async fn revoke_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<i64>,
-) -> Result<Json<OkResponse>, StatusCode> {
+) -> Result<Json<OkResponse>, CallerRefusal> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     if !auth.enabled || authorize_operator(&state, &auth, &headers).await {
@@ -4620,7 +4816,7 @@ pub async fn revoke_session(
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if !ok {
-            return Err(StatusCode::NOT_FOUND);
+            return Err(StatusCode::NOT_FOUND.into());
         }
         let _ = library
             .insert_security_audit_event(
@@ -4631,16 +4827,14 @@ pub async fn revoke_session(
             .await;
         return Ok(Json(OkResponse::OK));
     }
-    let identity = timed_portal_identity_from_headers(&library, &headers)
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let identity = require_portal_identity(&library, &headers).await?;
     let ok = library
         .delete_portal_session_by_id_for_identity(id, identity.id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !ok {
         // Horizontal privilege: session exists but not ours → 404 (not 403).
-        return Err(StatusCode::NOT_FOUND);
+        return Err(StatusCode::NOT_FOUND.into());
     }
     let _ = library
         .insert_security_audit_event(
@@ -5141,6 +5335,109 @@ pub(crate) mod tests {
         assert_eq!(untrusted, "10.0.0.1");
     }
 
+    /// Headers holding one line per value of `name`, in order.
+    fn header_lines(name: &'static str, lines: &[&'static str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for line in lines {
+            headers.append(name, HeaderValue::from_static(line));
+        }
+        headers
+    }
+
+    #[test]
+    fn spoofed_leftmost_forwarded_for_is_ignored() {
+        // nginx's `$proxy_add_x_forwarded_for` appends the real client to
+        // whatever the client sent, so the forged value is on the left.
+        let headers = header_lines("x-forwarded-for", &["198.51.100.7, 203.0.113.10"]);
+        let peer = "10.0.0.1".parse().unwrap();
+        let key = resolve_client_ip_key(Some(peer), &headers, &["10.0.0.1".into()]);
+        assert_eq!(key, "203.0.113.10");
+    }
+
+    #[test]
+    fn forwarded_for_skips_every_trusted_hop() {
+        let headers = header_lines(
+            "x-forwarded-for",
+            &["198.51.100.7, 203.0.113.10", "10.0.0.2"],
+        );
+        let peer = "10.0.0.1".parse().unwrap();
+        let trusted = ["10.0.0.0/24".to_string()];
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &headers, &trusted),
+            "203.0.113.10"
+        );
+        let all_trusted = header_lines("x-forwarded-for", &["10.0.0.9, 10.0.0.2"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &all_trusted, &trusted),
+            "10.0.0.9"
+        );
+    }
+
+    #[test]
+    fn unreadable_forwarded_for_hop_falls_back_to_the_peer() {
+        let peer = "10.0.0.1".parse().unwrap();
+        let trusted = ["10.0.0.1".to_string()];
+        let garbage = header_lines("x-forwarded-for", &["203.0.113.10, unknown"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &garbage, &trusted),
+            "10.0.0.1"
+        );
+        // A bad hop left of the client is never read.
+        let left_garbage = header_lines("x-forwarded-for", &["unknown, 203.0.113.10"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &left_garbage, &trusted),
+            "203.0.113.10"
+        );
+        let empty = header_lines("x-forwarded-for", &[""]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &empty, &trusted),
+            "10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn rfc7239_forwarded_uses_rightmost_untrusted_for() {
+        let peer = "10.0.0.1".parse().unwrap();
+        let trusted = ["10.0.0.0/24".to_string()];
+        let headers = header_lines(
+            "forwarded",
+            &[
+                "for=198.51.100.7;proto=https, For=\"[2001:db8::5]:4711\"",
+                "for=10.0.0.2:80;by=10.0.0.1",
+            ],
+        );
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &headers, &trusted),
+            "2001:db8::5"
+        );
+        let v4 = header_lines("forwarded", &["for=198.51.100.7, for=203.0.113.10:443"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &v4, &trusted),
+            "203.0.113.10"
+        );
+        let obfuscated = header_lines("forwarded", &["for=203.0.113.10, for=_hidden"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &obfuscated, &trusted),
+            "10.0.0.1"
+        );
+        let no_for = header_lines("forwarded", &["proto=https"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &no_for, &trusted),
+            "10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn x_forwarded_for_wins_over_forwarded() {
+        let peer = "10.0.0.1".parse().unwrap();
+        let mut headers = header_lines("x-forwarded-for", &["203.0.113.10"]);
+        headers.append("forwarded", HeaderValue::from_static("for=198.51.100.7"));
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &headers, &["10.0.0.1".into()]),
+            "203.0.113.10"
+        );
+    }
+
     /// Test-only owner password (assembled so static analysis does not flag a literal).
     pub(crate) fn phase2_owner_password() -> String {
         ["owner", "-", "pass"].concat()
@@ -5459,6 +5756,97 @@ pub(crate) mod tests {
         }
     }
 
+    /// Handlers that check the portal session themselves (public routes,
+    /// and checks beyond their layer's) answer the same retry-later 503 as
+    /// the layers, not 401.
+    #[tokio::test]
+    async fn handlers_that_check_the_session_answer_retry_later() {
+        use axum::body::Body;
+        use axum::http::{Method, Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-handler-503").await;
+        let cookie = portal_cookie_for(&library, "test", "member-ext").await;
+        break_portal_sessions(&library).await;
+        for (method, uri, body) in [
+            (Method::POST, "/api/auth/elevate", r#"{"password":"x"}"#),
+            (Method::PUT, "/api/auth/password", r#"{"password":"x"}"#),
+            (Method::GET, "/api/auth/passkeys", ""),
+            (Method::GET, "/api/auth/totp", ""),
+            (Method::GET, "/api/users", ""),
+            (Method::GET, "/api/users/default-scope", ""),
+            (Method::GET, "/api/auth/oidc/identities", ""),
+            (Method::GET, "/api/auth/sessions", ""),
+        ] {
+            let mut request = Request::builder()
+                .method(method.clone())
+                .uri(uri)
+                .header(header::COOKIE, &cookie);
+            if !body.is_empty() {
+                request = request.header(header::CONTENT_TYPE, "application/json");
+            }
+            let res = app
+                .clone()
+                .oneshot(request.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{method} {uri}"
+            );
+            assert_eq!(
+                res.headers().get(header::RETRY_AFTER).unwrap(),
+                &SESSION_CHECK_RETRY_AFTER_SECS.to_string(),
+                "{method} {uri}"
+            );
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], SESSION_CHECK_UNAVAILABLE, "{method} {uri}");
+        }
+        // A browser navigating to the provider step-up gets the branded
+        // page, still with `Retry-After`.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/oidc/elevate?provider=p")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(res.headers().contains_key(header::RETRY_AFTER));
+        assert!(res.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        // The operator token still gets past authorization while the portal
+        // lookup fails, even with a stale portal cookie in the request.
+        // Authorization runs before the target read, so the 404 for a missing
+        // user (rather than the 503) shows the operator was let through. A
+        // real deletion cannot run here: it also clears the dropped
+        // `portal_sessions` table.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/api/users/999999")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::AUTHORIZATION, "Bearer op-token-handler-503")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
     #[tokio::test]
     async fn portal_lookup_tells_signed_in_signed_out_and_unavailable_apart() {
         let (_state, _app, library) = phase2_harness("op-token-portal-lookup").await;
@@ -5487,9 +5875,14 @@ pub(crate) mod tests {
             portal_lookup_from_headers(&library, &headers).await,
             PortalLookup::Unavailable
         ));
-        assert!(timed_portal_identity_from_headers(&library, &headers)
-            .await
-            .is_none());
+        assert_eq!(
+            require_portal_identity(&library, &headers).await.err(),
+            Some(CallerRefusal::SessionCheckUnavailable)
+        );
+        assert_eq!(
+            optional_portal_identity(&library, &headers).await.err(),
+            Some(CallerRefusal::SessionCheckUnavailable)
+        );
     }
 
     #[tokio::test]

@@ -47,6 +47,7 @@ mod platform;
 mod plugins;
 mod redact;
 mod report_history;
+mod report_lookup;
 mod settings;
 
 pub use atomic_replace::replace_file;
@@ -97,7 +98,7 @@ pub use operator_auth::{
     ResolveOperatorTokenEnv,
 };
 pub use output::{
-    normalize_storage_prefix, BadBookAction, DestinationId, DestinationKeyStyle, DestinationNaming,
+    normalize_storage_prefix, BadBookAction, DestinationId, DestinationNaming,
     MultiDestinationMode, OutputConfig,
 };
 pub use output_copy::{
@@ -110,7 +111,7 @@ pub use overrides::{
 };
 pub use path_limits::{
     enforce_storage_key_limits, path_len, truncate_filename_stem, truncate_path_component,
-    PathLengthMeasure, PathLimits, DEFAULT_MAX_FILENAME_LENGTH, S3_MAX_OBJECT_KEY_BYTES,
+    PathLengthMeasure, PathLimits, DEFAULT_MAX_FILENAME_LENGTH, MAX_HOST_KEY_BYTES,
 };
 pub use paths::{
     resolve_config_path, resolve_files_dir, Paths, BOOKCLERK_CONFIG_ENV, BOOKCLERK_FILES_DIR_ENV,
@@ -132,8 +133,14 @@ pub use redact::{
     truncate_upload_message, unregister_secret, REDACTED,
 };
 pub use report_history::{
-    load_report_history, parse_submit_reply, record_report, ReportId, ReportRecord,
-    SubmitReplyError, MAX_REPORT_HISTORY, MAX_SUBMIT_REPLY_BYTES, REPORT_HISTORY_FILE,
+    find_report, load_report_history, mark_report_deleted, parse_submit_reply, record_report,
+    AccessCode, ReportId, ReportRecord, SubmitReply, SubmitReplyError, ACCESS_CODE_ALPHABET,
+    ACCESS_CODE_LENGTH, MAX_REPORT_HISTORY, MAX_SUBMIT_REPLY_BYTES, REPORT_HISTORY_FILE,
+};
+pub use report_lookup::{
+    delete_report, fetch_report, parse_delete_reply, parse_lookup_reply, EventLevel, IssueState,
+    LookupAnswer, LookupError, LookupEvent, LookupFix, LookupIssue, LookupReplyError, LookupReport,
+    MAX_LOOKUP_REPLY_BYTES,
 };
 pub use settings::{
     read_node_api_spki_pin, AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig,

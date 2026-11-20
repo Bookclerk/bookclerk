@@ -1435,7 +1435,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         online_since_ms INTEGER NOT NULL,
         cache_bytes INTEGER,
         cache_budget_bytes INTEGER,
-        cache_swept_ms INTEGER
+        cache_swept_ms INTEGER,
+        public_origin TEXT
     )",
     ),
     MigrationOp::Schema(super::LIBRARY_LEASES_DDL),
@@ -1634,6 +1635,29 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         pdf_storage_key TEXT,
         pdf_holding_id TEXT
     )",
+    ),
+    // Each edition's copy at each destination (docs/adr/storage-destinations.md,
+    // decision 3): `stored` once the destination holds the complete files at
+    // `storage_key` (the primary audio key there), `pending` while a failed
+    // or unavailable target waits for its next attempt at `next_attempt_at`,
+    // and `failed` once `attempts` reached the retry limit. An acquire
+    // succeeds on the first stored copy; the rest are retried in the
+    // background. A destination with no row has no copy of the edition.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS edition_copies (
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        destination TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('stored', 'pending', 'failed')),
+        storage_key TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (edition_id, destination)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_edition_copies_due ON edition_copies(state, next_attempt_at)",
     ),
     // The library's page index (docs/adr/library-data-model.md, decision 8
     // and Consequences): one row per held top-level work, so list views
@@ -1931,6 +1955,44 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
+    // How fast the host may download from each store account
+    // (`store::pacing`, `docs/internals/jobs.md#download-pacing`): the
+    // operator's override of the storefront's declared `[acquire]` pace
+    // (`pace_mode` `default`, `custom` or `unlimited`; a `custom` field left
+    // NULL keeps the storefront's value), and the end of the cool-down the
+    // store asked for with `rateLimited` (Unix ms; NULL or past for none).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_pace (
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        pace_mode TEXT NOT NULL DEFAULT 'default' CHECK (pace_mode IN ('default', 'custom', 'unlimited')),
+        downloads_per_day INTEGER,
+        min_gap_seconds INTEGER,
+        cooldown_until_ms INTEGER,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, account_id),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
+    // Each download that reached a store, per account (`store::pacing`):
+    // the rolling-24-hour budget counts these rows. `paced` is 1 for a
+    // download the host started itself, 0 for one a person started by
+    // hand (counted, never held). Rows older than two days are pruned when
+    // the account records its next download.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_downloads (
+        id TEXT PRIMARY KEY NOT NULL,
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        started_at_ms INTEGER NOT NULL,
+        job_id TEXT,
+        paced INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_account_downloads_account ON account_downloads(plugin_key, account_id, started_at_ms)",
+    ),
     // How far one person has listened to one edition (the built-in
     // player, `docs/adr/playback.md`): a position on the edition's
     // timeline, the runtime the last player reported, and whether they
@@ -2082,6 +2144,11 @@ mod tests {
             crate::FileRole::ALL.iter().map(|k| k.as_str()),
         );
         assert_check(
+            "edition_copies",
+            "state",
+            crate::CopyState::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
             "edition_acquisitions",
             "status",
             crate::AcquireStatus::ALL.iter().map(|k| k.as_str()),
@@ -2095,6 +2162,11 @@ mod tests {
             "library_work_rows",
             "acquire_status",
             crate::AcquireStatus::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "account_pace",
+            "pace_mode",
+            crate::pacing::PaceOverride::MODES.iter().copied(),
         );
         assert_check(
             "playback_sessions",

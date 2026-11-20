@@ -6,10 +6,10 @@ use bookclerk_config::{
     NamingProfile,
 };
 use bookclerk_library::control_plane::{
-    bootstrap_control_plane, is_cache_setting_key, is_output_setting_key, load_cache_settings,
-    load_events, load_host_enrollment, load_output, portable_output_seed, replace_events,
-    replace_output, set_host_enrollment_enabled, update_cache_settings, ConfigActor, EventsReplace,
-    EventsSettingsV1, OutputReplace, OutputSettingsV1, OUTPUT_SETTING_KEYS,
+    bootstrap_control_plane, is_cache_setting_key, is_output_setting_key, load_branch_enrollment,
+    load_cache_settings, load_events, load_output, portable_output_seed, replace_events,
+    replace_output, set_branch_enrollment_enabled, update_cache_settings, ConfigActor,
+    EventsReplace, EventsSettingsV1, OutputReplace, OutputSettingsV1, OUTPUT_SETTING_KEYS,
 };
 use bookclerk_library::{
     inspect_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
@@ -175,8 +175,8 @@ pub async fn run(
             if is_output_setting_key(dotted) {
                 return get_output_setting(config, dotted, format).await;
             }
-            if dotted == HOST_ENROLLMENT_ENABLED_KEY {
-                return get_host_enrollment(config, format).await;
+            if dotted == BRANCH_ENROLLMENT_ENABLED_KEY {
+                return get_branch_enrollment(config, format).await;
             }
             let value = lookup(config, dotted)
                 .ok_or_else(|| anyhow::anyhow!("unknown config key: {key}"))?;
@@ -199,8 +199,8 @@ pub async fn run(
             if is_output_setting_key(&dotted) {
                 return set_output_setting(config, &dotted, &value, format).await;
             }
-            if dotted == HOST_ENROLLMENT_ENABLED_KEY {
-                return set_host_enrollment(config, &value, format).await;
+            if dotted == BRANCH_ENROLLMENT_ENABLED_KEY {
+                return set_branch_enrollment(config, &value, format).await;
             }
             apply_setting_overrides(&mut cfg, &[(&dotted, value.as_str())]);
             let path = cfg.paths().config_file.clone();
@@ -462,7 +462,6 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
             let rules = resolve_replacement_characters(
                 &config.output.replacement_characters,
                 config.output.path_sanitization,
-                false,
             );
             let path_limits = DownloadOptions::from(config).path_limits;
             let key = storage_key_with_contexts(
@@ -725,15 +724,15 @@ async fn set_events_setting(
     })
 }
 
-/// Config key of the library's host-enrollment switch (`core.host_enrollment`).
-const HOST_ENROLLMENT_ENABLED_KEY: &str = "host_enrollment.enabled";
+/// Config key of the library's branch-enrollment switch (`core.branch_enrollment`).
+const BRANCH_ENROLLMENT_ENABLED_KEY: &str = "branch_enrollment.enabled";
 
 /// Prints whether branch nodes may enroll into this library.
-async fn get_host_enrollment(config: &Config, format: OutputFormat) -> anyhow::Result<()> {
+async fn get_branch_enrollment(config: &Config, format: OutputFormat) -> anyhow::Result<()> {
     let (store, _session) = open_control_plane(config).await?;
-    let settings = load_host_enrollment(&store).await?;
+    let settings = load_branch_enrollment(&store).await?;
     let payload = serde_json::json!({
-        "key": HOST_ENROLLMENT_ENABLED_KEY,
+        "key": BRANCH_ENROLLMENT_ENABLED_KEY,
         "value": settings.body.enabled,
         "authority": "database",
         "revision": settings.revision,
@@ -747,8 +746,8 @@ async fn get_host_enrollment(config: &Config, format: OutputFormat) -> anyhow::R
     })
 }
 
-/// Turns host enrollment on or off for the library.
-async fn set_host_enrollment(
+/// Turns branch enrollment on or off for the library.
+async fn set_branch_enrollment(
     config: &Config,
     value: &str,
     format: OutputFormat,
@@ -756,20 +755,20 @@ async fn set_host_enrollment(
     let enabled = match value.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => true,
         "false" | "0" | "no" | "off" => false,
-        _ => anyhow::bail!("{HOST_ENROLLMENT_ENABLED_KEY} must be true or false"),
+        _ => anyhow::bail!("{BRANCH_ENROLLMENT_ENABLED_KEY} must be true or false"),
     };
     let (store, _session) = open_control_plane(config).await?;
     let doc =
-        set_host_enrollment_enabled(&store, &ConfigActor::Operator { id: "cli".into() }, enabled)
+        set_branch_enrollment_enabled(&store, &ConfigActor::Operator { id: "cli".into() }, enabled)
             .await?;
     let payload = serde_json::json!({
-        "key": HOST_ENROLLMENT_ENABLED_KEY,
+        "key": BRANCH_ENROLLMENT_ENABLED_KEY,
         "value": doc.body.enabled,
         "authority": "database",
         "revision": doc.revision,
     });
     emit(format, &payload, || {
-        println!("set {HOST_ENROLLMENT_ENABLED_KEY}={}", doc.body.enabled);
+        println!("set {BRANCH_ENROLLMENT_ENABLED_KEY}={}", doc.body.enabled);
         println!("authority=database revision={}", doc.revision);
     })
 }

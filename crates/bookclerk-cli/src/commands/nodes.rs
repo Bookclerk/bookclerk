@@ -13,8 +13,8 @@ use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     effective_node_labels, list_enrollment_links, list_node_statuses, list_nodes, load_node,
     load_node_runtime, mint_enrollment_link, revoke_enrollment_link, revoke_node_credential,
-    set_node_labels, set_node_owner, update_node_runtime, ConfigActor, EnrollmentActor,
-    EnrollmentLink, NodeRuntimeSettingsV1, NodeStatus,
+    set_node_labels, set_node_owner, update_node_runtime, BranchRelationship, ConfigActor,
+    EnrollmentActor, EnrollmentLink, NodeKind, NodeRuntimeSettingsV1, NodeStatus,
 };
 use bookclerk_library::UserRecord;
 use clap::Subcommand;
@@ -253,6 +253,11 @@ pub async fn run(
                 rows.push(json!({
                     "node_id": node.node_id,
                     "kind": node.kind.as_str(),
+                    "relationship": BranchRelationship::of(
+                        node.kind,
+                        status.and_then(|s| s.public_origin.as_deref()),
+                    )
+                    .as_str(),
                     "owner_user_id": node.owner_user_id,
                     "this_node": node.node_id == this_node,
                     "live": status.is_some_and(|s| s.is_live(now_ms)),
@@ -302,8 +307,8 @@ pub async fn run(
                         }
                     );
                     println!(
-                        "  {} node, owner {}",
-                        node.kind.as_str(),
+                        "  {}, owner {}",
+                        relationship_text(node.kind, status),
                         owners.get(&node.node_id).map_or("-", String::as_str)
                     );
                     for line in heartbeat_lines(status, now_ms) {
@@ -612,6 +617,23 @@ fn status_line(status: &NodeStatus) -> String {
     )
 }
 
+/// How `bookclerk nodes` names a node's relationship to the library:
+/// `shared branch`, `remote branch at <origin>` or `local branch`.
+///
+/// # Arguments
+///
+/// * `kind` - How the node joined.
+/// * `status` - Its latest heartbeat, whose public origin makes a branch
+///   remote.
+fn relationship_text(kind: NodeKind, status: Option<&NodeStatus>) -> String {
+    let origin = status.and_then(|s| s.public_origin.as_deref());
+    match (kind, origin) {
+        (NodeKind::Shared, _) => "shared branch".to_string(),
+        (NodeKind::Branch, Some(origin)) => format!("remote branch at {origin}"),
+        (NodeKind::Branch, None) => "local branch".to_string(),
+    }
+}
+
 /// The lines a node's latest heartbeat adds under it in `bookclerk nodes`:
 /// its capacity and use, then its image cache when it keeps one.
 ///
@@ -662,7 +684,10 @@ fn cache_line(status: &NodeStatus, now_ms: i64) -> Option<String> {
 mod tests {
     use bookclerk_library::{LibraryStore, UserRole};
 
-    use super::{cache_line, heartbeat_lines, invite_spki_pin, parse_ttl, resolve_user};
+    use super::{
+        cache_line, heartbeat_lines, invite_spki_pin, parse_ttl, relationship_text, resolve_user,
+        NodeKind,
+    };
 
     #[test]
     fn the_cache_line_shows_use_budget_and_last_sweep() {
@@ -688,8 +713,9 @@ mod tests {
             cache_bytes: None,
             cache_budget_bytes: None,
             cache_swept_ms: None,
+            public_origin: None,
         };
-        assert_eq!(cache_line(&status, 0), None, "a Host keeps no cache");
+        assert_eq!(cache_line(&status, 0), None, "a branch keeps no cache");
         status.cache_bytes = Some(300 << 20);
         status.cache_budget_bytes = Some(1 << 30);
         assert_eq!(
@@ -710,6 +736,22 @@ mod tests {
         status.cache_bytes = None;
         assert_eq!(heartbeat_lines(Some(&status), 0).len(), 1);
         assert_eq!(heartbeat_lines(None, 0), ["no daemon heartbeat yet"]);
+
+        // A branch is local until its heartbeat reports an address.
+        assert_eq!(
+            relationship_text(NodeKind::Branch, Some(&status)),
+            "local branch"
+        );
+        assert_eq!(relationship_text(NodeKind::Branch, None), "local branch");
+        status.public_origin = Some("https://branch.example".into());
+        assert_eq!(
+            relationship_text(NodeKind::Branch, Some(&status)),
+            "remote branch at https://branch.example"
+        );
+        assert_eq!(
+            relationship_text(NodeKind::Shared, Some(&status)),
+            "shared branch"
+        );
     }
 
     #[test]

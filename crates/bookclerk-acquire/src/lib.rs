@@ -17,6 +17,8 @@ mod cue;
 mod destinations;
 /// Acquire-pipeline error types (`AcquireError`) returned to host callers.
 mod error;
+/// Host keys translated by the destination that stores them.
+mod keys;
 mod library_copies;
 mod match_storage;
 mod naming;
@@ -29,6 +31,7 @@ pub use convert::{convert_book, ConvertRequest, ConvertSummary};
 mod storage_scan;
 pub use destinations::{AcquireDestination, AcquireDestinations};
 pub use error::{AcquireError, Result};
+pub use keys::DestinationKeys;
 pub use library_copies::{
     from_store, LibraryCopies, LibraryCopy, LibraryCopyError, LibraryCopyFile, LibraryCopyListing,
     LibraryCopySource,
@@ -45,7 +48,7 @@ pub use pipeline::{
     acquire_book, acquire_book_indexed, acquire_pdf_only, call_number_of, planned_storage_key,
     planned_storage_key_for, planned_storage_key_with_rules, planned_title_folders,
     planned_title_names, share_acquired_sibling, AcquireMetadata, AcquireRequest, AcquireResult,
-    CoverImages, PlannedTitleNames, NAME_WILDCARD, NUMBER_WILDCARD,
+    CopyOutcome, CopyResult, CoverImages, PlannedTitleNames, NAME_WILDCARD, NUMBER_WILDCARD,
 };
 pub use reconcile::{
     extract_asins_from_key, find_existing_for_request, find_existing_for_title, reconcile_library,

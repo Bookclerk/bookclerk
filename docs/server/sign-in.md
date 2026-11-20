@@ -37,6 +37,11 @@ The Bearer API keeps accepting the token. The sign-in link is a loopback
 `GET /api/auth/tray-handoff?code=` URL with a one-time code (180 seconds by
 default), never the durable token.
 
+The desktop window follows the same rule: it is the operator only until an
+Owner exists, then the patron whose session the branch keeps for it, who elevates
+like anyone else (see
+[the desktop window](../contributing/ui/README.md#who-the-window-is-after-setup)).
+
 ### Owners and elevation
 
 An Owner can **elevate** to operator, with an IdP step-up, a passkey or
@@ -416,10 +421,15 @@ When the library does not answer in time to check a portal session (a
 busy or still-starting server), `/api/auth/me` and the signed-in API routes
 answer `503` with `Retry-After` and the slug `session_check_unavailable`,
 not `401`. The request is still refused, but the web app waits and asks
-again instead of showing the sign-in screen. A few handlers that check the
-session again themselves, such as elevation and the session list, still
-answer `401` in that case
-([#726](https://github.com/Bookclerk/bookclerk/issues/726)).
+again instead of showing the sign-in screen. The routes that check the
+session themselves (elevation, passwords, users, sessions, passkeys, the
+authenticator app, the profile and linked sign-in identities) answer the
+same way.
+
+> [!NOTE]
+> A request that carries the operator token still goes ahead when it also
+> carries a portal cookie that cannot be checked: deleting a user and
+> setting a user's password do not wait on the portal session.
 
 ## Client routes
 
@@ -536,8 +546,10 @@ the store unlisted and logs why.
   Escape cancels.
 - **Security**: password, named passkeys, authenticator app, linked
   identity providers, and Owner elevation.
-- **Sessions**: browsers and library cards, each with **Revoke**. A
-  library card shows the name its clerk gave itself.
+- **Sessions**: browsers, desktop windows and library cards, each with
+  **Revoke**. A library card shows the name its clerk gave itself; a
+  desktop window shows **Desktop app on <computer>**, and revoking it signs
+  that window out at its next launch.
 
 Profile edits are self-service. Security and profile edits are hidden or
 disabled while impersonating.

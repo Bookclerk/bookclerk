@@ -1,0 +1,1 @@
+{"trigger":"manual","version":"0.4.1","os":"linux","install_id":"3f2a9c4e-7b1d-4e8a-9c0f-1a2b3c4d5e6f","archived_at_unix_ms":1763500000000,"events":[{"level":"ERROR","target":"bookclerk_library::scan","message":"scan failed: timeout"},{"level":"INFO","message":"started"}]}

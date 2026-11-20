@@ -249,8 +249,8 @@ pub use db_stream::{
 pub use features::{
     negotiate_rpc_features, RpcFeature, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_CHANGES,
     FEATURE_STORAGE_CONDITIONAL_WRITE, FEATURE_STORAGE_COPY, FEATURE_STORAGE_DELETE_MANY,
-    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, FEATURE_STREAMS,
-    STORAGE_OPERATION_FEATURES,
+    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY,
+    FEATURE_STORAGE_TRANSLATE_KEYS, FEATURE_STREAMS, STORAGE_OPERATION_FEATURES,
 };
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
@@ -287,15 +287,15 @@ pub use roles::{
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
 pub use rpc::{
-    byte_source_from_async_read, connect_plugin, connect_socket_broker, pull_byte_source_to_writer,
-    roundtrip_event_read_message, roundtrip_socket_message, serve_plugin, serve_plugin_stdio,
-    serve_socket_broker, ContentSourceClient, CoverFetcherClient, DatabaseClient,
-    DestinationClient, DestinationServer, EventConsumerClient, EventPublisherClient,
-    EventReadCodec, EventReadMessage, HostBindings, JobRunnerClient, KvNamespaceClient,
-    MetadataFilesClient, MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient,
-    PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
-    ScheduledHandlerClient, SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient,
-    SourceClient, SourceServer,
+    byte_source_from_async_read, connect_plugin, connect_socket_broker, decode_empty_reply_bytes,
+    decode_plugin_error_bytes, pull_byte_source_to_writer, roundtrip_event_read_message,
+    roundtrip_socket_message, serve_plugin, serve_plugin_stdio, serve_socket_broker,
+    ContentSourceClient, CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer,
+    EventConsumerClient, EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings,
+    JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient, OidcClient,
+    OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer, QueueConsumerClient,
+    QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient, SocketCodec,
+    SocketHandlerClient, SocketWireMessage, SocketsClient, SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,
@@ -315,9 +315,10 @@ pub use settings_schema::{
 pub use storage_ops::{
     decode_storage_reply_bytes, encode_storage_reply_bytes, require_batch_len,
     validate_changes_page, validate_head_many, validate_key_outcomes, validate_move_many_page,
-    ChangesPage, ChangesRequest, KeyOutcome, KeyPair, MoveManyPage, MoveManyRequest,
-    MoveManyTarget, MoveOptions, MoveResult, ObjectChange, ObjectChangeKind, StorageReply,
-    StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
+    validate_translated_keys, ChangesPage, ChangesRequest, KeyOutcome, KeyPair, MoveManyPage,
+    MoveManyRequest, MoveManyTarget, MoveOptions, MoveResult, ObjectChange, ObjectChangeKind,
+    StorageReply, StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
+    MAX_TRANSLATED_KEY_BYTES,
 };
 
 /// Embedded JSON Schema for install `plugin.toml` files (shared with language

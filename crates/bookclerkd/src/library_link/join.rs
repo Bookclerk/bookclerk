@@ -728,7 +728,7 @@ pub struct StartBody {
         )),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The library is not accepting new branches (`enrollment_disabled`), or the session is impersonating a user (the standard error body).", body = crate::http_error::ErrorAnswer, examples(
-            ("enrollment_disabled" = (summary = "The library has host enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "This library isn't accepting new branches"}))),
+            ("enrollment_disabled" = (summary = "The library has branch enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "This library isn't accepting new branches"}))),
             ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
         )),
         (status = 404, description = "With `from_card`: this install holds no active library card for that library (`not_found`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_found", "detail": "this install holds no library card for that library"})),
