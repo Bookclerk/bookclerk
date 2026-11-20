@@ -2758,6 +2758,23 @@ mod results_and_uploads {
             objects(s3_out.path()).is_empty(),
             "the destination that refuses the title gets nothing"
         );
+        // The commit recorded the library's copy on the destination that
+        // took it, under its key there, and none on the other.
+        let title = world
+            .owner
+            .acquire_titles_named(None, "t1")
+            .await
+            .unwrap()
+            .remove(0);
+        let copies = world
+            .owner
+            .copies_of_editions(std::slice::from_ref(&title.edition_id))
+            .await
+            .unwrap();
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert_eq!(copies[0].destination, "local");
+        assert_eq!(copies[0].state, bookclerk_library::CopyState::Stored);
+        assert_eq!(copies[0].storage_key, title.storage_key);
     }
 
     /// The owner's plan lists, for each title, the destinations whose
