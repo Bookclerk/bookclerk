@@ -78,6 +78,36 @@ impl SettingKind {
     }
 }
 
+/// How a string setting's value names a network destination
+/// (`network` in `[[settings]]`).
+///
+/// A setting that declares one may widen the plugin's network grant: the host
+/// derives the destination from the value an operator saves and lists it on
+/// the consent form, and the plugin reaches it only once it is approved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingNetwork {
+    /// An HTTP(S) URL the plugin fetches (`https://abs.home.lan:13378`). A
+    /// bare `host[:port]` means `https://`. Grants a fetch to that host and
+    /// port.
+    Fetch,
+    /// A `host:port` the plugin opens a raw TCP socket to
+    /// (`db.home.lan:5432`); a bare host takes
+    /// [`SettingSpec::default_port`]. Grants TCP to that host and port.
+    Tcp,
+}
+
+impl SettingNetwork {
+    /// Wire / manifest name (`fetch`, `tcp`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fetch => "fetch",
+            Self::Tcp => "tcp",
+        }
+    }
+}
+
 /// One selectable value of an [`SettingKind::Enum`] setting.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +150,16 @@ pub struct SettingSpec {
     /// the column `default`), and it declares no columns of its own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub columns: Vec<SettingSpec>,
+    /// Whether the value names a network destination the plugin may reach
+    /// once the operator approves it. Only a top-level
+    /// [`SettingKind::String`] setting may declare it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<SettingNetwork>,
+    /// Port used when a [`Self::network`] value names none: required for a
+    /// bare `tcp` host, and replaces 443 for a bare `fetch` host. Allowed only
+    /// with `network`; 1-65535.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_port: Option<u16>,
 }
 
 impl SettingSpec {
@@ -307,6 +347,12 @@ impl SettingSpec {
                     "table setting `{key}` column `{name}` may not declare columns"
                 ));
             }
+            if column.network.is_some() || column.default_port.is_some() {
+                return Err(format!(
+                    "table setting `{key}` column `{name}` may not declare `network` or \
+                     `default_port`"
+                ));
+            }
             column
                 .validate_values()
                 .map_err(|err| format!("table setting `{key}`: {err}"))?;
@@ -317,6 +363,27 @@ impl SettingSpec {
             }
         }
         Ok(())
+    }
+
+    /// Validates `network` and `default_port`: only on a string setting, and
+    /// the port only beside `network`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message describing the first failed rule.
+    fn validate_network(&self) -> Result<(), String> {
+        let key = &self.key;
+        match (self.network, self.default_port) {
+            (None, None) => Ok(()),
+            (None, Some(_)) => Err(format!(
+                "setting `{key}` declares `default_port` without `network`"
+            )),
+            (Some(_), _) if self.kind != SettingKind::String => Err(format!(
+                "setting `{key}` declares `network` but is not a string"
+            )),
+            (Some(_), Some(0)) => Err(format!("setting `{key}` `default_port` must be 1-65535")),
+            (Some(_), _) => Ok(()),
+        }
     }
 
     /// Validates the `values` list: present and well formed for an enum,
@@ -410,6 +477,7 @@ impl SettingsSchema {
             }
             spec.validate_values()?;
             spec.validate_columns()?;
+            spec.validate_network()?;
             if spec.kind == SettingKind::Secret {
                 if spec.default.is_some() {
                     return Err(format!("secret setting `{key}` may not declare a default"));
@@ -595,6 +663,8 @@ mod tests {
             required: false,
             description: None,
             columns: Vec::new(),
+            network: None,
+            default_port: None,
         }
     }
 
@@ -610,6 +680,47 @@ mod tests {
             default: default.map(|d| Value::String(d.into())),
             ..spec(key, SettingKind::Enum)
         }
+    }
+
+    #[test]
+    fn network_settings_are_strings_with_an_optional_port() {
+        let ok = |spec: SettingSpec| SettingsSchema::new(vec![spec]).validate(true, true);
+        let url = SettingSpec {
+            network: Some(SettingNetwork::Fetch),
+            ..spec("server_url", SettingKind::String)
+        };
+        assert!(ok(url.clone()).is_ok());
+        let db = SettingSpec {
+            network: Some(SettingNetwork::Tcp),
+            default_port: Some(5432),
+            ..spec("host", SettingKind::String)
+        };
+        assert!(ok(db.clone()).is_ok());
+        assert!(ok(SettingSpec {
+            default_port: Some(0),
+            ..db.clone()
+        })
+        .is_err());
+        assert!(ok(SettingSpec {
+            network: None,
+            ..db.clone()
+        })
+        .is_err());
+        assert!(ok(SettingSpec {
+            kind: SettingKind::Integer,
+            ..url.clone()
+        })
+        .is_err());
+        let table = SettingSpec {
+            columns: vec![url],
+            ..spec("servers", SettingKind::Table)
+        };
+        assert!(ok(table).is_err(), "a table column may not declare network");
+        let parsed: SettingsSchema = toml::from_str(
+            "[[settings]]\nkey = \"host\"\ntype = \"string\"\nnetwork = \"tcp\"\ndefault_port = 5432\n",
+        )
+        .expect("toml");
+        assert_eq!(parsed.settings[0], db);
     }
 
     #[test]

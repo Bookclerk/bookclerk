@@ -938,6 +938,8 @@ mod table_tests {
             required: false,
             description: None,
             columns: Vec::new(),
+            network: None,
+            default_port: None,
         }
     }
 

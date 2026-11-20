@@ -156,7 +156,8 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"
-# The cron and HTTPS URL oracles are shared with the replay test through
+# The cron, HTTPS URL and setting destination oracles are shared with the
+# replay test through
 # `#[path]`.
 paths = [
     "fuzz/corpus/egress_policy/**",
@@ -165,6 +166,8 @@ paths = [
     "fuzz/oracles/cron_schedule.rs",
     "fuzz/corpus/https_url_policy/**",
     "fuzz/oracles/https_url_policy.rs",
+    "fuzz/corpus/setting_destination/**",
+    "fuzz/oracles/setting_destination.rs",
 ]
 
 [[test_input]]

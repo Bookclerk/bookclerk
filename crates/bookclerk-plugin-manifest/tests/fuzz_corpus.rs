@@ -517,3 +517,16 @@ fn check_local_names(policy: &EgressPolicy) {
         }
     }
 }
+
+#[path = "../../../fuzz/oracles/setting_destination.rs"]
+mod setting_destination_oracle;
+
+// Test code: an unreadable corpus file is a failed test.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_setting_destination_holds_the_oracle() {
+    for path in corpus_files("setting_destination") {
+        let data = std::fs::read(&path).expect("read");
+        setting_destination_oracle::check(&data);
+    }
+}

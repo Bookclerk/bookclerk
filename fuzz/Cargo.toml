@@ -109,6 +109,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "setting_destination"
+path = "fuzz_targets/setting_destination.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "egress_policy"
 path = "fuzz_targets/egress_policy.rs"
 test = false

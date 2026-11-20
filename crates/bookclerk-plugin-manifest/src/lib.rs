@@ -56,6 +56,7 @@ pub mod error;
 pub mod fmt;
 pub mod id;
 pub mod logo;
+pub mod setting_network;
 pub mod types;
 pub mod workerd_contract;
 
@@ -78,6 +79,9 @@ pub use id::validate_plugin_id;
 pub use logo::{
     embedded_logo_api_path, logo_content_type, validate_logo, LogoKind, LOGO_EXTENSIONS,
     MAX_EMBEDDED_LOGO_BYTES,
+};
+pub use setting_network::{
+    derive_setting_destination, DestinationScope, SettingDestination, SettingDestinationError,
 };
 pub use types::*;
 pub use workerd_contract::{
