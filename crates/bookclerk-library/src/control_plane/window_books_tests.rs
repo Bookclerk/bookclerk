@@ -1761,6 +1761,18 @@ async fn a_clerks_pages_end_with_the_books_only_branches_hold() {
             AnswersRecorded::Recorded(report) => assert_eq!(report.listings, 2, "{name}"),
             other => panic!("{name}: expected the answers recorded: {other:?}"),
         }
+        // A second branch lists the same book: it still goes on the page once.
+        let other = "branch-c";
+        add_branch(&store, other, riley).await;
+        ask_branches(&store, &works).await.unwrap();
+        pending_questions(&store, other).await.unwrap().unwrap();
+        match record_answers(&store, other, &answers[1..], &[])
+            .await
+            .unwrap()
+        {
+            AnswersRecorded::Recorded(report) => assert_eq!(report.listings, 1, "{name}"),
+            other => panic!("{name}: expected the answer recorded: {other:?}"),
+        }
 
         let all = read_person(&store, riley).await;
         let editions: Vec<(&str, &str, Availability, bool, bool)> = all
@@ -1803,6 +1815,7 @@ async fn a_clerks_pages_end_with_the_books_only_branches_hold() {
         // The page names no branch.
         let text = serde_json::to_string(&all).unwrap();
         assert!(!text.contains(branch), "{name}: {text}");
+        assert!(!text.contains(other), "{name}: {text}");
 
         // A branch reading the same library sees only the library's own.
         let as_branch = read_all(&store, branch).await;

@@ -585,7 +585,15 @@ async fn branch_books_page(
             .get(edition_id)
             .filter(|_| !held.contains(edition_id));
         if let (Some(work), Some(rows)) = (work, current.get(edition_id)) {
+            // Several branches can list the same store listing: each goes on
+            // the page once, so duplicates never use up its budget.
+            let mut listings: Vec<LookupEdition> = Vec::new();
             for edition in rows.iter().filter_map(branch_edition) {
+                if !listings.iter().any(|seen| same_edition(seen, &edition)) {
+                    listings.push(edition);
+                }
+            }
+            for (n, edition) in listings.into_iter().enumerate() {
                 let edition = WindowEdition {
                     edition,
                     yours: false,
@@ -593,6 +601,12 @@ async fn branch_books_page(
                 };
                 if !builder.push(work, identifiers.get(work), edition) {
                     stopped = true;
+                    // The page's first edition always fits; one that ran out
+                    // of room partway (more store listings than one page
+                    // holds) ends here, so paging still moves past it.
+                    if last.is_none() && n > 0 {
+                        last = Some(edition_id);
+                    }
                     break 'editions;
                 }
             }
