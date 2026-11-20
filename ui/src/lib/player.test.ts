@@ -584,6 +584,43 @@ describe("Player", () => {
     expect(w.synced[1].report.position_ms).toBe(16_000);
   });
 
+  it("ignores the answer to a report from the book before", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    let release = () => {};
+    w.holds.sync = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    w.flags.finishedNow = true;
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    expect(w.synced).toHaveLength(1);
+    w.holds.sync = undefined;
+    await w.player.play({ ...TARGET, editionId: "ed2" });
+    w.audio.ready(600);
+    w.clock.now += 1000;
+    w.audio.at(1);
+    release();
+    await settle();
+    expect(w.player.state.finished).toBe(false);
+    w.flags.finishedNow = false;
+    w.player.pause();
+    await settle();
+    expect(w.synced.at(-1)).toMatchObject({ id: "s2", report: { listened_ms: 1000 } });
+  });
+
+  it("counts loads and unloads for callers that read before they play", async () => {
+    const w = world();
+    const before = w.player.loads;
+    await w.player.play(TARGET);
+    const loaded = w.player.loads;
+    expect(loaded).not.toBe(before);
+    await w.player.stop();
+    expect(w.player.loads).not.toBe(loaded);
+  });
+
   it("marks the book finished and unloads it", async () => {
     const w = world();
     await w.player.play(TARGET);

@@ -195,6 +195,17 @@ export class Player {
   }
 
   /**
+   * Counts every load and unload. A caller that reads something before
+   * asking to play compares this before and after, and drops its request
+   * when the listener has started or stopped a book meanwhile.
+   *
+   * @returns The count so far.
+   */
+  get loads(): number {
+    return this.generation;
+  }
+
+  /**
    * Listens for state changes.
    *
    * @param listener - Called after each change.
@@ -503,8 +514,11 @@ export class Player {
     const sent = this.listened;
     try {
       const synced = await this.deps.sync(session.session_id, body);
-      this.listened = Math.max(0, this.listened - sent);
-      if (synced.finished_now) this.set({ finished: true });
+      // An answer for a session since replaced says nothing about this one.
+      if (this.session === session) {
+        this.listened = Math.max(0, this.listened - sent);
+        if (synced.finished_now) this.set({ finished: true });
+      }
     } catch (err) {
       if (isApiError(err) && err.status === 409 && this.session === session) {
         await this.reopen();
@@ -515,7 +529,7 @@ export class Player {
     }
     if (this.reportAgain) {
       this.reportAgain = false;
-      if (this.session === session) await this.report();
+      await this.report();
     }
   }
 

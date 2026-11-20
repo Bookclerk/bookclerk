@@ -3269,13 +3269,31 @@ export async function portalRevokeConnection(source: string, accountId: string):
   await parseJson(res);
 }
 
+/** Work to finish while the session can still authorize it. */
+const signOutTasks = new Set<() => Promise<void>>();
+
 /**
- * Signs out regardless of operator vs user/portal session.
+ * Registers work that must finish before the session is revoked, such as
+ * the player's last position report.
+ *
+ * @param task - Run, and awaited, at the start of every sign-out. A
+ *   failure does not stop the sign-out.
+ * @returns Removes the task.
+ */
+export function beforeSignOut(task: () => Promise<void>): () => void {
+  signOutTasks.add(task);
+  return () => signOutTasks.delete(task);
+}
+
+/**
+ * Signs out regardless of operator vs user/portal session, after the
+ * work registered with {@link beforeSignOut}.
  *
  * @param role - Current session role; portal roles use portal logout.
  * @returns Resolves when logout completes.
  */
 export async function signOut(role?: AuthRole): Promise<void> {
+  await Promise.all([...signOutTasks].map((task) => task().catch(() => undefined)));
   if (role === "administrator" || role === "host" || role === "member") {
     await portalLogout();
     return;

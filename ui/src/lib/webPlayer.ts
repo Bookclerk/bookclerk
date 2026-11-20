@@ -5,7 +5,7 @@
  * @module
  */
 import { useSyncExternalStore } from "react";
-import { coverSrc, fetchWork, type WorkDetail } from "@/lib/api";
+import { beforeSignOut, coverSrc, fetchWork, type WorkDetail } from "@/lib/api";
 import { bindMediaSession, type MediaDescription, type MediaSessionLike } from "@/lib/mediaSession";
 import {
   addBookmark,
@@ -128,6 +128,8 @@ export function webPlayer(): Player {
   // The last report must outlive the page, so it goes out as a keepalive
   // request when the page is hidden for good.
   window.addEventListener("pagehide", () => void player.stop(true));
+  // Signing out revokes the session the close needs, so close first.
+  beforeSignOut(() => player.stop());
   shared = player;
   return player;
 }
@@ -152,6 +154,8 @@ export function usePlayerState(): PlayerState {
  *   when the work has no audio on this server.
  */
 export async function playWork(workId: string, known?: WorkDetail | null): Promise<string | null> {
+  const player = webPlayer();
+  const loads = player.loads;
   const [work, recent] = await Promise.all([
     known ?? fetchWork(workId),
     // Only a preference between editions: a failed read means the first.
@@ -161,6 +165,9 @@ export async function playWork(workId: string, known?: WorkDetail | null): Promi
   ]);
   const edition = playableEdition(work, recent);
   if (!edition) return `No audio of “${work.title}” is on this server yet.`;
-  void webPlayer().play(targetFor(work, edition));
+  // The listener started or stopped another book while this one was
+  // being read: that later choice stands.
+  if (player.loads !== loads) return null;
+  void player.play(targetFor(work, edition));
   return null;
 }
