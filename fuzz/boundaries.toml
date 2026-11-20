@@ -378,6 +378,13 @@ input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.title_meta_fill]
+crate = "bookclerk-discover"
+boundary = "A user's title-meta query and the storefront lookups its store editions plan, from POST /api/discover/title-meta and its batch route"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.members_books_request]
 crate = "bookclerk-library"
 boundary = "A library operator's \"Acquire all of this branch's members' books\" choice, from PUT /api/config/branches/members-books"

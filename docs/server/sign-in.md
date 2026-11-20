@@ -499,11 +499,20 @@ Operators also see scan and acquire. Connecting stores stays in
 
 Link and revoke stores, and manage linked sign-in identities.
 
-**Revoke** marks the account revoked (which stops its scans), signs it
-out at the store (best effort), deletes its saved credentials, then
-unlinks it. Books already in the library stay. If a step fails, the store
-stays listed and the page shows the error, so **Revoke** can be tried
-again.
+**Revoke** marks the account revoked (which stops its scans) and signs
+it out at the store (best effort). Then one atomic batch marks it revoked
+again, deletes its saved credentials and unlinks it, so the account is
+never left linked without credentials or unlinked with them. Books already
+in the library stay. If a step fails, the store stays listed and the page
+shows the error, so **Revoke** can be tried again.
+
+A sign-in finishes by linking the account in one atomic batch that needs
+its saved credentials (an account without them is never scanned). If
+another sign-in of the same store account that the operator refused took
+them back first, or a revoke ran meanwhile, nothing is linked: a password
+sign-in answers `409` and asks you to sign in again, and a browser
+(OAuth) sign-in, which finishes after its start route answered, leaves
+the store unlisted and logs why.
 
 ### Settings → Account (everyone)
 

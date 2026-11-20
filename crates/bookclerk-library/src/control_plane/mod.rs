@@ -7,6 +7,7 @@
 //!
 //! See `docs/adr/control-plane.md`.
 
+mod account_links;
 mod artifacts;
 pub(crate) mod batch;
 mod branch_catalog;
@@ -68,6 +69,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use account_links::{
+    account_slot, link_signed_in_account, revoke_account_link, LinkRevoked, SignInLink,
+};
 pub use artifacts::{load_artifact_blob, put_artifact_blob, MAX_ARTIFACT_BLOB_BYTES};
 pub use branch_catalog::{
     accept_catalog_batch, begin_catalog, branch_provenance, branch_title_counts,
@@ -979,6 +983,8 @@ fn invalid_events(detail: &str) -> LibraryError {
     LibraryError::Invalid(format!("invalid configuration: {detail}"))
 }
 
+#[cfg(test)]
+mod account_links_tests;
 #[cfg(test)]
 mod carried_accounts_tests;
 #[cfg(test)]

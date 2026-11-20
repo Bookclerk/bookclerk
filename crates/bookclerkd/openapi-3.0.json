@@ -35842,6 +35842,19 @@
               }
             }
           },
+          "409": {
+            "description": "The account has no saved sign-in when the login links it: a refused login of the same store account, or a revoke, took it back meanwhile (or the store's login saved none). Signing in again connects it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "this account has no saved sign-in (it was disconnected while the sign-in finished); sign in again"
+                }
+              }
+            }
+          },
           "415": {
             "description": "The request did not declare a JSON body.",
             "content": {
@@ -36349,7 +36362,7 @@
           "Accounts"
         ],
         "summary": "Marks a store account revoked, signs it out, deletes its stored credentials, then unlinks it.",
-        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.\n\nLinks are exclusive (one identity per account), so the caller's link is\nthe account's only one and revoking it always clears the credentials.\nEvery step runs while the link still exists, in this order: the account\nis marked revoked (which also turns scanning off, so no job picks it up\nhalf-cleaned); the plugin signs it out at the store (for example, Audible\nderegisters its device), best effort; its `encrypted_secrets` rows are\ndeleted; only then is the link removed. Any failed library step answers\n503 and keeps the link, so the same request retries the cleanup.\nAlready-acquired library rows stay (product policy).",
+        "description": "The account is addressed by `(source, account_id)`: the same store id may\nexist under two plugins. `source` is the alias or plugin key of the link.\n\nLinks are exclusive (one identity per account), so the caller's link is\nthe account's only one and revoking it always clears the credentials.\nEvery step runs while the link still exists, in this order: the account\nis marked revoked (which also turns scanning off, so no job picks it up\nhalf-cleaned) and its holdings and scan checkpoints go; the plugin signs\nit out at the store (for example, Audible deregisters its device), best\neffort; then one atomic batch, guarded on the link and serialized with\nlogins of the same store account, marks it revoked again, deletes its\n`encrypted_secrets` rows and removes the link. Any failed library step\nanswers 503 and keeps the link, so the same request retries the\ncleanup. Already-acquired library rows stay (product policy).",
         "operationId": "portal_revoke_connection",
         "parameters": [
           {
@@ -36383,7 +36396,7 @@
             }
           },
           "400": {
-            "description": "The account is not linked to this identity, or the library database refused to read this identity's links (the body carries its message).",
+            "description": "The account is not linked to this identity (also when a concurrent revoke unlinked it first), or the library database refused to read this identity's links (the body carries its message).",
             "content": {
               "application/json": {
                 "schema": {
@@ -36446,7 +36459,7 @@
             }
           },
           "503": {
-            "description": "A cleanup step failed: marking the account revoked, deleting its stored credentials, or removing the link. The account stays linked, so repeating the request runs the cleanup again. When the cleanup task itself stopped, the daemon log names it; a repeat either finishes the cleanup or, if the unlink had already run, answers 400 `account not linked to this identity`.",
+            "description": "A cleanup step failed: marking the account revoked, or the batch that deletes its stored credentials and removes the link. The account stays linked, so repeating the request runs the cleanup again. When the cleanup task itself stopped, the daemon log names it; a repeat either finishes the cleanup or, if the unlink had already run, answers 400 `account not linked to this identity`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -51477,6 +51490,13 @@
             "type": "string",
             "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups.",
             "example": "us"
+          },
+          "store_editions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoreEdition"
+            },
+            "description": "Store editions that listed this title (the search hit's or card's\n`store_editions`), at most 16. A sparse record is filled from each of\nthese stores that declared `detailByProductId`, by the product id it\ngave the title, before the stores that declared `detailByIsbn` are\nasked by ISBN."
           }
         }
       },
