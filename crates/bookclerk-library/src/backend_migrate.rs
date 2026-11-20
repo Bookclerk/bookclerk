@@ -321,6 +321,20 @@ pub async fn migrate_library_backend(
         return Ok(summary);
     }
 
+    // An operator tool, run once, that needs every row in one transaction:
+    // the first-party sqlite and Postgres adapters accept the host-private
+    // interactive transaction (D1's does not; see
+    // docs/plugins/database-limits.md). Open one and read inside it before
+    // writing anything, so a destination that refuses it is left untouched.
+    #[allow(clippy::disallowed_methods)]
+    let probe = dest.db().begin().await.map_err(LibraryError::Orm)?;
+    // An adapter that refuses answers the first statement inside it.
+    plugin_artifacts::Entity::find()
+        .count(&probe)
+        .await
+        .map_err(LibraryError::Orm)?;
+    probe.rollback().await.map_err(LibraryError::Orm)?;
+
     // Archives go first, outside the row transaction: the chunked writer
     // runs its own atomic batches sized for the destination's limits.
     summary.tables.insert(
@@ -329,10 +343,7 @@ pub async fn migrate_library_backend(
     );
 
     let source_db = source.db();
-    // An operator tool, run once, that needs every row in one transaction:
-    // the first-party sqlite and Postgres adapters accept the host-private
-    // interactive transaction (D1's does not; see
-    // docs/plugins/database-limits.md).
+    // The transaction the probe above showed the destination accepts.
     #[allow(clippy::disallowed_methods)]
     let txn = dest.db().begin().await.map_err(LibraryError::Orm)?;
 
@@ -802,6 +813,66 @@ mod tests {
 
     /// Every table of the library schema is either copied or listed in
     /// [`LEFT_BEHIND_TABLES`], and both lists name only real tables.
+    /// Archives stored under any profile's chunk size are re-cut to the
+    /// destination's limits, and a destination that refuses the interactive
+    /// transaction (every external adapter profile) fails before anything is
+    /// written to it.
+    #[tokio::test]
+    async fn archives_follow_each_profile_and_gated_destinations_are_refused() {
+        use crate::control_plane::chunk_bytes;
+        use crate::test_support::{sqlite, Profile, INTERACTIVE_TRANSACTIONS_REFUSED};
+
+        let archive: Vec<u8> = (0..20 * 1024u32)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        for from in Profile::ALL {
+            let source = sqlite::memory(from).await.into_store();
+            let url = put_artifact_blob(&source, &archive).await.unwrap();
+            let sha = url.strip_prefix("blob:sha256:").unwrap().to_owned();
+
+            for to in Profile::ALL {
+                let caps = to.capabilities();
+                let dest = memory_store().await.with_db_capabilities(caps.clone());
+                let summary = migrate_library_backend(&source, &dest, &apply())
+                    .await
+                    .unwrap();
+                assert_eq!(summary.tables["plugin_artifacts"], 1, "{from:?} -> {to:?}");
+                let header = plugin_artifacts::Entity::find_by_id(sha.clone())
+                    .one(dest.db())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    usize::try_from(header.chunk_bytes).unwrap(),
+                    chunk_bytes(&caps),
+                    "{from:?} -> {to:?}"
+                );
+                assert_eq!(
+                    load_artifact_blob(&dest, &sha).await.unwrap().as_deref(),
+                    Some(archive.as_slice()),
+                    "{from:?} -> {to:?}"
+                );
+
+                let gated = sqlite::memory(to).await;
+                let err = migrate_library_backend(&source, gated.store(), &apply())
+                    .await
+                    .unwrap_err();
+                assert!(
+                    err.to_string().contains(INTERACTIVE_TRANSACTIONS_REFUSED),
+                    "{from:?} -> gated {to:?}: {err}"
+                );
+                assert_eq!(
+                    plugin_artifacts::Entity::find()
+                        .count(gated.connection())
+                        .await
+                        .unwrap(),
+                    0,
+                    "{from:?} -> gated {to:?}"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn every_table_is_copied_or_left_behind_on_purpose() {
         let store = memory_store().await;

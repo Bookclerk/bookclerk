@@ -228,6 +228,12 @@ caches, the library page index, in-progress storage scans, maintenance
 leases, node heartbeats, live subscriber registrations and observed
 deployment state.
 
+The copy writes every row in one transaction, so the destination must
+accept one. The first-party SQLite and PostgreSQL adapters do; the D1
+adapter does not, so D1 cannot be a migration destination yet. A
+destination that refuses is checked before anything is written and is
+left untouched.
+
 > [!NOTE]
 > Plugin database bindings are not copied. Each one is a separate
 > database that belongs to the old adapter; the new adapter provisions an
