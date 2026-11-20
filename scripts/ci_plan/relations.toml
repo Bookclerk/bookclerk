@@ -317,6 +317,14 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-node-proto"
+# The upload part Content-Range oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/upload_part/**",
+  "fuzz/oracles/upload_part.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
 # The copy download answer oracle is shared with the replay test through `#[path]`.
 paths = [
   "fuzz/corpus/copy_answer/**",

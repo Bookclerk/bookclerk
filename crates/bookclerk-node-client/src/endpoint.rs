@@ -17,12 +17,13 @@
 //! Everything else is refused before any byte is sent.
 
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_node_proto::{
-    canonical_origin, CLERK_AUTH_SCHEME, CLERK_CONNECT_PATH, CLERK_SUBPROTOCOL, MAX_FRAME_BYTES,
-    SUBPROTOCOL,
+    canonical_origin, UploadAnswer, UploadPart, UploadRange, CLERK_AUTH_SCHEME, CLERK_CONNECT_PATH,
+    CLERK_SUBPROTOCOL, MAX_FRAME_BYTES, SUBPROTOCOL,
 };
 use sha2::Digest as _;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
@@ -495,6 +496,50 @@ impl OwnerEndpoint {
     }
 }
 
+/// Most times one file sent in parts resumes before
+/// [`OwnerEndpoint::put_file`] gives up (a later attempt resumes again).
+pub const MAX_UPLOAD_RESUMES: u32 = 8;
+
+/// Where an uploaded file's bytes come from: readable from any offset, so
+/// an interrupted file resends only what the owner lacks.
+pub trait UploadSource: Sync {
+    /// A reader of the file from `offset` to its end.
+    ///
+    /// # Errors
+    ///
+    /// An I/O error when the file cannot be opened at `offset`.
+    fn open_at(
+        &self,
+        offset: u64,
+    ) -> impl std::future::Future<Output = std::io::Result<Pin<Box<dyn AsyncRead + Send>>>> + Send;
+}
+
+/// A file on this install's disk as an [`UploadSource`].
+#[derive(Debug, Clone)]
+pub struct LocalFileSource(pub std::path::PathBuf);
+
+impl UploadSource for LocalFileSource {
+    async fn open_at(&self, offset: u64) -> std::io::Result<Pin<Box<dyn AsyncRead + Send>>> {
+        use tokio::io::AsyncSeekExt as _;
+        let mut file = tokio::fs::File::open(&self.0).await?;
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        Ok(Box::pin(file))
+    }
+}
+
+/// The offset an upload answer tells the host to send from: `200 partial`
+/// or `503 unavailable` with reason `resume`; `None` for any other answer.
+fn resume_offset(status: u16, body: &[u8]) -> Option<u64> {
+    let answer: UploadAnswer = serde_json::from_slice(body).ok()?;
+    let resumable = (status == 200 && answer.status == "partial")
+        || (status == 503 && answer.reason.as_deref() == Some("resume"));
+    if resumable {
+        answer.offset
+    } else {
+        None
+    }
+}
+
 impl OwnerEndpoint {
     /// `PUT path` streaming exactly `length` bytes from `body`, with an
     /// `Authorization` header; answers the status and the (small) body.
@@ -519,14 +564,139 @@ impl OwnerEndpoint {
         length: u64,
         body: R,
     ) -> Result<(u16, Vec<u8>), DialError> {
-        if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
+        self.put_stream_range(path, authorization, length, None, body)
+            .await
+    }
+
+    /// `PUT path` of a declared upload file of `size` bytes read from
+    /// `source`: in one request when it fits in `part_bytes`, otherwise as
+    /// consecutive parts of at most `part_bytes`, each its own request with
+    /// `Content-Range` ([`UploadPart`]), so a relay that caps request bodies
+    /// passes it.
+    ///
+    /// A file sent in parts resumes: it first asks where the owner is
+    /// (`bytes */<size>`, [`UploadRange::Status`]) and sends from that
+    /// offset, and after a broken part or a `resume` answer it asks again
+    /// and sends only the rest, at most [`MAX_UPLOAD_RESUMES`] times.
+    /// Answers the status and body of the request that settled the file:
+    /// the last part's, the first that was neither `200 partial` nor a
+    /// `resume`, or the first that says the owner already holds the whole
+    /// file (`received`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::put_stream`], once the resumes run out; and
+    /// [`DialError::Io`] when `source` cannot be read from an offset.
+    pub async fn put_file<S: UploadSource + ?Sized>(
+        &self,
+        path: &str,
+        authorization: &str,
+        size: u64,
+        part_bytes: u64,
+        source: &S,
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        let part_bytes = part_bytes.max(1);
+        if size <= part_bytes {
+            let body = source.open_at(0).await.map_err(DialError::Io)?;
+            return self.put_stream(path, authorization, size, body).await;
+        }
+        let mut resumes = 0u32;
+        let mut offset = match self.upload_status(path, authorization, size).await? {
+            Ok(offset) => offset,
+            Err(settled) => return Ok(settled),
+        };
+        'file: loop {
+            if offset >= size {
+                return Err(DialError::Http);
+            }
+            let mut body = source.open_at(offset).await.map_err(DialError::Io)?;
+            while offset < size {
+                let part = UploadPart {
+                    offset,
+                    length: part_bytes.min(size - offset),
+                };
+                let range = part.content_range(size);
+                let sent = self
+                    .put_stream_range(path, authorization, part.length, Some(&range), &mut body)
+                    .await;
+                let next = match sent {
+                    Ok((status, answer)) => match resume_offset(status, &answer) {
+                        Some(next) if status == 200 && next == part.end() => {
+                            offset = next;
+                            continue;
+                        }
+                        Some(next) => next,
+                        None => return Ok((status, answer)),
+                    },
+                    Err(err) => {
+                        if resumes >= MAX_UPLOAD_RESUMES {
+                            return Err(err);
+                        }
+                        match self.upload_status(path, authorization, size).await? {
+                            Ok(next) => next,
+                            Err(settled) => return Ok(settled),
+                        }
+                    }
+                };
+                // The owner stands somewhere else: read on from there.
+                resumes += 1;
+                if resumes > MAX_UPLOAD_RESUMES {
+                    return Err(DialError::Http);
+                }
+                offset = next;
+                continue 'file;
+            }
+            return Err(DialError::Http);
+        }
+    }
+
+    /// Asks where the owner stands with a declared file of `size` bytes
+    /// (an empty `PUT` with `Content-Range: bytes */<size>`).
+    ///
+    /// # Returns
+    ///
+    /// `Ok(offset)`: the next byte the owner needs; `Err(answer)`: an
+    /// answer that settles the file (it is `received`, or refused).
+    async fn upload_status(
+        &self,
+        path: &str,
+        authorization: &str,
+        size: u64,
+    ) -> Result<Result<u64, (u16, Vec<u8>)>, DialError> {
+        let range = UploadRange::status_header(size);
+        let (status, answer) = self
+            .put_stream_range(path, authorization, 0, Some(&range), &[][..])
+            .await?;
+        Ok(match resume_offset(status, &answer) {
+            Some(offset) => Ok(offset),
+            None => Err((status, answer)),
+        })
+    }
+
+    /// [`Self::put_stream`], with an optional `Content-Range` value sent
+    /// as a header (an upload part).
+    async fn put_stream_range<R: AsyncRead + Unpin + Send>(
+        &self,
+        path: &str,
+        authorization: &str,
+        length: u64,
+        content_range: Option<&str>,
+        body: R,
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        if authorization.contains(['\r', '\n'])
+            || path.contains(['\r', '\n', ' '])
+            || content_range.is_some_and(|range| range.contains(['\r', '\n']))
+        {
             return Err(DialError::Http);
         }
         let mut io = self.connect().await?;
+        let range = content_range
+            .map(|range| format!("Content-Range: {range}\r\n"))
+            .unwrap_or_default();
         let head = format!(
             "PUT {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: {authorization}\r\n\
              Content-Type: application/octet-stream\r\nAccept: application/json\r\n\
-             Content-Length: {length}\r\nConnection: close\r\n\r\n",
+             {range}Content-Length: {length}\r\nConnection: close\r\n\r\n",
             self.authority(),
         );
         let sent = async {
@@ -1622,6 +1792,204 @@ mod tests {
             "{out:?}"
         );
         held.abort();
+    }
+
+    /// Accepts one upload request per answer, one after another, replying
+    /// each `(status line, JSON body)` in turn; hands back each request's
+    /// `Content-Range` (if any) and body.
+    async fn recording_owner(
+        answers: Vec<(&'static str, String)>,
+    ) -> (
+        OwnerEndpoint,
+        tokio::task::JoinHandle<Vec<(Option<String>, Vec<u8>)>>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for (status, answer) in answers {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0u8; 1];
+                    socket.read_exact(&mut byte).await.unwrap();
+                    head.push(byte[0]);
+                }
+                let head = String::from_utf8(head).unwrap();
+                let header = |name: &str| {
+                    head.lines().find_map(|line| {
+                        line.split_once(": ")
+                            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                            .map(|(_, value)| value.to_string())
+                    })
+                };
+                let length: usize = header("content-length").unwrap().parse().unwrap();
+                let mut body = vec![0u8; length];
+                socket.read_exact(&mut body).await.unwrap();
+                seen.push((header("content-range"), body));
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{answer}",
+                    answer.len()
+                );
+                socket.write_all(reply.as_bytes()).await.unwrap();
+            }
+            seen
+        });
+        let endpoint = OwnerEndpoint::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
+        (endpoint, served)
+    }
+
+    /// `200 partial` naming `offset`.
+    fn partial(offset: u64) -> (&'static str, String) {
+        (
+            "200 OK",
+            format!(r#"{{"status":"partial","offset":{offset},"job_completed":false}}"#),
+        )
+    }
+
+    /// `503 unavailable`, reason `resume`, naming `offset`.
+    fn resume(offset: u64) -> (&'static str, String) {
+        (
+            "503 Service Unavailable",
+            format!(
+                r#"{{"status":"unavailable","reason":"resume","offset":{offset},"job_completed":false}}"#
+            ),
+        )
+    }
+
+    const RECEIVED: &str = r#"{"status":"received","job_completed":false}"#;
+
+    /// `200 received`.
+    fn received() -> (&'static str, String) {
+        ("200 OK", RECEIVED.to_string())
+    }
+
+    /// An in-memory file as an [`UploadSource`].
+    struct Memory(Vec<u8>);
+
+    impl UploadSource for Memory {
+        async fn open_at(&self, offset: u64) -> std::io::Result<Pin<Box<dyn AsyncRead + Send>>> {
+            let start = usize::try_from(offset).unwrap().min(self.0.len());
+            Ok(Box::pin(std::io::Cursor::new(self.0[start..].to_vec())))
+        }
+    }
+
+    /// The `Content-Range` of each recorded request.
+    fn ranges(seen: &[(Option<String>, Vec<u8>)]) -> Vec<Option<&str>> {
+        seen.iter().map(|(range, _)| range.as_deref()).collect()
+    }
+
+    /// The bodies of recorded requests, joined in order.
+    fn joined(seen: &[(Option<String>, Vec<u8>)]) -> Vec<u8> {
+        seen.iter().flat_map(|(_, body)| body.clone()).collect()
+    }
+
+    /// A file larger than a part asks where the owner is, then goes as
+    /// consecutive ranged requests that add up to the file; one that fits
+    /// goes whole, with no range.
+    #[tokio::test]
+    async fn a_large_upload_goes_in_parts() {
+        let file: Vec<u8> = (0..25u8).collect();
+        let (endpoint, served) =
+            recording_owner(vec![partial(0), partial(10), partial(20), received()]).await;
+        let (status, answer) = endpoint
+            .put_file(
+                "/upload",
+                "Bookclerk-Upload t",
+                25,
+                10,
+                &Memory(file.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!((status, answer), (200, RECEIVED.as_bytes().to_vec()));
+        let seen = served.await.unwrap();
+        assert_eq!(
+            ranges(&seen),
+            vec![
+                Some("bytes */25"),
+                Some("bytes 0-9/25"),
+                Some("bytes 10-19/25"),
+                Some("bytes 20-24/25"),
+            ]
+        );
+        assert_eq!(joined(&seen), file);
+
+        let (endpoint, served) = recording_owner(vec![received()]).await;
+        endpoint
+            .put_file(
+                "/upload",
+                "Bookclerk-Upload t",
+                10,
+                10,
+                &Memory(file[..10].to_vec()),
+            )
+            .await
+            .unwrap();
+        let seen = served.await.unwrap();
+        assert_eq!(ranges(&seen), vec![None]);
+        assert_eq!(seen[0].1, file[..10]);
+    }
+
+    /// An owner that already holds the whole file (an earlier attempt
+    /// finished) says so to the status query, and nothing is sent.
+    #[tokio::test]
+    async fn an_upload_stops_once_the_owner_holds_the_file() {
+        let (endpoint, served) = recording_owner(vec![received()]).await;
+        let (status, answer) = endpoint
+            .put_file(
+                "/upload",
+                "Bookclerk-Upload t",
+                25,
+                10,
+                &Memory(vec![7; 25]),
+            )
+            .await
+            .unwrap();
+        assert_eq!((status, answer), (200, RECEIVED.as_bytes().to_vec()));
+        assert_eq!(served.await.unwrap().len(), 1);
+    }
+
+    /// An upload resumes where the owner stands: from the status query's
+    /// offset, and from a `resume` answer's offset mid-file (not on a part
+    /// boundary), sending only the bytes the owner lacks.
+    #[tokio::test]
+    async fn an_upload_resumes_from_the_owners_offset() {
+        let file: Vec<u8> = (0..25u8).collect();
+        let (endpoint, served) = recording_owner(vec![
+            partial(5),
+            partial(15),
+            resume(12),
+            partial(22),
+            received(),
+        ])
+        .await;
+        let (status, _) = endpoint
+            .put_file(
+                "/upload",
+                "Bookclerk-Upload t",
+                25,
+                10,
+                &Memory(file.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+        let seen = served.await.unwrap();
+        assert_eq!(
+            ranges(&seen),
+            vec![
+                Some("bytes */25"),
+                Some("bytes 5-14/25"),
+                Some("bytes 15-24/25"),
+                Some("bytes 12-21/25"),
+                Some("bytes 22-24/25"),
+            ]
+        );
+        assert_eq!(seen[1].1, file[5..15]);
+        assert_eq!(seen[2].1, file[15..]);
+        assert_eq!(seen[3].1, file[12..22]);
+        assert_eq!(seen[4].1, file[22..]);
     }
 
     #[test]

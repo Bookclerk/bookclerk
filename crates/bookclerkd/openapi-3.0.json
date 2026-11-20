@@ -36141,6 +36141,16 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Content-Range",
+            "in": "header",
+            "description": "For a file sent in parts: `bytes <first>-<last>/<size>`, the part this body is, each its own request in order; or `bytes */<size>` with an empty body, which asks for the offset the owner needs next (to resume). A file sent whole carries no range.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
           }
         ],
         "requestBody": {
@@ -36155,15 +36165,28 @@
         },
         "responses": {
           "200": {
-            "description": "The file was stored (`received`).",
+            "description": "The file was stored (`received`), or a part that is not the file's last was taken, or a status query was answered, with the offset the owner needs next (`partial`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
-                "example": {
-                  "job_completed": false,
-                  "status": "received"
+                "examples": {
+                  "partial": {
+                    "summary": "Send the file from this offset.",
+                    "value": {
+                      "job_completed": false,
+                      "offset": 67108864,
+                      "status": "partial"
+                    }
+                  },
+                  "received": {
+                    "summary": "The whole file was stored.",
+                    "value": {
+                      "job_completed": false,
+                      "status": "received"
+                    }
+                  }
                 }
               }
             }
@@ -36238,7 +36261,7 @@
             }
           },
           "422": {
-            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
+            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a `Content-Range` that is not exactly a part of the declared file (`invalid_range`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -36258,6 +36281,14 @@
                     "value": {
                       "job_completed": false,
                       "reason": "destinations_changed",
+                      "status": "refused"
+                    }
+                  },
+                  "invalid_range": {
+                    "summary": "The range is not a part of the declared file.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "invalid_range",
                       "status": "refused"
                     }
                   },
@@ -36290,15 +36321,29 @@
             }
           },
           "503": {
-            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`).",
+            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`). With reason `resume`, a part did not start where the open file stands, or broke part way: send the file from `offset` (0 when no write is open here).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
-                "example": {
-                  "job_completed": false,
-                  "status": "unavailable"
+                "examples": {
+                  "resume": {
+                    "summary": "Send the file from this offset.",
+                    "value": {
+                      "job_completed": false,
+                      "offset": 67108864,
+                      "reason": "resume",
+                      "status": "unavailable"
+                    }
+                  },
+                  "unavailable": {
+                    "summary": "Retry the request.",
+                    "value": {
+                      "job_completed": false,
+                      "status": "unavailable"
+                    }
+                  }
                 }
               }
             }
@@ -54466,13 +54511,21 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
+            "description": "Stable outcome: `received`, `partial` (a part that is not the\nfile's last was taken), `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
             "example": "received"
           },
           "reason": {
             "type": "string",
-            "description": "Why, for `refused`.",
+            "description": "Why, for `refused`, and `resume` for an `unavailable` part that\ndoes not continue the open file at [`Self::offset`].",
             "example": "size_mismatch",
+            "nullable": true
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "For `partial`, and an `unavailable` part with reason `resume`: the\noffset of the next byte of the file the owner needs.",
+            "example": 67108864,
+            "minimum": 0,
             "nullable": true
           },
           "job_completed": {

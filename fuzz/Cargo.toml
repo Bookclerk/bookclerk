@@ -341,6 +341,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "upload_part"
+path = "fuzz_targets/upload_part.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "copy_answer"
 path = "fuzz_targets/copy_answer.rs"
 test = false
