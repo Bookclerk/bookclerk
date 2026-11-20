@@ -477,3 +477,11 @@ boundary = "Scan and acquire requests a Member sends (over HTTP or through their
 input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
+
+[targets.relayed_log_line]
+crate = "bookclerk-config"
+boundary = "Stderr lines from jailed helpers and plugin guests that the host relays into its log"
+input_from = "guest"
+# The host parses each line in its own process before logging it.
+side = "host"
+artifacts = ["bookclerk"]
