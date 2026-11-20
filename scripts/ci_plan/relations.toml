@@ -127,6 +127,12 @@ paths = [
 package = "bookclerk-window-policy"
 paths = ["fuzz/corpus/window_policy/**", "fuzz/oracles/window_policy.rs"]
 
+# The title-meta query and fill-plan oracle, shared the same way with the
+# bookclerk-discover replay test.
+[[test_input]]
+package = "bookclerk-discover"
+paths = ["fuzz/corpus/title_meta_fill/**", "fuzz/oracles/title_meta_fill.rs"]
+
 # The mux peer oracle is shared the same way with the plugin-sdk replay test.
 [[test_input]]
 package = "bookclerk-plugin-sdk"
@@ -213,6 +219,14 @@ paths = [
     "fuzz/oracles/tags_read.rs",
     "fuzz/corpus/tags_wire/**",
     "fuzz/oracles/tags_wire.rs",
+]
+
+[[test_input]]
+package = "bookclerk-media"
+# The media_decode oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_decode/**",
+    "fuzz/oracles/media_decode.rs",
 ]
 
 [[test_input]]

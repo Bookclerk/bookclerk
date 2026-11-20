@@ -37,6 +37,7 @@ boundary extends it.
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
+| `media_decode` | Audio the media worker demuxes and decodes before it encodes or repackages it: store downloads, library copies and files on storage, recognised by their bytes, never their names | `bookclerk-media::decode_pcm_bytes` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
@@ -79,6 +80,7 @@ boundary extends it.
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
+| `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta` and each entry of its batch route) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
@@ -231,6 +233,16 @@ only that. The others check:
   `Done` record re-encodes to a frame that decodes to the same record. The
   shared oracle is `fuzz/oracles/tags_wire.rs`, replayed from
   `bookclerk-tags`.
+- **`media_decode`**: the input is a whole audio file. It is decoded at
+  the source's channel count twice and once mixed to mono. An accepted
+  stream has a sample rate from 1 Hz to 768 kHz and one or two channels,
+  and every chunk is whole frames; the same bytes always give the same
+  PCM; and the mono decode accepts exactly the files the source decode
+  does, with the same rate and length. A plain 16-bit PCM WAV must decode
+  to exactly the samples an independent parser in the oracle reads from
+  it. Seeds cover every container and codec the worker reads, including
+  HE-AAC and HE-AAC v2. The shared oracle is
+  `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
   them is the current tag, strong or weak. Any raw header that matches,
@@ -551,6 +563,18 @@ only that. The others check:
   digits, `.`, `_` and `-`. The parser then returns those trimmed ids,
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/branch_request.rs`, replayed from `bookclerk-library`.
+- **`title_meta_fill`**: the first byte declares `detailByProductId` and
+  `detailByIsbn` for four fake stores; the rest is the query body, read as
+  untyped JSON. An object body is served exactly when its known fields
+  have the documented types, none is written twice, it names at most 16
+  store editions (each a `source` and `product_id` string), and its
+  trimmed title, ASIN and ISBN are not all empty. A served query plans at
+  most three lookups: at most two by product id, in edition order, at
+  listing stores that declared `detailByProductId`, then by ISBN (or an
+  ISBN-shaped ASIN) at the stores that declared `detailByIsbn`, never the
+  same store and id twice. Positional (array) forms are left to the typed
+  parser, and their plan is still checked. The shared oracle is
+  `fuzz/oracles/title_meta_fill.rs`, replayed from `bookclerk-discover`.
 - **`members_books_request`**: reads the body as an untyped JSON value.
   It is accepted exactly when it is one object with no repeated keys and
   exactly the keys `node_id` (a string) and `acquire` (a boolean), where

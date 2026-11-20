@@ -62,7 +62,7 @@ OS.
 | `GET`/`PATCH /api/settings` | Operator | Daemon, library, plugin and confinement settings. `events.*` and `output.*` are compare-and-swap against the database (one authority per request) |
 | `GET`/`PUT /api/config/domains/core.events` | Operator | The authoritative `[events]` document and revision |
 | `GET`/`PUT /api/config/domains/core.output` | Operator | The authoritative shared `[output]` document and revision (`{expected_revision, document}`) |
-| `GET`/`PUT /api/auth/mfa-policy` | Owner or operator | `require_second_factor`: password sign-in needs TOTP or a passkey |
+| `GET`/`PUT /api/auth/mfa-policy` | Owner or operator reads; operator changes | `require_second_factor`: password sign-in needs TOTP or a passkey |
 | `GET /api/status` (also `/status`) | Yes | Status snapshot |
 | `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan. Any user may call `/api/library/scan`; a Member scans only the store accounts linked to them. The `/scan` alias stays with Administrators |
 | `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member acquires only from the store accounts linked to them. `editions` queues editions from a work's detail. The `/acquire` alias stays with Administrators |

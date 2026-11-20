@@ -1010,7 +1010,7 @@ methods on [`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) and
 | `loginStart` / `loginComplete` | OAuth storefronts (Audible). Start returns `{ sessionId, url }`; complete returns the login result |
 | `scan` | Returns one page of one account's library (see [Paged scans](#paged-scans)). Params carry `pluginDataDir`, `accountId`, filters, that account's host-injected `credential` (`{ accountId, credentials }`, the credentials as opaque JSON bytes; **no** library database path), `cursor` and `syncToken`. The reply is a `ScanPage` of `books[]` records (see [Book records](#book-records)); the host stores them with `source` forced to the plugin id |
 | `searchCatalog` | `{ query, region, limit, page, sort, field }` → `CatalogHit[]` (see [Book records](#book-records)). A `limit` of `0` means the storefront's default page of 20 hits; an empty query returns `[]` |
-| `catalogDetail` | `{ productId, isbn? }` → `{ found, hit }`: the full record for one product (description, narrators, runtime, genres). A store that declares `detailByIsbn` also answers a bare ISBN, which the host sends in both fields |
+| `catalogDetail` | `{ productId, isbn? }` → `{ found, hit }`: the full record for one product (description, narrators, runtime, genres). The host calls it only on a store that declares `detailByProductId` (for its own product ids) or `detailByIsbn` (which also answers a bare ISBN, sent in both fields) |
 | `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns a `PlainFetch` of **plain** files (DRM guests decrypt before returning): `mediaKind`, the carrier it fetched, which must be in its declared [`fetches`](#declaring-media); `files`, each `{ path, role, contentType?, title?, durationMs? }` with `role` `part` (ordered pieces), `whole` (the edition in one file, such as an M4B) or `cover`; `chapters`; and an optional `pdfUrl`. A reply lists `part`s or one `whole` file, never both, and at most one `cover`. The host acquires audio editions only today |
 | `purchaseHint` | Purchase link and, when `withPrice` is set, the live price of one title. `null` when the store does not sell it. `lookup` says how the host names the title (see [Price lookups](#price-lookups)) |
 | `purchaseHints` | The same for several titles in one call (`{ queries }`, one answer per query in order). The default in every SDK asks `purchaseHint` for each query, four at a time, those with a product id first, and stops starting lookups after 4 s, answering `null` for the rest, so the host's batch gets what the store managed; a store whose catalog prices many products per request (Audible's `products?asins=` takes fifty, Chirp's GraphQL takes aliased ids) overrides it to make one request, so a page of Discover cards costs one call per store |
@@ -1213,10 +1213,18 @@ and enrichment by declaring it:
   `catalogDetail` resolves any audiobook ISBN to a full record. After
   ranking a page, the host asks those stores, in `sortKey` order, to fill
   description, narrators, runtime and genres on lean rows from any store.
-  A row is looked up by its ISBN, or by the store's own product id when the
-  store listed the work itself. The first record found fills the gaps and
+  A row is looked up by its ISBN, or, when the store also declares
+  `detailByProductId` and listed the work itself, by its own product id.
+  The first record found fills the gaps and
   adds that store's edition. The lookups share a short time budget, so a
   slow store can't hold up a search.
+- **Product detail lookup.** Set `catalog.detailByProductId` in
+  `describe()` when `catalogDetail` resolves the product ids your own
+  search, expand and deals hits carry to a full record. The host then asks
+  your store to fill the lean rows it listed (as above, but by your product
+  id only), and a title dialog asks it for the editions it listed before
+  any ISBN store. A store that leaves it off is never woken for a detail
+  lookup.
 
 - **Price lookup by identifier.** Set `catalog.priceByIsbn` and
   `catalog.priceByAsin` in `describe()` when `purchaseHint` prices an exact
@@ -1224,9 +1232,10 @@ and enrichment by declaring it:
   an identifier lookup a store has not declared.
 
 All default to off. The first-party storefronts declare them as follows:
-Audible ranks its hits and prices exact ASINs, Libro.fm answers ISBN detail
-lookups and prices exact ISBNs, and Chirp and GraphicAudio declare neither.
-All four answer title searches with records.
+Audible ranks its hits and prices exact ASINs, Libro.fm answers ISBN and
+product detail lookups and prices exact ISBNs, GraphicAudio answers product
+detail lookups, and Chirp declares none. All four answer title searches
+with records.
 
 #### Declaring media
 

@@ -33,9 +33,8 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::auth::{
-    cookie_value, issue_elevation, issue_portal_session, require_operator_or_recent_owner,
-    require_portal_identity, resolve_portal_caller_identity, too_many_requests, CallerRefusal,
-    ClientIp,
+    cookie_value, issue_elevation, issue_portal_session, require_portal_identity,
+    resolve_portal_caller_identity, too_many_requests, CallerRefusal, ClientIp,
 };
 use crate::oidc_verify::{
     apple_client_secret_jwt, github_verified_email, json_subject, verify_id_token, UpstreamProfile,
@@ -109,10 +108,15 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(login_start))
         .routes(routes!(elevate_start))
         .routes(routes!(callback_get, callback_post));
-    let config = OpenApiRouter::new().routes(routes!(get_oidc_config, put_oidc_config));
+    // An Owner may read the providers; changing them needs the operator
+    // (or an elevated Owner), since a wrong provider lets an outside account
+    // sign in.
+    let config = OpenApiRouter::new().routes(routes!(get_oidc_config));
+    let config_write = OpenApiRouter::new().routes(routes!(put_oidc_config));
     vec![
         RouteGroup::new(public, Access::Public),
         RouteGroup::new(config, Access::OperatorOrOwner),
+        RouteGroup::new(config_write, Access::Operator),
     ]
 }
 
@@ -303,10 +307,6 @@ struct OidcConfigPut {
     #[serde(default)]
     #[schema(example = "https://books.example.com")]
     public_origin: Option<String>,
-    /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
-    #[serde(default)]
-    #[schema(example = "correct horse battery staple")]
-    current_password: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -815,7 +815,7 @@ async fn get_oidc_config(
     })
 }
 
-/// Operator PUT: writes next-generation sealed secrets, then publishes config.toml.
+/// Operator-only PUT: writes next-generation sealed secrets, then publishes config.toml.
 #[utoipa::path(
     put,
     path = "/api/auth/oidc/config",
@@ -823,20 +823,7 @@ async fn get_oidc_config(
     responses(
         (status = 200, description = "The settings after the change.", body = OidcConfigResponse),
         (status = 400, description = "A provider or the public origin is invalid (`oidc_config`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_config", "message": "public origin must use http or https", "status": 400})),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_config`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_config", "message": "recent authentication required to change sign-in providers", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_config`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_config", "message": "too many wrong passwords for this account; try again later", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_config` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_config", "message": "forbidden", "status": 403}))),
-            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
-        (status = 500, description = "The configuration file or the sealed secrets could not be written, or an Owner's current password could not be read or checked (`oidc_config`).", body = crate::http_error::ErrorJson, examples(
-            ("config_write" = (summary = "The configuration file could not be written.", value = json!({"error": "oidc_config", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_config", "message": "the current password could not be checked", "status": 500}))),
-        )),
+        (status = 500, description = "The configuration file or the sealed secrets could not be written (`oidc_config`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_config", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500})),
     ),
 )]
 async fn put_oidc_config(
@@ -844,20 +831,6 @@ async fn put_oidc_config(
     headers: HeaderMap,
     Json(body): Json<OidcConfigPut>,
 ) -> Result<Json<OidcConfigResponse>, Response> {
-    require_operator_or_recent_owner(&state, &headers, body.current_password.as_deref())
-        .await
-        .map_err(|refusal| {
-            refusal.answer(|status| {
-                oidc_config_error(
-                    status,
-                    crate::auth::recent_owner_gate_message(
-                        status,
-                        "recent authentication required to change sign-in providers",
-                    ),
-                )
-            })
-        })?;
-
     let _reload_guard = state.reload_lock.lock().await;
 
     let config_path = {
@@ -2676,14 +2649,14 @@ mod http_tests {
         oidc_store_secret_plaintext(library, &oidc_secret_store_name(logical, generation)).await
     }
 
-    async fn put_oidc_json(app: axum::Router, cookie: &str, body: &Value) -> (StatusCode, Value) {
+    async fn put_oidc_json(app: axum::Router, body: &Value) -> (StatusCode, Value) {
         let res = app
             .oneshot(
                 Request::builder()
                     .method("PUT")
                     .uri("/api/auth/oidc/config")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .header(axum::http::header::COOKIE, cookie)
+                    .header(axum::http::header::AUTHORIZATION, "Bearer op-token-oidc")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )
@@ -2792,7 +2765,7 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn oidc_config_put_member_forbidden() {
+    async fn oidc_config_put_member_refused() {
         let (_state, app, library, _dir, _dek) = persist_harness().await;
         let cookie =
             portal_cookie_for_user(&library, bookclerk_library::UserRole::Member, "Member").await;
@@ -2808,11 +2781,12 @@ mod http_tests {
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        // The operator-only layer admits no library session at all.
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn oidc_config_put_administrator_forbidden() {
+    async fn oidc_config_put_administrator_refused() {
         let (_state, app, library, _dir, _dek) = persist_harness().await;
         let cookie = portal_cookie_for_user(
             &library,
@@ -2832,14 +2806,13 @@ mod http_tests {
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        // The operator-only layer admits no library session at all.
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn oidc_config_put_owner_persists() {
-        let (state, app, library, dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
+    async fn oidc_config_put_operator_persists() {
+        let (state, app, _library, dir, _dek) = persist_harness().await;
         let body = serde_json::json!({
             "enabled": true,
             "allowed_email_domains": ["family.example"],
@@ -2860,7 +2833,7 @@ mod http_tests {
                     .method("PUT")
                     .uri("/api/auth/oidc/config")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .header(axum::http::header::COOKIE, &cookie)
+                    .header(axum::http::header::AUTHORIZATION, "Bearer op-token-oidc")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )
@@ -2886,9 +2859,7 @@ mod http_tests {
 
     #[tokio::test]
     async fn oidc_config_put_rejects_too_many_providers() {
-        let (state, app, library, _dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
+        let (state, app, _library, _dir, _dek) = persist_harness().await;
         let seed = serde_json::json!({
             "enabled": true,
             "providers": [{
@@ -2901,7 +2872,7 @@ mod http_tests {
                 "link_by_email": true
             }]
         });
-        let (status, json) = put_oidc_json(app.clone(), &cookie, &seed).await;
+        let (status, json) = put_oidc_json(app.clone(), &seed).await;
         assert_eq!(status, StatusCode::OK, "{json:?}");
 
         let providers: Vec<Value> = (0..=MAX_OIDC_PROVIDERS)
@@ -2922,7 +2893,7 @@ mod http_tests {
             "enabled": true,
             "providers": providers
         });
-        let (status, json) = put_oidc_json(app, &cookie, &oversized).await;
+        let (status, json) = put_oidc_json(app, &oversized).await;
         // Bound is enforced in `deserialize_bounded_oidc_providers`, so Axum's
         // Json extractor rejects before the handler (422), and config is unchanged.
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{json:?}");
@@ -2944,15 +2915,13 @@ mod http_tests {
 
     #[tokio::test]
     async fn oidc_config_put_public_origin_persists() {
-        let (state, app, library, dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
+        let (state, app, _library, dir, _dek) = persist_harness().await;
         let body = serde_json::json!({
             "enabled": false,
             "providers": [],
             "public_origin": "https://bookclerk.example.com/"
         });
-        let (status, json) = put_oidc_json(app.clone(), &cookie, &body).await;
+        let (status, json) = put_oidc_json(app.clone(), &body).await;
         assert_eq!(status, StatusCode::OK, "{json:?}");
         assert_eq!(json["public_origin"], "https://bookclerk.example.com");
         assert_eq!(json["issuer_url"], "https://bookclerk.example.com");
@@ -2989,7 +2958,7 @@ mod http_tests {
                     .method("PUT")
                     .uri("/api/auth/oidc/config")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .header(axum::http::header::COOKIE, &cookie)
+                    .header(axum::http::header::AUTHORIZATION, "Bearer op-token-oidc")
                     .header(axum::http::header::ORIGIN, "https://bookclerk.example.com")
                     .body(Body::from(clear.to_string()))
                     .unwrap(),
@@ -3013,15 +2982,13 @@ mod http_tests {
 
     #[tokio::test]
     async fn oidc_config_put_rejects_invalid_public_origin() {
-        let (_state, app, library, _dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
+        let (_state, app, _library, _dir, _dek) = persist_harness().await;
         let body = serde_json::json!({
             "enabled": false,
             "providers": [],
             "public_origin": "https://bookclerk.example.com/library"
         });
-        let (status, json) = put_oidc_json(app, &cookie, &body).await;
+        let (status, json) = put_oidc_json(app, &body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{json:?}");
         assert_eq!(json["error"], "oidc_config");
     }
@@ -3050,8 +3017,6 @@ mod http_tests {
     async fn oidc_config_put_rolls_back_after_first_secret_mutation() {
         let (_lock, _failpoint) = acquire_secret_failpoint().await;
         let (state, app, library, dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
         let seed = serde_json::json!({
             "enabled": true,
             "providers": [{
@@ -3064,7 +3029,7 @@ mod http_tests {
                 "default_role": "member"
             }]
         });
-        let (status, json) = put_oidc_json(app.clone(), &cookie, &seed).await;
+        let (status, json) = put_oidc_json(app.clone(), &seed).await;
         assert_eq!(status, StatusCode::OK, "{json:?}");
         assert_eq!(
             oidc_live_secret_plaintext(&state, &library, "github")
@@ -3097,7 +3062,7 @@ mod http_tests {
                 }
             ]
         });
-        let (status, json) = put_oidc_json(app, &cookie, &update).await;
+        let (status, json) = put_oidc_json(app, &update).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{json:?}");
         assert!(
             json["message"]
@@ -3134,8 +3099,6 @@ mod http_tests {
     async fn oidc_config_put_rolls_back_when_secret_delete_fails() {
         let (_lock, _failpoint) = acquire_secret_failpoint().await;
         let (state, app, library, dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
         let seed = serde_json::json!({
             "enabled": true,
             "providers": [{
@@ -3148,7 +3111,7 @@ mod http_tests {
                 "default_role": "member"
             }]
         });
-        let (status, json) = put_oidc_json(app.clone(), &cookie, &seed).await;
+        let (status, json) = put_oidc_json(app.clone(), &seed).await;
         assert_eq!(status, StatusCode::OK, "{json:?}");
 
         SECRET_MUTATION_SUCCESSES_REMAINING.store(-1, std::sync::atomic::Ordering::SeqCst);
@@ -3157,7 +3120,7 @@ mod http_tests {
             "enabled": false,
             "providers": []
         });
-        let (status, json) = put_oidc_json(app, &cookie, &clear).await;
+        let (status, json) = put_oidc_json(app, &clear).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{json:?}");
         assert!(
             json["message"]
@@ -3185,8 +3148,6 @@ mod http_tests {
     async fn oidc_config_put_fails_after_secret_mutation_at_config_write() {
         let (_lock, _failpoint) = acquire_secret_failpoint().await;
         let (state, app, library, dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
         let seed = serde_json::json!({
             "enabled": true,
             "providers": [{
@@ -3199,7 +3160,7 @@ mod http_tests {
                 "default_role": "member"
             }]
         });
-        let (status, json) = put_oidc_json(app.clone(), &cookie, &seed).await;
+        let (status, json) = put_oidc_json(app.clone(), &seed).await;
         assert_eq!(status, StatusCode::OK, "{json:?}");
         let published_gen = state.config.read().await.auth.oidc.secret_generation;
         assert!(published_gen > 0);
@@ -3217,7 +3178,7 @@ mod http_tests {
                 "default_role": "member"
             }]
         });
-        let (status, json) = put_oidc_json(app, &cookie, &update).await;
+        let (status, json) = put_oidc_json(app, &update).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{json:?}");
         assert!(
             json["message"]
@@ -3254,8 +3215,6 @@ mod http_tests {
     async fn oidc_config_put_serializes_concurrent_revisions() {
         let (_lock, _failpoint) = acquire_secret_failpoint().await;
         let (state, app, library, _dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
         let body_a = serde_json::json!({
             "enabled": true,
             "providers": [{
@@ -3282,10 +3241,8 @@ mod http_tests {
         });
         let app_a = app.clone();
         let app_b = app;
-        let cookie_a = cookie.clone();
-        let cookie_b = cookie;
-        let task_a = tokio::spawn(async move { put_oidc_json(app_a, &cookie_a, &body_a).await });
-        let task_b = tokio::spawn(async move { put_oidc_json(app_b, &cookie_b, &body_b).await });
+        let task_a = tokio::spawn(async move { put_oidc_json(app_a, &body_a).await });
+        let task_b = tokio::spawn(async move { put_oidc_json(app_b, &body_b).await });
         let (status_a, json_a) = task_a.await.expect("put a");
         let (status_b, json_b) = task_b.await.expect("put b");
         assert_eq!(status_a, StatusCode::OK, "{json_a:?}");
@@ -3322,8 +3279,6 @@ mod http_tests {
     #[tokio::test]
     async fn settings_patch_and_oidc_put_keep_resolvable_secrets() {
         let (state, app, library, _dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
         let seed = serde_json::json!({
             "enabled": true,
             "providers": [{
@@ -3336,12 +3291,11 @@ mod http_tests {
                 "default_role": "member"
             }]
         });
-        let (status, json) = put_oidc_json(app.clone(), &cookie, &seed).await;
+        let (status, json) = put_oidc_json(app.clone(), &seed).await;
         assert_eq!(status, StatusCode::OK, "{json:?}");
 
         let patch_app = app.clone();
         let oidc_app = app;
-        let cookie_oidc = cookie;
         let patch_task = tokio::spawn(async move {
             patch_app
                 .oneshot(
@@ -3362,7 +3316,6 @@ mod http_tests {
         let oidc_task = tokio::spawn(async move {
             put_oidc_json(
                 oidc_app,
-                &cookie_oidc,
                 &serde_json::json!({
                     "enabled": true,
                     "providers": [{
@@ -3398,8 +3351,6 @@ mod http_tests {
     #[tokio::test]
     async fn migrate_apply_and_oidc_put_keep_resolvable_secrets() {
         let (state, app, library, _dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
         let seed = serde_json::json!({
             "enabled": true,
             "providers": [{
@@ -3412,21 +3363,19 @@ mod http_tests {
                 "default_role": "member"
             }]
         });
-        let (status, json) = put_oidc_json(app.clone(), &cookie, &seed).await;
+        let (status, json) = put_oidc_json(app.clone(), &seed).await;
         assert_eq!(status, StatusCode::OK, "{json:?}");
 
         let plugin = state.config.read().await.database.plugin.clone();
         let apply_state = state.clone();
         let apply_plugin = plugin.clone();
         let oidc_app = app;
-        let cookie_oidc = cookie;
         let apply_task = tokio::spawn(async move {
             crate::api::apply_migrated_database_plugin(&apply_state, apply_plugin).await
         });
         let oidc_task = tokio::spawn(async move {
             put_oidc_json(
                 oidc_app,
-                &cookie_oidc,
                 &serde_json::json!({
                     "enabled": true,
                     "providers": [{
@@ -3460,9 +3409,7 @@ mod http_tests {
 
     #[tokio::test]
     async fn oidc_config_put_rejects_operator_role() {
-        let (_state, app, library, _dir, _dek) = persist_harness().await;
-        let cookie =
-            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
+        let (_state, app, _library, _dir, _dek) = persist_harness().await;
         let body = serde_json::json!({
             "enabled": true,
             "providers": [{
@@ -3480,7 +3427,7 @@ mod http_tests {
                     .method("PUT")
                     .uri("/api/auth/oidc/config")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .header(axum::http::header::COOKIE, cookie)
+                    .header(axum::http::header::AUTHORIZATION, "Bearer op-token-oidc")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )
@@ -3682,37 +3629,12 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn oidc_config_put_stale_owner_requires_password() {
-        use bookclerk_library::hash_token;
-        use chrono::{Duration as ChronoDuration, Utc};
-        use uuid::Uuid;
-
-        let (_state, app, library, _dir, _dek) = persist_harness().await;
-        let owner = library
-            .create_user(bookclerk_library::UserRole::Owner, Some("Owner"), None)
-            .await
-            .unwrap();
-        let identity = library
-            .ensure_local_portal_identity(owner.id, Some("Owner"))
-            .await
-            .unwrap();
-        let raw = Uuid::new_v4().to_string();
-        library
-            .insert_portal_session(
-                &hash_token(&raw),
-                identity.id,
-                Utc::now() + ChronoDuration::hours(12),
-            )
-            .await
-            .unwrap();
-        library
-            .set_portal_session_created_at(
-                &hash_token(&raw),
-                Utc::now() - ChronoDuration::minutes(20),
-            )
-            .await
-            .unwrap();
-        let cookie = format!("{}={raw}", crate::auth::PORTAL_SESSION_COOKIE);
+    async fn oidc_config_put_refuses_a_fresh_owner_session() {
+        let (state, app, library, _dir, _dek) = persist_harness().await;
+        // A just-minted Owner session used to pass the step-up check; the
+        // operator-only layer refuses it before the handler runs.
+        let cookie =
+            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
         let res = app
             .oneshot(
                 Request::builder()
@@ -3720,12 +3642,13 @@ mod http_tests {
                     .uri("/api/auth/oidc/config")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::COOKIE, cookie)
-                    .body(Body::from(r#"{"enabled":false,"providers":[]}"#))
+                    .body(Body::from(r#"{"enabled":true,"providers":[]}"#))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert!(!state.config.read().await.auth.oidc.enabled);
     }
 
     #[tokio::test]

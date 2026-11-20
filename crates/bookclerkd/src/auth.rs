@@ -1600,8 +1600,9 @@ pub async fn require_operator_auth(
 
 /// Operator token/session **or** an Owner portal session.
 ///
-/// Used for identity-broker (`[auth.oidc]`) configuration so Owners can manage
-/// SSO without elevating. Administrators cannot change IdP settings.
+/// Used for reading the sign-in settings (`[auth.oidc]`, OIDC clients, the
+/// second-factor policy), which Owners may see without elevating; changing
+/// them needs the operator. Administrators can't see them.
 /// Impersonating an Owner is treated as that Owner; impersonating anyone else
 /// is refused.
 pub async fn require_operator_or_owner_auth(
@@ -4787,61 +4788,8 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     }
 }
 
-/// How long a portal session counts as "recent" for authenticator / IdP changes.
+/// How long a portal session counts as "recent" for a user's own authenticator changes.
 pub(crate) const RECENT_AUTH_WINDOW: ChronoDuration = ChronoDuration::minutes(15);
-
-/// Message for a failed [`require_operator_or_recent_owner`] check.
-///
-/// # Arguments
-///
-/// * `status` - The status the check returned.
-/// * `reauth` - The route's own wording for a 401 (the Owner must re-authenticate).
-///
-/// # Returns
-///
-/// `reauth` for a 401, a fixed note for a 500 (the current password could
-/// not be read or verified), a lockout note for a 429 (too many wrong
-/// passwords for the account) and `forbidden` for everything else.
-pub(crate) fn recent_owner_gate_message(status: StatusCode, reauth: &'static str) -> &'static str {
-    if status == StatusCode::UNAUTHORIZED {
-        reauth
-    } else if status == StatusCode::INTERNAL_SERVER_ERROR {
-        "the current password could not be checked"
-    } else if status == StatusCode::TOO_MANY_REQUESTS {
-        "too many wrong passwords for this account; try again later"
-    } else {
-        "forbidden"
-    }
-}
-
-/// Operator bearer/session (including elevated Owner) may skip step-up.
-///
-/// A non-elevated Owner portal session must have been minted within
-/// [`RECENT_AUTH_WINDOW`] or present a matching `current_password`.
-pub(crate) async fn require_operator_or_recent_owner(
-    state: &AppState,
-    headers: &HeaderMap,
-    current_password: Option<&str>,
-) -> Result<(), CallerRefusal> {
-    let auth = state.auth_snapshot().await;
-    if authorize_operator_bearer_only(&auth, headers) {
-        return Ok(());
-    }
-    if let Some(op) = resolve_operator_session(state, &auth, headers).await {
-        if op.impersonating_user_id.is_none() {
-            return Ok(());
-        }
-        // Impersonating: require the target Owner's portal reauth, not operator skip.
-    }
-    let library = state.library_snapshot().await;
-    let identity = require_portal_identity(&library, headers).await?;
-    let (role, _, user, _) = resolve_portal_caller_identity(&library, &identity).await;
-    if role != "owner" {
-        return Err(StatusCode::FORBIDDEN.into());
-    }
-    let user = user.ok_or(StatusCode::UNAUTHORIZED)?;
-    Ok(require_recent_portal_reauth(state, headers, user.id, current_password).await?)
-}
 
 /// Require a recently minted portal session or the user's current password.
 pub(crate) async fn require_recent_portal_reauth(
@@ -6314,18 +6262,6 @@ pub(crate) mod tests {
         assert!(results
             .iter()
             .any(|r| matches!(r, Ok(PasswordRecheck::Locked(_)))));
-    }
-
-    #[test]
-    fn recent_owner_gate_message_names_the_lockout() {
-        assert_eq!(
-            recent_owner_gate_message(StatusCode::TOO_MANY_REQUESTS, "reauth"),
-            "too many wrong passwords for this account; try again later"
-        );
-        assert_eq!(
-            recent_owner_gate_message(StatusCode::UNAUTHORIZED, "reauth"),
-            "reauth"
-        );
     }
 
     #[tokio::test]
