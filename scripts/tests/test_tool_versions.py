@@ -293,6 +293,37 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(tv.main(["apply", "nodejs", "27"]), 1)
 
 
+class PruneRustTests(unittest.TestCase):
+    """``prune-rust`` keeps only the pinned toolchain, whatever the image preinstalled."""
+
+    def test_older_image_listing(self) -> None:
+        # windows-2025-vs2026 20261103: the image's own stable plus the pin.
+        listing = (
+            "stable-x86_64-pc-windows-msvc\n"
+            "1.99.1-x86_64-pc-windows-msvc\n"
+            "1.100.0-x86_64-pc-windows-msvc (active, default)\n"
+        )
+        self.assertEqual(
+            tv.extra_toolchains(listing, "1.100.0"),
+            ["stable-x86_64-pc-windows-msvc", "1.99.1-x86_64-pc-windows-msvc"],
+        )
+
+    def test_only_the_pin(self) -> None:
+        self.assertEqual(tv.extra_toolchains("1.100.0-aarch64-apple-darwin (default)\n", "1.100.0"), [])
+
+    def test_a_prefix_of_the_pin_is_extra(self) -> None:
+        listing = "1.100.0-x86_64-unknown-linux-gnu\n1.100.01-x86_64-unknown-linux-gnu\n1.10.0-x86_64-unknown-linux-gnu\n"
+        self.assertEqual(
+            tv.extra_toolchains(listing, "1.100.0"),
+            ["1.100.01-x86_64-unknown-linux-gnu", "1.10.0-x86_64-unknown-linux-gnu"],
+        )
+
+    def test_missing_pin_is_refused(self) -> None:
+        for listing in ("", "stable-x86_64-pc-windows-msvc (default)\n", "1.99.1-x86_64-pc-windows-msvc\n"):
+            with self.subTest(listing=listing), self.assertRaises(tv.ToolVersionsError):
+                tv.extra_toolchains(listing, "1.100.0")
+
+
 class PinFileTests(unittest.TestCase):
     """``.tool-versions`` parsing, rendering and Dockerfile rewrites."""
 

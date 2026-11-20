@@ -139,6 +139,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "output_copies"
+path = "fuzz_targets/output_copies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "plain_fetch"
 path = "fuzz_targets/plain_fetch.rs"
 test = false
@@ -356,6 +363,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "member_controls_request"
+path = "fuzz_targets/member_controls_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "patron_scope_request"
 path = "fuzz_targets/patron_scope_request.rs"
 test = false
@@ -365,6 +379,13 @@ bench = false
 [[bin]]
 name = "work_split_request"
 path = "fuzz_targets/work_split_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "playback_request"
+path = "fuzz_targets/playback_request.rs"
 test = false
 doc = false
 bench = false

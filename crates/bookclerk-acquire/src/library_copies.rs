@@ -154,6 +154,15 @@ impl StoredFrom {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store.to_owned());
     }
 
+    /// Forgets the store named: the audio stored from now on is the title's
+    /// own store download.
+    pub(crate) fn clear(&self) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
     /// The store named, if any.
     pub(crate) fn get(&self) -> Option<String> {
         self.0
@@ -595,6 +604,38 @@ pub(crate) mod tests {
                 listing.product_id.to_string(),
             ));
             self.copy.lock().unwrap().take()
+        }
+    }
+
+    /// Hands out prepared copies, one per ask in order, then none.
+    pub(crate) struct QueuedCopies {
+        /// The copies still to hand out, the next first.
+        copies: Mutex<std::collections::VecDeque<MemoryCopy>>,
+        /// How many times a copy was asked for.
+        asked: AtomicUsize,
+    }
+
+    impl QueuedCopies {
+        /// Hands out `copies`, the first to the first ask.
+        pub(crate) fn of(copies: Vec<MemoryCopy>) -> Arc<Self> {
+            Arc::new(Self {
+                copies: Mutex::new(copies.into()),
+                asked: AtomicUsize::new(0),
+            })
+        }
+
+        /// How many times a copy was asked for.
+        pub(crate) fn asks(&self) -> usize {
+            self.asked.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LibraryCopies for QueuedCopies {
+        async fn copy_of(&self, _listing: LibraryCopyListing<'_>) -> Option<Box<dyn LibraryCopy>> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            let next = self.copies.lock().unwrap().pop_front()?;
+            Some(Box::new(next))
         }
     }
 

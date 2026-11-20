@@ -87,7 +87,7 @@ A branch's node appears among the nodes (`bookclerk nodes list`,
 `kind = branch`), owned by the user who signed in, or the invite's user.
 **Trust follows that user's role**:
 
-- A Member's or Host's branch receives only jobs whose store accounts
+- A Member's branch receives only jobs whose store accounts
   belong to that user.
 - An Administrator's or Owner's branch may receive any job, but takes
   only that user's own work unless the branch's operator turns on
@@ -206,7 +206,23 @@ The exchange runs in five steps:
    `node_credentials` and a receipt.
 5. **Done.** The daemon checks that the answer names the library it read.
    It seals both private keys into its `encrypted_secrets`, records the
-   link in `library_links`, and starts the link's client.
+   link in `library_links`, and starts the link's client. A library card
+   this install held for the library is signed out, as with
+   `POST /api/config/clerk/sign-out`: the branch replaces it. The answer's
+   `replaced_card.card_removed` says whether the card is gone here (if not,
+   it stays under Library cards and the branch join still stands), and
+   `replaced_card.library_signed_out` whether the library ended the card's
+   session too. An invite join does the same.
+
+`POST /api/config/join/start` `{ from_card }` (a library id instead of
+`address` and `fingerprint`) joins a library this install holds an active
+card for. The address and pinned certificate come from the card, and the
+branch name defaults to the card's name. The library must still answer
+with the same library id (409 `origin_mismatch`) and certificate (409
+`fingerprint_unconfirmed`). It can't be a shared branch join (400
+`invalid_request`), and a library with no such card answers 404
+`not_found`. In the web app this is **Make this server a branch** beside
+a card in Settings → Library → **Library cards**.
 
 A clerk's library card uses the same authorization server with a
 second built-in public client, `bookclerk-clerk` (scope
@@ -248,16 +264,25 @@ accounts and which of them would travel.
   as it is, and one
   that came without a secret is not added. The join's answer counts what
   was added, already there, taken, or not kept.
-- **The branch operator's rule.** Each operator decides per member
-  whether they may connect store accounts there (**Settings → User
-  Management**, `PATCH /api/users/{id}` with `may_connect_accounts`). The
-  rule is on by default, and nobody can change their own. A member it is off for adds nothing from a join,
+- **The branch operator's rule.** Each operator decides whether members
+  may connect store accounts there with the **Link store accounts**
+  member control, for every member or one (**Settings → User
+  Management**, `PUT /api/users/default-controls` and
+  `PUT /api/users/{id}/controls`; see
+  [Sharing](../guide/sharing.md#limit-what-a-patron-may-do)). It is on
+  by default and nobody can change their own. An Owner or the operator
+  can turn it off for one Administrator too; Owners are never limited. A member it is off for adds nothing from a join,
   and the connect routes answer `403`. A sign-in that finishes after the
-  rule was turned off is not linked, and an account it newly stored (or
-  found revoked) is revoked again and its secrets deleted. A join already adding accounts when
-  the rule is turned off (or the member is disabled) stops: each account
-  is added in its own batch that checks the rule again, and the ones not
-  yet added count as not kept.
+  control was turned off is not linked, and an account it newly stored
+  (or found revoked) is revoked again and its secrets deleted. That
+  cleanup, an allowed sign-in's link and a revoke of the same store
+  account each take the account's write lock (`bookclerk_slots`) first,
+  so an allowed sign-in of the same account either links before the
+  cleanup (which then keeps it) or finds its credentials gone and asks the
+  member to sign in again. A join already adding accounts when the control
+  is turned off (or the member is disabled) stops: each account is added
+  in its own batch that checks the member's controls again, and the ones
+  not yet added count as not kept.
 
 ### Adding connections later, and disconnecting everywhere
 
@@ -717,10 +742,17 @@ node would be trusted to claim.
 Files stream **through** the owner to its destinations. Nothing is staged
 on a shared node's disk.
 
+Each title goes only to the destinations whose filter takes it (see
+[Choosing which books a destination takes](output.md#choosing-which-books-a-destination-takes)).
+The owner's `acquire.targets` answer lists, for each title, the ids of
+those destinations in `destinations`. An empty list means none takes the
+title, and the host fails it without fetching anything.
+
 1. **Grant.** The host sends `upload.grant` over the node socket, with
    the title's holding id from the plan and a manifest. The manifest lists each distinct file content once (`size`,
    `sha256`, `content_type`), with a list of **copies**, one
-   `{destination, key}` per owner destination. An audio file the host
+   `{destination, key}` per destination the title goes to, and no
+   other. An audio file the host
    could probe also carries `probe` (`bitrate_kbps`, `lossless`,
    `source_store`), which the owner keeps on the file's row once the
    upload commits (see [What a stored file's row
@@ -730,7 +762,11 @@ on a shared node's disk.
 2. **Send.** The host sends
    `PUT /api/node/v1/uploads/{upload_id}/files/{n}` per file, with
    `Authorization: Bookclerk-Upload <token>`. The owner tees the body,
-   chunk by chunk, into every destination under that destination's key.
+   chunk by chunk, into each of those destinations under that
+   destination's key. If the title's destinations change before the
+   commit (one is deployed or undeployed, or a filter is edited), the
+   upload is refused with `destinations_changed` and the title fails on
+   the host.
    It checks the size and SHA-256 as it streams, and re-checks the job's
    fence about once a second.
 3. **Commit.** The host sends `POST /api/node/v1/uploads/{upload_id}/commit`.
@@ -839,6 +875,16 @@ library it joined, in turn, for the copy of that listing.
   than the acquire's scratch budget, or holds audio the media worker
   can't read, the branch removes what it downloaded and fetches from the
   store.
+- **Audio that doesn't package: the store.** The copy is checked by its
+  tags before it is taken, so a copy whose tags read but whose audio
+  doesn't decode fails only when the output repackages or re-encodes it.
+  The branch then removes the copy and fetches the title from its store
+  (again, for a copy from another store that replaced the download) and
+  stores the copy that failed, and every copy after it, from that
+  download. Nothing of a copy reaches a destination before its audio is
+  packaged, so no destination is left with the library's broken audio;
+  copies already stored keep the library's audio, which was recorded as
+  taken before anything was stored.
 
 Only the audio, the cover and the companion PDF are taken. The branch
 writes its own sidecars (`.cue`, chapter JSON). The PDF is taken only
@@ -900,7 +946,7 @@ bookclerk plugins deploy <instance_id> --node <node_id>
 node, or handing it to the scheduler (`--replicas`), is refused.
 
 Uploads reach every destination deployed on the shared node that granted
-them, node-local ones included.
+them whose filter takes the title, node-local ones included.
 
 ## Branches of branches
 
@@ -1229,6 +1275,11 @@ A revoked branch deletes the library's plugin state the same way.
 > If the library can't be reached within 10 seconds, the branch leaves
 > anyway and says the library wasn't told. Revoke the node there
 > (**Settings → Nodes** or `bookclerk nodes revoke <node_id>`).
+
+To keep a library card instead, choose **Use a library card instead**
+beside the library. The branch is left only once the library hands over
+the card (see
+[Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).
 
 Joining again needs a new sign-in or invite. Files of books the branch
 shared stay in the library, marked as from a branch that left (see

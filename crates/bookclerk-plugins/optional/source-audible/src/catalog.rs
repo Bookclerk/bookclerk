@@ -3,10 +3,10 @@
 //! Uses [`bookclerk_audible_catalog`] public catalog HTTP — no account required.
 
 use bookclerk_audible_catalog::{
-    is_valid_asin, normalize_region, public_http_client, region_tld, search_catalog_by_genre_name,
-    search_catalog_by_narrator, search_catalog_by_series_asin, search_catalog_products,
-    search_catalog_products_paged, search_catalog_storefront, search_similar_products,
-    CatalogProduct,
+    catalog_origin, fetch_products_by_asins, is_valid_asin, normalize_region, public_http_client,
+    region_tld, search_catalog_by_genre_name, search_catalog_by_narrator,
+    search_catalog_by_series_asin, search_catalog_products, search_catalog_products_paged,
+    search_catalog_storefront, search_similar_products, CatalogProduct,
 };
 use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_storefront::{
@@ -192,6 +192,66 @@ fn seed_audible_asin(seed: &ExpandSeed) -> Option<&str> {
         })
 }
 
+/// The seed's top-level genres as Audible files it, looked up by its ASIN
+/// in the catalog at `origin`; empty when it has no ASIN or the lookup
+/// fails.
+async fn seed_genre_roots(
+    http: &bookclerk_plugin_sdk::http::Client,
+    origin: &str,
+    seed: &ExpandSeed,
+) -> Vec<String> {
+    let Some(asin) = seed_audible_asin(seed) else {
+        return Vec::new();
+    };
+    match fetch_products_by_asins(http, origin, &[asin]).await {
+        Ok(products) => products
+            .into_iter()
+            .find(|p| p.asin.eq_ignore_ascii_case(asin))
+            .map(|p| p.genre_roots)
+            .unwrap_or_default(),
+        Err(err) => {
+            tracing::debug!(asin, error = %err, "audible seed genre lookup failed");
+            Vec::new()
+        }
+    }
+}
+
+/// More titles read by `narrator`, kept only when a title shares a
+/// top-level genre with `seed`: narrators also record children's books,
+/// and a voice in common does not make a thriller's listener want *Llama
+/// Llama Red Pajama*. A seed whose genres are unknown (looked up in the
+/// catalog at `origin`) gets none, without searching.
+///
+/// # Errors
+///
+/// Returns the narrator search's error.
+async fn narrator_matches(
+    http: &bookclerk_plugin_sdk::http::Client,
+    region: &str,
+    origin: &str,
+    seed: &ExpandSeed,
+    narrator: &str,
+) -> bookclerk_audible_catalog::Result<Vec<CatalogProduct>> {
+    let roots = seed_genre_roots(http, origin, seed).await;
+    if roots.is_empty() {
+        return Ok(Vec::new());
+    }
+    let products = search_catalog_by_narrator(http, region, narrator).await?;
+    Ok(products
+        .into_iter()
+        .filter(|p| shares_genre_root(&p.genre_roots, &roots))
+        .collect())
+}
+
+/// Whether a title filed under `roots` shares a top-level genre with a
+/// seed filed under `seed_roots` (names compared without case). A title
+/// with no genres shares none.
+fn shares_genre_root(roots: &[String], seed_roots: &[String]) -> bool {
+    roots
+        .iter()
+        .any(|r| seed_roots.iter().any(|s| s.eq_ignore_ascii_case(r)))
+}
+
 /// Origin shown for a title Audible lists as similar to `seed_title`.
 fn similar_origin(seed_title: &str) -> String {
     format!("audible related titles (“{seed_title}”)")
@@ -306,10 +366,11 @@ pub async fn expand_candidates(
         }
     }
 
-    // Narrator search when narrators present (noisier; still useful for Audible seeds).
+    // More read by the same narrator, in the seed's genres only.
     if by_asin.len() < limit {
         if let Some(narrator) = primary_person(seed.narrators.as_deref()) {
-            match search_catalog_by_narrator(&http, &region, narrator).await {
+            let origin = catalog_origin(&region);
+            match narrator_matches(&http, &region, &origin, seed, narrator).await {
                 Ok(products) => {
                     for p in products {
                         push(
@@ -1033,6 +1094,7 @@ mod tests {
             length_minutes: None,
             published_at: None,
             categories: None,
+            genre_roots: Vec::new(),
             language: None,
             price_cents: None,
             currency: None,
@@ -1065,6 +1127,21 @@ mod tests {
         assert_eq!(records[0].asin().as_deref(), Some("B0D1KV49FL"));
         assert_eq!(records[0].narrators().as_deref(), Some("Joe Jameson"));
         assert_eq!(records[0].origin, "purchase search");
+    }
+
+    /// A narrator's other title is kept only when it shares a top-level
+    /// genre with the seed: a thriller narrator's picture book is not.
+    #[test]
+    fn narrator_titles_need_a_genre_root_in_common() {
+        let roots = |names: &[&str]| names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>();
+        let seed = roots(&["Mystery, Thriller & Suspense", "Literature & Fiction"]);
+        assert!(shares_genre_root(&roots(&["literature & fiction"]), &seed));
+        assert!(!shares_genre_root(
+            &roots(&["Children's Audiobooks"]),
+            &seed
+        ));
+        assert!(!shares_genre_root(&[], &seed));
+        assert!(!shares_genre_root(&roots(&["Literature & Fiction"]), &[]));
     }
 
     #[test]
@@ -1190,6 +1267,88 @@ mod tests {
             "list_price": { "base": 20.0, "currency_code": "USD" },
             "lowest_price": { "base": 12.0, "currency_code": "USD", "type": "member" }
         }})
+    }
+
+    /// A seed with an ASIN (`narrators` set), as Discover hands one over.
+    fn narrated_seed(asin: Option<&str>) -> ExpandSeed {
+        ExpandSeed {
+            source: "audible".into(),
+            product_id: String::new(),
+            title: "The Silent Patient".into(),
+            authors: None,
+            narrators: Some("Jack Hawkins".into()),
+            series: None,
+            series_asin: None,
+            asin: asin.map(Into::into),
+            isbn: None,
+            region: "us".into(),
+        }
+    }
+
+    /// The seed's genres come from the catalog's ladders for its ASIN.
+    #[tokio::test]
+    async fn seed_genres_come_from_its_catalog_ladders() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(query_param("asins", "B07D8QRT1W"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "products": [
+                    { "asin": "B000000009" },
+                    { "asin": "b07d8qrt1w", "category_ladders": [
+                        { "ladder": [{ "name": "Mystery, Thriller & Suspense" }] }
+                    ]}
+                ]})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = public_http_client().unwrap();
+        let roots =
+            seed_genre_roots(&http, &server.uri(), &narrated_seed(Some("B07D8QRT1W"))).await;
+        assert_eq!(roots, vec!["Mystery, Thriller & Suspense".to_string()]);
+    }
+
+    /// Without known genres the narrator step answers nothing and never
+    /// searches: no ASIN, a failed lookup, or a title filed under none.
+    #[tokio::test]
+    async fn a_seed_without_genres_gets_no_narrator_titles() {
+        let http = public_http_client().unwrap();
+        let unused = MockServer::start().await;
+        let none = narrator_matches(
+            &http,
+            "us",
+            &unused.uri(),
+            &narrated_seed(None),
+            "Jack Hawkins",
+        )
+        .await
+        .unwrap();
+        assert!(none.is_empty());
+        assert!(unused.received_requests().await.unwrap().is_empty());
+
+        let failing = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&failing)
+            .await;
+        let seed = narrated_seed(Some("B07D8QRT1W"));
+        let failed = narrator_matches(&http, "us", &failing.uri(), &seed, "Jack Hawkins")
+            .await
+            .unwrap();
+        assert!(failed.is_empty());
+
+        let unfiled = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "products": [{ "asin": "B07D8QRT1W" }] })),
+            )
+            .mount(&unfiled)
+            .await;
+        let found = narrator_matches(&http, "us", &unfiled.uri(), &seed, "Jack Hawkins")
+            .await
+            .unwrap();
+        assert!(found.is_empty());
     }
 
     #[tokio::test]

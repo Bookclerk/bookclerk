@@ -18,13 +18,16 @@
 //!
 //! A file is never staged on the owner. Its body is read once and teed,
 //! chunk by chunk through bounded channels, into
-//! [`StorageBackend::put_stream`] of every output destination deployed on
-//! this node, each under that destination's own key from the manifest (the
-//! host named the files with each destination's options from
-//! `acquire.targets`, as a local acquire would). Files are accepted only
-//! while this node has exactly the destinations it had at grant (otherwise
-//! 422 `destinations_changed`, the upload is aborted, and the title fails
-//! on the host); a title's commit re-checks the set the same way. While a
+//! [`StorageBackend::put_stream`] of every destination the upload was
+//! granted for (a title's target set: the destinations deployed on this
+//! node whose filter takes it; every one for a catalog upload), each under
+//! that destination's own key from the manifest (the host named the files
+//! with each destination's options from `acquire.targets`, as a local
+//! acquire would). Files are accepted only while the title's target set
+//! here is exactly the one granted, so no destination was deployed or
+//! undeployed and no filter changed meanwhile (otherwise 422
+//! `destinations_changed`, the upload is aborted, and the title fails on
+//! the host); a title's commit re-checks the set the same way. While a
 //! file streams, its size and SHA-256 are checked against the manifest
 //! and the job's fence is re-checked about once a second. Each destination
 //! sees the end of the stream only after the whole body matched, the fence
@@ -62,6 +65,7 @@
 //! The token never reaches a log: request tracing logs method and path
 //! only, and these handlers log upload and job ids.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -74,12 +78,13 @@ use axum::extract::{Path, Request, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use bookclerk_config::{DestinationFilter, PlacementFacts};
 use bookclerk_library::control_plane::{
-    abort_job_uploads, abort_upload, authorize_upload, commit_upload, load_or_create_node_identity,
-    load_upload, record_upload_file, upload_fence_live, upload_owns_key, JobClaimLimits,
-    UploadCommit, UploadFinish, UploadSession,
+    abort_job_uploads, abort_upload, authorize_upload, commit_upload, destination_filters,
+    load_or_create_node_identity, load_upload, record_upload_file, upload_fence_live,
+    upload_owns_key, JobClaimLimits, UploadCommit, UploadFinish, UploadSession,
 };
-use bookclerk_library::LibraryStore;
+use bookclerk_library::{AcquireTitle, LibraryStore};
 use bookclerk_node_proto::{UploadAnswer, UploadCommitRequest, UPLOAD_AUTH_SCHEME};
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{ObjectMeta, StorageBackend};
@@ -227,6 +232,104 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
 /// The ids of `destinations`, in order (the primary first).
 pub(crate) fn destination_ids(destinations: &[OwnerDestination]) -> Vec<String> {
     destinations.iter().map(|d| d.id.clone()).collect()
+}
+
+/// The destinations an upload was granted for, taken from `destinations`
+/// (this node's deployed ones) in the grant's order, to delete what a
+/// failed file wrote on them.
+///
+/// # Arguments
+///
+/// * `destinations` - This node's deployed destinations now.
+/// * `granted` - The ids the upload was granted for
+///   (`UploadSession::destinations`).
+///
+/// # Returns
+///
+/// `None` when one of `granted` is no longer deployed here (or is named
+/// twice).
+pub(crate) fn granted_destinations(
+    destinations: Vec<OwnerDestination>,
+    granted: &[String],
+) -> Option<Vec<OwnerDestination>> {
+    let mut by_id: std::collections::HashMap<String, OwnerDestination> = destinations
+        .into_iter()
+        .map(|destination| (destination.id.clone(), destination))
+        .collect();
+    granted.iter().map(|id| by_id.remove(id)).collect()
+}
+
+/// The stored filters of `destinations`, by destination id
+/// ([`destination_filters`]); a destination without one takes every title.
+///
+/// # Errors
+///
+/// Returns the read or parse error; the caller fails closed on it rather
+/// than writing where a filter said not to.
+pub(crate) async fn owner_filters(
+    library: &LibraryStore,
+    destinations: &[OwnerDestination],
+) -> bookclerk_library::Result<BTreeMap<String, DestinationFilter>> {
+    let ids = destination_ids(destinations);
+    destination_filters(library, ids.iter().map(String::as_str)).await
+}
+
+/// True when the destination `id` takes the title `facts` describes under
+/// `filters` (no stored filter takes every title).
+pub(crate) fn takes(
+    filters: &BTreeMap<String, DestinationFilter>,
+    id: &str,
+    facts: &PlacementFacts,
+) -> bool {
+    filters.get(id).is_none_or(|filter| filter.accepts(facts))
+}
+
+/// `destinations` narrowed to the title's target set: those whose filter
+/// takes `title`, in order (the primary first), as a local acquire of it
+/// would choose ([`crate::jobs::placement_facts`]).
+///
+/// # Errors
+///
+/// Returns the read error for the filters or the title's linked patrons.
+pub(crate) async fn title_target_set(
+    library: &LibraryStore,
+    destinations: Vec<OwnerDestination>,
+    title: &AcquireTitle,
+) -> bookclerk_library::Result<Vec<OwnerDestination>> {
+    let filters = owner_filters(library, &destinations).await?;
+    let facts = crate::jobs::placement_facts(library, title).await?;
+    Ok(destinations
+        .into_iter()
+        .filter(|destination| takes(&filters, &destination.id, &facts))
+        .collect())
+}
+
+/// The destinations `session` must write now: the target set of its title
+/// among `destinations`, or every one for a catalog upload or a title this
+/// node no longer has (whose grant scoped nothing). The upload proceeds
+/// only while these are exactly the ones it was granted for: a destination
+/// deployed or undeployed since, or a filter edited since, would leave a
+/// destination without the title once it is marked acquired, or write it
+/// where a filter says not to.
+///
+/// # Errors
+///
+/// Returns the read error for the title, its filters or its patrons.
+async fn session_target_set(
+    library: &LibraryStore,
+    destinations: Vec<OwnerDestination>,
+    session: &UploadSession,
+) -> bookclerk_library::Result<Vec<OwnerDestination>> {
+    if session.holding_id.is_empty() || session.is_catalog() {
+        return Ok(destinations);
+    }
+    match library
+        .acquire_title_of_holding(&session.holding_id)
+        .await?
+    {
+        Some(title) => title_target_set(library, destinations, &title).await,
+        None => Ok(destinations),
+    }
 }
 
 /// An answer with `status`.
@@ -1070,11 +1173,15 @@ async fn record_written(
             }
             // Aborted while this file streamed: its copies go too.
             tracing::warn!(upload_id = %session.upload_id, index, "the upload was aborted while a file streamed; deleting it");
-            match owner_destinations(state).await {
-                Ok(destinations) if destination_ids(&destinations) == ids => {
+            match owner_destinations(state)
+                .await
+                .ok()
+                .and_then(|destinations| granted_destinations(destinations, ids))
+            {
+                Some(destinations) => {
                     discard_file(library, &destinations, session, index).await;
                 }
-                _ => {
+                None => {
                     tracing::warn!(upload_id = %session.upload_id, index, "could not reopen this node's destinations to delete an aborted file")
                 }
             }
@@ -1085,11 +1192,15 @@ async fn record_written(
             // cleanup (it deletes only received files), so they go now;
             // a key owned by another writer meanwhile is left alone.
             tracing::warn!(upload_id = %session.upload_id, index, error = %err, "could not record an uploaded file; deleting it");
-            match owner_destinations(state).await {
-                Ok(destinations) if destination_ids(&destinations) == ids => {
+            match owner_destinations(state)
+                .await
+                .ok()
+                .and_then(|destinations| granted_destinations(destinations, ids))
+            {
+                Some(destinations) => {
                     discard_file(library, &destinations, session, index).await;
                 }
-                _ => {
+                None => {
                     tracing::warn!(upload_id = %session.upload_id, index, "could not reopen this node's destinations to delete an unrecorded file")
                 }
             }
@@ -1192,10 +1303,18 @@ pub async fn put_file(
             return unavailable();
         }
     };
+    let destinations = match session_target_set(&library, destinations, &session).await {
+        Ok(destinations) => destinations,
+        Err(err) => {
+            tracing::warn!(upload_id = %session.upload_id, error = %err, "could not read the title's destination filters");
+            return unavailable();
+        }
+    };
     if destination_ids(&destinations) != session.destinations {
-        // The host named the files for the destinations it was planned
-        // with; writing them to a changed set would mis-name or skip one.
-        tracing::warn!(upload_id = %session.upload_id, "this shared node's destinations changed since the upload was granted; aborted");
+        // The host named the files for the destinations it was granted;
+        // writing them to a changed set would mis-name, skip one, or write
+        // where a filter now says not to.
+        tracing::warn!(upload_id = %session.upload_id, "the title's destinations on this shared node changed since the upload was granted; aborted");
         abort_and_discard(&state, &library, &session.upload_id).await;
         return refused("destinations_changed");
     }
@@ -1279,18 +1398,27 @@ pub async fn post_commit(
     let Ok(commit) = serde_json::from_slice::<UploadCommitRequest>(&bytes) else {
         return refused("invalid_body");
     };
-    // A title's files reached only the destinations it was granted for;
-    // one deployed or undeployed since its last file would be left without
-    // the title once it is marked acquired (later plans skip it). The
-    // closing upload carries no files, and an already committed title is
-    // answered as committed again.
+    // A title's files reached only the destinations it was granted for
+    // (its target set); one deployed or undeployed since its last file, or
+    // a filter edited since, would leave a destination without the title
+    // once it is marked acquired (later plans skip it), or holding it
+    // against its filter. The closing upload carries no files, and an
+    // already committed title is answered as committed again.
     if !session.holding_id.is_empty() && session.state != "committed" {
         match owner_destinations(&state).await {
-            Ok(destinations) if destination_ids(&destinations) == session.destinations => {}
             Ok(destinations) if !destinations.is_empty() => {
-                tracing::warn!(upload_id = %session.upload_id, "this shared node's destinations changed before the upload's commit; aborted");
-                abort_and_discard(&state, &library, &session.upload_id).await;
-                return refused("destinations_changed");
+                let target = match session_target_set(&library, destinations, &session).await {
+                    Ok(target) => target,
+                    Err(err) => {
+                        tracing::warn!(upload_id = %session.upload_id, error = %err, "could not read the title's destination filters");
+                        return unavailable();
+                    }
+                };
+                if destination_ids(&target) != session.destinations {
+                    tracing::warn!(upload_id = %session.upload_id, "the title's destinations on this shared node changed before the upload's commit; aborted");
+                    abort_and_discard(&state, &library, &session.upload_id).await;
+                    return refused("destinations_changed");
+                }
             }
             Ok(_) | Err(_) => {
                 tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this shared node");

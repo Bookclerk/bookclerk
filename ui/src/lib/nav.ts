@@ -21,24 +21,32 @@ export function showSettingsNav(_role?: AuthRole): boolean {
 }
 
 /**
- * Whether the library Status page is available to this role: operators,
- * Owners, Administrators, and Hosts (who see the nodes they own).
+ * Whether the library Status page is available: to operators, Owners and
+ * Administrators, and to a Member who owns a node (a branch they linked).
+ * Each sees the nodes they own.
  *
  * @param role - Effective session role.
+ * @param administersNodes - The session's `administers_nodes`; when the
+ *   server sent none, the role alone decides.
  * @returns True when Status appears in the nav and may be opened.
  */
-export function showStatusNav(role?: AuthRole): boolean {
-  return role === "operator" || role === "owner" || role === "administrator" || role === "host";
+export function showStatusNav(role?: AuthRole, administersNodes?: boolean): boolean {
+  if (administersNodes !== undefined) return administersNodes;
+  return role === "operator" || role === "owner" || role === "administrator";
 }
 
 /**
  * Primary nav links for an effective role (Settings always included).
  *
  * @param role - Effective session role; Status is added for node administrators.
+ * @param administersNodes - The session's `administers_nodes`, if sent.
  * @returns Nav link ids and labels.
  */
-export function navLinksForRole(role?: AuthRole): { id: AppView; label: string }[] {
+export function navLinksForRole(
+  role?: AuthRole,
+  administersNodes?: boolean,
+): { id: AppView; label: string }[] {
   const links = [...BASE_LINKS];
-  if (showStatusNav(role)) links.push({ id: "status", label: "Status" });
+  if (showStatusNav(role, administersNodes)) links.push({ id: "status", label: "Status" });
   return [...links, { id: "settings", label: "Settings" }];
 }

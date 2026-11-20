@@ -10,11 +10,20 @@
 //! The acquire job evaluates every destination's filter against the book's
 //! [`PlacementFacts`] before it starts, and fails at once when no
 //! destination takes the book.
+//!
+//! Two fields, `format` and `quality`, describe a copy of the book rather
+//! than the book (see [`crate::OutputCopy`]). The book rules (every other
+//! field) decide whether a destination takes the book at all; the copy
+//! rules then decide which of the library's copies it receives, by the same
+//! include and exclude logic among themselves. A destination with no copy
+//! rules receives every copy.
 
 use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::Serialize;
+
+use crate::output_copy::{CopyFormat, CopyQuality, OutputCopy};
 
 /// Most rules one destination filter may hold.
 pub const MAX_FILTER_RULES: usize = 64;
@@ -36,9 +45,32 @@ pub enum FilterField {
     /// What the book is: `book` or `podcast` (a podcast episode is a
     /// podcast).
     MediaKind,
+    /// A copy's format ([`CopyFormat`]: `m4b`, `mp3`, `mp3_chapters` or
+    /// `original`), compared without case.
+    Format,
+    /// A copy's quality ([`CopyQuality`]: `original`, `64k`, `v2-mono` and
+    /// so on), compared without case.
+    Quality,
 }
 
 impl FilterField {
+    /// Every field, in the order the names are documented.
+    pub const ALL: [Self; 6] = [
+        Self::Patron,
+        Self::Storefront,
+        Self::Account,
+        Self::MediaKind,
+        Self::Format,
+        Self::Quality,
+    ];
+
+    /// Reads a field by its wire name ([`Self::as_str`]), exactly; `None`
+    /// for any other text.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|field| field.as_str() == name)
+    }
+
     /// The field's name on the wire.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -47,6 +79,18 @@ impl FilterField {
             Self::Storefront => "storefront",
             Self::Account => "account",
             Self::MediaKind => "media_kind",
+            Self::Format => "format",
+            Self::Quality => "quality",
+        }
+    }
+
+    /// True for the fields that describe a copy of the book (`format`,
+    /// `quality`) rather than the book.
+    #[must_use]
+    pub fn is_copy_field(self) -> bool {
+        match self {
+            Self::Format | Self::Quality => true,
+            Self::Patron | Self::Storefront | Self::Account | Self::MediaKind => false,
         }
     }
 }
@@ -72,7 +116,8 @@ pub struct FilterRule {
     /// The field the rule matches.
     pub field: FilterField,
     /// The value: a user id for `patron`, `book` or `podcast` for
-    /// `media_kind`, otherwise 1 to 128 bytes of text.
+    /// `media_kind`, a copy format for `format`, a copy quality for
+    /// `quality`, otherwise 1 to 128 bytes of text.
     #[schema(example = "audible")]
     pub value: String,
     /// Include or exclude.
@@ -164,7 +209,8 @@ impl std::error::Error for FilterError {}
 
 impl FilterRule {
     /// True when the book described by `facts` has this rule's value in
-    /// the rule's field. The effect is not considered.
+    /// the rule's field. The effect is not considered, and a copy rule
+    /// (`format`, `quality`) never matches a book.
     #[must_use]
     pub fn matches(&self, facts: &PlacementFacts) -> bool {
         let value = self.value.trim();
@@ -175,8 +221,48 @@ impl FilterRule {
             FilterField::Storefront => facts.storefront.eq_ignore_ascii_case(value),
             FilterField::Account => facts.account == value,
             FilterField::MediaKind => PlacementMediaKind::parse(value) == Some(facts.media_kind),
+            FilterField::Format | FilterField::Quality => false,
         }
     }
+
+    /// True when `copy` has this rule's value in the rule's field. The
+    /// effect is not considered, and a book rule never matches a copy.
+    #[must_use]
+    pub fn matches_copy(&self, copy: &OutputCopy) -> bool {
+        let value = self.value.trim();
+        match self.field {
+            FilterField::Format => CopyFormat::parse(value) == Some(copy.format),
+            FilterField::Quality => CopyQuality::parse(value).as_ref() == Some(&copy.quality),
+            FilterField::Patron
+            | FilterField::Storefront
+            | FilterField::Account
+            | FilterField::MediaKind => false,
+        }
+    }
+}
+
+/// The include and exclude decision over `rules`: false when an exclude
+/// rule matches, else true when there is no include rule or one matches.
+fn decide<'a>(
+    rules: impl Iterator<Item = &'a FilterRule>,
+    matches: impl Fn(&FilterRule) -> bool,
+) -> bool {
+    let mut any_include = false;
+    let mut included = false;
+    for rule in rules {
+        match rule.effect {
+            FilterEffect::Exclude => {
+                if matches(rule) {
+                    return false;
+                }
+            }
+            FilterEffect::Include => {
+                any_include = true;
+                included = included || matches(rule);
+            }
+        }
+    }
+    !any_include || included
 }
 
 impl DestinationFilter {
@@ -186,27 +272,35 @@ impl DestinationFilter {
         self.rules.is_empty()
     }
 
-    /// True when the destination takes the book described by `facts`: no
+    /// True when the destination takes the book described by `facts`:
+    /// among the book rules (every rule but `format` and `quality`), no
     /// exclude rule matches, and either there is no include rule or one of
-    /// them matches.
+    /// them matches. Copy rules are not considered.
     #[must_use]
     pub fn accepts(&self, facts: &PlacementFacts) -> bool {
-        let mut any_include = false;
-        let mut included = false;
-        for rule in &self.rules {
-            match rule.effect {
-                FilterEffect::Exclude => {
-                    if rule.matches(facts) {
-                        return false;
-                    }
-                }
-                FilterEffect::Include => {
-                    any_include = true;
-                    included = included || rule.matches(facts);
-                }
-            }
-        }
-        !any_include || included
+        decide(
+            self.rules.iter().filter(|rule| !rule.field.is_copy_field()),
+            |rule| rule.matches(facts),
+        )
+    }
+
+    /// True when the destination receives `copy` of a book it takes: among
+    /// the copy rules (`format` and `quality`), no exclude rule matches,
+    /// and either there is no include rule or one of them matches. Book
+    /// rules are not considered; a filter with no copy rules receives every
+    /// copy.
+    #[must_use]
+    pub fn accepts_copy(&self, copy: &OutputCopy) -> bool {
+        decide(
+            self.rules.iter().filter(|rule| rule.field.is_copy_field()),
+            |rule| rule.matches_copy(copy),
+        )
+    }
+
+    /// True when the filter has a `format` or `quality` rule.
+    #[must_use]
+    pub fn has_copy_rules(&self) -> bool {
+        self.rules.iter().any(|rule| rule.field.is_copy_field())
     }
 
     /// Checks the filter's bounds.
@@ -216,8 +310,9 @@ impl DestinationFilter {
     /// Returns a [`FilterError`] for more than [`MAX_FILTER_RULES`] rules,
     /// an empty or over-long value, a value with a NUL, a `patron` value
     /// that is not a positive user id, a `media_kind` value other than
-    /// `book` or `podcast`, or a rule given twice (the same field, value and
-    /// effect, compared without case).
+    /// `book` or `podcast`, a `format` value that is not a copy format, a
+    /// `quality` value that is not a copy quality, or a rule given twice
+    /// (the same field, value and effect, compared without case).
     pub fn validate(&self) -> Result<(), FilterError> {
         if self.rules.len() > MAX_FILTER_RULES {
             return Err(FilterError(format!(
@@ -252,6 +347,21 @@ impl DestinationFilter {
                     if PlacementMediaKind::parse(value).is_none() {
                         return Err(FilterError(format!(
                             "a media_kind rule takes `book` or `podcast`, not `{value}`"
+                        )));
+                    }
+                }
+                FilterField::Format => {
+                    if CopyFormat::parse(value).is_none() {
+                        return Err(FilterError(format!(
+                            "a format rule takes m4b, mp3, mp3_chapters or original, not `{value}`"
+                        )));
+                    }
+                }
+                FilterField::Quality => {
+                    if CopyQuality::parse(value).is_none() {
+                        return Err(FilterError(format!(
+                            "a quality rule takes original, a bitrate such as 64k, or v0 to v9 \
+                             (each but original may end in -mono), not `{value}`"
                         )));
                     }
                 }
@@ -348,8 +458,17 @@ mod strict {
                     ("storefront", FilterField::Storefront),
                     ("account", FilterField::Account),
                     ("media_kind", FilterField::MediaKind),
+                    ("format", FilterField::Format),
+                    ("quality", FilterField::Quality),
                 ],
-                expected: &["patron", "storefront", "account", "media_kind"],
+                expected: &[
+                    "patron",
+                    "storefront",
+                    "account",
+                    "media_kind",
+                    "format",
+                    "quality",
+                ],
             })
         }
     }
@@ -521,6 +640,71 @@ mod tests {
         assert!(!filter.accepts(&audible_book()));
     }
 
+    /// A copy from its `format:quality` name.
+    fn copy(raw: &str) -> OutputCopy {
+        OutputCopy::parse(raw).unwrap()
+    }
+
+    #[test]
+    fn copy_rules_choose_copies_and_leave_the_book_alone() {
+        let filter = DestinationFilter {
+            rules: vec![
+                rule(FilterField::Storefront, "audible", FilterEffect::Include),
+                rule(FilterField::Format, "MP3", FilterEffect::Include),
+                rule(FilterField::Quality, "64K-mono", FilterEffect::Exclude),
+            ],
+        };
+        assert!(filter.has_copy_rules());
+        assert!(filter.accepts(&audible_book()), "copy rules ignored");
+        let libro = PlacementFacts {
+            storefront: "libro".into(),
+            ..audible_book()
+        };
+        assert!(!filter.accepts(&libro), "the book rule still decides");
+        assert!(filter.accepts_copy(&copy("mp3:128k")));
+        assert!(!filter.accepts_copy(&copy("mp3:64k-mono")), "exclude wins");
+        assert!(!filter.accepts_copy(&copy("m4b:original")), "not included");
+
+        let books_only = DestinationFilter {
+            rules: vec![rule(FilterField::MediaKind, "book", FilterEffect::Include)],
+        };
+        assert!(!books_only.has_copy_rules());
+        assert!(books_only.accepts_copy(&copy("m4b:original")));
+        assert!(books_only.accepts_copy(&copy("mp3_chapters:v2")));
+
+        let no_mp3 = DestinationFilter {
+            rules: vec![rule(FilterField::Format, "mp3", FilterEffect::Exclude)],
+        };
+        assert!(no_mp3.accepts(&audible_book()));
+        assert!(no_mp3.accepts_copy(&copy("mp3_chapters:v2")));
+        assert!(!no_mp3.accepts_copy(&copy("mp3:v2")));
+    }
+
+    #[test]
+    fn copy_fields_name_themselves() {
+        for field in FilterField::ALL {
+            assert_eq!(FilterField::parse(field.as_str()), Some(field));
+        }
+        assert_eq!(FilterField::parse("Format"), None);
+        // The strict reader's name table agrees with `ALL`.
+        for field in FilterField::ALL {
+            let read: FilterField =
+                serde_json::from_str(&format!("\"{}\"", field.as_str())).unwrap();
+            assert_eq!(read, field);
+            assert_eq!(
+                serde_json::to_string(&field).unwrap(),
+                format!("\"{}\"", field.as_str())
+            );
+        }
+        assert!(serde_json::from_str::<FilterField>("\"genre\"").is_err());
+        assert_eq!(FilterField::Format.as_str(), "format");
+        assert_eq!(FilterField::Quality.as_str(), "quality");
+        assert!(FilterField::Quality.is_copy_field());
+        assert!(!FilterField::Patron.is_copy_field());
+        let rule = rule(FilterField::Patron, "3", FilterEffect::Include);
+        assert!(!rule.matches_copy(&copy("m4b:original")));
+    }
+
     #[test]
     fn episodes_and_shows_are_podcasts() {
         assert_eq!(
@@ -575,6 +759,10 @@ mod tests {
             br#"{"rules":[{"field":"patron","value":"+1","effect":"include"}]}"#,
             br#"{"rules":[{"field":"patron","value":"me","effect":"include"}]}"#,
             br#"{"rules":[{"field":"media_kind","value":"ebook","effect":"include"}]}"#,
+            br#"{"rules":[{"field":"format","value":"flac","effect":"include"}]}"#,
+            br#"{"rules":[{"field":"quality","value":"loud","effect":"include"}]}"#,
+            br#"{"rules":[{"field":"quality","value":"064k","effect":"include"}]}"#,
+            br#"{"rules":[{"field":"quality","value":"64k","effect":"include"},{"field":"quality","value":"64K","effect":"include"}]}"#,
             br#"{"rules":[{"field":"account","value":"  ","effect":"include"}]}"#,
             br#"{"rules":[{"field":"account","value":"a","effect":"include"},{"field":"account","value":"A","effect":"include"}]}"#,
             br#"{"other":1}"#,

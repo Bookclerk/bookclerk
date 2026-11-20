@@ -668,20 +668,23 @@ collection deletes unreferenced objects.
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
-`operator_sessions`, `account_links`, `member_account_rules`, `patron_scopes`,
+`operator_sessions`, `account_links`, `patron_controls`, `patron_scopes`,
 `patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
+`playback_progress`, `playback_sessions`, `bookmarks`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
 `plugin_databases` and `bookclerk_schema_migrations`, plus the library
 model tables below.
 
-`member_account_rules` holds the operator's per-member rule on store
-accounts: a row with `may_connect = 0` stops that user from connecting
-store accounts here, and no row allows it. `patron_scopes` holds a
+`patron_controls` holds the member controls an Administrator set for one
+Member, as JSON naming only the controls that differ from the library's
+default (the `core.member_controls` configuration document); a Member
+with no row follows the default for every control (see
+[Sharing](../guide/sharing.md#limit-what-a-patron-may-do)). `patron_scopes` holds a
 Member's own patron scope as JSON; a Member with no row follows the
 library's default scope (see [Sharing](../guide/sharing.md#limit-what-a-patron-sees)). `patron_scope_keys`
 holds a scope's include and exclude values as rows, keyed by a hash of
@@ -696,7 +699,11 @@ library the last one applied from its keeper branch, on that branch the
 last one sent to each library, with a fingerprint of the sign-in sent
 (`observed`). It is removed with the account. When an
 account is taken back with no link left, its `node:` rows in both tables
-go too, so the library picks its next keeper afresh.
+go too, so the library picks its next keeper afresh. Writes that link a
+signed-in store account, take back a refused sign-in, or revoke a link
+are serialized per account by the `bookclerk_slots` row
+`store-account:<plugin key length>:<plugin key>:<account id>`, which is
+kept once created.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:
@@ -748,7 +755,12 @@ library holds as works, expressions and editions:
   was never probed (it is not audio, the media worker was unavailable, or
   it was stored before probes were recorded), and the other four columns
   are then empty too. See [What a stored file's row
-  says](media.md#what-a-stored-files-row-says).
+  says](media.md#what-a-stored-files-row-says). An audio file an acquire
+  writes also names the library copy it belongs to (`copy_format`, such
+  as `m4b` or `mp3`, and `copy_quality`, such as `original` or
+  `64k-mono`; see [Keeping several
+  copies](output.md#keeping-several-copies)); both are empty for
+  sidecars, the PDF and uploads.
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that
@@ -792,6 +804,13 @@ work and, when known, its edition) keep no title, authors, ASIN or ISBN of
 their own; readers take those from the work and the wish's store sources.
 A wish for a book the library does not hold creates a catalog work and
 edition with no listing or holding.
+
+The built-in player keeps its own rows, each pointing at an edition and
+removed with its user (see [Playback reference](playback.md)):
+`playback_progress` (one row per user and edition: position, reported
+runtime and finished flag), `playback_sessions` (one row per stretch of
+listening, kept as history after it closes) and `bookmarks` (places a
+user marked). `listening_progress` stays what other servers reported.
 
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at the key the

@@ -78,15 +78,17 @@ impl ContentSource for StubSource {
             return Err(SourceError::auth(refusal));
         }
         let account_id = opts.email.unwrap_or_else(|| "oauth-user".into());
+        // A login stores the account and its sign-in, as a real
+        // storefront's login does, before the portal links it.
+        scope
+            .upsert_account(&account_id, &opts.marketplace, None, true)
+            .await
+            .unwrap();
+        scope
+            .save_source_auth(&account_id, "auth", b"stub-login-token")
+            .await
+            .unwrap();
         if let Some((library, user_id)) = self.stops_member.as_ref().and_then(|s| s.get()) {
-            scope
-                .upsert_account(&account_id, &opts.marketplace, None, true)
-                .await
-                .unwrap();
-            scope
-                .save_source_auth(&account_id, "auth", b"stub-login-token")
-                .await
-                .unwrap();
             // `linked@…` stands for an account another login of the same
             // store account connected while this one ran.
             if account_id.starts_with("linked@") {
@@ -103,11 +105,7 @@ impl ContentSource for StubSource {
                     .await
                     .unwrap();
             }
-            bookclerk_library::control_plane::set_member_may_connect_accounts(
-                library, *user_id, false,
-            )
-            .await
-            .unwrap();
+            allow_linking(library, *user_id, false).await;
         }
         Ok(SourceAccount {
             account_id,
@@ -183,6 +181,13 @@ fn stores() -> Vec<Arc<dyn ContentSource>> {
 ///
 /// The router, the library, and the `Cookie` header value of a live session.
 async fn harness(sources: Vec<Arc<dyn ContentSource>>) -> (Router, LibraryStore, String) {
+    // Logins seal their sign-in; a test that reads it back configures (and
+    // holds) its own key first.
+    if bookclerk_library::require_master_key(None).is_err() {
+        let keys = tempfile::tempdir().unwrap();
+        bookclerk_library::configure_master_key(keys.path()).unwrap();
+        std::mem::forget(keys);
+    }
     let library = LibraryStore::from_connection(
         bookclerk_plugin_database_sqlite::open_memory()
             .await
@@ -536,9 +541,7 @@ async fn oauth_start_returns_the_login_url() {
 async fn a_member_the_operator_stopped_cannot_connect() {
     let (app, library, cookie) = harness(stores()).await;
     let member = library.list_users().await.unwrap()[0].id;
-    bookclerk_library::control_plane::set_member_may_connect_accounts(&library, member, false)
-        .await
-        .unwrap();
+    allow_linking(&library, member, false).await;
     let refused = json!({"error": "this library's administrator hasn't allowed you to connect store accounts here"});
     for (path, body) in [
         ("/sources/libro/login", Some(credentials())),
@@ -551,9 +554,7 @@ async fn a_member_the_operator_stopped_cannot_connect() {
     }
     assert!(library.list_accounts().await.unwrap().is_empty());
 
-    bookclerk_library::control_plane::set_member_may_connect_accounts(&library, member, true)
-        .await
-        .unwrap();
+    allow_linking(&library, member, true).await;
     let (status, _, answer) = call(
         &app,
         "POST",
@@ -617,9 +618,7 @@ async fn a_login_the_operator_stopped_midway_is_taken_back() {
     // The revoked row stays behind. A later login the operator stops the
     // same way finds it there, but the row was not in use, so the new
     // credential is taken back too.
-    bookclerk_library::control_plane::set_member_may_connect_accounts(&library, member, true)
-        .await
-        .unwrap();
+    allow_linking(&library, member, true).await;
     let (status, _, answer) = call(
         &app,
         "POST",
@@ -679,4 +678,18 @@ async fn a_refused_login_keeps_an_account_another_login_connected() {
         .await
         .unwrap()
         .is_some());
+}
+
+/// Overrides the "Link store accounts" member control of `user_id`.
+async fn allow_linking(library: &bookclerk_library::LibraryStore, user_id: i64, allowed: bool) {
+    bookclerk_library::control_plane::set_member_control_overrides(
+        library,
+        user_id,
+        bookclerk_library::control_plane::ControlOverrides {
+            link_accounts: Some(allowed),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 }

@@ -11,18 +11,30 @@ import {
   startClerkSignIn,
   type ClerkCardView,
 } from "@/lib/clerk";
-import { fingerprintGroups, JoinApiError, type LibraryInfoView } from "@/lib/join";
+import {
+  fingerprintGroups,
+  JoinApiError,
+  joinErrorMessage,
+  startJoin,
+  type LibraryInfoView,
+} from "@/lib/join";
 import { useLiveRefresh } from "@/lib/live";
 
 /** Props for {@link ClerkCardsPanel}. */
 export interface ClerkCardsPanelProps {
   /** Called when the session expired (a 401). */
   onSessionExpired: () => void;
+  /**
+   * Offer "Make this server a branch" on each card: joining a library is
+   * the operator's.
+   */
+  canJoin?: boolean;
 }
 
 /**
  * Settings → Library → Library cards: the libraries this server is signed
- * in to as a clerk, each with Sign out, and "Sign in with a library card".
+ * in to as a clerk, each with Sign out (and, for the operator, "Make this
+ * server a branch"), and "Sign in with a library card".
  *
  * A card shows the person's books in that library beside the books here,
  * without making this server a branch of it: nothing is downloaded and the
@@ -31,7 +43,7 @@ export interface ClerkCardsPanelProps {
  * @param props - See {@link ClerkCardsPanelProps}.
  * @returns The panel.
  */
-export function ClerkCardsPanel({ onSessionExpired }: ClerkCardsPanelProps) {
+export function ClerkCardsPanel({ onSessionExpired, canJoin = false }: ClerkCardsPanelProps) {
   const [cards, setCards] = useState<ClerkCardView[] | null>(null);
   const [defaultName, setDefaultName] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -113,6 +125,7 @@ export function ClerkCardsPanel({ onSessionExpired }: ClerkCardsPanelProps) {
             <CardRow
               key={card.library_id}
               card={card}
+              canJoin={canJoin}
               onSignedOut={(message) => {
                 setNotice(message);
                 void refresh();
@@ -126,16 +139,22 @@ export function ClerkCardsPanel({ onSessionExpired }: ClerkCardsPanelProps) {
 }
 
 /**
- * One card: the library, who it signs in as, and Sign out.
+ * One card: the library, who it signs in as, Sign out, and (for the
+ * operator) "Make this server a branch", which joins the library with the
+ * card's address and pinned certificate; the branch replaces the card once
+ * the library approves.
  *
- * @param props - The card, and what to do once it is signed out.
+ * @param props - The card, whether this caller may join, and what to do
+ *   once it is signed out.
  * @returns The row.
  */
 function CardRow({
   card,
+  canJoin,
   onSignedOut,
 }: {
   card: ClerkCardView;
+  canJoin: boolean;
   onSignedOut: (message: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -158,6 +177,27 @@ function CardRow({
     }
   }
 
+  async function onMakeBranch() {
+    if (
+      !window.confirm(
+        `Make this server a branch of ${library}? It can then download your books from your store accounts and run the library's work. Once the library approves, your library card is signed out: its books come through the branch.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const started = await startJoin({ from_card: card.library_id });
+      // The library asks you to approve the branch and sends the browser
+      // back to this server's /join/callback.
+      window.location.assign(started.authorize_url);
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not start joining the library."));
+      setBusy(false);
+    }
+  }
+
   return (
     <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
       <div className="min-w-0 space-y-0.5">
@@ -171,9 +211,21 @@ function CardRow({
           </p>
         ) : null}
       </div>
-      <Button type="button" variant="secondary" disabled={busy} onClick={() => void onSignOut()}>
-        {card.state === "signed_out" ? "Remove" : "Sign out"}
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        {canJoin && card.state === "active" ? (
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy}
+            onClick={() => void onMakeBranch()}
+          >
+            Make this server a branch
+          </Button>
+        ) : null}
+        <Button type="button" variant="secondary" disabled={busy} onClick={() => void onSignOut()}>
+          {card.state === "signed_out" ? "Remove" : "Sign out"}
+        </Button>
+      </div>
     </li>
   );
 }

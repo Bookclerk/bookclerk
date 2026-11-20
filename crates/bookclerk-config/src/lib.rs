@@ -37,6 +37,7 @@ mod naming_profile;
 mod oidc_broker;
 mod operator_auth;
 mod output;
+mod output_copy;
 mod overrides;
 mod path_limits;
 mod paths;
@@ -98,6 +99,10 @@ pub use operator_auth::{
 pub use output::{
     normalize_storage_prefix, BadBookAction, DestinationId, DestinationKeyStyle, DestinationNaming,
     MultiDestinationMode, OutputConfig,
+};
+pub use output_copy::{
+    copies_to_make, mp3_cbr_kbps, validate_copies, CopyError, CopyFormat, CopyQuality, OutputCopy,
+    MAX_EXTRA_COPIES, MAX_QUALITY_BYTES, MP3_CBR_KBPS,
 };
 pub use overrides::{
     apply_config_updates, apply_config_updates_from_path, apply_setting_overrides,

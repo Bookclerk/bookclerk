@@ -85,6 +85,27 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 };
             }
         }
+        "output.copies" => {
+            // Every copy must read, or the list is left as it was.
+            match v
+                .split(',')
+                .map(str::trim)
+                .filter(|copy| !copy.is_empty())
+                .map(crate::OutputCopy::parse)
+                .collect::<std::result::Result<Vec<_>, _>>()
+            {
+                Ok(copies) if copies.len() <= crate::MAX_EXTRA_COPIES => {
+                    config.output.copies = copies;
+                }
+                Ok(copies) => tracing::warn!(
+                    key,
+                    count = copies.len(),
+                    max = crate::MAX_EXTRA_COPIES,
+                    "ignoring output.copies: too many copies"
+                ),
+                Err(err) => tracing::warn!(key, error = %err, "ignoring output.copies"),
+            }
+        }
         "output.widevine" => config.output.widevine = parse_bool(v).unwrap_or(false),
         "output.xhe_aac" => config.output.xhe_aac = parse_bool(v).unwrap_or(false),
         "output.widevine_cdm" => config.output.widevine_cdm = Some(PathBuf::from(v)),
@@ -503,6 +524,7 @@ mod tests {
     /// One value per dotted key that differs from the default configuration.
     const NON_DEFAULT_OVERRIDES: &[(&str, &str)] = &[
         ("output.format", "mp3"),
+        ("output.copies", "mp3:64k-mono"),
         ("output.widevine", "true"),
         ("output.xhe_aac", "true"),
         ("output.widevine_cdm", "/cdm/device.wvd"),

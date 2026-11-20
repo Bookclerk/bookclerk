@@ -37,6 +37,7 @@ import { StoreLogo } from "@/components/StoreLogo";
 import { WisherAvatars } from "@/components/WisherAvatars";
 import { WorkStateEditor } from "@/components/WorkStateEditor";
 import { decodeHtmlEntities, parseGuidedReviewBody, prepareDescriptionHtml } from "@/lib/safeHtml";
+import { pricesVisible } from "@/lib/pricesVisible";
 import { cn, titleDetailDialogClass } from "@/lib/utils";
 
 const FALLBACK_COVER = "/bookclerk-mark.svg";
@@ -801,6 +802,9 @@ export function TitleDetailModal({
           return null;
       }
     };
+    // A patron who may not see store links gets none the app builds, as
+    // the library already drops them from its own answers.
+    const linksVisible = pricesVisible();
     const pushSeed = (source: string, productId: string) => {
       const key = source.toLowerCase();
       if (have.has(key)) return;
@@ -811,7 +815,7 @@ export function TitleDetailModal({
         source: key,
         product_id: productId.trim(),
         title: detail.title,
-        url,
+        url: linksVisible ? url : null,
       });
     };
     for (const e of commerceEditions ?? []) {

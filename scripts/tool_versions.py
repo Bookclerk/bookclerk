@@ -24,6 +24,11 @@ Usage:
 ``tool_versions.py select <tool> --releases FILE [--cooldown-days N]``
     Prints the newest release older than the cooldown that is newer than the
     pin. Exits 2 when there is none.
+``tool_versions.py prune-rust``
+    Uninstalls every rustup toolchain except the pinned ``rust`` one. CI
+    runs it after installing the pin: runner images preinstall other
+    toolchains, and the Rust cache key hashes every installed one, so an
+    image that ships a different set would otherwise change the key.
 ``tool_versions.py apply <tool> <version> [--digest sha256:<hex>]``
     Writes the new pin, the tool's image reference in every Dockerfile that
     builds from it (``--digest`` is then required) and, for ``rust``, the
@@ -303,6 +308,32 @@ def rewrite_toolchain_channel(text: str, version: str) -> str:
     return TOOLCHAIN_CHANNEL.sub(f'channel = "{version}"', text)
 
 
+def extra_toolchains(listing: str, pin: str) -> list[str]:
+    """Picks the toolchains in a ``rustup toolchain list`` output that aren't the pin.
+
+    rustup names a pinned install ``<version>-<host triple>`` and writes one
+    toolchain per line, optionally followed by a parenthesized note such as
+    ``(default)`` or ``(active, default)``. Any other name (``stable-...``,
+    another version, a nightly) is extra.
+
+    Args:
+        listing: The command's standard output.
+        pin: The pinned ``rust`` version, such as ``1.100.0``.
+
+    Returns:
+        The extra toolchain names, in listing order.
+
+    Raises:
+        ToolVersionsError: When no listed toolchain is the pin, so pruning
+            would leave cargo without the pinned compiler.
+    """
+    names = [line.split()[0] for line in listing.splitlines() if line.strip()]
+    pinned = [name for name in names if name == pin or name.startswith(f"{pin}-")]
+    if not pinned:
+        raise ToolVersionsError(f"rust {pin} is not installed; install it before pruning")
+    return [name for name in names if name not in pinned]
+
+
 def _tracked_dockerfiles() -> list[Path]:
     """Lists the Dockerfiles git tracks (``*Dockerfile``, as the bump workflow commits)."""
     out = subprocess.run(
@@ -338,6 +369,7 @@ def main(argv: list[str]) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("github-output", help="print <tool>=<version> lines")
     commands.add_parser("bumpable", help="list the tools the bump workflow moves")
+    commands.add_parser("prune-rust", help="uninstall every toolchain but the pinned rust")
     for name in ("repo", "image"):
         command = commands.add_parser(name, help=f"print a tool's {name}")
         command.add_argument("tool", type=_tool)
@@ -366,6 +398,14 @@ def main(argv: list[str]) -> int:
             for tool in TOOLS:
                 if tool.repo is not None:
                     print(tool.name)
+            return 0
+        if args.command == "prune-rust":
+            listing = subprocess.run(
+                ["rustup", "toolchain", "list"], check=True, capture_output=True, text=True
+            ).stdout
+            for name in extra_toolchains(listing, pins["rust"]):
+                print(f"removing toolchain {name}", file=sys.stderr)
+                subprocess.run(["rustup", "toolchain", "uninstall", name], check=True)
             return 0
         tool: Tool = args.tool
         if args.command in ("repo", "select", "apply") and tool.repo is None:

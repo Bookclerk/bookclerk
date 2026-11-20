@@ -191,7 +191,7 @@ pub struct UserSsoPicture {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
-/// First-party user role (`owner` | `administrator` | `host` | `member`).
+/// First-party user role (`owner` | `administrator` | `member`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum UserRole {
@@ -199,9 +199,6 @@ pub enum UserRole {
     Owner,
     /// Library / user administration without Operator elevation.
     Administrator,
-    /// Member who administers the nodes they own (budgets, drain, name).
-    /// Not trusted with other users' work; promote to Administrator for that.
-    Host,
     /// Library member with scoped portal access (no operator token).
     Member,
 }
@@ -213,7 +210,6 @@ impl UserRole {
         match self {
             Self::Owner => "owner",
             Self::Administrator => "administrator",
-            Self::Host => "host",
             Self::Member => "member",
         }
     }
@@ -224,7 +220,6 @@ impl UserRole {
         match s {
             "owner" => Some(Self::Owner),
             "administrator" => Some(Self::Administrator),
-            "host" => Some(Self::Host),
             "member" => Some(Self::Member),
             _ => None,
         }
@@ -243,12 +238,11 @@ impl UserRole {
     }
 
     /// Whether this role reaches the node administration routes even while
-    /// the user owns no node (Host, Administrator, Owner). Any other active
-    /// user reaches them once they own a node: owning a node does not
-    /// require a role.
+    /// the user owns no node (Administrator, Owner). A Member reaches them
+    /// once they own a node: owning a node does not require a role.
     #[must_use]
     pub fn can_administer_owned_nodes(self) -> bool {
-        matches!(self, Self::Owner | Self::Administrator | Self::Host)
+        matches!(self, Self::Owner | Self::Administrator)
     }
 }
 
@@ -294,7 +288,7 @@ impl UserStatus {
 pub struct UserRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
-    /// First-party role (`owner`, `administrator`, `host`, or `member`).
+    /// First-party role (`owner`, `administrator`, or `member`).
     pub role: UserRole,
     /// Lifecycle status for the row (user, request, …).
     pub status: UserStatus,
@@ -1104,6 +1098,22 @@ pub struct WishlistPurchaseHint {
     pub member_price_label: Option<String>,
 }
 
+impl WishlistPurchaseHint {
+    /// Removes the hint's store link and every price it carries, keeping
+    /// the store and product id, for a patron whose "See prices and store
+    /// links" member control is off.
+    pub fn hide_price_and_link(&mut self) {
+        self.url = None;
+        self.price_cents = None;
+        self.currency = None;
+        self.price_label = None;
+        self.list_price_cents = None;
+        self.list_price_label = None;
+        self.member_price_cents = None;
+        self.member_price_label = None;
+    }
+}
+
 /// Personal wishlist row (also contributes to the shared global queue while open).
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TitleRequestRecord {
@@ -1218,6 +1228,26 @@ pub struct TitleRequestRecord {
     /// RFC 3339 timestamp when the row was last modified.
     #[schema(example = "2026-10-29T10:14:22Z")]
     pub updated_at: DateTime<Utc>,
+}
+
+impl TitleRequestRecord {
+    /// Removes the store links and prices of every purchase hint, for a
+    /// patron whose "See prices and store links" member control is off.
+    pub fn hide_prices_and_links(&mut self) {
+        for hint in &mut self.purchase_hints {
+            hint.hide_price_and_link();
+        }
+        for source in &mut self.sources {
+            source.url = None;
+            source.price_cents = None;
+            source.currency = None;
+            source.price_label = None;
+            source.list_price_cents = None;
+            source.list_price_label = None;
+            source.member_price_cents = None;
+            source.member_price_label = None;
+        }
+    }
 }
 
 /// Compact wisher shown on the global queue (avatar + label).

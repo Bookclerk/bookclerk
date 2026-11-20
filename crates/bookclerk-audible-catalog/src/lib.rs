@@ -14,10 +14,10 @@ mod public_meta;
 
 pub use error::{CatalogError, Result};
 pub use public_meta::{
-    fetch_audible_catalog_rating, fetch_audible_catalog_reviews,
-    fetch_audible_catalog_reviews_page, is_audible_podcast_product, normalize_region,
-    normalize_review_body, parse_catalog_products, public_http_client, region_tld,
-    resolve_genre_category_id, search_catalog_asins, search_catalog_by_genre_name,
+    catalog_origin, fetch_audible_catalog_rating, fetch_audible_catalog_reviews,
+    fetch_audible_catalog_reviews_page, fetch_products_by_asins, is_audible_podcast_product,
+    normalize_region, normalize_review_body, parse_catalog_products, public_http_client,
+    region_tld, resolve_genre_category_id, search_catalog_asins, search_catalog_by_genre_name,
     search_catalog_by_narrator, search_catalog_by_series_asin, search_catalog_by_series_name,
     search_catalog_keywords, search_catalog_products, search_catalog_products_ex,
     search_catalog_products_ex2, search_catalog_products_paged, search_catalog_products_rich,

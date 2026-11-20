@@ -55,13 +55,14 @@ boundary extends it.
 | `node_frame` | Node-to-node frames on the library socket | `bookclerk-node-proto::Frame` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
+| `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
 | `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
-| `audible_catalog` | Audible public catalog answers (search results and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
+| `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
-| `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
+| `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
@@ -74,8 +75,10 @@ boundary extends it.
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
+| `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
+| `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
@@ -173,11 +176,24 @@ only that. The others check:
   `rules` array, each rule an object of exactly `field`, `value` and
   `effect`, no key repeated at any level, at most 64 rules, each value
   trimmed, non-empty, at most 128 bytes and free of NUL, a `patron` value a
-  positive user id, a `media_kind` value `book` or `podcast`, and no rule
-  given twice. An accepted filter holds the oracle's rules in order,
-  survives a JSON round trip, and takes or refuses sample books exactly as
-  the oracle's reading does. The shared oracle is
+  positive user id, a `media_kind` value `book` or `podcast`, a `format`
+  value a copy format, a `quality` value a copy quality, and no rule given
+  twice. An accepted filter holds the oracle's rules in order, survives a
+  JSON round trip, and takes or refuses sample books and sample copies
+  exactly as the oracle's reading does. The shared oracle is
   `fuzz/oracles/destination_filter.rs`, replayed from `bookclerk-config`.
+- **`output_copies`**: the first byte picks the main output's copy and the
+  rest is the `copies` array, read as the server reads it (`OutputCopy`'s
+  serde derive, then `validate_copies`). It is accepted exactly when an
+  independent reading, built on `serde_json::Value` and a separate scan for
+  repeated keys, accepts it: at most 8 objects of exactly `format` and
+  `quality`, a known format, a quality that is `original`, a bitrate the
+  MP3 encoder writes or `v0` to `v9` (optionally `-mono`, any ASCII case,
+  trimmed, at most 16 bytes), `original` exactly for M4B and as-delivered
+  copies, and no copy repeated or equal to the main output's. An accepted
+  list holds the oracle's copies in canonical form and survives a JSON
+  round trip. The shared oracle is `fuzz/oracles/output_copies.rs`,
+  replayed from `bookclerk-config`.
 - **`destination_id`**: the input is the id as received, read as UTF-8
   lossily. It is accepted exactly when it is 1 to 64 bytes, each a
   lowercase ASCII letter, a digit, `_` or `-`, checked byte by byte, so no
@@ -368,7 +384,9 @@ only that. The others check:
   frame version, and serializes and parses back to an equal frame (unless
   its serialized text grows past the limit, as `1e9` written out does). Every
   call number in `acquire.targets` is 1 to 16 ASCII letters and digits,
-  checked byte by byte. A `catalog.ask` or `catalog.found` that passes
+  checked byte by byte, and every target whose destination list passes
+  its validator names only destinations its plan lists, each once and in
+  the plan's order. A `catalog.ask` or `catalog.found` that passes
   its validator names at most 100 works, each once, by plain correlation
   keys; its identifiers are plain ASCII with a marketplace exactly on an
   ASIN, and each answer lists 1 to 8 distinct editions with a title. A
@@ -397,7 +415,9 @@ only that. The others check:
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
   the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
-  `scan.removed`, `scan.pass_end` and a `work` frame with scan tokens. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens, and
+  `acquire.targets` with a destination subset, an empty list and a list
+  that does not fit its plan. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the library and node it was opened
@@ -550,6 +570,18 @@ only that. The others check:
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/members_books_request.rs`, replayed from
   `bookclerk-library`.
+- **`member_controls_request`**: the first byte picks the body (`d` for
+  the default, `u` for a patron's overrides) and the oracle reads the rest
+  as an untyped JSON value. The default is accepted exactly when it is one
+  object with no repeated keys whose keys are among `link_accounts`,
+  `download`, `edit_metadata`, `upload`, `request_books` and `see_prices`,
+  each a boolean; a control left out is allowed. A patron's body is
+  accepted exactly when it is one object with no repeated keys and exactly
+  the key `overrides`, an object of those keys with boolean or `null`
+  values; a control left out or `null` follows the default. The parser
+  then returns exactly those values, and otherwise refuses the body as
+  `Invalid`. The shared oracle is `fuzz/oracles/member_controls_request.rs`,
+  replayed from `bookclerk-library`.
 - **`patron_scope_request`**: the first byte picks the body (`d` for the
   default scope, `u` for a user's) and the oracle reads the rest as an
   untyped JSON value. A scope is accepted exactly when it is one object
@@ -570,6 +602,35 @@ only that. The others check:
   parser then returns those ids sorted and distinct, and otherwise refuses
   it as `Invalid`. The shared oracle is `fuzz/oracles/work_split_request.rs`,
   replayed from `bookclerk-library`.
+- **`playback_request`**: an input's first byte picks the part. For `s`
+  (sync) and `c` (close) the rest is a body, read as an untyped JSON
+  value: it is accepted exactly when it is at most 1,024 bytes and one
+  object with no repeated keys, a `position_ms`, optionally a
+  `listened_ms` and a `duration_ms` (which may be `null`) and no other
+  key, each a whole number from 0 to sixty days of milliseconds. The
+  parser then returns those numbers unchanged, and otherwise refuses the
+  body as `Invalid`. For `t` the rest is a stream path's session id and
+  track index, checked byte by byte: accepted exactly when the id is a
+  lowercase hyphenated UUID and the index a number from 0 to 511 with no
+  sign or leading zero. For `o` (open a session), `p` (set progress),
+  `b` (add a bookmark) and `e` (change one) the rest is that route's
+  body, at most 4,096 bytes and one object with no repeated or unknown
+  keys. A session body has an `edition_id` of 1 to 128 bytes, a `player`
+  that is absent, `web` or `desktop`, and an optional `player_name`,
+  returned with control characters dropped, trimmed and cut to 64 bytes
+  on a character boundary. A progress body's two lengths and its
+  `is_finished` flag are each absent, `null` or in range. A bookmark
+  body's title, trimmed, is at most 200 bytes with no control character.
+  For `q` the rest is a progress page cursor, decoded with the oracle's
+  own Base64 decoder: accepted exactly when it is at most 256 bytes of
+  canonical unpadded URL-safe Base64 for a change time, a `|` and an
+  edition id of 1 to 128 bytes, and an accepted cursor writes back to
+  the same token.
+  The routes refuse a body over the parsers' length limits (`413`)
+  before reading it as the same JSON type, so they accept nothing the
+  parsers refuse.
+  The shared oracle is `fuzz/oracles/playback_request.rs`, replayed from
+  `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `library_id`, `share_books`, `include_branches`,
