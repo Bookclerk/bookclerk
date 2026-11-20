@@ -69,6 +69,9 @@ impl RequestAcquirer for DaemonAcquirer {
                 // The holding id names exactly this account's title.
                 titles: vec![title.holding_id.clone()],
                 account: Some(title.account_id.clone()),
+                // The host takes the request on its own: paced like any
+                // download it starts itself.
+                paced: true,
                 ..crate::jobs::AcquireAsk::default()
             },
             JobTrigger::Scheduler,

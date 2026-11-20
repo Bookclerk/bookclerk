@@ -302,6 +302,66 @@
       "error": "plugin.toml: `[cli]` requires `\"cli\"` in `entrypoints`"
     },
     {
+      "name": "storefront with acquire pace",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n[acquire]\ndownloads_per_day = 100\nmin_gap_seconds = 30\ncooldown_seconds = 86400\n",
+      "error": null
+    },
+    {
+      "name": "storefront with empty acquire",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n[acquire]\n",
+      "error": null
+    },
+    {
+      "name": "acquire with zero gap",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n[acquire]\nmin_gap_seconds = 0\n",
+      "error": null
+    },
+    {
+      "name": "acquire without a storefront entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[acquire]\ndownloads_per_day = 100\n",
+      "error": "plugin.toml: `[acquire]` needs the `storefront` entrypoint"
+    },
+    {
+      "name": "acquire with zero downloads",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n[acquire]\ndownloads_per_day = 0\n",
+      "error": "plugin.toml: `[acquire].downloads_per_day` must be between 1 and 10000"
+    },
+    {
+      "name": "acquire with too many downloads",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n[acquire]\ndownloads_per_day = 10001\n",
+      "error": "plugin.toml: `[acquire].downloads_per_day` must be between 1 and 10000"
+    },
+    {
+      "name": "acquire with negative gap",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n[acquire]\nmin_gap_seconds = -1\n",
+      "error": "plugin.toml: `[acquire].min_gap_seconds` must be between 0 and 86400"
+    },
+    {
+      "name": "acquire with gap over a day",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n[acquire]\nmin_gap_seconds = 86401\n",
+      "error": "plugin.toml: `[acquire].min_gap_seconds` must be between 0 and 86400"
+    },
+    {
+      "name": "acquire with zero cooldown",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n[acquire]\ncooldown_seconds = 0\n",
+      "error": "plugin.toml: `[acquire].cooldown_seconds` must be between 1 and 604800"
+    },
+    {
+      "name": "acquire with cooldown over a week",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[media]\nworks = [\"book\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n[acquire]\ncooldown_seconds = 604801\n",
+      "error": "plugin.toml: `[acquire].cooldown_seconds` must be between 1 and 604800"
+    },
+    {
       "name": "storefront with media",
       "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
       "tables": "[media]\nworks = [\"book\", \"podcast\"]\nlists = [\"audio\"]\nfetches = [\"audio\"]\n",
