@@ -886,6 +886,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn errors_name_what_was_wrong() {
+        assert_eq!(
+            RequestError::TooLong(8).to_string(),
+            "the body is at most 8 bytes"
+        );
+        assert_eq!(
+            RequestError::NotJson.to_string(),
+            "the body is not the expected JSON"
+        );
+        assert_eq!(
+            RequestError::Shape("time").to_string(),
+            "time is missing or has the wrong type"
+        );
+        assert_eq!(
+            RequestError::OutOfRange("time").to_string(),
+            "time is out of range"
+        );
+    }
+
+    #[test]
+    fn device_names_are_clipped_on_a_character_boundary() {
+        assert_eq!(clip("short", 64), "short");
+        // "é" is two bytes; a cut through it backs up to the boundary.
+        assert_eq!(clip("aé", 2), "a");
+        let long = "x".repeat(MAX_DEVICE_NAME_BYTES + 10);
+        let play =
+            parse_play_request(format!(r#"{{"deviceInfo":{{"clientName":"{long}"}}}}"#).as_bytes())
+                .unwrap();
+        assert_eq!(play.device.name.len(), MAX_DEVICE_NAME_BYTES);
+    }
+
+    #[test]
     fn a_login_needs_both_strings() {
         let ok = parse_login_request(br#"{"username":" riley ","password":"abc-def"}"#).unwrap();
         assert_eq!(ok.username, "riley");

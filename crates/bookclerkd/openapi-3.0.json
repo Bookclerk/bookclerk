@@ -32562,7 +32562,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LoginResponse"
+                  "$ref": "#/components/schemas/PlayerLoginResponse"
                 }
               }
             }
@@ -32678,7 +32678,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LoginResponse"
+                  "$ref": "#/components/schemas/PlayerLoginResponse"
                 }
               }
             }
@@ -32948,7 +32948,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LoginResponse"
+                  "$ref": "#/components/schemas/PlayerLoginResponse"
                 }
               }
             }
@@ -33109,7 +33109,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LoginResponse"
+                  "$ref": "#/components/schemas/PlayerLoginResponse"
                 }
               }
             }
@@ -33117,30 +33117,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -33158,15 +33150,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -33200,30 +33188,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -33241,15 +33221,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -33283,45 +33259,33 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -33386,30 +33350,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -33438,15 +33394,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -33573,30 +33525,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -33625,15 +33569,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -33722,30 +33662,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -33774,15 +33706,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -33827,30 +33755,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -33879,15 +33799,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -33932,30 +33848,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -33984,15 +33892,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -34048,30 +33952,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -34089,15 +33985,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -34153,30 +34045,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -34194,15 +34078,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -34250,30 +34130,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -34302,15 +34174,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -34386,30 +34254,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -34487,30 +34347,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -34539,15 +34391,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -34592,30 +34440,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -34644,15 +34484,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -34697,30 +34533,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -34749,15 +34577,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -34822,30 +34646,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -34874,15 +34690,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -34958,30 +34770,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -35010,15 +34814,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -35079,30 +34879,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -35153,15 +34945,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -35207,30 +34995,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -35259,15 +35039,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -35339,30 +35115,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -35504,30 +35272,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -35649,15 +35409,11 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
@@ -35786,30 +35542,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -35882,15 +35630,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -35962,30 +35706,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -36047,15 +35783,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -36116,30 +35848,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -36201,15 +35925,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -36270,30 +35990,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -36333,15 +36045,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -36386,30 +36094,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -36438,15 +36138,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -36489,30 +36185,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -36541,15 +36229,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -36619,30 +36303,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -36704,15 +36380,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -36776,30 +36448,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -36861,15 +36525,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -36903,30 +36563,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -36944,15 +36596,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -37021,30 +36669,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -37062,15 +36702,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -37104,30 +36740,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -37145,15 +36773,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -37225,30 +36849,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -37321,15 +36937,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -37399,30 +37011,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -37484,15 +37088,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -37546,30 +37146,22 @@
           "401": {
             "description": "No live player card (`Unauthorized`, plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
           "403": {
             "description": "The patron must enroll a second factor on the library's website first (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
+                "example": "Enroll a second factor on the library's website first"
               }
             }
           },
@@ -37598,15 +37190,11 @@
           "503": {
             "description": "The card could not be checked; retry (plain text).",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "service_unavailable",
-                  "message": "The Bookclerk daemon is not ready to handle this request.",
-                  "status": 503
-                }
+                "example": "Service Unavailable"
               }
             }
           }
@@ -42122,7 +41710,7 @@
           "libraryId": {
             "type": "string",
             "description": "The library it is listed in.",
-            "example": "main"
+            "example": "bookclerk-library"
           },
           "addedAt": {
             "type": "integer",
@@ -47937,12 +47525,12 @@
           "libraryId": {
             "type": "string",
             "description": "The library the item is listed in.",
-            "example": "main"
+            "example": "bookclerk-library"
           },
           "folderId": {
             "type": "string",
             "description": "The folder id: the library id.",
-            "example": "main"
+            "example": "bookclerk-library"
           },
           "path": {
             "type": "string",
@@ -52483,7 +52071,7 @@
           "libraryId": {
             "type": "string",
             "description": "The library id.",
-            "example": "main"
+            "example": "bookclerk-library"
           },
           "libraryItemId": {
             "type": "string",
@@ -52658,12 +52246,12 @@
               "libraryId": {
                 "type": "string",
                 "description": "The library the item is listed in.",
-                "example": "main"
+                "example": "bookclerk-library"
               },
               "folderId": {
                 "type": "string",
                 "description": "The folder id: the library id.",
-                "example": "main"
+                "example": "bookclerk-library"
               },
               "path": {
                 "type": "string",
@@ -53004,6 +52592,53 @@
           "web",
           "desktop"
         ]
+      },
+      "PlayerLoginResponse": {
+        "type": "object",
+        "description": "The answer to a sign-in, a token refresh, `POST /api/authorize` and\nthe browser sign-in's callback.",
+        "required": [
+          "user",
+          "userDefaultLibraryId",
+          "serverSettings",
+          "ereaderDevices",
+          "Source"
+        ],
+        "properties": {
+          "user": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/User"
+              }
+            ],
+            "description": "The signed-in patron, with the card's tokens."
+          },
+          "userDefaultLibraryId": {
+            "type": "string",
+            "description": "The library an app opens first: the whole library.",
+            "example": "bookclerk-library"
+          },
+          "serverSettings": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ServerSettings"
+              }
+            ],
+            "description": "Settings apps read at sign-in."
+          },
+          "ereaderDevices": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "E-reader devices: always empty, the API serves no ebooks.",
+            "example": []
+          },
+          "Source": {
+            "type": "string",
+            "description": "How the server was installed; apps only display it.",
+            "example": "bookclerk"
+          }
+        }
       },
       "PlayerPasswordJson": {
         "type": "object",
@@ -57622,7 +57257,7 @@
           "libraryId": {
             "type": "string",
             "description": "The library it is listed in.",
-            "example": "main"
+            "example": "bookclerk-library"
           },
           "books": {
             "type": "array",
@@ -60603,7 +60238,7 @@
             },
             "description": "Libraries the patron may open, by id.",
             "example": [
-              "main"
+              "bookclerk-library"
             ]
           },
           "itemTagsSelected": {

@@ -79,18 +79,21 @@ pub struct Ping {
 /// the browser sign-in's callback.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(as = PlayerLoginResponse)]
 pub struct LoginResponse {
     /// The signed-in patron, with the card's tokens.
     pub user: User,
     /// The library an app opens first: the whole library.
+    #[schema(example = "bookclerk-library")]
     pub user_default_library_id: String,
     /// Settings apps read at sign-in.
     pub server_settings: ServerSettings,
     /// E-reader devices: always empty, the API serves no ebooks.
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<Object>, example = json!([]))]
     pub ereader_devices: Vec<serde_json::Value>,
     /// How the server was installed; apps only display it.
     #[serde(rename = "Source")]
+    #[schema(example = "bookclerk")]
     pub source: &'static str,
 }
 
@@ -149,7 +152,7 @@ pub struct User {
     /// What the patron may do.
     pub permissions: Permissions,
     /// Libraries the patron may open, by id.
-    #[schema(example = json!(["main"]))]
+    #[schema(example = json!(["bookclerk-library"]))]
     pub libraries_accessible: Vec<String>,
     /// Tags that limit what the patron sees: none (scope is applied by
     /// the host, not by tags).
@@ -473,10 +476,10 @@ pub struct LibraryItem {
     #[schema(example = json!(null))]
     pub old_library_item_id: Option<String>,
     /// The library the item is listed in.
-    #[schema(example = "main")]
+    #[schema(example = "bookclerk-library")]
     pub library_id: String,
     /// The folder id: the library id.
-    #[schema(example = "main")]
+    #[schema(example = "bookclerk-library")]
     pub folder_id: String,
     /// A display path: the title.
     #[schema(example = "/the-first.m4b")]
@@ -916,7 +919,7 @@ pub struct PlaybackSession {
     #[schema(example = "42")]
     pub user_id: String,
     /// The library id.
-    #[schema(example = "main")]
+    #[schema(example = "bookclerk-library")]
     pub library_id: String,
     /// The item id.
     #[schema(example = "li_8f14e45fceea467f")]
@@ -1072,7 +1075,7 @@ pub struct Series {
     #[schema(example = 1763630000000_i64)]
     pub updated_at: i64,
     /// The library it is listed in.
-    #[schema(example = "main")]
+    #[schema(example = "bookclerk-library")]
     pub library_id: String,
     /// Its items in series order, on lists.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1152,7 +1155,7 @@ pub struct Author {
     #[schema(example = json!(null))]
     pub image_path: Option<String>,
     /// The library it is listed in.
-    #[schema(example = "main")]
+    #[schema(example = "bookclerk-library")]
     pub library_id: String,
     /// When the library first saw the author, in epoch milliseconds.
     #[schema(example = 1763600000000_i64)]

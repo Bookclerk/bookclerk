@@ -351,6 +351,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn errors_say_what_was_wrong() {
+        assert_eq!(OAuthError::TooLong.to_string(), "query too long");
+        assert_eq!(OAuthError::Invalid("state").to_string(), "invalid state");
+        assert_eq!(OAuthError::UnknownApp.to_string(), "Invalid redirect_uri");
+        assert_eq!(
+            app_of_return_address(&"x".repeat(MAX_OAUTH_QUERY_BYTES + 1)),
+            None
+        );
+        assert_eq!(app_of_return_address("not a url"), None);
+    }
+
+    #[test]
     fn passwords_are_generated_and_read_back() {
         let password = format_player_password(&[
             0, 1, 2, 3, 4, 31, 32, 63, 255, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,

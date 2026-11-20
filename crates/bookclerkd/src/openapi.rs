@@ -435,10 +435,22 @@ fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str
                     .responses
                     .entry((*status).to_string())
                     .or_insert_with(|| {
-                        ResponseBuilder::new()
-                            .description(*description)
-                            .build()
-                            .into()
+                        let response = ResponseBuilder::new().description(*description);
+                        match access {
+                            // The player layer answers in plain text, as
+                            // the apps expect.
+                            Access::Player => response
+                                .content("text/plain", crate::player::refusal_content(status))
+                                .build()
+                                .into(),
+                            Access::Public
+                            | Access::OperatorOrPortal
+                            | Access::Operator
+                            | Access::OperatorOrAdministrator
+                            | Access::OperatorOrOwner
+                            | Access::OperatorOrNodeOwner
+                            | Access::OperatorOrUser => response.build().into(),
+                        }
                     });
             }
             if op.security.is_none() {

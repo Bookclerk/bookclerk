@@ -292,6 +292,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn errors_say_what_was_wrong() {
+        assert_eq!(SocketError::TooLong.to_string(), "socket frame too long");
+        assert_eq!(
+            SocketError::UnknownPacket.to_string(),
+            "unknown socket packet"
+        );
+        assert_eq!(
+            SocketError::Malformed.to_string(),
+            "malformed socket packet"
+        );
+    }
+
+    #[test]
     fn engine_packets_are_read() {
         assert_eq!(parse_client_frame("1"), Ok(ClientFrame::Close));
         assert_eq!(parse_client_frame("2"), Ok(ClientFrame::Ping));

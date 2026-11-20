@@ -394,6 +394,29 @@ pub(crate) fn add_error_examples(doc: &mut utoipa::openapi::OpenApi) {
     }
 }
 
+/// The plain-text body the card layer answers with a refusal, for the
+/// OpenAPI document.
+///
+/// # Arguments
+///
+/// * `status` - The refusal's status: `401`, `403` or `503`.
+///
+/// # Returns
+///
+/// A `text/plain` content with the body the layer sends for that status.
+pub(crate) fn refusal_content(status: &str) -> utoipa::openapi::Content {
+    use utoipa::openapi::schema::{ObjectBuilder, Type};
+    let body = match status {
+        "403" => ENROLL_FIRST,
+        "503" => "Service Unavailable",
+        _ => "Unauthorized",
+    };
+    utoipa::openapi::ContentBuilder::new()
+        .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+        .example(Some(body.into()))
+        .build()
+}
+
 /// The answer to a card that did not resolve.
 pub(crate) fn card_refusal(refusal: CardRefusal) -> Response {
     match refusal {

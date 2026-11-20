@@ -825,3 +825,370 @@ async fn the_socket_refuses_long_polling_and_old_revisions() {
         }
     }
 }
+
+/// A GET with the card; answers status and JSON.
+async fn get(world: &World, access: &str, uri: &str) -> Answer {
+    send(world, Method::GET, uri, As::Card(access), None, &[]).await
+}
+
+#[tokio::test]
+async fn every_browse_route_answers_in_shape() {
+    let world = world().await;
+    let (access, _) = sign_in(&world).await;
+    let library = bookclerk_player_api::ids::WHOLE_LIBRARY_ID;
+    let libraries = get(&world, &access, "/player/api/libraries").await;
+    assert_eq!(libraries.json()["libraries"][0]["id"], library);
+    let plain = get(&world, &access, &format!("/player/api/libraries/{library}")).await;
+    assert_eq!(plain.json()["id"], library);
+    for missing in [
+        "/player/api/libraries/other".to_owned(),
+        "/player/api/libraries/other/items".to_owned(),
+        "/player/api/items/not-an-item".to_owned(),
+        "/player/api/series/c2VyaWVz".to_owned(),
+        "/player/api/authors/bm9ib2R5".to_owned(),
+    ] {
+        let answer = get(&world, &access, &missing).await;
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "{missing}");
+    }
+    let filterdata = get(
+        &world,
+        &access,
+        &format!("/player/api/libraries/{library}/filterdata"),
+    )
+    .await;
+    assert_eq!(filterdata.json()["authorCount"], 1);
+    let narrators = get(
+        &world,
+        &access,
+        &format!("/player/api/libraries/{library}/narrators"),
+    )
+    .await;
+    assert_eq!(narrators.json()["narrators"][0]["name"], "Nia Narrator");
+    let series = get(
+        &world,
+        &access,
+        &format!("/player/api/libraries/{library}/series?limit=10&page=0"),
+    )
+    .await;
+    assert_eq!(series.status, StatusCode::OK);
+    assert_eq!(series.json()["total"], 0);
+    for query in [
+        "sort=media.metadata.title&desc=1&limit=5&page=0",
+        "sort=addedAt&limit=5",
+        "filter=progress.aW4tcHJvZ3Jlc3M&limit=5",
+        "filter=progress.ZmluaXNoZWQ&limit=5",
+        "filter=narrators.TmlhIE5hcnJhdG9y&limit=5",
+    ] {
+        let items = get(
+            &world,
+            &access,
+            &format!("/player/api/libraries/{library}/items?{query}"),
+        )
+        .await;
+        assert_eq!(items.status, StatusCode::OK, "{query}");
+    }
+    let search = get(
+        &world,
+        &access,
+        &format!("/player/api/libraries/{library}/search?q=First&limit=5"),
+    )
+    .await;
+    // Search needs the library's search index, which this daemon may not
+    // have open; it answers 503 then, as documented.
+    assert!(
+        matches!(
+            search.status,
+            StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
+        ),
+        "{:?}",
+        search.status
+    );
+    let bad = get(
+        &world,
+        &access,
+        &format!("/player/api/libraries/{library}/items?limit=99999"),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    let batch = send(
+        &world,
+        Method::POST,
+        "/player/api/items/batch/get",
+        As::Card(&access),
+        Some(json!({ "libraryItemIds": [world.item, "unknown"] })),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        batch.json()["libraryItems"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let malformed = send(
+        &world,
+        Method::POST,
+        "/player/api/items/batch/get",
+        As::Card(&access),
+        Some(json!({ "libraryItemIds": "x" })),
+        &[],
+    )
+    .await;
+    assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+    let me = get(&world, &access, "/player/api/me").await;
+    assert_eq!(me.json()["username"], RILEY);
+    let authorize = send(
+        &world,
+        Method::POST,
+        "/player/api/authorize",
+        As::Card(&access),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(authorize.json()["user"]["username"], RILEY);
+}
+
+#[tokio::test]
+async fn offline_sessions_batches_and_downloads() {
+    let world = world().await;
+    let (access, refresh) = sign_in(&world).await;
+    let local = send(
+        &world,
+        Method::POST,
+        "/player/api/session/local",
+        As::Card(&access),
+        Some(json!({
+            "id": "offline-1",
+            "libraryItemId": world.item,
+            "currentTime": 300,
+            "timeListening": 60,
+            "duration": 36000,
+            "updatedAt": 1_763_600_000_000_i64,
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(local.status, StatusCode::OK, "{:?}", local.json());
+    let all = send(
+        &world,
+        Method::POST,
+        "/player/api/session/local-all",
+        As::Card(&access),
+        Some(json!({ "sessions": [
+            { "id": "offline-2", "libraryItemId": world.item, "currentTime": 400 },
+            { "id": "offline-3", "libraryItemId": "../x", "currentTime": 1 },
+        ] })),
+        &[],
+    )
+    .await;
+    assert_eq!(all.status, StatusCode::OK, "{:?}", all.json());
+    let results = all.json()["results"].clone();
+    assert_eq!(results[0]["success"], true);
+    assert_eq!(results[1]["success"], false);
+    let play = send(
+        &world,
+        Method::POST,
+        &format!("/player/api/items/{}/play", world.item),
+        As::Card(&access),
+        Some(json!({ "mediaPlayer": "exoplayer" })),
+        &[],
+    )
+    .await;
+    assert_eq!(play.status, StatusCode::OK);
+    let sessions = get(
+        &world,
+        &access,
+        "/player/api/me/listening-sessions?itemsPerPage=10&page=0",
+    )
+    .await;
+    assert!(sessions.json()["total"].as_u64().unwrap_or(0) >= 1);
+    let stats = get(&world, &access, "/player/api/me/listening-stats").await;
+    assert_eq!(stats.status, StatusCode::OK);
+    let in_progress = get(&world, &access, "/player/api/me/items-in-progress").await;
+    assert_eq!(
+        in_progress.json()["libraryItems"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let batch = send(
+        &world,
+        Method::PATCH,
+        "/player/api/me/progress/batch/update",
+        As::Card(&access),
+        Some(json!([{ "libraryItemId": world.item, "currentTime": 500, "duration": 36000 }])),
+        &[],
+    )
+    .await;
+    assert_eq!(batch.status, StatusCode::OK);
+    let progress = get(
+        &world,
+        &access,
+        &format!("/player/api/me/progress/{}", world.item),
+    )
+    .await;
+    assert_eq!(progress.json()["currentTime"], 500.0);
+    let cleared = send(
+        &world,
+        Method::DELETE,
+        &format!("/player/api/me/progress/{}", world.item),
+        As::Card(&access),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK);
+    let gone = get(
+        &world,
+        &access,
+        &format!("/player/api/me/progress/{}", world.item),
+    )
+    .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+
+    let download = format!("/player/api/items/{}/file/0/download", world.item);
+    let saved = get(&world, &access, &download).await;
+    assert_eq!(saved.status, StatusCode::OK);
+    assert!(saved.headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .starts_with("attachment"));
+    let riley = world
+        .store
+        .get_user_by_login_name(RILEY)
+        .await
+        .unwrap()
+        .unwrap();
+    bookclerk_library::control_plane::set_member_control_overrides(
+        &world.store,
+        riley.id,
+        bookclerk_library::control_plane::ControlOverrides {
+            download: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let refused = get(&world, &access, &download).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    let wrong = send(
+        &world,
+        Method::POST,
+        "/player/auth/refresh",
+        As::Nobody,
+        None,
+        &[("x-refresh-token", "not-a-token")],
+    )
+    .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    let missing = send(
+        &world,
+        Method::POST,
+        "/player/auth/refresh",
+        As::Nobody,
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::UNAUTHORIZED);
+    let rotated = send(
+        &world,
+        Method::POST,
+        "/player/auth/refresh",
+        As::Nobody,
+        None,
+        &[("x-refresh-token", refresh.as_str())],
+    )
+    .await;
+    assert_eq!(rotated.status, StatusCode::OK);
+    assert_eq!(rotated.json()["user"]["permissions"]["download"], false);
+}
+
+#[tokio::test]
+async fn the_socket_signs_in_and_sends_progress() {
+    use futures::SinkExt as _;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let world = world().await;
+    let (access, _) = sign_in(&world).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = world.app.clone();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let url = format!(
+        "ws://127.0.0.1:{}/player/socket.io/?EIO=4&transport=websocket",
+        addr.port()
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    assert!(recv(&mut socket).await.starts_with("0{"));
+    socket
+        .send(Message::Text("40/admin,".into()))
+        .await
+        .unwrap();
+    let text = recv(&mut socket).await;
+    assert!(text.starts_with("44"), "{text}");
+    socket.send(Message::Text("40".into())).await.unwrap();
+    assert!(recv(&mut socket).await.starts_with("40{"));
+    socket
+        .send(Message::Text(r#"42["auth","not-a-card"]"#.into()))
+        .await
+        .unwrap();
+    assert!(recv(&mut socket).await.contains("auth_failed"));
+    socket
+        .send(Message::Text(format!(r#"42["auth","{access}"]"#).into()))
+        .await
+        .unwrap();
+    assert!(recv(&mut socket).await.contains("\"init\""));
+    socket.send(Message::Text("2".into())).await.unwrap();
+    assert_eq!(recv(&mut socket).await, "3");
+    socket
+        .send(Message::Text(r#"42["ping"]"#.into()))
+        .await
+        .unwrap();
+    assert!(recv(&mut socket).await.contains("pong"));
+    socket.send(Message::Text("3".into())).await.unwrap();
+    socket
+        .send(Message::Text(r#"42["something_else",{}]"#.into()))
+        .await
+        .unwrap();
+    let patched = send(
+        &world,
+        Method::PATCH,
+        &format!("/player/api/me/progress/{}", world.item),
+        As::Card(&access),
+        Some(json!({ "currentTime": 42, "duration": 36000 })),
+        &[],
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK);
+    let event = recv(&mut socket).await;
+    assert!(event.contains("user_item_progress_updated"), "{event}");
+    socket.send(Message::Text("41".into())).await.unwrap();
+}
+
+/// The next text frame other than the server's heartbeat.
+async fn recv<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>) -> String
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use futures::StreamExt as _;
+    use tokio_tungstenite::tungstenite::Message;
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
+            .await
+            .expect("a frame in time")
+            .expect("an open socket")
+            .unwrap();
+        if let Message::Text(text) = frame {
+            let text = text.as_str().to_owned();
+            if text != "2" {
+                return text;
+            }
+        }
+    }
+}
