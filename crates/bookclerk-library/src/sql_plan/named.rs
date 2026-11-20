@@ -1492,6 +1492,14 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
     let allow_p = allow_mutate_params(user_id);
 
     let identity_deletes = [
+        // A player card's tokens and card row go before its session row,
+        // which their subquery reads.
+        "DELETE FROM player_card_tokens WHERE session_id IN \
+         (SELECT id FROM portal_sessions WHERE identity_id IN \
+         (SELECT id FROM portal_identities WHERE user_id = ?)) AND ",
+        "DELETE FROM player_cards WHERE session_id IN \
+         (SELECT id FROM portal_sessions WHERE identity_id IN \
+         (SELECT id FROM portal_identities WHERE user_id = ?)) AND ",
         "DELETE FROM account_links WHERE identity_id IN \
          (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
         "DELETE FROM title_requests WHERE identity_id IN \
@@ -1541,6 +1549,7 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         "playback_progress",
         "playback_sessions",
         "bookmarks",
+        "player_passwords",
     ] {
         let mut p = vec![j_i64(user_id)];
         p.extend(allow_p.clone());

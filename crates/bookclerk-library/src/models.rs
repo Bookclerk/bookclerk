@@ -470,7 +470,8 @@ pub struct OperatorSessionRecord {
 /// Where a user's session token is presented.
 ///
 /// A token works only in its own place: a browser token only as the session
-/// cookie, a library card only as `Authorization: Bookclerk-Clerk`.
+/// cookie, a library card only as `Authorization: Bookclerk-Clerk`, and a
+/// player card's tokens only on the `/player` API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PortalSessionKind {
@@ -479,6 +480,10 @@ pub enum PortalSessionKind {
     /// A library card: a clerk that shows the user's books from this
     /// library without joining it as a node.
     Clerk,
+    /// A player library card: an audiobook player app signed in to the
+    /// `/player` API. Its tokens live in `player_card_tokens`; the row's
+    /// own token hash is never handed out.
+    Player,
 }
 
 impl PortalSessionKind {
@@ -488,6 +493,7 @@ impl PortalSessionKind {
         match self {
             Self::Browser => "browser",
             Self::Clerk => "clerk",
+            Self::Player => "player",
         }
     }
 
@@ -497,6 +503,7 @@ impl PortalSessionKind {
         match s {
             "browser" => Some(Self::Browser),
             "clerk" => Some(Self::Clerk),
+            "player" => Some(Self::Player),
             _ => None,
         }
     }

@@ -529,11 +529,10 @@ async fn token_authorization_code(
         .as_deref()
         .ok_or(StatusCode::BAD_REQUEST)?;
     let client_id = form.client_id.as_deref().ok_or(StatusCode::BAD_REQUEST)?;
-    // A branch's code is redeemed only at the node API's enroll/oauth, and
-    // a clerk sign-in's only at the library card route.
-    if client_id.trim() == bookclerk_node_proto::BRANCH_CLIENT_ID
-        || client_id.trim() == bookclerk_node_proto::CLERK_CLIENT_ID
-    {
+    // A branch's code is redeemed only at the node API's enroll/oauth, a
+    // clerk sign-in's only at the library card route, and a player app's
+    // only at the player API's callback.
+    if is_built_in_client_id(client_id) {
         return Err(StatusCode::UNAUTHORIZED);
     }
     let verifier = form
@@ -1286,11 +1285,14 @@ fn oidc_client_error(status: StatusCode, message: impl Into<String>) -> Response
         .into_response()
 }
 
-/// True for the ids of the built-in public clients (a joining branch and a
-/// clerk's library card), which are never stored as registered clients.
+/// True for the ids of the built-in public clients (a joining branch, a
+/// clerk's library card and a player app's card), which are never stored
+/// as registered clients.
 fn is_built_in_client_id(id: &str) -> bool {
     let id = id.trim();
-    id == bookclerk_node_proto::BRANCH_CLIENT_ID || id == bookclerk_node_proto::CLERK_CLIENT_ID
+    id == bookclerk_node_proto::BRANCH_CLIENT_ID
+        || id == bookclerk_node_proto::CLERK_CLIENT_ID
+        || id == bookclerk_player_api::oauth::PLAYER_CLIENT_ID
 }
 
 /// Reject empty, oversized, or punctuation-heavy client ids.

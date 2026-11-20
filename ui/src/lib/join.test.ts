@@ -58,6 +58,12 @@ describe("join pages", () => {
     expect(isConsentPage(null)).toBe(false);
   });
 
+  it("include a player app's consent page", () => {
+    expect(isAppPath("/apps/approve")).toBe(true);
+    expect(joinPage("/apps/approve/")).toBe("player-approve");
+    expect(isConsentPage("player-approve")).toBe(true);
+  });
+
   it("include this install's library card callback", () => {
     expect(isAppPath("/clerk/callback")).toBe(true);
     expect(joinPage("/clerk/callback/")).toBe("clerk-callback");

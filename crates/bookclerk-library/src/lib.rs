@@ -202,6 +202,12 @@ pub use store::{
         MAX_PLAYBACK_BODY_BYTES, MAX_PLAYBACK_SYNC_BYTES, MAX_PLAYBACK_TRACKS,
         MAX_PROGRESS_CURSOR_BYTES,
     },
+    player_cards::{
+        NewPlayerCard, PlayerCard, PlayerCardTokens, PlayerPassword, MAX_PLAYER_PASSWORDS,
+        MAX_PLAYER_PASSWORD_LABEL_BYTES, PLAYER_ACCESS_TTL_SECS, PLAYER_REFRESH_GRACE_SECS,
+        PLAYER_REFRESH_TTL_DAYS,
+    },
+    player_catalog::{PlayerFacet, PlayerItem},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source,

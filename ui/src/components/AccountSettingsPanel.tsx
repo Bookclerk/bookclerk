@@ -19,6 +19,7 @@ import {
 import { SsoSignInButton } from "@/components/SsoProviderMark";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { CatalogListingSetting } from "@/components/CatalogListingSetting";
+import { PlayerPasswordsSection } from "@/components/PlayerPasswordsSection";
 import { SessionsPanel } from "@/components/SessionsPanel";
 import { TotpSetupHint } from "@/components/TotpSetupHint";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
@@ -982,6 +983,8 @@ export function AccountSettingsPanel({
       ) : null}
 
       {canEditProfile ? <CatalogListingSetting /> : null}
+
+      {canEditProfile ? <PlayerPasswordsSection /> : null}
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">

@@ -12,6 +12,9 @@ export const JOIN_CALLBACK_PATH = "/join/callback";
 /** Where a library sends the browser back after a library card sign-in. */
 export const CLERK_CALLBACK_PATH = "/clerk/callback";
 
+/** The library's consent page for a player app's browser sign-in. */
+export const PLAYER_APPROVE_PATH = "/apps/approve";
+
 /** Document paths the React app owns (served as `index.html` by bookclerkd). */
 const APP_PATHS = new Set([
   "/",
@@ -30,31 +33,35 @@ const APP_PATHS = new Set([
   // callback.
   CLERK_APPROVE_PATH,
   CLERK_CALLBACK_PATH,
+  // A player app's browser sign-in: the library's consent page.
+  PLAYER_APPROVE_PATH,
 ]);
 
 /**
  * A page that sign-in flows from other installs own: a branch's consent
  * (`approve`), a clerk's consent (`clerk-approve`), the joining install's
- * callback (`callback`), or this install's library card callback
- * (`clerk-callback`).
+ * callback (`callback`), this install's library card callback
+ * (`clerk-callback`), or a player app's consent (`player-approve`).
  */
-export type JoinPage = "approve" | "clerk-approve" | "callback" | "clerk-callback";
+export type JoinPage =
+  "approve" | "clerk-approve" | "callback" | "clerk-callback" | "player-approve";
 
 /**
  * True for a consent page, which keeps its address across a sign-in.
  *
  * @param page - The page, from {@link joinPage}.
- * @returns Whether it is a branch's or a clerk's consent page.
+ * @returns Whether it is a branch's, a clerk's or a player app's consent page.
  */
 export function isConsentPage(page: JoinPage | null): boolean {
-  return page === "approve" || page === "clerk-approve";
+  return page === "approve" || page === "clerk-approve" || page === "player-approve";
 }
 
 /**
  * Which Join a library page this document is, if any.
  *
  * @param pathname - Document pathname.
- * @returns `approve`, `clerk-approve`, `callback`, `clerk-callback`, or `null`.
+ * @returns `approve`, `clerk-approve`, `callback`, `clerk-callback`,
+ *   `player-approve`, or `null`.
  */
 export function joinPage(pathname: string = window.location.pathname): JoinPage | null {
   switch (normalizePathname(pathname)) {
@@ -66,6 +73,8 @@ export function joinPage(pathname: string = window.location.pathname): JoinPage 
       return "callback";
     case CLERK_CALLBACK_PATH:
       return "clerk-callback";
+    case PLAYER_APPROVE_PATH:
+      return "player-approve";
     default:
       return null;
   }

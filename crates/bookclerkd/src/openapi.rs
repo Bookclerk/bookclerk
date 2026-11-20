@@ -62,6 +62,10 @@ const OIDC_ACCESS_TOKEN: &str = "oidcAccessToken";
 /// `Authorization: Bookclerk-Clerk <token>`.
 const CLERK_TOKEN: &str = "clerkToken";
 
+/// Security scheme: a player card's access token (`/player`), as
+/// `Authorization: Bearer <token>` or `?token=<token>`.
+const PLAYER_TOKEN: &str = "playerToken";
+
 /// Who a route group admits, as enforced by its auth layer.
 ///
 /// The variants mirror the `require_*` middleware in [`crate::auth`]; the
@@ -86,6 +90,9 @@ pub enum Access {
     OperatorOrUser,
     /// `require_operator_or_portal_auth`: the operator, or any portal session.
     OperatorOrPortal,
+    /// `crate::player::admit_player_card`: a player card's access token
+    /// only; no session, cookie or operator token.
+    Player,
 }
 
 impl Access {
@@ -95,7 +102,9 @@ impl Access {
     /// layer but the public and operator-only ones.
     fn gates_enrollment(self) -> bool {
         match self {
-            Access::Public | Access::Operator => false,
+            // The player layer refuses an unenrolled patron itself, with
+            // the plain-text answer apps read (stated in its refusals).
+            Access::Public | Access::Operator | Access::Player => false,
             Access::OperatorOrAdministrator
             | Access::OperatorOrOwner
             | Access::OperatorOrNodeOwner
@@ -123,6 +132,7 @@ impl Access {
                 PORTAL_SESSION,
                 CLERK_TOKEN,
             ],
+            Access::Player => &[PLAYER_TOKEN],
         }
     }
 
@@ -148,6 +158,9 @@ impl Access {
             Access::OperatorOrPortal => {
                 "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
             }
+            Access::Player => {
+                "A player card's access token only (`/player/login`, `/player/auth/refresh` or the browser sign-in), from a signed-in, active patron; what the patron's scope hides answers 404."
+            }
         }
     }
 }
@@ -159,7 +172,7 @@ impl Access {
 /// (name, scheme) for the operator Bearer token, the two session cookies, and
 /// the credentials single routes check themselves: node signatures, upload
 /// tokens, OIDC access tokens and clerk sign-in tokens.
-fn security_schemes() -> [(&'static str, SecurityScheme); 8] {
+fn security_schemes() -> [(&'static str, SecurityScheme); 9] {
     [
         (
             OPERATOR_TOKEN,
@@ -225,6 +238,17 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 8] {
                 "A library card (`POST /api/clerk/v1/token`), as `Authorization: Bookclerk-Clerk <token>`. Accepted only on routes any library session may use, over TLS except on loopback.",
             ))),
         ),
+        (
+            PLAYER_TOKEN,
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some(
+                        "A player card's access token (`POST /player/login`), as `Authorization: Bearer <token>` or, in audio and cover URLs, the `token` query parameter. Accepted only under `/player`.",
+                    ))
+                    .build(),
+            ),
+        ),
     ]
 }
 
@@ -281,6 +305,7 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Library copies", "/api/copies/v1", "Downloads of an edition's files the library already holds, by a branch or clerk it granted the copy to; the grant's token is the credential."),
     ("OIDC provider", "/.well-known", "Bookclerk as an OpenID Connect provider for other apps."),
     ("OIDC provider", "/oidc", "Bookclerk as an OpenID Connect provider for other apps."),
+    ("Player", "/player", "The player API for audiobook apps written for an Audiobookshelf server (`docs/server/player-apps.md`)."),
     ("OIDC provider", "/api/auth/oidc/clients", "Bookclerk as an OpenID Connect provider for other apps."),
     ("Legacy", "/status", "Old unprefixed paths; use the `/api/…` route named in each."),
     ("Legacy", "/scan", "Old unprefixed paths; use the `/api/…` route named in each."),
@@ -385,6 +410,14 @@ fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str
                     "401",
                     "The caller is not signed in, or the credential is wrong.",
                 )],
+                Access::Player => &[
+                    ("401", "No live player card (`Unauthorized`, plain text)."),
+                    (
+                        "403",
+                        "The patron must enroll a second factor on the library's website first (plain text).",
+                    ),
+                    ("503", "The card could not be checked; retry (plain text)."),
+                ],
                 Access::Operator
                 | Access::OperatorOrAdministrator
                 | Access::OperatorOrOwner
@@ -585,6 +618,7 @@ pub fn document() -> OpenApi {
     fill_untyped_content(&mut doc);
     add_extractor_rejections(&mut doc);
     add_middleware_error_examples(&mut doc);
+    crate::player::add_error_examples(&mut doc);
     close_nested_output_schemas(&mut doc);
     doc
 }
@@ -2056,6 +2090,7 @@ mod tests {
             (Access::OperatorOrNodeOwner, true),
             (Access::OperatorOrUser, true),
             (Access::OperatorOrPortal, true),
+            (Access::Player, false),
         ] {
             assert_eq!(access.gates_enrollment(), gates, "{access:?}");
         }

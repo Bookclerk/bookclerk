@@ -780,7 +780,8 @@ pub struct PortalSessionView {
     pub user_agent: Option<String>,
     /// How the session is used: `browser` for a browser session, `clerk`
     /// for a library card, whose `client_label` is the name the clerk gave
-    /// itself.
+    /// itself, `player` for a player app's card (`/player`), whose
+    /// `client_label` is the player password's label or the app's name.
     #[schema(example = "browser")]
     pub channel: bookclerk_library::PortalSessionKind,
 }

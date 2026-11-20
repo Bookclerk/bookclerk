@@ -1,7 +1,8 @@
 # ADR: Playback is a host feature with one core
 
 - **Status:** Accepted (decisions made with the maintainer on 2026-11-19).
-  Decisions 1 to 7 are built; 8 and 9 are planned
+  Decisions 1 to 8 are built (8 in the [player API ADR](player-api.md));
+  9 is planned
 - **Date:** 2026-11-19
 - **Related:** [Library data model](library-data-model.md),
   [Patron scopes and linked sign-in](patron-scopes.md),
@@ -139,14 +140,15 @@ A sync body and a stream path are parsed sans IO in `bookclerk-library`
 are a bounded type (at most sixty days of milliseconds), a session lists
 at most 512 tracks, and an edition takes at most 200 bookmarks per person.
 
-### 8. Apps connect to the host at `/player` (planned)
+### 8. Apps connect to the host at `/player`
 
 Apps written for an Audiobookshelf server connect to Bookclerk at
 `/player`, served by the host from a first-party crate over the core
 above. The path names Bookclerk's own implementation; it is not `/abs`.
 Sign-in there mints library cards (a short access token and a rotating
 refresh token), and every item, progress and stream call lands on the
-same tables and the same check as the web player.
+same tables and the same check as the web player. The
+[player API ADR](player-api.md) records how.
 
 ### 9. The desktop window plays natively (planned)
 

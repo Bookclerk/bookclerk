@@ -7,9 +7,9 @@ calls and the rules behind them. The decisions are in the
 [Web API](api/README.md) reference with example requests and responses.
 
 > [!NOTE]
-> The core is in place; the web app's player, the desktop player and the
-> app-compatible `/player` API are being built on it and are not in this
-> release.
+> The core is in place. Phone and car apps reach it through the
+> [player API](player-apps.md); the web app's player and the desktop
+> player are being built on it.
 
 ## What is stored
 

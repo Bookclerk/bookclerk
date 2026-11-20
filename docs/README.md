@@ -37,6 +37,7 @@ others go deeper.
 - [Libraries and branches](server/branches.md): join a library, shared branches and consent
 - [Media worker](server/media.md): the confined process that handles audio files
 - [Playback reference](server/playback.md): what the daemon stores and serves for players
+- [Player apps](server/player-apps.md): listen in apps made for Audiobookshelf servers, through `/player`
 - [Backups, updates, import and export](server/backups.md): native backups, schema backups, updating, Libation and PostgreSQL export
 - [Diagnostics](server/diagnostics.md): opt-in error reports
 - [CLI reference](server/cli-reference.md): every built-in `bookclerk` command and option (generated)
@@ -108,4 +109,5 @@ Build and agent conventions for this repository live in
 - [Metadata claims and file sync](adr/metadata-claims-and-file-sync.md): every value is a claim with its source, one resolver, evidence-based works, and two-way sync with tags and sidecar files
 - [Patron scopes and linked sign-in](adr/patron-scopes.md): which part of the library a Member sees, and how a linked server's permissions follow one authority
 - [Playback](adr/playback.md): playback is a host feature with one core that the web player, the desktop window and app-compatible clients share
+- [Player API](adr/player-api.md): the host serves apps made for Audiobookshelf servers at `/player`, with player cards and no account password
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks

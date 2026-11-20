@@ -342,7 +342,7 @@ fn map_progress(m: playback_progress::Model) -> PlaybackProgress {
 }
 
 /// Maps a stored session row.
-fn map_session(m: playback_sessions::Model) -> PlaybackSession {
+pub(super) fn map_session(m: playback_sessions::Model) -> PlaybackSession {
     PlaybackSession {
         id: m.id,
         user_id: m.user_id,
@@ -362,7 +362,7 @@ fn map_session(m: playback_sessions::Model) -> PlaybackSession {
 }
 
 /// Maps a stored bookmark row.
-fn map_bookmark(m: bookmarks::Model) -> Bookmark {
+pub(super) fn map_bookmark(m: bookmarks::Model) -> Bookmark {
     Bookmark {
         id: m.id,
         user_id: m.user_id,

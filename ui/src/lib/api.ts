@@ -1458,8 +1458,11 @@ export interface ListedSession {
   client_label?: string | null;
   device_type?: string | null;
   user_agent?: string | null;
-  /** For a portal session: `browser`, or `clerk` for a clerk's library card. */
-  channel?: "browser" | "clerk" | null;
+  /**
+   * For a portal session: `browser`, `clerk` for a clerk's library card, or
+   * `player` for a player app's card.
+   */
+  channel?: "browser" | "clerk" | "player" | null;
 }
 
 /**

@@ -35,6 +35,7 @@ bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
 bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/optional/source-graphicaudio" }
 # plan_authz drives the scan and acquire planners over an in-memory library.
 bookclerk-library = { path = "../crates/bookclerk-library" }
+bookclerk-player-api = { path = "../crates/bookclerk-player-api" }
 bookclerk-plugin-database-sqlite = { path = "../crates/bookclerk-plugins/platform/database-sqlite", features = ["host-helpers"] }
 bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
 # s3_event reads S3 notification messages (no `s3` feature: the parser has
@@ -377,6 +378,20 @@ bench = false
 [[bin]]
 name = "playback_request"
 path = "fuzz_targets/playback_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "player_request"
+path = "fuzz_targets/player_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "player_socket"
+path = "fuzz_targets/player_socket.rs"
 test = false
 doc = false
 bench = false

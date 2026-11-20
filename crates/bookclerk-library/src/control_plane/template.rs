@@ -18,11 +18,13 @@ use crate::store::LibraryStore;
 
 /// Tables that must be empty before a library can become a template: rows
 /// in them are secrets or sign-in state of the install that wrote them.
-const MUST_BE_EMPTY: [&str; 4] = [
+const MUST_BE_EMPTY: [&str; 6] = [
     "encrypted_secrets",
     "operator_sessions",
     "portal_sessions",
     "claim_tickets",
+    "player_passwords",
+    "player_card_tokens",
 ];
 
 /// What [`strip_install_state`] removed.
