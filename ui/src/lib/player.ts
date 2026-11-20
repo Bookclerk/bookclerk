@@ -60,6 +60,8 @@ export interface PlayerDeps {
   probe(path: string): Promise<number>;
   /** Monotonic milliseconds. */
   now(): number;
+  /** Resolves after `ms` milliseconds. */
+  wait(ms: number): Promise<void>;
   /** Reads the stored speed; `null` when none. */
   loadSpeed(): string | null;
   /** Stores the speed. */
@@ -108,6 +110,12 @@ export const SYNC_EVERY_MS = 15_000;
 /** Milliseconds before a second stream failure earns another new session. */
 const RETRY_AFTER_MS = 60_000;
 
+/**
+ * How long a close waits for reports still on their way, in milliseconds,
+ * before it goes out assuming the server took them.
+ */
+export const CLOSE_WAIT_MS = 2000;
+
 /** Milliseconds one skip button moves. */
 export const SKIP_MS = 30_000;
 
@@ -155,10 +163,33 @@ export function playbackErrorText(err: unknown): string {
 interface ReportFlight {
   /** The session the report is for. */
   session: PlaybackSession;
-  /** Listened milliseconds the report carries. */
-  listenedMs: number;
   /** True when another report was asked for meanwhile and follows this one. */
   again: boolean;
+}
+
+/**
+ * The listened time the server has not taken yet, for one stretch of
+ * listening to one book: it lives from a load to the stop or failure that
+ * ends it, across a replaced session. Reports still on their way hold part
+ * of it, so no report sends that part again, and a report that fails gives
+ * its part back.
+ */
+interface Meter {
+  /** Milliseconds listened that no answered report carried. */
+  listened: number;
+  /** The part of `listened` that reports on their way carry. */
+  reserved: number;
+  /** One promise per report on its way; each resolves when it is answered. */
+  pending: Set<Promise<void>>;
+}
+
+/**
+ * A meter with nothing listened.
+ *
+ * @returns The meter.
+ */
+function emptyMeter(): Meter {
+  return { listened: 0, reserved: 0, pending: new Set() };
 }
 
 /** The web player's engine. One per page. */
@@ -181,8 +212,14 @@ export class Player {
   private pendingSeekMs: number | null = null;
   /** True when the loaded track should play as soon as it can. */
   private wantPlay = false;
-  /** Milliseconds listened since the last report. */
-  private listened = 0;
+  /** Listened time for the book now loaded. */
+  private meter: Meter = emptyMeter();
+  /**
+   * Where the listener was when a session was given up; the next play of
+   * that book starts there, whatever the server last stored. `null`
+   * otherwise.
+   */
+  private resumeMs: number | null = null;
   /** {@link PlayerDeps.now} at the last listened-time tick; `null` while paused. */
   private tickedAt: number | null = null;
   /** {@link PlayerDeps.now} at the last report. */
@@ -273,11 +310,16 @@ export class Player {
    * @param target - What to play.
    */
   async play(target: PlayTarget): Promise<void> {
+    // A choice in its own right, the loaded book included: a request still
+    // reading for another book no longer stands.
+    this.claims += 1;
     if (this.state.target?.editionId === target.editionId && this.session) {
       this.resume();
       return;
     }
-    await this.begin(target);
+    // A book given up after a failure goes on from where the listener was.
+    const again = this.state.target?.editionId === target.editionId;
+    await this.begin(target, again ? this.resumeMs : null);
   }
 
   /**
@@ -285,8 +327,10 @@ export class Player {
    * the same edition's earlier session included.
    *
    * @param target - What to play.
+   * @param startMs - Where to start; `null` for where the server says the
+   *   listener left it.
    */
-  private async begin(target: PlayTarget): Promise<void> {
+  private async begin(target: PlayTarget, startMs: number | null = null): Promise<void> {
     // Everything that decides which request is the latest happens before
     // the first await, so a slow close of the book before cannot let an
     // earlier request overtake a later one.
@@ -305,13 +349,15 @@ export class Player {
           .catch(() => undefined);
         return;
       }
-      await this.adopt(session, session.position_ms, generation);
+      await this.adopt(session, startMs ?? session.position_ms, generation);
       if (generation !== this.generation) return;
       // Bookmarks are a convenience: playing does not wait on them.
       void this.readBookmarks(target.editionId, generation);
     } catch (err) {
       if (generation === this.generation) {
         this.session = null;
+        // The place is still the one to go on from when play is pressed again.
+        this.resumeMs = startMs;
         this.set({ status: "error", error: playbackErrorText(err) });
       }
     }
@@ -326,8 +372,9 @@ export class Player {
    */
   private async readBookmarks(editionId: string, generation: number): Promise<void> {
     try {
-      // Two reads settle any change a listener can make in the meantime.
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+      // Read until a list arrives that no change overtook. A listener
+      // cannot add bookmarks faster than they are read for long.
+      for (;;) {
         const edits = this.bookmarkEdits;
         const manifest = await this.deps.manifest(editionId);
         if (generation !== this.generation) return;
@@ -466,7 +513,7 @@ export class Player {
     const now = this.deps.now();
     if (this.tickedAt !== null) {
       // A long gap is a suspended tab, not listening.
-      this.listened += Math.min(Math.max(0, now - this.tickedAt), 2000);
+      this.meter.listened += Math.min(Math.max(0, now - this.tickedAt), 2000);
     }
     this.tickedAt = this.audio && !this.audio.paused ? now : null;
   }
@@ -523,6 +570,8 @@ export class Player {
    */
   private async onStreamError(): Promise<void> {
     if (!this.session || !this.state.target) return;
+    // The stream being replaced has nothing new to say by failing again.
+    if (this.recovery) return;
     const now = this.deps.now();
     // A stream that fails again right after a new session is broken, not ended.
     if (this.retriedAt !== null && now - this.retriedAt < RETRY_AFTER_MS) {
@@ -544,18 +593,50 @@ export class Player {
   private abandon(error: string): void {
     const session = this.session;
     this.tick();
-    const body = session ? this.reportBody(session) : null;
+    const body = this.reportBody();
+    const meter = this.meter;
+    this.meter = emptyMeter();
+    // Whatever was on its way for this session, a replacement included, is
+    // no longer wanted.
+    this.generation += 1;
+    this.recovery = null;
     this.session = null;
     this.wantPlay = false;
     this.tickedAt = null;
     this.pendingSeekMs = null;
-    this.listened = 0;
+    this.resumeMs = body.position_ms;
     this.audio?.pause();
     if (this.audio) this.audio.src = "";
     this.set({ status: "error", error });
     // The server may have ended it already; then the close changes nothing.
-    if (session && body) {
-      void this.deps.close(session.session_id, body, false).catch(() => undefined);
+    if (session) void this.finish(session, meter, body, false);
+  }
+
+  /**
+   * Sends a session's close. Reports still on their way are given a moment
+   * to be answered first, so the close carries the time of one that failed
+   * and leaves out the time of one the server took. One that has not
+   * answered by then is taken as accepted.
+   *
+   * @param session - The session to close.
+   * @param meter - The listened time of the stretch that ended.
+   * @param body - The close report; its listened time is filled in here.
+   * @param keepalive - True while the page is going away, which cannot wait.
+   */
+  private async finish(
+    session: PlaybackSession,
+    meter: Meter,
+    body: PlaybackReport,
+    keepalive: boolean,
+  ): Promise<void> {
+    if (!keepalive && meter.pending.size > 0) {
+      await Promise.race([Promise.all([...meter.pending]), this.deps.wait(CLOSE_WAIT_MS)]);
+    }
+    body.listened_ms = Math.round(Math.max(0, meter.listened - meter.reserved));
+    try {
+      await this.deps.close(session.session_id, body, keepalive);
+    } catch {
+      // The last periodic report stands.
     }
   }
 
@@ -597,18 +678,15 @@ export class Player {
   }
 
   /**
-   * The report for the current position.
+   * The report for the current position, with the listened time no report
+   * on its way already carries.
    *
-   * @param session - The session the report is for.
    * @returns The body of a sync or close request.
    */
-  private reportBody(session: PlaybackSession): PlaybackReport {
-    // What a report in flight for this session already carries is not sent
-    // twice.
-    const inFlight = this.flight?.session === session ? this.flight.listenedMs : 0;
+  private reportBody(): PlaybackReport {
     const body: PlaybackReport = {
       position_ms: Math.max(0, Math.round(this.state.positionMs)),
-      listened_ms: Math.round(Math.max(0, this.listened - inFlight)),
+      listened_ms: Math.round(Math.max(0, this.meter.listened - this.meter.reserved)),
     };
     if (this.state.durationMs) body.duration_ms = Math.round(this.state.durationMs);
     return body;
@@ -630,31 +708,50 @@ export class Player {
       return;
     }
     this.syncedAt = this.deps.now();
-    const body = this.reportBody(session);
-    const flight: ReportFlight = { session, listenedMs: this.listened, again: false };
+    const meter = this.meter;
+    const body = this.reportBody();
+    const carried = Math.max(0, meter.listened - meter.reserved);
+    meter.reserved += carried;
+    let answered = () => {};
+    const pending = new Promise<void>((resolve) => {
+      answered = resolve;
+    });
+    meter.pending.add(pending);
+    const flight: ReportFlight = { session, again: false };
     this.flight = flight;
-    let resend = false;
+    let synced: PlaybackSynced | null = null;
+    let failure: unknown = null;
     try {
-      const synced = await this.deps.sync(session.session_id, body);
-      // An answer for a session since replaced says nothing about this one.
-      if (this.session === session) {
-        this.listened = Math.max(0, this.listened - flight.listenedMs);
-        if (synced.finished_now) this.set({ finished: true });
-      }
+      synced = await this.deps.sync(session.session_id, body);
     } catch (err) {
+      failure = err;
+    }
+    // Settled before anything else is sent: time the server took leaves the
+    // meter whichever session is open by now, and time it refused is free
+    // for the next report.
+    if (synced) meter.listened = Math.max(0, meter.listened - carried);
+    meter.reserved -= carried;
+    meter.pending.delete(pending);
+    answered();
+    if (this.flight === flight) this.flight = null;
+    let resend = false;
+    if (synced) {
+      // An answer for a session since replaced says nothing about this one.
+      if (this.session === session && synced.finished_now) this.set({ finished: true });
+    } else if (
       // A new session that refuses its first report is left to the next
       // periodic one, so two failures cannot open sessions in a loop.
-      if (isApiError(err) && err.status === 409 && this.session === session && !replaced) {
-        if (this.flight === flight) this.flight = null;
-        await this.reopen();
-        // The server never took this report, and a paused book sends no
-        // other: the new session gets the place and the time once.
-        resend = this.session !== null && this.session !== session;
-      }
-      // Anything else is retried by the next report.
-    } finally {
-      if (this.flight === flight) this.flight = null;
+      isApiError(failure) &&
+      failure.status === 409 &&
+      this.session === session &&
+      !replaced
+    ) {
+      await this.reopen();
+      // The server never took this report, and a paused book sends no
+      // other: the new session gets the place and the time once.
+      resend = this.session !== null && this.session !== session;
     }
+    // Any other failure is retried by the next report.
     if (resend) await this.report(true);
     else if (flight.again && this.session === session) await this.report();
   }
@@ -810,24 +907,22 @@ export class Player {
     this.wantPlay = false;
     this.session = null;
     this.recovery = null;
+    this.resumeMs = null;
     if (!session) {
       if (this.state.status !== "idle") this.set(idle(this.state.speed));
       return;
     }
     this.tick();
-    const body = this.reportBody(session);
+    const body = this.reportBody();
     this.audio?.pause();
     if (this.audio) this.audio.src = "";
     this.set(idle(this.state.speed));
-    // Cleared before the close is awaited: by the time it answers, another
+    // Replaced before the close is awaited: by the time it answers, another
     // book may be loading, and its state is not this call's to reset.
-    this.listened = 0;
+    const meter = this.meter;
+    this.meter = emptyMeter();
     this.tickedAt = null;
     this.pendingSeekMs = null;
-    try {
-      await this.deps.close(session.session_id, body, keepalive);
-    } catch {
-      // The last periodic report stands.
-    }
+    await this.finish(session, meter, body, keepalive);
   }
 }

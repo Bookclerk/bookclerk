@@ -108,6 +108,7 @@ export function webPlayer(): Player {
     setProgress: putPlaybackProgress,
     probe,
     now: () => performance.now(),
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     loadSpeed: () => {
       try {
         return window.localStorage.getItem(SPEED_KEY);

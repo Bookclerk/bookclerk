@@ -23,6 +23,7 @@ const deps: PlayerDeps = {
   setProgress: unused,
   probe: unused,
   now: () => 0,
+  wait: () => Promise.resolve(),
   loadSpeed: () => null,
   saveSpeed: () => {},
 };

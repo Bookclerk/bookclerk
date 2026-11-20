@@ -328,7 +328,16 @@ Rules the engine keeps:
   session at the place the listener is, and a report the ended session
   refused is sent once to the new one. A second stream error within a
   minute closes the session and is shown to the listener instead; play
-  then opens a new session.
+  then opens a new session at the place the listener reached, whatever
+  the server last stored. A stream error while a replacement is already
+  opening joins that replacement.
+- Listened time is counted once. A report holds the time it carries until
+  the server answers: an accepted report takes it out of the count, even
+  when the session was replaced meanwhile, and a failed one gives it back
+  for the next report. A close waits up to two seconds (`CLOSE_WAIT_MS`)
+  for reports still on their way, so it carries the time of one that
+  failed; the `keepalive` close on page hide cannot wait and assumes they
+  were accepted.
 - Playing again a book played to its end opens a new session, because
   only opening one marks a finished edition as in progress again.
 - An edition in several files has every file's length read from its
