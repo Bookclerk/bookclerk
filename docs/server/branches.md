@@ -87,7 +87,7 @@ A branch's node appears among the nodes (`bookclerk nodes list`,
 `kind = branch`), owned by the user who signed in, or the invite's user.
 **Trust follows that user's role**:
 
-- A Member's or Host's branch receives only jobs whose store accounts
+- A Member's branch receives only jobs whose store accounts
   belong to that user.
 - An Administrator's or Owner's branch may receive any job, but takes
   only that user's own work unless the branch's operator turns on
@@ -274,11 +274,15 @@ accounts and which of them would travel.
   can turn it off for one Administrator too; Owners are never limited. A member it is off for adds nothing from a join,
   and the connect routes answer `403`. A sign-in that finishes after the
   control was turned off is not linked, and an account it newly stored
-  (or found revoked) is revoked again and its secrets deleted. A join
-  already adding accounts when the control is turned off (or the member
-  is disabled) stops: each account is added in its own batch that checks
-  the member's controls again, and the ones not yet added count as not
-  kept.
+  (or found revoked) is revoked again and its secrets deleted. That
+  cleanup, an allowed sign-in's link and a revoke of the same store
+  account each take the account's write lock (`bookclerk_slots`) first,
+  so an allowed sign-in of the same account either links before the
+  cleanup (which then keeps it) or finds its credentials gone and asks the
+  member to sign in again. A join already adding accounts when the control
+  is turned off (or the member is disabled) stops: each account is added
+  in its own batch that checks the member's controls again, and the ones
+  not yet added count as not kept.
 
 ### Adding connections later, and disconnecting everywhere
 
@@ -516,7 +520,9 @@ node, this server first, and who approved it (`GET /api/config/shared-branches`)
 Another user sees only the ones they own.
 
 A shared branch that isn't running can be removed there
-(`DELETE /api/config/nodes/{node_id}`). Stop Bookclerk on it first.
+(`DELETE /api/config/nodes/{node_id}`) by the operator, or by an Owner after
+elevating, since removing one deletes its records. Stop Bookclerk on it
+first.
 
 > [!WARNING]
 > Removing a shared branch doesn't take back the database credentials or key it

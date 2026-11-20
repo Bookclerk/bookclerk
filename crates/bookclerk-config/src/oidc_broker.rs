@@ -334,33 +334,33 @@ impl OidcBrokerConfig {
     }
 }
 
-/// Accepts `owner` / `administrator` / `host` / `member`; rejects `operator` and unknown roles.
+/// Accepts `owner` / `administrator` / `member`; rejects `operator` and unknown roles.
 ///
 /// # Errors
 ///
 /// Returns [`ConfigError::Invalid`] when `role` is `operator` or not a supported member role.
 fn validate_role(role: &str, field: &str) -> Result<()> {
     match role.trim() {
-        "owner" | "administrator" | "host" | "member" => Ok(()),
+        "owner" | "administrator" | "member" => Ok(()),
         "operator" => Err(ConfigError::Invalid(format!(
             "{field} cannot be `operator` — the Operator account is local-only"
         ))),
         other => Err(ConfigError::Invalid(format!(
-            "{field} must be owner, administrator, host, or member (got `{other}`)"
+            "{field} must be owner, administrator, or member (got `{other}`)"
         ))),
     }
 }
 
 /// Pick the highest Bookclerk role from mapped claim values.
 ///
-/// Precedence: owner > administrator > host > member.
+/// Precedence: owner > administrator > member.
 #[must_use]
 pub fn resolve_mapped_role(
     role_map: &BTreeMap<String, String>,
     claim_values: &[String],
 ) -> Option<String> {
     /// Known roles, highest first.
-    const RANKED: [&str; 4] = ["owner", "administrator", "host", "member"];
+    const RANKED: [&str; 3] = ["owner", "administrator", "member"];
     let rank = |role: &str| RANKED.iter().position(|known| *known == role);
     let mut best: Option<usize> = None;
     for raw in claim_values {
@@ -463,18 +463,18 @@ mod tests {
     }
 
     #[test]
-    fn mapped_role_ranks_host_between_administrator_and_member() {
+    fn mapped_role_ranks_administrator_above_member_and_refuses_host() {
         let mut map = BTreeMap::new();
         map.insert("users".into(), "member".into());
-        map.insert("hosts".into(), "host".into());
         map.insert("admins".into(), "administrator".into());
-        map.insert("typo".into(), "hosts".into());
-        let host = resolve_mapped_role(&map, &["users".into(), "hosts".into(), "typo".into()]);
-        assert_eq!(host.as_deref(), Some("host"));
-        let admin = resolve_mapped_role(&map, &["hosts".into(), "admins".into()]);
+        map.insert("typo".into(), "admins".into());
+        let member = resolve_mapped_role(&map, &["users".into(), "typo".into()]);
+        assert_eq!(member.as_deref(), Some("member"));
+        let admin = resolve_mapped_role(&map, &["users".into(), "admins".into()]);
         assert_eq!(admin.as_deref(), Some("administrator"));
-        assert!(validate_role("host", "default_role").is_ok());
-        assert!(validate_role("hosts", "default_role").is_err());
+        // The Host role is gone: a mapping or default naming it is refused.
+        assert!(validate_role("host", "default_role").is_err());
+        assert!(validate_role("admins", "default_role").is_err());
     }
 
     #[test]

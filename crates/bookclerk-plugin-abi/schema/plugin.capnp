@@ -1682,6 +1682,12 @@ struct CatalogCapabilities {
   # True when `purchaseHint` / `purchaseHints` price a query by its exact
   # ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
   priceByAsin @2 :Bool;
+  # True when `catalogDetail` resolves this store's own `productId` (an id
+  # its search, expand or deals hits gave) to a full bibliographic record.
+  # Catalog search then asks this store to fill lean result rows it listed
+  # itself, and title dialogs ask it for the editions it listed. A store
+  # that leaves it false is never woken for a detail lookup by product id.
+  detailByProductId @3 :Bool;
 }
 
 # Portal Accounts connect mode for storefronts.

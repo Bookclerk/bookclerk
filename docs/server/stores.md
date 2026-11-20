@@ -118,6 +118,17 @@ Connect Audible from **Accounts**, which signs in with Amazon OAuth.
 Connect again to refresh the sign-in, or when Widevine L3 provisioning
 needs the device registered as Android again.
 
+The plugin's network grants cover the Amazon and Audible hosts of every
+Audible marketplace (`*.amazon.co.uk`, `*.audible.de`, `*.amazon.co.jp`
+and so on), so accounts outside the US can refresh their sign-in and sign
+the device out when the account is removed.
+
+> [!NOTE]
+> Earlier versions granted only the US hosts. After an upgrade the plugin
+> keeps running under its earlier grant until you approve the new hosts:
+> `bookclerk plugins approve audible --yes` (see
+> [Plugins](plugins.md#consent-rides-on-the-version)).
+
 ### Decryption and formats
 
 The Audible plugin decrypts Audible's DRM itself. The host's media
@@ -194,7 +205,7 @@ bookclerk library acquire --isbn 978…
 | Setting | Default | Values |
 | --- | --- | --- |
 | `container` | `m4b` | `m4b`, `zip` |
-| `base_url` | the store's | Overrides the API address, for testing |
+| `base_url` | the store's | Overrides the API address for sign-in, scans, downloads and the catalog, for testing |
 
 Credentials are stored in `encrypted_secrets` in the database.
 
@@ -222,7 +233,7 @@ bookclerk library scan --source chirp
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `graphql_url` | the store's | Overrides the GraphQL address, for testing |
+| `graphql_url` | the store's | Overrides the GraphQL address for sign-in, scans, downloads and the catalog, for testing |
 
 The plugin signs in with Chirp's GraphQL `signIn` mutation, not a browser
 cookie session.
@@ -255,17 +266,29 @@ bookclerk library scan --source graphicaudio
 - `bitrate` is `hi` or `lo`, for `device` access.
 - `container` is `auto`, `m4b`, `mp3` or `flac`, for `zip` access.
 - `base_url` and `store_url` override the Access App and Magento
-  addresses, for testing.
+  addresses, for testing. Catalog search, details, related titles and
+  prices use `store_url` too.
 
 The Magento paths use the password stored when the account was connected.
 
 Catalog search and Discover read GraphicAudio's public store, which needs no
 account. Search and series pages only list a title, a link and a cover. The
-plugin's title-details call reads the product page instead, and the demo
-library's seed uses it. Title dialogs in the web app don't ask GraphicAudio
-for details yet. A product page gives the author, the cast (shown as
-narrators), the synopsis, the ISBN, the release date, the running time, the
-genre, the review score and the price.
+plugin's title-details call reads the product page instead: catalog search
+uses it to fill the GraphicAudio rows on a results page, and title dialogs
+use it for a title GraphicAudio listed. A product page gives the author,
+the cast (shown as narrators), the synopsis, the ISBN, the release date,
+the running time, the genre, the review score and the price.
+
+The store's search answers a query it can't match, such as one with a
+colon or an author's name, with an alphabetical list of its whole catalog.
+The plugin sends the query as plain words, and when the answer still looks
+like that list it tries again without the last word, up to three searches,
+judging each answer by the words it sent. It stops early when only common
+or short words would be left.
+If every search gets the list, the plugin returns no results rather than
+the list. A later page of results uses the search that worked on page 1,
+and comes back empty when that page is the list. Author and narrator
+searches are sent once and kept as they come.
 
 > [!NOTE]
 > A ZIP purchase also unlocks the app and the browser player. An

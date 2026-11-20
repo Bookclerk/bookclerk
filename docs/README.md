@@ -109,4 +109,5 @@ Build and agent conventions for this repository live in
 - [Patron scopes and linked sign-in](adr/patron-scopes.md): which part of the library a Member sees, and how a linked server's permissions follow one authority
 - [Playback](adr/playback.md): playback is a host feature with one core that the web player, the desktop window and app-compatible clients share
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks
+- [What needs the operator](adr/owner-and-operator.md): the rule for which actions need elevation, and the switches an Owner sets on each Administrator
 - [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins

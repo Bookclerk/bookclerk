@@ -262,6 +262,42 @@ first appear after the nightly run or a manual run (see
 > GitHub does not let a public package go back to private. Later publishes
 > keep the package's visibility, so this step is needed only once.
 
+## Desktop packages
+
+The desktop app's unsigned packages (see
+[Packages](ui/README.md#packages)) are built by
+[`.github/workflows/desktop-packages.yml`](../../.github/workflows/desktop-packages.yml):
+a `.deb` and an AppImage on Linux, an NSIS installer on Windows, and a
+`.dmg` on macOS. Each is a full release build on its own runner.
+
+The images workflow calls it, so it runs on the images' schedule (see
+[When it runs](#when-it-runs)):
+
+- nightly, and by hand, when `main` has moved since the last publish;
+- for a published release, whose packages it attaches to the release.
+
+A pull request runs it only when it changes the workflow or the packaging
+configuration (`tauri.packaging*.json`, `crates/bookclerk-dev/src/package.rs`).
+CI's [desktop job](ci.md#desktop-job) covers the window's code on every pull
+request. A change that breaks how the packaged app finds its runtime shows
+up in the next nightly build.
+
+Every build uploads the packages as workflow artifacts, kept for 14 days.
+For a release, the `publish` job attaches them to the GitHub release with a
+build-provenance attestation each. To check a downloaded package, replace
+`<owner>` with the repository's owner:
+
+```sh
+gh attestation verify <downloaded package> --owner <owner>
+```
+
+Only that job holds `contents: write`, `id-token: write` and
+`attestations: write`.
+
+The package builds keep no Rust cache. Three release caches would not fit
+beside CI's caches in the repository's 10 GB, and a nightly build has no
+one waiting on it.
+
 ## Release tags
 
 Publishing a release starts the image publish, the docs publish, the

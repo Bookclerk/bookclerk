@@ -78,15 +78,17 @@ impl ContentSource for StubSource {
             return Err(SourceError::auth(refusal));
         }
         let account_id = opts.email.unwrap_or_else(|| "oauth-user".into());
+        // A login stores the account and its sign-in, as a real
+        // storefront's login does, before the portal links it.
+        scope
+            .upsert_account(&account_id, &opts.marketplace, None, true)
+            .await
+            .unwrap();
+        scope
+            .save_source_auth(&account_id, "auth", b"stub-login-token")
+            .await
+            .unwrap();
         if let Some((library, user_id)) = self.stops_member.as_ref().and_then(|s| s.get()) {
-            scope
-                .upsert_account(&account_id, &opts.marketplace, None, true)
-                .await
-                .unwrap();
-            scope
-                .save_source_auth(&account_id, "auth", b"stub-login-token")
-                .await
-                .unwrap();
             // `linked@…` stands for an account another login of the same
             // store account connected while this one ran.
             if account_id.starts_with("linked@") {
@@ -179,6 +181,13 @@ fn stores() -> Vec<Arc<dyn ContentSource>> {
 ///
 /// The router, the library, and the `Cookie` header value of a live session.
 async fn harness(sources: Vec<Arc<dyn ContentSource>>) -> (Router, LibraryStore, String) {
+    // Logins seal their sign-in; a test that reads it back configures (and
+    // holds) its own key first.
+    if bookclerk_library::require_master_key(None).is_err() {
+        let keys = tempfile::tempdir().unwrap();
+        bookclerk_library::configure_master_key(keys.path()).unwrap();
+        std::mem::forget(keys);
+    }
     let library = LibraryStore::from_connection(
         bookclerk_plugin_database_sqlite::open_memory()
             .await

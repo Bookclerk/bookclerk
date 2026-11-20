@@ -225,6 +225,7 @@ export const NAV: NavSpec[] = [
       "adr/metadata-claims-and-file-sync",
       "adr/patron-scopes",
       "adr/storage-destinations",
+      "adr/owner-and-operator",
       "adr/playback",
       "adr/ingress-plugins",
     ],

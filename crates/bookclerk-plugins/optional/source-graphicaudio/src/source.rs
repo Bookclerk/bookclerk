@@ -4,8 +4,8 @@
 //! handlers ([`crate::guest`]); the host stores the credentials they return.
 
 use bookclerk_storefront::{
-    CatalogHit, CatalogSearchOpts, ExpandSeed, PriceLookup, PricedAnswer, PricedListing,
-    PurchaseHintOpts, SourcePurchaseHint,
+    CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PriceLookup, PricedAnswer,
+    PricedListing, PurchaseHintOpts, SourcePurchaseHint,
 };
 
 use crate::catalog::{
@@ -15,6 +15,113 @@ use crate::magento::DEFAULT_STORE_URL;
 
 /// Describe / config id for this store (`graphicaudio`).
 pub const ID: &str = "graphicaudio";
+
+/// Most store searches one [`GraphicAudioSource::search_catalog`] call
+/// makes: the query, then up to two shorter forms of it.
+const SEARCH_MAX_ATTEMPTS: usize = 3;
+
+/// Short words a title shares with almost every other title, so they say
+/// nothing about whether a listing answers the query.
+const COMMON_WORDS: &[&str] = &[
+    "the", "and", "for", "with", "from", "into", "book", "part", "volume", "vol", "series",
+];
+
+/// The words of a search query as the store's search can read them:
+/// punctuation other than an apostrophe inside a word becomes a space, so
+/// "Mistborn: The Final Empire" is sent as "Mistborn The Final Empire".
+///
+/// # Arguments
+///
+/// * `raw` - The caller's query.
+///
+/// # Returns
+///
+/// The words in order; empty when the query has none.
+fn search_words(raw: &str) -> Vec<String> {
+    let chars: Vec<char> = raw.chars().collect();
+    let folded: String = chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let inside_word = i > 0
+                && chars[i - 1].is_alphanumeric()
+                && chars.get(i + 1).is_some_and(|n| n.is_alphanumeric());
+            if c.is_alphanumeric() || (matches!(c, '\'' | '\u{2019}') && inside_word) {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    folded.split_whitespace().map(str::to_string).collect()
+}
+
+/// The lowercased words of `text` with apostrophes dropped, for comparing a
+/// listing with a query.
+fn plain_words(text: &str) -> Vec<String> {
+    text.chars()
+        .filter(|c| !matches!(c, '\'' | '\u{2019}'))
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The query words that tell titles apart: three letters or more, and not
+/// in [`COMMON_WORDS`].
+fn telling_words(words: &[String]) -> Vec<String> {
+    words
+        .iter()
+        .flat_map(|w| plain_words(w))
+        .filter(|w| w.chars().count() >= 3 && !COMMON_WORDS.contains(&w.as_str()))
+        .collect()
+}
+
+/// True when `product`'s title or series holds at least half of `telling`
+/// (rounded up).
+fn answers_query(product: &MagentoCatalogProduct, telling: &[String]) -> bool {
+    let mut text = plain_words(&product.title);
+    if let Some(series) = product.series.as_deref() {
+        text.extend(plain_words(series));
+    }
+    let held = telling.iter().filter(|w| text.contains(w)).count();
+    held * 2 >= telling.len()
+}
+
+/// Fewest products a search page must list to be taken for the catalog
+/// listing. The listing fills the store's grid, while a short answer is more
+/// likely a few real matches whose titles happen to be in order.
+const MIN_LISTING_PRODUCTS: usize = 6;
+
+/// True when a search answer looks like the store's alphabetical listing of
+/// the whole catalog rather than matches for the query: at least
+/// [`MIN_LISTING_PRODUCTS`] products, none of whose title or series
+/// [answers](answers_query) the
+/// query, in alphabetical order by title. A query with no
+/// [telling words](telling_words) cannot be judged, so its answer is taken.
+///
+/// # Arguments
+///
+/// * `products` - The products the search page listed, in page order.
+/// * `query` - The query's words, as [`search_words`] gives them.
+fn looks_like_fallback_listing(products: &[MagentoCatalogProduct], query: &[String]) -> bool {
+    let telling = telling_words(query);
+    if telling.is_empty() || products.len() < MIN_LISTING_PRODUCTS {
+        return false;
+    }
+    if products.iter().any(|p| answers_query(p, &telling)) {
+        return false;
+    }
+    let titles: Vec<String> = products.iter().map(|p| p.title.to_lowercase()).collect();
+    titles.windows(2).all(|pair| pair[0] <= pair[1])
+}
 
 /// GraphicAudio catalog client used by the guest's discovery entrypoints.
 ///
@@ -48,7 +155,32 @@ impl GraphicAudioSource {
         self
     }
 
+    /// Catalog client for the instance settings document `config`.
+    ///
+    /// Uses the document's `store_url` override when it has one, the same
+    /// storefront origin [`crate::guest::resolve_store_base_url`] gives
+    /// sign-in, scans and fetches, so a staging or mock origin reaches every
+    /// entrypoint.
+    #[must_use]
+    pub fn from_config(config: &serde_json::Value) -> Self {
+        Self::new().with_store_url(crate::guest::resolve_store_base_url(config))
+    }
+
     /// Searches the public catalog.
+    ///
+    /// The store's search answers a query it cannot match (one with
+    /// punctuation or an author's name, say) with an alphabetical listing of
+    /// the whole catalog. So the query goes out as plain words, and an answer
+    /// that looks like that listing (a full grid, none of it matching the
+    /// query's words, in alphabetical order) is not taken: the page is asked
+    /// again with the last word dropped (an author's name usually trails the
+    /// title), up to three requests in all, and answers nothing when every
+    /// attempt gets the listing. Each answer is judged by the words sent for
+    /// it, and a shortened query with no telling words left is not sent. A later page first settles the query on
+    /// page 1 the same way, then asks for that page with it, and answers
+    /// nothing when that page looks like the listing. An author or narrator
+    /// search is sent once and taken as it comes: grid titles never carry a
+    /// person's name, so the listing check cannot judge it.
     ///
     /// # Errors
     ///
@@ -59,8 +191,8 @@ impl GraphicAudioSource {
         &self,
         opts: &CatalogSearchOpts,
     ) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
-        let q = opts.query.trim();
-        if q.is_empty() {
+        let words = search_words(&opts.query);
+        if words.is_empty() {
             return Ok(Vec::new());
         }
         let limit = opts.effective_limit();
@@ -69,20 +201,72 @@ impl GraphicAudioSource {
             Err(_) => return Ok(Vec::new()),
         };
         let page = opts.page.max(1);
-        let products =
-            match crate::catalog::search_catalog_page(&http, &self.store_url, q, page).await {
-                Ok(p) => p,
-                Err(err) => {
-                    tracing::debug!(error = %err, "graphicaudio catalog search failed");
-                    return Ok(Vec::new());
-                }
+        let names_a_person = matches!(
+            opts.field,
+            Some(CatalogSearchField::Author | CatalogSearchField::Narrator)
+        );
+        // Settle the query on page 1: the listing check needs the first page
+        // of answers, since a later page of a real search may hold none of
+        // the query's words either.
+        let mut settled = None;
+        for attempt in 0..SEARCH_MAX_ATTEMPTS {
+            let Some(kept) = words.len().checked_sub(attempt).filter(|n| *n > 0) else {
+                break;
             };
+            let sent = &words[..kept];
+            // A shortened query left with no telling words cannot be
+            // judged, so its answer could be the listing taken as matches.
+            if attempt > 0 && telling_words(sent).is_empty() {
+                break;
+            }
+            let q = sent.join(" ");
+            let Some(found) = self.search_page(&http, &q, 1).await else {
+                return Ok(Vec::new());
+            };
+            // Judge each answer by the words actually sent.
+            if names_a_person || !looks_like_fallback_listing(&found, sent) {
+                settled = Some((sent, found));
+                break;
+            }
+            tracing::debug!(query = %q, "graphicaudio search answered with the catalog listing");
+        }
+        let Some((sent, first)) = settled else {
+            return Ok(Vec::new());
+        };
+        let products = if page == 1 {
+            first
+        } else {
+            let Some(found) = self.search_page(&http, &sent.join(" "), page).await else {
+                return Ok(Vec::new());
+            };
+            if !names_a_person && looks_like_fallback_listing(&found, sent) {
+                return Ok(Vec::new());
+            }
+            found
+        };
         Ok(products
             .into_iter()
             .take(limit)
             .filter(|p| !p.product_id.trim().is_empty())
             .map(|p| ga_catalog_hit(&p, String::from("search")))
             .collect())
+    }
+
+    /// One page of the store's search for `q`, or `None` (logged) when the
+    /// request or its parse fails.
+    async fn search_page(
+        &self,
+        http: &bookclerk_plugin_sdk::http::Client,
+        q: &str,
+        page: u32,
+    ) -> Option<Vec<MagentoCatalogProduct>> {
+        match crate::catalog::search_catalog_page(http, &self.store_url, q, page).await {
+            Ok(found) => Some(found),
+            Err(err) => {
+                tracing::debug!(error = %err, "graphicaudio catalog search failed");
+                None
+            }
+        }
     }
 
     /// The full catalog record of one product, read from its product page.
@@ -692,6 +876,74 @@ mod tests {
             .await
             .expect("expand")
             .is_empty());
+    }
+
+    /// A grid product titled `title`.
+    fn product(id: &str, title: &str) -> MagentoCatalogProduct {
+        MagentoCatalogProduct {
+            product_id: id.into(),
+            sku: None,
+            title: title.into(),
+            url: None,
+            series: None,
+            cover_url: None,
+        }
+    }
+
+    #[test]
+    fn search_words_drop_punctuation_but_keep_apostrophes_inside_words() {
+        assert_eq!(
+            search_words("Mistborn: The Final Empire — Sanderson"),
+            vec!["Mistborn", "The", "Final", "Empire", "Sanderson"]
+        );
+        assert_eq!(
+            search_words("'Ender's Game' (1/3)"),
+            vec!["Ender's", "Game", "1", "3"]
+        );
+        assert_eq!(search_words("Ender\u{2019}s"), vec!["Ender\u{2019}s"]);
+        assert!(search_words(" :;- ").is_empty());
+    }
+
+    /// The catalog's alphabetical listing is told apart from real matches,
+    /// a series page included; an answer that cannot be judged is taken.
+    #[test]
+    fn the_alphabetical_catalog_listing_is_recognised() {
+        let query = search_words("Mistborn: The Final Empire Sanderson");
+        let listing = [
+            product("1", "1632"),
+            product("2", "A Call to Arms"),
+            product("3", "Abaddon's Gate"),
+            product("4", "Age of Aztec"),
+            product("5", "Alloy of Law"),
+            product("6", "Ancillary Justice"),
+        ];
+        assert!(looks_like_fallback_listing(&listing, &query));
+        // Fewer products than a full grid are taken as real matches.
+        assert!(!looks_like_fallback_listing(&listing[..5], &query));
+
+        let matches = [
+            product("4", "Mistborn 1: The Final Empire 1 of 3"),
+            product("5", "Mistborn 1: The Final Empire 2 of 3"),
+        ];
+        assert!(!looks_like_fallback_listing(&matches, &query));
+
+        // A series page names the series rather than the title.
+        let mut part = product("6", "The Well of Ascension 1 of 3");
+        part.series = Some("Mistborn".into());
+        let series = [product("7", "Alloy of Law"), part];
+        assert!(!looks_like_fallback_listing(
+            &series,
+            &search_words("Mistborn")
+        ));
+
+        // Unsorted or unjudgeable answers are kept.
+        let mut unsorted = listing.clone();
+        unsorted.reverse();
+        assert!(!looks_like_fallback_listing(&unsorted, &query));
+        assert!(!looks_like_fallback_listing(
+            &listing,
+            &search_words("The 1 of")
+        ));
     }
 
     #[test]

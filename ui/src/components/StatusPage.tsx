@@ -86,8 +86,8 @@ function NodeCard({ node }: { node: ConfigNodeView }) {
 /**
  * Library status: health every node administrator may see (nodes live,
  * committed capacity, active jobs, delivery backlog) and the nodes the
- * caller may see. An operator sees every node; a Host, Administrator, or
- * Owner signed in to the portal sees the nodes they own.
+ * caller may see. An operator sees every node; an Administrator or Owner
+ * signed in to the portal sees the nodes they own.
  *
  * @param props - Sign-out callback, navigation, and the session role.
  */
