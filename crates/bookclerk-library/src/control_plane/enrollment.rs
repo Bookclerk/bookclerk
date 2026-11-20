@@ -7,7 +7,7 @@
 //!
 //! Who may mint (decision 5 of the H-4 design):
 //!
-//! - nobody, while the library's `core.host_enrollment` switch is off;
+//! - nobody, while the library's `core.branch_enrollment` switch is off;
 //! - the operator, or an active Owner, for any active user;
 //! - any other active user, for themselves only.
 //!
@@ -44,11 +44,11 @@ use crate::models::{UserRecord, UserRole, UserStatus};
 use crate::store::LibraryStore;
 use crate::token_hash::hash_token;
 
-/// Namespace of the library's host-enrollment switch.
-pub const HOST_ENROLLMENT_NAMESPACE: &str = "core.host_enrollment";
+/// Namespace of the library's branch-enrollment switch.
+pub const BRANCH_ENROLLMENT_NAMESPACE: &str = "core.branch_enrollment";
 
-/// Schema version of [`HostEnrollmentSettingsV1`].
-pub const HOST_ENROLLMENT_SCHEMA_VERSION: i64 = 1;
+/// Schema version of [`BranchEnrollmentSettingsV1`].
+pub const BRANCH_ENROLLMENT_SCHEMA_VERSION: i64 = 1;
 
 /// Version tag that starts every enrollment token.
 pub const ENROLLMENT_TOKEN_PREFIX: &str = "bcn1";
@@ -88,7 +88,7 @@ fn redeem_refused() -> LibraryError {
 
 /// Refusal while the library's switch is off.
 fn enrollment_disabled() -> LibraryError {
-    LibraryError::Forbidden("host enrollment is disabled for this library".into())
+    LibraryError::Forbidden("branch enrollment is disabled for this library".into())
 }
 
 /// Fixed-width UTC timestamp, so stored times compare correctly as text.
@@ -96,45 +96,45 @@ fn stamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Micros, true)
 }
 
-/// Typed `core.host_enrollment` document, schema version 1.
+/// Typed `core.branch_enrollment` document, schema version 1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostEnrollmentSettingsV1 {
+pub struct BranchEnrollmentSettingsV1 {
     /// When false, no link may be minted or redeemed.
     pub enabled: bool,
 }
 
-impl Default for HostEnrollmentSettingsV1 {
+impl Default for BranchEnrollmentSettingsV1 {
     fn default() -> Self {
         Self { enabled: true }
     }
 }
 
-/// The host-enrollment switch as stored, or its default when no document
+/// The branch-enrollment switch as stored, or its default when no document
 /// was ever written.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostEnrollmentSettings {
+pub struct BranchEnrollmentSettings {
     /// Effective settings.
-    pub body: HostEnrollmentSettingsV1,
+    pub body: BranchEnrollmentSettingsV1,
     /// Stored revision; `None` while the default applies.
     pub revision: Option<i64>,
 }
 
-/// Reads the library's host-enrollment switch. A missing document means the
+/// Reads the library's branch-enrollment switch. A missing document means the
 /// default: enabled.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails or the stored document has an
 /// unsupported schema or an invalid body.
-pub async fn load_host_enrollment(store: &LibraryStore) -> Result<HostEnrollmentSettings> {
-    match load_document(store, &DocumentKey::library(HOST_ENROLLMENT_NAMESPACE)).await? {
-        None => Ok(HostEnrollmentSettings {
-            body: HostEnrollmentSettingsV1::default(),
+pub async fn load_branch_enrollment(store: &LibraryStore) -> Result<BranchEnrollmentSettings> {
+    match load_document(store, &DocumentKey::library(BRANCH_ENROLLMENT_NAMESPACE)).await? {
+        None => Ok(BranchEnrollmentSettings {
+            body: BranchEnrollmentSettingsV1::default(),
             revision: None,
         }),
         Some(stored) => {
-            let doc = parse_host_enrollment(stored)?;
-            Ok(HostEnrollmentSettings {
+            let doc = parse_branch_enrollment(stored)?;
+            Ok(BranchEnrollmentSettings {
                 body: doc.body,
                 revision: Some(doc.revision),
             })
@@ -142,7 +142,7 @@ pub async fn load_host_enrollment(store: &LibraryStore) -> Result<HostEnrollment
     }
 }
 
-/// Turns host enrollment on or off for the library.
+/// Turns branch enrollment on or off for the library.
 ///
 /// Only the operator or a verified Owner ([`verify_library_owner`]) may write
 /// it. Retries a few times on a concurrent edit.
@@ -151,26 +151,26 @@ pub async fn load_host_enrollment(store: &LibraryStore) -> Result<HostEnrollment
 ///
 /// Returns [`LibraryError::Forbidden`] for any other actor, and the write
 /// error when the document cannot be stored.
-pub async fn set_host_enrollment_enabled(
+pub async fn set_branch_enrollment_enabled(
     store: &LibraryStore,
     actor: &ConfigActor,
     enabled: bool,
-) -> Result<ConfigurationDocument<HostEnrollmentSettingsV1>> {
+) -> Result<ConfigurationDocument<BranchEnrollmentSettingsV1>> {
     if !matches!(
         actor,
         ConfigActor::Operator { .. } | ConfigActor::LibraryOwner(_)
     ) {
         return Err(LibraryError::Forbidden(
-            "only the operator or an Owner may change host enrollment".into(),
+            "only the operator or an Owner may change branch enrollment".into(),
         ));
     }
-    let key = DocumentKey::library(HOST_ENROLLMENT_NAMESPACE);
-    let body = HostEnrollmentSettingsV1 { enabled };
+    let key = DocumentKey::library(BRANCH_ENROLLMENT_NAMESPACE);
+    let body = BranchEnrollmentSettingsV1 { enabled };
     let json = serde_json::to_string(&body)
         .map_err(|err| LibraryError::Invalid(format!("invalid configuration: {err}")))?;
     for attempt in 0..4 {
         let operation_id = format!(
-            "host-enrollment-{attempt}-{}",
+            "branch-enrollment-{attempt}-{}",
             uuid::Uuid::new_v4().simple()
         );
         let Some(current) = load_document(store, &key).await? else {
@@ -178,19 +178,19 @@ pub async fn set_host_enrollment_enabled(
                 store,
                 actor,
                 &key,
-                HOST_ENROLLMENT_SCHEMA_VERSION,
+                BRANCH_ENROLLMENT_SCHEMA_VERSION,
                 &json,
                 &operation_id,
             )
             .await?;
-            let doc = parse_host_enrollment(stored)?;
+            let doc = parse_branch_enrollment(stored)?;
             if doc.body == body {
                 return Ok(doc);
             }
             // A concurrent writer created it first; replace on the next pass.
             continue;
         };
-        let doc = parse_host_enrollment(current)?;
+        let doc = parse_branch_enrollment(current)?;
         if doc.body == body {
             return Ok(doc);
         }
@@ -198,34 +198,34 @@ pub async fn set_host_enrollment_enabled(
             store,
             actor,
             &key,
-            HOST_ENROLLMENT_SCHEMA_VERSION,
+            BRANCH_ENROLLMENT_SCHEMA_VERSION,
             doc.revision,
             &json,
             &operation_id,
         )
         .await?
         {
-            ReplaceOutcome::Applied(stored) => return parse_host_enrollment(stored),
+            ReplaceOutcome::Applied(stored) => return parse_branch_enrollment(stored),
             ReplaceOutcome::Conflict { .. } | ReplaceOutcome::Replayed { .. } => {}
         }
     }
     Err(LibraryError::Conflict(
-        "core.host_enrollment kept changing; retry".into(),
+        "core.branch_enrollment kept changing; retry".into(),
     ))
 }
 
-/// Parses a stored `core.host_enrollment` row, failing closed on an unknown
+/// Parses a stored `core.branch_enrollment` row, failing closed on an unknown
 /// schema.
-fn parse_host_enrollment(
+fn parse_branch_enrollment(
     stored: StoredDocument,
-) -> Result<ConfigurationDocument<HostEnrollmentSettingsV1>> {
-    if stored.schema_version != HOST_ENROLLMENT_SCHEMA_VERSION {
+) -> Result<ConfigurationDocument<BranchEnrollmentSettingsV1>> {
+    if stored.schema_version != BRANCH_ENROLLMENT_SCHEMA_VERSION {
         return Err(super::documents::unsupported(
-            HOST_ENROLLMENT_NAMESPACE,
+            BRANCH_ENROLLMENT_NAMESPACE,
             stored.schema_version,
         ));
     }
-    let body: HostEnrollmentSettingsV1 = serde_json::from_str(&stored.document_json)
+    let body: BranchEnrollmentSettingsV1 = serde_json::from_str(&stored.document_json)
         .map_err(|err| LibraryError::Invalid(format!("invalid configuration: {err}")))?;
     Ok(document(stored, body))
 }
@@ -537,9 +537,9 @@ fn is_base64url(raw: &str) -> bool {
 }
 
 /// SQL predicate, and its binds after scope and namespace, that holds
-/// while `core.host_enrollment` is still the revision `seen` was read at.
+/// while `core.branch_enrollment` is still the revision `seen` was read at.
 fn switch_unchanged_predicate(
-    seen: &HostEnrollmentSettings,
+    seen: &BranchEnrollmentSettings,
 ) -> (&'static str, Vec<bookclerk_plugin_abi::DbValue>) {
     match seen.revision {
         None => (
@@ -573,7 +573,7 @@ pub(super) struct NewLink<'a> {
     pub(super) expires_at: &'a str,
 }
 
-/// Inserts `row` only while `core.host_enrollment` is still the enabled
+/// Inserts `row` only while `core.branch_enrollment` is still the enabled
 /// revision `seen`, in one statement, so a disable that commits after the
 /// switch was read mints nothing.
 ///
@@ -586,7 +586,7 @@ pub(super) struct NewLink<'a> {
 /// Returns the write error when the statement fails.
 pub(super) async fn insert_link_while_switch_holds(
     store: &LibraryStore,
-    seen: &HostEnrollmentSettings,
+    seen: &BranchEnrollmentSettings,
     row: &NewLink<'_>,
 ) -> Result<bool> {
     let (switch_sql, mut switch_binds) = switch_unchanged_predicate(seen);
@@ -600,7 +600,7 @@ pub(super) async fn insert_link_while_switch_holds(
         text(row.expires_at),
         text(LIBRARY_SCOPE_TYPE),
         text(LIBRARY_SCOPE_ID),
-        text(HOST_ENROLLMENT_NAMESPACE),
+        text(BRANCH_ENROLLMENT_NAMESPACE),
     ];
     binds.append(&mut switch_binds);
     let sql = format!(
@@ -641,7 +641,7 @@ pub async fn mint_enrollment_link(
             "only the operator or an Owner may mint an enrollment link for another user".into(),
         ));
     }
-    let enrollment = load_host_enrollment(store).await?;
+    let enrollment = load_branch_enrollment(store).await?;
     if !enrollment.body.enabled {
         return Err(enrollment_disabled());
     }
@@ -689,7 +689,7 @@ pub async fn mint_enrollment_link(
         for_user_id,
         created_by = %link.created_by,
         expires_at = %link.expires_at,
-        "minted host enrollment link"
+        "minted branch enrollment link"
     );
     Ok(MintedLink { link, secret })
 }
@@ -777,7 +777,7 @@ pub async fn revoke_enrollment_link(
             "enrollment link {link_id} was redeemed before it could be revoked"
         )));
     }
-    tracing::info!(link_id, "revoked host enrollment link");
+    tracing::info!(link_id, "revoked branch enrollment link");
     Ok(link)
 }
 
@@ -841,7 +841,7 @@ pub fn authorized_enrollment_link(
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::Forbidden`] while host enrollment is off or the
+/// Returns [`LibraryError::Forbidden`] while branch enrollment is off or the
 /// user is not active, [`LibraryError::Invalid`] for a malformed label, and
 /// the write error.
 pub async fn record_authorized_enrollment_link(
@@ -855,7 +855,7 @@ pub async fn record_authorized_enrollment_link(
     if !is_link_id(link_id) {
         return Err(LibraryError::Invalid("malformed link id".into()));
     }
-    if !load_host_enrollment(store).await?.body.enabled {
+    if !load_branch_enrollment(store).await?.body.enabled {
         return Err(enrollment_disabled());
     }
     active_user(store, for_user_id)
@@ -1109,7 +1109,7 @@ pub async fn redeem_enrollment_link_as(
     if let Some(done) = redeem_replay(store, &operation_id, &request_hash).await? {
         return Ok(done);
     }
-    let enrollment = load_host_enrollment(store).await?;
+    let enrollment = load_branch_enrollment(store).await?;
     if !enrollment.body.enabled {
         return Err(enrollment_disabled());
     }
@@ -1141,7 +1141,7 @@ pub async fn redeem_enrollment_link_as(
         int(link.for_user_id),
         text(LIBRARY_SCOPE_TYPE),
         text(LIBRARY_SCOPE_ID),
-        text(HOST_ENROLLMENT_NAMESPACE),
+        text(BRANCH_ENROLLMENT_NAMESPACE),
     ];
     claim_binds.append(&mut switch_binds);
     let claim_sql = format!(
@@ -1240,7 +1240,7 @@ pub async fn redeem_enrollment_link_as(
     if let Some(done) = redeem_replay(store, &operation_id, &request_hash).await? {
         return Ok(done);
     }
-    tracing::warn!(link_id = %req.link_id, "host enrollment redeem refused");
+    tracing::warn!(link_id = %req.link_id, "branch enrollment redeem refused");
     Err(redeem_refused())
 }
 

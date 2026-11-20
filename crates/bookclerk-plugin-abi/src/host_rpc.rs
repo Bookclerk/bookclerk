@@ -14,20 +14,8 @@ use crate::plugin_host_capnp::{
     adapter_transaction as adapter_transaction_capnp, adapter_transaction_reply,
     host_adapter_database_session as host_adapter_database_session_capnp,
 };
-use crate::rpc::{from_capnp, read_error};
+use crate::rpc::{from_capnp, read_empty, read_error};
 use crate::{PluginError, Result};
-
-/// Decodes an empty success reply or guest error union.
-///
-/// # Errors
-///
-/// Returns a decode failure or the guest [`PluginError`] on `err`.
-fn read_empty(reader: crate::plugin_capnp::empty_reply::Reader<'_>) -> Result<()> {
-    match reader.which().map_err(from_capnp)? {
-        crate::plugin_capnp::empty_reply::Ok(()) => Ok(()),
-        crate::plugin_capnp::empty_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-    }
-}
 
 fn write_error(mut out: crate::plugin_capnp::plugin_error::Builder<'_>, err: &PluginError) {
     out.set_code(err.wire_str());

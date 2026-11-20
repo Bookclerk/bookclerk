@@ -63,7 +63,10 @@ pub async fn scan_storage(
     let placement = storage.scan_placement();
     let node_local = placement.is_some();
     let mut state = match prior {
-        Some(raw) => decode_prior(raw, &instance_id)?,
+        // A checkpoint another listing wrote (a run whose set of
+        // destinations differed) starts a fresh scan.
+        Some(raw) => decode_prior(raw, &instance_id)?
+            .unwrap_or_else(|| fresh_checkpoint(&instance_id, node_local, placement.clone())),
         None => fresh_checkpoint(&instance_id, node_local, placement.clone()),
     };
     if prior.is_some() && !placement_matches(&state.placement, &placement) {
@@ -159,7 +162,16 @@ fn fresh_checkpoint(
     }
 }
 
-fn decode_prior(raw: &JobCheckpoint, instance_id: &str) -> Result<ScanCheckpoint> {
+/// Reads a prior storage-scan checkpoint for the listing `instance_id`.
+///
+/// # Returns
+///
+/// The checkpoint, or `None` when another listing wrote it.
+///
+/// # Errors
+///
+/// Returns an error for an unknown version or malformed JSON.
+fn decode_prior(raw: &JobCheckpoint, instance_id: &str) -> Result<Option<ScanCheckpoint>> {
     if raw.schema_version != SCAN_VERSION {
         return Err(AcquireError::Other(anyhow::anyhow!(
             "unsupported storage checkpoint version {}",
@@ -174,12 +186,14 @@ fn decode_prior(raw: &JobCheckpoint, instance_id: &str) -> Result<ScanCheckpoint
         )));
     }
     if state.instance_id != instance_id {
-        return Err(AcquireError::Other(anyhow::anyhow!(
-            "storage checkpoint is bound to `{}`, not `{instance_id}`",
-            state.instance_id
-        )));
+        tracing::info!(
+            prior = %state.instance_id,
+            current = instance_id,
+            "storage checkpoint was written for another listing; scanning afresh"
+        );
+        return Ok(None);
     }
-    Ok(state)
+    Ok(Some(state))
 }
 
 async fn page_scan(
@@ -510,6 +524,17 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn a_checkpoint_of_another_listing_is_set_aside() {
+        let state = fresh_checkpoint("fanout:a,b", false, None);
+        let raw = JobCheckpoint {
+            schema_version: SCAN_VERSION,
+            json: serde_json::to_string(&state).unwrap(),
+        };
+        assert!(decode_prior(&raw, "fanout:a,b").unwrap().is_some());
+        assert!(decode_prior(&raw, "fanout:a").unwrap().is_none());
     }
 
     fn apply_checkpoint(backend: &LocalFsBackend, generation: &str) -> JobCheckpoint {

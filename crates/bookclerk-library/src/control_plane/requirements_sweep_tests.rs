@@ -746,6 +746,7 @@ async fn pinned_job_of_a_silent_node_fails_after_grace() {
             budget_bytes: 1 << 30,
             swept_ms: Some(1_793_212_800_000),
         }),
+        public_origin: None,
     };
     let status = record_node_heartbeat(&store, "node-a", &heartbeat)
         .await
@@ -819,6 +820,7 @@ async fn a_live_pinned_job_still_has_its_requirements_reconciled() {
         memory_available_bytes: None,
         files_dir_free_bytes: None,
         cache: None,
+        public_origin: None,
     };
     record_node_heartbeat(&store, "node-a", &heartbeat)
         .await

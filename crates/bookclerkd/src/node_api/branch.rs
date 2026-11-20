@@ -62,10 +62,10 @@ use bookclerk_config::DatabasePluginKind;
 use bookclerk_config::NodeApiMode;
 use bookclerk_library::control_plane::{
     accounts_to_carry_where, authorized_enrollment_link, branch_title_counts, check_redeem_request,
-    enrollment_link_brings_accounts, library_ancestry, list_nodes, load_host_enrollment,
+    enrollment_link_brings_accounts, library_ancestry, list_nodes, load_branch_enrollment,
     load_library_row, load_node_credential, member_accounts, record_accounts_sent,
     record_authorized_enrollment_link, redeem_enrollment_link_as, remove_detached_branch_titles,
-    set_branch_members_books, set_host_enrollment_enabled, verify_library_owner, ConfigActor,
+    set_branch_enrollment_enabled, set_branch_members_books, verify_library_owner, ConfigActor,
     EnrolledNode, NodeKind, RedeemRequest,
 };
 use bookclerk_library::{hash_token, LibraryError, UserStatus};
@@ -144,7 +144,7 @@ pub(super) async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Respo
         .flatten()
         .map(|row| row.library_id)
         .ok_or_else(|| enroll_error(StatusCode::SERVICE_UNAVAILABLE, "library_unavailable"))?;
-    let enrollment = load_host_enrollment(&library)
+    let enrollment = load_branch_enrollment(&library)
         .await
         .map(|settings| settings.body.enabled)
         .unwrap_or(false);
@@ -1547,7 +1547,7 @@ pub struct BranchConsentBody {
         (status = 403, description = "The caller is not an active library user (`user_required`, `user_inactive`), this library is not accepting branches (`enrollment_disabled`), a shared branch join needs an Owner (`owner_required`) with a second factor (`step_up_unavailable`) that was confirmed (`step_up_required`) and passed (`step_up_failed`), the connection failed the transport policy (`transport_insecure`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::NodeRefusal, examples(
             ("user_required" = (summary = "The session is not a library user.", value = json!({"error": "user_required", "detail": "a branch belongs to a user: sign in with your account on this library"}))),
             ("user_inactive" = (summary = "The account is not active.", value = json!({"error": "user_inactive", "detail": "this account is not active"}))),
-            ("enrollment_disabled" = (summary = "This library has host enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "this library isn't accepting new branches"}))),
+            ("enrollment_disabled" = (summary = "This library has branch enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "this library isn't accepting new branches"}))),
             ("owner_required" = (summary = "Only an Owner can let a shared branch join.", value = json!({"error": "owner_required", "detail": "only an Owner of this library can let a shared branch join"}))),
             ("step_up_unavailable" = (summary = "The Owner has no second factor to confirm with.", value = json!({"error": "step_up_unavailable", "detail": "joining as a shared branch needs a fresh second factor: set up an authenticator app or a passkey on your account first"}))),
             ("step_up_required" = (summary = "The shared branch join was not confirmed with a second factor.", value = json!({"error": "step_up_required", "detail": "confirm with your authenticator app or a passkey to let a shared branch join"}))),
@@ -1620,7 +1620,7 @@ pub async fn post_branch_consent(
         return refused;
     }
     let library = state.library_snapshot().await;
-    match load_host_enrollment(&library).await {
+    match load_branch_enrollment(&library).await {
         Ok(settings) if settings.body.enabled => {}
         Ok(_) => {
             return consent_error(
@@ -1630,7 +1630,7 @@ pub async fn post_branch_consent(
             )
         }
         Err(err) => {
-            tracing::warn!(error = %err, "branch consent could not read host enrollment");
+            tracing::warn!(error = %err, "branch consent could not read branch enrollment");
             return consent_error(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "try again");
         }
     }
@@ -2140,7 +2140,7 @@ pub async fn put_branch_members_books(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PutBranches {
-    /// "Let new branches join" (`core.host_enrollment.enabled`).
+    /// "Let new branches join" (`core.branch_enrollment.enabled`).
     #[schema(example = true)]
     pub enrollment: bool,
 }
@@ -2158,7 +2158,7 @@ pub struct PutBranches {
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
-        (status = 409, description = "The setting kept changing under the write; retry.", body = crate::http_error::ErrorMessage, example = json!({"error": "core.host_enrollment kept changing; retry"})),
+        (status = 409, description = "The setting kept changing under the write; retry.", body = crate::http_error::ErrorMessage, example = json!({"error": "core.branch_enrollment kept changing; retry"})),
         (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
@@ -2172,7 +2172,7 @@ pub async fn put_branches(
         Err(refused) => return refused,
     };
     let library = state.library_snapshot().await;
-    match set_host_enrollment_enabled(&library, &actor, body.enrollment).await {
+    match set_branch_enrollment_enabled(&library, &actor, body.enrollment).await {
         Ok(doc) => Json(BranchJoinSetting {
             enrollment: doc.body.enabled,
         })

@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use crate::api::AppState;
 use crate::http_error::ErrorMessage;
 
-/// An error answer: its status and JSON body.
-type OverrideError = (StatusCode, Json<ErrorMessage>);
+/// An error answer: a status and JSON body, or the session-check refusal.
+type OverrideError = axum::response::ErrorResponse;
 
 /// Default page size of `GET /api/library/conflicts`.
 const DEFAULT_CONFLICT_LIMIT: u64 = 50;
@@ -113,13 +113,17 @@ async fn administrator(
 ) -> Result<Option<i64>, OverrideError> {
     crate::auth::library_administrator(state, headers)
         .await
-        .map_err(|status| {
-            let message = if status == StatusCode::UNAUTHORIZED {
-                "sign in first"
-            } else {
-                "only an Administrator can change how listings resolve"
-            };
-            (status, Json(ErrorMessage::new(message)))
+        .map_err(|refusal| {
+            refusal
+                .answer(|status| {
+                    let message = if status == StatusCode::UNAUTHORIZED {
+                        "sign in first"
+                    } else {
+                        "only an Administrator can change how listings resolve"
+                    };
+                    (status, Json(ErrorMessage::new(message)))
+                })
+                .into()
         })
 }
 
@@ -130,6 +134,7 @@ fn failed(route: &str, err: &LibraryError) -> OverrideError {
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorMessage::new("the library could not be changed")),
     )
+        .into()
 }
 
 /// The 404 answer for an unknown `kind` id.
@@ -138,6 +143,7 @@ fn not_found(kind: EntityKind, id: &str) -> OverrideError {
         StatusCode::NOT_FOUND,
         Json(ErrorMessage::new(LibraryError::not_found(kind, id))),
     )
+        .into()
 }
 
 /// Pins a store listing to the edition it sells.
@@ -215,7 +221,8 @@ pub(crate) async fn delete_listing_pin(
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorMessage::new(format!("listing {id} has no pin"))),
-        ));
+        )
+            .into());
     }
     tracing::info!(listing_id = %id, ?user_id, "listing pin removed");
     Ok(StatusCode::NO_CONTENT)
@@ -312,7 +319,9 @@ pub(crate) async fn post_work_split(
     Json(body): Json<WorkSplitBody>,
 ) -> Result<Json<SplitJson>, OverrideError> {
     let user_id = administrator(&state, &headers).await?;
-    let bad = |message: String| (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message)));
+    let bad = |message: String| -> OverrideError {
+        (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message))).into()
+    };
     // The same parse the fuzz target drives (`parse_work_split_request`).
     let request = match body.validate() {
         Ok(request) => request,
@@ -331,7 +340,8 @@ pub(crate) async fn post_work_split(
                 Json(ErrorMessage::new(
                     "the work changed while it was being split; try again",
                 )),
-            ))
+            )
+                .into())
         }
         Err(err) => return Err(failed("post_work_split", &err)),
     };
@@ -353,7 +363,8 @@ pub(crate) async fn post_work_split(
                 "work {id} has no expression {}",
                 ids.join(", ")
             ))),
-        )),
+        )
+            .into()),
         SplitOutcome::WouldEmpty => Err(bad(
             "a split must leave the work at least one expression".into()
         )),

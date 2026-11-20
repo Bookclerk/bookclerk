@@ -340,20 +340,30 @@ pub struct ShareSampler {
     share: watch::Receiver<usize>,
     /// The table the machine's slots are read from.
     shares: Arc<CapacityShares>,
+    /// Reads this install's public origin now (`integrations.public_origin`),
+    /// so the library labels it a remote branch, or a local one without.
+    /// Called from the blocking sampling thread, never on the runtime.
+    public_origin: PublicOriginSource,
 }
 
+/// Reads an install's current public origin; `None` when it has none.
+pub type PublicOriginSource = Box<dyn Fn() -> Option<String> + Send>;
+
 impl ShareSampler {
-    /// A sampler for the link whose share `share` reports.
+    /// A sampler for the link whose share `share` reports, stamping each
+    /// sample with what `public_origin` reads.
     #[must_use]
     pub fn new(
         inner: NodeSampler,
         share: watch::Receiver<usize>,
         shares: Arc<CapacityShares>,
+        public_origin: PublicOriginSource,
     ) -> Self {
         Self {
             inner,
             share,
             shares,
+            public_origin,
         }
     }
 }
@@ -398,7 +408,8 @@ pub fn scale_heartbeat(sample: NodeHeartbeat, share: usize, machine: usize) -> N
 
 impl HeartbeatSource for ShareSampler {
     fn sample(&mut self) -> NodeHeartbeat {
-        let sample = self.inner.sample();
+        let mut sample = self.inner.sample();
+        sample.public_origin = (self.public_origin)();
         let share = *self.share.borrow();
         scale_heartbeat(sample, share, self.shares.machine())
     }
@@ -495,6 +506,7 @@ mod tests {
             cache_bytes: None,
             cache_budget_bytes: None,
             cache_swept_ms: None,
+            public_origin: None,
         }
     }
 
@@ -566,6 +578,7 @@ mod tests {
             memory_available_bytes: Some(12_000),
             files_dir_free_bytes: Some(5),
             cache: None,
+            public_origin: None,
         };
         // Half the machine; the machine is mostly idle, so the library's
         // half is all free.
@@ -622,6 +635,7 @@ mod tests {
             memory_available_bytes: Some(16_000),
             files_dir_free_bytes: None,
             cache: None,
+            public_origin: None,
         };
         let early = scale_heartbeat(sample, *share.borrow(), table.machine());
         assert_eq!(early.cpu_millicores, 0);
@@ -635,5 +649,28 @@ mod tests {
         table.record_status(&recorded);
         assert_eq!(table.machine(), 4);
         assert_eq!(*share.borrow(), 4);
+    }
+
+    /// Each sample carries the install's public origin as read at that
+    /// moment, so a change reaches the library on the next heartbeat.
+    #[test]
+    fn samples_carry_the_public_origin_read_now() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let table = Arc::new(CapacityShares::new());
+        let share = table.register("c1", 1, None);
+        let origin = Arc::new(std::sync::Mutex::new(None::<String>));
+        let read = Arc::clone(&origin);
+        let mut sampler = ShareSampler::new(
+            NodeSampler::new(files.path()),
+            share,
+            Arc::clone(&table),
+            Box::new(move || read.lock().map(|o| o.clone()).unwrap_or(None)),
+        );
+        assert_eq!(sampler.sample().public_origin, None);
+        *origin.lock().expect("lock") = Some("https://branch.example".into());
+        assert_eq!(
+            sampler.sample().public_origin.as_deref(),
+            Some("https://branch.example")
+        );
     }
 }

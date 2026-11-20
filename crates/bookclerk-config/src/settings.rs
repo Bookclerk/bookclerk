@@ -640,6 +640,26 @@ impl DiagnosticsConfig {
             .unwrap_or_default()
     }
 
+    /// HTTPS endpoint the install reads its own reports back from
+    /// (`…/lookup`; deletion is `…/lookup/delete`), or empty when no
+    /// collector is configured.
+    #[must_use]
+    pub fn effective_lookup_url(&self) -> String {
+        let base = self.effective_collector_url();
+        let base = base.trim_end_matches('/');
+        // A `collector_url` naming the submit route still names the collector.
+        let base = if base.to_ascii_lowercase().ends_with("/submit") {
+            &base[..base.len() - "/submit".len()]
+        } else {
+            base
+        };
+        if base.is_empty() {
+            String::new()
+        } else {
+            format!("{base}/lookup")
+        }
+    }
+
     /// HTTPS endpoint clients POST redacted JSON to (`…/submit`).
     #[must_use]
     pub fn effective_submit_url(&self) -> String {
@@ -1583,6 +1603,22 @@ share_reports = true
             cfg.diagnostics.effective_submit_url(),
             "https://reports.example/submit"
         );
+    }
+
+    #[test]
+    fn diagnostics_lookup_url_names_the_collector() {
+        let mut cfg = Config::default();
+        for (url, want) in [
+            ("https://reports.example", "https://reports.example/lookup"),
+            ("https://reports.example/", "https://reports.example/lookup"),
+            (
+                "https://reports.example/SUBMIT/",
+                "https://reports.example/lookup",
+            ),
+        ] {
+            cfg.diagnostics.collector_url = url.into();
+            assert_eq!(cfg.diagnostics.effective_lookup_url(), want, "{url}");
+        }
     }
 
     #[test]
