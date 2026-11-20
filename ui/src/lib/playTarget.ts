@@ -23,6 +23,18 @@ export function rowOffersPlay(work: WorkSummary): boolean {
 }
 
 /**
+ * The editions of a work the player could start.
+ *
+ * @param work - A work's detail.
+ * @returns Its acquired audio editions, in the work's order.
+ */
+export function audioEditions(work: WorkDetail): Edition[] {
+  return work.editions.filter(
+    (edition) => edition.media_kind === "audio" && edition.acquire_status === "acquired",
+  );
+}
+
+/**
  * The edition of a work the player starts: the acquired audio edition the
  * listener was last in, else the first acquired audio edition.
  *
@@ -34,9 +46,7 @@ export function playableEdition(
   work: WorkDetail,
   recent: readonly PlaybackProgress[] = [],
 ): Edition | null {
-  const audio = work.editions.filter(
-    (edition) => edition.media_kind === "audio" && edition.acquire_status === "acquired",
-  );
+  const audio = audioEditions(work);
   for (const row of recent) {
     const match = audio.find((edition) => edition.id === row.edition_id);
     if (match) return match;

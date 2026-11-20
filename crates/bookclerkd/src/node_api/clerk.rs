@@ -118,23 +118,28 @@ fn consented(scope: &str) -> Option<Consent> {
 /// * `library` - The library store.
 /// * `headers` - The consent request's headers (its session cookie).
 /// * `user_id` - The approving user.
+///
+/// # Errors
+///
+/// [`crate::auth::CallerRefusal::SessionCheckUnavailable`] when the
+/// session could not be checked, so the card is not tied to the wrong
+/// identity.
 async fn approving_identity(
     library: &bookclerk_library::LibraryStore,
     headers: &axum::http::HeaderMap,
     user_id: i64,
-) -> Option<i64> {
-    if let Some(identity) = crate::auth::timed_portal_identity_from_headers(library, headers).await
-    {
+) -> Result<Option<i64>, crate::auth::CallerRefusal> {
+    if let Some(identity) = crate::auth::optional_portal_identity(library, headers).await? {
         if identity.user_id == Some(user_id) {
-            return Some(identity.id);
+            return Ok(Some(identity.id));
         }
     }
-    library
+    Ok(library
         .first_portal_identity_for_user(user_id)
         .await
         .ok()
         .flatten()
-        .map(|identity| identity.id)
+        .map(|identity| identity.id))
 }
 
 /// The portal identity a redeemed card's session is stored under: the
@@ -321,7 +326,10 @@ pub async fn post_clerk_consent(
     }
     let clerk_name = params.clerk_name.as_deref().unwrap_or("").trim();
     let library = state.library_snapshot().await;
-    let identity_id = approving_identity(&library, &parts.headers, user.id).await;
+    let identity_id = match approving_identity(&library, &parts.headers, user.id).await {
+        Ok(identity_id) => identity_id,
+        Err(refused) => return refused.into_response(),
+    };
     let code = random_token();
     bookclerk_config::register_secret(code.as_str());
     let expires = chrono::Utc::now() + chrono::Duration::seconds(CLERK_CODE_TTL_SECS);

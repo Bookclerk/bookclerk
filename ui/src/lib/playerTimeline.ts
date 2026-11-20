@@ -91,7 +91,9 @@ export const SPEEDS: readonly number[] = [0.75, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2, 
  * @returns One of {@link SPEEDS}; 1 for anything unusable.
  */
 export function nearestSpeed(value: unknown): number {
-  const wanted = typeof value === "number" ? value : Number(value);
+  // Only a number or its text converts; `Number` throws on a symbol.
+  const wanted =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   if (!Number.isFinite(wanted) || wanted <= 0) return 1;
   return SPEEDS.reduce((best, speed) =>
     Math.abs(speed - wanted) < Math.abs(best - wanted) ? speed : best,

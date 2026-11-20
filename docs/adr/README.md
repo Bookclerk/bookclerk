@@ -51,10 +51,14 @@ a later change supersedes one, its **Status** says so.
 - [What needs the operator](owner-and-operator.md): the rule for which
   actions need elevation, and the switches an Owner sets on each
   Administrator.
-
 - [Playback](playback.md): playback is a host feature with one core
   (progress, sessions, one rights check, one stream route) that the web
   player, the desktop window and app-compatible clients share.
+- [Ingress plugins](ingress-plugins.md): one action gives an install a
+  stable public address, through relay or dynamic DNS plugins.
+- [Notifications](notifications.md): the host routes events into send
+  jobs by administrator rules and patron preferences, notifier plugins
+  send them, and account mail carries reset and recovery.
 
 ## Adding a record
 

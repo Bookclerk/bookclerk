@@ -5,7 +5,7 @@
  * @module
  */
 import { useSyncExternalStore } from "react";
-import { coverSrc, fetchWork, type WorkDetail } from "@/lib/api";
+import { beforeSignOut, coverSrc, fetchWork, type WorkDetail } from "@/lib/api";
 import { isDesktopWindow } from "@/lib/desktop";
 import { tauriBridge } from "@/lib/desktopLive";
 import { bindMediaSession, type MediaDescription, type MediaSessionLike } from "@/lib/mediaSession";
@@ -21,7 +21,7 @@ import {
   syncPlaybackSession,
 } from "@/lib/playback";
 import { Player, type PlayerState } from "@/lib/player";
-import { playableEdition, targetFor } from "@/lib/playTarget";
+import { audioEditions, playableEdition, targetFor } from "@/lib/playTarget";
 
 /** Where the chosen speed is kept between visits. */
 const SPEED_KEY = "bookclerk.player.speed";
@@ -45,6 +45,15 @@ export function playerName(userAgent: string): string {
   return match ? `Web (${match[1]})` : "Web";
 }
 
+/** How long a track's metadata may take to arrive, in milliseconds. */
+const PROBE_WAIT_MS = 15_000;
+
+/**
+ * How long Play waits for the listener's history to pick between several
+ * editions of a work, in milliseconds.
+ */
+export const HISTORY_WAIT_MS = 2000;
+
 /**
  * Reads a track's length from its stream's metadata.
  *
@@ -55,16 +64,26 @@ function probe(path: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const audio = new Audio();
     audio.preload = "metadata";
+    const onMetadata = () => {
+      const ms = audio.duration * 1000;
+      done(() => (Number.isFinite(ms) ? resolve(ms) : reject(new Error("unknown length"))));
+    };
+    const onError = () => done(() => reject(new Error("unreadable track")));
+    // A stream that stalls sends neither event.
+    const timer = setTimeout(
+      () => done(() => reject(new Error("the track did not answer"))),
+      PROBE_WAIT_MS,
+    );
     const done = (settle: () => void) => {
+      clearTimeout(timer);
+      audio.removeEventListener("loadedmetadata", onMetadata);
+      audio.removeEventListener("error", onError);
       audio.removeAttribute("src");
       audio.load();
       settle();
     };
-    audio.addEventListener("loadedmetadata", () => {
-      const ms = audio.duration * 1000;
-      done(() => (Number.isFinite(ms) ? resolve(ms) : reject(new Error("unknown length"))));
-    });
-    audio.addEventListener("error", () => done(() => reject(new Error("unreadable track"))));
+    audio.addEventListener("loadedmetadata", onMetadata);
+    audio.addEventListener("error", onError);
     audio.src = path;
   });
 }
@@ -118,6 +137,7 @@ export function webPlayer(): Player {
     setProgress: putPlaybackProgress,
     probe: native ? (path) => nativeProbe(native, path) : probe,
     now: () => performance.now(),
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     loadSpeed: () => {
       try {
         return window.localStorage.getItem(SPEED_KEY);
@@ -153,6 +173,12 @@ export function webPlayer(): Player {
   // The last report must outlive the page, so it goes out as a keepalive
   // request when the page is hidden for good.
   window.addEventListener("pagehide", () => void player.stop(true));
+  // Signing out revokes the session the close needs, so close first, and
+  // start nothing until the identity has changed.
+  beforeSignOut(
+    () => player.retire(),
+    () => player.readmit(),
+  );
   shared = player;
   return player;
 }
@@ -177,15 +203,37 @@ export function usePlayerState(): PlayerState {
  *   when the work has no audio on this server.
  */
 export async function playWork(workId: string, known?: WorkDetail | null): Promise<string | null> {
-  const [work, recent] = await Promise.all([
-    known ?? fetchWork(workId),
-    // Only a preference between editions: a failed read means the first.
-    fetchPlaybackProgress({ limit: 50, includeFinished: true })
-      .then((page) => page.items)
-      .catch(() => []),
-  ]);
+  const player = webPlayer();
+  const latest = player.claim();
+  // Only a preference between editions, read alongside the work: a read
+  // that fails or is slow means the first edition.
+  const history = fetchPlaybackProgress({ limit: 50, includeFinished: true })
+    .then((page) => page.items)
+    .catch(() => []);
+  let work: WorkDetail;
+  try {
+    work = known ?? (await fetchWork(workId));
+  } catch (err) {
+    // A failure of a choice the listener has since replaced is not shown.
+    if (!latest()) return null;
+    throw err;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const recent =
+    audioEditions(work).length > 1
+      ? await Promise.race([
+          history,
+          new Promise<[]>((resolve) => {
+            timer = setTimeout(() => resolve([]), HISTORY_WAIT_MS);
+          }),
+        ])
+      : [];
+  clearTimeout(timer);
+  // The listener chose, started or stopped another book while this one
+  // was being read: that later choice stands, and nothing is said of this.
+  if (!latest()) return null;
   const edition = playableEdition(work, recent);
   if (!edition) return `No audio of “${work.title}” is on this server yet.`;
-  void webPlayer().play(targetFor(work, edition));
+  void player.play(targetFor(work, edition));
   return null;
 }

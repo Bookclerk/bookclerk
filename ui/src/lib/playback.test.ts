@@ -12,7 +12,17 @@ import {
   syncPlaybackSession,
 } from "./playback";
 
-// Stubs `fetch` with one answer and records the requests.
+/**
+ * Stubs `fetch` with one answer and records the requests. Each call
+ * replaces the stub the one before installed and starts its own record,
+ * so a test that stubs twice reads the second stub's requests from the
+ * second record.
+ *
+ * @param status - The status every request is answered with.
+ * @param body - The answer's body: text as given, anything else as JSON;
+ *   not sent with status 204.
+ * @returns The requests made since this call, oldest first.
+ */
 function stubFetch(status: number, body: unknown) {
   const calls: { url: string; init: RequestInit }[] = [];
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
@@ -81,6 +91,6 @@ describe("playback routes", () => {
     expect(isApiError(err) && [err.status, err.code]).toEqual([502, undefined]);
     stubFetch(500, { error: 7 });
     const other = await fetchPlaybackManifest("ed1").catch((e: unknown) => e);
-    expect(isApiError(other) && other.code).toBeUndefined();
+    expect(isApiError(other) && [other.status, other.code]).toEqual([500, undefined]);
   });
 });

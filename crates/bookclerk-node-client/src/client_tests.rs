@@ -98,6 +98,7 @@ impl HeartbeatSource for FixedSampler {
             memory_available_bytes: None,
             files_dir_free_bytes: None,
             cache: None,
+            public_origin: None,
         }
     }
 }

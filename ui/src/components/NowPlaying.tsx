@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BookmarkPlus, Check, ChevronDown, Trash2 } from "lucide-react";
 import { CoverThumb } from "@/components/CoverThumb";
 import { Scrubber, SleepSelect, SpeedSelect, TransportButtons } from "@/components/PlayerControls";
@@ -8,9 +8,15 @@ import { userFacingApiError } from "@/lib/api";
 import { formatClock, formatRemaining } from "@/lib/playerTimeline";
 import { usePlayerState, webPlayer } from "@/lib/webPlayer";
 
+/** What Tab stops at inside the now-playing view. */
+const TAB_STOPS =
+  'button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+
 /**
  * The now-playing view: the loaded book's cover, timeline, controls and
  * the listener's bookmarks. Closes itself when the book is unloaded.
+ * While it is open the keyboard stays inside it; closing it returns to
+ * whatever opened it.
  *
  * @param props - `onClose` returns to the player bar.
  */
@@ -21,13 +27,38 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const target = state.target;
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!target) onClose();
   }, [target, onClose]);
   useEffect(() => {
+    const opener = document.activeElement;
+    panelRef.current?.focus();
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
+      if (event.key !== "Tab") return;
+      // Tab goes round the view and never to the page under it.
+      const panel = panelRef.current;
+      if (!panel) return;
+      const stops = [...panel.querySelectorAll<HTMLElement>(TAB_STOPS)];
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const active = document.activeElement;
+      let next: HTMLElement | null = null;
+      if (!first || !last) next = panel;
+      else if (!panel.contains(active)) next = first;
+      else if (event.shiftKey && (active === first || active === panel)) next = last;
+      else if (!event.shiftKey && active === last) next = first;
+      if (next) {
+        event.preventDefault();
+        next.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -61,7 +92,9 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="now-playing-heading"
-        className="flex max-h-[94vh] w-full max-w-xl flex-col overflow-hidden rounded-t-xl bg-paper shadow-xl sm:rounded-xl"
+        ref={panelRef}
+        tabIndex={-1}
+        className="outline-none flex max-h-[94vh] w-full max-w-xl flex-col overflow-hidden rounded-t-xl bg-paper shadow-xl sm:rounded-xl"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-ink/10 px-4 py-2.5">
@@ -136,6 +169,8 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
               className="mt-2 flex gap-2"
               onSubmit={(event) => {
                 event.preventDefault();
+                // The note cannot be edited while it is sent, so clearing
+                // it afterwards clears only what was saved.
                 void run(async () => {
                   await player.addBookmark(note.trim());
                   setNote("");
@@ -147,6 +182,7 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
                 onChange={(event) => setNote(event.target.value)}
                 placeholder={`Note for ${formatClock(state.positionMs)} (optional)`}
                 maxLength={200}
+                disabled={busy}
                 aria-label="Bookmark note"
               />
               <Button type="submit" variant="secondary" className="shrink-0" disabled={busy}>
@@ -166,7 +202,11 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
                       type="button"
                       className="flex min-w-0 flex-1 items-baseline gap-3 rounded-md px-1 py-1 text-left hover:bg-ink/5"
                       onClick={() => player.seek(bookmark.position_ms)}
-                      aria-label={`Go to ${formatClock(bookmark.position_ms)}`}
+                      aria-label={
+                        bookmark.title
+                          ? `Go to ${formatClock(bookmark.position_ms)}, ${bookmark.title}`
+                          : `Go to ${formatClock(bookmark.position_ms)}`
+                      }
                     >
                       <span className="shrink-0 text-sm font-semibold tabular-nums text-teal">
                         {formatClock(bookmark.position_ms)}

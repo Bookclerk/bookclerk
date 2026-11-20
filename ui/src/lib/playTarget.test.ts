@@ -4,6 +4,7 @@ import type { PlaybackProgress } from "./playback";
 import {
   SHELF_SIZE,
   percentDone,
+  audioEditions,
   playableEdition,
   readShelf,
   rowOffersPlay,
@@ -76,6 +77,10 @@ describe("playableEdition", () => {
     edition("a"),
     edition("b"),
   ]);
+
+  it("lists the acquired audio editions in the work's order", () => {
+    expect(audioEditions(w).map((found) => found.id)).toEqual(["a", "b"]);
+  });
 
   it("takes the first acquired audio edition", () => {
     expect(playableEdition(w)?.id).toBe("a");

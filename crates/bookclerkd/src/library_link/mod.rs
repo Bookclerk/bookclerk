@@ -454,6 +454,18 @@ const LINK_RETRY_MIN: Duration = Duration::from_secs(5);
 /// Longest delay between attempts to read the active links again.
 const LINK_RETRY_MAX: Duration = Duration::from_secs(300);
 
+/// Reads this install's `integrations.public_origin` for a link's
+/// heartbeat, so its library labels it a remote branch (or a local one
+/// when unset). The heartbeat samples on a blocking thread, where the
+/// config lock may be waited on.
+fn public_origin_source(state: &Arc<AppState>) -> capacity::PublicOriginSource {
+    let state = Arc::clone(state);
+    Box::new(move || {
+        let cfg = state.config.blocking_read();
+        crate::origin::configured_public_origin(cfg.integrations.public_origin.as_deref())
+    })
+}
+
 /// Runs the clients of the live library's active links until the library
 /// is swapped, then stops them (waiting for each to exit, so the same
 /// node never dials twice) and starts the new store's set.
@@ -736,6 +748,7 @@ async fn start_clients(
                 NodeSampler::new(&files_dir),
                 share,
                 Arc::clone(&state.capacity),
+                public_origin_source(state),
             )),
         ) {
             Ok(started) => started,
