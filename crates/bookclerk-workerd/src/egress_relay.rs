@@ -645,6 +645,20 @@ pub async fn host_link_from_env() -> Result<Option<Arc<bookclerk_plugin_sdk::mux
     ))))
 }
 
+/// How long a tunnel stays open after workerd's side reached EOF while the
+/// upstream sends nothing.
+///
+/// EOF from workerd is either a half-close (the plugin still reads) or a
+/// full close, and the relay cannot tell them apart until a write fails. A
+/// silent upstream would otherwise hold the tunnel, and one of the host's
+/// bounded tunnel slots, forever. Each upstream read restarts the wait.
+/// Unit tests use a short wait so a closed tunnel ends quickly.
+const HALF_CLOSE_GRACE: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(30)
+};
+
 /// Copies a raw tunnel both ways until the upstream side ends.
 ///
 /// The host link carries no TCP half-close: a stream `Close` ends both
@@ -652,8 +666,9 @@ pub async fn host_link_from_env() -> Result<Option<Arc<bookclerk_plugin_sdk::mux
 /// closed its writer and still reads), the relay does not pass the EOF on;
 /// it keeps the tunnel open and relays the reply until the upstream ends,
 /// then closes workerd's side. A plugin that fully closes its socket ends
-/// the relay through the failed write. The upstream therefore never sees a
-/// half-close, which the rare protocol that waits for one cannot use.
+/// the relay through the failed write, or after [`HALF_CLOSE_GRACE`] of
+/// upstream silence. The upstream therefore never sees a half-close, which
+/// the rare protocol that waits for one cannot use.
 ///
 /// # Errors
 ///
@@ -677,7 +692,7 @@ where
                     upstream.flush().await?;
                 }
             }
-            n = upstream.read(&mut upstream_buf) => {
+            n = read_upstream(upstream, &mut upstream_buf, client_open) => {
                 let n = n?;
                 if n == 0 {
                     let _ = client.shutdown().await;
@@ -688,6 +703,25 @@ where
             }
         }
     }
+}
+
+/// Reads from the upstream, bounded by [`HALF_CLOSE_GRACE`] once workerd's
+/// side has ended.
+///
+/// # Errors
+///
+/// The read failed, or the grace ran out.
+async fn read_upstream<U>(upstream: &mut U, buf: &mut [u8], client_open: bool) -> Result<usize>
+where
+    U: AsyncRead + Unpin,
+{
+    if client_open {
+        return Ok(upstream.read(buf).await?);
+    }
+    tokio::time::timeout(HALF_CLOSE_GRACE, upstream.read(buf))
+        .await
+        .context("upstream stayed silent after the plugin closed its side")?
+        .map_err(Into::into)
 }
 
 /// Serves one workerd connection end to end.

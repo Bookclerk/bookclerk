@@ -100,7 +100,7 @@ fn check_request(head: &[u8]) {
                     || (target.port == default_port && authority == host_in_url(&target.host)),
                 "url authority {authority:?} vs target {target:?}"
             );
-            check_rewritten(&rewritten, method, &target.authority(), &original.headers);
+            check_rewritten(&rewritten, method, &target.authority(), original.headers);
         }
     }
 }
