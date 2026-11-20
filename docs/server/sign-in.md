@@ -391,7 +391,7 @@ A branch in Settings → Library has **Use a library card instead**. See
 | Elevation | `POST /api/auth/elevate` `{ password }`, `DELETE /api/auth/elevate`, `GET /api/auth/oidc/elevate`, `POST /api/auth/passkeys/elevate/*` (Owner only) |
 | SSO | `GET /api/auth/oidc/providers`, `/login`, `GET`/`POST /callback` |
 | SSO settings | `GET`/`PUT /api/auth/oidc/config` (providers, `public_origin`, `detected_origin`, issuer URLs; Owner or operator reads, operator changes) |
-| Bookclerk as IdP | `GET`/`POST`/`PUT`/`DELETE /api/auth/oidc/clients` (Owner or operator lists, operator changes) |
+| Bookclerk as IdP | `GET`/`POST /api/auth/oidc/clients`, `PUT`/`DELETE /api/auth/oidc/clients/{client_id}`, `POST /api/auth/oidc/clients/{client_id}/rotate-secret` (Owner or operator lists, operator changes) |
 | Passkeys | `GET`/`POST`/`DELETE /api/auth/passkeys…` (sign-in, register, elevate) |
 | TOTP | `POST /api/auth/totp/enroll/begin` and `/finish`, `GET`/`DELETE /api/auth/totp`, `POST /api/auth/totp/login` |
 | Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator reads, operator changes) |
