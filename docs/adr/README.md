@@ -55,6 +55,8 @@ a later change supersedes one, its **Status** says so.
 - [Playback](playback.md): playback is a host feature with one core
   (progress, sessions, one rights check, one stream route) that the web
   player, the desktop window and app-compatible clients share.
+- [Ingress plugins](ingress-plugins.md): one action gives an install a
+  stable public address, through relay or dynamic DNS plugins.
 
 ## Adding a record
 
