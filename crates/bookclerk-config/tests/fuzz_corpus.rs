@@ -1,5 +1,5 @@
 //! Replays the checked-in `bookclerk-config` fuzz corpora (`cache_settings`,
-//! `desktop_profile`, `destination_id`, `diagnostics_submit_reply`) through their shared
+//! `destination_id`, `diagnostics_submit_reply`) through their shared
 //! oracles, so ordinary CI checks every seed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 
@@ -8,10 +8,6 @@ use std::path::PathBuf;
 /// The `cache_settings` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/cache_settings.rs"]
 mod cache_settings_oracle;
-
-/// The `desktop_profile` oracle, shared with the fuzz target.
-#[path = "../../../fuzz/oracles/desktop_profile.rs"]
-mod desktop_profile_oracle;
 
 /// The `destination_filter` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/destination_filter.rs"]
@@ -108,21 +104,4 @@ fn fuzz_corpus_output_copies_holds_invariants() {
         checked += 1;
     }
     assert!(checked > 0, "no output_copies seed");
-}
-
-/// Mirrors `fuzz/fuzz_targets/desktop_profile.rs` with the shared oracle.
-// Test code: a missing corpus file is the test failing.
-#[allow(clippy::expect_used)]
-#[test]
-fn fuzz_corpus_desktop_profile_holds_invariants() {
-    let (mut accepted, mut refused) = (0, 0);
-    for path in corpus_files("desktop_profile") {
-        if desktop_profile_oracle::check(&std::fs::read(&path).expect("read")) {
-            accepted += 1;
-        } else {
-            refused += 1;
-        }
-    }
-    assert!(accepted > 0, "no desktop_profile seed was accepted");
-    assert!(refused > 0, "every desktop_profile seed was accepted");
 }

@@ -1,12 +1,14 @@
-//! Who the desktop window is: the patron this OS user's profile names, and
-//! the session cookies the window holds for them where the page cannot see
-//! them.
+//! Who the desktop window is: the patron whose session this branch keeps
+//! sealed for its window, and the session cookies the window holds for them
+//! where the page cannot see them.
 //!
 //! The window acts as the operator only until the library has an active
 //! Owner (first run, or a computer that is only a clerk of another
-//! library). After that it acts as a patron: the one named by the session in
-//! this OS user's `profile.toml` (see [`bookclerk_config::DesktopProfile`]),
-//! or nobody until they sign in. [`WindowJar`] keeps that patron's portal
+//! library). After that it acts as a patron: the one whose portal session
+//! is sealed in this branch's `encrypted_secrets` ([`remembered`]), or
+//! nobody until they sign in. The files directory, and so the database, is
+//! already this OS account's own, so the sealed row is per OS account
+//! without a file of its own. [`WindowJar`] keeps that patron's portal
 //! session cookie, and the operator session cookie an elevation sets, so
 //! the routes the web app uses for elevation, impersonation and sign-out
 //! work unchanged; `Set-Cookie` never reaches the page.
@@ -14,9 +16,12 @@
 //! See `docs/adr/desktop-window-identity.md`.
 
 use axum::http::HeaderValue;
-use bookclerk_config::ProfileSession;
-use bookclerk_library::{hash_token, LibraryStore, SessionClientInfo, UserStatus};
+use bookclerk_library::{
+    build_sealed_record, delete_secret, get_secret, hash_token, secret_account_type, secret_kind,
+    unseal_secret, upsert_secret, LibraryError, LibraryStore, SessionClientInfo, UserStatus,
+};
 use chrono::{Duration as ChronoDuration, Utc};
+use zeroize::Zeroizing;
 
 use crate::auth::{PORTAL_SESSION_COOKIE, SESSION_COOKIE};
 
@@ -24,6 +29,42 @@ use crate::auth::{PORTAL_SESSION_COOKIE, SESSION_COOKIE};
 /// again. The window renews it on every launch, so only a computer left
 /// unopened this long signs out.
 pub const DESKTOP_SESSION_TTL: ChronoDuration = ChronoDuration::days(90);
+
+/// `encrypted_secrets.name` of the window's sealed patron session.
+const WINDOW_SESSION_NAME: &str = "patron_session";
+
+/// A patron's raw portal session token, as the window keeps it: never
+/// printed by `Debug`, and wiped from memory when dropped.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WindowSession(Zeroizing<String>);
+
+impl WindowSession {
+    /// Wraps a raw session token.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - The token, as the portal session cookie carries it.
+    ///
+    /// # Returns
+    ///
+    /// The session, or `None` for an empty token.
+    #[must_use]
+    pub fn new(raw: &str) -> Option<Self> {
+        (!raw.is_empty()).then(|| Self(Zeroizing::new(raw.to_owned())))
+    }
+
+    /// The raw token, for the cookie and the session lookup only.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for WindowSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WindowSession(<redacted>)")
+    }
+}
 
 /// The session cookies the window holds: never sent to the page, added to
 /// each request instead of anything the page sent.
@@ -104,7 +145,7 @@ fn computer_name() -> String {
 }
 
 /// Mints a window session for `user_id`: a portal session labelled
-/// **Desktop app on <computer>** in the patron's session list, lasting
+/// **Desktop app on `<computer>`** in the patron's session list, lasting
 /// [`DESKTOP_SESSION_TTL`].
 ///
 /// # Arguments
@@ -116,7 +157,7 @@ fn computer_name() -> String {
 ///
 /// The new session's raw token, or `None` when the patron does not exist,
 /// is disabled, or the session cannot be stored.
-pub async fn mint(library: &LibraryStore, user_id: i64) -> Option<ProfileSession> {
+pub async fn mint(library: &LibraryStore, user_id: i64) -> Option<WindowSession> {
     let user = library.get_user(user_id).await.ok()??;
     if matches!(user.status, UserStatus::Disabled) {
         return None;
@@ -126,7 +167,7 @@ pub async fn mint(library: &LibraryStore, user_id: i64) -> Option<ProfileSession
         .await
         .ok()?;
     let raw = uuid::Uuid::new_v4().to_string();
-    let session = ProfileSession::parse(&raw)?;
+    let session = WindowSession::new(&raw)?;
     let client = SessionClientInfo {
         user_agent: None,
         device_type: String::from("desktop"),
@@ -147,19 +188,19 @@ pub async fn mint(library: &LibraryStore, user_id: i64) -> Option<ProfileSession
     Some(session)
 }
 
-/// The patron a profile's session signs in as, when it still can: the
+/// The patron a window session signs in as, when it still can: the
 /// session exists and has not expired, and its patron exists and is not
 /// disabled.
 ///
 /// # Arguments
 ///
 /// * `library` - The library on this computer.
-/// * `session` - The profile's session.
+/// * `session` - The window's session.
 ///
 /// # Returns
 ///
 /// The patron's user id, or `None`.
-pub async fn patron(library: &LibraryStore, session: &ProfileSession) -> Option<i64> {
+pub async fn patron(library: &LibraryStore, session: &WindowSession) -> Option<i64> {
     let identity = library
         .get_portal_session_identity(&hash_token(session.expose()))
         .await
@@ -174,10 +215,96 @@ pub async fn patron(library: &LibraryStore, session: &ProfileSession) -> Option<
 ///
 /// * `library` - The library on this computer.
 /// * `session` - The session to end.
-pub async fn end(library: &LibraryStore, session: &ProfileSession) {
+pub async fn end(library: &LibraryStore, session: &WindowSession) {
     let _ = library
         .delete_portal_session(&hash_token(session.expose()))
         .await;
+}
+
+/// The patron session this branch's window last signed in with.
+///
+/// # Arguments
+///
+/// * `library` - The library on this computer.
+/// * `node_id` - This branch's node id, which keys the sealed row.
+///
+/// # Returns
+///
+/// The session, or `None` when none is kept.
+///
+/// # Errors
+///
+/// Returns the read error, or an error when the row does not unseal.
+pub async fn remembered(
+    library: &LibraryStore,
+    node_id: &str,
+) -> Result<Option<WindowSession>, LibraryError> {
+    let Some(record) = get_secret(
+        library.db(),
+        secret_kind::WINDOW_SESSION,
+        Some(node_id),
+        secret_account_type::OPERATOR,
+        Some(node_id),
+        WINDOW_SESSION_NAME,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let plaintext = Zeroizing::new(unseal_secret(&record)?);
+    let raw = std::str::from_utf8(&plaintext)
+        .map_err(|_| LibraryError::Invalid("stored window session is not text".into()))?;
+    Ok(WindowSession::new(raw))
+}
+
+/// Seals `session` as the one this branch's window signs in with,
+/// replacing any other.
+///
+/// # Arguments
+///
+/// * `library` - The library on this computer.
+/// * `node_id` - This branch's node id, which keys the sealed row.
+/// * `session` - The patron's session.
+///
+/// # Errors
+///
+/// Returns an error when the session cannot be sealed or stored.
+pub async fn remember(
+    library: &LibraryStore,
+    node_id: &str,
+    session: &WindowSession,
+) -> Result<(), LibraryError> {
+    let record = build_sealed_record(
+        session.expose().as_bytes(),
+        secret_kind::WINDOW_SESSION,
+        node_id,
+        secret_account_type::OPERATOR,
+        node_id,
+        WINDOW_SESSION_NAME,
+    )?;
+    upsert_secret(library.db(), &record).await
+}
+
+/// Forgets the session this branch's window signs in with.
+///
+/// # Arguments
+///
+/// * `library` - The library on this computer.
+/// * `node_id` - This branch's node id, which keys the sealed row.
+///
+/// # Errors
+///
+/// Returns the delete error.
+pub async fn forget(library: &LibraryStore, node_id: &str) -> Result<(), LibraryError> {
+    delete_secret(
+        library.db(),
+        secret_kind::WINDOW_SESSION,
+        Some(node_id),
+        secret_account_type::OPERATOR,
+        Some(node_id),
+        WINDOW_SESSION_NAME,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -218,5 +345,9 @@ mod tests {
             }
         );
         assert!(!shown.contains("secret"), "{shown}");
+        let session = WindowSession::new("secret").unwrap();
+        assert_eq!(session.expose(), "secret");
+        assert!(!format!("{session:?}").contains("secret"));
+        assert_eq!(WindowSession::new(""), None);
     }
 }

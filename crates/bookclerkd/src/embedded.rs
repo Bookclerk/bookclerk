@@ -13,9 +13,9 @@
 //! clerk of another library) every request is the operator: the host adds
 //! the current operator token as `Authorization: Bearer`, read again for
 //! every request so a rotation applies at once. After that the window is a
-//! patron: the one this OS user's `profile.toml` names, whose session the
-//! host renews at every launch, or nobody until they sign in on the app's
-//! own sign-in screen. The host keeps that patron's session cookies in a
+//! patron: the one whose portal session this branch keeps sealed in its
+//! own database, which the host renews at every launch, or nobody until
+//! they sign in on the app's own sign-in screen. The host keeps that patron's session cookies in a
 //! [`session::WindowJar`] and adds them to each request; an elevation's
 //! operator session lands there too, so elevation, impersonation and
 //! sign-out work as on the web. Whatever the page sent as cookies,
@@ -24,10 +24,10 @@
 //! credential of its own. With `daemon.auth.enabled = false` nothing is
 //! added.
 //!
-//! **The profile.** A sign-in in the window (a response that sets the
-//! patron's portal session while no elevation is active) writes the session
-//! to the profile; creating the library's first Owner in the window signs
-//! the window in as that Owner; signing out deletes the profile. Elevating,
+//! **The kept session.** A sign-in in the window (a response that sets the
+//! patron's portal session while no elevation is active) seals the session
+//! for the next launch; creating the library's first Owner in the window
+//! signs the window in as that Owner; signing out forgets it. Elevating,
 //! impersonating and ending either never touch it. The router sees every
 //! request as coming from [`EMBEDDED_ORIGIN`], a loopback origin, so a join
 //! or a library card sign-in asks the library to send the window back there.
@@ -68,7 +68,6 @@ use axum::body::Body;
 use axum::http::{header, Request, Response, StatusCode};
 use axum::http::{HeaderValue, Method};
 use axum::Router;
-use bookclerk_config::DesktopProfile;
 use bookclerk_window_policy::{
     classify_navigation, refusal, rewrite_request_headers, sign_in_ttl, Credential, Refusal,
     SIGN_IN_START_PATHS,
@@ -95,8 +94,7 @@ pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
 const BOOTSTRAP_PATH: &str = "/api/auth/bootstrap";
 
 /// Where the embedded host reads its files and configuration, as
-/// `bookclerkd`'s `--bookclerk-files` and `--config` do, and this OS user's
-/// desktop profile.
+/// `bookclerkd`'s `--bookclerk-files` and `--config` do.
 #[derive(Debug, Clone, Default)]
 pub struct EmbeddedOptions {
     /// Bookclerk files directory; `None` uses `BOOKCLERK_FILES_DIR` or the
@@ -104,9 +102,6 @@ pub struct EmbeddedOptions {
     pub bookclerk_files: Option<PathBuf>,
     /// Path to `config.toml`; `None` uses the one in the files directory.
     pub config: Option<PathBuf>,
-    /// Path to `profile.toml`; `None` uses the one in the OS user's
-    /// configuration directory ([`bookclerk_config::profile_path`]).
-    pub profile: Option<PathBuf>,
 }
 
 /// A running host with no listener, answering requests handed to it.
@@ -121,10 +116,10 @@ pub struct EmbeddedHost {
     sign_in_open_until: Mutex<Option<Instant>>,
     /// The patron's session cookies, which the page never sees.
     jar: Mutex<session::WindowJar>,
-    /// This OS user's `profile.toml`, or `None` when the OS reports no
-    /// configuration directory (the window then forgets its sign-in when it
-    /// closes).
-    profile_path: Option<PathBuf>,
+    /// This branch's node id, which keys the window's sealed session, or
+    /// `None` when the node identity cannot be read (the window then
+    /// forgets its sign-in when it closes).
+    node_id: Option<String>,
 }
 
 impl std::fmt::Debug for EmbeddedHost {
@@ -157,9 +152,9 @@ impl EmbeddedHost {
     pub async fn start(options: EmbeddedOptions, syslog_identifier: &str) -> anyhow::Result<Self> {
         let config = bookclerk_config::Config::load(options.bookclerk_files, options.config)?;
         init_logging(&config, syslog_identifier, crate::ProcessRole::Desktop);
-        let profile_path = options.profile.or_else(bookclerk_config::profile_path);
-        let host = Self::from_host(start_host(config, HostMode::Embedded).await?, profile_path);
-        host.open_profile().await;
+        let node_id = crate::node_queue::node_id(&config.paths().files_dir);
+        let host = Self::from_host(start_host(config, HostMode::Embedded).await?, node_id);
+        host.open_session().await;
         tracing::info!("host started embedded in the desktop window; no listener is bound");
         Ok(host)
     }
@@ -170,77 +165,74 @@ impl EmbeddedHost {
     /// # Arguments
     ///
     /// * `host` - The host [`start_host`] (or a test) started.
-    /// * `profile_path` - This OS user's `profile.toml`, when there is one.
+    /// * `node_id` - This branch's node id, which keys the window's sealed
+    ///   session, when it can be read.
     ///
     /// # Returns
     ///
-    /// The embedded host, signed in as nobody until [`Self::open_profile`].
-    pub(crate) fn from_host(host: HostParts, profile_path: Option<PathBuf>) -> Self {
+    /// The embedded host, signed in as nobody until [`Self::open_session`].
+    pub(crate) fn from_host(host: HostParts, node_id: Option<String>) -> Self {
         let HostParts { state, app, .. } = host;
         Self {
             state,
             app,
             sign_in_open_until: Mutex::new(None),
             jar: Mutex::new(session::WindowJar::default()),
-            profile_path,
+            node_id,
         }
     }
 
-    /// Signs the window in as the patron this OS user's profile names.
+    /// Signs the window in as the patron whose session this branch keeps.
     ///
-    /// The profile's session is swapped for a fresh one lasting
-    /// [`session::DESKTOP_SESSION_TTL`]: the new one is written to the
-    /// profile first and the old one ended after, so a failed write keeps
-    /// the old, still valid, session. A profile whose session was revoked,
-    /// expired, or whose patron was disabled is deleted, and the window
-    /// shows the sign-in screen. An unreadable profile is left alone and
-    /// logged.
-    pub(crate) async fn open_profile(&self) {
+    /// The kept session is swapped for a fresh one lasting
+    /// [`session::DESKTOP_SESSION_TTL`]: the new one is sealed first and the
+    /// old one ended after, so a failed write keeps the old, still valid,
+    /// session. A kept session that was revoked or expired, or whose patron
+    /// was disabled, is forgotten, and the window shows the sign-in screen.
+    /// A row that cannot be read is left alone and logged.
+    pub(crate) async fn open_session(&self) {
         if !self.state.auth_snapshot().await.enabled {
             return;
         }
-        let Some(path) = self.profile_path.as_deref() else {
+        let Some(node_id) = self.node_id.as_deref() else {
             return;
         };
-        let profile = match bookclerk_config::read_profile(path) {
-            Ok(Some(profile)) => profile,
+        let library = self.state.library_snapshot().await;
+        let kept = match session::remembered(&library, node_id).await {
+            Ok(Some(kept)) => kept,
             Ok(None) => return,
             Err(err) => {
-                tracing::warn!(error = %err, path = %path.display(), "desktop profile not read; the window opens signed out");
+                tracing::warn!(error = %err, "window session not read; the window opens signed out");
                 return;
             }
         };
-        let library = self.state.library_snapshot().await;
-        let Some(user_id) = session::patron(&library, &profile.session).await else {
-            tracing::info!("the desktop profile's session has ended; the window opens signed out");
-            if let Err(err) = bookclerk_config::remove_profile(path) {
-                tracing::warn!(error = %err, "ended desktop profile not removed");
+        let Some(user_id) = session::patron(&library, &kept).await else {
+            tracing::info!("the window's session has ended; the window opens signed out");
+            if let Err(err) = session::forget(&library, node_id).await {
+                tracing::warn!(error = %err, "ended window session not forgotten");
             }
             return;
         };
         let current = match session::mint(&library, user_id).await {
-            Some(fresh) => {
-                match bookclerk_config::write_profile(path, &DesktopProfile::branch(fresh.clone()))
-                {
-                    Ok(()) => {
-                        session::end(&library, &profile.session).await;
-                        fresh
-                    }
-                    Err(err) => {
-                        tracing::warn!(error = %err, "desktop profile not renewed; keeping its session");
-                        session::end(&library, &fresh).await;
-                        profile.session
-                    }
+            Some(fresh) => match session::remember(&library, node_id, &fresh).await {
+                Ok(()) => {
+                    session::end(&library, &kept).await;
+                    fresh
                 }
-            }
-            None => profile.session,
+                Err(err) => {
+                    tracing::warn!(error = %err, "window session not renewed; keeping it");
+                    session::end(&library, &fresh).await;
+                    kept
+                }
+            },
+            None => kept,
         };
         self.update_jar(|jar| jar.portal = Some(current.expose().to_owned()));
-        tracing::info!(user_id, "desktop window signed in from its profile");
+        tracing::info!(user_id, "desktop window signed in with its kept session");
     }
 
     /// The same host as a new launch of the window would see it: the same
-    /// state, router and profile path, signed in as nobody.
+    /// state, router and node id, signed in as nobody.
     #[cfg(test)]
     pub(crate) fn relaunched(&self) -> Self {
         Self {
@@ -248,7 +240,7 @@ impl EmbeddedHost {
             app: self.app.clone(),
             sign_in_open_until: Mutex::new(None),
             jar: Mutex::new(session::WindowJar::default()),
-            profile_path: self.profile_path.clone(),
+            node_id: self.node_id.clone(),
         }
     }
 
@@ -305,7 +297,7 @@ impl EmbeddedHost {
             if post && ok && path == BOOTSTRAP_PATH {
                 self.sign_in_bootstrapped_owner(response.body()).await;
             }
-            self.absorb(&set_cookies);
+            self.absorb(&set_cookies).await;
         }
         response
     }
@@ -337,7 +329,7 @@ impl EmbeddedHost {
             tracing::warn!(user_id, "the new Owner's window session could not be made");
             return;
         };
-        self.remember(Some(&fresh));
+        self.remember(Some(&fresh)).await;
         self.update_jar(|jar| jar.portal = Some(fresh.expose().to_owned()));
         tracing::info!(
             user_id,
@@ -346,12 +338,12 @@ impl EmbeddedHost {
     }
 
     /// Applies a response's session cookies to the jar, and keeps the
-    /// profile in step with a sign-in or a sign-out.
+    /// sealed session in step with a sign-in or a sign-out.
     ///
-    /// The profile changes only when the patron's own session changes while
-    /// no operator session is held: impersonation and its end always run
-    /// under an elevated session, so they never rewrite it.
-    fn absorb(&self, set_cookies: &[HeaderValue]) {
+    /// The kept session changes only when the patron's own session changes
+    /// while no operator session is held: impersonation and its end always
+    /// run under an elevated session, so they never rewrite it.
+    async fn absorb(&self, set_cookies: &[HeaderValue]) {
         if set_cookies.is_empty() {
             return;
         }
@@ -367,30 +359,26 @@ impl EmbeddedHost {
         if before.portal == after.portal || after.operator.is_some() {
             return;
         }
-        match after.portal.as_deref() {
-            Some(raw) => match bookclerk_config::ProfileSession::parse(raw) {
-                Some(signed_in) => self.remember(Some(&signed_in)),
-                None => {
-                    tracing::warn!("a sign-in's session is not a session token; not remembered")
-                }
-            },
-            None => self.remember(None),
-        }
+        let signed_in = after
+            .portal
+            .as_deref()
+            .and_then(session::WindowSession::new);
+        self.remember(signed_in.as_ref()).await;
     }
 
-    /// Writes `session` to the profile, or deletes the profile for `None`.
-    fn remember(&self, session: Option<&bookclerk_config::ProfileSession>) {
-        let Some(path) = self.profile_path.as_deref() else {
+    /// Seals `session` for the next launch, or forgets the kept one for
+    /// `None`.
+    async fn remember(&self, session: Option<&session::WindowSession>) {
+        let Some(node_id) = self.node_id.as_deref() else {
             return;
         };
+        let library = self.state.library_snapshot().await;
         let written = match session {
-            Some(session) => {
-                bookclerk_config::write_profile(path, &DesktopProfile::branch(session.clone()))
-            }
-            None => bookclerk_config::remove_profile(path),
+            Some(session) => session::remember(&library, node_id, session).await,
+            None => session::forget(&library, node_id).await,
         };
         if let Err(err) = written {
-            tracing::warn!(error = %err, path = %path.display(), "desktop profile not updated");
+            tracing::warn!(error = %err, "window session not kept");
         }
     }
 
@@ -710,7 +698,7 @@ mod tests {
             app,
             sign_in_open_until: Mutex::new(None),
             jar: Mutex::new(session::WindowJar::default()),
-            profile_path: None,
+            node_id: None,
         };
         assert!(format!("{host:?}").starts_with("EmbeddedHost"));
         let sign_in = "https://library.example/sign-in";
@@ -748,7 +736,7 @@ mod tests {
             app: echo_router(),
             sign_in_open_until: Mutex::new(None),
             jar: Mutex::new(session::WindowJar::default()),
-            profile_path: None,
+            node_id: None,
         };
         let mut frames = Vec::new();
         // Stop after the first frame: `hello`, naming every topic.

@@ -154,18 +154,23 @@ async fn who(host: &EmbeddedHost) -> (StatusCode, serde_json::Value) {
 }
 
 #[tokio::test]
-async fn the_desktop_window_opens_as_its_profiles_patron_and_elevates_like_the_web() {
+async fn the_desktop_window_opens_as_its_kept_patron_and_elevates_like_the_web() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let profile = home.path().join("bookclerk").join("profile.toml");
+    let node = "window-test-node";
     // Public origin set: the window's cookie requests still pass the CSRF check.
     let config = "[integrations]\npublic_origin = \"https://library.example\"\n";
     let parts = assemble_host(opened(&files, config).await, HostMode::Embedded)
         .await
         .unwrap();
     let state = parts.state.clone();
-    let host = EmbeddedHost::from_host(parts, Some(profile.clone()));
+    let host = EmbeddedHost::from_host(parts, Some(node.to_owned()));
+    let library = state.library_snapshot().await;
+    let kept = || async {
+        crate::embedded::session::remembered(&library, node)
+            .await
+            .unwrap()
+    };
 
     // First run: the operator creates the Owner, and the window becomes them.
     let created = host
@@ -177,9 +182,7 @@ async fn the_desktop_window_opens_as_its_profiles_patron_and_elevates_like_the_w
         .await;
     assert_eq!(created.status(), StatusCode::OK);
     assert!(created.headers().get("set-cookie").is_none());
-    let first = bookclerk_config::read_profile(&profile)
-        .unwrap()
-        .expect("profile written");
+    let first = kept().await.expect("session kept");
     let (status, me) = who(&host).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(me["role"], "owner", "{me}");
@@ -245,21 +248,18 @@ async fn the_desktop_window_opens_as_its_profiles_patron_and_elevates_like_the_w
         ("owner".into(), false.into())
     );
     assert_eq!(
-        bookclerk_config::read_profile(&profile).unwrap(),
+        kept().await,
         Some(first.clone()),
-        "elevating and impersonating never rewrite the profile"
+        "elevating and impersonating never rewrite the kept session"
     );
 
     // The next launch opens as the same patron, on a fresh session.
-    let library = state.library_snapshot().await;
     let reopened = host.relaunched();
-    reopened.open_profile().await;
-    let renewed = bookclerk_config::read_profile(&profile)
-        .unwrap()
-        .expect("profile kept");
+    reopened.open_session().await;
+    let renewed = kept().await.expect("session still kept");
     assert_ne!(renewed, first, "the session is swapped at launch");
     assert_eq!(
-        crate::embedded::session::patron(&library, &first.session).await,
+        crate::embedded::session::patron(&library, &first).await,
         None
     );
     let (_, me) = who(&reopened).await;
@@ -270,7 +270,7 @@ async fn the_desktop_window_opens_as_its_profiles_patron_and_elevates_like_the_w
         .handle(window_json("POST", "/api/auth/logout", "{}"))
         .await;
     assert!(out.status().is_success(), "{}", out.status());
-    assert_eq!(bookclerk_config::read_profile(&profile).unwrap(), None);
+    assert_eq!(kept().await, None);
     let (status, _) = who(&reopened).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
@@ -288,14 +288,13 @@ async fn the_desktop_window_opens_as_its_profiles_patron_and_elevates_like_the_w
         "{:?}",
         String::from_utf8_lossy(signed_in.body())
     );
-    assert!(bookclerk_config::read_profile(&profile).unwrap().is_some());
+    let current = kept().await.expect("the sign-in is kept");
 
     // A revoked session sends the next launch to the sign-in screen.
-    let current = bookclerk_config::read_profile(&profile).unwrap().unwrap();
-    crate::embedded::session::end(&library, &current.session).await;
+    crate::embedded::session::end(&library, &current).await;
     let revoked = host.relaunched();
-    revoked.open_profile().await;
-    assert_eq!(bookclerk_config::read_profile(&profile).unwrap(), None);
+    revoked.open_session().await;
+    assert_eq!(kept().await, None);
     let (status, _) = who(&revoked).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     host.shutdown().await;
@@ -310,7 +309,6 @@ async fn the_desktop_host_refuses_to_start_on_an_interrupted_shared_branch_join(
     let options = EmbeddedOptions {
         bookclerk_files: Some(files.path().to_path_buf()),
         config: None,
-        profile: None,
     };
     let Err(err) = EmbeddedHost::start(options, "bookclerk-desktop-test").await else {
         panic!("an interrupted shared branch join must stop the start");

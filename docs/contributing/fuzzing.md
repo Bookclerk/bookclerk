@@ -57,7 +57,6 @@ boundary extends it.
 | `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
-| `desktop_profile` | The desktop app's per-OS-account `profile.toml`, which names the patron session the window opens with and which anything running as that account can edit | `bookclerk-config::parse_profile` |
 | `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
@@ -207,13 +206,6 @@ only that. The others check:
   the key's documented range, and the parser returns that number. The
   shared oracle is `fuzz/oracles/cache_settings.rs`, replayed from
   `bookclerk-config`.
-- **`desktop_profile`**: a file is accepted exactly when it is at most 4096
-  bytes of UTF-8 TOML whose table holds `version`, `mode` and `session` and
-  nothing else, with `version` the integer 1, `mode` the string `branch`
-  and `session` a lowercase hyphenated UUID checked character by
-  character; the accepted profile carries that session text, and writing it
-  out and parsing again gives an equal profile. The shared oracle is
-  `fuzz/oracles/desktop_profile.rs`, replayed from `bookclerk-config`.
 - **`diagnostics_submit_reply`**: a reply longer than 4096 bytes is
   refused. Otherwise it is accepted exactly when, read independently as a
   JSON value, it is an object whose `report_id` is a string that is a

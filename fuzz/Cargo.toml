@@ -40,8 +40,6 @@ bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
 # s3_event reads S3 notification messages (no `s3` feature: the parser has
 # no AWS client).
 bookclerk-storage = { path = "../crates/bookclerk-storage" }
-# desktop_profile's oracle reads the profile's TOML table itself.
-toml = "1.1"
 # window_policy drives the desktop window's custom-scheme policy.
 bookclerk-window-policy = { path = "../crates/bookclerk-window-policy" }
 http = "1"
@@ -463,13 +461,6 @@ bench = false
 [[bin]]
 name = "plan_authz"
 path = "fuzz_targets/plan_authz.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "desktop_profile"
-path = "fuzz_targets/desktop_profile.rs"
 test = false
 doc = false
 bench = false

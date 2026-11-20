@@ -38,7 +38,7 @@ The Bearer API keeps accepting the token. The sign-in link is a loopback
 default), never the durable token.
 
 The desktop window follows the same rule: it is the operator only until an
-Owner exists, then the patron its OS account's profile names, who elevates
+Owner exists, then the patron whose session the branch keeps for it, who elevates
 like anyone else (see
 [the desktop window](../contributing/ui/README.md#who-the-window-is-after-setup)).
 

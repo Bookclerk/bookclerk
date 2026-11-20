@@ -21,7 +21,6 @@ mod cache_settings;
 mod cookie_flags;
 mod database;
 mod desktop;
-mod desktop_profile;
 mod diagnostics;
 /// [`ConfigError`] and the crate [`Result`] alias.
 mod error;
@@ -62,11 +61,6 @@ pub use database::{
     DatabasePluginKind, DatabasePostgresConfig, DatabaseSqliteConfig,
 };
 pub use desktop::graphical_session_available;
-pub use desktop_profile::{
-    parse_profile, profile_path, read_profile, remove_profile, write_profile, DesktopProfile,
-    ProfileError, ProfileMode, ProfileSession, MAX_PROFILE_BYTES, PROFILE_FILE_NAME,
-    PROFILE_VERSION,
-};
 pub use diagnostics::{
     global as diagnostics_global, BufferedEvent, DiagnosticsHandle, ProcessRole, UploadPayload,
     SLOW_TARGET,
