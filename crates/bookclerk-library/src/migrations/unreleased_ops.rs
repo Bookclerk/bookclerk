@@ -265,14 +265,14 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(plugin_key, account_id)",
     ),
-    // The operator's per-member rule "may connect store accounts here". No
-    // row means allowed (the default); `may_connect = 0` refuses a connect
-    // on this instance and any account that arrives for the member from
-    // another library (`control_plane::carried_accounts`).
+    // One Member's overrides of the library's default member controls
+    // (`control_plane::member_controls`): JSON with only the controls that
+    // differ from the default. No row means the Member follows the
+    // default for every control.
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS member_account_rules (
+        r"CREATE TABLE IF NOT EXISTS patron_controls (
         user_id INTEGER PRIMARY KEY,
-        may_connect INTEGER NOT NULL,
+        controls_json TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )",

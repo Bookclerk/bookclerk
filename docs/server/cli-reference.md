@@ -38,7 +38,7 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
 - [`bookclerk libraries`](#bookclerk-libraries): Owner libraries this install hosts for, and consent to their plugins
 - [`bookclerk nodes`](#bookclerk-nodes): Library nodes: liveness, capacity, budgets, and placement labels
-- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes
+- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes and member controls
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
@@ -64,7 +64,7 @@ Commands:
 - [`bookclerk library set-status`](#bookclerk-library-set-status): Match storage files to library rows and update acquire status
 - [`bookclerk library get-license`](#bookclerk-library-get-license): Fetch a content license for an ASIN
 - [`bookclerk library search`](#bookclerk-library-search): Search the library's works by title, people, series or store id
-- [`bookclerk library export`](#bookclerk-library-export): Export library rows as CSV / JSON / XLSX (alias of `export library`)
+- [`bookclerk library export`](#bookclerk-library-export): Export library titles as CSV / JSON / XLSX (alias of `export library`): the whole library, or with `--user` that person's view
 - [`bookclerk library list`](#bookclerk-library-list): List books in the local library DB
 - [`bookclerk library convert`](#bookclerk-library-convert): Convert acquired m4b/m4a to mp3
 - [`bookclerk library filters`](#bookclerk-library-filters): Manage saved quick filters
@@ -254,7 +254,7 @@ Options:
 
 ### `bookclerk library export`
 
-Export library rows as CSV / JSON / XLSX (alias of `export library`)
+Export library titles as CSV / JSON / XLSX (alias of `export library`): the whole library, or with `--user` that person's view
 
 ```text
 bookclerk library export [OPTIONS] --path <PATH> [ASINS]...
@@ -271,6 +271,7 @@ Options:
 - `--json`: Write JSON
 - `--xlsx`: Write XLSX
 - `--account <ACCOUNT>`: Limit the export to this account id, stem, or nickname
+- `--user <USER>`: Fill `tags` and `is_finished` with this person's own state (login name or user id); without it they are empty
 
 ### `bookclerk library list`
 
@@ -1227,7 +1228,7 @@ Commands:
 
 - [`bookclerk export native`](#bookclerk-export-native): Write a portable Bookclerk `.tar.gz` backup of the files directory
 - [`bookclerk export libation`](#bookclerk-export-libation): Export Settings.json, AccountsSettings.json, and LibationContext.db
-- [`bookclerk export library`](#bookclerk-export-library): Export library rows as CSV / JSON / XLSX
+- [`bookclerk export library`](#bookclerk-export-library): Export library titles as CSV / JSON / XLSX: the whole library, or with `--user` that person's view with their tags and finished flags
 - [`bookclerk export postgres`](#bookclerk-export-postgres): Copy library.db to PostgreSQL
 
 ### `bookclerk export native`
@@ -1262,7 +1263,7 @@ Options:
 
 ### `bookclerk export library`
 
-Export library rows as CSV / JSON / XLSX
+Export library titles as CSV / JSON / XLSX: the whole library, or with `--user` that person's view with their tags and finished flags
 
 ```text
 bookclerk export library [OPTIONS] --path <PATH> [ASINS]...
@@ -1279,6 +1280,7 @@ Options:
 - `--json`: Force JSON even when the destination extension is not `.json`
 - `--xlsx`: Force XLSX even when the destination extension is not `.xlsx`
 - `--account <ACCOUNT>`: Limit exported library rows to this account id when set
+- `--user <USER>`: Fill `tags` and `is_finished` with this person's own state (login name or user id); without it they are empty
 
 ### `bookclerk export postgres`
 
@@ -1883,7 +1885,7 @@ Arguments:
 
 ## `bookclerk users`
 
-The library's people: patron scopes
+The library's people: patron scopes and member controls
 
 ```text
 bookclerk users [OPTIONS] <COMMAND>
@@ -1892,6 +1894,7 @@ bookclerk users [OPTIONS] <COMMAND>
 Commands:
 
 - [`bookclerk users scope`](#bookclerk-users-scope): Read or set which part of the library a patron sees
+- [`bookclerk users controls`](#bookclerk-users-controls): Read or set what a patron may do: link store accounts, download, edit metadata, upload, request books, see prices
 
 ### `bookclerk users scope`
 
@@ -1940,6 +1943,54 @@ Options:
 - `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author and narrator. Repeatable: a book needs one
 - `--exclude <FIELD=VALUE>`: Hide books with this value, whatever `--include` says. Repeatable
 - `--follow-default`: Drop the patron's own scope so they follow the library's default
+
+### `bookclerk users controls`
+
+Read or set what a patron may do: link store accounts, download, edit metadata, upload, request books, see prices
+
+```text
+bookclerk users controls [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users controls get`](#bookclerk-users-controls-get): Print a patron's controls, or the library's default
+- [`bookclerk users controls set`](#bookclerk-users-controls-set): Change controls of a patron, or of the library's default. Controls not named keep their value
+
+#### `bookclerk users controls get`
+
+Print a patron's controls, or the library's default
+
+```text
+bookclerk users controls get [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: The library's default, which patrons follow unless a control is set for them alone
+
+#### `bookclerk users controls set`
+
+Change controls of a patron, or of the library's default. Controls not named keep their value
+
+```text
+bookclerk users controls set [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: Change the library's default instead of one patron's controls
+- `--allow <CONTROL>`: Allow a control (`link_accounts`, `download`, `edit_metadata`, `upload`, `request_books`, `see_prices`). Repeatable
+- `--deny <CONTROL>`: Turn a control off. Repeatable
+- `--follow-default <CONTROL>`: Make the patron follow the library's default for a control again. Repeatable; `all` names every control
 
 ## `bookclerk queues`
 
