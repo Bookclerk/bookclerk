@@ -356,6 +356,24 @@ export interface DestinationChangesResults {
 }
 
 /**
+ * Params envelope of `Destination.translateKeys`.
+ *
+ * @internal
+ */
+export interface DestinationTranslateKeysParams {
+  keys: string[];
+}
+
+/**
+ * Results envelope of `Destination.translateKeys`.
+ *
+ * @internal
+ */
+export interface DestinationTranslateKeysResults {
+  result: T.TranslateKeysReply;
+}
+
+/**
  * Params envelope of `Source.open`.
  *
  * @internal
@@ -2346,6 +2364,26 @@ export const HeadManyResultCodec: StructCodec<T.HeadManyResult> = {
 };
 
 /**
+ * Wire codec for `TranslateKeysResult` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const TranslateKeysResultCodec: StructCodec<T.TranslateKeysResult> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0),
+    };
+  },
+};
+
+/**
  * Wire codec for `ChangesRequest` (1 data words, 1 pointers).
  *
  * @internal
@@ -3908,6 +3946,45 @@ export const HeadManyReplyCodec: StructCodec<T.HeadManyReply> = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HeadManyReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `TranslateKeysReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const TranslateKeysReplyCodec: StructCodec<T.TranslateKeysReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          TranslateKeysResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("TranslateKeysReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: TranslateKeysResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("TranslateKeysReply", disc);
     }
   },
 };
@@ -11481,6 +11558,46 @@ export const DestinationChangesResultsCodec: StructCodec<DestinationChangesResul
   read(s, caps) {
     return {
       result: ChangesReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.translateKeys` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationTranslateKeysParamsCodec: StructCodec<DestinationTranslateKeysParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.translateKeys` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationTranslateKeysResultsCodec: StructCodec<DestinationTranslateKeysResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      TranslateKeysReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: TranslateKeysReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

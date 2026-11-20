@@ -186,6 +186,9 @@ FEATURE_STORAGE_CONDITIONAL_WRITE: str = "storage.conditionalWrite"
 FEATURE_STORAGE_CHANGES: str = "storage.changes"
 """Guest implements `Destination.changes` (`storage.changes`)."""
 
+FEATURE_STORAGE_TRANSLATE_KEYS: str = "storage.translateKeys"
+"""Guest implements `Destination.translateKeys` (`storage.translateKeys`)."""
+
 OBJECT_CHANGE_KINDS: tuple[str, ...] = ("changed", "upserted", "removed")
 """What happened to an object in a change feed. Unknown codes are kept and
 treated as `changed`.
@@ -423,6 +426,7 @@ __all__ = [
     "FEATURE_STORAGE_HEAD_MANY",
     "FEATURE_STORAGE_CONDITIONAL_WRITE",
     "FEATURE_STORAGE_CHANGES",
+    "FEATURE_STORAGE_TRANSLATE_KEYS",
     "OBJECT_CHANGE_KINDS",
     "PLUGIN_ERROR_CODES",
     "ENTRYPOINTS",

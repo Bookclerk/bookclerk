@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Bookmark, Download, ExternalLink, Trash2, X } from "lucide-react";
+import { Bookmark, Download, ExternalLink, Play, Trash2, X } from "lucide-react";
 import { BranchRequestButtons } from "@/components/BranchRequestButtons";
 import { StarRating } from "@/components/StarRating";
 import { Badge } from "@/components/ui/badge";
@@ -448,6 +448,7 @@ export function TitleDetailModal({
   onWishlist,
   onRemoveWishlist,
   onAcquire,
+  onPlay,
   onMetaSearch,
   showAcquire = false,
 }: {
@@ -457,6 +458,8 @@ export function TitleDetailModal({
   onWishlist?: (detail: TitleDetail) => void;
   onRemoveWishlist?: (detail: TitleDetail) => void;
   onAcquire?: (detail: TitleDetail) => void;
+  /** Play the title's audio; given only when some is on this server. */
+  onPlay?: () => void;
   /** Open an author / narrator / series / genre search on the parent surface. */
   onMetaSearch?: (kind: TitleMetaSearchKind, value: string) => void;
   showAcquire?: boolean;
@@ -1183,6 +1186,12 @@ export function TitleDetailModal({
             <Button variant="secondary" disabled>
               <Bookmark className="h-4 w-4 fill-current" />
               Wishlisted
+            </Button>
+          ) : null}
+          {onPlay ? (
+            <Button onClick={onPlay}>
+              <Play className="h-4 w-4" />
+              Play
             </Button>
           ) : null}
           {showAcquire && onAcquire && canAcquireMore(detail) ? (

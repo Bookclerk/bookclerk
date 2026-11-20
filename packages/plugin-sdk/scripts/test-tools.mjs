@@ -409,6 +409,34 @@ function bindingMessage(manifest) {
   }
   return "";
 }
+// [acquire]: the host parses a table with deny_unknown_fields, so a scalar
+// or array is refused as well as an unknown key, and an empty table is fine.
+{
+  const store = (acquire) => ({
+    ...bindingBase,
+    entrypoints: ["storefront"],
+    media: { works: ["book"], lists: ["audio"], fetches: ["audio"] },
+    acquire,
+  });
+  const cases = [
+    [{}, ""],
+    [{ downloads_per_day: 100 }, ""],
+    [false, "plugin.toml: `[acquire]` must be a table"],
+    [100, "plugin.toml: `[acquire]` must be a table"],
+    [[1], "plugin.toml: `[acquire]` must be a table"],
+    [parse("d = 1979-05-27").d, "plugin.toml: `[acquire]` must be a table"],
+    [Object.create(null), ""],
+    [{ downloads_per_days: 1 }, "unknown field `downloads_per_days`"],
+  ];
+  for (const [acquire, want] of cases) {
+    const got = bindingMessage(store(acquire));
+    if (want === "" ? got !== "" : !got.includes(want)) {
+      console.error("FAIL [acquire]", JSON.stringify(acquire), JSON.stringify(got));
+      process.exit(1);
+    }
+  }
+  console.log("ok [acquire] must be a table of known fields");
+}
 // [metadata_files]: the host parses rows with deny_unknown_fields and a bool `writes`.
 {
   const dialect = { id: "txt", name: "Text", file_names: ["desc.txt"], fields: ["description"] };
@@ -565,6 +593,28 @@ function bindingMessage(manifest) {
     }
   }
   console.log("ok own_user_agent validation");
+}
+// [acquire]: the host refuses fields it does not know, so the tools do too.
+{
+  const storefront = (acquire) => ({
+    ...bindingBase,
+    entrypoints: ["storefront"],
+    media: { works: ["book"], lists: ["audio"], fetches: ["audio"] },
+    acquire,
+  });
+  const cases = [
+    [storefront({}), ""],
+    [storefront({ downloads_per_day: 100, min_gap_seconds: 30 }), ""],
+    [storefront({ downloads_per_days: 100 }), "unknown field `downloads_per_days`"],
+  ];
+  for (const [manifest, needle] of cases) {
+    const message = bindingMessage(manifest);
+    if (needle ? !message.includes(needle) : message !== "") {
+      console.error("FAIL acquire", JSON.stringify(manifest), message);
+      process.exit(1);
+    }
+  }
+  console.log("ok acquire rejects unknown keys");
 }
 // [triggers] crons: shape, count and duplicates; a cron-only manifest is valid.
 {

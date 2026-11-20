@@ -462,7 +462,6 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
             let rules = resolve_replacement_characters(
                 &config.output.replacement_characters,
                 config.output.path_sanitization,
-                false,
             );
             let path_limits = DownloadOptions::from(config).path_limits;
             let key = storage_key_with_contexts(

@@ -2488,6 +2488,143 @@ async fn suspend_job_commits_checkpoint_and_stale_fence_cannot() {
     assert!(!store.suspend_job(&fence, &checkpoint, wake).await.unwrap());
 }
 
+/// A deferred job waits as `pending` with its reason, spends no attempt,
+/// drops any checkpoint, and a stale fence cannot defer it.
+#[tokio::test]
+async fn defer_job_parks_without_an_attempt_or_checkpoint() {
+    let store = kit_store().await;
+    let created = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Acquire,
+            payload: JobPayload {
+                paced: true,
+                trigger: JobTrigger::Scheduler,
+                checkpoint: Some(bookclerk_plugin_abi::JobCheckpoint {
+                    schema_version: 1,
+                    json: "{}".into(),
+                }),
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 8,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id } = created else {
+        panic!("expected created: {created:?}");
+    };
+    let first = claim_job(&store, "worker-defer").await;
+    let fence = fence_of(&first);
+    let wake = chrono::Utc::now() + chrono::Duration::hours(1);
+    assert!(store
+        .defer_job(&fence, wake, "waiting for the daily download budget")
+        .await
+        .unwrap());
+    let parked = store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(parked.state, JobState::Pending);
+    assert!(parked.lease_owner.is_none());
+    assert_eq!(
+        parked.progress.as_deref(),
+        Some("waiting for the daily download budget")
+    );
+    assert!(parked.payload.checkpoint.is_none());
+    assert!(parked.payload.resume_pending);
+    assert!(parked.payload.paced);
+    assert!(store
+        .claim_next_job(
+            JobResourceClass::Network,
+            "worker-early",
+            60,
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(!store.defer_job(&fence, wake, "again").await.unwrap());
+    // Another account's pace change leaves it parked; its own wakes it.
+    store
+        .upsert_account("audible", "a1", "us", None, true, "audible")
+        .await
+        .unwrap();
+    assert_eq!(store.wake_paced_acquires("other").await.unwrap(), 1);
+    let parked = store.get_job(&id).await.unwrap().unwrap();
+    assert!(parked.run_after <= chrono::Utc::now());
+    assert_eq!(store.wake_paced_acquires("a1").await.unwrap(), 0);
+    let woken = claim_job(&store, "worker-woken").await;
+    assert_eq!(woken.id, id);
+}
+
+/// Waking reads the pending jobs in pages of the database's result cap,
+/// so under every profile, even with a one-row cap, each paced acquire on
+/// the account is woken and no other.
+#[tokio::test]
+async fn waking_paced_acquires_skips_other_accounts_and_unpaced_jobs() {
+    for profile in crate::test_support::Profile::ALL {
+        for capped in [false, true] {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let store = if capped {
+                store.with_plan_limits(64, 1, 65_536)
+            } else {
+                store
+            };
+            waking_paced_acquires_on(store).await;
+        }
+    }
+}
+
+/// The body of [`waking_paced_acquires_skips_other_accounts_and_unpaced_jobs`]
+/// on one store.
+async fn waking_paced_acquires_on(store: LibraryStore) {
+    store
+        .upsert_account("audible", "a1", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let later = chrono::Utc::now() + chrono::Duration::hours(6);
+    let mut ids = Vec::new();
+    for (account, paced) in [("a1", true), ("a2", true), ("a1", false), ("a1", true)] {
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    paced,
+                    account: Some(account.into()),
+                    // Two paced acquires on a1 differ by title.
+                    title: (ids.len() == 3).then(|| "second".into()),
+                    trigger: JobTrigger::Scheduler,
+                    ..Default::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 8,
+                run_after: Some(later),
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id } = created else {
+            panic!("expected created: {created:?}");
+        };
+        ids.push(id);
+    }
+    store.clear_account_cooldown("audible", "a1").await.unwrap();
+    let now = chrono::Utc::now();
+    let run_after = |i: usize| {
+        let store = &store;
+        let id = ids[i].clone();
+        async move { store.get_job(&id).await.unwrap().unwrap().run_after }
+    };
+    assert!(run_after(0).await <= now, "a1's paced acquire is woken");
+    assert!(run_after(1).await > now, "a2's stays parked");
+    assert!(run_after(2).await > now, "an unpaced job is left alone");
+    assert!(
+        run_after(3).await <= now,
+        "every paced acquire on a1 is woken"
+    );
+}
+
 #[tokio::test]
 async fn suspend_lost_fence_does_not_commit_and_reclaim_sees_checkpoint() {
     use bookclerk_plugin_abi::JobCheckpoint;

@@ -98,7 +98,7 @@ pub use operator_auth::{
     ResolveOperatorTokenEnv,
 };
 pub use output::{
-    normalize_storage_prefix, BadBookAction, DestinationId, DestinationKeyStyle, DestinationNaming,
+    normalize_storage_prefix, BadBookAction, DestinationId, DestinationNaming,
     MultiDestinationMode, OutputConfig,
 };
 pub use output_copy::{
@@ -110,7 +110,7 @@ pub use overrides::{
 };
 pub use path_limits::{
     enforce_storage_key_limits, path_len, truncate_filename_stem, truncate_path_component,
-    PathLengthMeasure, PathLimits, DEFAULT_MAX_FILENAME_LENGTH, S3_MAX_OBJECT_KEY_BYTES,
+    PathLengthMeasure, PathLimits, DEFAULT_MAX_FILENAME_LENGTH, MAX_HOST_KEY_BYTES,
 };
 pub use paths::{
     resolve_config_path, resolve_files_dir, Paths, BOOKCLERK_CONFIG_ENV, BOOKCLERK_FILES_DIR_ENV,

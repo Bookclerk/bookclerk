@@ -289,6 +289,14 @@ pub trait Destination {
     async fn changes(&self, _request: crate::ChangesRequest) -> Result<crate::ChangesPage> {
         Err(PluginError::unsupported("changes"))
     }
+
+    /// Translate up to [`crate::MAX_BATCH_KEYS`] host keys into the keys
+    /// this destination stores them under (`storage.translateKeys`), one
+    /// per host key in order. The same host key must always translate to
+    /// the same key.
+    async fn translate_keys(&self, _keys: Vec<String>) -> Result<Vec<String>> {
+        Err(PluginError::unsupported("translateKeys"))
+    }
 }
 
 /// Source capability that can open a named object as a stream.

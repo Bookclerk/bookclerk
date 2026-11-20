@@ -251,8 +251,8 @@ pub use db_stream::{
 pub use features::{
     negotiate_rpc_features, RpcFeature, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_CHANGES,
     FEATURE_STORAGE_CONDITIONAL_WRITE, FEATURE_STORAGE_COPY, FEATURE_STORAGE_DELETE_MANY,
-    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, FEATURE_STREAMS,
-    STORAGE_OPERATION_FEATURES,
+    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY,
+    FEATURE_STORAGE_TRANSLATE_KEYS, FEATURE_STREAMS, STORAGE_OPERATION_FEATURES,
 };
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
@@ -320,9 +320,10 @@ pub use settings_schema::{
 pub use storage_ops::{
     decode_storage_reply_bytes, encode_storage_reply_bytes, require_batch_len,
     validate_changes_page, validate_head_many, validate_key_outcomes, validate_move_many_page,
-    ChangesPage, ChangesRequest, KeyOutcome, KeyPair, MoveManyPage, MoveManyRequest,
-    MoveManyTarget, MoveOptions, MoveResult, ObjectChange, ObjectChangeKind, StorageReply,
-    StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
+    validate_translated_keys, ChangesPage, ChangesRequest, KeyOutcome, KeyPair, MoveManyPage,
+    MoveManyRequest, MoveManyTarget, MoveOptions, MoveResult, ObjectChange, ObjectChangeKind,
+    StorageReply, StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
+    MAX_TRANSLATED_KEY_BYTES,
 };
 
 /// Embedded JSON Schema for install `plugin.toml` files (shared with language

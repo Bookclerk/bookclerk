@@ -832,6 +832,17 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
           })),
         }),
     }),
+    translateKeys: spec<
+      W.DestinationTranslateKeysParams,
+      W.DestinationTranslateKeysResults["result"]
+    >({
+      params: W.DestinationTranslateKeysParamsCodec,
+      results: W.DestinationTranslateKeysResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "translateKeys", [batchKeys(p.keys)]),
+      ok: (value) => okValue({ keys: asList<unknown>(value).map(String) }),
+    }),
     changes: spec<W.DestinationChangesParams, W.DestinationChangesResults["result"]>({
       params: W.DestinationChangesParamsCodec,
       results: W.DestinationChangesResultsCodec,

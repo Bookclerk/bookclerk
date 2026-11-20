@@ -163,6 +163,8 @@ const featureStorageHeadMany :Text = "storage.headMany";
 const featureStorageConditionalWrite :Text = "storage.conditionalWrite";
 # Guest implements `Destination.changes` (`storage.changes`).
 const featureStorageChanges :Text = "storage.changes";
+# Guest implements `Destination.translateKeys` (`storage.translateKeys`).
+const featureStorageTranslateKeys :Text = "storage.translateKeys";
 
 # Guest-advertised caps for `rpc.scalarLimits`; never above the file constants.
 struct ScalarLimits {
@@ -405,6 +407,14 @@ struct DeleteManyResult {
 struct HeadManyResult {
   # One probe per requested key, in request order.
   objects @0 :List(HeadOk);
+}
+
+# Success payload of `Destination.translateKeys`.
+struct TranslateKeysResult {
+  # One translated key per requested host key, in request order: the key
+  # the guest stores that host key under. Each is a relative key with no
+  # empty, `.` or `..` segment.
+  keys @0 :List(Text);
 }
 
 # Argument of `Destination.changes`. Fields are only ever appended.
@@ -1009,6 +1019,16 @@ struct HeadManyReply {
   }
 }
 
+# Result union of `Destination.translateKeys`.
+struct TranslateKeysReply {
+  union {
+    # Success: one translated key per host key.
+    ok @0 :TranslateKeysResult;
+    # Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
 # Result union of `Destination.changes`.
 struct ChangesReply {
   union {
@@ -1202,6 +1222,14 @@ interface Destination {
   changes @12 (
       request :ChangesRequest  # Cursor and page size.
   ) -> (result :ChangesReply);
+  # Translate up to `maxBatchKeys` host keys into the keys the guest stores
+  # them under (requires `storage.translateKeys`). A host key is `/`-joined
+  # segments, none empty, `.`, `..` or holding `\` or a control character.
+  # The same host key must always translate to the same key. Without the
+  # feature the host stores each host key as written.
+  translateKeys @13 (
+      keys :List(Text)  # Host keys to translate.
+  ) -> (result :TranslateKeysReply);
 }
 
 # Read-only byte source for job inputs (not a storefront).

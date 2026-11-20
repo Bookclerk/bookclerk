@@ -4712,6 +4712,48 @@
         }
       ]
     },
+    "Destination.translateKeys$Params": {
+      "name": "Destination.translateKeys$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "keys",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Destination.translateKeys$Results": {
+      "name": "Destination.translateKeys$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "TranslateKeysReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "DiagnoseReply": {
       "name": "DiagnoseReply",
       "file": "plugin.capnp",
@@ -15631,6 +15673,58 @@
         }
       ]
     },
+    "TranslateKeysReply": {
+      "name": "TranslateKeysReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "TranslateKeysResult"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "TranslateKeysResult": {
+      "name": "TranslateKeysResult",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "keys",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
     "UserRelationsReply": {
       "name": "UserRelationsReply",
       "file": "plugin.capnp",
@@ -16408,6 +16502,12 @@
           "ordinal": 12,
           "params": "Destination.changes$Params",
           "results": "Destination.changes$Results"
+        },
+        {
+          "name": "translateKeys",
+          "ordinal": 13,
+          "params": "Destination.translateKeys$Params",
+          "results": "Destination.translateKeys$Results"
         }
       ]
     },
@@ -16901,6 +17001,11 @@
       "name": "featureStorageMoveMany",
       "file": "plugin.capnp",
       "value": "storage.moveMany"
+    },
+    "featureStorageTranslateKeys": {
+      "name": "featureStorageTranslateKeys",
+      "file": "plugin.capnp",
+      "value": "storage.translateKeys"
     },
     "featureStreams": {
       "name": "featureStreams",

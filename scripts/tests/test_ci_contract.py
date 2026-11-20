@@ -28,8 +28,8 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
-from ci_plan.execute import BUILD_ONLY_HOSTED_CHECKS, BUILD_PLAN_ENV  # noqa: E402
-from ci_plan.plan import CHECK_JOB, JOB_CHECKS, OS_LEG_JOBS, STEP_GATED_JOBS  # noqa: E402
+from ci_plan.execute import BUILD_ONLY_HOSTED_CHECKS, BUILD_PLAN_ENV, OS_TEST_PARTS  # noqa: E402
+from ci_plan.plan import CHECK_JOB, JOB_CHECKS, OS_LEG_JOBS, REPORT_JOBS, STEP_GATED_JOBS  # noqa: E402
 
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 OUTPUT_REF = re.compile(r"needs\.plan\.outputs\.([A-Za-z0-9_]+)")
@@ -42,6 +42,17 @@ FAIL_FAST_JOB = "merge-queue-fail-fast"
 PRIVATE_HEAD_ACTION = "./.github/actions/osv-remediation-head"
 # The gate of a step that compiles another job's check on a build-only push.
 HOSTED_BUILD_IF = "env.CI_BUILD_ONLY == 'true' && runner.os == 'Windows' && needs.plan.outputs.check_%s == 'true'"
+# Picks a pull request run's CodeQL or ClusterFuzzLite slot by its run id's
+# parity (Actions expressions have no modulo).
+RUN_ID_PARITY = (
+    "(endsWith(format('{0}', github.run_id), '0') || endsWith(format('{0}', github.run_id), '2')"
+    " || endsWith(format('{0}', github.run_id), '4') || endsWith(format('{0}', github.run_id), '6')"
+    " || endsWith(format('{0}', github.run_id), '8')) && 'even' || 'odd'"
+)
+# Caches only report-only jobs save, each keyed by the build plan digest of
+# the cache whose checks it compiles (`test-os` builds `rust_test`, a `debug`
+# check, on Windows and macOS).
+REPORT_CACHES = {"debug-tests": "debug"}
 # The macOS job's display name, which CI Gate's stranded-job step names.
 MACOS_JOB_NAME = "macOS (sandbox, gateway, tray)"
 
@@ -52,7 +63,7 @@ def _load() -> dict:
 
 
 def _emitted_keys() -> set[str]:
-    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs", "test_parts"}
+    keys = {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs", "test_parts", "os_test_matrix"}
     keys |= {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
     keys |= {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]}
     keys |= {f"check_{c}" for c in BUILD_ONLY_HOSTED_CHECKS}
@@ -155,7 +166,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(known - used, {"mode"})
 
     def test_jobs_match_planner(self) -> None:
-        gated = [j for j in self.jobs if j not in ("plan", "ci-gate", FAIL_FAST_JOB, *OS_LEG_JOBS)]
+        gated = [j for j in self.jobs if j not in ("plan", "ci-gate", FAIL_FAST_JOB, *OS_LEG_JOBS, *REPORT_JOBS)]
         self.assertEqual(set(gated), set(JOB_CHECKS))
         for job in gated:
             self.assertEqual(
@@ -170,7 +181,7 @@ class WorkflowContractTests(unittest.TestCase):
         for job_name, job in self.jobs.items():
             for step in job.get("steps", []):
                 for check in RUN_CHECK.findall(step.get("run", "")):
-                    if job_name in OS_LEG_JOBS:
+                    if job_name in OS_LEG_JOBS or job_name in REPORT_JOBS:
                         continue
                     if BUILD_ONLY_HOSTED_CHECKS.get(check) == job_name:
                         # Compiled on build-only pushes only; its own job runs it.
@@ -249,6 +260,26 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertEqual(
                     self.jobs[name]["strategy"]["matrix"]["os"], "${{ fromJSON(needs.plan.outputs.os_matrix) }}"
                 )
+
+    def test_full_suite_on_windows_and_macos_only_reports(self) -> None:
+        """`test-os` runs `rust_test` on each OS_TEST_PARTS leg, outside pull requests, and never gates."""
+        self.assertEqual(REPORT_JOBS, {"test-os": ("test",)})
+        job = self.jobs["test-os"]
+        self.assertEqual(job["needs"], "plan")
+        self.assertEqual(job["if"], "needs.plan.outputs.os_legs == 'true' && needs.plan.outputs.job_test == 'true'")
+        self.assertIs(job["continue-on-error"], True)
+        self.assertNotIn("test-os", self.jobs["ci-gate"]["needs"])
+        self.assertEqual(job["strategy"]["matrix"], {"include": "${{ fromJSON(needs.plan.outputs.os_test_matrix) }}"})
+        self.assertEqual(job["runs-on"], "${{ matrix.os }}")
+        self.assertEqual(job["env"]["CI_OS_SUITE"], "1")
+        self.assertEqual({runner for runner, _ in OS_TEST_PARTS}, {"windows-latest", "macos-latest"})
+        runs = [RUN_CHECK.search(s["run"]).group(1) for s in job["steps"] if RUN_CHECK.search(s.get("run", ""))]
+        self.assertEqual(runs, ["rust_test"])
+        test = next(s for s in job["steps"] if RUN_CHECK.search(s.get("run", "")))
+        self.assertEqual(test["env"]["CI_TEST_PART"], "${{ format('{0}/{1}', matrix.part, matrix.parts) }}")
+        # Its own cache, so it never changes what the gating OS jobs restore.
+        keys = {s["with"]["shared-key"] for s in job["steps"] if str(s.get("uses", "")).startswith("Swatinem/rust-cache@")}
+        self.assertEqual(keys, {"debug-tests"})
 
     def test_gate_sees_every_job_and_runs_always(self) -> None:
         gate = self.jobs["ci-gate"]
@@ -354,7 +385,13 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_nothing_can_hide_a_failure(self) -> None:
         for name, job in self.jobs.items():
-            self.assertNotIn("continue-on-error", job, name)
+            # A report-only job says so in its name and never reaches CI Gate
+            # (test_full_suite_on_windows_and_macos_only_reports).
+            if name in REPORT_JOBS:
+                self.assertIs(job["continue-on-error"], True, name)
+                self.assertIn("report only", job["name"], name)
+            else:
+                self.assertNotIn("continue-on-error", job, name)
             for step in job.get("steps", []):
                 self.assertNotIn("continue-on-error", step, f"{name}: {step.get('name')}")
 
@@ -378,17 +415,18 @@ class WorkflowContractTests(unittest.TestCase):
                 if not str(step.get("uses", "")).startswith("Swatinem/rust-cache@"):
                     continue
                 with self.subTest(job=name):
-                    self.assertIn(step["with"].get("shared-key"), {"lint", "debug", "release"})
+                    self.assertIn(step["with"].get("shared-key"), {"lint", "debug", "release", *REPORT_CACHES})
                     self.assertIn("CARGO_PROFILE_DEV_DEBUG", step["with"]["env-vars"].split())
                     self.assertIn("CI_CARGO_PROFILES", step["with"]["env-vars"].split())
                     listed = step["with"]["env-vars"].split()
-                    own = BUILD_PLAN_ENV[step["with"]["shared-key"]]
+                    key = step["with"]["shared-key"]
+                    own = BUILD_PLAN_ENV[REPORT_CACHES.get(key, key)]
                     self.assertIn(own, listed)
                     self.assertEqual([v for v in listed if v.startswith("CI_BUILD_PLAN_")], [own])
                     if step["with"]["save-if"] is not False and step["with"]["save-if"] != "false":
                         self.assertIn("refs/heads/main", step["with"]["save-if"])
                         savers.add(name)
-        self.assertEqual(savers, set(BUILD_ONLY_JOBS) | {"macos"})
+        self.assertEqual(savers, set(BUILD_ONLY_JOBS) | {"macos", *REPORT_JOBS})
 
     def test_cache_keys_follow_the_cargo_profiles(self) -> None:
         """CI_CARGO_PROFILES is the digest of the workspace Cargo.toml's profile tables.
@@ -513,6 +551,8 @@ class WorkflowContractTests(unittest.TestCase):
         for step in job["steps"]:
             self.assertNotIn("uses", step, "must not check out or run repository code")
         self.assertIn('gh run cancel "$RUN_ID"', job["steps"][0]["run"])
+        # A report-only job's failure never cancels the run (REPORT_JOBS).
+        self.assertIn('(.name | contains("report only"))', job["steps"][0]["run"])
         # A group the queue dropped (its branch deleted) is cancelled too,
         # checked only after the CI Gate test, since a merged group's branch
         # is deleted as well.
@@ -780,12 +820,12 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
 
 
     # Jobs that never run on a pull request, or hold a runner only briefly.
-    UNSLOTTED_CI_JOBS = {"plan", "macos", "windows-cluster", "merge-queue-fail-fast", "ci-gate"}
+    UNSLOTTED_CI_JOBS = {"plan", "macos", "windows-cluster", "test-os", "merge-queue-fail-fast", "ci-gate"}
     # Pull request jobs may always hold at most this many runners at once, so
     # the merge queue keeps the rest of the organization's runners.
-    PR_SLOT_BUDGET = 12
-    # The organization's concurrent hosted runners (GitHub Free).
-    RUNNER_CAP = 20
+    PR_SLOT_BUDGET = 36
+    # The organization's concurrent hosted runners (GitHub Team).
+    RUNNER_CAP = 60
 
     @staticmethod
     def _lanes() -> object:
@@ -863,9 +903,13 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
                     self.assertTrue(group.startswith("${{ github.event_name == 'pull_request' && "), group)
                     self.assertIn("github.run_id", group)
                     self.assertIn("github.run_attempt", group)
-                    found = re.findall(r"'(cflite-pr-slot[a-z0-9-]*)'", group)
+                    # Each run takes the slot of its run id's parity.
+                    self.assertIn(RUN_ID_PARITY, group)
+                    found = [f"cflite-pr-slot-{p}" for p in ("even", "odd") if "'cflite-pr-slot-{0}'" in group]
                     found += [
-                        f"codeql-pr-slot-{lang}" for lang in re.findall(r"'(rust|other)'", group)
+                        f"codeql-pr-slot-{lang}-{p}"
+                        for lang in re.findall(r"'(rust|other)'", group)
+                        for p in ("even", "odd")
                     ]
                     self.assertTrue(found, group)
                     slots.update(found)

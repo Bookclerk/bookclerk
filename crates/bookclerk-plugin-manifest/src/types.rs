@@ -207,6 +207,90 @@ impl MediaManifest {
     }
 }
 
+/// Most downloads a day `[acquire].downloads_per_day` may declare.
+pub const MAX_DOWNLOADS_PER_DAY: i64 = 10_000;
+
+/// Longest gap between downloads `[acquire].min_gap_seconds` may declare
+/// (one day).
+pub const MAX_MIN_GAP_SECONDS: i64 = 86_400;
+
+/// Longest cool-down `[acquire].cooldown_seconds` may declare (one week).
+pub const MAX_COOLDOWN_SECONDS: i64 = 604_800;
+
+/// `[acquire]`: how fast the host may download from one store account of
+/// this storefront when it starts the downloads itself.
+///
+/// Stores rarely publish their limits and throttle after the fact, so a
+/// storefront declares a safe pace here and the host keeps every automatic
+/// download (auto-acquire, quality upgrades, acquire-all, requests from
+/// other libraries) under it. Every field is optional: a missing
+/// `downloads_per_day` means no daily budget, a missing `min_gap_seconds`
+/// no gap, and a missing `cooldown_seconds` the host's one-hour default.
+/// Only a plugin with the `storefront` entrypoint may declare the table.
+///
+/// The fields are signed so a negative value reaches validation and gets
+/// the same message in every author tool, rather than a parser error.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcquireManifest {
+    /// Downloads allowed per store account in any rolling 24 hours, from 1
+    /// to [`MAX_DOWNLOADS_PER_DAY`]; `None` for no daily budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloads_per_day: Option<i64>,
+    /// Seconds between the start of two downloads on one store account,
+    /// from 0 to [`MAX_MIN_GAP_SECONDS`]; `None` for no gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_gap_seconds: Option<i64>,
+    /// Seconds automatic downloads on an account pause after the store
+    /// answers `rateLimited` without saying how long, from 1 to
+    /// [`MAX_COOLDOWN_SECONDS`]; `None` for the host default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_seconds: Option<i64>,
+}
+
+impl AcquireManifest {
+    /// Checks each declared value against its range.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] naming the first field outside its range.
+    pub fn validate(&self) -> Result<()> {
+        let checks = [
+            (
+                "downloads_per_day",
+                self.downloads_per_day,
+                1,
+                MAX_DOWNLOADS_PER_DAY,
+            ),
+            (
+                "min_gap_seconds",
+                self.min_gap_seconds,
+                0,
+                MAX_MIN_GAP_SECONDS,
+            ),
+            (
+                "cooldown_seconds",
+                self.cooldown_seconds,
+                1,
+                MAX_COOLDOWN_SECONDS,
+            ),
+        ];
+        for (field, value, min, max) in checks {
+            if let Some(value) = value {
+                if !(min..=max).contains(&value) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: `[acquire].{field}` must be between {min} and {max}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// `[metadata_files]`: the metadata file dialects a `metadataFiles` plugin
 /// implements. Required for that entrypoint and forbidden without it.
 ///
@@ -1376,6 +1460,10 @@ pub struct PluginManifest {
     /// [`MediaManifest`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaManifest>,
+    /// How fast the host may download from one store account (`[acquire]`):
+    /// optional, storefronts only; see [`AcquireManifest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquire: Option<AcquireManifest>,
     /// Metadata file dialects (`[metadata_files]`): required for plugins
     /// that export the `metadataFiles` entrypoint and forbidden for every
     /// other plugin; see [`MetadataFilesManifest`].
@@ -1990,6 +2078,26 @@ impl PluginManifest {
         .map_err(|detail| Error::message(format!("plugin.toml: {detail}")))
     }
 
+    /// Checks the `[acquire]` table against the plugin's entrypoints and its
+    /// ranges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when a plugin without the `storefront`
+    /// entrypoint declares the table, or a value is out of range
+    /// ([`AcquireManifest::validate`]).
+    fn validate_acquire(&self) -> Result<()> {
+        let Some(acquire) = &self.acquire else {
+            return Ok(());
+        };
+        if !self.has_entrypoint(Entrypoint::Storefront) {
+            return Err(Error::message(
+                "plugin.toml: `[acquire]` needs the `storefront` entrypoint",
+            ));
+        }
+        acquire.validate()
+    }
+
     /// Checks the `[media]` table against the plugin's entrypoints.
     ///
     /// The same rules, with the same messages, run in the TypeScript and
@@ -2404,6 +2512,7 @@ impl PluginManifest {
             let _ = crate::validate_logo(logo)?;
         }
         self.validate_media()?;
+        self.validate_acquire()?;
         self.validate_metadata_files()?;
         self.validate_notifier()?;
         self.validate_notification_types()?;
