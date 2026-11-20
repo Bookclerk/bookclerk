@@ -146,12 +146,30 @@ fn visible_to(_person: i64, titles: Vec<AcquireTitle>) -> Vec<AcquireTitle> {
 }
 
 /// The person `holder` asks for, when this library gives it copies: a
-/// trusted branch's owner.
+/// trusted branch's owner, or a library card's person, whose member
+/// controls allow downloads ([`super::MemberControl::Download`]).
 ///
 /// # Errors
 ///
 /// Returns the read error.
 async fn person_of(store: &LibraryStore, holder: CopyHolder<'_>) -> Result<Option<i64>> {
+    let Some(person) = holder_person(store, holder).await? else {
+        return Ok(None);
+    };
+    Ok(
+        super::user_may(store, person, super::MemberControl::Download)
+            .await?
+            .then_some(person),
+    )
+}
+
+/// The person behind `holder`: a trusted branch's owner, or a library
+/// card's person.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn holder_person(store: &LibraryStore, holder: CopyHolder<'_>) -> Result<Option<i64>> {
     match holder {
         CopyHolder::Node(node_id) => {
             let Some(node) = nodes::Entity::find_by_id(node_id.to_string())
@@ -277,6 +295,12 @@ fn digest_of(rows: &[&edition_files::Model]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// The library copy (`output.copies`) `row` belongs to, as its format and
+/// quality names; `None` for a file of no one copy.
+fn copy_of(row: &edition_files::Model) -> Option<(&str, &str)> {
+    Some((row.copy_format.as_deref()?, row.copy_quality.as_deref()?))
+}
+
 /// The key of the primary audio among one destination's `rows`: the
 /// acquisition's `primary` where the destination holds it, else the only
 /// row it recorded as the primary audio ([`FileRole::Audio`]), since a
@@ -330,9 +354,26 @@ async fn files_of(
             .or_default()
             .push(row);
     }
+    // Only the main output's copy is stored at the plain names (every other
+    // copy sits under a folder named after it), so any row at `primary`
+    // names the main copy, whichever destination holds it.
+    let primary_copy = rows
+        .iter()
+        .find(|row| row.storage_key == primary)
+        .and_then(copy_of);
     let mut files = BTreeMap::new();
     let mut digests = BTreeMap::new();
-    for (destination, mut rows) in by_destination {
+    for (destination, rows) in by_destination {
+        // Only the primary audio's own library copy is offered: another
+        // copy (an MP3 at a lower bitrate, say) is not the library's copy
+        // of the edition, even on a destination that holds nothing else.
+        let mut rows: Vec<&edition_files::Model> = rows
+            .into_iter()
+            .filter(|row| match (copy_of(row), primary_copy) {
+                (Some(copy), Some(primary)) => copy == primary,
+                (None, _) | (_, None) => true,
+            })
+            .collect();
         // Destinations may name files differently, so each has its own
         // primary audio key: the acquisition's where this destination
         // holds it, else the one row it recorded as the primary audio.
@@ -619,6 +660,150 @@ pub async fn authorize_copy(
         destination: row.destination,
         files,
     }))
+}
+
+/// One audio file a player streams for an edition, on one destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackTrack {
+    /// Storage key on the destination.
+    pub key: String,
+    /// Media type of the file, once probed.
+    pub content_type: Option<String>,
+    /// Average bitrate in kilobits per second, once probed.
+    pub bitrate_kbps: Option<u32>,
+    /// True for a lossless encoding; false also for a file not probed.
+    pub lossless: bool,
+}
+
+/// What a person may play of one edition ([`plan_playback`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackPlan {
+    /// The listener.
+    pub person: i64,
+    /// The edition.
+    pub edition_id: String,
+    /// The edition's tracks on each destination that holds its primary
+    /// audio, by destination id: the primary audio first, then its other
+    /// parts in key order. A track's place in its list is its stream
+    /// index. Chapter files of a title also stored whole are left out,
+    /// since they repeat the primary audio.
+    pub destinations: BTreeMap<String, Vec<PlaybackTrack>>,
+    /// Per destination, the digest of the file rows the list was made
+    /// from: a play session stores it, and [`authorize_playback`]
+    /// compares it.
+    digests: BTreeMap<String, String>,
+}
+
+impl PlaybackPlan {
+    /// The digest of the edition's file rows on `destination`, or `None`
+    /// when the destination does not hold the edition.
+    #[must_use]
+    pub fn digest(&self, destination: &str) -> Option<&str> {
+        self.digests.get(destination).map(String::as_str)
+    }
+}
+
+/// Decides whether `person` may play this library's copy of
+/// `edition_id`, and lists its tracks: the one check behind the playback
+/// manifest, a new play session and every stream request.
+///
+/// The person's member controls must allow downloads
+/// ([`super::MemberControl::Download`], which covers streaming). The
+/// edition must be one the person may take (`visible_to`, the same rule
+/// a copy grant uses) and one this library has acquired, with its
+/// primary audio recorded on at least one destination. Whether the person's
+/// patron scope shows them the work at all is the caller's check
+/// ([`crate::LibraryStore::work_in_scope`]).
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `person` - The listener (`users.id`).
+/// * `edition_id` - The edition.
+///
+/// # Returns
+///
+/// The plan, or `None` for "you may not" and "there is no copy" alike.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn plan_playback(
+    store: &LibraryStore,
+    person: i64,
+    edition_id: &str,
+) -> Result<Option<PlaybackPlan>> {
+    if !super::user_may(store, person, super::MemberControl::Download).await? {
+        return Ok(None);
+    }
+    if visible_to(person, titles_of_edition(store, edition_id).await?).is_empty() {
+        return Ok(None);
+    }
+    let Some(plan) = edition_plan(store, person, edition_id).await? else {
+        return Ok(None);
+    };
+    let destinations: BTreeMap<String, Vec<PlaybackTrack>> = plan
+        .destinations
+        .into_iter()
+        .map(|(destination, files)| {
+            let tracks = files
+                .into_iter()
+                .filter(|file| matches!(file.file.role, CopyRole::Audio | CopyRole::Part))
+                .map(|file| PlaybackTrack {
+                    key: file.key,
+                    content_type: file.file.content_type,
+                    bitrate_kbps: file
+                        .file
+                        .probe
+                        .as_ref()
+                        .and_then(|probe| probe.bitrate_kbps),
+                    lossless: file.file.probe.is_some_and(|probe| probe.lossless),
+                })
+                .collect();
+            (destination, tracks)
+        })
+        .collect();
+    Ok(Some(PlaybackPlan {
+        person,
+        edition_id: plan.edition_id,
+        destinations,
+        digests: plan.digests,
+    }))
+}
+
+/// The tracks a play session may still stream, or `None`.
+///
+/// Read afresh on every stream request: the person must still be allowed
+/// the edition ([`plan_playback`]), and the edition's files on
+/// `destination` must be the ones the session's `files_digest` was made
+/// from, so a replaced file ends the session's streams instead of
+/// splicing two encodings.
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `person` - The session's listener.
+/// * `edition_id` - The session's edition.
+/// * `destination` - The destination the session streams from.
+/// * `files_digest` - The digest the session stored when it opened.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn authorize_playback(
+    store: &LibraryStore,
+    person: i64,
+    edition_id: &str,
+    destination: &str,
+    files_digest: &str,
+) -> Result<Option<Vec<PlaybackTrack>>> {
+    let Some(mut plan) = plan_playback(store, person, edition_id).await? else {
+        return Ok(None);
+    };
+    if plan.digest(destination) != Some(files_digest) {
+        return Ok(None);
+    }
+    Ok(plan.destinations.remove(destination))
 }
 
 #[cfg(test)]

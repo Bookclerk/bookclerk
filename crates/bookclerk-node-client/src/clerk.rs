@@ -7,11 +7,13 @@
 //!    self-signed library's fingerprint.
 //! 2. [`authorize_clerk`] makes the verifier, `state` and the authorize URL
 //!    the browser goes to.
-//! 3. [`redeem_clerk_code`] sends the code and the verifier to `POST
-//!    /api/clerk/v1/token`, checks the answer
+//! 3. [`exchange_clerk_code`] sends the code and the verifier to `POST
+//!    /api/clerk/v1/token` and checks the answer
 //!    ([`bookclerk_node_proto::parse_clerk_token_answer`]) is for the
-//!    library that was inspected, and seals the card into a clerk link
-//!    (`bookclerk_library::control_plane::record_clerk_link`).
+//!    library that was inspected.
+//! 4. [`ExchangedCard::record`] seals the card into a clerk link
+//!    (`bookclerk_library::control_plane::record_clerk_link`). A sign-in
+//!    that replaces a branch leaves the branch between the two steps.
 //!
 //! The daemon then dials the library's clerk socket with the card
 //! ([`crate::OwnerEndpoint::connect_clerk_socket`]).
@@ -96,7 +98,7 @@ pub fn authorize_clerk(
     })
 }
 
-/// What [`redeem_clerk_code`] needs: the inspected library and the pending
+/// What [`exchange_clerk_code`] needs: the inspected library and the pending
 /// sign-in.
 pub struct ClerkRedeem<'a> {
     /// The library's canonical origin.
@@ -117,7 +119,60 @@ pub struct ClerkRedeem<'a> {
     pub clerk_name: &'a str,
 }
 
-/// Redeems a clerk sign-in's code for a library card and records it.
+/// A library card the library handed over for a clerk sign-in, not yet
+/// recorded here. `Debug` prints no secret.
+pub struct ExchangedCard {
+    /// The card; registered for redaction.
+    card: LibraryCard,
+    /// The clerk link to record it under.
+    link: NewClerkLink,
+}
+
+impl std::fmt::Debug for ExchangedCard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExchangedCard")
+            .field("library_id", &self.link.library_id)
+            .field("origin", &self.link.origin)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExchangedCard {
+    /// The library the card is for.
+    #[must_use]
+    pub fn library_id(&self) -> &str {
+        &self.link.library_id
+    }
+
+    /// Seals the card into a clerk link
+    /// (`bookclerk_library::control_plane::record_clerk_link`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JoinError::Unsaved`] when the card could not be recorded
+    /// here, among others while this install is still an active branch of
+    /// the library (the library then holds a session this install cannot
+    /// use; the person ends it from the library's session list).
+    pub async fn record(self, store: &LibraryStore) -> Result<ClerkLink, JoinError> {
+        let link = record_clerk_link(store, &self.link, &self.card)
+            .await
+            .map_err(|err| JoinError::Unsaved {
+                node_id: None,
+                reason: err.to_string(),
+            })?;
+        tracing::info!(
+            library_id = %link.library_id,
+            origin = %link.origin,
+            pinned = link.spki_pin.is_some(),
+            "signed in to the library with a library card"
+        );
+        Ok(link)
+    }
+}
+
+/// Sends a clerk sign-in's code and verifier to the library and checks
+/// the card it answers is for the library that was inspected, without
+/// recording it here ([`ExchangedCard::record`] does).
 ///
 /// The code, the verifier and the card are registered for redaction before
 /// they could reach a log; the code and verifier go once in the request
@@ -127,14 +182,9 @@ pub struct ClerkRedeem<'a> {
 ///
 /// Returns [`JoinError::Refused`] when the library refuses the code (spent,
 /// expired, or not this sign-in's), [`JoinError`] when it is unreachable
-/// or answers another status, [`JoinError::Record`] when its answer is
-/// malformed or names another library, and [`JoinError::Unsaved`] when the
-/// card could not be recorded here (the library then holds a session this
-/// install cannot use; the person ends it from the library's session list).
-pub async fn redeem_clerk_code(
-    store: &LibraryStore,
-    redeem: &ClerkRedeem<'_>,
-) -> Result<ClerkLink, JoinError> {
+/// or answers another status, and [`JoinError::Record`] when its answer is
+/// malformed or names another library.
+pub async fn exchange_clerk_code(redeem: &ClerkRedeem<'_>) -> Result<ExchangedCard, JoinError> {
     let endpoint = OwnerEndpoint::new(redeem.origin, redeem.spki_pin)?;
     bookclerk_config::register_secret(redeem.code);
     bookclerk_config::register_secret(redeem.verifier);
@@ -172,9 +222,9 @@ pub async fn redeem_clerk_code(
             "the library answered for another library".into(),
         ));
     }
-    let link = record_clerk_link(
-        store,
-        &NewClerkLink {
+    Ok(ExchangedCard {
+        card,
+        link: NewClerkLink {
             library_id: parsed.library_id,
             origin: endpoint.origin().to_string(),
             spki_pin: redeem.spki_pin.map(str::to_string),
@@ -183,20 +233,7 @@ pub async fn redeem_clerk_code(
             display_name: parsed.user.display_name,
             clerk_name: redeem.clerk_name.to_string(),
         },
-        &card,
-    )
-    .await
-    .map_err(|err| JoinError::Unsaved {
-        node_id: None,
-        reason: err.to_string(),
-    })?;
-    tracing::info!(
-        library_id = %link.library_id,
-        origin = %link.origin,
-        pinned = link.spki_pin.is_some(),
-        "signed in to the library with a library card"
-    );
-    Ok(link)
+    })
 }
 
 #[cfg(test)]
@@ -218,6 +255,28 @@ mod tests {
             origin: "https://library.example".into(),
             spki_pin: None,
         }
+    }
+
+    #[test]
+    fn an_exchanged_card_names_its_library_and_prints_no_card() {
+        let token = "c".repeat(bookclerk_node_proto::CLERK_TOKEN_LEN);
+        let exchanged = ExchangedCard {
+            card: LibraryCard::new(token.clone()).expect("card"),
+            link: NewClerkLink {
+                library_id: "lib-1".into(),
+                origin: "https://library.example".into(),
+                spki_pin: None,
+                library_name: "library.example".into(),
+                remote_user_id: 7,
+                display_name: Some("Reader".into()),
+                clerk_name: "Laptop".into(),
+            },
+        };
+        assert_eq!(exchanged.library_id(), "lib-1");
+        let debug = format!("{exchanged:?}");
+        assert!(debug.contains("lib-1"));
+        assert!(debug.contains("https://library.example"));
+        assert!(!debug.contains(&token));
     }
 
     #[test]

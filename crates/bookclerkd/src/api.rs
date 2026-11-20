@@ -1244,7 +1244,7 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
 ///
 /// The group's routes, without auth layers (see [`route_groups`]).
 // Node administration: operators see and edit every node; a user who
-// owns nodes (Host, Administrator, Owner) sees and edits only those. An
+// owns nodes, or is an Administrator or Owner, sees and edits only those. An
 // Owner also sees and removes every shared node (the shared branches).
 #[inline(never)]
 fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
@@ -1272,7 +1272,7 @@ fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
 fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         // Any active user queues scans and acquires; the planner limits a
-        // Member or Host to the store accounts linked to them.
+        // Member to the store accounts linked to them.
         .routes(routes!(trigger_scan))
         .routes(routes!(trigger_acquire))
         // How listings resolve: the handlers admit only the operator, an
@@ -1367,6 +1367,24 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
         .routes(routes!(crate::library_works::get_edition_cover))
+        .routes(routes!(crate::playback::get_edition_playback))
+        .routes(routes!(crate::playback::post_session))
+        .routes(routes!(crate::playback::post_session_sync))
+        .routes(routes!(crate::playback::post_session_close))
+        .routes(routes!(crate::playback::get_session_track))
+        .routes(routes!(crate::playback::list_progress))
+        .routes(routes!(
+            crate::playback::put_progress,
+            crate::playback::delete_progress
+        ))
+        .routes(routes!(
+            crate::playback::list_edition_bookmarks,
+            crate::playback::post_edition_bookmark
+        ))
+        .routes(routes!(
+            crate::playback::put_bookmark,
+            crate::playback::delete_bookmark
+        ))
         .routes(routes!(crate::covers::get_cover))
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))
@@ -1435,6 +1453,14 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(
             crate::patron_scopes::get_user_scope,
             crate::patron_scopes::put_user_scope
+        ))
+        .routes(routes!(
+            crate::patron_scopes::get_default_controls,
+            crate::patron_scopes::put_default_controls
+        ))
+        .routes(routes!(
+            crate::patron_scopes::get_user_controls,
+            crate::patron_scopes::put_user_controls
         ))
         .routes(routes!(auth::create_user_claim_ticket))
         .routes(routes!(auth::reset_user_password))
@@ -5876,7 +5902,22 @@ async fn discover_recommendations(
             .iter()
             .flat_map(|shelf| shelf.items.iter().filter_map(|item| item.cover_url.clone())),
     );
+    if !caller_sees_prices(&state, &headers).await {
+        feed.hide_prices_and_links();
+    }
     Ok(Json(feed))
+}
+
+/// Whether the caller may see prices and store links (the "See prices
+/// and store links" member control). Discover answers and wishlist rows
+/// drop both for a patron it is off for.
+async fn caller_sees_prices(state: &AppState, headers: &HeaderMap) -> bool {
+    crate::patron_scopes::caller_may(
+        state,
+        headers,
+        bookclerk_library::control_plane::MemberControl::SeePrices,
+    )
+    .await
 }
 
 /// Resolves storefront price/availability for one title, forcing server-side preferred stores.
@@ -5904,6 +5945,9 @@ async fn discover_purchase_hints(
         .map_err(internal_err)?;
     let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
     check_card_recording(&library, &sources, &body, &mut response, deadline).await;
+    if !caller_sees_prices(&state, &headers).await {
+        response.hide_prices_and_links();
+    }
     Ok(Json(response))
 }
 
@@ -6003,6 +6047,11 @@ async fn discover_purchase_hints_batch(
         let mut response = item.map_err(internal_err)?;
         check_card_recording(&library, &sources, query, &mut response, deadline).await;
         results.push(response);
+    }
+    if !caller_sees_prices(&state, &headers).await {
+        for response in &mut results {
+            response.hide_prices_and_links();
+        }
     }
     Ok(Json(PurchaseHintsBatchResponse { results }))
 }
@@ -6146,20 +6195,14 @@ async fn discover_title_meta_batch(
     Ok(Json(TitleMetaBatchResponse { results }))
 }
 
-/// Rejects a title-metadata query that has no title, ASIN, or ISBN.
+/// Rejects a title-metadata query that has no title, ASIN, or ISBN, or that
+/// names more than [`bookclerk_discover::TITLE_META_MAX_STORE_EDITIONS`]
+/// store editions.
 fn validate_title_meta_query(
     body: &bookclerk_discover::TitleMetaQuery,
 ) -> Result<(), (StatusCode, String)> {
-    if body.title.trim().is_empty()
-        && body.asin.as_deref().unwrap_or("").trim().is_empty()
-        && body.isbn.as_deref().unwrap_or("").trim().is_empty()
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "title, asin, or isbn is required".into(),
-        ));
-    }
-    Ok(())
+    bookclerk_discover::check_title_meta_query(body)
+        .map_err(|problem| (StatusCode::BAD_REQUEST, problem.to_string()))
 }
 
 /// Storefronts the caller is associated with (portal links, or all operator accounts).
@@ -6208,6 +6251,7 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
 )]
 async fn discover_catalog_search(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(q): Query<CatalogSearchQuery>,
 ) -> Result<Json<bookclerk_discover::CatalogSearchPage>, (StatusCode, String)> {
     // Wall budget for parallel multi-store search (each store capped ~7s;
@@ -6328,6 +6372,9 @@ async fn discover_catalog_search(
         &state,
         page.items.iter().filter_map(|hit| hit.cover_url.clone()),
     );
+    if !caller_sees_prices(&state, &headers).await {
+        page.hide_prices_and_links();
+    }
     Ok(Json(page))
 }
 
@@ -6363,10 +6410,14 @@ async fn list_wishlist(
         .list_wishlist(identity_id)
         .await
         .map_err(internal_err)?;
+    let sees_prices = caller_sees_prices(&state, &headers).await;
     for row in &mut rows {
         state
             .covers
             .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+        if !sees_prices {
+            row.hide_prices_and_links();
+        }
     }
     Ok(Json(rows))
 }
@@ -6392,6 +6443,9 @@ async fn create_wishlist(
     state
         .covers
         .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    if !caller_sees_prices(&state, &headers).await {
+        row.hide_prices_and_links();
+    }
     Ok(Json(row))
 }
 
@@ -6460,6 +6514,9 @@ async fn delete_wishlist(
     state
         .covers
         .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    if !caller_sees_prices(&state, &headers).await {
+        row.hide_prices_and_links();
+    }
     Ok(Json(row))
 }
 

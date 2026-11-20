@@ -393,7 +393,7 @@ pub struct AuthMeResponse {
     /// Whether the request resolved to an operator, portal, or impersonated session.
     #[schema(example = true)]
     pub authenticated: bool,
-    /// `operator`, `owner`, `administrator`, `host`, or `member` (legacy clients may
+    /// `operator`, `owner`, `administrator`, or `member` (legacy clients may
     /// still send `portal`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "administrator")]
@@ -410,6 +410,11 @@ pub struct AuthMeResponse {
     /// True when this operator session was created via Owner elevate.
     #[schema(example = false)]
     pub elevated: bool,
+    /// Whether this session reaches the node administration routes and the
+    /// library Status page: the operator, an Owner or Administrator, or a
+    /// Member who owns at least one node (a branch they linked).
+    #[schema(example = false)]
+    pub administers_nodes: bool,
     /// Present when the operator is impersonating a User.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub impersonating: Option<AuthMeImpersonating>,
@@ -422,6 +427,12 @@ pub struct AuthMeResponse {
     /// Password-login second-factor policy and this user's enrollment.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub second_factor: Option<AuthSecondFactor>,
+    /// Whether the caller's "See prices and store links" member control
+    /// allows prices and store links. The library already drops them from
+    /// its answers when it does not; the app uses this to show no store
+    /// links of its own either. Always true for the operator.
+    #[schema(example = true)]
+    pub see_prices: bool,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -626,7 +637,7 @@ pub struct PortalSessionIssued {
     /// Always `true` on this success path.
     #[schema(example = true)]
     pub ok: bool,
-    /// The user's role (`owner`, `administrator`, `host`, or `member`).
+    /// The user's role (`owner`, `administrator`, or `member`).
     #[schema(example = "member")]
     pub role: String,
 }
@@ -1348,6 +1359,17 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     (StatusCode::OK, hdrs, Json(OkResponse::OK)).into_response()
 }
 
+/// Whether the caller may see prices and store links, as Discover decides
+/// it ([`crate::patron_scopes::caller_may`]).
+async fn sees_prices(state: &AppState, headers: &HeaderMap) -> bool {
+    crate::patron_scopes::caller_may(
+        state,
+        headers,
+        bookclerk_library::control_plane::MemberControl::SeePrices,
+    )
+    .await
+}
+
 /// Resolves the caller and returns `/me` JSON; unauthenticated callers get 401.
 #[utoipa::path(
     get,
@@ -1355,7 +1377,7 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "Who the caller is (operator, portal user, or impersonation).", body = AuthMeResponse),
-        (status = 401, description = "Nobody is signed in: the same body with `authenticated` false, so the app can show the sign-in screen.", body = AuthMeResponse, example = json!({"authenticated": false, "default_view": "discover", "can_acquire": false, "elevated": false})),
+        (status = 401, description = "Nobody is signed in: the same body with `authenticated` false, so the app can show the sign-in screen.", body = AuthMeResponse, example = json!({"authenticated": false, "default_view": "discover", "can_acquire": false, "elevated": false, "administers_nodes": false, "see_prices": false})),
         (status = 503, description = "The portal session could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than showing the sign-in screen.", body = crate::http_error::ErrorJson, headers(("Retry-After" = u64, description = "Seconds to wait before asking again.")), example = json!({"error": "session_check_unavailable", "message": "Your sign-in could not be checked yet. Try again in a moment.", "status": 503})),
     ),
 )]
@@ -1373,10 +1395,12 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 default_view,
                 can_acquire: true,
                 elevated: false,
+                administers_nodes: true,
                 impersonating: None,
                 portal: None,
                 user: None,
                 second_factor: None,
+                see_prices: true,
             }),
         )
             .into_response();
@@ -1394,6 +1418,9 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
             let default_view = default_view_for_subject(&library, &prefs_key, identity_id).await;
             let (role, can_acquire, user, portal) =
                 impersonation_caller_identity(&library, target_id).await;
+            // A missing or disabled target administers nothing.
+            let administers_nodes =
+                user.is_some() && user_administers_nodes(&library, &role, target_id).await;
             return (
                 StatusCode::OK,
                 Json(AuthMeResponse {
@@ -1402,6 +1429,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                     default_view,
                     can_acquire,
                     elevated: false,
+                    administers_nodes,
                     impersonating,
                     portal,
                     user: match user {
@@ -1412,6 +1440,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                         None => None,
                     },
                     second_factor: second_factor_for(&state, &library, Some(target_id)).await,
+                    see_prices: sees_prices(&state, &headers).await,
                 }),
             )
                 .into_response();
@@ -1441,10 +1470,12 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 default_view,
                 can_acquire: true,
                 elevated: op.elevated_from_user_id.is_some(),
+                administers_nodes: true,
                 impersonating: None,
                 portal: None,
                 user,
                 second_factor: None,
+                see_prices: true,
             }),
         )
             .into_response();
@@ -1461,10 +1492,12 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 default_view,
                 can_acquire: true,
                 elevated: false,
+                administers_nodes: true,
                 impersonating: None,
                 portal: None,
                 user: None,
                 second_factor: None,
+                see_prices: true,
             }),
         )
             .into_response();
@@ -1481,6 +1514,10 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
     if let Some(identity) = identity {
         let (role, can_acquire, user, prefs_key) =
             resolve_portal_caller_identity(&library, &identity).await;
+        let administers_nodes = match identity.user_id {
+            Some(user_id) => user_administers_nodes(&library, &role, user_id).await,
+            None => false,
+        };
         let default_view = default_view_for_subject(&library, &prefs_key, Some(identity.id)).await;
         return (
             StatusCode::OK,
@@ -1490,6 +1527,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                 default_view,
                 can_acquire,
                 elevated: false,
+                administers_nodes,
                 impersonating: None,
                 portal: Some(PortalMeInfo {
                     identity_id: identity.id,
@@ -1505,6 +1543,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
                     None => None,
                 },
                 second_factor: second_factor_for(&state, &library, identity.user_id).await,
+                see_prices: sees_prices(&state, &headers).await,
             }),
         )
             .into_response();
@@ -1518,10 +1557,12 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
             default_view: String::from("discover"),
             can_acquire: false,
             elevated: false,
+            administers_nodes: false,
             impersonating: None,
             portal: None,
             user: None,
             second_factor: None,
+            see_prices: false,
         }),
     )
         .into_response()
@@ -1620,8 +1661,8 @@ pub async fn require_operator_or_owner_auth(
 pub enum NodeAdminCaller {
     /// Operator token or session, or auth disabled: every node.
     Operator,
-    /// A portal user who owns nodes, or whose role (Host, Administrator,
-    /// Owner) reaches node administration. Sees and edits only owned nodes.
+    /// A portal user who owns nodes, or whose role (Administrator, Owner)
+    /// reaches node administration. Sees and edits only owned nodes.
     NodeOwner {
         /// Calling user.
         user_id: i64,
@@ -1629,7 +1670,7 @@ pub enum NodeAdminCaller {
 }
 
 /// True when a user may use the node administration routes: their role
-/// always may (Host, Administrator, Owner), or they own at least one node.
+/// always may (Administrator, Owner), or they own at least one node.
 /// A lookup failure fails closed.
 async fn user_administers_nodes(
     library: &bookclerk_library::LibraryStore,
@@ -3145,7 +3186,7 @@ pub async fn list_users(
         .list_user_presence_extras(USER_LIST_LISTENING_WITHIN)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let account_rules = bookclerk_library::control_plane::member_account_rules(&library)
+    let default_controls = bookclerk_library::control_plane::default_member_controls(&library)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut rows = Vec::new();
@@ -3159,6 +3200,11 @@ pub async fn list_users(
             .await
             .unwrap_or_default();
         let extra = extras.get(&u.id);
+        let overrides = bookclerk_library::control_plane::member_control_overrides(&library, u.id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let controls =
+            bookclerk_library::control_plane::effective_controls(&u, default_controls, overrides);
         rows.push(UserListEntry {
             summary: UserSummary::from_record(&u),
             online: extra.map(|e| e.online).unwrap_or(false),
@@ -3175,7 +3221,7 @@ pub async fn list_users(
                 .collect(),
             listening: extra.and_then(|e| e.listening.clone()),
             integrations: extra.map(|e| e.integrations.clone()).unwrap_or_default(),
-            may_connect_accounts: account_rules.get(&u.id).copied().unwrap_or(true),
+            controls,
             identities: identities
                 .iter()
                 .map(|p| UserIdentitySummary {
@@ -3212,11 +3258,6 @@ pub struct PatchUserRequest {
     /// Replacement email when present.
     #[schema(example = "sam@example.com")]
     pub email: Option<String>,
-    #[serde(default)]
-    /// Whether the user may connect store accounts on this library, by
-    /// hand or by bringing them from another library, when present.
-    #[schema(example = false)]
-    pub may_connect_accounts: Option<bool>,
 }
 
 /// 409 body when the patch would remove the last administrator.
@@ -3241,8 +3282,8 @@ fn last_owner_response() -> Response {
         .into_response()
 }
 
-/// Patch role/status/display/login, or the store-account rule, for a
-/// first-party user (provisioner).
+/// Patch role/status/display/login/email for a first-party user
+/// (provisioner).
 #[utoipa::path(
     patch,
     path = "/api/users/{id}",
@@ -3272,7 +3313,6 @@ pub async fn patch_user(
         && body.display_name.is_none()
         && body.login_name.is_none()
         && body.email.is_none()
-        && body.may_connect_accounts.is_none()
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -3286,12 +3326,6 @@ pub async fn patch_user(
     if !actor.can_manage_target(user.role, is_self) {
         return Err(StatusCode::FORBIDDEN);
     }
-    // The store-account rule is the operator's over a user: nobody changes
-    // their own, and the refusal comes before any other field is written.
-    if is_self && body.may_connect_accounts.is_some() {
-        return Err(StatusCode::FORBIDDEN);
-    }
-
     if let Some(role_raw) = body.role.as_deref() {
         let Some(role) = UserRole::parse(role_raw.trim()) else {
             return Err(StatusCode::BAD_REQUEST);
@@ -3355,27 +3389,6 @@ pub async fn patch_user(
             }
             Err(_) => return Err(StatusCode::CONFLICT),
         };
-    }
-
-    if let Some(allowed) = body.may_connect_accounts {
-        match bookclerk_library::control_plane::set_member_may_connect_accounts(
-            &library, user_id, allowed,
-        )
-        .await
-        {
-            Ok(()) => {}
-            Err(LibraryError::NotFound(_)) => return Err(StatusCode::NOT_FOUND),
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        }
-        let _ = library
-            .insert_security_audit_event(
-                &actor.audit_actor(),
-                "user_account_rule",
-                Some(&format!(
-                    r#"{{"user_id":{user_id},"may_connect_accounts":{allowed}}}"#
-                )),
-            )
-            .await;
     }
 
     let _ = library
@@ -4177,7 +4190,7 @@ pub(crate) async fn authorize_provisioner(
 ///
 /// # Errors
 ///
-/// 401 when no one is signed in, 403 for a Member, Host or a session
+/// 401 when no one is signed in, 403 for a Member or a session
 /// without a user.
 pub(crate) async fn library_administrator(
     state: &AppState,
@@ -4206,7 +4219,7 @@ async fn provisioner_for_impersonated_user(
     match user.role {
         UserRole::Owner => Ok(Provisioner::Owner { user_id }),
         UserRole::Administrator => Ok(Provisioner::Administrator { user_id }),
-        UserRole::Host | UserRole::Member => Err(StatusCode::FORBIDDEN),
+        UserRole::Member => Err(StatusCode::FORBIDDEN),
     }
 }
 
@@ -4376,11 +4389,9 @@ pub struct UserListEntry {
     pub listening: Option<bookclerk_library::UserListeningHint>,
     /// Storefront and integration accounts linked to the user.
     pub integrations: Vec<bookclerk_library::UserIntegrationHint>,
-    /// Whether the operator lets the user connect store accounts here, by
-    /// hand or by bringing them from another library. True unless an
-    /// administrator turned it off for this user.
-    #[schema(example = true)]
-    pub may_connect_accounts: bool,
+    /// What the user may do here (the member controls that apply to them;
+    /// see `GET /api/users/{id}/controls` for the default and overrides).
+    pub controls: bookclerk_library::control_plane::MemberControls,
     /// External sign-in identities linked to the user.
     pub identities: Vec<UserIdentitySummary>,
 }
@@ -7332,116 +7343,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn admin_sets_whether_a_member_may_connect_store_accounts() {
-        use axum::body::Body;
-        use axum::http::{Request, StatusCode};
-        use http_body_util::BodyExt;
-        use tower::ServiceExt;
-
-        let (_state, app, library) = phase2_harness("op-token-users").await;
-        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
-        let member = library
-            .list_users()
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|user| user.role == UserRole::Member)
-            .expect("a seeded member")
-            .id;
-        let patched = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PATCH")
-                    .uri(format!("/api/users/{member}"))
-                    .header(header::COOKIE, &cookie)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"may_connect_accounts":false}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(patched.status(), StatusCode::OK);
-        assert!(
-            !bookclerk_library::control_plane::member_may_connect_accounts(&library, member)
-                .await
-                .unwrap()
-        );
-        let listed = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/users")
-                    .header(header::COOKIE, &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body: serde_json::Value =
-            serde_json::from_slice(&listed.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        for row in body["users"].as_array().expect("users array") {
-            let expected = row["id"].as_i64() != Some(member);
-            assert_eq!(row["may_connect_accounts"], expected, "{row}");
-        }
-        let audited = library
-            .list_security_audit_events(20)
-            .await
-            .unwrap()
-            .into_iter()
-            .any(|event| event.action == "user_account_rule");
-        assert!(audited);
-
-        // An Administrator the Owner stopped can't change their own rule,
-        // not even to lift it.
-        let admin_cookie = portal_cookie_for(&library, "test", "administrator-ext").await;
-        let me = library
-            .get_portal_identity("test", "administrator-ext")
-            .await
-            .unwrap()
-            .and_then(|identity| identity.user_id)
-            .expect("the administrator's user");
-        let stop = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PATCH")
-                    .uri(format!("/api/users/{me}"))
-                    .header(header::COOKIE, &cookie)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"may_connect_accounts":false}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(stop.status(), StatusCode::OK);
-        let own = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PATCH")
-                    .uri(format!("/api/users/{me}"))
-                    .header(header::COOKIE, &admin_cookie)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        r#"{"display_name":"Changed","may_connect_accounts":true}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(own.status(), StatusCode::FORBIDDEN);
-        let unchanged = library.get_user(me).await.unwrap().unwrap();
-        assert_ne!(unchanged.display_name.as_deref(), Some("Changed"));
-        assert!(
-            !bookclerk_library::control_plane::member_may_connect_accounts(&library, me)
-                .await
-                .unwrap()
-        );
-    }
-
-    #[tokio::test]
     async fn admin_user_list_includes_presence() {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
@@ -8400,7 +8301,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn node_routes_admit_operators_and_node_owning_roles_only() {
+    async fn node_routes_admit_operators_administrators_and_node_owners_only() {
         use axum::body::Body;
         use axum::http::{header, Request, StatusCode};
         use axum::routing::get;
@@ -8411,14 +8312,39 @@ pub(crate) mod tests {
         let _dek = process_dek_lock().await;
         let token = "op-token-node-owner";
         let (state, _app, library) = phase2_harness(token).await;
-        let host = library
-            .upsert_portal_identity("test", "host-ext", Some("Hosting"))
+        // A Member who owns a node reaches the node routes like an
+        // administrator; owning a node needs no role.
+        let keeper = library
+            .upsert_portal_identity("test", "keeper-ext", Some("Keeper"))
             .await
             .unwrap();
+        let keeper_id = keeper.user_id.expect("bridged keeper");
         library
-            .set_user_role(host.user_id.expect("bridged host"), UserRole::Host)
+            .set_user_role(keeper_id, UserRole::Member)
             .await
             .unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let node_id = bookclerk_library::control_plane::bootstrap_control_plane(
+            &library,
+            files.path(),
+            &files.path().join("cache"),
+            None,
+            &bookclerk_config::Config::default(),
+        )
+        .await
+        .unwrap()
+        .node
+        .node_id;
+        bookclerk_library::control_plane::set_node_owner(
+            &library,
+            &bookclerk_library::control_plane::ConfigActor::Operator {
+                id: "operator".into(),
+            },
+            &node_id,
+            Some(keeper_id),
+        )
+        .await
+        .unwrap();
         // Echoes the caller the middleware resolved.
         let probe = axum::Router::new()
             .route(
@@ -8456,19 +8382,49 @@ pub(crate) mod tests {
 
         let (status, body) = call(Some((header::AUTHORIZATION, format!("Bearer {token}")))).await;
         assert_eq!((status, body.as_str()), (StatusCode::OK, "operator"));
-        let host_cookie = portal_cookie_for(&library, "test", "host-ext").await;
-        let (status, body) = call(Some((header::COOKIE, host_cookie))).await;
+        let keeper_cookie = portal_cookie_for(&library, "test", "keeper-ext").await;
+        let (status, body) = call(Some((header::COOKIE, keeper_cookie))).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, format!("owner:{}", host.user_id.unwrap()));
+        assert_eq!(body, format!("owner:{keeper_id}"));
         let admin_cookie = portal_cookie_for(&library, "test", "administrator-ext").await;
         let (status, body) = call(Some((header::COOKIE, admin_cookie))).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.starts_with("owner:"), "{body}");
         let member_cookie = portal_cookie_for(&library, "test", "member-ext").await;
-        let (status, _) = call(Some((header::COOKIE, member_cookie))).await;
+        let (status, _) = call(Some((header::COOKIE, member_cookie.clone()))).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = call(None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // `/api/auth/me` tells the web app the same, so it shows Status to
+        // the Member who owns a node and not to one who owns none.
+        let me_route = axum::Router::new()
+            .route("/me", get(me))
+            .with_state(state.clone());
+        for (cookie, expected) in [
+            (
+                portal_cookie_for(&library, "test", "keeper-ext").await,
+                true,
+            ),
+            (member_cookie, false),
+        ] {
+            let response = me_route
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/me")
+                        .header(header::COOKIE, cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["role"], "member");
+            assert_eq!(json["administers_nodes"], expected, "{json}");
+        }
     }
 
     #[tokio::test]

@@ -326,8 +326,8 @@ mod tests {
         .unwrap()
         .node
         .node_id;
-        let host = store
-            .create_user(bookclerk_library::UserRole::Host, Some("Hosting"), None)
+        let riley = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
             .await
             .unwrap();
         let config = Config::load(
@@ -342,10 +342,10 @@ mod tests {
         let operator = node_routes(&state, crate::auth::NodeAdminCaller::Operator);
         let owner = node_routes(
             &state,
-            crate::auth::NodeAdminCaller::NodeOwner { user_id: host.id },
+            crate::auth::NodeAdminCaller::NodeOwner { user_id: riley.id },
         );
 
-        // Before an operator assigns it, the host owns nothing.
+        // Before an operator assigns it, Riley owns nothing.
         let (status, listed) = send(&owner, "GET", "/api/config/nodes", Value::Null).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(listed["nodes"], json!([]));
@@ -356,16 +356,16 @@ mod tests {
             &operator,
             "PUT",
             &format!("/api/config/nodes/{mine}/owner"),
-            json!({ "user_id": host.id }),
+            json!({ "user_id": riley.id }),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{assigned}");
-        assert_eq!(assigned["owner_user_id"], host.id);
+        assert_eq!(assigned["owner_user_id"], riley.id);
         let (status, _) = send(
             &operator,
             "PUT",
             &format!("/api/config/nodes/{mine}/owner"),
-            json!({ "user_id": host.id + 1000 }),
+            json!({ "user_id": riley.id + 1000 }),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -376,8 +376,8 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0]["node_id"], json!(mine));
         assert_eq!(nodes[0]["kind"], "shared");
-        assert_eq!(nodes[0]["owner"]["user_id"], host.id);
-        assert_eq!(nodes[0]["owner"]["role"], "host");
+        assert_eq!(nodes[0]["owner"]["user_id"], riley.id);
+        assert_eq!(nodes[0]["owner"]["role"], "member");
         let (_, all) = send(&operator, "GET", "/api/config/nodes", Value::Null).await;
         assert_eq!(all["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(all["capabilities"]["scope"], "all");
@@ -488,8 +488,8 @@ mod tests {
             .create_user(bookclerk_library::UserRole::Member, Some("Member"), None)
             .await
             .unwrap();
-        let host = store
-            .create_user(bookclerk_library::UserRole::Host, Some("Hosting"), None)
+        let stranger = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Stranger"), None)
             .await
             .unwrap();
         let config = Config::load(
@@ -522,7 +522,9 @@ mod tests {
         let operator = routes(crate::auth::NodeAdminCaller::Operator);
         let as_owner = routes(crate::auth::NodeAdminCaller::NodeOwner { user_id: owner.id });
         let as_member = routes(crate::auth::NodeAdminCaller::NodeOwner { user_id: member.id });
-        let as_host = routes(crate::auth::NodeAdminCaller::NodeOwner { user_id: host.id });
+        let as_stranger = routes(crate::auth::NodeAdminCaller::NodeOwner {
+            user_id: stranger.id,
+        });
         // The member owns the shared branch; the Owner owns neither node.
         let (status, assigned) = send(
             &operator,
@@ -557,7 +559,7 @@ mod tests {
         let (_, listed) = send(&as_owner, "GET", "/api/config/nodes", Value::Null).await;
         assert_eq!(listed["nodes"], json!([]));
         // A member sees only the shared branch it owns, as the nodes listing does;
-        // a host owning nothing sees none.
+        // another member owning nothing sees none.
         let (_, listed) = send(
             &as_member,
             "GET",
@@ -568,7 +570,13 @@ mod tests {
         assert_eq!(ids(&listed), std::slice::from_ref(&shared_branch));
         let (_, nodes) = send(&as_member, "GET", "/api/config/nodes", Value::Null).await;
         assert_eq!(ids(&nodes), std::slice::from_ref(&shared_branch));
-        let (_, listed) = send(&as_host, "GET", "/api/config/shared-branches", Value::Null).await;
+        let (_, listed) = send(
+            &as_stranger,
+            "GET",
+            "/api/config/shared-branches",
+            Value::Null,
+        )
+        .await;
         assert_eq!(listed["nodes"], json!([]));
 
         // The Owner removes the stopped shared branch it sees there.

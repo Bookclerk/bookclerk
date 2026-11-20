@@ -41,7 +41,7 @@ from .path_guard import (
 PYTHON_WORKERD_FLAGS = ("python_workers", "disable_python_external_sdk")
 """Compatibility flags required for Python Workers under bookclerk-workerd."""
 
-WORKERD_PIN_COMPAT_DATE = "2026-11-10"
+WORKERD_PIN_COMPAT_DATE = "2026-11-12"
 """Newest ``compatibility_date`` the pinned workerd binary honors."""
 
 _LOAD_SUFFIXES = (".js", ".mjs", ".py", ".wasm", ".json")
@@ -286,6 +286,9 @@ HOST_EVENT_TYPES = frozenset(
         "holding_removed",
         "wishlist_changed",
         "listening_synced",
+        "playback_started",
+        "playback_progress",
+        "playback_finished",
     }
 )
 """Domain event types only the host emits; plugins consume them but cannot produce them."""

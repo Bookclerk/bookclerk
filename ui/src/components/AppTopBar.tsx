@@ -28,7 +28,7 @@ export function AppTopBar({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuId = useId();
   const { openPreferences, preferencesOpen } = usePreferences();
-  const links = navLinksForRole(nav.role);
+  const links = navLinksForRole(nav.role, nav.administersNodes);
   // Each signed-in user can add a branch of their own; the operator has no
   // user account and adds one for a user in User management.
   const canAddBranch = nav.role != null && nav.role !== "operator";

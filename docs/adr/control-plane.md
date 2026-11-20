@@ -12,6 +12,9 @@
   its owner's titles, and other members' titles only when its operator
   turns on "Keep copies of other members' books" (see
   [Work settings on the branch](../server/branches.md#work-settings-on-the-branch)).
+  The Host user role is removed (2026-11-18, see
+  [Node kinds, ownership, and the Host role](#node-kinds-ownership-and-the-host-role)):
+  a Member who owns a node administers it as a Host did.
 - **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
   library-install decision, the Phase 3 implementation, and the node and
   install/deploy terminology: 2026-10-14)
@@ -881,6 +884,18 @@ across nodes.
   Lowering a limit lets held slots above it drain rather than revoking them.
 
 ### Node kinds, ownership, and the Host role
+
+> [!NOTE]
+> Amended 2026-11-18 with the owner: the Host user role is removed. A
+> library's roles are Owner, Administrator and Member. A Member who owns a
+> node (a branch they linked, or one an operator assigned) reaches the node
+> routes and the Status page exactly as a Host did, and `GET /api/auth/me`
+> reports it as `administers_nodes`. Whether members may link branches
+> stays the operator's or an Owner's switch (`core.host_enrollment`,
+> decision 5 below); limits for one person go with the patron scopes.
+> Trust is unchanged: a Member's node receives only work whose secrets
+> belong to that Member. Where the text below says Host role, read Member
+> who owns a node.
 
 Decided 2026-10-14 with the owner. A library has two kinds of node:
 
