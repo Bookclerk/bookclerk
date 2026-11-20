@@ -621,8 +621,8 @@ impl DiagnosticsHandle {
     /// * `trigger` - Why the report was sent.
     /// * `reply` - The collector's reply body.
     fn remember_report(&self, trigger: &str, reply: &[u8]) {
-        let report_id = match crate::parse_submit_reply(reply) {
-            Ok(id) => id,
+        let reply = match crate::parse_submit_reply(reply) {
+            Ok(reply) => reply,
             Err(err) => {
                 eprintln!("bookclerk: diagnostics report sent but not recorded: {err}");
                 return;
@@ -632,10 +632,12 @@ impl DiagnosticsHandle {
             return;
         };
         let record = crate::ReportRecord {
-            report_id,
+            report_id: reply.report_id,
             trigger: trigger.to_string(),
             version: self.inner.version.clone(),
             sent_at_unix_ms: unix_now_ms(),
+            access_code: reply.access_code,
+            deleted_at_unix_ms: None,
         };
         if let Err(err) = crate::record_report(files_dir, record) {
             eprintln!("bookclerk: diagnostics report sent but not recorded: {err}");

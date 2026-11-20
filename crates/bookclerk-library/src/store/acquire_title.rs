@@ -74,6 +74,9 @@ pub struct AcquireTitle {
     pub content_kind: &'static str,
     /// When the account bought the title, when the store reported it.
     pub purchased_at: Option<DateTime<Utc>>,
+    /// When this library first recorded the account's holding of the
+    /// title; the added date when the store reports no purchase time.
+    pub added_at: Option<DateTime<Utc>>,
     /// Publication time as the store reported it, else the edition's.
     pub published_at: Option<DateTime<Utc>>,
     /// The edition's acquire state; not acquired when no title of it was
@@ -806,6 +809,7 @@ impl TitleRows {
             is_abridged: listing.is_abridged == Some(1) || abridged_expression,
             content_kind,
             purchased_at: parse_time(holding.purchased_at.as_deref()),
+            added_at: parse_time(Some(holding.created_at.as_str())),
             published_at: parse_time(
                 listing
                     .published_at
@@ -980,6 +984,10 @@ mod tests {
             assert_eq!(view.is_abridged, flat.is_abridged);
             assert_eq!(view.content_kind, "book");
             assert_eq!(view.purchased_at, flat.purchased_at, "{name}");
+            assert!(
+                view.added_at.is_some(),
+                "{name}: the holding's first record"
+            );
             assert_eq!(view.published_at, flat.published_at, "{name}");
             assert_eq!(view.status, flat.acquire_status);
             assert_eq!(view.storage_key, flat.storage_key);

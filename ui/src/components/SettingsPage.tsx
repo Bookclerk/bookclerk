@@ -49,6 +49,7 @@ import {
   type SettingsResponse,
 } from "@/lib/api";
 import { storeIconSrc } from "@/lib/catalogTitle";
+import { showStatusNav } from "@/lib/nav";
 import { inexactNumberSetting, parseRows, rowsProblem } from "@/lib/settingsTable";
 import { cn, pageWidthClass } from "@/lib/utils";
 
@@ -494,10 +495,9 @@ export function SettingsPage({
   const confinementHasErrors = Boolean(jailMemoryError || jailCpuError || jailProcessError);
   const isImpersonating = Boolean(session?.impersonating);
   const showOperatorChrome = role === "operator" && !isImpersonating;
-  // Node owners (Hosts, and Administrators or Owners who own nodes) see the
-  // nodes they own; the API scopes the list.
-  const showNodes =
-    showOperatorChrome || role === "owner" || role === "administrator" || role === "host";
+  // Node administrators (Administrators, Owners, and Members who own a
+  // node) see the nodes they own; the API scopes the list.
+  const showNodes = showOperatorChrome || showStatusNav(role, session?.administers_nodes);
   const showSignInSettings = role === "operator" || role === "owner";
   // Settings → Library: the operator, or an Owner (the two sharing settings).
   const showLibrary = canChangeBranchSharing(role, isImpersonating);
@@ -1564,7 +1564,9 @@ export function SettingsPage({
             />
           ) : null}
 
-          {activeTab === "signin" && showSignInSettings ? <OidcSettingsPanel /> : null}
+          {activeTab === "signin" && showSignInSettings ? (
+            <OidcSettingsPanel canChange={showOperatorChrome} />
+          ) : null}
 
           {activeTab === "nodes" && showNodes ? (
             <NodesPanel onSessionExpired={onSessionExpired} />
@@ -1592,7 +1594,10 @@ export function SettingsPage({
           ) : null}
 
           {activeTab === "shared_branches" && showSignInSettings ? (
-            <SharedBranchesPanel onSessionExpired={onSessionExpired} />
+            <SharedBranchesPanel
+              onSessionExpired={onSessionExpired}
+              canRemove={showOperatorChrome}
+            />
           ) : null}
 
           {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (

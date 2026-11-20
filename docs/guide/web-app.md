@@ -23,8 +23,9 @@ gives you.
 - **Wishlist**: your wishlist and the Global queue everyone shares.
 - **Accounts**: connect and disconnect your store accounts. See
   [Stores](stores.md).
-- **Status**: for Hosts, Administrators, Owners and the operator, the
-  health of the server and of every branch.
+- **Status**: for Administrators, Owners, the operator, and Members who
+  own a branch, the health of the server and of the branches they look
+  after.
 - **Settings**: your profile, password, passkeys and sessions; and, for
   the people who run the library, users, sign-in options, plugins and
   server settings.
@@ -38,12 +39,11 @@ Everyone in a library has a role. It decides what they can do:
 
 | Role | Can |
 | --- | --- |
-| Member | Browse the library, use Discover and the wishlist, connect their own stores |
-| Host | Everything a Member can, plus look after the branches they own |
+| Member | Browse the library, use Discover and the wishlist, connect their own stores, and look after the branches they own |
 | Administrator | Everything a Member can, plus scan, download books and add people |
 | Owner | Everything an Administrator can, plus manage sign-in options and other Administrators |
 
-An Owner or Administrator can limit which books a Member or Host sees; see
+An Owner or Administrator can limit which books a Member sees; see
 [Limit what a patron sees](sharing.md#limit-what-a-patron-sees).
 
 The **operator** is not a person in the library. It is the key to the

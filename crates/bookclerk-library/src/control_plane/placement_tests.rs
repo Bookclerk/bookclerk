@@ -721,12 +721,12 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
     .unwrap();
     let mine = session.node.node_id.clone();
     register(&store, "node-other", &session.library_id).await;
-    let host = store
-        .create_user(crate::UserRole::Host, Some("Hosting"), None)
+    let riley = store
+        .create_user(crate::UserRole::Member, Some("Riley"), None)
         .await
         .unwrap();
     let stranger = store
-        .create_user(crate::UserRole::Host, Some("Stranger"), None)
+        .create_user(crate::UserRole::Member, Some("Stranger"), None)
         .await
         .unwrap();
 
@@ -736,11 +736,11 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
     assert_eq!(node.owner_user_id, None);
 
     // Only an operator assigns ownership, and only to a real user.
-    let refused = set_node_owner(&store, &ConfigActor::Bootstrap, &mine, Some(host.id))
+    let refused = set_node_owner(&store, &ConfigActor::Bootstrap, &mine, Some(riley.id))
         .await
         .unwrap_err();
     assert!(matches!(refused, LibraryError::Forbidden(_)), "{refused}");
-    let unknown = set_node_owner(&store, &operator(), &mine, Some(host.id + 1000))
+    let unknown = set_node_owner(&store, &operator(), &mine, Some(riley.id + 1000))
         .await
         .unwrap_err();
     assert!(matches!(unknown, LibraryError::NotFound(_)), "{unknown}");
@@ -761,7 +761,7 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
         .await
         .unwrap();
     let gone = store
-        .create_user(crate::UserRole::Host, Some("Gone"), None)
+        .create_user(crate::UserRole::Member, Some("Gone"), None)
         .await
         .unwrap();
     store
@@ -773,12 +773,12 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
         .unwrap_err();
     assert!(matches!(disabled, LibraryError::Invalid(_)), "{disabled}");
     assert_eq!(load_node(&store, &mine).await.unwrap().owner_user_id, None);
-    let owned = set_node_owner(&store, &operator(), &mine, Some(host.id))
+    let owned = set_node_owner(&store, &operator(), &mine, Some(riley.id))
         .await
         .unwrap();
-    assert_eq!(owned.owner_user_id, Some(host.id));
+    assert_eq!(owned.owner_user_id, Some(riley.id));
     assert_eq!(
-        nodes_owned_by(&store, host.id)
+        nodes_owned_by(&store, riley.id)
             .await
             .unwrap()
             .into_iter()
@@ -792,7 +792,7 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
         .is_empty());
 
     // The owner changes budgets and drain on its node.
-    let actor = verify_node_owner(&store, host.id, &mine).await.unwrap();
+    let actor = verify_node_owner(&store, riley.id, &mine).await.unwrap();
     let doc = update_node_runtime(&store, &actor, &mine, |rt| {
         rt.cpu_budget_percent = 40;
         rt.schedulable = false;
@@ -801,14 +801,14 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
     .unwrap();
     assert_eq!(doc.body.cpu_budget_percent, 40);
     assert!(!doc.body.schedulable);
-    assert_eq!(doc.updated_by, format!("node-owner:{}", host.id));
+    assert_eq!(doc.updated_by, format!("node-owner:{}", riley.id));
 
     // It cannot touch another node, set labels, or write other documents.
-    let other = verify_node_owner(&store, host.id, "node-other")
+    let other = verify_node_owner(&store, riley.id, "node-other")
         .await
         .unwrap_err();
     assert!(matches!(other, LibraryError::Forbidden(_)), "{other}");
-    let missing = verify_node_owner(&store, host.id, "no-such-node")
+    let missing = verify_node_owner(&store, riley.id, "no-such-node")
         .await
         .unwrap_err();
     assert!(matches!(missing, LibraryError::Forbidden(_)), "{missing}");
@@ -840,7 +840,7 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
     set_node_owner(&store, &operator(), &mine, None)
         .await
         .unwrap();
-    assert!(verify_node_owner(&store, host.id, &mine).await.is_err());
+    assert!(verify_node_owner(&store, riley.id, &mine).await.is_err());
 }
 
 /// A two-node library with live heartbeats, for the hand-back tests.

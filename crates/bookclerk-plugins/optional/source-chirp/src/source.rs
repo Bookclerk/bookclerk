@@ -83,6 +83,16 @@ impl ChirpSource {
         }
     }
 
+    /// Catalog client for the instance settings document `config`.
+    ///
+    /// Uses the document's `graphql_url` override when it has one, the same
+    /// endpoint [`crate::guest::resolve_graphql_url`] gives sign-in, scans
+    /// and fetches, so a staging or mock endpoint reaches every entrypoint.
+    #[must_use]
+    pub fn from_config(config: &serde_json::Value) -> Self {
+        Self::with_graphql_url(crate::guest::resolve_graphql_url(config))
+    }
+
     /// Searches the public catalog.
     ///
     /// # Errors

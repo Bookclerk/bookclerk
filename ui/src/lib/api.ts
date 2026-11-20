@@ -15,7 +15,7 @@ export type AppView = "discover" | "library" | "accounts" | "wishlist" | "status
 /**
  * Session role returned by the daemon auth APIs.
  */
-export type AuthRole = "operator" | "owner" | "administrator" | "host" | "member";
+export type AuthRole = "operator" | "owner" | "administrator" | "member";
 
 /**
  * Linked portal identity attached to a user session.
@@ -82,6 +82,11 @@ export interface AuthSession {
   default_view: AppView;
   can_acquire: boolean;
   elevated?: boolean;
+  /**
+   * Whether the session reaches node administration and the Status page:
+   * the operator, an Owner or Administrator, or a Member who owns a node.
+   */
+  administers_nodes?: boolean;
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
@@ -537,13 +542,7 @@ function normalizeView(raw: string | undefined): AppView {
 }
 
 function normalizeRole(raw: string | undefined): AuthRole | undefined {
-  if (
-    raw === "operator" ||
-    raw === "owner" ||
-    raw === "administrator" ||
-    raw === "host" ||
-    raw === "member"
-  ) {
+  if (raw === "operator" || raw === "owner" || raw === "administrator" || raw === "member") {
     return raw;
   }
   // Legacy portal sessions map to member.
@@ -667,6 +666,11 @@ function toAuthSession(body: {
   default_view?: string;
   can_acquire?: boolean;
   elevated?: boolean;
+  /**
+   * Whether the session reaches node administration and the Status page:
+   * the operator, an Owner or Administrator, or a Member who owns a node.
+   */
+  administers_nodes?: boolean;
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
@@ -679,6 +683,7 @@ function toAuthSession(body: {
     default_view: normalizeView(body.default_view),
     can_acquire: Boolean(body.can_acquire),
     elevated: Boolean(body.elevated),
+    administers_nodes: body.administers_nodes,
     impersonating: body.impersonating,
     portal: body.portal,
     user: body.user,
@@ -763,6 +768,7 @@ export async function authMe(): Promise<AuthSession> {
     default_view?: string;
     can_acquire?: boolean;
     elevated?: boolean;
+    administers_nodes?: boolean;
     impersonating?: AuthMeImpersonating;
     portal?: PortalInfo;
     user?: AuthMeUser;
@@ -985,7 +991,6 @@ export interface OidcBrokerConfigUpdate {
   providers: OidcProviderConfigUpdate[];
   /** Omit to leave unchanged; empty string clears `integrations.public_origin`. */
   public_origin?: string | null;
-  current_password?: string;
 }
 
 /** Registered passkey row. */
@@ -1059,7 +1064,6 @@ export interface OidcAsClientWrite {
   issue_refresh_token: boolean;
   allowed_scopes: string[];
   enabled: boolean;
-  current_password?: string;
 }
 
 /**
@@ -1110,18 +1114,15 @@ export async function updateOidcClient(
 }
 
 /**
- * Deletes a registered OIDC client.
+ * Deletes a registered OIDC client (operator or elevated Owner only).
  *
  * @param clientId - Client to remove.
- * @param currentPassword - Owner re-auth when the session is older than 15 minutes.
  * @returns Resolves when the client is removed.
  */
-export async function deleteOidcClient(clientId: string, currentPassword?: string): Promise<void> {
+export async function deleteOidcClient(clientId: string): Promise<void> {
   const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}`, {
     method: "DELETE",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ current_password: currentPassword }),
   });
   if (!res.ok) {
     await parseJson(res);
@@ -1129,21 +1130,18 @@ export async function deleteOidcClient(clientId: string, currentPassword?: strin
 }
 
 /**
- * Rotates a confidential client's secret; plaintext is returned once.
+ * Rotates a confidential client's secret (operator or elevated Owner only);
+ * plaintext is returned once.
  *
  * @param clientId - Confidential client to rotate.
- * @param currentPassword - Owner re-auth when required.
  * @returns Client row including the new plaintext secret once.
  */
-export async function rotateOidcClientSecret(
-  clientId: string,
-  currentPassword?: string,
-): Promise<OidcAsClient> {
+export async function rotateOidcClientSecret(clientId: string): Promise<OidcAsClient> {
   const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}/rotate-secret`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ current_password: currentPassword }),
+    body: "{}",
   });
   return parseJson(res);
 }
@@ -1965,24 +1963,20 @@ export async function fetchMfaPolicy(): Promise<{ require_second_factor: boolean
 }
 
 /**
- * Persists whether password login requires TOTP or a passkey.
+ * Persists whether password login requires TOTP or a passkey (operator or
+ * elevated Owner only).
  *
  * @param requireSecondFactor - When true, password-only sign-in is not enough once enrolled.
- * @param currentPassword - Owner step-up; operators omit this.
  * @returns Saved `{ require_second_factor }` flag.
  */
 export async function putMfaPolicy(
   requireSecondFactor: boolean,
-  currentPassword?: string,
 ): Promise<{ require_second_factor: boolean }> {
   const res = await fetch("/api/auth/mfa-policy", {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      require_second_factor: requireSecondFactor,
-      current_password: currentPassword,
-    }),
+    body: JSON.stringify({ require_second_factor: requireSecondFactor }),
   });
   return parseJson(res);
 }
@@ -3042,6 +3036,84 @@ export interface DiagnosticsReport {
   version: string;
   /** When the collector accepted it, Unix milliseconds. */
   sent_at_unix_ms: number;
+  /** The code that reads it back or deletes it (`XXXX-XXXX-XXXX-XXXX`), or null when the collector issued none. */
+  access_code: string | null;
+  /** When this install deleted the collector's stored copy, Unix milliseconds, or null. */
+  deleted_at_unix_ms: number | null;
+}
+
+/** One logged event in a stored report. */
+export interface DiagnosticsReportEvent {
+  /** When it happened, Unix milliseconds, or 0 when unknown. */
+  ts_unix_ms: number;
+  /** Severity. */
+  level: "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE";
+  /** Where it was logged. */
+  target: string;
+  /** The redacted message. */
+  message: string;
+  /** Redacted fields recorded with it. */
+  fields: { name: string; value: string }[];
+}
+
+/** A report read back from the collector (`GET /api/diagnostics/reports/{id}`). */
+export interface DiagnosticsReportLookup {
+  /** The report's ID. */
+  report_id: string;
+  /** When the collector received it, Unix milliseconds. */
+  received_at_unix_ms: number;
+  /** When its stored copy was deleted, Unix milliseconds, or null. */
+  deleted_at_unix_ms: number | null;
+  /** The stored report, or null once deleted. */
+  report: {
+    /** Version that sent it. */
+    version: string;
+    /** Why it was sent. */
+    trigger: string;
+    /** Operating system. */
+    os: string;
+    /** CPU architecture. */
+    arch: string;
+    /** Linux distribution, or empty. */
+    distro: string;
+    /** Events, oldest first. */
+    events: DiagnosticsReportEvent[];
+  } | null;
+  /** GitHub issues tracking it, the tracking issue first. */
+  issues: { number: number; title: string; state: "open" | "closed"; url: string }[];
+  /** The tracking issue's fix, or null. */
+  fix: { pr_number: number | null; pr_url: string | null; fixed_in: string | null } | null;
+}
+
+/**
+ * Reads a sent report back from the collector with its access code (operator only).
+ *
+ * @param reportId - The report's ID.
+ * @returns The report, its issues and its fix.
+ */
+export async function fetchDiagnosticsReport(reportId: string): Promise<DiagnosticsReportLookup> {
+  const res = await fetch(`/api/diagnostics/reports/${encodeURIComponent(reportId)}`, {
+    credentials: "include",
+  });
+  return parseJson<DiagnosticsReportLookup>(res);
+}
+
+/**
+ * Deletes the collector's stored copy of a sent report; its summary and issue
+ * links stay (operator only).
+ *
+ * @param reportId - The report's ID.
+ * @returns When the copy was deleted, Unix milliseconds.
+ */
+export async function deleteDiagnosticsReport(reportId: string): Promise<number> {
+  const res = await fetch(`/api/diagnostics/reports/${encodeURIComponent(reportId)}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const body = await parseJson<{ deleted_at_unix_ms: number }>(res);
+  return body.deleted_at_unix_ms;
 }
 
 /**
@@ -3332,7 +3404,7 @@ async function finishBeforeIdentityChange(): Promise<void> {
  */
 export async function signOut(role?: AuthRole): Promise<void> {
   await finishBeforeIdentityChange();
-  if (role === "administrator" || role === "host" || role === "member") {
+  if (role === "administrator" || role === "member") {
     await portalLogout();
     return;
   }
@@ -4374,7 +4446,29 @@ export type TitleMetaQuery = {
   narrators?: string | null;
   length_minutes?: number | null;
   region?: string;
+  /**
+   * Store editions that listed the title. The server fills a sparse record
+   * from the stores that answer their own product ids before asking ISBN
+   * stores.
+   */
+  store_editions?: StoreEdition[] | null;
 };
+
+/** Most store editions the server accepts on one title-meta query. */
+const TITLE_META_MAX_STORE_EDITIONS = 16;
+
+/**
+ * The store editions a title-meta query sends: the first
+ * {@link TITLE_META_MAX_STORE_EDITIONS} with a source and product id.
+ *
+ * @param body - The title-meta query.
+ * @returns The editions to send, possibly empty.
+ */
+function titleMetaEditions(body: TitleMetaQuery): StoreEdition[] {
+  return (body.store_editions ?? [])
+    .filter((edition) => edition.source.trim() !== "" && edition.product_id.trim() !== "")
+    .slice(0, TITLE_META_MAX_STORE_EDITIONS);
+}
 
 function titleMetaClientKey(body: TitleMetaQuery): string {
   return [
@@ -4383,10 +4477,14 @@ function titleMetaClientKey(body: TitleMetaQuery): string {
     body.asin ?? "",
     body.isbn ?? "",
     body.region ?? "us",
+    titleMetaEditions(body)
+      .map((edition) => `${edition.source}:${edition.product_id}`)
+      .join(","),
   ].join("|");
 }
 
 function serializeTitleMetaQuery(body: TitleMetaQuery) {
+  const storeEditions = titleMetaEditions(body);
   return {
     title: body.title,
     authors: body.authors ?? undefined,
@@ -4395,6 +4493,7 @@ function serializeTitleMetaQuery(body: TitleMetaQuery) {
     narrators: body.narrators ?? undefined,
     length_minutes: body.length_minutes ?? undefined,
     region: body.region ?? "us",
+    store_editions: storeEditions.length > 0 ? storeEditions : undefined,
   };
 }
 

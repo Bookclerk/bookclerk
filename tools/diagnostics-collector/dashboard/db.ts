@@ -101,6 +101,8 @@ export type ReportListRow = ReportRow & {
   issue_source: string | null;
   /** Issues that list the report. */
   issue_count: number;
+  /** When the report's sender deleted its stored copy, Unix ms, or null. */
+  deleted_at?: number | null;
 };
 
 /** An `issues` row. */
@@ -598,7 +600,7 @@ const TRACKER = `(SELECT ri.issue_number FROM report_issue ri LEFT JOIN issues t
  */
 const REPORT_COLUMNS = `r.report_id, r.object_key, r.received_at, r.version, r.os, r.arch, r.distro,
   r.trigger, r.events, r.errors, r.warnings, r.signature, r.signature_label,
-  r.route, r.peak_latency_ms, r.deployment, r.triage_state, r.triaged_by,
+  r.route, r.peak_latency_ms, r.deployment, r.triage_state, r.triaged_by, r.deleted_at,
   (SELECT COUNT(*) FROM signature_mutes m WHERE m.signature = r.signature
     AND (m.until IS NULL OR m.until > CAST(strftime('%s', 'now') AS INTEGER) * 1000)) AS muted,
   i.number AS issue_number, i.state AS issue_state,

@@ -33,7 +33,7 @@ use uuid::Uuid;
 use url::Url;
 
 use crate::api::AppState;
-use crate::auth::{constant_time_eq, require_operator_or_recent_owner, PORTAL_SESSION_COOKIE};
+use crate::auth::{constant_time_eq, PORTAL_SESSION_COOKIE};
 
 /// Access-token and ID-token lifetime in seconds (1 hour).
 const ACCESS_TTL_SECS: i64 = 3600;
@@ -57,13 +57,17 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(token))
         .routes(routes!(userinfo))
         .routes(routes!(revoke));
+    // An Owner may read the clients; changing them needs the operator
+    // (or an elevated Owner), since a client can sign people in elsewhere.
+    let read = OpenApiRouter::new().routes(routes!(list_clients));
     let admin = OpenApiRouter::new()
-        .routes(routes!(list_clients, create_client))
+        .routes(routes!(create_client))
         .routes(routes!(update_client, delete_client))
         .routes(routes!(rotate_client_secret));
     vec![
         RouteGroup::new(protocol, Access::Public),
-        RouteGroup::new(admin, Access::OperatorOrOwner),
+        RouteGroup::new(read, Access::OperatorOrOwner),
+        RouteGroup::new(admin, Access::Operator),
     ]
 }
 
@@ -1449,34 +1453,11 @@ struct OidcClientWrite {
     #[serde(default = "default_true")]
     #[schema(example = true)]
     enabled: bool,
-    /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
-    #[serde(default)]
-    #[schema(example = "correct horse battery staple")]
-    current_password: Option<String>,
 }
 
 /// Serde default for `issue_refresh_token` (on unless the operator opts out).
 fn default_true() -> bool {
     true
-}
-
-/// Owner/operator gate for client mutations (recent portal re-auth or operator).
-async fn require_client_admin(
-    state: &AppState,
-    headers: &HeaderMap,
-    password: Option<&str>,
-) -> Result<(), Response> {
-    require_operator_or_recent_owner(state, headers, password)
-        .await
-        .map_err(|status| {
-            oidc_client_error(
-                status,
-                crate::auth::recent_owner_gate_message(
-                    status,
-                    "recent authentication required to change OIDC clients",
-                ),
-            )
-        })
 }
 
 /// Owner/operator list of Bookclerk-as-IdP clients (secrets never included).
@@ -1514,29 +1495,14 @@ async fn list_clients(
     responses(
         (status = 200, description = "The client; a confidential client's secret appears once.", body = OidcClientView),
         (status = 400, description = "The client id or a redirect URI is invalid (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "at least one redirect URI is required", "status": 400})),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
-            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
         (status = 409, description = "A client with this id already exists (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "a client with this id already exists", "status": 409})),
-        (status = 500, description = "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("store" = (summary = "The client could not be read or stored.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
-        )),
+        (status = 500, description = "The client could not be read or stored (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500})),
     ),
 )]
 async fn create_client(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Json(body): Json<OidcClientWrite>,
 ) -> Result<Json<OidcClientView>, Response> {
-    require_client_admin(&state, &headers, body.current_password.as_deref()).await?;
     let client_id = body.client_id.unwrap_or_default();
     validate_client_id(&client_id)
         .map_err(|msg| oidc_client_error(StatusCode::BAD_REQUEST, msg))?;
@@ -1589,30 +1555,15 @@ async fn create_client(
     responses(
         (status = 200, description = "The client after the change; when the update made a public client confidential, its new secret appears once.", body = OidcClientView),
         (status = 400, description = "The client id or a redirect URI is invalid (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "client id may only contain letters, digits, '.', '_', '-', and '~'", "status": 400})),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
-            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
         (status = 404, description = "No such client (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "unknown client", "status": 404})),
-        (status = 500, description = "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("store" = (summary = "The client could not be read or stored.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
-        )),
+        (status = 500, description = "The client could not be read or stored (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500})),
     ),
 )]
 async fn update_client(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(client_id): Path<String>,
     Json(body): Json<OidcClientWrite>,
 ) -> Result<Json<OidcClientView>, Response> {
-    require_client_admin(&state, &headers, body.current_password.as_deref()).await?;
     validate_client_id(&client_id)
         .map_err(|msg| oidc_client_error(StatusCode::BAD_REQUEST, msg))?;
     let scopes = normalize_client_scopes(&body.allowed_scopes);
@@ -1660,40 +1611,17 @@ async fn update_client(
     delete,
     path = "/api/auth/oidc/clients/{client_id}",
     params(("client_id" = String, Path, description = "Client id.")),
-    request_body(
-        content = Option<OidcClientWrite>,
-        description = "Optional; only `current_password` is read, to confirm an Owner outside the recent sign-in window.",
-    ),
     responses(
         (status = 204, description = "The client was deleted."),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
-            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
         (status = 404, description = "No such client (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "unknown client", "status": 404})),
         (status = 409, description = "The client is provided by a plugin; disable it instead (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "plugin-provided clients cannot be deleted; disable them instead", "status": 409})),
-        (status = 500, description = "The client could not be read or removed, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("store" = (summary = "The client could not be read or removed.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
-        )),
+        (status = 500, description = "The client could not be read or removed (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500})),
     ),
 )]
 async fn delete_client(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(client_id): Path<String>,
-    body: Option<Json<OidcClientWrite>>,
 ) -> Result<StatusCode, Response> {
-    let password = body
-        .as_ref()
-        .and_then(|Json(body)| body.current_password.as_deref());
-    require_client_admin(&state, &headers, password).await?;
     let library = state.library_snapshot().await;
     let existing = library
         .get_oidc_client(&client_id)
@@ -1719,50 +1647,21 @@ async fn delete_client(
     }
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-/// Optional password for rotating a confidential client's secret.
-struct RotateSecretBody {
-    /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
-    #[serde(default)]
-    #[schema(example = "correct horse battery staple")]
-    current_password: Option<String>,
-}
-
 /// Mint a new secret for a confidential client; plaintext is returned once.
 #[utoipa::path(
     post,
     path = "/api/auth/oidc/clients/{client_id}/rotate-secret",
     params(("client_id" = String, Path, description = "Client id.")),
-    request_body = Option<RotateSecretBody>,
     responses(
         (status = 200, description = "The client with its new secret (shown once).", body = OidcClientView),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
-            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
         (status = 404, description = "No such client (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "unknown client", "status": 404})),
-        (status = 500, description = "The secret could not be stored, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("store" = (summary = "The secret could not be stored.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
-        )),
+        (status = 500, description = "The secret could not be stored (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500})),
     ),
 )]
 async fn rotate_client_secret(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(client_id): Path<String>,
-    body: Option<Json<RotateSecretBody>>,
 ) -> Result<Json<OidcClientView>, Response> {
-    let password = body
-        .as_ref()
-        .and_then(|Json(body)| body.current_password.as_deref());
-    require_client_admin(&state, &headers, password).await?;
     let raw = generate_client_secret();
     let library = state.library_snapshot().await;
     let updated = library

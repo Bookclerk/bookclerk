@@ -680,20 +680,58 @@ enum EnrichKey {
     Product(String),
 }
 
+/// Which catalog-detail lookups an enrichment store declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DetailLookups {
+    /// `CatalogCapabilities.detailByIsbn`: any audiobook ISBN resolves.
+    by_isbn: bool,
+    /// `CatalogCapabilities.detailByProductId`: the store's own product ids
+    /// resolve.
+    by_product_id: bool,
+}
+
+impl DetailLookups {
+    /// The lookups `source` declared in `describe()`.
+    fn of(source: &dyn ContentSource) -> Self {
+        Self {
+            by_isbn: source.answers_catalog_detail_by_isbn(),
+            by_product_id: source.answers_catalog_detail_by_product_id(),
+        }
+    }
+
+    /// True when the store answers some detail lookup.
+    fn any(self) -> bool {
+        self.by_isbn || self.by_product_id
+    }
+}
+
 /// Key to ask `provider` for `c`'s full record: the row's ISBN when it has
-/// one, else the product id `provider` itself gave the row.
+/// one and `provider` resolves ISBNs, else the product id `provider` itself
+/// gave the row.
 ///
 /// # Arguments
 ///
 /// * `c` - The ranked search row.
-/// * `provider` - Plugin id of a store that declared `detailByIsbn`.
+/// * `provider` - Plugin id of the enrichment store.
+/// * `lookups` - The detail lookups that store declared. Its own product
+///   ids are sent only when it declared `detailByProductId`.
 ///
 /// # Returns
 ///
-/// `None` when the row has neither an ISBN nor an edition at `provider`.
-fn enrich_key_for(c: &StorefrontCandidate, provider: &str) -> Option<EnrichKey> {
-    if let Some(isbn) = c.isbn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        return Some(EnrichKey::Isbn(isbn.to_string()));
+/// `None` when the store has no lookup for the row: no ISBN it can resolve
+/// and no edition of its own that it answers by product id.
+fn enrich_key_for(
+    c: &StorefrontCandidate,
+    provider: &str,
+    lookups: DetailLookups,
+) -> Option<EnrichKey> {
+    if lookups.by_isbn {
+        if let Some(isbn) = c.isbn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return Some(EnrichKey::Isbn(isbn.to_string()));
+        }
+    }
+    if !lookups.by_product_id {
+        return None;
     }
     let own = std::iter::once((c.source.as_str(), c.product_id.as_str())).chain(
         c.store_editions
@@ -748,10 +786,11 @@ async fn enrich_lookup(provider: &Arc<dyn ContentSource>, key: &EnrichKey) -> Op
 }
 
 /// Fill bibliographic gaps on the final page from the stores that declared
-/// `CatalogCapabilities.detailByIsbn`.
+/// `CatalogCapabilities.detailByIsbn` or `detailByProductId`.
 ///
 /// Each lean row asks those stores in registry order (`sort_key`) and takes
-/// the first full record. Bounded by [`PAGE_ENRICH_TIMEOUT`] so a slow guest
+/// the first full record: ISBN stores by the row's ISBN, and product stores
+/// by the product id they gave the row themselves. Bounded by [`PAGE_ENRICH_TIMEOUT`] so a slow guest
 /// cannot exceed the daemon search budget. Rows with no ISBN and no edition
 /// at an enrichment store are skipped (title-meta / purchase-hints still fill
 /// those in the detail modal).
@@ -762,7 +801,7 @@ async fn enrich_ranked_page(
     let providers: Vec<Arc<dyn ContentSource>> = registry
         .routed()
         .into_iter()
-        .filter(|source| source.answers_catalog_detail_by_isbn())
+        .filter(|source| DetailLookups::of(source.as_ref()).any())
         .collect();
     enrich_page_from(&providers, ranked).await;
 }
@@ -783,7 +822,10 @@ async fn enrich_page_from(
             let keys: Vec<(usize, EnrichKey)> = providers
                 .iter()
                 .enumerate()
-                .filter_map(|(p, provider)| enrich_key_for(c, provider.id()).map(|k| (p, k)))
+                .filter_map(|(p, provider)| {
+                    let lookups = DetailLookups::of(provider.as_ref());
+                    enrich_key_for(c, provider.id(), lookups).map(|k| (p, k))
+                })
                 .collect();
             (!keys.is_empty()).then_some((i, keys))
         })
@@ -1315,7 +1357,7 @@ async fn attach_pooled_recordings(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn cand(narrators: Option<&str>, authors: Option<&str>) -> StorefrontCandidate {
@@ -1634,19 +1676,24 @@ mod tests {
         assert_eq!(legacy_dec.pending[0].work_key, "asin:B00TEST");
     }
 
-    /// A store that declared `detailByIsbn`: answers detail lookups from
-    /// `answer` and records every call.
-    struct DetailStore {
+    /// A store that declared `detailByIsbn` (and, when `by_product_id` is
+    /// set, `detailByProductId`): answers detail lookups from `answer` and
+    /// records every call.
+    pub(crate) struct DetailStore {
         /// Store id.
-        id: &'static str,
+        pub(crate) id: &'static str,
+        /// True when the store declared `detailByIsbn`.
+        pub(crate) by_isbn: bool,
+        /// True when the store declared `detailByProductId`.
+        pub(crate) by_product_id: bool,
         /// Record every lookup returns; `None` answers "not found".
-        answer: Option<CatalogHit>,
+        pub(crate) answer: Option<CatalogHit>,
         /// When true every lookup fails, as a broken store would.
-        fails: bool,
+        pub(crate) fails: bool,
         /// Lookups made, as `isbn:<v>` or `product:<v>`.
-        calls: Arc<std::sync::Mutex<Vec<String>>>,
+        pub(crate) calls: Arc<std::sync::Mutex<Vec<String>>>,
         /// Hits the first page of every catalog search returns.
-        listed: Vec<CatalogHit>,
+        pub(crate) listed: Vec<CatalogHit>,
     }
 
     impl DetailStore {
@@ -1715,7 +1762,11 @@ mod tests {
         }
 
         fn answers_catalog_detail_by_isbn(&self) -> bool {
-            true
+            self.by_isbn
+        }
+
+        fn answers_catalog_detail_by_product_id(&self) -> bool {
+            self.by_product_id
         }
 
         async fn search_catalog(
@@ -1761,6 +1812,8 @@ mod tests {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let store = DetailStore {
             id,
+            by_isbn: true,
+            by_product_id: true,
             answer,
             fails,
             calls: calls.clone(),
@@ -1774,6 +1827,8 @@ mod tests {
     fn search_store(id: &'static str, listed: Vec<CatalogHit>) -> Arc<dyn ContentSource> {
         Arc::new(DetailStore {
             id,
+            by_isbn: true,
+            by_product_id: false,
             answer: None,
             fails: false,
             calls: Arc::default(),
@@ -1970,11 +2025,29 @@ mod tests {
         assert!(first[0].ends_with("|chirp:c-1"), "{first:?}");
     }
 
+    /// Lookups of a store that declared only `detailByIsbn`.
+    const ISBN_ONLY: DetailLookups = DetailLookups {
+        by_isbn: true,
+        by_product_id: false,
+    };
+
+    /// Lookups of a store that declared both, as Libro.fm does.
+    const BOTH: DetailLookups = DetailLookups {
+        by_isbn: true,
+        by_product_id: true,
+    };
+
+    /// Lookups of a store that declared only `detailByProductId`.
+    const PRODUCT_ONLY: DetailLookups = DetailLookups {
+        by_isbn: false,
+        by_product_id: true,
+    };
+
     #[test]
     fn enrich_key_prefers_the_isbn_then_the_providers_own_listing() {
         let with_isbn = lean_row("chirp", "c1", Some("9780000000001"));
         assert_eq!(
-            enrich_key_for(&with_isbn, "libro"),
+            enrich_key_for(&with_isbn, "libro", ISBN_ONLY),
             Some(EnrichKey::Isbn("9780000000001".into()))
         );
         let mut listed_at_provider = lean_row("chirp", "c1", None);
@@ -1982,17 +2055,92 @@ mod tests {
             .store_editions
             .push(StoreEdition::new("libro", "libro-42"));
         assert_eq!(
-            enrich_key_for(&listed_at_provider, "libro"),
+            enrich_key_for(&listed_at_provider, "libro", BOTH),
             Some(EnrichKey::Product("libro-42".into()))
         );
         assert_eq!(
-            enrich_key_for(&lean_row("libro", "libro-7", None), "libro"),
+            enrich_key_for(&lean_row("libro", "libro-7", None), "libro", BOTH),
             Some(EnrichKey::Product("libro-7".into()))
         );
+        // A store that declared only ISBN lookups is never sent its own ids.
         assert_eq!(
-            enrich_key_for(&lean_row("chirp", "c1", None), "libro"),
+            enrich_key_for(&listed_at_provider, "libro", ISBN_ONLY),
             None
         );
+        assert_eq!(
+            enrich_key_for(&lean_row("chirp", "c1", None), "libro", BOTH),
+            None
+        );
+    }
+
+    /// A store that answers only its own product ids is asked for the rows
+    /// it listed, never by ISBN; a store with no lookup is asked nothing.
+    #[test]
+    fn enrich_key_asks_a_product_store_only_for_its_own_listings() {
+        let mut listed = lean_row("chirp", "c1", Some("9780000000001"));
+        listed
+            .store_editions
+            .push(StoreEdition::new("graphicaudio", "1716"));
+        assert_eq!(
+            enrich_key_for(&listed, "graphicaudio", PRODUCT_ONLY),
+            Some(EnrichKey::Product("1716".into()))
+        );
+        assert_eq!(
+            enrich_key_for(
+                &lean_row("chirp", "c1", Some("9780000000001")),
+                "graphicaudio",
+                PRODUCT_ONLY
+            ),
+            None
+        );
+        let none = DetailLookups {
+            by_isbn: false,
+            by_product_id: false,
+        };
+        assert_eq!(enrich_key_for(&listed, "graphicaudio", none), None);
+    }
+
+    /// A lean row from a store that declared only `detailByProductId` is
+    /// filled from that store's own product page.
+    #[tokio::test]
+    async fn page_enrich_fills_a_row_from_the_store_that_listed_it() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store: Arc<dyn ContentSource> = Arc::new(DetailStore {
+            id: "graphicaudio",
+            by_isbn: false,
+            by_product_id: true,
+            answer: Some(CatalogHit {
+                product_id: "1716".into(),
+                title: "Mistborn".into(),
+                description: Some("From the product page.".into()),
+                work_kind: bookclerk_source::records::WorkKind::Book,
+                expression_kind: bookclerk_source::records::ExpressionKind::Dramatisation,
+                media_kind: bookclerk_source::records::MediaKind::Audio,
+                ..CatalogHit::default()
+            }),
+            fails: false,
+            calls: calls.clone(),
+            listed: Vec::new(),
+        });
+        let mut ranked = vec![
+            (
+                String::from("soft:mistborn"),
+                lean_row("graphicaudio", "1716", None),
+            ),
+            // Another store's row with an ISBN: a product-only store has no
+            // key for it.
+            (
+                String::from("isbn:9780000000001"),
+                lean_row("chirp", "c1", Some("9780000000001")),
+            ),
+        ];
+        enrich_page_from(&[store], &mut ranked).await;
+        assert_eq!(*calls.lock().unwrap(), vec!["product:1716"]);
+        assert_eq!(
+            ranked[0].1.description.as_deref(),
+            Some("From the product page.")
+        );
+        assert!(ranked[1].1.description.is_none());
     }
 
     #[tokio::test]
