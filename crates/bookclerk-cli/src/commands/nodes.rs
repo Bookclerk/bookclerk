@@ -763,12 +763,12 @@ mod tests {
                 .expect("sqlite memory"),
         );
         let riley = store
-            .create_user_with_login(UserRole::Host, Some("Riley"), Some("riley"), None)
+            .create_user_with_login(UserRole::Member, Some("Riley"), Some("riley"), None)
             .await
             .unwrap();
         // A numeric login whose number is not also a user id.
         let numeric = store
-            .create_user_with_login(UserRole::Host, Some("Numeric"), Some("4242"), None)
+            .create_user_with_login(UserRole::Member, Some("Numeric"), Some("4242"), None)
             .await
             .unwrap();
 
@@ -787,7 +787,7 @@ mod tests {
         // A login that is another user's id is ambiguous.
         let shadow = store
             .create_user_with_login(
-                UserRole::Host,
+                UserRole::Member,
                 Some("Shadow"),
                 Some(&riley.id.to_string()),
                 None,

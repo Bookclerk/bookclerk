@@ -413,6 +413,13 @@ input_from = "Administrator, Owner or operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.playback_request]
+crate = "bookclerk-library"
+boundary = "What a player sends the playback routes: the bodies that open a session, report or set progress and add or change a bookmark, the progress page cursor, and the stream path of GET /api/playback/sessions/{id}/tracks/{n}"
+input_from = "any signed-in patron"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.connections_request]
 crate = "bookclerk-library"
 boundary = "A branch Owner's store connections to add to one library, or one to disconnect, from POST /api/config/join/connections and POST /api/config/join/connections/disconnect"

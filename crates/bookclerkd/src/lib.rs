@@ -53,6 +53,7 @@ mod origin;
 mod passkeys;
 mod patron_scopes;
 mod placement;
+mod playback;
 mod plugin_installs;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
