@@ -30,6 +30,8 @@ bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-tags = { path = "../crates/bookclerk-tags" }
 bookclerk-archive = { path = "../crates/bookclerk-archive" }
+# media_decode drives the media worker's demux and decode path.
+bookclerk-media = { path = "../crates/bookclerk-media" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
 bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
@@ -275,6 +277,13 @@ bench = false
 [[bin]]
 name = "cover_wire"
 path = "fuzz_targets/cover_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media_decode"
+path = "fuzz_targets/media_decode.rs"
 test = false
 doc = false
 bench = false

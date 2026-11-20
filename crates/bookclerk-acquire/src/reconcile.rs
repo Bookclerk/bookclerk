@@ -1352,6 +1352,7 @@ mod reconcile_integration {
             is_abridged: false,
             content_kind: "book",
             purchased_at: None,
+            added_at: None,
             published_at: None,
             status: AcquireStatus::Acquired,
             storage_key: Some("a.m4b".into()),

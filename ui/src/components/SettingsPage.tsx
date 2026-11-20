@@ -1564,7 +1564,9 @@ export function SettingsPage({
             />
           ) : null}
 
-          {activeTab === "signin" && showSignInSettings ? <OidcSettingsPanel /> : null}
+          {activeTab === "signin" && showSignInSettings ? (
+            <OidcSettingsPanel canChange={showOperatorChrome} />
+          ) : null}
 
           {activeTab === "nodes" && showNodes ? (
             <NodesPanel onSessionExpired={onSessionExpired} />
@@ -1592,7 +1594,10 @@ export function SettingsPage({
           ) : null}
 
           {activeTab === "shared_branches" && showSignInSettings ? (
-            <SharedBranchesPanel onSessionExpired={onSessionExpired} />
+            <SharedBranchesPanel
+              onSessionExpired={onSessionExpired}
+              canRemove={showOperatorChrome}
+            />
           ) : null}
 
           {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (
