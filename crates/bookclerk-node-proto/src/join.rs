@@ -68,7 +68,7 @@ pub struct OwnerInfo {
     /// `loopback`).
     #[schema(example = "acme")]
     pub transport: String,
-    /// Whether the library lets new branches join (`core.host_enrollment`).
+    /// Whether the library lets new branches join (`core.branch_enrollment`).
     #[schema(example = true)]
     pub enrollment: bool,
     /// In `self_signed` mode: base64url SHA-256 of the certificate's

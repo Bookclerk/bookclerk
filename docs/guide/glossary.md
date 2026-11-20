@@ -22,7 +22,7 @@ The words Bookclerk uses, in plain language.
 
 ## People and sign-in
 
-- **Owner, Administrator, Host, Member**: People's roles in a library. See
+- **Owner, Administrator, Member**: People's roles in a library. See
   [Roles](web-app.md#roles).
 - **Operator**: Whoever runs the server, using the operator token. Not a
   person's account.
@@ -32,7 +32,7 @@ The words Bookclerk uses, in plain language.
   account.
 - **Passkey**: A way to sign in with your phone, computer or security key
   instead of a password.
-- **Patron scope**: Which books a Member or Host sees. See
+- **Patron scope**: Which books a Member sees. See
   [Limit what a patron sees](sharing.md#limit-what-a-patron-sees).
 
 ## Behind the scenes

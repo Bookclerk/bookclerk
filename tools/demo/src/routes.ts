@@ -113,8 +113,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/config/library-consents/revoke", "deny"],
   ["POST", "/api/config/libraries/{library_id}/jobs", "deny"],
   ["POST", "/api/config/libraries/{library_id}/scan", "deny"],
-  ["GET", "/api/config/host-enrollment", "allow"],
-  ["PUT", "/api/config/host-enrollment", "deny"],
+  ["GET", "/api/config/branch-enrollment", "allow"],
+  ["PUT", "/api/config/branch-enrollment", "deny"],
   ["GET", "/api/config/join", "allow"],
   ["POST", "/api/config/join/callback", "deny"],
   ["POST", "/api/config/join/connections", "deny"],
@@ -156,6 +156,10 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PATCH", "/api/settings", "deny"],
   // The visitor's own copy's sent diagnostics reports: read-only.
   ["GET", "/api/diagnostics/reports", "allow"],
+  // Reading a report back or deleting it calls the real collector with the
+  // copy's access code: refused.
+  ["GET", "/api/diagnostics/reports/{id}", "deny"],
+  ["DELETE", "/api/diagnostics/reports/{id}", "deny"],
 
   // Plugins: the image's own storefronts only; no installs or changes.
   ["GET", "/api/config/plugin-instances", "allow"],
@@ -211,6 +215,20 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/library/listings/{id}/pin", "allow"],
   ["DELETE", "/api/library/listings/{id}/pin", "allow"],
   ["POST", "/api/library/works/{id}/split", "allow"],
+  // Playback: a visitor's own listening state. The demo never acquires, so
+  // no edition has audio to stream.
+  ["GET", "/api/library/editions/{id}/playback", "allow"],
+  ["GET", "/api/library/editions/{id}/bookmarks", "allow"],
+  ["POST", "/api/library/editions/{id}/bookmarks", "allow"],
+  ["PUT", "/api/playback/bookmarks/{id}", "allow"],
+  ["DELETE", "/api/playback/bookmarks/{id}", "allow"],
+  ["GET", "/api/playback/progress", "allow"],
+  ["PUT", "/api/playback/progress/{edition_id}", "allow"],
+  ["DELETE", "/api/playback/progress/{edition_id}", "allow"],
+  ["POST", "/api/playback/sessions", "allow"],
+  ["POST", "/api/playback/sessions/{id}/sync", "allow"],
+  ["POST", "/api/playback/sessions/{id}/close", "allow"],
+  ["GET", "/api/playback/sessions/{id}/tracks/{index}", "allow"],
   // Same-origin cover images; the token only names URLs the API handed out.
   ["GET", "/api/covers/{token}/{size}", "allow"],
   // Same-origin Gravatars (fixed host, validated hash) and store icons (from

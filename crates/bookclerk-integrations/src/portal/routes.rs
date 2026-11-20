@@ -544,6 +544,7 @@ struct PasswordLoginBody {
             ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
         )),
         (status = 403, description = "The library's administrator has not allowed the caller to connect store accounts here.", body = PortalErrorBody, example = json!({"error": "this library's administrator hasn't allowed you to connect store accounts here"})),
+        (status = 409, description = "The account has no saved sign-in when the login links it: a refused login of the same store account, or a revoke, took it back meanwhile (or the store's login saved none). Signing in again connects it.", body = PortalErrorBody, example = json!({"error": SIGN_IN_TAKEN_BACK})),
         (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
             ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
             ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
@@ -594,20 +595,23 @@ async fn source_password_login(
         return Err(refused);
     }
 
+    // The link batch marks the account active with scans on together with
+    // the link, and only while its sign-in is still stored.
     scope
-        .upsert_account(
+        .ensure_account(
             &account.account_id,
             &account.marketplace,
             account.label.as_deref(),
-            true,
         )
         .await?;
-    library
-        .mark_connection_active(&plugin_key, &account.account_id)
-        .await?;
-    library
-        .link_account(identity.id, &plugin_key, &account.account_id, source_id)
-        .await?;
+    link_after_login(
+        &library,
+        identity.id,
+        &plugin_key,
+        &account.account_id,
+        source_id,
+    )
+    .await?;
     Ok(Json(SourceConnected {
         ok: true,
         account_id: account.account_id,
@@ -776,17 +780,26 @@ async fn start_source_oauth_session(
                     undo_refused_login(&library, &plugin_key, &account.account_id, &known).await;
                     return;
                 }
-                let _ = library
-                    .mark_connection_active(&plugin_key, &account.account_id)
-                    .await;
-                let _ = library
-                    .link_account(identity_id, &plugin_key, &account.account_id, &source_id)
-                    .await;
-                info!(
-                    account = %account.account_id,
-                    source = %source_id,
-                    "portal OAuth login completed"
-                );
+                match link_after_login(
+                    &library,
+                    identity_id,
+                    &plugin_key,
+                    &account.account_id,
+                    &source_id,
+                )
+                .await
+                {
+                    Ok(()) => info!(
+                        account = %account.account_id,
+                        source = %source_id,
+                        "portal OAuth login completed"
+                    ),
+                    Err(err) => warn!(
+                        error = %err.message,
+                        source = %source_id,
+                        "portal OAuth login finished but the account was not linked"
+                    ),
+                }
             }
             Err(err) => warn!(%err, source = %source_id, "portal OAuth login failed"),
         }
@@ -902,11 +915,13 @@ struct ConnectionInfo {
 /// the account's only one and revoking it always clears the credentials.
 /// Every step runs while the link still exists, in this order: the account
 /// is marked revoked (which also turns scanning off, so no job picks it up
-/// half-cleaned); the plugin signs it out at the store (for example, Audible
-/// deregisters its device), best effort; its `encrypted_secrets` rows are
-/// deleted; only then is the link removed. Any failed library step answers
-/// 503 and keeps the link, so the same request retries the cleanup.
-/// Already-acquired library rows stay (product policy).
+/// half-cleaned) and its holdings and scan checkpoints go; the plugin signs
+/// it out at the store (for example, Audible deregisters its device), best
+/// effort; then one atomic batch, guarded on the link and serialized with
+/// logins of the same store account, marks it revoked again, deletes its
+/// `encrypted_secrets` rows and removes the link. Any failed library step
+/// answers 503 and keeps the link, so the same request retries the
+/// cleanup. Already-acquired library rows stay (product policy).
 #[utoipa::path(
     operation_id = "portal_revoke_connection",
     post,
@@ -915,7 +930,7 @@ struct ConnectionInfo {
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "The account was marked revoked, its stored credentials were deleted, and it was unlinked.", body = PortalOk),
-        (status = 400, description = "The account is not linked to this identity, or the library database refused to read this identity's links (the body carries its message).", body = PortalErrorBody, examples(
+        (status = 400, description = "The account is not linked to this identity (also when a concurrent revoke unlinked it first), or the library database refused to read this identity's links (the body carries its message).", body = PortalErrorBody, examples(
             ("not_linked" = (summary = "No link between this identity and the account.", value = json!({"error": "account not linked to this identity"}))),
             ("library_failed" = (summary = "The library database refused the read.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
         )),
@@ -923,7 +938,7 @@ struct ConnectionInfo {
             ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
             ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
         )),
-        (status = 503, description = "A cleanup step failed: marking the account revoked, deleting its stored credentials, or removing the link. The account stays linked, so repeating the request runs the cleanup again. When the cleanup task itself stopped, the daemon log names it; a repeat either finishes the cleanup or, if the unlink had already run, answers 400 `account not linked to this identity`.", body = PortalErrorBody, examples(
+        (status = 503, description = "A cleanup step failed: marking the account revoked, or the batch that deletes its stored credentials and removes the link. The account stays linked, so repeating the request runs the cleanup again. When the cleanup task itself stopped, the daemon log names it; a repeat either finishes the cleanup or, if the unlink had already run, answers 400 `account not linked to this identity`.", body = PortalErrorBody, examples(
             ("step_failed" = (summary = "The library database refused a cleanup step.", value = json!({"error": "revoke cleanup failed: ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
             ("task_stopped" = (summary = "The cleanup task panicked.", value = json!({"error": "revoke cleanup failed: task 12 panicked"}))),
         )),
@@ -970,21 +985,69 @@ async fn revoke_connection(
                 "plugin not deployed on this host; revoking without store sign-out"
             );
         }
-        // The link goes last: until the sealed credentials are gone the
-        // account stays linked, so a failed step can be retried.
-        library
-            .delete_account_secrets(&plugin_key, &account_id)
-            .await
-            .map_err(cleanup_failed)?;
-        library
-            .unlink_account(identity.id, &plugin_key, &account_id)
-            .await
-            .map_err(cleanup_failed)
+        // One atomic batch, guarded on the link and serialized with logins
+        // of the same store account: the account is marked revoked, its
+        // sealed credentials deleted and the link removed together, so a
+        // failure leaves the link (and the retry) in place and a
+        // concurrent reconnect can never leave live credentials unlinked.
+        match bookclerk_library::control_plane::revoke_account_link(
+            &library,
+            identity.id,
+            &plugin_key,
+            &account_id,
+        )
+        .await
+        .map_err(cleanup_failed)?
+        {
+            bookclerk_library::control_plane::LinkRevoked::Revoked => Ok(()),
+            bookclerk_library::control_plane::LinkRevoked::NotLinked => {
+                Err(PortalError::bad("account not linked to this identity"))
+            }
+        }
     });
     cleanup
         .await
         .map_err(|err| PortalError::unavailable(format!("revoke cleanup failed: {err}")))??;
     Ok(Json(PortalOk { ok: true }))
+}
+
+/// Message of the 409 a login answers when its sign-in was taken back
+/// before it could link the account.
+const SIGN_IN_TAKEN_BACK: &str =
+    "this account has no saved sign-in (it was disconnected while the sign-in finished); sign in again";
+
+/// Links the account a login signed in to, as one atomic batch serialized
+/// with a refused login's cleanup and with revokes of the same store
+/// account ([`bookclerk_library::control_plane::link_signed_in_account`]).
+///
+/// # Errors
+///
+/// Answers 400 when another identity holds the account, 409 when the
+/// account's sign-in was taken back before the link, and the library
+/// error otherwise.
+async fn link_after_login(
+    library: &bookclerk_library::LibraryStore,
+    identity_id: i64,
+    plugin_key: &str,
+    account_id: &str,
+    source: &str,
+) -> Result<(), PortalError> {
+    use bookclerk_library::control_plane::SignInLink;
+    match bookclerk_library::control_plane::link_signed_in_account(
+        library,
+        identity_id,
+        plugin_key,
+        account_id,
+        source,
+    )
+    .await?
+    {
+        SignInLink::Linked | SignInLink::AlreadyYours => Ok(()),
+        SignInLink::LinkedToSomeoneElse => Err(PortalError::bad(format!(
+            "account `{account_id}` is already linked to another user"
+        ))),
+        SignInLink::SignInTakenBack => Err(PortalError::conflict(SIGN_IN_TAKEN_BACK)),
+    }
 }
 
 /// Maps a failed revoke cleanup step to a retryable 503 and logs it.
@@ -1190,6 +1253,14 @@ impl PortalError {
     fn unauthorized(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
+            message: msg.into(),
+        }
+    }
+
+    /// Builds a 409 whose message names the conflicting change.
+    fn conflict(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
             message: msg.into(),
         }
     }

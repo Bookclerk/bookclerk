@@ -202,6 +202,46 @@ After editing the config (or running `bookclerk plugins deploy <id>`):
    bookclerk config database migrate --from sqlite --to postgres --apply
    ```
 
+The copy moves the whole library, not only the catalog. The destination
+opens as the same library, at the same configuration revisions:
+
+- the library identity, every configuration document (`core.output`,
+  `core.events`, `core.cache`, the patron scope default, sign-in policy
+  and plugin settings) with its revision, audit and change rows;
+- plugin versions, stored plugin archives, instances, default instances,
+  deployments and placements;
+- nodes and their credentials, enrollment links, links to other libraries
+  and the books they share;
+- each person's playback progress, listening sessions and bookmarks;
+- queued jobs and events, and the receipts that make retried operations
+  safe.
+
+Nothing is seeded again from `config.toml`. If a host already opened the
+new backend (a reload after editing `[database].plugin` does), the
+identity, node row and configuration documents it wrote there are
+replaced by the source's. Any other row in the destination makes the copy
+refuse unless you pass `--force`.
+
+The copy leaves behind only
+what Bookclerk rebuilds or rewrites on its own: Discover shelves and
+caches, the library page index, in-progress storage scans, maintenance
+leases, node heartbeats, live subscriber registrations and observed
+deployment state.
+
+The copy writes every row in one transaction, so the destination must
+accept one. The first-party SQLite and PostgreSQL adapters do; the D1
+adapter does not, so D1 cannot be a migration destination yet. A
+destination that refuses is checked before anything is written and is
+left untouched.
+
+> [!NOTE]
+> Plugin database bindings are not copied. Each one is a separate
+> database that belongs to the old adapter; the new adapter provisions an
+> empty one when the plugin next runs. Before you switch, list the old
+> ones with `bookclerk plugins db list` and drop any you no longer need
+> with `bookclerk plugins db drop <plugin> [binding]` (leave out `binding`
+> to drop every binding of that plugin).
+
 Daemon operators can instead `POST /api/database/migrate` with JSON
 `{ "from": "sqlite", "to": "postgres", "dry_run": false, "apply": true }`.
 When `apply` is true, the daemon writes `[database].plugin` and **reopens
@@ -673,6 +713,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
+`playback_progress`, `playback_sessions`, `bookmarks`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
@@ -698,7 +739,11 @@ library the last one applied from its keeper branch, on that branch the
 last one sent to each library, with a fingerprint of the sign-in sent
 (`observed`). It is removed with the account. When an
 account is taken back with no link left, its `node:` rows in both tables
-go too, so the library picks its next keeper afresh.
+go too, so the library picks its next keeper afresh. Writes that link a
+signed-in store account, take back a refused sign-in, or revoke a link
+are serialized per account by the `bookclerk_slots` row
+`store-account:<plugin key length>:<plugin key>:<account id>`, which is
+kept once created.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:
@@ -756,6 +801,14 @@ library holds as works, expressions and editions:
   `64k-mono`; see [Keeping several
   copies](output.md#keeping-several-copies)); both are empty for
   sidecars, the PDF and uploads.
+- `edition_copies`: each edition's copy on each destination: `stored`
+  with the edition's primary audio key there, `pending` with the last
+  error and when the next background attempt is due, or `failed` after 8
+  failed attempts in a row. An acquire records each destination's outcome
+  when it returns, and a branch's upload records the destinations it
+  wrote when it commits. Acquire runs read it to visit an acquired
+  edition a destination still lacks (see [Several
+  destinations](output.md#several-destinations)).
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that
@@ -799,6 +852,13 @@ work and, when known, its edition) keep no title, authors, ASIN or ISBN of
 their own; readers take those from the work and the wish's store sources.
 A wish for a book the library does not hold creates a catalog work and
 edition with no listing or holding.
+
+The built-in player keeps its own rows, each pointing at an edition and
+removed with its user (see [Playback reference](playback.md)):
+`playback_progress` (one row per user and edition: position, reported
+runtime and finished flag), `playback_sessions` (one row per stretch of
+listening, kept as history after it closes) and `bookmarks` (places a
+user marked). `listening_progress` stays what other servers reported.
 
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at the key the

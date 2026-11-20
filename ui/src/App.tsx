@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { LoginPage } from "@/components/LoginPage";
 import { NotFoundPage } from "@/components/NotFoundPage";
+import { PlayerBar } from "@/components/PlayerBar";
 import { PreferencesProvider } from "@/components/PreferencesDialog";
 import { useTheme } from "@/components/ThemeProvider";
 import { Button } from "@/components/ui/button";
@@ -118,8 +119,6 @@ function formatAuthRole(role?: AuthRole | string): string {
       return "Owner";
     case "administrator":
       return "Administrator";
-    case "host":
-      return "Host";
     case "member":
       return "Member";
     case "operator":
@@ -400,7 +399,13 @@ export default function App() {
 
   const canAcquire = session.can_acquire;
   const role = session.role;
-  const nav = { view, onNavigate: navigate, defaultView: session.default_view, role };
+  const nav = {
+    view,
+    onNavigate: navigate,
+    defaultView: session.default_view,
+    role,
+    administersNodes: session.administers_nodes,
+  };
 
   let page = <LibraryPage onLogout={onLogout} canAcquire={canAcquire} nav={nav} role={role} />;
 
@@ -423,7 +428,7 @@ export default function App() {
     );
   } else if (view === "discover") {
     page = <DiscoverPage onLogout={onLogout} nav={nav} role={role} />;
-  } else if (view === "status" && showStatusNav(role)) {
+  } else if (view === "status" && showStatusNav(role, session.administers_nodes)) {
     page = <StatusPage onLogout={onLogout} nav={nav} role={role} />;
   }
 
@@ -480,6 +485,8 @@ export default function App() {
         <div className="min-h-0 flex-1 overflow-hidden">
           <PageSuspense>{page}</PageSuspense>
         </div>
+        {/* Below every screen, so a book keeps playing while moving between them. */}
+        <PlayerBar />
       </div>
     </PreferencesProvider>
   );

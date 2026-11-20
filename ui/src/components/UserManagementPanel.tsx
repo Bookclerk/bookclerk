@@ -221,10 +221,10 @@ function UserPresenceIndicator({ user, size = "sm" }: { user: ListedUser; size?:
 function assignableRoles(session: AuthSession | null): string[] {
   if (!session) return [];
   if (session.role === "operator" || session.elevated) {
-    return ["member", "host", "administrator", "owner"];
+    return ["member", "administrator", "owner"];
   }
   if (session.role === "owner") {
-    return ["member", "host", "administrator"];
+    return ["member", "administrator"];
   }
   if (session.role === "administrator") {
     return ["member"];
@@ -832,7 +832,6 @@ export function UserManagementPanel({
             className={selectClassName}
           >
             {roleChoices.includes("member") ? <option value="member">Member</option> : null}
-            {roleChoices.includes("host") ? <option value="host">Host</option> : null}
             {roleChoices.includes("administrator") ? (
               <option value="administrator">Administrator</option>
             ) : null}
@@ -980,9 +979,7 @@ export function UserManagementPanel({
                           ? "Owner"
                           : u.role === "administrator"
                             ? "Admin"
-                            : u.role === "host"
-                              ? "Host"
-                              : "Member"}
+                            : "Member"}
                       </div>
                       <div className="flex flex-wrap items-center gap-1">
                         {(u.integrations ?? []).length === 0 ? (
@@ -1217,7 +1214,6 @@ export function UserManagementPanel({
                     <option value={selected.role}>{selected.role}</option>
                   ) : null}
                   {roleChoices.includes("member") ? <option value="member">Member</option> : null}
-                  {roleChoices.includes("host") ? <option value="host">Host</option> : null}
                   {roleChoices.includes("administrator") ? (
                     <option value="administrator">Administrator</option>
                   ) : null}

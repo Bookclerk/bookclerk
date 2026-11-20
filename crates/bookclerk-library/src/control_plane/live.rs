@@ -46,11 +46,15 @@ pub enum LiveTopic {
     /// Stored Discover shelves (`discover_feeds`): a ranking job wrote or
     /// dropped someone's shelves.
     Discover,
+    /// Listening progress and bookmarks (`playback_progress`, `bookmarks`):
+    /// someone started, stopped or finished an edition, or changed a
+    /// bookmark. Position syncs while a session plays do not move it.
+    Playback,
 }
 
 impl LiveTopic {
     /// Every topic.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Library,
         Self::Jobs,
         Self::Deliveries,
@@ -60,6 +64,7 @@ impl LiveTopic {
         Self::Libraries,
         Self::Users,
         Self::Discover,
+        Self::Playback,
     ];
 
     /// The topic's wire name, also its key in `live_topic_revisions`.
@@ -75,6 +80,7 @@ impl LiveTopic {
             Self::Libraries => "libraries",
             Self::Users => "users",
             Self::Discover => "discover",
+            Self::Playback => "playback",
         }
     }
 
@@ -87,9 +93,11 @@ impl LiveTopic {
     /// The table behind the topic and its change-stamp column, which every
     /// write to the table sets to the time of the write.
     ///
-    /// `None` for `library_links`, which has no change stamp, and for
+    /// `None` for `library_links`, which has no change stamp, for
     /// `configuration_changes`, an append-only log whose stamp is not
-    /// indexed; their writes bump on a probe instead.
+    /// indexed, and for `playback`, which has two tables and moves only
+    /// on some of their writes; their writes bump on a probe or outright
+    /// instead.
     #[must_use]
     pub fn stamp_column(self) -> Option<(&'static str, &'static str)> {
         match self {
@@ -102,6 +110,7 @@ impl LiveTopic {
             Self::Libraries => None,
             Self::Users => Some(("users", "updated_at")),
             Self::Discover => Some(("discover_feeds", "computed_at")),
+            Self::Playback => None,
         }
     }
 }

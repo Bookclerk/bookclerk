@@ -1,4 +1,4 @@
-//! SeaORM entity for `node_credentials`: the public keys an enrolled host
+//! SeaORM entity for `node_credentials`: the public keys an enrolled branch
 //! node proves itself with.
 
 use sea_orm::entity::prelude::*;

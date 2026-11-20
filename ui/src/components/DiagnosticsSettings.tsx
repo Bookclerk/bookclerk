@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
+  deleteDiagnosticsReport,
+  fetchDiagnosticsReport,
   fetchDiagnosticsReports,
   fetchSettings,
   saveDiagnosticsSharing,
   type DiagnosticsReport,
+  type DiagnosticsReportLookup,
 } from "@/lib/api";
-import { diagnosticsIssueSearchUrl, formatReportTime } from "@/lib/diagnostics";
+import { diagnosticsIssueSearchUrl, formatReportTime, isHttpsLink } from "@/lib/diagnostics";
 
 /** Props for {@link DiagnosticsSharingFields}. */
 export interface DiagnosticsSharingFieldsProps {
@@ -81,14 +84,128 @@ export function DiagnosticsSharingFields({
   );
 }
 
+/** Props for {@link DiagnosticsReportPanel}. */
+export interface DiagnosticsReportPanelProps {
+  /** The report as the collector returned it. */
+  lookup: DiagnosticsReportLookup;
+}
+
 /**
- * The reports this install sent, newest first, each with its ID, a copy
- * button and a link that searches the project's issues for it.
+ * A report read back from the collector: the issues tracking it, its fix,
+ * and the stored log lines (redacted, as sent).
+ */
+export function DiagnosticsReportPanel({ lookup }: DiagnosticsReportPanelProps) {
+  const { fix, issues, report } = lookup;
+  return (
+    <div className="mt-2 space-y-3 rounded-md border border-ink/15 bg-paper p-3 text-xs text-ink/70">
+      {issues.length === 0 ? (
+        <p>No issue tracks this report yet.</p>
+      ) : (
+        <ul className="space-y-1">
+          {issues.map((issue) => (
+            <li key={issue.number}>
+              {isHttpsLink(issue.url) ? (
+                <a
+                  className="text-teal underline-offset-2 hover:underline"
+                  href={issue.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  #{issue.number} {issue.title}
+                </a>
+              ) : (
+                <span>
+                  #{issue.number} {issue.title}
+                </span>
+              )}{" "}
+              <span className="text-ink/50">({issue.state})</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {fix ? (
+        <p>
+          Fixed
+          {fix.fixed_in ? ` in ${fix.fixed_in}` : ", not released yet"}
+          {fix.pr_number !== null ? (
+            <>
+              {" by "}
+              {isHttpsLink(fix.pr_url) ? (
+                <a
+                  className="text-teal underline-offset-2 hover:underline"
+                  href={fix.pr_url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  pull request #{fix.pr_number}
+                </a>
+              ) : (
+                `pull request #${fix.pr_number}`
+              )}
+            </>
+          ) : null}
+          .
+        </p>
+      ) : null}
+      {lookup.deleted_at_unix_ms !== null ? (
+        <p>
+          You deleted the stored copy on {formatReportTime(lookup.deleted_at_unix_ms)}. Its summary
+          and issue links stay.
+        </p>
+      ) : null}
+      {report ? (
+        <div className="space-y-1">
+          <p className="text-ink/50">
+            {report.version} · {report.trigger} · {report.os} {report.arch} {report.distro}
+          </p>
+          <ol className="max-h-80 space-y-1 overflow-y-auto font-mono">
+            {report.events.map((e, i) => (
+              <li key={i} className="break-words">
+                <span className="text-ink/50">{formatReportTime(e.ts_unix_ms)}</span>{" "}
+                <span className={e.level === "ERROR" ? "text-brick" : undefined}>{e.level}</span>{" "}
+                <span className="text-ink/50">{e.target}</span> {e.message}
+                {e.fields.map((f) => (
+                  <span key={f.name} className="text-ink/50">
+                    {" "}
+                    {f.name}={f.value}
+                  </span>
+                ))}
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** What one report row shows below itself. */
+type RowState =
+  | { kind: "loading" }
+  | { kind: "shown"; lookup: DiagnosticsReportLookup }
+  | { kind: "confirm" }
+  | { kind: "deleting" }
+  | { kind: "error"; message: string };
+
+/**
+ * The reports this install sent, newest first, each with its ID, its access
+ * code, a link that searches the project's issues for it, and (when the
+ * collector gave a code) View and Delete.
  */
 export function DiagnosticsReportsList() {
   const [reports, setReports] = useState<DiagnosticsReport[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [rows, setRows] = useState<Record<string, RowState>>({});
+
+  const setRow = useCallback((id: string, state: RowState | null) => {
+    setRows((prev) => {
+      const next = { ...prev };
+      if (state === null) delete next[id];
+      else next[id] = state;
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -115,12 +232,45 @@ export function DiagnosticsReportsList() {
     };
   }, []);
 
-  async function copy(id: string) {
+  async function copy(text: string) {
     try {
-      await navigator.clipboard.writeText(id);
-      setCopied(id);
+      await navigator.clipboard.writeText(text);
+      setCopied(text);
     } catch {
       setCopied(null);
+    }
+  }
+
+  async function view(id: string) {
+    if (rows[id]?.kind === "shown") {
+      setRow(id, null);
+      return;
+    }
+    setRow(id, { kind: "loading" });
+    try {
+      setRow(id, { kind: "shown", lookup: await fetchDiagnosticsReport(id) });
+    } catch (err) {
+      setRow(id, {
+        kind: "error",
+        message: err instanceof Error ? err.message : "Could not read the report back.",
+      });
+    }
+  }
+
+  async function remove(id: string) {
+    setRow(id, { kind: "deleting" });
+    try {
+      const at = await deleteDiagnosticsReport(id);
+      setRow(id, null);
+      setReports(
+        (prev) =>
+          prev?.map((r) => (r.report_id === id ? { ...r, deleted_at_unix_ms: at } : r)) ?? prev,
+      );
+    } catch (err) {
+      setRow(id, {
+        kind: "error",
+        message: err instanceof Error ? err.message : "Could not delete the report.",
+      });
     }
   }
 
@@ -143,41 +293,121 @@ export function DiagnosticsReportsList() {
   return (
     <div className="py-3">
       <p className="mb-2 text-xs text-ink/50">
-        To follow up on a report, search the project's issues for its ID, or give the ID to a
-        maintainer.
+        View reads a report back from the collector with the issues tracking it. Delete removes the
+        collector's copy and keeps its summary and issue links. If this app cannot start, the ID and
+        access code (also in <code>diagnostics/reports.json</code>) open the collector's lookup
+        page.
       </p>
       <ul className="divide-y divide-ink/10">
-        {reports.map((r) => (
-          <li
-            key={r.report_id}
-            className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2"
-          >
-            <div className="min-w-0 space-y-0.5">
-              <code className="block break-all font-mono text-xs text-ink">{r.report_id}</code>
-              <span className="block text-xs text-ink/50">
-                {formatReportTime(r.sent_at_unix_ms)} · {r.trigger} · {r.version}
-              </span>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                className="text-xs"
-                onClick={() => void copy(r.report_id)}
-              >
-                {copied === r.report_id ? "Copied" : "Copy ID"}
-              </Button>
-              <a
-                className="text-xs text-teal underline-offset-2 hover:underline"
-                href={diagnosticsIssueSearchUrl(r.report_id)}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                Find the issue
-              </a>
-            </div>
-          </li>
-        ))}
+        {reports.map((r) => {
+          const row = rows[r.report_id];
+          const code = r.access_code;
+          const deleted = r.deleted_at_unix_ms !== null;
+          return (
+            <li key={r.report_id} className="py-2">
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                <div className="min-w-0 space-y-0.5">
+                  <code className="block break-all font-mono text-xs text-ink">{r.report_id}</code>
+                  <span className="block text-xs text-ink/50">
+                    {formatReportTime(r.sent_at_unix_ms)} · {r.trigger} · {r.version}
+                    {code ? (
+                      <>
+                        {" · code "}
+                        <code className="font-mono text-ink/70">{code}</code>
+                      </>
+                    ) : null}
+                    {deleted ? " · deleted" : null}
+                  </span>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="text-xs"
+                    onClick={() => void copy(r.report_id)}
+                  >
+                    {copied === r.report_id ? "Copied" : "Copy ID"}
+                  </Button>
+                  {code ? (
+                    <>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="text-xs"
+                        onClick={() => void copy(code)}
+                      >
+                        {copied === code ? "Copied" : "Copy code"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="text-xs"
+                        disabled={row?.kind === "loading" || row?.kind === "deleting"}
+                        onClick={() => void view(r.report_id)}
+                      >
+                        {row?.kind === "shown"
+                          ? "Hide"
+                          : row?.kind === "loading"
+                            ? "Loading…"
+                            : "View"}
+                      </Button>
+                      {deleted ? null : (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="text-xs"
+                          disabled={row?.kind === "deleting"}
+                          onClick={() => setRow(r.report_id, { kind: "confirm" })}
+                        >
+                          Delete
+                        </Button>
+                      )}
+                    </>
+                  ) : null}
+                  <a
+                    className="text-xs text-teal underline-offset-2 hover:underline"
+                    href={diagnosticsIssueSearchUrl(r.report_id)}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    Find the issue
+                  </a>
+                </div>
+              </div>
+              {row?.kind === "shown" ? <DiagnosticsReportPanel lookup={row.lookup} /> : null}
+              {row?.kind === "confirm" || row?.kind === "deleting" ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-ink/70">
+                  <span>
+                    Delete the collector's copy of this report? Its summary and issue links stay, so
+                    it still counts.
+                  </span>
+                  <Button
+                    type="button"
+                    className="text-xs"
+                    disabled={row.kind === "deleting"}
+                    onClick={() => void remove(r.report_id)}
+                  >
+                    {row.kind === "deleting" ? "Deleting…" : "Delete report"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="text-xs"
+                    disabled={row.kind === "deleting"}
+                    onClick={() => setRow(r.report_id, null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              ) : null}
+              {row?.kind === "error" ? (
+                <p className="mt-2 text-xs font-medium text-brick" role="alert">
+                  {row.message}
+                </p>
+              ) : null}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

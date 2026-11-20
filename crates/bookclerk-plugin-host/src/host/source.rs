@@ -81,6 +81,8 @@ pub struct ExternalSource {
     sort_key: u32,
     /// Declared `CatalogCapabilities.detailByIsbn` from `describe()`.
     detail_by_isbn: bool,
+    /// Declared `CatalogCapabilities.detailByProductId` from `describe()`.
+    detail_by_product_id: bool,
     /// Declared `CatalogCapabilities.priceByIsbn` from `describe()`.
     price_by_isbn: bool,
     /// Declared `CatalogCapabilities.priceByAsin` from `describe()`.
@@ -289,6 +291,7 @@ impl ExternalSource {
             describe.sort_key
         };
         let detail_by_isbn = describe.catalog.detail_by_isbn;
+        let detail_by_product_id = describe.catalog.detail_by_product_id;
         let price_by_isbn = describe.catalog.price_by_isbn;
         let price_by_asin = describe.catalog.price_by_asin;
         let plugin_data_dir = plugin_data_dir(config, plugin)?;
@@ -303,6 +306,7 @@ impl ExternalSource {
             aliases,
             sort_key,
             detail_by_isbn,
+            detail_by_product_id,
             price_by_isbn,
             price_by_asin,
             plugin_data_dir,
@@ -743,6 +747,10 @@ impl ContentSource for ExternalSource {
 
     fn answers_catalog_detail_by_isbn(&self) -> bool {
         self.detail_by_isbn
+    }
+
+    fn answers_catalog_detail_by_product_id(&self) -> bool {
+        self.detail_by_product_id
     }
 
     fn answers_price_by_isbn(&self) -> bool {

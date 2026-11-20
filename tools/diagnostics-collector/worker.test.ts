@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "vitest";
 import type { Env } from "./env.ts";
 import { createD1 } from "./test-support/d1.ts";
+import { MAX_SUBMIT_BYTES } from "./submit.ts";
 import worker, {
   UpstreamError,
   type CursorAnswer,
@@ -167,6 +168,54 @@ describe("worker errors", () => {
     );
     assert.equal(res.status, 502);
     assert.deepEqual(await res.json(), { error: "upstream failed" });
+  });
+
+  it("stops reading a /submit body that streams past the cap", async () => {
+    // No Content-Length: a chunked upload declares nothing, so the size is
+    // only known by counting what arrives.
+    let pulled = 0;
+    let cancelled = false;
+    const chunk = new TextEncoder().encode(" ".repeat(64 * 1024));
+    const body = new ReadableStream({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    let upstream = false;
+    globalThis.fetch = async (): Promise<Response> => {
+      upstream = true;
+      return new Response("{}", { status: 500 });
+    };
+    const request = new Request("https://collector.test/submit", {
+      method: "POST",
+      body,
+      headers: { "content-type": "application/json" },
+      duplex: "half",
+    } as RequestInit);
+    assert.equal(request.headers.get("content-length"), null);
+    const res = await worker.fetch(request, ENV, CTX);
+    assert.equal(res.status, 413);
+    assert.deepEqual(await res.json(), { error: "payload too large" });
+    assert.ok(cancelled, "the rest of the body is cancelled");
+    assert.ok(pulled <= 6, `read ${pulled} chunks`);
+    assert.ok(!upstream, "nothing reaches B2");
+  });
+
+  it("refuses a /submit body whose Content-Length understates it", async () => {
+    const res = await worker.fetch(
+      new Request("https://collector.test/submit", {
+        method: "POST",
+        body: " ".repeat(MAX_SUBMIT_BYTES + 1),
+        headers: { "content-type": "application/json", "content-length": "2" },
+      }),
+      ENV,
+      CTX,
+    );
+    assert.equal(res.status, 413);
   });
 
   it("still refuses /report without the key", async () => {
