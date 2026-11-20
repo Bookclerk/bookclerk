@@ -264,10 +264,10 @@ The host `EventPublisher` writes straight into the library outbox
 - **Host-emitted types.** Some domain events belong to the host.
   `book_acquired` is one: a source plugin's acquire handler returns the
   book, then the host's acquire pipeline records it and publishes
-  `book_acquired` in the same transaction as the library row. Its payload
-  names the title (`titleId`), its edition (`editionId`, `null` before the
-  title resolves to one), `source`, `asin`, `isbn`, `accountId` and the
-  written `pathKeys`.
+  `book_acquired` in the same transaction as the edition's acquire state.
+  Its payload names the title by the account holding that acquired it
+  (`titleId`), its edition (`editionId`), `source`, `asin`, `isbn`,
+  `accountId` and the written `pathKeys`.
   `edition_linked`, `edition_updated` and `holding_added` are written by
   the library model resolver in the same batch as the store listing they
   describe, `holding_removed` in the batch that deletes the holding,
@@ -903,15 +903,22 @@ piling up work.
   UPDATE includes `EXISTS (wake_pending ∧ lease owner)`.
 
 **`book_acquired`.** A successful acquire writes `book_acquired` into
-`domain_events` in the same transaction as the library acquire-status
-change (book uuid, storage key, product ids; never media bytes). It sets
-the envelope `source` to the book's storefront plugin id.
+`domain_events` in the same transaction as the edition's acquire state
+(the account holding as `titleId`, the edition, storage key, product ids;
+never media bytes). The holding is also the event's correlation and
+ordering key. It sets the envelope `source` to the book's storefront
+plugin id.
 
 **`edition_acquire_changed`.** Any other acquire state change of a title
-with an edition (queued, downloading, failed, or reset to not acquired)
-writes `edition_acquire_changed` (`editionId`, `titleId`, `status`, one of
-`not_acquired`, `queued`, `downloading` or `error`) in the same
-transaction. Its `source` is the book's storefront plugin id too.
+(queued, downloading, failed, or reset to not acquired) writes
+`edition_acquire_changed` (`editionId`, `titleId`, the account holding,
+and `status`, one of `not_acquired`, `queued`, `downloading` or `error`)
+in the same transaction. Its `source` is the book's storefront plugin id
+too.
+
+A write is recorded only while its holding still holds the edition: one
+read before a revoke or rescan removed the holding changes nothing and
+publishes no event.
 
 **`ingest_batch_finished`.** When an [upload](../server/uploads.md) or a
 storage intake batch reaches a final state, the host writes

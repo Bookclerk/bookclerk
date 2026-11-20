@@ -110,19 +110,25 @@ pub trait AtomicTxnBackend: Send + Sync {
         spec: PublishDomainEventSpec,
     ) -> Result<PublishDomainEventOutcome>;
 
-    /// Update acquire status and, when acquired, publish `book_acquired` in the same transaction.
+    /// Write an edition's acquire state for the account holding that made
+    /// the write, and publish its event, in one batch.
     ///
-    /// `title` is the title's edition and account holding: the edition's
-    /// `edition_acquisitions` row is written in the same batch (only the
-    /// holding that acquired an edition, while it exists, changes it).
+    /// Only the holding that acquired an edition, while it exists, changes
+    /// it; `book_uuid` names the flat `books` row mirrored until the table
+    /// is dropped (book model step 6).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LibraryError::NotFound`] when the holding no longer
+    /// holds the edition, or the database error.
     async fn set_acquire_status(
         &self,
-        book_uuid: &str,
-        title: Option<&crate::TitleHolding>,
+        holding: &crate::TitleHolding,
+        book_uuid: Option<&str>,
         status: crate::models::AcquireStatus,
         storage_key: Option<&str>,
         error_message: Option<&str>,
-        event: Option<PublishDomainEventSpec>,
+        event: PublishDomainEventSpec,
     ) -> Result<()>;
 
     /// Create deliveries for `subscribers`. `mark_dispatched` finishes the parent event.

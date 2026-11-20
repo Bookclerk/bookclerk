@@ -44,8 +44,10 @@ use crate::split::split_audio_by_chapters;
 pub struct AcquireRequest {
     /// Download product id (Audible ASIN / Libro ISBN).
     pub asin: String,
-    /// Stable library UUID when known (preferred for status updates).
-    pub book_uuid: Option<String>,
+    /// The account holding (`holdings.id`) the title is acquired for,
+    /// when known: acquire state is written under it. Without one the
+    /// state is written to the title `asin` names on `account_id`.
+    pub holding_id: Option<String>,
     /// Which store owns this title (plugin id: `audible`, `libro`, …).
     pub source: String,
     /// Store account id that owns this title.
@@ -632,15 +634,14 @@ async fn acquire_book_recorded(
                     key = %primary_key,
                     "skipping download — matched existing acquired media"
                 );
-                library
-                    .set_acquire_status(
-                        status_key(&req),
-                        &req.account_id,
-                        AcquireStatus::Acquired,
-                        Some(&primary_key),
-                        None,
-                    )
-                    .await?;
+                record_status(
+                    library,
+                    &req,
+                    AcquireStatus::Acquired,
+                    Some(&primary_key),
+                    None,
+                )
+                .await?;
                 let fetched_pdf =
                     resume_missing_companion_pdf(library, destinations, &req, source).await?;
                 return Ok(AcquireResult {
@@ -688,15 +689,14 @@ async fn acquire_book_recorded(
                         idx.insert_key(key.clone());
                     }
                 }
-                library
-                    .set_acquire_status(
-                        status_key(&req),
-                        &req.account_id,
-                        AcquireStatus::Acquired,
-                        Some(&primary_key),
-                        None,
-                    )
-                    .await?;
+                record_status(
+                    library,
+                    &req,
+                    AcquireStatus::Acquired,
+                    Some(&primary_key),
+                    None,
+                )
+                .await?;
                 let fetched_pdf =
                     resume_missing_companion_pdf(library, destinations, &req, source).await?;
                 return Ok(AcquireResult {
@@ -735,15 +735,7 @@ async fn acquire_book_recorded(
         check_edition_paths(library, destinations, &req).await?;
     }
 
-    library
-        .set_acquire_status(
-            status_key(&req),
-            &req.account_id,
-            AcquireStatus::Queued,
-            None,
-            None,
-        )
-        .await?;
+    record_status(library, &req, AcquireStatus::Queued, None, None).await?;
 
     let result = match run_pipeline(library, copies, &req, source).await {
         Ok(mut result) => {
@@ -754,15 +746,14 @@ async fn acquire_book_recorded(
                     idx.insert_key(key.clone());
                 }
             }
-            library
-                .set_acquire_status(
-                    status_key(&req),
-                    &req.account_id,
-                    AcquireStatus::Acquired,
-                    Some(&result.storage_key),
-                    None,
-                )
-                .await?;
+            record_status(
+                library,
+                &req,
+                AcquireStatus::Acquired,
+                Some(&result.storage_key),
+                None,
+            )
+            .await?;
             Ok(result)
         }
         // A fetch that only filled missing destinations failed while others
@@ -824,15 +815,7 @@ async fn acquire_book_recorded(
         }
         Err(err) => {
             let message = err.to_string();
-            let _ = library
-                .set_acquire_status(
-                    status_key(&req),
-                    &req.account_id,
-                    AcquireStatus::Error,
-                    None,
-                    Some(&message),
-                )
-                .await;
+            let _ = record_status(library, &req, AcquireStatus::Error, None, Some(&message)).await;
             Err(err)
         }
     };
@@ -841,9 +824,73 @@ async fn acquire_book_recorded(
     result
 }
 
-/// Library status row key: book UUID when known, otherwise the store product id.
+/// The request's key for logs and scratch paths: its account holding when
+/// known, otherwise the store product id.
 fn status_key(req: &AcquireRequest) -> &str {
-    req.book_uuid.as_deref().unwrap_or(&req.asin)
+    req.holding_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .unwrap_or(&req.asin)
+}
+
+/// Records `req`'s acquire state: under its account holding when known
+/// ([`LibraryStore::set_holding_acquire_status`]), otherwise on the title
+/// its product id names.
+///
+/// # Errors
+///
+/// Returns the library's error when the write fails or the title is gone.
+async fn record_status(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+    status: AcquireStatus,
+    storage_key: Option<&str>,
+    error_message: Option<&str>,
+) -> bookclerk_library::Result<()> {
+    match req.holding_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(holding) => {
+            library
+                .set_holding_acquire_status(holding, status, storage_key, error_message)
+                .await
+        }
+        None => {
+            library
+                .set_acquire_status(
+                    &req.asin,
+                    &req.account_id,
+                    status,
+                    storage_key,
+                    error_message,
+                )
+                .await
+        }
+    }
+}
+
+/// Records `req`'s companion PDF state, keyed as [`record_status`] keys
+/// the audio state.
+///
+/// # Errors
+///
+/// Returns the library's error when the write fails or the title is gone.
+async fn record_pdf_status(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+    status: AcquireStatus,
+    pdf_storage_key: Option<&str>,
+) -> bookclerk_library::Result<()> {
+    match req.holding_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(holding) => {
+            library
+                .set_holding_pdf_status(holding, status, pdf_storage_key)
+                .await
+        }
+        None => {
+            library
+                .set_pdf_status(&req.asin, &req.account_id, status, pdf_storage_key)
+                .await
+        }
+    }
 }
 
 /// Initial scratch reservation held until the real directory size is known.
@@ -1829,15 +1876,7 @@ async fn run_pipeline(
     req: &AcquireRequest,
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
-    library
-        .set_acquire_status(
-            status_key(req),
-            &req.account_id,
-            AcquireStatus::Downloading,
-            None,
-            None,
-        )
-        .await?;
+    record_status(library, req, AcquireStatus::Downloading, None, None).await?;
 
     run_source_pipeline(library, copies, req, source).await
 }
@@ -3385,14 +3424,8 @@ async fn put_companion_pdf(
     }
 
     if let Some(pdf_key) = primary_pdf_key.or_else(|| written.first().cloned()) {
-        if let Err(err) = library
-            .set_pdf_status(
-                &req.asin,
-                &req.account_id,
-                AcquireStatus::Acquired,
-                Some(&pdf_key),
-            )
-            .await
+        if let Err(err) =
+            record_pdf_status(library, req, AcquireStatus::Acquired, Some(&pdf_key)).await
         {
             tracing::warn!(id = %status_key(req), error = %err, "PDF status update failed");
         }
@@ -3412,10 +3445,7 @@ async fn record_companion_pdf_failure(
         error = %err,
         "companion PDF failed; audio acquire continues"
     );
-    if let Err(status_err) = library
-        .set_pdf_status(&req.asin, &req.account_id, AcquireStatus::Error, None)
-        .await
-    {
+    if let Err(status_err) = record_pdf_status(library, req, AcquireStatus::Error, None).await {
         tracing::warn!(
             id = %status_key(req),
             error = %status_err,
@@ -3508,21 +3538,13 @@ async fn stored_edition_pdf(
     if title.pdf_acquired_here() {
         return Ok(Some(key));
     }
-    let Some(book_uuid) = title.book_uuid.as_deref() else {
-        return Ok(None);
-    };
     let primary = destinations.primary_destination();
     let primary = (primary.id.as_str(), primary.backend.as_ref());
     if !sibling_pdf_is_present(Some(&primary), Some(&key)).await? {
         return Ok(None);
     }
     library
-        .set_pdf_status(
-            book_uuid,
-            &title.account_id,
-            AcquireStatus::Acquired,
-            Some(&key),
-        )
+        .set_holding_pdf_status(&title.holding_id, AcquireStatus::Acquired, Some(&key))
         .await?;
     Ok(Some(key))
 }
@@ -3984,6 +4006,15 @@ async fn resolve_title(
     library: &LibraryStore,
     req: &AcquireRequest,
 ) -> Option<bookclerk_library::AcquireTitle> {
+    if let Some(holding) = req.holding_id.as_deref().filter(|id| !id.is_empty()) {
+        return match library.acquire_title_of_holding(holding).await {
+            Ok(title) => title,
+            Err(err) => {
+                tracing::warn!(asin = %req.asin, error = %err, "could not read the title from the library model");
+                None
+            }
+        };
+    }
     let book = resolve_book(library, req).await?;
     match library
         .acquire_title(
@@ -4007,9 +4038,13 @@ async fn resolve_book(
     library: &LibraryStore,
     req: &AcquireRequest,
 ) -> Option<bookclerk_library::BookRecord> {
-    if let Some(uuid) = req.book_uuid.as_deref().filter(|s| !s.is_empty()) {
-        if let Ok(Some(b)) = library.get_book_by_uuid(uuid).await {
-            return Some(b);
+    if let Some(holding) = req.holding_id.as_deref().filter(|s| !s.is_empty()) {
+        if let Ok(Some(title)) = library.acquire_title_of_holding(holding).await {
+            if let Some(uuid) = title.book_uuid.as_deref() {
+                if let Ok(Some(b)) = library.get_book_by_uuid(uuid).await {
+                    return Some(b);
+                }
+            }
         }
     }
     library
@@ -4151,7 +4186,17 @@ async fn base_folder_naming_ctx(
     let Some(parent_asin) = episode.series_asin.as_deref() else {
         return episode;
     };
-    let Ok(Some(parent)) = library.get_book(parent_asin, &req.account_id).await else {
+    let parent = match library
+        .acquire_titles_named(Some(&req.account_id), parent_asin)
+        .await
+    {
+        Ok(titles) => titles.into_iter().next(),
+        Err(err) => {
+            tracing::warn!(asin = %req.asin, error = %err, "could not read the podcast parent");
+            None
+        }
+    };
+    let Some(parent) = parent else {
         return episode;
     };
     NamingContext {
@@ -4162,7 +4207,7 @@ async fn base_folder_naming_ctx(
         narrators: parent.narrators.clone(),
         series: parent.series.clone(),
         series_index: None,
-        series_asin: parent.series_asin.clone(),
+        series_asin: parent.series_product_id.clone(),
         year_published: parent.published_at.map(|dt| dt.year()),
         account_id: Some(parent.account_id.clone()),
         locale: Some(parent.marketplace.clone()),
@@ -4170,10 +4215,10 @@ async fn base_folder_naming_ctx(
         categories: parent.categories.clone(),
         length_minutes: parent.length_minutes,
         is_abridged: parent.is_abridged,
-        content_kind: Some(parent.content_kind.clone()),
+        content_kind: Some(parent.content_kind.to_string()),
         call_number: match &req.parent_call_number {
             Some(id) => Some(id.clone()),
-            None => call_number_or_none(library, &parent.uuid).await,
+            None => bookclerk_library::call_number(&parent.edition_id),
         },
         ..Default::default()
     }
@@ -4197,19 +4242,6 @@ pub async fn call_number_of(
         .edition_of_book(book_uuid)
         .await?
         .and_then(|edition| bookclerk_library::call_number(&edition)))
-}
-
-/// [`call_number_of`] for naming outside an acquire's pinned id
-/// ([`pin_call_number`]): a planned key a caller only compares (a preview,
-/// a scan pattern). A failed read is logged and names by product id; an
-/// acquire never reaches here for its own title, whose id it pinned.
-async fn call_number_or_none(library: &LibraryStore, book_uuid: &str) -> Option<String> {
-    call_number_of(library, book_uuid)
-        .await
-        .unwrap_or_else(|err| {
-            tracing::warn!(error = %err, "could not read a title's edition for naming");
-            None
-        })
 }
 
 /// The folder and file naming contexts of `req`. Both carry the edition's
@@ -4541,10 +4573,9 @@ async fn check_edition_paths(
     destinations: &AcquireDestinations,
     req: &AcquireRequest,
 ) -> Result<()> {
-    let owner = match resolve_book(library, req).await {
-        Some(book) => library.file_owner_of_book(&book.uuid).await?,
-        None => None,
-    };
+    let owner = owner_of_request(library, req)
+        .await?
+        .and_then(|(owner, _)| owner);
     for item in &destinations.items {
         let dest_req = request_for_destination(req, item);
         let templates = dest_req.options.naming_templates();
@@ -4642,9 +4673,6 @@ pub async fn share_acquired_sibling(
     destinations: &[(&str, &dyn StorageBackend)],
     title: &bookclerk_library::AcquireTitle,
 ) -> Result<Option<String>> {
-    let Some(book_uuid) = title.book_uuid.as_deref() else {
-        return Ok(None);
-    };
     let edition = title.edition_id.clone();
     // The edition records which holding acquired it (`edition_acquisitions`).
     let Some(acquisition) = library.edition_acquisition(&edition).await? else {
@@ -4684,13 +4712,7 @@ pub async fn share_acquired_sibling(
         }
     }
     library
-        .set_acquire_status(
-            book_uuid,
-            &title.account_id,
-            AcquireStatus::Acquired,
-            Some(key),
-            None,
-        )
+        .set_holding_acquire_status(&title.holding_id, AcquireStatus::Acquired, Some(key), None)
         .await?;
     // The edition's companion PDF is shared too when it is on the primary
     // destination.
@@ -4700,12 +4722,7 @@ pub async fn share_acquired_sibling(
         .filter(|key| acquisition.pdf_status == AcquireStatus::Acquired && !key.is_empty());
     if pdf_key.is_some() && sibling_pdf_is_present(destinations.first(), pdf_key).await? {
         library
-            .set_pdf_status(
-                book_uuid,
-                &title.account_id,
-                AcquireStatus::Acquired,
-                pdf_key,
-            )
+            .set_holding_pdf_status(&title.holding_id, AcquireStatus::Acquired, pdf_key)
             .await?;
     }
     Ok(Some(key.to_string()))
@@ -4745,16 +4762,43 @@ async fn file_owner_of_request(
     library: &LibraryStore,
     req: &AcquireRequest,
 ) -> Result<Option<FileOwner>> {
+    match owner_of_request(library, req).await? {
+        None => Ok(None),
+        Some((Some(owner), _)) => Ok(Some(owner)),
+        Some((None, title)) => Err(AcquireError::Other(anyhow::anyhow!(
+            "title {title} has no edition yet; rescan its account before acquiring it"
+        ))),
+    }
+}
+
+/// The edition that owns `req`'s files, found through its account holding
+/// when known, otherwise through the title its product id names.
+///
+/// # Returns
+///
+/// `None` when the title is not in the library; otherwise the owner
+/// (`None` when the title has no edition yet) and the id it was found by.
+///
+/// # Errors
+///
+/// Returns an error when the library lookup fails.
+async fn owner_of_request(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+) -> Result<Option<(Option<FileOwner>, String)>> {
+    if let Some(holding) = req.holding_id.as_deref().filter(|id| !id.is_empty()) {
+        return Ok(library
+            .file_owner_of_holding(holding)
+            .await?
+            .map(|owner| (Some(owner), holding.to_string())));
+    }
     let Some(book) = resolve_book(library, req).await else {
         return Ok(None);
     };
-    match library.file_owner_of_book(&book.uuid).await? {
-        Some(owner) => Ok(Some(owner)),
-        None => Err(AcquireError::Other(anyhow::anyhow!(
-            "title {} has no edition yet; rescan its account before acquiring it",
-            book.uuid
-        ))),
-    }
+    Ok(Some((
+        library.file_owner_of_book(&book.uuid).await?,
+        book.uuid,
+    )))
 }
 
 /// [`acquire_pdf_only`] against destinations whose writes are already
@@ -4858,14 +4902,13 @@ async fn download_and_store_companion_pdf(
     let pdf_key = primary_pdf_key
         .or_else(|| written_keys.first().cloned())
         .unwrap_or_default();
-    library
-        .set_pdf_status(
-            &primary_req.asin,
-            &primary_req.account_id,
-            AcquireStatus::Acquired,
-            Some(&pdf_key),
-        )
-        .await?;
+    record_pdf_status(
+        library,
+        primary_req,
+        AcquireStatus::Acquired,
+        Some(&pdf_key),
+    )
+    .await?;
 
     Ok(AcquireResult {
         asin: primary_req.asin.clone(),
@@ -4992,7 +5035,7 @@ mod tests {
     fn dummy_req(cache: &Path, job_id: Option<String>, quota: Option<u64>) -> AcquireRequest {
         AcquireRequest {
             asin: "B00TEST".into(),
-            book_uuid: None,
+            holding_id: None,
             source: "audible".into(),
             account_id: "user-1".into(),
             title: "Test".into(),
@@ -5399,16 +5442,18 @@ mod tests {
         take_library_copy(store, req, work_dir, &offer, CopyCover::Take).await
     }
 
-    /// A request for `uuid` that asks `copies` before the store and reads
-    /// what it downloads in this process.
-    fn copy_req(
+    /// A request for book `uuid`'s holding that asks `copies` before the
+    /// store and reads what it downloads in this process.
+    async fn copy_req(
+        store: &LibraryStore,
         cache: &Path,
         job: String,
         product_id: &str,
         uuid: &str,
         copies: Arc<crate::library_copies::tests::OneCopy>,
     ) -> AcquireRequest {
-        let mut req = edition_req(cache, job, product_id, "user-1", uuid);
+        let mut req = edition_req(cache, job, product_id, "user-1");
+        req.holding_id = Some(holding_of(store, uuid).await);
         req.library_copies = LibraryCopySource::new(copies)
             .read_by(Arc::new(bookclerk_media::MediaPool::in_process()));
         req
@@ -5446,7 +5491,15 @@ mod tests {
         );
         let (copy_fetches, taken) = (copy.fetched.clone(), copy.taken.clone());
         let copies = OneCopy::of(copy);
-        let req = copy_req(&cache, job.clone(), "B00COPY", &uuid, copies.clone());
+        let req = copy_req(
+            &store,
+            &cache,
+            job.clone(),
+            "B00COPY",
+            &uuid,
+            copies.clone(),
+        )
+        .await;
         let result = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -5489,7 +5542,7 @@ mod tests {
             let (copy_fetches, taken) = (copy.fetched.clone(), copy.taken.clone());
             let before = fetches.load(Ordering::SeqCst);
             let copies = OneCopy::of(copy);
-            let req = copy_req(&cache, job.clone(), &product, &uuid, copies.clone());
+            let req = copy_req(&store, &cache, job.clone(), &product, &uuid, copies.clone()).await;
             let result = acquire_book(&store, &destinations, req, &source)
                 .await
                 .unwrap();
@@ -5520,7 +5573,15 @@ mod tests {
         copy.failing = Some(0);
         let first_taken = copy.taken.clone();
         let before = fetches.load(Ordering::SeqCst);
-        let req = copy_req(&cache, job.clone(), "B00CUT", &uuid, OneCopy::of(copy));
+        let req = copy_req(
+            &store,
+            &cache,
+            job.clone(),
+            "B00CUT",
+            &uuid,
+            OneCopy::of(copy),
+        )
+        .await;
         let work_dir = cache.join("acquire").join(&uuid);
         prepare_work_dir(&store, &req, &work_dir).await.unwrap();
         assert!(fetch_from_library(&store, &req, &work_dir).await.is_none());
@@ -5532,7 +5593,15 @@ mod tests {
         );
         copy.failing = Some(0);
         let taken = copy.taken.clone();
-        let req = copy_req(&cache, job.clone(), "B00CUT", &uuid, OneCopy::of(copy));
+        let req = copy_req(
+            &store,
+            &cache,
+            job.clone(),
+            "B00CUT",
+            &uuid,
+            OneCopy::of(copy),
+        )
+        .await;
         let result = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -5545,7 +5614,7 @@ mod tests {
         let uuid = edition_book(&store, "B00NONE", "user-1", "Twin", None).await;
         let none = Arc::new(OneCopy::default());
         let before = fetches.load(Ordering::SeqCst);
-        let req = copy_req(&cache, job, "B00NONE", &uuid, none.clone());
+        let req = copy_req(&store, &cache, job, "B00NONE", &uuid, none.clone()).await;
         let result = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -5591,7 +5660,15 @@ mod tests {
         // any destination is written.
         let copy = copy_of();
         let taken = copy.taken.clone();
-        let req = copy_req(&cache, job.clone(), "B00REC", &uuid, OneCopy::of(copy));
+        let req = copy_req(
+            &store,
+            &cache,
+            job.clone(),
+            "B00REC",
+            &uuid,
+            OneCopy::of(copy),
+        )
+        .await;
         let work_dir = cache.join("acquire").join(&uuid);
         prepare_work_dir(&store, &req, &work_dir).await.unwrap();
         assert!(fetch_from_library(&store, &req, &work_dir).await.is_none());
@@ -5599,7 +5676,7 @@ mod tests {
         assert_eq!(puts.load(Ordering::SeqCst), 0);
         assert!(!work_dir.join(LIBRARY_COPY_DIR).exists());
 
-        let req = copy_req(&cache, job, "B00REC", &uuid, OneCopy::of(copy_of()));
+        let req = copy_req(&store, &cache, job, "B00REC", &uuid, OneCopy::of(copy_of())).await;
         let result = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -5649,7 +5726,7 @@ mod tests {
                 ("Twin.pdf", FileRole::Pdf, b"%PDF-1.4 companion".to_vec()),
             ],
         );
-        let mut req = copy_req(&cache, job, "B00PDF", &uuid, OneCopy::of(copy));
+        let mut req = copy_req(&store, &cache, job, "B00PDF", &uuid, OneCopy::of(copy)).await;
         req.options.download_pdf = true;
         let result = acquire_book(&store, &destinations, req, &pdf_source)
             .await
@@ -5711,7 +5788,7 @@ mod tests {
             ],
         );
         let copy_fetches = copy.fetched.clone();
-        let mut req = copy_req(&cache, job, "B00NOPDF", &uuid, OneCopy::of(copy));
+        let mut req = copy_req(&store, &cache, job, "B00NOPDF", &uuid, OneCopy::of(copy)).await;
         req.options.download_pdf = false;
         let result = acquire_book(&store, &destinations, req, &source)
             .await
@@ -5758,11 +5835,15 @@ mod tests {
             }
         };
         // What the library says of its copy, and the file it sends.
+        let holding = holding_of(&store, &uuid).await;
         let compare = |claims: (Option<u32>, bool), audio: Vec<u8>, name: &'static str| {
             let mut copy = MemoryCopy::new(Some("libro"), vec![(name, FileRole::Audio, audio)]);
             copy.claims = claims;
             let (fetched, taken) = (copy.fetched.clone(), copy.taken.clone());
-            let mut req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+            let mut req = edition_req(&cache, job.clone(), "B00CMP", "user-1");
+            req.holding_id = Some(holding.clone());
+            req.library_copies = LibraryCopySource::new(OneCopy::of(copy))
+                .read_by(Arc::new(bookclerk_media::MediaPool::in_process()));
             // Files are kept as delivered, so a FLAC copy can be stored.
             req.options.format = bookclerk_config::OutputFormat::None;
             (req, fetched, taken)
@@ -5812,7 +5893,15 @@ mod tests {
             );
             copy.claims = (Some(700), true);
             let copy_fetches = copy.fetched.clone();
-            let mut req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+            let mut req = copy_req(
+                &store,
+                &cache,
+                job.clone(),
+                "B00CMP",
+                &uuid,
+                OneCopy::of(copy),
+            )
+            .await;
             req.options.format = bookclerk_config::OutputFormat::None;
             let offer = offered_copy(&store, &req).await.unwrap();
             let mut own_fetch = own(&work_dir);
@@ -5943,7 +6032,15 @@ mod tests {
         );
         copy.claims = (Some(700), true);
         copy.refuses_taken = true;
-        let mut req = copy_req(&cache, job.clone(), "B00CMP", &uuid, OneCopy::of(copy));
+        let mut req = copy_req(
+            &store,
+            &cache,
+            job.clone(),
+            "B00CMP",
+            &uuid,
+            OneCopy::of(copy),
+        )
+        .await;
         req.options.format = bookclerk_config::OutputFormat::None;
         let offer = offered_copy(&store, &req).await.unwrap();
         let own_fetch = own(&work_dir);
@@ -6160,7 +6257,7 @@ mod tests {
             let book_uuid_for_record = book.uuid.clone();
             let mut req = dummy_req(&cache, Some(id.clone()), None);
             req.asin = "B00CRASH".into();
-            req.book_uuid = Some(book.uuid);
+            req.holding_id = Some(holding_of(&store, &book.uuid).await);
             req.title = "Crash".into();
             req.options.format = bookclerk_config::OutputFormat::None;
             req.options.fixup_metadata = false;
@@ -6221,7 +6318,7 @@ mod tests {
 
         let mut req = dummy_req(&cache, Some(job_id.clone()), None);
         req.asin = "B00CRASH".into();
-        req.book_uuid = Some(book_uuid);
+        req.holding_id = Some(holding_of(&store, &book_uuid).await);
         req.title = "Crash".into();
         req.options.format = bookclerk_config::OutputFormat::None;
         req.options.fixup_metadata = false;
@@ -6246,6 +6343,16 @@ mod tests {
             .unwrap());
     }
 
+    /// The account holding of book `uuid`, which acquire requests name.
+    async fn holding_of(store: &LibraryStore, uuid: &str) -> String {
+        store
+            .title_holding_of_book(uuid)
+            .await
+            .unwrap()
+            .expect("the upsert resolves the book to a holding")
+            .holding_id
+    }
+
     /// Upserts `product_id` as `title` on `account` (creating the account)
     /// and returns the book's uuid.
     async fn edition_book(
@@ -6264,19 +6371,14 @@ mod tests {
         store.upsert_book(&book).await.unwrap().uuid
     }
 
-    /// A request for `uuid` (`product_id` on `account`) named by `<title>`
+    /// A request for `product_id` on `account` named by `<title>`
     /// alone, so two editions of one title plan the same key.
-    fn edition_req(
-        cache: &Path,
-        job: String,
-        product_id: &str,
-        account: &str,
-        uuid: &str,
-    ) -> AcquireRequest {
+    fn edition_req(cache: &Path, job: String, product_id: &str, account: &str) -> AcquireRequest {
         let mut req = dummy_req(cache, Some(job), None);
         req.asin = product_id.into();
         req.account_id = account.into();
-        req.book_uuid = Some(uuid.into());
+        // No holding: written by product id and account, as a request
+        // without a known holding is.
         req.title = "Twin".into();
         req
     }
@@ -6482,7 +6584,15 @@ mod tests {
             )],
         );
         let taken = copy.taken.clone();
-        let mut req = copy_req(&cache, job.clone(), "B00BAD", &uuid, OneCopy::of(copy));
+        let mut req = copy_req(
+            &store,
+            &cache,
+            job.clone(),
+            "B00BAD",
+            &uuid,
+            OneCopy::of(copy),
+        )
+        .await;
         req.options = destinations.primary_destination().options.clone();
         let result = acquire_book(&store, &destinations, req, &source)
             .await
@@ -6515,7 +6625,7 @@ mod tests {
             pdf_url: None,
             mp3: true,
         };
-        let uuid = edition_book(&store, "B00BADOTHER", "user-1", "Twin", None).await;
+        edition_book(&store, "B00BADOTHER", "user-1", "Twin", None).await;
         let bad = || {
             let mut copy = MemoryCopy::new(
                 Some("libro"),
@@ -6527,7 +6637,7 @@ mod tests {
         // Asked once before the store download and once after it.
         let (first, second) = (bad(), bad());
         let taken = second.taken.clone();
-        let mut req = edition_req(&cache, job, "B00BADOTHER", "user-1", &uuid);
+        let mut req = edition_req(&cache, job, "B00BADOTHER", "user-1");
         req.library_copies = LibraryCopySource::new(QueuedCopies::of(vec![first, second]))
             .read_by(Arc::new(bookclerk_media::MediaPool::in_process()));
         req.options = destinations.primary_destination().options.clone();
@@ -6610,7 +6720,7 @@ mod tests {
         second.claims = (Some(98), false);
         let (second_fetches, taken) = (second.fetched.clone(), second.taken.clone());
         let copies = QueuedCopies::of(vec![first, second]);
-        let mut req = edition_req(&cache, job, "B00WIN", "user-1", &uuid);
+        let mut req = edition_req(&cache, job, "B00WIN", "user-1");
         req.library_copies = LibraryCopySource::new(copies.clone())
             .read_by(Arc::new(bookclerk_media::MediaPool::in_process()));
         req.options = destinations.primary_destination().options.clone();
@@ -6812,7 +6922,7 @@ mod tests {
     #[tokio::test]
     async fn a_book_no_destination_takes_fails_before_it_is_fetched() {
         let store = test_store().await;
-        let uuid = edition_book(&store, "B00NONE", "user-1", "Twin", None).await;
+        edition_book(&store, "B00NONE", "user-1", "Twin", None).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         tokio::fs::create_dir_all(&cache).await.unwrap();
@@ -6827,7 +6937,7 @@ mod tests {
         };
         let job = job_id(&store).await;
 
-        let mut req = edition_req(&cache, job.clone(), "B00NONE", "user-1", &uuid);
+        let mut req = edition_req(&cache, job.clone(), "B00NONE", "user-1");
         req.placement = Some(audible_placement());
         let err = acquire_book(&store, &destinations, req.clone(), &source)
             .await
@@ -6853,7 +6963,7 @@ mod tests {
     #[tokio::test]
     async fn a_book_is_written_only_to_the_destinations_that_take_it() {
         let store = test_store().await;
-        let uuid = edition_book(&store, "B00SOME", "user-1", "Twin", None).await;
+        edition_book(&store, "B00SOME", "user-1", "Twin", None).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         tokio::fs::create_dir_all(&cache).await.unwrap();
@@ -6877,7 +6987,7 @@ mod tests {
         };
         let job = job_id(&store).await;
 
-        let mut req = edition_req(&cache, job, "B00SOME", "user-1", &uuid);
+        let mut req = edition_req(&cache, job, "B00SOME", "user-1");
         req.placement = Some(audible_placement());
         let result = acquire_book(&store, &destinations, req, &source)
             .await
@@ -7036,7 +7146,7 @@ mod tests {
     #[tokio::test]
     async fn copies_that_would_share_a_folder_are_refused_before_storing() {
         let store = test_store().await;
-        let uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -7052,7 +7162,7 @@ mod tests {
             .collect();
         copies[0].destinations.items[0].options.folder_template = Some(label);
         let job = job_id(&store).await;
-        let mut req = edition_req(&cache, job, "B00SAME", "user-1", &uuid);
+        let mut req = edition_req(&cache, job, "B00SAME", "user-1");
         req.options = destinations.primary_destination().options.clone();
         let fetch = PlainFetch {
             parts: Vec::new(),
@@ -7115,7 +7225,7 @@ mod tests {
             .collect();
         assert_eq!(copies.len(), 2);
         let job = job_id(&store).await;
-        let mut req = edition_req(&cache, job, "B00PDFCOPY", "user-1", &uuid);
+        let mut req = edition_req(&cache, job, "B00PDFCOPY", "user-1");
         req.options = destinations.primary_destination().options.clone();
         pin_call_number(&mut req, Some(&owner));
         let work_dir = cache.join("acquire").join(&uuid);
@@ -7228,7 +7338,7 @@ mod tests {
             })
             .collect();
         let job = job_id(&store).await;
-        let mut req = edition_req(&cache, job, "B00COPY", "user-1", &uuid);
+        let mut req = edition_req(&cache, job, "B00COPY", "user-1");
         req.options = destinations.primary_destination().options.clone();
         pin_call_number(&mut req, Some(&owner));
         let work_dir = cache.join("acquire").join(&uuid);
@@ -7372,7 +7482,7 @@ mod tests {
             })
             .collect();
         let job = job_id(&store).await;
-        let mut req = edition_req(&cache, job, "B00COPY", "user-1", &uuid);
+        let mut req = edition_req(&cache, job, "B00COPY", "user-1");
         req.options = destinations.primary_destination().options.clone();
         pin_call_number(&mut req, Some(&owner));
         let work_dir = cache.join("acquire").join(&uuid);
@@ -7547,7 +7657,7 @@ mod tests {
     #[tokio::test]
     async fn a_book_whose_every_copy_is_refused_fails_before_it_is_fetched() {
         let store = test_store().await;
-        let uuid = edition_book(&store, "B00NOCOPY", "user-1", "Twin", None).await;
+        edition_book(&store, "B00NOCOPY", "user-1", "Twin", None).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         tokio::fs::create_dir_all(&cache).await.unwrap();
@@ -7561,7 +7671,7 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let mut req = edition_req(&cache, job, "B00NOCOPY", "user-1", &uuid);
+        let mut req = edition_req(&cache, job, "B00NOCOPY", "user-1");
         req.placement = Some(audible_placement());
         let err = acquire_book(&store, &destinations, req, &source)
             .await
@@ -7585,7 +7695,7 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job, "B00ONE", "user-1", &uuid);
+        let req = edition_req(&cache, job, "B00ONE", "user-1");
         let result = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -7643,7 +7753,7 @@ mod tests {
         };
 
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1");
         let result = acquire_book(&store, &destinations, req, &source)
             .await
             .expect("the first stored copy is enough");
@@ -7665,7 +7775,7 @@ mod tests {
         // there from the stored copy, though the title is acquired already.
         std::fs::remove_file(&second_root).unwrap();
         std::fs::create_dir_all(&second_root).unwrap();
-        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1");
         let again = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -7692,7 +7802,7 @@ mod tests {
         );
 
         // With every copy stored, a third acquire fetches and writes nothing.
-        let req = edition_req(&cache, job, "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job, "B00SOME", "user-1");
         let puts_before = second_puts.load(Ordering::SeqCst);
         assert!(
             acquire_book(&store, &destinations, req, &source)
@@ -7720,7 +7830,7 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1");
         let first = acquire_book(&store, &local_only, req, &source)
             .await
             .unwrap();
@@ -7742,7 +7852,7 @@ mod tests {
             destinations.items.push(extra);
         }
         destinations.multi_destination = MultiDestinationMode::SyncMissing;
-        let req = edition_req(&cache, job, "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job, "B00SOME", "user-1");
         let again = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -7791,7 +7901,7 @@ mod tests {
         };
         let local_only = title_named_destinations(&tmp.path().join("local"), Arc::default());
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1");
         let first = acquire_book(&store, &local_only, req, &source)
             .await
             .unwrap();
@@ -7807,7 +7917,7 @@ mod tests {
         std::fs::remove_dir_all(&broken_root).unwrap();
         std::fs::write(&broken_root, b"not a folder").unwrap();
 
-        let req = edition_req(&cache, job, "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job, "B00SOME", "user-1");
         let again = acquire_book(&store, &destinations, req, &source)
             .await
             .expect("the stored copy keeps the title acquired");
@@ -7846,7 +7956,7 @@ mod tests {
         });
         let local_only = title_named_destinations(&tmp.path().join("local"), Arc::default());
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job.clone(), "B00SOME", "user-1");
         acquire_book(&store, &local_only, req, &source)
             .await
             .unwrap();
@@ -7859,7 +7969,7 @@ mod tests {
         destinations.items.push(second);
         destinations.multi_destination = MultiDestinationMode::RefetchMissing;
 
-        let req = edition_req(&cache, job, "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job, "B00SOME", "user-1");
         let err = acquire_book(&store, &destinations, req, &source)
             .await
             .expect_err("the throttled refetch is the job's to act on");
@@ -7890,7 +8000,7 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job, "B00SOME", "user-1", &uuid);
+        let req = edition_req(&cache, job, "B00SOME", "user-1");
         assert!(acquire_book(&store, &destinations, req, &source)
             .await
             .is_err());
@@ -7918,12 +8028,12 @@ mod tests {
         };
         let job = job_id(&store).await;
 
-        let req = edition_req(&cache, job.clone(), "B00SAME", "user-1", &first_uuid);
+        let req = edition_req(&cache, job.clone(), "B00SAME", "user-1");
         let first = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
         assert!(!first.matched_existing);
-        let req = edition_req(&cache, job.clone(), "B00SAME", "user-2", &second_uuid);
+        let req = edition_req(&cache, job.clone(), "B00SAME", "user-2");
         let second = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -8007,7 +8117,7 @@ mod tests {
         };
         let job = job_id(&store).await;
         for (product, uuid) in [("B00ONE", &first_uuid), ("B00TWO", &second_uuid)] {
-            let req = edition_req(&cache, job.clone(), product, "user-1", uuid);
+            let req = edition_req(&cache, job.clone(), product, "user-1");
             let acquired = acquire_book(&store, &destinations, req, &source)
                 .await
                 .unwrap();
@@ -8057,7 +8167,7 @@ mod tests {
     #[tokio::test]
     async fn another_editions_file_at_the_planned_name_is_not_adopted() {
         let store = test_store().await;
-        let first_uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
+        edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
         let second_uuid = edition_book(&store, "B00TWO", "user-1", "Twin", Some("Ada")).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
@@ -8071,12 +8181,12 @@ mod tests {
         };
         let job = job_id(&store).await;
         // Two editions whose short ids collide plan one name.
-        let mut first = edition_req(&cache, job.clone(), "B00ONE", "user-1", &first_uuid);
+        let mut first = edition_req(&cache, job.clone(), "B00ONE", "user-1");
         first.call_number = Some("samesame".into());
         acquire_book(&store, &destinations, first, &source)
             .await
             .unwrap();
-        let mut second = edition_req(&cache, job, "B00TWO", "user-1", &second_uuid);
+        let mut second = edition_req(&cache, job, "B00TWO", "user-1");
         second.call_number = Some("samesame".into());
         let refused = acquire_book(&store, &destinations, second, &source).await;
         assert!(
@@ -8126,7 +8236,7 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job, "B00LONG", "user-1", &uuid);
+        let req = edition_req(&cache, job, "B00LONG", "user-1");
         let refused = acquire_book(&store, &destinations, req, &source).await;
         assert!(refused.is_err(), "an unresolved title must not acquire");
         assert_eq!(fetches.load(Ordering::SeqCst), 0);
@@ -8136,7 +8246,7 @@ mod tests {
     #[tokio::test]
     async fn templates_without_the_call_number_acquire_nothing() {
         let store = test_store().await;
-        let uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
+        edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         tokio::fs::create_dir_all(&cache).await.unwrap();
@@ -8150,7 +8260,7 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job, "B00ONE", "user-1", &uuid);
+        let req = edition_req(&cache, job, "B00ONE", "user-1");
         let err = acquire_book(&store, &destinations, req.clone(), &source)
             .await
             .expect_err("a template that can share a path is refused");
@@ -8168,7 +8278,7 @@ mod tests {
     #[tokio::test]
     async fn a_name_another_edition_holds_is_never_overwritten() {
         let store = test_store().await;
-        let first_uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
+        edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
         let second_uuid = edition_book(&store, "B00TWO", "user-1", "Twin", None).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
@@ -8183,7 +8293,7 @@ mod tests {
         // Another edition's file at the first edition's planned name (two
         // edition ids that share their short id).
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job, "B00ONE", "user-1", &first_uuid);
+        let req = edition_req(&cache, job, "B00ONE", "user-1");
         let mut planned_req = req.clone();
         planned_req.options = destinations.primary_destination().options.clone();
         let planned = planned_storage_key(&store, &planned_req).await;
@@ -8212,8 +8322,8 @@ mod tests {
     #[tokio::test]
     async fn a_sibling_whose_file_is_gone_is_fetched_again() {
         let store = test_store().await;
-        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
-        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         let dest = tmp.path().join("dest");
@@ -8226,14 +8336,14 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job.clone(), "B00SAME", "user-1", &first_uuid);
+        let req = edition_req(&cache, job.clone(), "B00SAME", "user-1");
         let first = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
         tokio::fs::remove_file(dest.join(&first.storage_key))
             .await
             .unwrap();
-        let req = edition_req(&cache, job, "B00SAME", "user-2", &second_uuid);
+        let req = edition_req(&cache, job, "B00SAME", "user-2");
         let second = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -8258,7 +8368,7 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job, "B00SAME", "user-1", &first_uuid);
+        let req = edition_req(&cache, job, "B00SAME", "user-1");
         let first = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -8296,7 +8406,7 @@ mod tests {
     #[tokio::test]
     async fn a_sibling_named_differently_per_destination_is_shared() {
         let store = test_store().await;
-        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
         let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
@@ -8314,7 +8424,7 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job, "B00SAME", "user-1", &first_uuid);
+        let req = edition_req(&cache, job, "B00SAME", "user-1");
         let first = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -8353,7 +8463,7 @@ mod tests {
             pdf_url: None,
         };
         let job = job_id(&store).await;
-        let req = edition_req(&cache, job, "B00SAME", "user-1", &first_uuid);
+        let req = edition_req(&cache, job, "B00SAME", "user-1");
         let first = acquire_book(&store, &destinations, req, &source)
             .await
             .unwrap();
@@ -8401,8 +8511,8 @@ mod tests {
         let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let destinations = title_named_destinations(&dest, puts);
         let job = job_id(&store).await;
-        let first_req = edition_req(&cache, job.clone(), "B00SAME", "user-1", &first_uuid);
-        let second_req = edition_req(&cache, job, "B00SAME", "user-2", &second_uuid);
+        let first_req = edition_req(&cache, job.clone(), "B00SAME", "user-1");
+        let second_req = edition_req(&cache, job, "B00SAME", "user-2");
 
         // Nothing stored yet.
         assert_eq!(
@@ -8486,7 +8596,7 @@ mod tests {
 
         let mut req = dummy_req(&cache, Some(id), Some(16));
         req.asin = "B00PDFQ".into();
-        req.book_uuid = Some(book.uuid);
+        req.holding_id = Some(holding_of(&store, &book.uuid).await);
         req.title = "Pdf Quota".into();
         let destinations = counting_destinations_with(&dest_root, puts.clone(), true);
         let source = CountingSource {
@@ -8612,7 +8722,7 @@ mod tests {
 
         let mut req = dummy_req(&cache, Some(id), Some(16));
         req.asin = "B00PDFT".into();
-        req.book_uuid = Some(book.uuid);
+        req.holding_id = Some(holding_of(&store, &book.uuid).await);
         req.title = "Pdf Throttle".into();
         let destinations = counting_destinations_with(&dest_root, puts.clone(), true);
         let source = ThrottlesAfterFirst(CountingSource {

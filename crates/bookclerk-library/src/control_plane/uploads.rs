@@ -53,7 +53,9 @@ use crate::entities::{books, edition_acquisitions, node_upload_sessions};
 use crate::error::{LibraryError, Result};
 use crate::models::{is_downloadable, AcquireStatus, JobRecord};
 use crate::models::{JobKind, JobState};
-use crate::store::event_outbox::{book_acquired_spec, prepare_publish_domain_event};
+use crate::store::event_outbox::{
+    book_acquired_spec, prepare_publish_domain_event, AcquireEventTitle,
+};
 use crate::store::{AcquireTitle, EditionFile, FileOwner, FileProbe, FileRole, LibraryStore};
 
 /// How long a granted upload's token is accepted past its latest
@@ -1736,7 +1738,6 @@ async fn commit_upload_checked(
             .map_err(LibraryError::Orm)?,
         None => None,
     };
-    let edition = title.as_ref().map(|t| t.edition_id.clone());
     let now = stamp(Utc::now());
     let gate_sql = "EXISTS (SELECT 1 FROM node_upload_sessions \
                      WHERE upload_id = ? AND state = 'committed' AND committed_at = ?)";
@@ -1957,12 +1958,12 @@ async fn commit_upload_checked(
                 binds,
             ));
         }
-        // `book_acquired` names the flat row while `books` exists.
-        if let Some(model) = &model {
+        // `book_acquired` names the uploading holding.
+        {
             let event = prepare_publish_domain_event(book_acquired_spec(
-                model,
+                AcquireEventTitle::of_title(title),
                 Some(&session.primary_key),
-                edition.as_deref(),
+                Some(&title.edition_id),
             ))?;
             let mut binds = vec![
                 text(&event.id),
