@@ -148,18 +148,19 @@ fn write_failed(route: &str, err: &LibraryError) -> PlaybackError {
 
 /// The signed-in library user, or the 403 a session without one gets.
 ///
-/// In the desktop window ([`AppState::in_window`]) the listener is always
-/// the library's Owner (the earliest active one), whoever the request
-/// acts as: the window is the person at this computer, and their
-/// listening state stays theirs while elevated to the operator or
-/// impersonating a patron. A daemon with a listener never does this, so
-/// the operator token there still has nothing to play as.
+/// In the desktop window ([`AppState::in_window`]) the listener is the
+/// patron the window is signed in as, whoever the request acts as: while
+/// that patron is elevated to the operator, or impersonating someone from
+/// the elevation, their own listening state stays theirs
+/// (`elevated_from_user_id`). Before the library has an Owner the window
+/// is the operator token and has nothing to play as. A daemon with a
+/// listener plays as the caller, so impersonation there plays as the
+/// person impersonated, as every other per-person route does.
 ///
 /// # Errors
 ///
-/// A 403 for the operator token or a session linked to no library user
-/// (and, in the window, a library with no active Owner); a 500 when the
-/// window's Owner cannot be read.
+/// A 403 for the operator token, an operator session nobody elevated
+/// from (in the window), or a session linked to no library user.
 async fn listener(state: &AppState, headers: &HeaderMap) -> Result<i64, PlaybackError> {
     let no_user = || {
         refuse(
@@ -168,15 +169,13 @@ async fn listener(state: &AppState, headers: &HeaderMap) -> Result<i64, Playback
         )
     };
     if state.in_window.get().is_some() {
-        // The desktop window always plays as the library's Owner, whether
-        // it acts as the operator, elevated or impersonating someone: the
-        // listening state belongs to the person at this machine.
-        let library = state.library_snapshot().await;
-        return library
-            .first_active_owner_id()
-            .await
-            .map_err(|err| read_failed("playback listener", &err))?
-            .ok_or_else(no_user);
+        // The window plays as its own patron even while elevated or
+        // impersonating: the listening state belongs to the person at
+        // this computer, who started the elevation.
+        let auth = state.auth_snapshot().await;
+        if let Some(op) = crate::auth::resolve_operator_session(state, &auth, headers).await {
+            return op.elevated_from_user_id.ok_or_else(no_user);
+        }
     }
     caller_user_id(state, headers).await.ok_or_else(no_user)
 }

@@ -112,12 +112,11 @@ element:
    their buttons back to the page: MPRIS on Linux, the media overlay on
    Windows and Now Playing on macOS.
 
-The window's requests carry the operator token, which has no user, so the
-window keeps its listening state as the library's earliest active Owner.
-
-> [!NOTE]
-> Using the Owner is a stopgap until the desktop app gets its own
-> sign-in design.
+The window listens as the patron it is signed in as. While that patron
+is elevated to the operator, or impersonating someone from the
+elevation, the window still keeps their own listening state, because it
+is the person at the computer who is listening. Before the library has
+an Owner the window is the operator and has nothing to play as.
 
 ## Events and live updates
 

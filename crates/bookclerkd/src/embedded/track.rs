@@ -10,14 +10,10 @@
 //! session, this node, the patron scope, the files digest) apply to every
 //! byte the worker reads, exactly as for a browser.
 
-use std::sync::Arc;
-
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
 use bookclerk_library::parse_track_path;
 use bookclerk_media::{ByteSpan, PcmStream, RangeSource};
-
-use crate::api::AppState;
 
 /// Why a track cannot be played, in words for the listener.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,8 +50,9 @@ impl std::error::Error for TrackError {}
 struct HostRoute {
     /// The router the window's requests go to.
     app: Router,
-    /// The host's state, for the current operator token.
-    state: Arc<AppState>,
+    /// What the track's reads present: the window's credential when the
+    /// track was opened.
+    credential: super::OwnedCredential,
     /// The track's stream path.
     path: String,
 }
@@ -67,9 +64,6 @@ impl HostRoute {
     ///
     /// The status, the `Content-Range` value if any, and the body.
     async fn get(&self, range: &str) -> (StatusCode, Option<String>, Vec<u8>) {
-        let auth = self.state.auth_snapshot().await;
-        let bearer = auth.enabled.then(|| auth.token.clone());
-        drop(auth);
         let request = Request::builder()
             .method(Method::GET)
             .uri(&self.path)
@@ -79,7 +73,7 @@ impl HostRoute {
         let Ok(request) = request else {
             return (StatusCode::BAD_REQUEST, None, Vec::new());
         };
-        let response = super::serve(self.app.clone(), bearer.as_deref(), request).await;
+        let (response, _) = super::serve(self.app.clone(), self.credential.borrow(), request).await;
         let content_range = response
             .headers()
             .get(header::CONTENT_RANGE)
@@ -125,7 +119,7 @@ pub(crate) fn content_range_size(value: &str) -> Option<u64> {
 /// # Arguments
 ///
 /// * `app` - The host's router.
-/// * `state` - The host's state.
+/// * `credential` - What every read presents (the window's credential).
 /// * `path` - The track's stream path, as the session listed it.
 /// * `start_ms` - Where to start, in milliseconds into the track.
 ///
@@ -137,7 +131,7 @@ pub(crate) fn content_range_size(value: &str) -> Option<u64> {
 /// decode the track.
 pub(crate) async fn open_track(
     app: Router,
-    state: Arc<AppState>,
+    credential: super::OwnedCredential,
     path: &str,
     start_ms: u64,
 ) -> Result<PcmStream, TrackError> {
@@ -148,7 +142,7 @@ pub(crate) async fn open_track(
         .ok_or(TrackError::NotATrack)?;
     let route = HostRoute {
         app,
-        state,
+        credential,
         path: format!(
             "/api/playback/sessions/{}/tracks/{}",
             parsed.session_id, parsed.index

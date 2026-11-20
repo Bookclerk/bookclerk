@@ -165,9 +165,9 @@ use WSOLA time-stretching and the rate conversion uses a windowed-sinc
 resampler, both in a small engine crate (`bookclerk-player-engine`) with
 no I/O. The page's stage B player drives that engine as if it were an
 audio element, so the timeline, sync and bookmark logic exist once. The
-system's media controls come from `souvlaki`. Until the desktop app has
-its own sign-in, the window listens as the library's earliest active
-Owner.
+system's media controls come from `souvlaki`. The window listens as the
+patron it is signed in as, and keeps doing so while that patron is
+elevated or impersonating someone from the elevation.
 
 ## Consequences
 

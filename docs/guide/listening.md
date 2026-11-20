@@ -96,7 +96,7 @@ while the connection was down.
   such as Apple Lossless, plays only in browsers that support that kind.
 - **There is no Play button.** The operator account is not a person in
   the library and has nothing to play as. Sign in as yourself. In the
-  desktop window you listen as the library's Owner.
+  desktop window you keep listening as yourself while you are elevated.
 
 ## Next steps
 
