@@ -3528,7 +3528,17 @@ async fn base_folder_naming_ctx(
     let Some(parent_asin) = episode.series_asin.as_deref() else {
         return episode;
     };
-    let Ok(Some(parent)) = library.get_book(parent_asin, &req.account_id).await else {
+    let parent = match library
+        .acquire_titles_named(Some(&req.account_id), parent_asin)
+        .await
+    {
+        Ok(titles) => titles.into_iter().next(),
+        Err(err) => {
+            tracing::warn!(asin = %req.asin, error = %err, "could not read the podcast parent");
+            None
+        }
+    };
+    let Some(parent) = parent else {
         return episode;
     };
     NamingContext {
@@ -3539,7 +3549,7 @@ async fn base_folder_naming_ctx(
         narrators: parent.narrators.clone(),
         series: parent.series.clone(),
         series_index: None,
-        series_asin: parent.series_asin.clone(),
+        series_asin: parent.series_product_id.clone(),
         year_published: parent.published_at.map(|dt| dt.year()),
         account_id: Some(parent.account_id.clone()),
         locale: Some(parent.marketplace.clone()),
@@ -3547,10 +3557,10 @@ async fn base_folder_naming_ctx(
         categories: parent.categories.clone(),
         length_minutes: parent.length_minutes,
         is_abridged: parent.is_abridged,
-        content_kind: Some(parent.content_kind.clone()),
+        content_kind: Some(parent.content_kind.to_string()),
         call_number: match &req.parent_call_number {
             Some(id) => Some(id.clone()),
-            None => call_number_or_none(library, &parent.uuid).await,
+            None => bookclerk_library::call_number(&parent.edition_id),
         },
         ..Default::default()
     }
@@ -3574,19 +3584,6 @@ pub async fn call_number_of(
         .edition_of_book(book_uuid)
         .await?
         .and_then(|edition| bookclerk_library::call_number(&edition)))
-}
-
-/// [`call_number_of`] for naming outside an acquire's pinned id
-/// ([`pin_call_number`]): a planned key a caller only compares (a preview,
-/// a scan pattern). A failed read is logged and names by product id; an
-/// acquire never reaches here for its own title, whose id it pinned.
-async fn call_number_or_none(library: &LibraryStore, book_uuid: &str) -> Option<String> {
-    call_number_of(library, book_uuid)
-        .await
-        .unwrap_or_else(|err| {
-            tracing::warn!(error = %err, "could not read a title's edition for naming");
-            None
-        })
 }
 
 /// The folder and file naming contexts of `req`. Both carry the edition's
@@ -3910,10 +3907,9 @@ async fn check_edition_paths(
     destinations: &AcquireDestinations,
     req: &AcquireRequest,
 ) -> Result<()> {
-    let owner = match resolve_book(library, req).await {
-        Some(book) => library.file_owner_of_book(&book.uuid).await?,
-        None => None,
-    };
+    let owner = owner_of_request(library, req)
+        .await?
+        .and_then(|(owner, _)| owner);
     for item in &destinations.items {
         let dest_req = request_for_destination(req, item);
         let templates = dest_req.options.naming_templates();
@@ -4097,16 +4093,43 @@ async fn file_owner_of_request(
     library: &LibraryStore,
     req: &AcquireRequest,
 ) -> Result<Option<FileOwner>> {
+    match owner_of_request(library, req).await? {
+        None => Ok(None),
+        Some((Some(owner), _)) => Ok(Some(owner)),
+        Some((None, title)) => Err(AcquireError::Other(anyhow::anyhow!(
+            "title {title} has no edition yet; rescan its account before acquiring it"
+        ))),
+    }
+}
+
+/// The edition that owns `req`'s files, found through its account holding
+/// when known, otherwise through the title its product id names.
+///
+/// # Returns
+///
+/// `None` when the title is not in the library; otherwise the owner
+/// (`None` when the title has no edition yet) and the id it was found by.
+///
+/// # Errors
+///
+/// Returns an error when the library lookup fails.
+async fn owner_of_request(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+) -> Result<Option<(Option<FileOwner>, String)>> {
+    if let Some(holding) = req.holding_id.as_deref().filter(|id| !id.is_empty()) {
+        return Ok(library
+            .file_owner_of_holding(holding)
+            .await?
+            .map(|owner| (Some(owner), holding.to_string())));
+    }
     let Some(book) = resolve_book(library, req).await else {
         return Ok(None);
     };
-    match library.file_owner_of_book(&book.uuid).await? {
-        Some(owner) => Ok(Some(owner)),
-        None => Err(AcquireError::Other(anyhow::anyhow!(
-            "title {} has no edition yet; rescan its account before acquiring it",
-            book.uuid
-        ))),
-    }
+    Ok(Some((
+        library.file_owner_of_book(&book.uuid).await?,
+        book.uuid,
+    )))
 }
 
 /// [`acquire_pdf_only`] against destinations whose writes are already
