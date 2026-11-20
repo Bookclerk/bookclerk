@@ -512,6 +512,8 @@ async fn token(
     match form.grant_type.as_str() {
         "authorization_code" => token_authorization_code(&state, &headers, &form).await,
         "refresh_token" => token_refresh(&state, &headers, &form).await,
+        // RFC 6749 section 3.2: an empty parameter counts as omitted.
+        "" => Err(TokenError::invalid_request("The grant_type is required.")),
         _ => Err(TokenError::new(
             TokenErrorCode::UnsupportedGrantType,
             "Only authorization_code and refresh_token are supported.",
@@ -2567,6 +2569,12 @@ mod tests {
         let (state, _library) = oidc_test_state().await;
         let app = crate::api::router(state, None);
         for (body, content_type, status, error) in [
+            (
+                "grant_type=&code=c",
+                "application/x-www-form-urlencoded",
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
             (
                 "grant_type=password&username=a&password=b",
                 "application/x-www-form-urlencoded",

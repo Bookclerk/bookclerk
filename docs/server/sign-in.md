@@ -406,6 +406,11 @@ session themselves (elevation, passwords, users, sessions, passkeys, the
 authenticator app, the profile and linked sign-in identities) answer the
 same way.
 
+> [!NOTE]
+> A request that carries the operator token still goes ahead when it also
+> carries a portal cookie that cannot be checked: deleting a user and
+> setting a user's password do not wait on the portal session.
+
 ## Client routes
 
 The web app keeps the address bar in step with the screen:

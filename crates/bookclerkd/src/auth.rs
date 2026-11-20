@@ -3663,22 +3663,30 @@ pub async fn delete_user(
         .flatten()
         .and_then(|identity| identity.user_id);
     let is_self = portal_self_id == Some(user_id);
+    // Authorize before reading the target, so a caller whose sign-in could
+    // not be checked gets the session-check refusal rather than a 404 or 500
+    // from the target read, and a caller without rights learns nothing about
+    // which users exist.
+    let provisioner = match authorize_provisioner(&state, &auth, &headers, &library).await {
+        Ok(actor) => Some(actor),
+        Err(CallerRefusal::Status(StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED)) if is_self => {
+            None
+        }
+        Err(other) => return Err(other),
+    };
     let target = library
         .get_user(user_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let actor = match authorize_provisioner(&state, &auth, &headers, &library).await {
-        Ok(actor) => {
+    let actor = match provisioner {
+        Some(actor) => {
             if !actor.can_manage_target(target.role, is_self) {
                 return Err(StatusCode::FORBIDDEN.into());
             }
             actor.audit_actor()
         }
-        Err(CallerRefusal::Status(StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED)) if is_self => {
-            format!("user:{user_id}")
-        }
-        Err(other) => return Err(other),
+        None => format!("user:{user_id}"),
     };
     match library.delete_user(user_id).await {
         Ok(()) => {
@@ -5694,8 +5702,12 @@ pub(crate) mod tests {
             .to_str()
             .unwrap()
             .starts_with("text/html"));
-        // The operator token still deletes a user while the portal lookup
-        // fails, even with a stale portal cookie in the request.
+        // The operator token still gets past authorization while the portal
+        // lookup fails, even with a stale portal cookie in the request.
+        // Authorization runs before the target read, so the 404 for a missing
+        // user (rather than the 503) shows the operator was let through. A
+        // real deletion cannot run here: it also clears the dropped
+        // `portal_sessions` table.
         let res = app
             .clone()
             .oneshot(
