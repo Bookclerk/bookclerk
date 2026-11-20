@@ -82,7 +82,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends capnproto libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev libfuse2
+          sudo apt-get install -y --no-install-recommends capnproto libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev libasound2-dev libfuse2
 
       - name: Install capnproto (macOS)
         if: runner.os == 'macOS'

@@ -82,12 +82,26 @@ network can reach this host's web API.
   return (to `http://localhost/join/callback` or
   `http://localhost/clerk/callback`) is handed to the app scheme. Navigation
   anywhere else is refused.
-- The page may call one Tauri command, `live`, which takes nothing from the
-  page but its channel. The capability in
-  `crates/bookclerk-desktop/capabilities/main.json` allows it for the main
-  window's own pages only, so the library's sign-in pages, which are remote,
-  can't call it, and the command itself checks the calling webview and page
-  again before it starts the feed.
+- The page may call three Tauri commands: `live`, which takes nothing from
+  the page but its channel, and `player` and `player_events` for the
+  window's own audio player (below). The capability in
+  `crates/bookclerk-desktop/capabilities/main.json` allows them for the
+  main window's own pages only, so the library's sign-in pages, which are
+  remote, can't call them, and each command checks the calling webview and
+  page again before it runs.
+- The custom scheme can't stream audio to the webview either (no `Range`),
+  so the window plays books itself (`crates/bookclerk-desktop/src/player.rs`).
+  The web app's player drives it through `ui/src/lib/nativePlayer.ts`:
+  `player` takes one checked command (load a session's track, play, pause,
+  seek, speed, stop, probe a track's length, or what the system's media
+  controls show), and `player_events` hands over a channel for the
+  position, play, pause, the end, errors and the media controls' buttons.
+  The host reads the track through the session's stream route and a
+  confined `bookclerk-media-worker pcm` process decodes it. The
+  `bookclerk-player-engine` crate changes the speed and the sample rate,
+  and `cpal` plays it on the default output device. `souvlaki` drives
+  MPRIS (over zbus), the Windows media overlay and Now Playing. See
+  [Playback](../../server/playback.md#the-desktop-window).
 - These rules (which requests are refused, the headers the router sees,
   where the window may go, who may start the live feed) live in the `bookclerk-window-policy` crate,
   which the `window_policy` fuzz target checks (see
@@ -119,10 +133,10 @@ itself.
 
 To build and run it:
 
-1. Install the webview's development files. On Debian and Ubuntu:
+1. Install the webview's and ALSA's development files. On Debian and Ubuntu:
 
    ```sh
-   sudo apt-get install libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev
+   sudo apt-get install libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev libasound2-dev
    ```
 
    Windows (WebView2) and macOS (WKWebView) need nothing extra.

@@ -1217,7 +1217,7 @@ jobs:
       - name: Install capnproto and the webview's development files
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends capnproto libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev
+          sudo apt-get install -y --no-install-recommends capnproto libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev libasound2-dev
 
       - name: Desktop window clippy
         run: python scripts/ci-exec.py run desktop

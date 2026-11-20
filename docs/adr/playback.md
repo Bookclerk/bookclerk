@@ -148,13 +148,25 @@ Sign-in there mints library cards (a short access token and a rotating
 refresh token), and every item, progress and stream call lands on the
 same tables and the same check as the web player.
 
-### 9. The desktop window plays natively (planned)
+### 9. The desktop window plays natively
 
 The desktop window's custom scheme delivers no request headers on Linux,
 so it cannot serve `Range` to a web view. The window decodes in the
 confined media worker and plays through the operating system's audio and
 media controls, reading files and writing progress through the same
 core.
+
+The host reads each block of the track through the session's own stream
+route in process, so the window gets no second path to the files. A
+`pcm` worker per track decodes them under the same rules as the tag
+worker: no path, no network, ranges only inside the file. Speed changes
+use WSOLA time-stretching and the rate conversion uses a windowed-sinc
+resampler, both in a small engine crate (`bookclerk-player-engine`) with
+no I/O. The page's stage B player drives that engine as if it were an
+audio element, so the timeline, sync and bookmark logic exist once. The
+system's media controls come from `souvlaki`. Until the desktop app has
+its own sign-in, the window listens as the library's earliest active
+Owner.
 
 ## Consequences
 

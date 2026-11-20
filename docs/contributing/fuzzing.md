@@ -38,6 +38,7 @@ boundary extends it.
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
 | `media_decode` | Audio the media worker demuxes and decodes before it encodes or repackages it: store downloads, library copies and files on storage, recognised by their bytes, never their names | `bookclerk-media::decode_pcm_bytes` |
+| `media_pcm_wire` | PCM worker frames for the desktop window's player: requests the worker reads, and the worker's whole output (byte-range requests, the stream format, samples, the end) the host reads while the worker decodes untrusted audio | `bookclerk-media::pcm_wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
@@ -242,6 +243,16 @@ only that. The others check:
   it. Seeds cover every container and codec the worker reads, including
   HE-AAC and HE-AAC v2. The shared oracle is
   `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
+- **`media_pcm_wire`**: the first byte, modulo 3, picks a request body, a
+  reply body, or the worker's whole output. An accepted request or reply
+  re-encodes to exactly its own bytes, and a reply's fields are within the
+  wire's limits, checked against the constants rather than the decoder's
+  own code. The whole output is fed to `ReplyReader` in pieces whose sizes
+  come from the input: the replies it yields re-encode, concatenated, to
+  exactly the bytes it consumed, it yields nothing after an error, and
+  every `Pcm` that `ReplyOrder` admits holds whole frames of the `Format`
+  it admitted first. The shared oracle is `fuzz/oracles/media_pcm_wire.rs`,
+  replayed from `bookclerk-media`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
   them is the current tag, strong or weak. Any raw header that matches,
