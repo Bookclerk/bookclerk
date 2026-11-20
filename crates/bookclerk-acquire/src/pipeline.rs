@@ -96,7 +96,7 @@ pub struct AcquireRequest {
     pub library_copies: LibraryCopySource,
     /// The destination this request names files for, which translates the
     /// host keys its naming templates build. The default keeps host keys;
-    /// [`request_for_destination`] sets it for each destination.
+    /// the per-destination requests set it for each destination.
     pub destination_keys: crate::keys::DestinationKeys,
 }
 
