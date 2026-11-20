@@ -71,6 +71,7 @@ import {
   dashboardSummarySent,
   dashboardMatchClosed,
   dashboardScheduled,
+  indexCap,
 } from "./dashboard/routes.ts";
 import {
   MAX_CHECKIN_CHARS,
@@ -82,11 +83,13 @@ import {
   recordCheckin,
 } from "./checkin.ts";
 import { sweepDemoRuns } from "./demo-runs.ts";
+import { lookupFetch } from "./lookup.ts";
+import { newAccessCode, pruneAccess, storeAccess } from "./report-access.ts";
 import { MAX_CURSOR_CHARS, commitCursor, parseCursor, readCursor } from "./ingest-cursor.ts";
 import { handleTriage, readCapped } from "./triage.ts";
 import { looksLikeSecretLeak, MAX_SUBMIT_BYTES, parseSubmit } from "./submit.ts";
 import { extractVersionFromKey, normalizeVersion, versionAcceptable } from "./version-filter.ts";
-import type { B2Access, B2Auth } from "./dashboard/storage.ts";
+import { decodeVersionPage, type B2Access, type B2Auth } from "./dashboard/storage.ts";
 import type { Background, Env } from "./env.ts";
 import { asObject, isObject } from "./json.ts";
 
@@ -352,6 +355,15 @@ export default {
           console.error(`usage prune failed: ${err instanceof Error ? err.message : String(err)}`);
         }),
       );
+      // Once a day, on the first run after midnight UTC (the cron runs every
+      // 30 minutes): access codes outlive their reports by a day at most.
+      if (now % 86_400_000 < 30 * 60_000) {
+        ctx.waitUntil(
+          pruneAccess(db, now).catch((err: unknown) => {
+            console.error(`access prune failed: ${errorText(err)}`);
+          }),
+        );
+      }
       ctx.waitUntil(
         sweepDemoRuns(db, Math.floor(now / 1000))
           .then(async (closed) => {
@@ -392,6 +404,9 @@ async function respond(request: Request, env: Env, ctx: Background): Promise<Res
   try {
     const page = await dashboardFetch(request, env, ctx, path, b2Access(env));
     if (page) return page;
+
+    const lookup = await lookupFetch(request, env, path, b2Access(env));
+    if (lookup) return lookup;
 
     if (request.method === "GET" && (path === "/" || path === "/health")) {
       const origin = new URL(request.url).origin;
@@ -500,6 +515,7 @@ function b2Access(env: Env): B2Access {
   return {
     authorize: () => b2Authorize(env),
     downloadById: (auth, fileId) => b2DownloadById(auth, fileId),
+    deleteObject: (auth, objectKey) => b2DeleteObject(auth, env.B2_BUCKET_ID ?? "", objectKey),
     bucketId: env.B2_BUCKET_ID ?? "",
   };
 }
@@ -667,9 +683,27 @@ async function handleSubmit(request: Request, env: Env, ctx: Background): Promis
     bookclerk_version: truncate(String(payload.version || ""), 64),
   });
 
+  // The sender's access code (report-access.ts). Only its hash is kept,
+  // and only in D1; a failure costs the code, never the report.
+  const db = env.DASHBOARD_DB;
+  let accessCode: string | null = null;
+  if (db) {
+    const code = newAccessCode();
+    try {
+      const stored = await storeAccess(
+        db,
+        { report_id: reportId, object_key: objectKey, created_at: receivedAt },
+        code,
+        indexCap(env),
+      );
+      if (stored) accessCode = code;
+    } catch (err) {
+      console.error(`access code failed: ${errorText(err)}`);
+    }
+  }
+
   // Best-effort dashboard index row; a failure leaves the report for the
   // owner's reindex and never fails the upload.
-  const db = env.DASHBOARD_DB;
   if (db) {
     ctx.waitUntil(
       dashboardIndexSubmitted({ ...env, DASHBOARD_DB: db }, enriched, objectKey).catch(() => {}),
@@ -682,6 +716,7 @@ async function handleSubmit(request: Request, env: Env, ctx: Background): Promis
       report_id: reportId,
       key: objectKey,
       received_at_unix_ms: receivedAt,
+      ...(accessCode ? { access_code: accessCode } : {}),
     },
     201,
   );
@@ -1309,6 +1344,59 @@ async function b2DownloadById(auth: B2Auth, fileId: string): Promise<string> {
   );
   if (!res.ok) throw await b2Error("b2 download", res);
   return res.text();
+}
+
+/**
+ * Deletes every version of one object, hide markers included.
+ *
+ * @param auth - Authorization.
+ * @param bucketId - Bucket.
+ * @param objectKey - The object.
+ * @throws {UpstreamError} When B2 refuses a listing or a deletion (a version
+ *   that is already gone is not an error).
+ */
+async function b2DeleteObject(auth: B2Auth, bucketId: string, objectKey: string): Promise<void> {
+  let startFileId: string | null = null;
+  // An object has one version unless it was uploaded again; ten pages of
+  // 100 is far beyond any real case and bounds the subrequests.
+  for (let page = 0; page < 10; page++) {
+    const body: Record<string, unknown> = {
+      bucketId,
+      prefix: objectKey,
+      startFileName: objectKey,
+      maxFileCount: 100,
+    };
+    if (startFileId) body.startFileId = startFileId;
+    const res = await upstreamFetch(
+      "b2 list versions",
+      `${auth.apiUrl}/b2api/v2/b2_list_file_versions`,
+      {
+        method: "POST",
+        headers: { Authorization: auth.authorizationToken, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!res.ok) throw await b2Error("b2 list versions", res);
+    const data: unknown = await res.json().catch(() => null);
+    const { fileIds, more } = decodeVersionPage(data, objectKey);
+    for (const fileId of fileIds) {
+      const del = await upstreamFetch(
+        "b2 delete",
+        `${auth.apiUrl}/b2api/v2/b2_delete_file_version`,
+        {
+          method: "POST",
+          headers: { Authorization: auth.authorizationToken, "Content-Type": "application/json" },
+          body: JSON.stringify({ fileName: objectKey, fileId }),
+        },
+      );
+      if (!del.ok) {
+        const err = await b2Error("b2 delete", del);
+        if (!err.message.endsWith(": file_not_present")) throw err;
+      }
+    }
+    if (!more) return;
+    startFileId = asObject(data).nextFileId as string;
+  }
 }
 
 /**
