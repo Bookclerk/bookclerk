@@ -1268,7 +1268,7 @@ fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
 /// # Returns
 ///
 /// The group's routes, without auth layers (see [`route_groups`]).
-// Host enrollment links: any signed-in user acts for themselves; the
+// Branch enrollment links: any signed-in user acts for themselves; the
 // library lets the operator or an Owner act for others.
 #[inline(never)]
 fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
@@ -1347,8 +1347,8 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Any user reads the switch; the handler lets only the operator or
         // an active Owner change it.
         .routes(routes!(
-            crate::node_api::get_host_enrollment,
-            crate::node_api::put_host_enrollment
+            crate::node_api::get_branch_enrollment,
+            crate::node_api::put_branch_enrollment
         ))
 }
 

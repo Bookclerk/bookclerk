@@ -1754,7 +1754,7 @@ pub async fn require_operator_or_node_owner_auth(
     Err(StatusCode::UNAUTHORIZED)
 }
 
-/// Who is calling a route that acts for a user (host enrollment links).
+/// Who is calling a route that acts for a user (branch enrollment links).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserCaller {
     /// Operator token or session, or auth disabled.
