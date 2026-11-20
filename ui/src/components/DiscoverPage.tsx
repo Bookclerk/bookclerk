@@ -491,6 +491,7 @@ export function DiscoverPage({
           isbn: t.isbn,
           narrators: t.narrators,
           length_minutes: t.length_minutes,
+          store_editions: t.store_editions,
         })),
       );
       setResultMeta((prev) => {
@@ -1574,6 +1575,7 @@ function ShelfCard({
                 isbn: rec.isbn,
                 narrators: rec.narrators,
                 length_minutes: rec.length_minutes,
+                store_editions: rec.store_editions,
               })
             : Promise.resolve(null),
         ]);

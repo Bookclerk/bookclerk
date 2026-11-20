@@ -49,6 +49,7 @@ impl PluginWorker for ChirpRoot {
                 detail_by_isbn: false,
                 price_by_isbn: false,
                 price_by_asin: false,
+                detail_by_product_id: false,
             },
             ..PluginDescribe::default()
         })
@@ -59,10 +60,11 @@ impl PluginWorker for ChirpRoot {
         _invocation: Invocation,
         mut bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        let config = bindings.config.json_value().unwrap_or(Value::Null);
         let scan_state =
             DatabaseBinding::take_named_from_bindings(&mut bindings, SCAN_STATE_BINDING);
         Ok(Entrypoints {
-            storefront: Some(Box::new(ChirpContentSource { scan_state })),
+            storefront: Some(Box::new(ChirpContentSource { config, scan_state })),
             ..Entrypoints::default()
         })
     }
@@ -76,9 +78,19 @@ impl PluginWorker for ChirpRoot {
 }
 
 struct ChirpContentSource {
+    /// The instance settings document from the `CONFIG` binding; its origin
+    /// override reaches sign-in, scans and every catalog entrypoint.
+    config: Value,
     /// The `SCAN_STATE` database, once the operator approved it: scan delta
     /// state.
     scan_state: Option<DatabaseBinding>,
+}
+
+impl ChirpContentSource {
+    /// Catalog client for this instance's configured origin.
+    fn catalog(&self) -> bookclerk_plugin_source_chirp::ChirpSource {
+        bookclerk_plugin_source_chirp::ChirpSource::from_config(&self.config)
+    }
 }
 
 fn internal(err: impl std::fmt::Display) -> PluginError {
@@ -103,14 +115,14 @@ impl ContentSourceRole for ChirpContentSource {
     }
 
     async fn login(&self, params: LoginParams) -> Result<LoginResult, PluginError> {
-        let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&Value::Null);
+        let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&self.config);
         bookclerk_plugin_source_chirp::guest_login_rpc(&gql, params)
             .await
             .map_err(internal)
     }
 
     async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
-        let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&Value::Null);
+        let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&self.config);
         bookclerk_plugin_source_chirp::guest_scan_page(&gql, &params, self.scan_state.as_ref())
             .await
     }
@@ -127,7 +139,7 @@ impl ContentSourceRole for ChirpContentSource {
         &self,
         params: SearchCatalogParams,
     ) -> Result<Vec<CatalogHit>, PluginError> {
-        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        let source = self.catalog();
         source
             .search_catalog(&CatalogSearchOpts::from(params))
             .await
@@ -140,7 +152,7 @@ impl ContentSourceRole for ChirpContentSource {
         params: ExpandCandidatesParams,
     ) -> Result<Vec<CatalogHit>, PluginError> {
         let (seed, limit) = expand_seed_from_params(params);
-        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        let source = self.catalog();
         source
             .expand_candidates(&seed, limit)
             .await
@@ -152,7 +164,7 @@ impl ContentSourceRole for ChirpContentSource {
         &self,
         params: PurchaseHintParams,
     ) -> Result<Option<PurchaseHint>, PluginError> {
-        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        let source = self.catalog();
         source
             .purchase_hint(&PurchaseHintOpts::from(params))
             .await
@@ -170,7 +182,7 @@ impl ContentSourceRole for ChirpContentSource {
             .into_iter()
             .map(PurchaseHintOpts::from)
             .collect();
-        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        let source = self.catalog();
         source
             .purchase_hints(&opts)
             .await
@@ -183,7 +195,7 @@ impl ContentSourceRole for ChirpContentSource {
         &self,
         params: PurchaseHintParams,
     ) -> Result<PurchaseHintResult, PluginError> {
-        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        let source = self.catalog();
         source
             .purchase_answer(&PurchaseHintOpts::from(params))
             .await
@@ -202,7 +214,7 @@ impl ContentSourceRole for ChirpContentSource {
             .into_iter()
             .map(PurchaseHintOpts::from)
             .collect();
-        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        let source = self.catalog();
         source
             .purchase_answers(&opts)
             .await
@@ -212,7 +224,7 @@ impl ContentSourceRole for ChirpContentSource {
 
     async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>, PluginError> {
         let limit = params.limit.unwrap_or(DEFAULT_LIST_DEALS_LIMIT);
-        let source = bookclerk_plugin_source_chirp::ChirpSource::new();
+        let source = self.catalog();
         source
             .list_deals(usize::try_from(limit).unwrap_or(usize::MAX))
             .await
