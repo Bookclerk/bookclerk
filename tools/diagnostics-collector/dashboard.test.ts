@@ -1082,6 +1082,15 @@ describe("pages", () => {
     );
     assert.equal(log.length, 2);
     assert.equal(log[0]!.report_id, ID1);
+    // After its sender deletes it, the page says so instead of a read failure.
+    await env.DASHBOARD_DB.prepare("UPDATE reports SET deleted_at = ? WHERE report_id = ?")
+      .bind(NOW, ID2)
+      .run();
+    const gone = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID2}`, { headers: { cookie } }), b2)
+    ).text();
+    assert.match(gone, /The report's sender deleted its stored copy on /);
+    assert.ok(!gone.includes("could not be read from storage"));
   });
 
   it("counts a report filed twice under the older issue and flags the conflict", async () => {

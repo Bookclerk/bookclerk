@@ -870,11 +870,11 @@ library it joined, in turn, for the copy of that listing.
   downloads the library's copy too, probes it itself, and stores it in
   place of its own download only when its own probe agrees. Otherwise it
   keeps its own, as it does when the two don't fit in the acquire's
-  scratch budget together. A lossless copy (FLAC or ALAC) is taken only
-  by a branch whose output keeps files as delivered: every other output
-  repackages the audio, and the media worker decodes AAC and MP3
-  audio only (so a copy in another encoding, such as Opus, is not taken
-  by such a branch either). The comparison runs once, in that acquire. The stored
+  scratch budget together. A branch whose output re-encodes or
+  repackages the audio takes only a copy the media worker reads (AAC,
+  ALAC, FLAC or MP3; see [what audio it reads](media.md#what-audio-it-reads)),
+  so a copy in another encoding, such as Opus, is taken only by a branch
+  that keeps files as delivered. The comparison runs once, in that acquire. The stored
   file's row names the store the audio really came from, and the cover
   and companion PDF of the branch's own download are kept (the library's
   cover is used only when the store sent none).

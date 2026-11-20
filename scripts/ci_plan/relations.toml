@@ -189,6 +189,8 @@ paths = [
     "fuzz/oracles/output_copies.rs",
     "fuzz/corpus/diagnostics_submit_reply/**",
     "fuzz/oracles/diagnostics_submit_reply.rs",
+    "fuzz/corpus/diagnostics_lookup_reply/**",
+    "fuzz/oracles/diagnostics_lookup_reply.rs",
 ]
 
 [[test_input]]
@@ -221,6 +223,14 @@ paths = [
     "fuzz/oracles/tags_read.rs",
     "fuzz/corpus/tags_wire/**",
     "fuzz/oracles/tags_wire.rs",
+]
+
+[[test_input]]
+package = "bookclerk-media"
+# The media_decode oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_decode/**",
+    "fuzz/oracles/media_decode.rs",
 ]
 
 [[test_input]]

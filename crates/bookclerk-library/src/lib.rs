@@ -55,7 +55,9 @@ mod wishlist_merge;
 
 pub use atomic_ops::{atomic_status, DbAtomicParams, DbAtomicResult};
 pub use atomic_txn::{AtomicTxnBackend, TypedAtomicExec};
-pub use backend_migrate::{migrate_library_backend, BackendMigrateOptions, BackendMigrateSummary};
+pub use backend_migrate::{
+    migrate_library_backend, BackendMigrateOptions, BackendMigrateSummary, LEFT_BEHIND_TABLES,
+};
 pub use backup::encode::{CanonicalObject, CHUNK_TARGET_UNCOMPRESSED_BYTES};
 pub use backup::repository::BackupRepository;
 pub use backup::restore::restore_backup_unit;
