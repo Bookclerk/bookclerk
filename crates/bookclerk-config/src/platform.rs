@@ -120,24 +120,35 @@ pub fn node_limits() -> Option<NodeLimits> {
         let dir = std::fs::read_to_string("/proc/self/cgroup")
             .ok()
             .and_then(|text| cgroup_v2_dir(&text))?;
-        let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
-        let cpu_millis = read("cpu.max").as_deref().and_then(parse_cpu_max);
-        let memory_bytes = read("memory.max").as_deref().and_then(parse_memory_max);
-        if cpu_millis.is_none() && memory_bytes.is_none() {
-            return None;
-        }
-        let cpus = std::thread::available_parallelism()
-            .map_or(1, |n| u64::try_from(n.get()).unwrap_or(u64::MAX));
-        Some(NodeLimits {
-            cpu_millis,
-            memory_bytes,
-            cpus,
-        })
+        limits_in(&dir)
     }
     #[cfg(not(target_os = "linux"))]
     {
         None
     }
+}
+
+/// The limits a cgroup v2 directory's `cpu.max` and `memory.max` set, or
+/// `None` when neither file sets one.
+///
+/// # Arguments
+///
+/// * `dir` - The cgroup's directory under `/sys/fs/cgroup`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn limits_in(dir: &std::path::Path) -> Option<NodeLimits> {
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+    let cpu_millis = read("cpu.max").as_deref().and_then(parse_cpu_max);
+    let memory_bytes = read("memory.max").as_deref().and_then(parse_memory_max);
+    if cpu_millis.is_none() && memory_bytes.is_none() {
+        return None;
+    }
+    let cpus = std::thread::available_parallelism()
+        .map_or(1, |n| u64::try_from(n.get()).unwrap_or(u64::MAX));
+    Some(NodeLimits {
+        cpu_millis,
+        memory_bytes,
+        cpus,
+    })
 }
 
 /// The cgroup v2 directory a `/proc/self/cgroup` text names (its `0::`
@@ -194,6 +205,22 @@ mod limits_tests {
     fn memory_max_is_bytes_or_unlimited() {
         assert_eq!(parse_memory_max("1073741824\n"), Some(1_073_741_824));
         assert_eq!(parse_memory_max("max\n"), None);
+    }
+
+    #[test]
+    fn limits_come_from_the_cgroup_files() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(limits_in(dir.path()), None, "no files, no limits");
+        std::fs::write(dir.path().join("cpu.max"), "max 100000\n").expect("cpu.max");
+        std::fs::write(dir.path().join("memory.max"), "max\n").expect("memory.max");
+        assert_eq!(limits_in(dir.path()), None, "unlimited is no limit");
+        std::fs::write(dir.path().join("cpu.max"), "25000 100000\n").expect("cpu.max");
+        std::fs::write(dir.path().join("memory.max"), "1073741824\n").expect("memory.max");
+        let limits = limits_in(dir.path()).expect("limits");
+        assert_eq!(limits.cpu_millis, Some(250));
+        assert_eq!(limits.memory_bytes, Some(1_073_741_824));
+        assert!(limits.cpus >= 1);
+        let _ = node_limits();
     }
 
     #[test]

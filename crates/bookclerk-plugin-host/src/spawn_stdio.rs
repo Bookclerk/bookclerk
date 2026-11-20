@@ -3517,6 +3517,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn guest_stderr_keeps_its_own_level_up_to_warn() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log buf").extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&bytes);
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new("bookclerk=trace"))
+            .with_writer(move || Buf(Arc::clone(&sink)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            emit_guest_stderr_record("probe", "guest", "TRACE relay-trace");
+            emit_guest_stderr_record("probe", "guest", "2026-11-20T10:00:00Z DEBUG relay-debug");
+            emit_guest_stderr_record("probe", "guest", "ERROR relay-error");
+        });
+        let text = String::from_utf8(bytes.lock().expect("log buf").clone()).expect("utf-8 log");
+        let level_of = |token: &str| {
+            text.lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|v| v["fields"]["message"].as_str() == Some(token))
+                .and_then(|v| v["level"].as_str().map(str::to_owned))
+        };
+        assert_eq!(level_of("relay-trace").as_deref(), Some("TRACE"), "{text}");
+        assert_eq!(level_of("relay-debug").as_deref(), Some("DEBUG"), "{text}");
+        assert_eq!(level_of("relay-error").as_deref(), Some("WARN"), "{text}");
+        assert!(text.contains("\"guest_ref\":\"probe\""), "{text}");
+    }
+
     fn capture_spawn_logs(filter: &str, token: &str) -> String {
         use std::io::Write;
         use std::sync::{Arc, Mutex};

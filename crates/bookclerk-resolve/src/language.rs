@@ -72,7 +72,34 @@ mod tests {
     }
 
     #[test]
+    fn every_named_language_maps_to_its_code() {
+        let cases = [
+            ("Español", "es"),
+            ("Deutsch", "de"),
+            ("Italiano", "it"),
+            ("Português", "pt"),
+            ("Japanese", "ja"),
+            ("chinese_simplified", "zh"),
+            ("Korean", "ko"),
+            ("Nederlands", "nl"),
+            ("Svenska", "sv"),
+            ("Dansk", "da"),
+            ("Norsk", "no"),
+            ("Suomi", "fi"),
+            ("Polski", "pl"),
+            ("Russian", "ru"),
+            ("Arabic", "ar"),
+            ("Hindi", "hi"),
+            ("Turkish", "tr"),
+        ];
+        for (raw, code) in cases {
+            assert_eq!(normalize_language(raw).as_deref(), Some(code), "{raw}");
+        }
+    }
+
+    #[test]
     fn unknown_or_blank_is_none() {
+        assert_eq!(normalize_language("-US"), None);
         assert_eq!(normalize_language(""), None);
         assert_eq!(normalize_language("   "), None);
         assert_eq!(normalize_language("klingonese"), None);

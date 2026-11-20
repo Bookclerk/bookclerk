@@ -2233,6 +2233,97 @@ mod tests {
         }
     }
 
+    /// Every reason a title-search record is dropped is counted, and the
+    /// store's tally is logged once.
+    #[test]
+    fn dropped_records_are_tallied_by_reason() {
+        use bookclerk_source::records::ExpressionKind;
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log buf").extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let query = PurchaseHintsQuery {
+            title: "The Sunlit Man".into(),
+            ..PurchaseHintsQuery::default()
+        };
+        let answer = PricedAnswer {
+            hint: None,
+            records: vec![
+                sunlit_record("SAME", ExpressionKind::Narration, None, 100),
+                sunlit_record("OTHER", ExpressionKind::Dramatisation, None, 100),
+                sunlit_record("UNPLACED", ExpressionKind::Narration, None, 100),
+            ],
+        };
+        let mut placement = Placement::default();
+        placement
+            .cards
+            .insert(0, BTreeSet::from([String::from("expr-narration")]));
+        for (product, expression) in [("SAME", "expr-narration"), ("OTHER", "expr-drama")] {
+            placement.expressions.insert(
+                (String::from("store-a"), String::from(product)),
+                BTreeSet::from([String::from(expression)]),
+            );
+        }
+        let opts = PurchaseHintOpts::default();
+        let mut tally = DropTally::default();
+        let kept = evaluate_answer(
+            "store-a",
+            &query,
+            &opts,
+            &answer,
+            Some(placement.view(0, "store-a")),
+            &mut tally,
+        );
+        let kept: Vec<&str> = kept.iter().map(|h| h.product_id.as_str()).collect();
+        assert_eq!(kept, vec!["SAME"]);
+        assert_eq!((tally.other_recording, tally.record_not_pooled), (1, 1));
+
+        // A card the pool knows nothing of, and a pool that was not read.
+        let unknown_card = evaluate_answer(
+            "store-a",
+            &query,
+            &opts,
+            &answer,
+            Some(placement.view(1, "store-a")),
+            &mut tally,
+        );
+        assert!(unknown_card.is_empty());
+        assert_eq!(tally.card_not_pooled, 3);
+        let unread = evaluate_answer("store-a", &query, &opts, &answer, None, &mut tally);
+        assert!(unread.is_empty());
+        assert_eq!(tally.pool_unread, 3);
+
+        tally.returned = 9;
+        tally.kept = 1;
+        tally.cards_with_drops = 3;
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&bytes);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || Buf(Arc::clone(&sink)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            tally.log("store-a");
+            DropTally::default().log("store-quiet");
+        });
+        let text = String::from_utf8(bytes.lock().expect("log buf").clone()).expect("utf-8 log");
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.contains("card_not_pooled=3"), "{text}");
+        assert!(text.contains("pool_unread=3"), "{text}");
+    }
+
     /// A title search's records price a card only with the recording the
     /// card names: by its ISBN without a pool, by the pool's placement with
     /// one. The cheaper dramatisation of the same title never prices it.
