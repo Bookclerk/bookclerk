@@ -4481,6 +4481,7 @@ export const CatalogCapabilitiesCodec: StructCodec<T.CatalogCapabilities> = {
     s.setBool(0, v.detailByIsbn ?? false);
     s.setBool(1, v.priceByIsbn ?? false);
     s.setBool(2, v.priceByAsin ?? false);
+    s.setBool(3, v.detailByProductId ?? false);
   },
   read(s, caps) {
     void caps;
@@ -4488,6 +4489,7 @@ export const CatalogCapabilitiesCodec: StructCodec<T.CatalogCapabilities> = {
       detailByIsbn: s.getBool(0),
       priceByIsbn: s.getBool(1),
       priceByAsin: s.getBool(2),
+      detailByProductId: s.getBool(3),
     };
   },
 };

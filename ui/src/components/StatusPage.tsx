@@ -12,7 +12,7 @@ import {
   type ConfigNodeView,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/live";
-import { age, cores, ownerName, size } from "@/lib/nodeFormat";
+import { age, cores, ownerName, relationshipLabel, size } from "@/lib/nodeFormat";
 import { cn, pageWidthClass } from "@/lib/utils";
 
 /**
@@ -59,8 +59,11 @@ function NodeCard({ node }: { node: ConfigNodeView }) {
         {!node.runtime.schedulable ? (
           <Badge className="bg-brick/10 text-brick normal-case tracking-normal">Drained</Badge>
         ) : null}
-        {node.kind === "branch" ? (
-          <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">Branch</Badge>
+        <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
+          {relationshipLabel(node.relationship)}
+        </Badge>
+        {status?.public_origin ? (
+          <span className="font-mono text-[11px] text-ink/45">{status.public_origin}</span>
         ) : null}
         {node.owner ? (
           <span className="text-xs text-ink/55">Owned by {ownerName(node.owner)}</span>
@@ -86,8 +89,8 @@ function NodeCard({ node }: { node: ConfigNodeView }) {
 /**
  * Library status: health every node administrator may see (nodes live,
  * committed capacity, active jobs, delivery backlog) and the nodes the
- * caller may see. An operator sees every node; a Host, Administrator, or
- * Owner signed in to the portal sees the nodes they own.
+ * caller may see. An operator sees every node; an Administrator or Owner
+ * signed in to the portal sees the nodes they own.
  *
  * @param props - Sign-out callback, navigation, and the session role.
  */

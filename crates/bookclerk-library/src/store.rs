@@ -1441,6 +1441,21 @@ impl LibraryStore {
             .exec(txn)
             .await
             .map_err(LibraryError::Orm)?;
+        crate::entities::playback_progress::Entity::delete_many()
+            .filter(crate::entities::playback_progress::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        crate::entities::playback_sessions::Entity::delete_many()
+            .filter(crate::entities::playback_sessions::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        crate::entities::bookmarks::Entity::delete_many()
+            .filter(crate::entities::bookmarks::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
 
         portal_identities::Entity::delete_many()
             .filter(portal_identities::Column::UserId.eq(id))
@@ -7936,6 +7951,7 @@ pub(crate) mod acquire_title;
 pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
 pub(crate) mod discover;
+pub(crate) mod edition_copies;
 pub(crate) mod edition_enrichment;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
@@ -7945,6 +7961,8 @@ pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
 pub(crate) mod overrides;
+pub(crate) mod playback;
+pub(crate) mod playback_request;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod request_queue;
@@ -7963,6 +7981,10 @@ pub use acquire_title::{AcquireTitle, AcquireTitlePage};
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
+};
+pub use edition_copies::{
+    copy_retry_delay, CopyState, EditionCopy, COPY_RETRY_BASE_DELAY, COPY_RETRY_MAX_DELAY,
+    MAX_COPY_ATTEMPTS,
 };
 pub use edition_enrichment::{
     EditionAsin, EditionEnrichment, EnrichCandidate, EnrichCandidatePage,

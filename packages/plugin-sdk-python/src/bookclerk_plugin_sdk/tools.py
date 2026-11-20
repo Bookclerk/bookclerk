@@ -286,6 +286,9 @@ HOST_EVENT_TYPES = frozenset(
         "holding_removed",
         "wishlist_changed",
         "listening_synced",
+        "playback_started",
+        "playback_progress",
+        "playback_finished",
     }
 )
 """Domain event types only the host emits; plugins consume them but cannot produce them."""

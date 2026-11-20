@@ -27,11 +27,11 @@ boundary extends it.
 | `workerd_control` | Lines on workerd's stdout, shared with plugin isolates, that report the bridge RPC port on Windows (`--control-fd`) | `bookclerk-workerd::control` |
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `egress_relay_head` | Request heads workerd sends the launcher's egress relay (plugin code) and response heads from the servers a plugin reached | `bookclerk-workerd::egress_relay` |
+| `egress_bridge` | The workerd egress gate (`bridge/egress.js`) every workerd guest's `fetch()` and `connect()` goes through, run in an embedded JavaScript engine against `EgressPolicy` | `bookclerk-workerd` bridge |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `setting_destination` | Operator-entered values of network settings: the one destination each grants | `bookclerk-plugin-manifest::derive_setting_destination` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
-| `https_url_policy` | URLs from untrusted output checked against a host allowlist (no caller since covers moved to the cover service) | `bookclerk-plugin-manifest::https_url_on_hosts` |
-| `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
+| `abi_decode` | Every generated Cap'n Proto `read_*` codec, the database envelope decoders, and the reply helpers every payload-free guest reply and guest error goes through (`read_empty`, `read_error`) | `bookclerk-plugin-abi` |
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
@@ -39,6 +39,7 @@ boundary extends it.
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
+| `media_decode` | Audio the media worker demuxes and decodes before it encodes or repackages it: store downloads, library copies and files on storage, recognised by their bytes, never their names | `bookclerk-media::decode_pcm_bytes` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
@@ -53,17 +54,18 @@ boundary extends it.
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
-| `node_frame` | Node-to-node frames on the library socket | `bookclerk-node-proto::Frame` |
+| `node_frame` | Node-to-node frames on the library socket, including the public origin a branch reports in its heartbeat | `bookclerk-node-proto::Frame`, `BranchOrigin::parse` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
-| `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
+| `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` and `access_code` join the install's report history | `bookclerk-config::parse_submit_reply` |
+| `diagnostics_lookup_reply` | The diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue and pull request links | `bookclerk-config::parse_lookup_reply`, `parse_delete_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
-| `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
+| `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
@@ -79,7 +81,9 @@ boundary extends it.
 | `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
+| `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
+| `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta` and each entry of its batch route) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
@@ -87,9 +91,9 @@ Some boundaries need more than a cell:
 - **`granted_http`** covers the request head, body framing, chunked bodies
   and the query string.
 - **`egress_policy`** fuzzes the JSON wire form. The workerd `egress.js`
-  gate is a separate implementation: its User-Agent rule is fuzzed in
-  JavaScript ([egress bridge User-Agent rule](#egress-bridge-user-agent-rule)),
-  the rest is still to add (#335).
+  gate is a separate implementation: `egress_bridge` checks its host
+  decisions against `EgressPolicy`, and its User-Agent rule is fuzzed in
+  JavaScript ([egress bridge User-Agent rule](#egress-bridge-user-agent-rule)).
 - **`abi_decode`** goes through `read_any_message`, and
   **`abi_roundtrip`** through `roundtrip_any_message`.
 - **`guest_sql_authz`** lowers each policy as the SQLite adapter lowers it.
@@ -144,6 +148,27 @@ only that. The others check:
   reading of the host. The shared oracle is
   `fuzz/oracles/setting_destination.rs`, replayed from
   `bookclerk-plugin-manifest`.
+- **`egress_bridge`**: for a policy the host can emit (every pattern
+  already normalized, every CIDR in its `network/prefix` form), each probe
+  host (the grants' names and near misses, local names, `localhost` and
+  the metadata name, and IP literals in every range and spelling), on
+  granted, default and ungranted ports, goes to `allowsFetch` and
+  `allowsRedirectTo` as the URL parser prints it and to `allowsTcp` as
+  `canonicalSocketHost` returns it, in QuickJS. QuickJS has
+  no URL parser, so the target models both with the `url` crate, and the
+  Node replay checks those models against Node's parser and the bridge's
+  own `canonicalSocketHost`.
+  The bridge never allows what `EgressPolicy` refuses, and on a hostname
+  the two agree exactly. The shared oracle is
+  `fuzz/oracles/egress_bridge.rs`. Its replay in `bookclerk-workerd`
+  pins the Rust verdicts in
+  `packages/plugin-sdk/scripts/egress_bridge_vectors.json`
+  (`UPDATE_FUZZ_SEEDS=1` rewrites it), and `npm run test:egress-bridge`
+  (in the `plugin_sdk_abi` check) replays them against the bridge under
+  Node, which also checks the oracle's model of the URL parser. Where a
+  newer Node accepts a host the model refuses (Node 26 passes invalid
+  `xn--` labels through), the replay holds the gate to the Rust verdicts
+  on the raw host instead.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
   yields a deny policy. No binding takes the reserved `NETWORK` name, only
   a string setting with `network` carries `default_port`, and a destination
@@ -153,15 +178,16 @@ only that. The others check:
   minute-by-minute scan of `matches`. The shared oracle is
   `fuzz/oracles/cron_schedule.rs`, replayed from
   `bookclerk-plugin-manifest`.
-- **`https_url_policy`**: the check is idempotent, and an accepted URL is
-  `https://` with no user info, port or IP literal, on a host the patterns
-  cover, read byte by byte rather than by the URL parser. The shared oracle
-  is `fuzz/oracles/https_url_policy.rs`, replayed from
-  `bookclerk-plugin-manifest`.
 - **`abi_decode`**: the traversal budget is derived from the input size.
   Structured seeds cover the book records, the metadata replies and the
   cover request and reply (`structured_*.bin`), plus the typed
-  `limit_exceeded` envelopes (`limit_error_reply.bin`, `caps_reply_*.bin`).
+  `limit_exceeded` envelopes (`limit_error_reply.bin`, `caps_reply_*.bin`,
+  `empty_reply_*.bin`, `plugin_error_*.bin`). A guest error's `details`
+  are kept only as one JSON object that serializes back to itself.
+  Selectors 0 to 5 are the hand-written decoders and the generated table
+  follows, so adding a hand-written decoder moves every generated seed's
+  selector byte (`structured_book_record_seeds_are_current` rewrites the
+  structured seeds with `UPDATE_FUZZ_SEEDS=1`).
 - **`db_stream`**: decoding a frame stream in one push and in chunks of
   any size agree (both the same reply, or both refused), an accepted
   reply has no statement over the row cap, and it re-encodes to frames
@@ -236,9 +262,23 @@ only that. The others check:
   refused. Otherwise it is accepted exactly when, read independently as a
   JSON value, it is an object whose `report_id` is a string that is a
   lowercase hyphenated version-4 UUID, checked group by group, and the
-  parser returns that string unchanged. The shared oracle is
+  parser returns that string unchanged. The access code comes back exactly
+  when `access_code` is a string of 16 characters, each a digit or an
+  uppercase letter other than I, L, O and U, and is otherwise dropped
+  without refusing the reply. The shared oracle is
   `fuzz/oracles/diagnostics_submit_reply.rs`, replayed from
   `bookclerk-config`.
+- **`diagnostics_lookup_reply`**: each input goes through both the lookup
+  and the delete reader for one fixed report ID. An answer longer than
+  1 MiB is refused. Otherwise, read independently as a JSON value, it is
+  accepted exactly when it is an object for that report with every field
+  of its type (only `deleted_at_unix_ms`, `report`, `fix` and the fix's
+  fields may be absent or null), issue and pull request links start
+  `https://`, levels are the five upper-case names and states `open` or
+  `closed`. The accepted answer, serialized, equals the expected one
+  rebuilt from the value; another report's ID is `OtherReport`. The
+  shared oracle is `fuzz/oracles/diagnostics_lookup_reply.rs`, replayed
+  from `bookclerk-config`.
 - **`cover_wire`**: the first byte picks the request or the reply decoder.
   An accepted frame re-encodes to exactly its own bytes, and an accepted
   reply carries only JPEG-signed images and a nonzero size. The shared
@@ -257,6 +297,16 @@ only that. The others check:
   `Done` record re-encodes to a frame that decodes to the same record. The
   shared oracle is `fuzz/oracles/tags_wire.rs`, replayed from
   `bookclerk-tags`.
+- **`media_decode`**: the input is a whole audio file. It is decoded at
+  the source's channel count twice and once mixed to mono. An accepted
+  stream has a sample rate from 1 Hz to 768 kHz and one or two channels,
+  and every chunk is whole frames; the same bytes always give the same
+  PCM; and the mono decode accepts exactly the files the source decode
+  does, with the same rate and length. A plain 16-bit PCM WAV must decode
+  to exactly the samples an independent parser in the oracle reads from
+  it. Seeds cover every container and codec the worker reads, including
+  HE-AAC and HE-AAC v2. The shared oracle is
+  `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
   them is the current tag, strong or weak. Any raw header that matches,
@@ -577,6 +627,18 @@ only that. The others check:
   digits, `.`, `_` and `-`. The parser then returns those trimmed ids,
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/branch_request.rs`, replayed from `bookclerk-library`.
+- **`title_meta_fill`**: the first byte declares `detailByProductId` and
+  `detailByIsbn` for four fake stores; the rest is the query body, read as
+  untyped JSON. An object body is served exactly when its known fields
+  have the documented types, none is written twice, it names at most 16
+  store editions (each a `source` and `product_id` string), and its
+  trimmed title, ASIN and ISBN are not all empty. A served query plans at
+  most three lookups: at most two by product id, in edition order, at
+  listing stores that declared `detailByProductId`, then by ISBN (or an
+  ISBN-shaped ASIN) at the stores that declared `detailByIsbn`, never the
+  same store and id twice. Positional (array) forms are left to the typed
+  parser, and their plan is still checked. The shared oracle is
+  `fuzz/oracles/title_meta_fill.rs`, replayed from `bookclerk-discover`.
 - **`members_books_request`**: reads the body as an untyped JSON value.
   It is accepted exactly when it is one object with no repeated keys and
   exactly the keys `node_id` (a string) and `acquire` (a boolean), where
@@ -617,6 +679,35 @@ only that. The others check:
   parser then returns those ids sorted and distinct, and otherwise refuses
   it as `Invalid`. The shared oracle is `fuzz/oracles/work_split_request.rs`,
   replayed from `bookclerk-library`.
+- **`playback_request`**: an input's first byte picks the part. For `s`
+  (sync) and `c` (close) the rest is a body, read as an untyped JSON
+  value: it is accepted exactly when it is at most 1,024 bytes and one
+  object with no repeated keys, a `position_ms`, optionally a
+  `listened_ms` and a `duration_ms` (which may be `null`) and no other
+  key, each a whole number from 0 to sixty days of milliseconds. The
+  parser then returns those numbers unchanged, and otherwise refuses the
+  body as `Invalid`. For `t` the rest is a stream path's session id and
+  track index, checked byte by byte: accepted exactly when the id is a
+  lowercase hyphenated UUID and the index a number from 0 to 511 with no
+  sign or leading zero. For `o` (open a session), `p` (set progress),
+  `b` (add a bookmark) and `e` (change one) the rest is that route's
+  body, at most 4,096 bytes and one object with no repeated or unknown
+  keys. A session body has an `edition_id` of 1 to 128 bytes, a `player`
+  that is absent, `web` or `desktop`, and an optional `player_name`,
+  returned with control characters dropped, trimmed and cut to 64 bytes
+  on a character boundary. A progress body's two lengths and its
+  `is_finished` flag are each absent, `null` or in range. A bookmark
+  body's title, trimmed, is at most 200 bytes with no control character.
+  For `q` the rest is a progress page cursor, decoded with the oracle's
+  own Base64 decoder: accepted exactly when it is at most 256 bytes of
+  canonical unpadded URL-safe Base64 for a change time, a `|` and an
+  edition id of 1 to 128 bytes, and an accepted cursor writes back to
+  the same token.
+  The routes refuse a body over the parsers' length limits (`413`)
+  before reading it as the same JSON type, so they accept nothing the
+  parsers refuse.
+  The shared oracle is `fuzz/oracles/playback_request.rs`, replayed from
+  `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `library_id`, `share_books`, `include_branches`,
@@ -1065,6 +1156,35 @@ The tests and corpora live in `tools/diagnostics-collector/`.
     of JSON naming an object with exactly the five fields, a lowercase
     version-4 UUID checked by position, and version, platform and kind
     tokens checked character by character.
+- **Diagnostics report body** (`parseSubmit` in `submit.ts`). It is the
+  body anyone can send to `POST /submit`, read under the 256 KiB cap while
+  it streams (`readCapped`), and decides what report is stored in B2.
+  - Test and corpus: `submit.fuzz.test.ts`, `corpus/submit/`.
+  - Oracle: a report exactly when the body is JSON naming an object whose
+    trigger (1–64 characters), version (at most 64, not all whitespace)
+    and OS (at most 64) are strings, whose `archived_at_unix_ms` is absent
+    or a number, and whose `events` is an array of at most 500 objects
+    with no string `message`, `level` or `target` over 8,000, 32 or 256
+    characters. An admitted report equals the parsed body.
+- **Report lookup body** (`parseLookupInput` in `report-access.ts`). It
+  is the body anyone can post to `/lookup` and `/lookup/delete`, as JSON
+  or a form, and names the report a code is checked against and whether a
+  form confirmed a deletion.
+  - Test and corpus: `report-access.fuzz.test.ts`, `corpus/lookup_input/`
+    (each seed's first line is the `Content-Type`).
+  - Oracle: a request exactly when the body is at most 1,024 characters
+    and is either a JSON object with exactly the string fields `report_id`
+    and `access_code`, or a form (decoded by the test's own reader) with
+    those two once each and at most `confirm=yes` besides; the ID, trimmed
+    and lowercased, is a version-4 UUID checked by position, and the code,
+    normalized by regular expressions, is 16 Crockford base32 characters.
+- **B2 version listing** (`decodeVersionPage` in `dashboard/storage.ts`).
+  It reads B2's `b2_list_file_versions` answer for one object, and its
+  result is every file version a deletion removes.
+  - Test and corpus: `report-access.fuzz.test.ts`, `corpus/b2_versions/`.
+  - Oracle: exactly the string `fileId`s of the entries whose `fileName`
+    is the object's key, in order, and more to read exactly when
+    `nextFileName` is that key and `nextFileId` a string.
 - **Hosted demo run event** (`parseDemoRunEvent` in `demo-runs.ts`). It is
   the value the demo Worker passes to the collector's `DemoRuns`
   entrypoint over its service binding (no public route), and decides what
@@ -1483,9 +1603,6 @@ check); `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
 These are tracked in the fuzzing ADR's follow-ups:
 
 - a full RPC session against a scripted guest;
-- the rest of the workerd `egress.js` gate (destinations, redirects,
-  addresses) checked against `EgressPolicy` (#335; the User-Agent rule is
-  [covered](#egress-bridge-user-agent-rule));
 - Audible CENC/DASH parsing;
 - package extraction;
 - naming paths;

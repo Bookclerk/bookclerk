@@ -3,7 +3,8 @@
  *
  * Bound as the plugin's `globalOutbound`. Policy JSON is injected by
  * bookclerk-workerd (`mode`, `domains`, `maxRedirects`, `subrequests`,
- * `allowUndeclaredPublicRedirects`, `tcp`, `addressCidrs`).
+ * `allowUndeclaredPublicRedirects`, `tcp`, `addressCidrs`, `localNames`,
+ * `pendingSettings`).
  *
  * - Initial (hop 0) hosts must match `domains` (IDNA ASCII; reject `%` / non-ASCII).
  *   A bare `*` entry matches every hostname but never an IP literal; it is a
@@ -17,8 +18,15 @@
  *   and an undeclared hop stays on ports 80 and 443.
  * - The host's CONNECT proxy is the resolved-address layer (SSRF / DNS
  *   rebinding): it resolves each tunnel, checks every address and dials the
- *   checked one. This script is hostname policy. A local-network IPv4
- *   literal listed in `localNames` (a setting named it) passes here.
+ *   checked one. This script is hostname policy. A local-network literal
+ *   listed in `localNames` (a setting named it) passes here.
+ * - Hosts are judged as the URL parser prints them (`connect()` authorities
+ *   go through `canonicalSocketHost` first), and the checks mirror the Rust
+ *   `EgressPolicy` in `bookclerk-plugin-manifest`: IP literals are classified
+ *   by range and need a covering `addressCidrs` grant unless public, and
+ *   `localhost` / `metadata.google.internal` need a grant for the address
+ *   they resolve to. The `egress_bridge` fuzz target runs these functions
+ *   against the Rust policy, which must allow everything this script allows.
  * - TCP `connect` requires a matching `tcp[]` host+port grant. Fetch grants
  *   do not imply TCP. Author isolates keep using `import { connect } from
  *   "cloudflare:sockets"`; this worker is the gateway, not a polyfill.
@@ -34,7 +42,12 @@
 
 import { connect } from "cloudflare:sockets";
 
-const CREDENTIAL_HEADERS = ["authorization", "cookie", "cookie2", "proxy-authorization"];
+const CREDENTIAL_HEADERS = [
+  "authorization",
+  "cookie",
+  "cookie2",
+  "proxy-authorization",
+];
 
 /** Fetch request-body-header names — removed when method becomes GET. */
 const REQUEST_BODY_HEADERS = [
@@ -47,23 +60,11 @@ const REQUEST_BODY_HEADERS = [
 /** The `domains` entry that grants every public hostname. */
 const ANY_PUBLIC_HOST = "*";
 
-/** Ports a `domains` entry that names no port grants. */
-const FETCH_DEFAULT_PORTS = [80, 443];
-
 /** Agent sent when the injected policy names none (SDK dev harnesses). */
 const FALLBACK_USER_AGENT = "bookclerk (+https://bookclerk.app)";
 
-function hostMatches(host, pattern) {
-  const h = normalizeHostToken(host);
-  const p = normalizeHostToken(pattern);
-  if (h == null || p == null) return false;
-  if (p === ANY_PUBLIC_HOST) return !isIpLiteral(h);
-  if (p.startsWith("*.")) {
-    const suffix = p.slice(1); // ".example.com"
-    return h.endsWith(suffix) || h === p.slice(2);
-  }
-  return h === p;
-}
+/** Ports a `domains` entry that names no port grants. */
+const FETCH_DEFAULT_PORTS = [80, 443];
 
 /** Canonical decimal port (digits, no leading zero, 1-65535), else null. */
 function parseCanonicalPort(text) {
@@ -111,16 +112,32 @@ function unbracketed(host) {
   return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
 }
 
+/** True when the host part of `domains` entry `entry` covers `host`. */
+function entryMatches(host, entry) {
+  const split = splitEntryPort(entry);
+  return split != null && hostMatches(host, split.host);
+}
+
 /** True when some `domains` entry covers `host` and grants `port`. */
 function domainGrants(host, port, policy) {
-  const normalized = normalizeHostToken(host);
-  if (normalized == null || port == null) return false;
-  const bare = unbracketed(normalized);
+  if (port == null) return false;
   return (policy.domains || []).some((d) => {
     const entry = splitEntryPort(d);
-    if (entry == null || !hostMatches(bare, entry.host)) return false;
+    if (entry == null || !hostMatches(host, entry.host)) return false;
     return entry.port == null ? FETCH_DEFAULT_PORTS.includes(port) : entry.port === port;
   });
+}
+
+function hostMatches(host, pattern) {
+  const h = normalizeHostToken(host);
+  const p = normalizeHostToken(pattern);
+  if (h == null || p == null) return false;
+  if (p === ANY_PUBLIC_HOST) return !isIpLiteral(h);
+  if (p.startsWith("*.")) {
+    const suffix = p.slice(1); // ".example.com"
+    return h.endsWith(suffix) || h === p.slice(2);
+  }
+  return h === p;
 }
 
 /** Trim, strip trailing dots, lowercase. Reject `%` and non-ASCII (fail closed). */
@@ -146,62 +163,203 @@ function isIpLiteral(host) {
   return /^(0x[0-9a-f]*|[0-9]+)$/.test(last);
 }
 
-function parseIpv4(host) {
-  const h = normalizeHostToken(host);
-  if (h == null) return null;
-  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!v4) return null;
-  const o = v4.slice(1).map((n) => Number(n));
-  if (o.some((n) => n > 255)) return null;
-  return (o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3];
+/**
+ * Dotted-decimal IPv4 as the URL parser and the host print it (four parts,
+ * no leading zeros) → its 32-bit value, else null. Legacy spellings (`127.1`,
+ * hex, octal) are not parsed here: the URL parser has already rewritten them
+ * for fetch, `canonicalSocketHost` for `connect()`, and anything else that
+ * looks numeric is refused by `classifyHost`.
+ */
+function parseIpv4(text) {
+  if (typeof text !== "string") return null;
+  const parts = text.split(".");
+  if (parts.length !== 4) return null;
+  let addr = 0;
+  for (const part of parts) {
+    if (!/^(0|[1-9][0-9]{0,2})$/.test(part)) return null;
+    const n = Number(part);
+    if (n > 255) return null;
+    addr = addr * 256 + n;
+  }
+  return addr;
 }
 
+/**
+ * RFC 4291 text IPv6 (one `::` at most, an optional dotted IPv4 tail, no
+ * zone) → its eight 16-bit groups, else null.
+ */
+function parseIpv6(text) {
+  if (typeof text !== "string" || !text.includes(":") || text.length > 45) return null;
+  const split = text.split("::");
+  if (split.length > 2) return null;
+  const groups = (part) => (part === "" ? [] : part.split(":"));
+  const head = groups(split[0]);
+  const tail = split.length === 2 ? groups(split[1]) : [];
+  const words = [];
+  const read = (list) => {
+    for (let i = 0; i < list.length; i++) {
+      const g = list[i];
+      if (i === list.length - 1 && g.includes(".") && list === lastList) {
+        const v4 = parseIpv4(g);
+        if (v4 == null) return false;
+        words.push(Math.floor(v4 / 65536), v4 % 65536);
+        continue;
+      }
+      if (!/^[0-9a-f]{1,4}$/i.test(g)) return false;
+      words.push(parseInt(g, 16));
+    }
+    return true;
+  };
+  const lastList = split.length === 2 ? tail : head;
+  if (!read(head)) return null;
+  const headLen = words.length;
+  if (!read(tail)) return null;
+  if (split.length === 1) return words.length === 8 ? words : null;
+  if (words.length > 7) return null;
+  const zeros = new Array(8 - words.length).fill(0);
+  return [...words.slice(0, headLen), ...zeros, ...words.slice(headLen)];
+}
+
+/**
+ * An address in the one form the checks below compare: IPv4 as
+ * `{ v4: number }`, IPv6 as `{ v6: number[8] }`, IPv4-mapped IPv6
+ * (`::ffff:a.b.c.d`) unwrapped to the IPv4 it carries.
+ */
+function canonicalIp(ip) {
+  if (ip.v6) {
+    const w = ip.v6;
+    if (w[0] === 0 && w[1] === 0 && w[2] === 0 && w[3] === 0 && w[4] === 0 && w[5] === 0xffff) {
+      return { v4: w[6] * 65536 + w[7] };
+    }
+  }
+  return ip;
+}
+
+/** IPv4 outside every special-use range the host refuses without a CIDR grant. */
 function isPublicIpv4(addr) {
-  const a = (addr >>> 24) & 0xff;
-  const b = (addr >>> 16) & 0xff;
+  const a = Math.floor(addr / 16777216);
+  const b = Math.floor(addr / 65536) % 256;
+  const c = Math.floor(addr / 256) % 256;
   if (a === 0 || a === 10 || a === 127) return false;
   if (a === 172 && b >= 16 && b <= 31) return false;
   if (a === 192 && b === 168) return false;
   if (a === 169 && b === 254) return false;
   if (a === 100 && b >= 64 && b <= 127) return false;
   if (a === 198 && (b === 18 || b === 19)) return false;
+  if (a >= 224 && a <= 239) return false; // multicast
+  if (addr === 0xffffffff) return false; // broadcast
+  if (a === 192 && b === 0 && c === 2) return false; // documentation
+  if (a === 198 && b === 51 && c === 100) return false;
+  if (a === 203 && b === 0 && c === 113) return false;
   return true;
 }
 
-function cidrContainsIpv4(cidr, addr) {
-  const parts = String(cidr).split("/");
-  const net = parseIpv4(parts[0]);
-  if (net == null) return false;
-  const prefix = parts.length > 1 ? Number(parts[1]) : 32;
-  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return false;
-  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  return ((addr >>> 0) & mask) === ((net >>> 0) & mask);
+/** IPv6 that is not unspecified, loopback, multicast, ULA, link-local or documentation. */
+function isPublicIpv6(w) {
+  if (w.every((g) => g === 0)) return false;
+  if (w.slice(0, 7).every((g) => g === 0) && w[7] === 1) return false;
+  if (w[0] >= 0xff00) return false;
+  if ((w[0] & 0xfe00) === 0xfc00) return false;
+  if ((w[0] & 0xffc0) === 0xfe80) return false;
+  if (w[0] === 0x2001 && w[1] === 0xdb8) return false;
+  return true;
 }
 
-/** RFC 1918 or RFC 6598 shared space: a LAN address a setting may name. */
-function isLocalNetworkIpv4(addr) {
-  const a = (addr >>> 24) & 0xff;
-  const b = (addr >>> 16) & 0xff;
-  return (
-    a === 10 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 100 && b >= 64 && b <= 127)
-  );
+/** `addr/prefix` or a bare address (a host route) → `{ ip, prefix }`, else null. */
+function parseCidr(raw) {
+  if (typeof raw !== "string") return null;
+  const text = raw.trim();
+  const slash = text.indexOf("/");
+  const addrText = slash === -1 ? text : text.slice(0, slash);
+  const v4 = parseIpv4(addrText);
+  const v6 = v4 == null ? parseIpv6(addrText) : null;
+  if (v4 == null && v6 == null) return null;
+  const max = v4 != null ? 32 : 128;
+  let prefix = max;
+  if (slash !== -1) {
+    const p = text.slice(slash + 1);
+    if (!/^\+?[0-9]{1,3}$/.test(p)) return null;
+    prefix = Number(p);
+    if (prefix > max) return null;
+  }
+  return { ip: v4 != null ? { v4 } : { v6 }, prefix };
+}
+
+/** Whether the first `prefix` bits of two 16-bit group lists agree. */
+function groupsPrefixEqual(a, b, prefix) {
+  let left = prefix;
+  for (let i = 0; i < a.length && left > 0; i++) {
+    const bits = Math.min(16, left);
+    const shift = 16 - bits;
+    if (a[i] >> shift !== b[i] >> shift) return false;
+    left -= bits;
+  }
+  return true;
+}
+
+/** Whether a CIDR grant covers an address (both canonicalized first). */
+function cidrContains(grant, ip) {
+  const net = canonicalIp(grant.ip);
+  const addr = canonicalIp(ip);
+  if (net.v4 != null && addr.v4 != null) {
+    const p = Math.min(grant.prefix, 32);
+    const toGroups = (n) => [Math.floor(n / 65536), n % 65536];
+    return groupsPrefixEqual(toGroups(net.v4), toGroups(addr.v4), p);
+  }
+  if (net.v6 && addr.v6) return groupsPrefixEqual(net.v6, addr.v6, Math.min(grant.prefix, 128));
+  return false;
+}
+
+/** The public Internet, or an address an `addressCidrs` grant covers. */
+function addressAllowed(ip, policy) {
+  const addr = canonicalIp(ip);
+  if (addr.v4 != null ? isPublicIpv4(addr.v4) : isPublicIpv6(addr.v6)) return true;
+  return (policy.addressCidrs || []).some((raw) => {
+    const grant = parseCidr(raw);
+    return grant != null && cidrContains(grant, addr);
+  });
+}
+
+/** RFC 1918, RFC 6598 shared space or IPv6 ULA: an address a setting may name. */
+function isLocalNetwork(ip) {
+  const addr = canonicalIp(ip);
+  if (addr.v4 != null) {
+    const a = Math.floor(addr.v4 / 16777216);
+    const b = Math.floor(addr.v4 / 65536) % 256;
+    return (
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    );
+  }
+  return (addr.v6[0] & 0xfe00) === 0xfc00;
+}
+
+/** Whether two addresses are the same once canonicalized. */
+function sameIp(a, b) {
+  const x = canonicalIp(a);
+  const y = canonicalIp(b);
+  if (x.v4 != null || y.v4 != null) return x.v4 === y.v4;
+  return x.v6.every((g, i) => g === y.v6[i]);
 }
 
 /**
- * True when an IPv4 literal may be requested: public, inside a CIDR grant,
- * or a local-network literal a setting named (`localNames`), which grants
- * exactly that address.
+ * Whether an IP literal may be requested: [`addressAllowed`], or a
+ * local-network literal a setting named (`localNames`), which grants exactly
+ * that address.
  */
-function ipv4Granted(addr, policy) {
-  if (isPublicIpv4(addr)) return true;
-  const cidrs = policy.addressCidrs || [];
-  if (cidrs.some((c) => cidrContainsIpv4(c, addr))) return true;
-  return (
-    isLocalNetworkIpv4(addr) && (policy.localNames || []).some((n) => parseIpv4(String(n)) === addr)
-  );
+function literalAllowed(ip, policy) {
+  if (addressAllowed(ip, policy)) return true;
+  if (!isLocalNetwork(ip)) return false;
+  return (policy.localNames || []).some((n) => {
+    if (typeof n !== "string") return false;
+    const bare = unbracketed(n.trim());
+    const v4 = parseIpv4(bare);
+    const v6 = v4 == null ? parseIpv6(bare) : null;
+    if (v4 == null && v6 == null) return false;
+    return sameIp(v4 != null ? { v4 } : { v6 }, ip);
+  });
 }
 
 function isRestrictedHostname(host) {
@@ -215,49 +373,219 @@ function isRestrictedHostname(host) {
   );
 }
 
-function hostnameAddressOk(host, policy) {
-  const cidrs = policy.addressCidrs || [];
-  if (isRestrictedHostname(host)) {
-    const loop4 = parseIpv4("127.0.0.1");
-    return cidrs.some((c) => cidrContainsIpv4(c, loop4) || String(c).startsWith("::1"));
+/**
+ * A restricted name passes only with a grant for the address it resolves
+ * to: the metadata name needs `169.254.169.254`, the loopback names need
+ * `127.0.0.1` or `::1`. Any other name is the resolved-address layer's call.
+ */
+function restrictedNameOk(name, policy) {
+  if (name === "metadata.google.internal") {
+    return addressAllowed({ v4: 169 * 16777216 + 254 * 65536 + 169 * 256 + 254 }, policy);
   }
-  const addr = parseIpv4(host);
-  if (addr != null) {
-    return ipv4Granted(addr, policy);
-  }
-  if (normalizeHostToken(host) === "::1") {
-    return cidrs.some((c) => String(c) === "::1/128" || String(c) === "::1");
+  if (name === "localhost" || name === "localhost.localdomain" || name.endsWith(".localhost")) {
+    return (
+      addressAllowed({ v4: 127 * 16777216 + 1 }, policy) ||
+      addressAllowed({ v6: [0, 0, 0, 0, 0, 0, 0, 1] }, policy)
+    );
   }
   return true;
 }
 
-function allowsInitial(host, port, policy) {
-  if (policy.mode !== "outbound") return false;
-  if (!hostnameAddressOk(host, policy)) return false;
-  return domainGrants(host, port, policy);
+/**
+ * The host a gate judges: `{ ip, text }` for an address (IPv6 without its
+ * brackets), `{ name }` for a hostname, or null (refused). Hosts arrive as
+ * the URL parser or `canonicalSocketHost` printed them; any other numeric
+ * spelling, and anything `normalizeHostToken` refuses, fails closed.
+ */
+/**
+ * Decodes one Punycode label body (RFC 3492, the part after `xn--`), or
+ * returns null when it is not valid Punycode.
+ */
+function decodePunycode(input) {
+  const base = 36;
+  const tMin = 1;
+  const tMax = 26;
+  const maxCode = 0x10ffff;
+  const out = [];
+  const delimiter = input.lastIndexOf("-");
+  for (let j = 0; j < Math.max(delimiter, 0); j++) {
+    const c = input.charCodeAt(j);
+    if (c >= 0x80) return null;
+    out.push(c);
+  }
+  let n = 128;
+  let bias = 72;
+  let i = 0;
+  for (let k = delimiter > 0 ? delimiter + 1 : 0; k < input.length; ) {
+    const oldi = i;
+    let w = 1;
+    for (let t = base; ; t += base) {
+      if (k >= input.length) return null;
+      const c = input.charCodeAt(k++);
+      let digit;
+      if (c >= 0x30 && c <= 0x39) digit = c - 22;
+      else if (c >= 0x61 && c <= 0x7a) digit = c - 0x61;
+      else return null;
+      i += digit * w;
+      if (i > 0x7fffffff) return null;
+      const th = t <= bias ? tMin : t >= bias + tMax ? tMax : t - bias;
+      if (digit < th) break;
+      w *= base - th;
+      if (w > 0x7fffffff) return null;
+    }
+    const len = out.length + 1;
+    let delta = oldi === 0 ? Math.floor((i - oldi) / 700) : Math.floor((i - oldi) / 2);
+    delta += Math.floor(delta / len);
+    let kk = 0;
+    while (delta > ((base - tMin) * tMax) >> 1) {
+      delta = Math.floor(delta / (base - tMin));
+      kk += base;
+    }
+    bias = kk + Math.floor(((base - tMin + 1) * delta) / (delta + 38));
+    n += Math.floor(i / len);
+    i %= len;
+    if (n > maxCode || (n >= 0xd800 && n <= 0xdfff)) return null;
+    out.splice(i, 0, n);
+    i += 1;
+  }
+  return String.fromCodePoint(...out);
 }
 
-function allowsRedirect(host, port, hop, policy, maxRedirects) {
+/**
+ * True when every `xn--` label of an ASCII hostname is Punycode for a
+ * non-ASCII label that encodes back to itself, as the Rust policy's IDNA
+ * check demands. URL parsers differ here (newer ones pass `xn--` labels
+ * through unchecked), so the bridge checks rather than trusting the parser.
+ * Where the runtime has `URL`, the decoded label must also survive IDNA
+ * mapping unchanged.
+ */
+function punycodeLabelsOk(name) {
+  for (const label of name.split(".")) {
+    if (!label.startsWith("xn--")) continue;
+    const decoded = decodePunycode(label.slice(4));
+    if (decoded == null || decoded.length === 0 || /^[\x00-\x7f]*$/.test(decoded)) {
+      return false;
+    }
+    if (typeof URL === "function") {
+      let again;
+      try {
+        again = new URL(`http://${decoded}/`).hostname;
+      } catch {
+        return false;
+      }
+      if (again !== label) return false;
+    }
+  }
+  return true;
+}
+
+function classifyHost(host) {
+  const token = normalizeHostToken(host);
+  if (token == null) return null;
+  const bare = token.startsWith("[") && token.endsWith("]") ? token.slice(1, -1) : token;
+  const v4 = parseIpv4(bare);
+  if (v4 != null) return { ip: { v4 }, text: bare };
+  const v6 = parseIpv6(bare);
+  if (v6 != null) return { ip: { v6 }, text: bare };
+  if (isIpLiteral(bare)) return null;
+  if (!punycodeLabelsOk(bare)) return null;
+  return { name: bare };
+}
+
+function allowsInitial(host, policy) {
+  if (policy.mode !== "outbound") return false;
+  const target = classifyHost(host);
+  if (target == null) return false;
+  if (target.ip) {
+    if (!literalAllowed(target.ip, policy)) return false;
+  } else if (isRestrictedHostname(target.name) && !restrictedNameOk(target.name, policy)) {
+    return false;
+  }
+  const text = target.ip ? target.text : target.name;
+  return (policy.domains || []).some((d) => entryMatches(text, d));
+}
+
+/**
+ * A direct fetch to `host:port`: [`allowsInitial`] plus the port rule (an
+ * entry's own port, else 80 and 443).
+ */
+function allowsFetch(host, port, policy) {
+  if (!allowsInitial(host, policy)) return false;
+  const target = classifyHost(host);
+  return target != null && domainGrants(target.ip ? target.text : target.name, port, policy);
+}
+
+function allowsRedirect(host, hop, policy, maxRedirects) {
   if (policy.mode !== "outbound") return false;
   if (hop >= maxRedirects) return false;
-  if (!hostnameAddressOk(host, policy)) return false;
-  if (domainGrants(host, port, policy)) return true;
-  return Boolean(policy.allowUndeclaredPublicRedirects) && FETCH_DEFAULT_PORTS.includes(port);
+  const target = classifyHost(host);
+  if (target == null) return false;
+  if (target.ip) {
+    return (
+      literalAllowed(target.ip, policy) &&
+      (policy.allowUndeclaredPublicRedirects === true ||
+        (policy.domains || []).some((d) => entryMatches(target.text, d)))
+    );
+  }
+  const restricted = isRestrictedHostname(target.name);
+  if (restricted && !restrictedNameOk(target.name, policy)) return false;
+  if (policy.allowUndeclaredPublicRedirects === true) {
+    // A restricted name is never an undeclared public destination.
+    return !restricted;
+  }
+  return (policy.domains || []).some((d) => entryMatches(target.name, d));
+}
+
+/**
+ * A redirect hop to `host:port`: [`allowsRedirect`] plus the port rule. A
+ * hop to a declared host needs a port its entry grants; an undeclared public
+ * hop is limited to 80 and 443.
+ */
+function allowsRedirectTo(host, port, hop, policy, maxRedirects) {
+  if (!allowsRedirect(host, hop, policy, maxRedirects)) return false;
+  const target = classifyHost(host);
+  if (target == null) return false;
+  if (domainGrants(target.ip ? target.text : target.name, port, policy)) return true;
+  return policy.allowUndeclaredPublicRedirects === true && FETCH_DEFAULT_PORTS.includes(port);
 }
 
 function allowsTcp(host, port, policy) {
   if (policy.mode !== "outbound") return false;
-  if (!hostnameAddressOk(host, policy)) return false;
-  const normalized = normalizeHostToken(host);
-  if (normalized == null) return false;
+  const target = classifyHost(host);
+  if (target == null) return false;
+  if (target.ip) {
+    if (!literalAllowed(target.ip, policy)) return false;
+  } else if (isRestrictedHostname(target.name) && !restrictedNameOk(target.name, policy)) {
+    return false;
+  }
+  const text = target.ip ? target.text : target.name;
   const grants = policy.tcp || [];
   return grants.some(
     (g) =>
       g.host !== ANY_PUBLIC_HOST &&
-      hostMatches(normalized, g.host) &&
+      hostMatches(text, g.host) &&
       Array.isArray(g.ports) &&
       g.ports.includes(port),
   );
+}
+
+/**
+ * The hostname a `connect()` authority names, printed the way the URL parser
+ * prints a fetch hostname (legacy IPv4 spellings rewritten, IPv6 compressed
+ * and bracketed, names IDNA-mapped and lowercased), so one set of checks
+ * judges both. Only ASCII letters, digits, `.`, `-`, `_` and `:` are
+ * accepted first: the URL parser would percent-decode `%` and read `@`, `/`
+ * or `\` as structure, which would judge a different host than the one
+ * dialled. Null when the authority names no valid host.
+ */
+function canonicalSocketHost(hostname) {
+  if (typeof hostname !== "string" || !/^[A-Za-z0-9._:-]+$/.test(hostname)) return null;
+  const literal = hostname.includes(":") ? `[${hostname}]` : hostname;
+  try {
+    return new URL(`http://${literal}/`).hostname;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -299,7 +627,11 @@ function withUserAgent(request, hostname, policy) {
 }
 
 function sameOrigin(a, b) {
-  return a.protocol === b.protocol && a.hostname === b.hostname && a.port === b.port;
+  return (
+    a.protocol === b.protocol &&
+    a.hostname === b.hostname &&
+    a.port === b.port
+  );
 }
 
 /**
@@ -402,15 +734,6 @@ function parseAuthority(authority) {
 }
 
 /** Workerd `json` bindings arrive as objects; keep string parse for tests. */
-function loadPolicy(raw) {
-  if (raw == null || raw === "") return {};
-  if (typeof raw === "string") {
-    return JSON.parse(raw);
-  }
-  if (typeof raw === "object") return raw;
-  throw new Error("invalid egress policy type");
-}
-
 /**
  * The pending network setting whose destination is `host:port`, if any.
  * Pending settings grant nothing; they only let a refusal name the setting.
@@ -454,6 +777,15 @@ function notGranted(host, port, policy, fallback) {
   );
 }
 
+function loadPolicy(raw) {
+  if (raw == null || raw === "") return {};
+  if (typeof raw === "string") {
+    return JSON.parse(raw);
+  }
+  if (typeof raw === "object") return raw;
+  throw new Error("invalid egress policy type");
+}
+
 export default {
   async fetch(request, env) {
     let policy;
@@ -481,7 +813,7 @@ export default {
       const url = new URL(current.url);
       const port = effectivePort(url);
       if (hop === 0) {
-        if (!allowsInitial(url.hostname, port, policy)) {
+        if (!allowsFetch(url.hostname, port, policy)) {
           return notGranted(
             url.hostname,
             port,
@@ -489,7 +821,7 @@ export default {
             `host \`${url.host}\` not in capabilities.network.domains`,
           );
         }
-      } else if (!allowsRedirect(url.hostname, port, hop, policy, maxRedirects)) {
+      } else if (!allowsRedirectTo(url.hostname, port, hop, policy, maxRedirects)) {
         if (hop >= maxRedirects) {
           return new Response("too many redirects", { status: 508 });
         }
@@ -557,22 +889,27 @@ export default {
     const opened = await socket.opened;
     const authority = (opened && opened.localAddress) || "";
     const parsed = parseAuthority(authority);
-    const hostname = parsed.hostname;
     const port = parsed.port;
-    if (!allowsTcp(hostname, port, policy)) {
+    // Judge and dial the canonical host, so the check and the socket agree
+    // on which host it is.
+    const hostname = canonicalSocketHost(parsed.hostname);
+    if (hostname == null || !allowsTcp(hostname, port, policy)) {
       try {
         await socket.close();
       } catch {
         /* already closed */
       }
-      const pending = pendingSetting(hostname, port, policy);
+      const named = hostname ?? String(parsed.hostname);
+      const pending = pendingSetting(named, port, policy);
       throw new Error(
         pending
-          ? `network_not_granted: ${destinationOf(hostname, port)} is named by setting \`${pending.setting}\` and awaits the operator's approval`
-          : `network_not_granted: tcp connect \`${hostname}:${port}\` is not in capabilities.network.tcp`,
+          ? `network_not_granted: ${destinationOf(named, port)} is named by setting \`${pending.setting}\` and awaits the operator's approval`
+          : `network_not_granted: tcp connect \`${parsed.hostname}:${port}\` is not in capabilities.network.tcp`,
       );
     }
-    const outbound = connect({ hostname, port });
+    // `connect()` takes IPv6 without the URL form's brackets.
+    const dial = hostname.startsWith("[") ? hostname.slice(1, -1) : hostname;
+    const outbound = connect({ hostname: dial, port });
     await outbound.opened;
     await Promise.all([
       socket.readable.pipeTo(outbound.writable),

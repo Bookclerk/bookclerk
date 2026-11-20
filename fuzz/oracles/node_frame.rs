@@ -76,14 +76,20 @@
 //!   leading `/`, no backslash, no control character, no drive prefix).
 //!   Checked character by character here, since the branch asks for byte
 //!   ranges by those sizes and reads the names when it places the files.
+//! - a `heartbeat`'s public origin that the library would keep
+//!   (`BranchOrigin::parse` accepts it) is `http://` or `https://` and a
+//!   non-empty authority of printable ASCII with no `/`, `?`, `#` or `@`,
+//!   at most 255 bytes in all. Checked byte by byte here, since the library
+//!   stores it and shows it as the branch's address.
 
 use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
     claimed_problem, copy_grant_problem, copy_granted_problem, finish_problem, found_problem,
     questions_problem, scan_pass_end_problem, scan_removed_problem, target_destinations_problem,
-    window_page_problem, Availability, Body, CopyGrantedFrame, CopyRole, Frame, LookupScheme,
-    LookupWork, WindowCursor, FRAME_VERSION, MAX_CALL_NUMBER_BYTES, MAX_FRAME_BYTES,
+    window_page_problem, Availability, Body, BranchOrigin, CopyGrantedFrame, CopyRole, Frame,
+    LookupScheme, LookupWork, WindowCursor, FRAME_VERSION, MAX_BRANCH_ORIGIN_BYTES,
+    MAX_CALL_NUMBER_BYTES, MAX_FRAME_BYTES,
 };
 use serde_json::Value;
 
@@ -176,6 +182,7 @@ pub fn check(data: &[u8]) {
     check_window(&frame.body);
     check_scan_reports(&frame.body);
     check_copies(&frame.body);
+    check_heartbeat(&frame.body);
     let text_again = frame.to_text();
     // Serializing can lengthen an opaque JSON field (`1e9` is written out
     // in full), past the limit the parser enforces: such a frame is never
@@ -610,6 +617,33 @@ fn check_window(body: &Body) {
                     "an edition listed twice was accepted"
                 );
             }
+        }
+    }
+}
+
+/// The `heartbeat` invariant: a public origin the library would keep is a
+/// plain `http(s)` origin, checked byte by byte.
+fn check_heartbeat(body: &Body) {
+    if let Body::Heartbeat {
+        public_origin: Some(raw),
+        ..
+    } = body
+    {
+        if let Some(origin) = BranchOrigin::parse(raw) {
+            let origin = origin.as_str();
+            let rest = origin
+                .strip_prefix("https://")
+                .or_else(|| origin.strip_prefix("http://"));
+            assert!(
+                origin.len() <= MAX_BRANCH_ORIGIN_BYTES
+                    && rest.is_some_and(|rest| {
+                        !rest.is_empty()
+                            && rest.bytes().all(|b| {
+                                b.is_ascii_graphic() && !matches!(b, b'/' | b'?' | b'#' | b'@')
+                            })
+                    }),
+                "branch origin {origin:?} accepted from {raw:?}"
+            );
         }
     }
 }

@@ -4,18 +4,10 @@ use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
-use mp3lame_encoder::{Builder, DualPcm, Encoder, FlushGap, MonoPcm};
-use symphonia::core::audio::GenericAudioBufferRef;
-use symphonia::core::codecs::audio::AudioDecoderOptions;
-use symphonia::core::codecs::CodecParameters;
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, TrackType};
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-
+use crate::decode::{open_audio_file, OutChannels};
 use crate::error::{MediaError, Result};
 use crate::MediaOutcome;
+use mp3lame_encoder::{Builder, DualPcm, Encoder, FlushGap, MonoPcm};
 
 /// Re-encode audio to MP3 (classic Libation `DecryptToLossy`).
 ///
@@ -42,54 +34,15 @@ pub fn encode_to_mp3_native(
         "native mp3 encode (symphonia + lame)"
     );
 
-    let file = File::open(input)?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = input.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
+    let mut opened = open_audio_file(input, false)?;
+    let sample_rate = opened.sample_rate;
 
-    let mut format = symphonia::default::get_probe()
-        .probe(
-            &hint,
-            mss,
-            FormatOptions::default(),
-            MetadataOptions::default(),
-        )
-        .map_err(|err| MediaError::Native(format!("probe failed: {err}")))?;
-
-    let track = format
-        .default_track(TrackType::Audio)
-        .ok_or_else(|| MediaError::Native("no decodable audio track".into()))?
-        .clone();
-    let track_id = track.id;
-    let audio_params = match track.codec_params.as_ref() {
-        Some(CodecParameters::Audio(params)) => params.clone(),
-        _ => {
-            return Err(MediaError::Native(
-                "selected track is missing audio codec parameters".into(),
-            ));
-        }
-    };
-    let sample_rate = audio_params
-        .sample_rate
-        .ok_or_else(|| MediaError::Native("missing sample rate".into()))?;
-    let channels = audio_params
-        .channels
-        .as_ref()
-        .map(symphonia::core::audio::Channels::count)
-        .unwrap_or(2)
-        .max(1);
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
-        .map_err(|err| MediaError::Native(format!("decoder init failed: {err}")))?;
-
-    let out_channels = if lame.downsample_mono || lame.mode.eq_ignore_ascii_case("mono") {
-        1u32
+    let out_layout = if lame.downsample_mono || lame.mode.eq_ignore_ascii_case("mono") {
+        OutChannels::Mono
     } else {
-        channels.min(2) as u32
+        OutChannels::SourceUpToStereo
     };
+    let out_channels = u32::from(opened.pcm_format(out_layout).channels);
 
     // Default: match source. Optional down-sample only when max_sample_rate is lower.
     let target_rate = match max_sample_rate {
@@ -167,50 +120,16 @@ pub fn encode_to_mp3_native(
     let mut out_file = File::create(output)?;
     let mut output_written = 0u64;
     let mut mp3_chunk = Vec::new();
-    let mut decoded_pcm: Vec<i16> = Vec::new();
     let mut encode_pcm: Vec<i16> = Vec::new();
-    // Reused across packets so decode does not allocate per AU.
-    let mut interleaved_scratch: Vec<i16> = Vec::new();
     let mut resampler = (target_rate != sample_rate)
         .then(|| LinearResampler::new(sample_rate, target_rate, out_channels as usize));
 
-    loop {
-        let packet = match format.next_packet() {
-            Ok(Some(packet)) => packet,
-            Ok(None) => break,
-            Err(SymphoniaError::ResetRequired) => {
-                decoder.reset();
-                continue;
-            }
-            Err(err) => {
-                return Err(MediaError::Native(format!("demux error: {err}")));
-            }
-        };
-        if packet.track_id != track_id {
-            continue;
-        }
-        let decoded = match decoder.decode(&packet) {
-            Ok(buf) => buf,
-            Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(err) => {
-                return Err(MediaError::Native(format!("decode error: {err}")));
-            }
-        };
-
-        decoded_pcm.clear();
-        append_pcm_i16(
-            &decoded,
-            out_channels,
-            &mut interleaved_scratch,
-            &mut decoded_pcm,
-        );
-
+    opened.decode_each(out_layout, |decoded_pcm| {
         if let Some(rs) = resampler.as_mut() {
-            rs.push(&decoded_pcm, &mut encode_pcm);
+            rs.push(decoded_pcm, &mut encode_pcm);
         } else {
-            encode_pcm.extend_from_slice(&decoded_pcm);
+            encode_pcm.extend_from_slice(decoded_pcm);
         }
-
         drain_encode_chunks(
             &mut encoder,
             &mut encode_pcm,
@@ -219,8 +138,8 @@ pub fn encode_to_mp3_native(
             &mut out_file,
             &mut output_written,
             max_output_bytes,
-        )?;
-    }
+        )
+    })?;
 
     if let Some(rs) = resampler.as_mut() {
         rs.flush(&mut encode_pcm);
@@ -449,58 +368,6 @@ fn encode_pcm_chunk(
     Ok(())
 }
 
-/// Copies or down/up-mixes a Symphonia buffer into interleaved i16 at `out_channels`.
-fn append_pcm_i16(
-    buf: &GenericAudioBufferRef<'_>,
-    out_channels: u32,
-    interleaved: &mut Vec<i16>,
-    dst: &mut Vec<i16>,
-) {
-    let frames = buf.frames();
-    if frames == 0 {
-        return;
-    }
-    let in_channels = buf.spec().channels().count().max(1);
-    let out_ch = out_channels.max(1) as usize;
-
-    // Common path: layout already matches — copy straight into `dst` (no scratch).
-    if (out_ch == 1 && in_channels == 1) || (out_ch == 2 && in_channels == 2) {
-        let start = dst.len();
-        let need = frames.saturating_mul(in_channels);
-        dst.resize(start + need, 0);
-        buf.copy_to_slice_interleaved(&mut dst[start..]);
-        return;
-    }
-
-    let need = frames.saturating_mul(in_channels);
-    interleaved.resize(need, 0);
-    buf.copy_to_slice_interleaved(&mut interleaved[..need]);
-
-    let mix_channels = in_channels.min(2);
-    let out_samples = if out_ch == 1 {
-        frames
-    } else {
-        frames.saturating_mul(2)
-    };
-    dst.reserve(out_samples);
-    if out_ch == 1 {
-        for frame in interleaved[..need].chunks_exact(in_channels) {
-            let mut acc = 0i32;
-            for sample in frame.iter().take(mix_channels) {
-                acc += i32::from(*sample);
-            }
-            dst.push((acc / mix_channels as i32) as i16);
-        }
-    } else {
-        for frame in interleaved[..need].chunks_exact(in_channels) {
-            let l = frame[0];
-            let r = if mix_channels > 1 { frame[1] } else { l };
-            dst.push(l);
-            dst.push(r);
-        }
-    }
-}
-
 /// Fills the Xing/Info frame LAME reserved at the start of `out_file` with
 /// the finished stream's frame count, so readers get an exact running time
 /// for variable bit rate output instead of estimating it from the opening.
@@ -710,12 +577,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = dir.path().join("source.m4b");
         let encoded = dir.path().join("encoded.mp3");
+        // Long enough at 320 kbps stereo to outgrow the source's reserved
+        // `moov` slack, which an M4B carries however short its audio.
         let sample_rate = 48_000usize;
-        let pcm = vec![0i16; 32];
+        let pcm = vec![0i16; sample_rate * 2 * 40];
         crate::package_m4b_from_pcm(
             &pcm,
             u32::try_from(sample_rate).expect("rate"),
-            1,
+            2,
             &source,
             &[("One".to_string(), 0)],
         )
@@ -762,7 +631,9 @@ mod tests {
             &[("One".to_string(), 0)],
         )
         .expect("32 kbps AAC source");
-        let source_len = std::fs::metadata(&source).expect("source").len();
+        // The audio, without the `moov` slack reserved for later edits.
+        let (moov, _) = bookclerk_mp4::read_moov(&source).expect("moov");
+        let source_len = std::fs::metadata(&source).expect("source").len() - moov.len;
         let lame = bookclerk_config::LameConfig {
             constant_bitrate: true,
             bitrate_kbps: 320,

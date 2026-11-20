@@ -193,6 +193,18 @@ Workerd egress is matched by the shared `EgressPolicy` and
   the allowlist patterns. Percent-encoded hosts and failed IDNA are
   **rejected** (fail closed). Unicode and Punycode forms of the same name
   match after normalization.
+- **Address literals and special names.** A host that is an IP literal
+  passes only when it is public or inside a granted CIDR, judged by range
+  in every spelling (legacy `127.1`, hex and octal IPv4, bracketed and
+  IPv4-mapped IPv6). `localhost` names need a grant covering `127.0.0.1`
+  or `::1`, and `metadata.google.internal` one covering
+  `169.254.169.254`; neither ever passes as an undeclared public redirect.
+  A `connect()` host is first rewritten the way the URL parser rewrites a
+  fetch host, and one with `%`, `@` or other URL syntax is refused, so
+  the gate and the socket agree on which host it is. A label starting
+  `xn--` must be valid Punycode for a non-ASCII label, checked by the
+  bridge itself because URL parsers differ on it. The bridge and
+  `EgressPolicy` are fuzzed against each other (`egress_bridge`).
 - **Resolved addresses.** Permission is enforced against the resolved IP
   (public addresses plus explicit CIDRs): the host resolves each tunnel's
   host and checks every address before it dials. DNS rebinding from a
@@ -324,17 +336,35 @@ rejected. A dropped token isn't granted.
 
 ### Approving on the command line
 
-The CLI always approves the full request, including every destination
-the plugin's network settings name now, which it lists under
-"Destinations from settings":
-
-`bookclerk plugins config set` says when a value names a destination
-that needs approval.
+`bookclerk plugins approve` approves what the plugin's current version
+asks for, as accepting the consent dialog unchanged does, including every
+destination the plugin's network settings name now, which it lists under
+"Destinations from settings". `bookclerk plugins config set` says when a
+value names a destination that needs approval.
 
 ```sh
 bookclerk plugins approve echo          # interactive summary of network/bindings
 bookclerk plugins approve echo --yes    # non-interactive
 bookclerk plugins deploy echo
+```
+
+When the plugin already has a grant, a re-approval (for example to accept
+an upgrade) keeps your earlier answers:
+
+- destinations you denied stay denied, and the ones you added stay;
+- network stays off if you turned it off for a version that asked for it;
+- your answer on undeclared public redirects and the own `User-Agent`
+  hosts you refused stay as they were.
+
+Everything new in this version is approved, and the structural
+capabilities (entrypoints, events, jobs, bindings, flags) and budgets
+are what the version declares. The command lists the destinations it
+keeps. This applies to a host-local tree's grant; an installed version
+always records its package's request. To approve
+the package's request as is instead, pass `--reset`:
+
+```sh
+bookclerk plugins approve echo --reset
 ```
 
 ### Platform guests
@@ -453,7 +483,9 @@ On an upgrade of the **same PluginKey**:
 meanwhile. What is pending is shown the same way everywhere:
 
 - `bookclerk plugins info <id>` (`pending_structural`) and
-  `bookclerk plugins approve <id>`, which prints it before the full request;
+  `bookclerk plugins approve <id>`, which prints it before the full request
+  and then approves it, keeping your earlier denials
+  ([Approving on the command line](#approving-on-the-command-line));
 - the consent dialog in **Settings**, which lists it under **New in this
   version** with the new destinations ticked (untick one to deny it);
 - `GET /api/plugins/{id}/consent`, as `pending` (the same lines, plus the

@@ -12,6 +12,9 @@
   its owner's titles, and other members' titles only when its operator
   turns on "Keep copies of other members' books" (see
   [Work settings on the branch](../server/branches.md#work-settings-on-the-branch)).
+  The Host user role is removed (2026-11-18, see
+  [Node kinds, ownership, and the Host role](#node-kinds-ownership-and-the-host-role)):
+  a Member who owns a node administers it as a Host did.
 - **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
   library-install decision, the Phase 3 implementation, and the node and
   install/deploy terminology: 2026-10-14)
@@ -58,7 +61,7 @@ database and unlock its secret root:
 | Database target | `[database]` in `config.toml`, or `BOOKCLERK_DATABASE_*` / D1 / Postgres env | The process needs it to open the connection that would store later configuration |
 | Auth password | `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` | Unwraps `master.key`; not itself a library secret |
 | Secret root | `$BOOKCLERK_FILES_DIR/master.key` (`BCK1` or `BCK2`) | Decrypts `encrypted_secrets` and is the library DEK |
-| Host enrollment | `$BOOKCLERK_FILES_DIR/node-identity.json` | Stable `HostId` and the library id this files directory has joined |
+| Branch enrollment | `$BOOKCLERK_FILES_DIR/node-identity.json` | Stable `HostId` and the library id this files directory has joined |
 
 `[database].plugin`, the SQLite path, the D1 account/database ids, the D1 API
 token, and the Postgres URL stay bootstrap. Moving them into the database
@@ -882,6 +885,28 @@ across nodes.
 
 ### Node kinds, ownership, and the Host role
 
+> [!NOTE]
+> Amended 2026-11-18 with the owner: the Host user role is removed. A
+> library's roles are Owner, Administrator and Member. A Member who owns a
+> node (a branch they linked, or one an operator assigned) reaches the node
+> routes and the Status page exactly as a Host did, and `GET /api/auth/me`
+> reports it as `administers_nodes`. Whether members may link branches
+> stays the operator's or an Owner's switch (`core.branch_enrollment`,
+> decision 5 below); limits for one person go with the patron scopes.
+> Trust is unchanged: a Member's node receives only work whose secrets
+> belong to that Member. Where the text below says Host role, read Member
+> who owns a node.
+>
+> Amended 2026-11-19 with the owner's branch naming (2026-11-18): every
+> node also has a relationship to the library. A shared node is a
+> **shared branch**. A branch node reports its own
+> `integrations.public_origin` in each heartbeat; one that reports a plain
+> `http(s)` origin is a **remote branch** (a core branch other installs
+> can reach), and one that reports none is a **local branch**. The label
+> follows the latest heartbeat and changes nothing about trust or work.
+> The library's switch for letting new branches join is
+> `core.branch_enrollment` (formerly `core.host_enrollment`).
+
 Decided 2026-10-14 with the owner. A library has two kinds of node:
 
 - **Shared nodes** share the library database and `master.key` and give the
@@ -962,8 +987,8 @@ Decided 2026-10-15 with the owner, for the H-4 design:
    for a secret ref handed out under a live fence.
 4. **Uploads.** Streamed through the owner to each output destination,
    never staged on a shared node's disk.
-5. **Enrollment.** The operator or an Owner turns host enrollment on or off
-   for the library (`core.host_enrollment`, on by default). While it is on,
+5. **Enrollment.** The operator or an Owner turns branch enrollment on or off
+   for the library (`core.branch_enrollment`, on by default). While it is on,
    any active user may mint a link for themselves and enroll their own
    host; the operator or an Owner may mint for any active user. The node's
    owner is that user. Owning a node no longer requires the Host role;
@@ -976,7 +1001,7 @@ Built in the first H-4 slice:
   is stored) and `node_credentials` (Ed25519 sign key, X25519 box key,
   `revoked_at`), and the host-database table `library_links` (written by
   the host client, below). All are canonical SQL-v1 with SeaORM entities.
-- `core.host_enrollment` (`{ "enabled": bool }`), a library document that
+- `core.branch_enrollment` (`{ "enabled": bool }`), a library document that
   defaults to enabled while absent. Only the operator or a verified Owner
   (`ConfigActor::LibraryOwner`, built by `verify_library_owner` from the
   stored role) may write it; that actor writes no other document.
@@ -990,7 +1015,7 @@ Built in the first H-4 slice:
   logged. Links live 24 h by default, 5 minutes to 7 days.
 - Redeem is one canonical batch: the claim `UPDATE` re-checks the hash,
   expiry, single use, revocation, the link user's status, and that
-  `core.host_enrollment` is still the revision read as enabled; the same
+  `core.branch_enrollment` is still the revision read as enabled; the same
   batch inserts the `nodes` row (`kind = branch`, owned by the link's user),
   `node_credentials`, and a receipt. A retry with the same secret and keys
   answers from the receipt; anything else is one generic 403. Two
@@ -1749,7 +1774,7 @@ names are unchanged.
   `/oidc/authorize` validates a branch request and hands it to the SPA
   consent page `/join/approve` ("Let <branch> join <library> as yours?").
   Approving (`POST /api/auth/branch-consent`, a signed-in user, never the
-  operator alone) checks the user is active, `core.host_enrollment` is on
+  operator alone) checks the user is active, `core.branch_enrollment` is on
   and `classify_transport` allows the connection, then stores a
   single-use code (hashed, 60 s) in `oidc_auth_codes`.
 - **Library cards (2026-11-13).** A second built-in public client,
@@ -2027,7 +2052,7 @@ it: a tree, A ← B ← C.
   both on by default), set in Settings → Library on the branch
   (`GET` / `POST /api/config/join/sharing`, the operator or an Owner of
   the branch: a signed-in user's stored role and status are read on every
-  call, as for `core.host_enrollment` (`verify_library_owner`), and anyone
+  call, as for `core.branch_enrollment` (`verify_library_owner`), and anyone
   else gets 403; an Owner's change is recorded in the security audit) and
   reported to the library at once; the library keeps what was reported on the node row
   (`nodes.share_books`, `nodes.include_branches`) and shows it read-only in

@@ -2467,6 +2467,117 @@ pub fn validate_approved_grant(
     })
 }
 
+/// Re-approves the current request on top of a stored grant, keeping the
+/// operator's earlier answers.
+///
+/// This is what accepting the web consent dialog unchanged does, for a
+/// caller with no dialog (`bookclerk plugins approve`):
+///
+/// - Structural capabilities (entrypoints, producers, consumers, jobs,
+///   bindings, compatibility flags) are what the current version declares.
+/// - Network destinations are the request's, minus the destinations the
+///   operator denied, plus the ones they added (`operator_denied_*` /
+///   `operator_added_*`, rebuilt for legacy grants as [`effective_grant`]
+///   does). A TCP denial removes the denied ports of that host.
+/// - Network mode stays `deny` when the operator turned network off for a
+///   version that asked for destinations; otherwise it is the request's.
+/// - The operator's redirect answer and the own `User-Agent` hosts they
+///   refused stay answered; a host the request newly declares is approved.
+/// - Budgets are the request's: a grant cannot tell a budget the operator
+///   chose from one it inherited, and a new version may need more.
+///
+/// The draft then goes through [`validate_approved_grant`], so the stored
+/// `operator_*` sets are recomputed against the current request.
+///
+/// # Arguments
+///
+/// * `existing` - The stored grant for this PluginKey.
+/// * `requested` - Consent request generated from the current manifest.
+///
+/// # Returns
+///
+/// The normalized grant to store.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when the draft fails [`validate_approved_grant`]
+/// (for example a stored addition is no longer a valid pattern).
+pub fn reapprove_grant(existing: &PluginGrant, requested: &PluginGrant) -> Result<PluginGrant> {
+    // Additions are what the stored grant holds beyond what the version it
+    // approved declared, so destinations an upgrade drops leave with it
+    // instead of turning into operator additions. Grants that never recorded
+    // that version's request fall back to the new one.
+    let baseline = approved_request(existing, requested);
+    let (added_domains, denied_domains) = classified_operator_network(existing, &baseline);
+    let (added_tcp, denied_tcp) = classified_operator_tcp(existing, &baseline);
+    let (added_cidrs, denied_cidrs) = classified_operator_cidrs(existing, &baseline);
+    let mut draft = requested.clone();
+    draft.domains = requested
+        .domains
+        .iter()
+        .filter(|domain| !denied_domains.contains(*domain))
+        .cloned()
+        .chain(added_domains)
+        .collect();
+    draft.tcp = tcp_ports_where(&requested.tcp, |host, port| {
+        !tcp_port_listed(&denied_tcp, host, port)
+    });
+    draft.tcp.extend(added_tcp);
+    draft.address_cidrs = requested
+        .address_cidrs
+        .iter()
+        .filter(|cidr| !denied_cidrs.contains(*cidr))
+        .cloned()
+        .chain(added_cidrs)
+        .collect();
+    // A stored grant with destinations, or a request for them on record,
+    // means network was asked for and the operator turned it off.
+    let asked_for_network = !existing.manifest_domains.is_empty()
+        || !existing.manifest_tcp.is_empty()
+        || !existing.manifest_cidrs.is_empty()
+        || !existing.domains.is_empty()
+        || !existing.tcp.is_empty()
+        || !existing.address_cidrs.is_empty();
+    if existing.network_mode.eq_ignore_ascii_case("deny") && asked_for_network {
+        draft.network_mode = existing.network_mode.clone();
+    }
+    if let Some(answer) = existing.operator_allow_undeclared_public_redirects {
+        draft.allow_undeclared_public_redirects = answer;
+    }
+    draft.operator_allow_undeclared_public_redirects =
+        existing.operator_allow_undeclared_public_redirects;
+    draft.own_user_agent_hosts = existing.own_user_agent_hosts.as_ref().map(|_| {
+        requested
+            .approved_own_user_agent_hosts()
+            .difference(&existing.own_user_agent_refused_hosts)
+            .cloned()
+            .collect()
+    });
+    validate_approved_grant(&draft, requested)
+}
+
+/// The request the stored grant was approved against: its recorded
+/// `manifest_*` sets, each falling back to `requested`'s when the grant
+/// recorded none.
+///
+/// # Arguments
+///
+/// * `existing` - The stored grant.
+/// * `requested` - The current package's request.
+fn approved_request(existing: &PluginGrant, requested: &PluginGrant) -> PluginGrant {
+    let mut baseline = requested.clone();
+    if !existing.manifest_domains.is_empty() {
+        baseline.manifest_domains = existing.manifest_domains.clone();
+    }
+    if !existing.manifest_tcp.is_empty() {
+        baseline.manifest_tcp = existing.manifest_tcp.clone();
+    }
+    if !existing.manifest_cidrs.is_empty() {
+        baseline.manifest_cidrs = existing.manifest_cidrs.clone();
+    }
+    baseline
+}
+
 /// Clamps an optional CPU budget through [`WorkerdLimits::effective`].
 fn normalize_cpu_ms(value: Option<u32>) -> Option<u32> {
     value.map(|cpu_ms| {
@@ -5070,6 +5181,159 @@ reason = "  App API contract.  "
         grant.address_cidrs = cidrs.iter().map(|c| (*c).to_string()).collect();
         grant.manifest_cidrs = grant.address_cidrs.clone();
         grant
+    }
+
+    /// The operator's answer for `before`: deny `denied`, add `added`.
+    fn narrowed(before: &PluginGrant, denied: &str, added: &str) -> PluginGrant {
+        let mut draft = before.clone();
+        draft.domains.remove(denied);
+        draft.domains.insert(added.into());
+        validate_approved_grant(&draft, before).unwrap()
+    }
+
+    #[test]
+    fn reapproving_keeps_the_operators_domain_answers_and_approves_new_hosts() {
+        let before = network_request(&["api.store.example", "cdn.store.example"], &[], &[]);
+        let stored = narrowed(&before, "cdn.store.example", "mirror.example");
+        let after = network_request(
+            &[
+                "api.store.example",
+                "cdn.store.example",
+                "new.store.example",
+            ],
+            &[],
+            &[],
+        );
+
+        let grant = reapprove_grant(&stored, &after).unwrap();
+        assert_eq!(
+            grant.domains,
+            [
+                "api.store.example".to_string(),
+                "mirror.example".to_string(),
+                "new.store.example".to_string(),
+            ]
+            .into()
+        );
+        assert_eq!(
+            grant.operator_denied_domains,
+            ["cdn.store.example".to_string()].into()
+        );
+        assert_eq!(
+            grant.operator_added_domains,
+            ["mirror.example".to_string()].into()
+        );
+        // Nothing is left waiting: the upgrade's new host was approved, the
+        // denial stays an answer.
+        assert!(pending_structural(&grant, &after).is_empty());
+        // Reapproving again is stable.
+        assert_eq!(
+            reapprove_grant(&grant, &after).unwrap().domains,
+            grant.domains
+        );
+    }
+
+    #[test]
+    fn reapproving_keeps_tcp_and_cidr_answers() {
+        let before = network_request(
+            &[],
+            &[("db.example", &[5432, 6432])],
+            &["10.0.0.0/8", "192.168.0.0/16"],
+        );
+        let mut draft = before.clone();
+        draft.tcp = [TcpGrant {
+            host: "db.example".into(),
+            ports: vec![5432],
+        }]
+        .into();
+        draft.tcp.insert(TcpGrant {
+            host: "cache.example".into(),
+            ports: vec![6379],
+        });
+        draft.address_cidrs.remove("192.168.0.0/16");
+        let stored = validate_approved_grant(&draft, &before).unwrap();
+        let after = network_request(
+            &[],
+            &[("db.example", &[5432, 6432])],
+            &["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12"],
+        );
+
+        let grant = reapprove_grant(&stored, &after).unwrap();
+        assert!(grant.tcp.contains(&TcpGrant {
+            host: "cache.example".into(),
+            ports: vec![6379],
+        }));
+        assert!(!grant
+            .tcp
+            .iter()
+            .any(|t| t.host == "db.example" && t.ports.contains(&6432)));
+        assert!(grant
+            .tcp
+            .iter()
+            .any(|t| t.host == "db.example" && t.ports.contains(&5432)));
+        assert!(!grant.address_cidrs.contains("192.168.0.0/16"));
+        assert!(grant.address_cidrs.contains("172.16.0.0/12"));
+        assert!(grant.address_cidrs.contains("10.0.0.0/8"));
+    }
+
+    #[test]
+    fn reapproving_drops_destinations_the_new_version_no_longer_asks_for() {
+        let before = network_request(
+            &["old.example"],
+            &[("old-db.example", &[5432])],
+            &["10.0.0.0/8"],
+        );
+        let stored = validate_approved_grant(&before, &before).unwrap();
+        let after = network_request(
+            &["new.example"],
+            &[("new-db.example", &[5432])],
+            &["172.16.0.0/12"],
+        );
+
+        let grant = reapprove_grant(&stored, &after).unwrap();
+        assert_eq!(grant.domains, ["new.example".to_string()].into());
+        assert!(grant.operator_added_domains.is_empty());
+        assert_eq!(
+            grant.tcp,
+            [TcpGrant {
+                host: "new-db.example".into(),
+                ports: vec![5432],
+            }]
+            .into()
+        );
+        assert!(grant.operator_added_tcp.is_empty());
+        assert_eq!(grant.address_cidrs, ["172.16.0.0/12".to_string()].into());
+        assert!(grant.operator_added_cidrs.is_empty());
+    }
+
+    #[test]
+    fn reapproving_keeps_network_off_and_the_redirect_answer() {
+        let mut before = network_request(&["api.store.example"], &[], &[]);
+        before.allow_undeclared_public_redirects = true;
+        let mut draft = before.clone();
+        draft.network_mode = "deny".into();
+        draft.allow_undeclared_public_redirects = false;
+        let stored = validate_approved_grant(&draft, &before).unwrap();
+        assert_eq!(
+            stored.operator_allow_undeclared_public_redirects,
+            Some(false)
+        );
+
+        let grant = reapprove_grant(&stored, &before).unwrap();
+        assert_eq!(grant.network_mode, "deny");
+        assert!(!grant.allow_undeclared_public_redirects);
+        assert_eq!(
+            grant.operator_allow_undeclared_public_redirects,
+            Some(false)
+        );
+
+        // A version that first asks for network after one that asked for
+        // none is approved with network on.
+        let mut no_network = sample_grant(&[], &["config"], &[]);
+        no_network.network_mode = "deny".into();
+        let offline = approved_for(&no_network);
+        let grant = reapprove_grant(&offline, &before).unwrap();
+        assert_eq!(grant.network_mode, "outbound");
     }
 
     #[test]

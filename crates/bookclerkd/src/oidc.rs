@@ -17,6 +17,7 @@ use crate::openapi::{Access, RouteGroup};
 use std::sync::Arc;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
+use axum::extract::rejection::FormRejection;
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -33,7 +34,7 @@ use uuid::Uuid;
 use url::Url;
 
 use crate::api::AppState;
-use crate::auth::{constant_time_eq, require_operator_or_recent_owner, PORTAL_SESSION_COOKIE};
+use crate::auth::{constant_time_eq, PORTAL_SESSION_COOKIE};
 
 /// Access-token and ID-token lifetime in seconds (1 hour).
 const ACCESS_TTL_SECS: i64 = 3600;
@@ -57,13 +58,17 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(token))
         .routes(routes!(userinfo))
         .routes(routes!(revoke));
+    // An Owner may read the clients; changing them needs the operator
+    // (or an elevated Owner), since a client can sign people in elsewhere.
+    let read = OpenApiRouter::new().routes(routes!(list_clients));
     let admin = OpenApiRouter::new()
-        .routes(routes!(list_clients, create_client))
+        .routes(routes!(create_client))
         .routes(routes!(update_client, delete_client))
         .routes(routes!(rotate_client_secret));
     vec![
         RouteGroup::new(protocol, Access::Public),
-        RouteGroup::new(admin, Access::OperatorOrOwner),
+        RouteGroup::new(read, Access::OperatorOrOwner),
+        RouteGroup::new(admin, Access::Operator),
     ]
 }
 
@@ -480,171 +485,210 @@ struct TokenResponse {
     scope: String,
 }
 
-/// Dispatches token grants; unknown `grant_type` values return 400.
+/// Dispatches token grants. Every refusal is an RFC 6749 §5.2 JSON body
+/// ([`TokenError`]), never the branded error page, so a client library can
+/// tell `invalid_grant` from `invalid_client`.
 #[utoipa::path(
     post,
     path = "/oidc/token",
     request_body(content = TokenForm, content_type = "application/x-www-form-urlencoded"),
     responses(
         (status = 200, description = "Tokens.", body = TokenResponse),
-        (status = 400, description = "The grant is invalid or unsupported. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
-            (crate::http_error::ErrorJson = "application/json"),
-            (String = "text/html"),
+        (status = 400, description = "The request is malformed (`invalid_request`), the code, refresh token or PKCE verifier is invalid, expired or already used, or the token's user is disabled (`invalid_grant`), or the grant type is not supported (`unsupported_grant_type`).", body = TokenError, examples(
+            ("invalid_request" = (summary = "A required parameter is missing.", value = json!({"error": "invalid_request", "error_description": "The code parameter is missing."}))),
+            ("invalid_grant" = (summary = "The code was already used or has expired.", value = json!({"error": "invalid_grant", "error_description": "The authorization code is invalid, expired or already used."}))),
+            ("unsupported_grant_type" = (summary = "The grant type is not supported.", value = json!({"error": "unsupported_grant_type", "error_description": "Only authorization_code and refresh_token are supported."}))),
         )),
-        (status = 401, description = "The client failed to authenticate. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
-            (crate::http_error::ErrorJson = "application/json"),
-            (String = "text/html"),
-        )),
-        (status = 403, description = "The token's user is disabled. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
-            (crate::http_error::ErrorJson = "application/json"),
-            (String = "text/html"),
-        )),
-        (status = 500, description = "The code, the token or the user could not be read or stored. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
-            (crate::http_error::ErrorJson = "application/json"),
-            (String = "text/html"),
-        )),
+        (status = 401, description = "The client is unknown or disabled, or its secret is wrong (`invalid_client`).", body = TokenError, example = json!({"error": "invalid_client", "error_description": "The client could not be authenticated."})),
+        (status = 500, description = "The code, the token or the user could not be read or stored (`server_error`).", body = TokenError, example = json!({"error": "server_error", "error_description": "The token could not be issued. Try again."})),
     ),
 )]
 async fn token(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Form(form): Form<TokenForm>,
-) -> Result<Json<TokenResponse>, StatusCode> {
+    form: Result<Form<TokenForm>, FormRejection>,
+) -> Result<Json<TokenResponse>, TokenError> {
+    let Ok(Form(form)) = form else {
+        return Err(TokenError::invalid_request(
+            "The body must be an application/x-www-form-urlencoded form with a grant_type.",
+        ));
+    };
     match form.grant_type.as_str() {
         "authorization_code" => token_authorization_code(&state, &headers, &form).await,
         "refresh_token" => token_refresh(&state, &headers, &form).await,
-        _ => Err(StatusCode::BAD_REQUEST),
+        // RFC 6749 section 3.2: an empty parameter counts as omitted.
+        "" => Err(TokenError::invalid_request("The grant_type is required.")),
+        _ => Err(TokenError::new(
+            TokenErrorCode::UnsupportedGrantType,
+            "Only authorization_code and refresh_token are supported.",
+        )),
     }
 }
 
 /// Exchanges a one-time code after PKCE and optional client-secret checks.
+///
+/// # Errors
+///
+/// Returns the [`TokenError`] RFC 6749 §5.2 names for the failure.
 async fn token_authorization_code(
     state: &AppState,
     headers: &HeaderMap,
     form: &TokenForm,
-) -> Result<Json<TokenResponse>, StatusCode> {
-    let code = form.code.as_deref().ok_or(StatusCode::BAD_REQUEST)?;
+) -> Result<Json<TokenResponse>, TokenError> {
+    let code = form
+        .code
+        .as_deref()
+        .ok_or_else(|| TokenError::invalid_request("The code parameter is missing."))?;
     let redirect_uri = form
         .redirect_uri
         .as_deref()
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    let client_id = form.client_id.as_deref().ok_or(StatusCode::BAD_REQUEST)?;
+        .ok_or_else(|| TokenError::invalid_request("The redirect_uri parameter is missing."))?;
+    let client_id = form
+        .client_id
+        .as_deref()
+        .ok_or_else(|| TokenError::invalid_request("The client_id parameter is missing."))?;
     // A branch's code is redeemed only at the node API's enroll/oauth, and
     // a clerk sign-in's only at the library card route.
     if client_id.trim() == bookclerk_node_proto::BRANCH_CLIENT_ID
         || client_id.trim() == bookclerk_node_proto::CLERK_CLIENT_ID
     {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(TokenError::invalid_client());
     }
     let verifier = form
         .code_verifier
         .as_deref()
-        .ok_or(StatusCode::BAD_REQUEST)?;
+        .ok_or_else(|| TokenError::invalid_request("The code_verifier parameter is missing."))?;
     let library = state.library_snapshot().await;
     let client = library
         .get_oidc_client(client_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+        .map_err(|_| TokenError::server_error())?
+        .ok_or_else(TokenError::invalid_client)?;
     if !client.enabled {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(TokenError::invalid_client());
     }
     if let Some(secret_hash) = &client.client_secret_hash {
         let provided = form.client_secret.as_deref().unwrap_or("");
         if !constant_time_eq(hash_token(provided).as_bytes(), secret_hash.as_bytes()) {
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err(TokenError::invalid_client());
         }
     }
     let Some((stored_client, user_id, stored_redirect, challenge, method, scope)) = library
         .consume_oidc_auth_code(&hash_token(code))
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| TokenError::server_error())?
     else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(TokenError::new(
+            TokenErrorCode::InvalidGrant,
+            "The authorization code is invalid, expired or already used.",
+        ));
     };
     if stored_client != client_id || stored_redirect != redirect_uri {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(TokenError::new(
+            TokenErrorCode::InvalidGrant,
+            "The authorization code was issued to another client or redirect URI.",
+        ));
     }
-    if method == "S256" {
-        let expected = pkce_s256_challenge(verifier);
-        if expected != challenge {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-    } else {
-        return Err(StatusCode::BAD_REQUEST);
+    if method != "S256" || pkce_s256_challenge(verifier) != challenge {
+        return Err(TokenError::new(
+            TokenErrorCode::InvalidGrant,
+            "The code verifier does not match the code challenge.",
+        ));
     }
     mint_tokens(state, headers, client_id, user_id, &scope).await
 }
 
 /// Issues a new token pair from a stored refresh token (confidential clients re-auth).
+///
+/// # Errors
+///
+/// Returns the [`TokenError`] RFC 6749 §5.2 names for the failure.
 async fn token_refresh(
     state: &AppState,
     headers: &HeaderMap,
     form: &TokenForm,
-) -> Result<Json<TokenResponse>, StatusCode> {
+) -> Result<Json<TokenResponse>, TokenError> {
     let refresh = form
         .refresh_token
         .as_deref()
-        .ok_or(StatusCode::BAD_REQUEST)?;
+        .ok_or_else(|| TokenError::invalid_request("The refresh_token parameter is missing."))?;
     let library = state.library_snapshot().await;
     let Some((client_id, user_id, scope)) = library
         .get_oidc_refresh_token(&hash_token(refresh))
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| TokenError::server_error())?
     else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(TokenError::new(
+            TokenErrorCode::InvalidGrant,
+            "The refresh token is invalid, expired or revoked.",
+        ));
     };
     if let Some(req_client) = form.client_id.as_deref() {
         if req_client != client_id {
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err(TokenError::new(
+                TokenErrorCode::InvalidGrant,
+                "The refresh token was issued to another client.",
+            ));
         }
     }
     // Confidential clients must present client_secret on refresh (client_secret_post).
     let client = library
         .get_oidc_client(&client_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+        .map_err(|_| TokenError::server_error())?
+        .ok_or_else(TokenError::invalid_client)?;
     if !client.enabled {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(TokenError::invalid_client());
     }
     if !client.issue_refresh_token {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(TokenError::new(
+            TokenErrorCode::InvalidGrant,
+            "This client is not allowed refresh tokens.",
+        ));
     }
     if let Some(secret_hash) = &client.client_secret_hash {
         let provided = form.client_secret.as_deref().unwrap_or("");
         if !constant_time_eq(hash_token(provided).as_bytes(), secret_hash.as_bytes()) {
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err(TokenError::invalid_client());
         }
     }
     mint_tokens(state, headers, &client_id, user_id, &scope).await
 }
 
 /// Signs access/ID JWTs and optionally persists a hashed refresh token.
+///
+/// # Errors
+///
+/// `invalid_client` when the client is gone or disabled, `invalid_grant`
+/// when the user is gone or disabled, and `server_error` when a read, the
+/// signing or the refresh token's write fails.
 async fn mint_tokens(
     state: &AppState,
     headers: &HeaderMap,
     client_id: &str,
     user_id: i64,
     scope: &str,
-) -> Result<Json<TokenResponse>, StatusCode> {
+) -> Result<Json<TokenResponse>, TokenError> {
     let library = state.library_snapshot().await;
     let client = library
         .get_oidc_client(client_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+        .map_err(|_| TokenError::server_error())?
+        .ok_or_else(TokenError::invalid_client)?;
     if !client.enabled {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(TokenError::invalid_client());
     }
     let user = library
         .get_user(user_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    if matches!(user.status, bookclerk_library::UserStatus::Disabled) {
-        return Err(StatusCode::FORBIDDEN);
-    }
+        .map_err(|_| TokenError::server_error())?
+        .filter(|user| !matches!(user.status, bookclerk_library::UserStatus::Disabled))
+        .ok_or_else(|| {
+            TokenError::new(
+                TokenErrorCode::InvalidGrant,
+                "The grant's user no longer exists or is disabled.",
+            )
+        })?;
     let issuer = issuer_base(state, Some(headers)).await;
     let hmac_key = signing_key(state).await;
     let now = Utc::now().timestamp();
@@ -659,7 +703,8 @@ async fn mint_tokens(
             "scope": scope,
             "token_use": "access",
         }),
-    )?;
+    )
+    .map_err(|_| TokenError::server_error())?;
     let mut id_claims = serde_json::json!({
         "iss": issuer,
         "sub": user_id.to_string(),
@@ -668,12 +713,12 @@ async fn mint_tokens(
         "exp": now + ACCESS_TTL_SECS,
     });
     let profile = UserinfoResponse::for_user(user_id.to_string(), &user, scope);
-    let profile = serde_json::to_value(&profile).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let profile = serde_json::to_value(&profile).map_err(|_| TokenError::server_error())?;
     if let (Some(claims), serde_json::Value::Object(profile)) = (id_claims.as_object_mut(), profile)
     {
         claims.extend(profile);
     }
-    let id_token = sign_jwt(&hmac_key, &id_claims)?;
+    let id_token = sign_jwt(&hmac_key, &id_claims).map_err(|_| TokenError::server_error())?;
     let refresh_token = if client.issue_refresh_token {
         let refresh_raw = Uuid::new_v4().to_string();
         library
@@ -685,7 +730,7 @@ async fn mint_tokens(
                 Utc::now() + ChronoDuration::days(REFRESH_TTL_DAYS),
             )
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|_| TokenError::server_error())?;
         Some(refresh_raw)
     } else {
         None
@@ -698,6 +743,128 @@ async fn mint_tokens(
         id_token,
         scope: scope.to_string(),
     }))
+}
+
+/// The `error` code of a token-endpoint refusal (RFC 6749 §5.2), which also
+/// fixes its status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum TokenErrorCode {
+    /// A required parameter is missing, or the body is not a form (400).
+    InvalidRequest,
+    /// The client is unknown, disabled, built in for another route, or
+    /// presented the wrong secret (401).
+    InvalidClient,
+    /// The code or refresh token is invalid, expired, used, or bound to
+    /// another client or redirect URI; the PKCE verifier does not match; or
+    /// the grant's user is gone or disabled (400).
+    InvalidGrant,
+    /// The `grant_type` is neither `authorization_code` nor
+    /// `refresh_token` (400).
+    UnsupportedGrantType,
+    /// A library read or write, or the token signing, failed (500). RFC
+    /// 6749 defines this code for the authorization endpoint; token
+    /// clients read it the same way.
+    ServerError,
+}
+
+impl TokenErrorCode {
+    /// The HTTP status RFC 6749 §5.2 answers this code with.
+    ///
+    /// # Returns
+    ///
+    /// 401 for `invalid_client`, 500 for `server_error`, else 400.
+    fn status(self) -> StatusCode {
+        match self {
+            TokenErrorCode::InvalidClient => StatusCode::UNAUTHORIZED,
+            TokenErrorCode::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+            TokenErrorCode::InvalidRequest
+            | TokenErrorCode::InvalidGrant
+            | TokenErrorCode::UnsupportedGrantType => StatusCode::BAD_REQUEST,
+        }
+    }
+}
+
+/// A token-endpoint refusal as RFC 6749 §5.2 writes it: JSON with an
+/// `error` code and a human-readable `error_description`, sent with
+/// `Cache-Control: no-store`.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+struct TokenError {
+    /// What went wrong, as a client library branches on it.
+    error: TokenErrorCode,
+    /// A sentence for the person debugging the client; never a secret or
+    /// a token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "The authorization code is invalid, expired or already used.")]
+    error_description: Option<&'static str>,
+}
+
+impl TokenError {
+    /// A refusal with `code` and `description`.
+    ///
+    /// # Arguments
+    ///
+    /// * `code` - The RFC 6749 error code, which picks the status.
+    /// * `description` - The `error_description` sentence.
+    ///
+    /// # Returns
+    ///
+    /// The refusal.
+    fn new(code: TokenErrorCode, description: &'static str) -> Self {
+        Self {
+            error: code,
+            error_description: Some(description),
+        }
+    }
+
+    /// The `invalid_request` refusal, for a missing parameter.
+    ///
+    /// # Arguments
+    ///
+    /// * `description` - The sentence naming the parameter.
+    ///
+    /// # Returns
+    ///
+    /// The refusal.
+    fn invalid_request(description: &'static str) -> Self {
+        Self::new(TokenErrorCode::InvalidRequest, description)
+    }
+
+    /// The `invalid_client` refusal, which says nothing about which check
+    /// failed.
+    ///
+    /// # Returns
+    ///
+    /// The refusal.
+    fn invalid_client() -> Self {
+        Self::new(
+            TokenErrorCode::InvalidClient,
+            "The client could not be authenticated.",
+        )
+    }
+
+    /// The `server_error` refusal for a failed library read or write.
+    ///
+    /// # Returns
+    ///
+    /// The refusal.
+    fn server_error() -> Self {
+        Self::new(
+            TokenErrorCode::ServerError,
+            "The token could not be issued. Try again.",
+        )
+    }
+}
+
+impl IntoResponse for TokenError {
+    fn into_response(self) -> Response {
+        (
+            self.error.status(),
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(self),
+        )
+            .into_response()
+    }
 }
 
 /// Returns `sub` / `name` / `preferred_username` for a valid access JWT.
@@ -1449,34 +1616,11 @@ struct OidcClientWrite {
     #[serde(default = "default_true")]
     #[schema(example = true)]
     enabled: bool,
-    /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
-    #[serde(default)]
-    #[schema(example = "correct horse battery staple")]
-    current_password: Option<String>,
 }
 
 /// Serde default for `issue_refresh_token` (on unless the operator opts out).
 fn default_true() -> bool {
     true
-}
-
-/// Owner/operator gate for client mutations (recent portal re-auth or operator).
-async fn require_client_admin(
-    state: &AppState,
-    headers: &HeaderMap,
-    password: Option<&str>,
-) -> Result<(), Response> {
-    require_operator_or_recent_owner(state, headers, password)
-        .await
-        .map_err(|status| {
-            oidc_client_error(
-                status,
-                crate::auth::recent_owner_gate_message(
-                    status,
-                    "recent authentication required to change OIDC clients",
-                ),
-            )
-        })
 }
 
 /// Owner/operator list of Bookclerk-as-IdP clients (secrets never included).
@@ -1514,29 +1658,14 @@ async fn list_clients(
     responses(
         (status = 200, description = "The client; a confidential client's secret appears once.", body = OidcClientView),
         (status = 400, description = "The client id or a redirect URI is invalid (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "at least one redirect URI is required", "status": 400})),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
-            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
         (status = 409, description = "A client with this id already exists (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "a client with this id already exists", "status": 409})),
-        (status = 500, description = "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("store" = (summary = "The client could not be read or stored.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
-        )),
+        (status = 500, description = "The client could not be read or stored (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500})),
     ),
 )]
 async fn create_client(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Json(body): Json<OidcClientWrite>,
 ) -> Result<Json<OidcClientView>, Response> {
-    require_client_admin(&state, &headers, body.current_password.as_deref()).await?;
     let client_id = body.client_id.unwrap_or_default();
     validate_client_id(&client_id)
         .map_err(|msg| oidc_client_error(StatusCode::BAD_REQUEST, msg))?;
@@ -1589,30 +1718,15 @@ async fn create_client(
     responses(
         (status = 200, description = "The client after the change; when the update made a public client confidential, its new secret appears once.", body = OidcClientView),
         (status = 400, description = "The client id or a redirect URI is invalid (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "client id may only contain letters, digits, '.', '_', '-', and '~'", "status": 400})),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
-            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
         (status = 404, description = "No such client (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "unknown client", "status": 404})),
-        (status = 500, description = "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("store" = (summary = "The client could not be read or stored.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
-        )),
+        (status = 500, description = "The client could not be read or stored (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500})),
     ),
 )]
 async fn update_client(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(client_id): Path<String>,
     Json(body): Json<OidcClientWrite>,
 ) -> Result<Json<OidcClientView>, Response> {
-    require_client_admin(&state, &headers, body.current_password.as_deref()).await?;
     validate_client_id(&client_id)
         .map_err(|msg| oidc_client_error(StatusCode::BAD_REQUEST, msg))?;
     let scopes = normalize_client_scopes(&body.allowed_scopes);
@@ -1660,40 +1774,17 @@ async fn update_client(
     delete,
     path = "/api/auth/oidc/clients/{client_id}",
     params(("client_id" = String, Path, description = "Client id.")),
-    request_body(
-        content = Option<OidcClientWrite>,
-        description = "Optional; only `current_password` is read, to confirm an Owner outside the recent sign-in window.",
-    ),
     responses(
         (status = 204, description = "The client was deleted."),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
-            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
         (status = 404, description = "No such client (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "unknown client", "status": 404})),
         (status = 409, description = "The client is provided by a plugin; disable it instead (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "plugin-provided clients cannot be deleted; disable them instead", "status": 409})),
-        (status = 500, description = "The client could not be read or removed, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("store" = (summary = "The client could not be read or removed.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
-        )),
+        (status = 500, description = "The client could not be read or removed (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500})),
     ),
 )]
 async fn delete_client(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(client_id): Path<String>,
-    body: Option<Json<OidcClientWrite>>,
 ) -> Result<StatusCode, Response> {
-    let password = body
-        .as_ref()
-        .and_then(|Json(body)| body.current_password.as_deref());
-    require_client_admin(&state, &headers, password).await?;
     let library = state.library_snapshot().await;
     let existing = library
         .get_oidc_client(&client_id)
@@ -1719,50 +1810,21 @@ async fn delete_client(
     }
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-/// Optional password for rotating a confidential client's secret.
-struct RotateSecretBody {
-    /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
-    #[serde(default)]
-    #[schema(example = "correct horse battery staple")]
-    current_password: Option<String>,
-}
-
 /// Mint a new secret for a confidential client; plaintext is returned once.
 #[utoipa::path(
     post,
     path = "/api/auth/oidc/clients/{client_id}/rotate-secret",
     params(("client_id" = String, Path, description = "Client id.")),
-    request_body = Option<RotateSecretBody>,
     responses(
         (status = 200, description = "The client with its new secret (shown once).", body = OidcClientView),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "too many wrong passwords for this account; try again later", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
-            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
         (status = 404, description = "No such client (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "unknown client", "status": 404})),
-        (status = 500, description = "The secret could not be stored, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
-            ("store" = (summary = "The secret could not be stored.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
-        )),
+        (status = 500, description = "The secret could not be stored (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500})),
     ),
 )]
 async fn rotate_client_secret(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(client_id): Path<String>,
-    body: Option<Json<RotateSecretBody>>,
 ) -> Result<Json<OidcClientView>, Response> {
-    let password = body
-        .as_ref()
-        .and_then(|Json(body)| body.current_password.as_deref());
-    require_client_admin(&state, &headers, password).await?;
     let raw = generate_client_secret();
     let library = state.library_snapshot().await;
     let updated = library
@@ -2393,6 +2455,261 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::CONFLICT);
+    }
+
+    /// Token-endpoint refusals are RFC 6749 JSON bodies with the matching
+    /// status, even for a client that asks for no particular media type.
+    #[tokio::test]
+    async fn token_errors_are_rfc6749_json() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let (state, _library) = oidc_test_state().await;
+        let app = crate::api::router(state, None);
+        for (body, content_type, status, error) in [
+            (
+                "grant_type=&code=c",
+                "application/x-www-form-urlencoded",
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            (
+                "grant_type=password&username=a&password=b",
+                "application/x-www-form-urlencoded",
+                StatusCode::BAD_REQUEST,
+                "unsupported_grant_type",
+            ),
+            (
+                "grant_type=refresh_token&refresh_token=not-a-token",
+                "application/x-www-form-urlencoded",
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+            ),
+            (
+                "grant_type=authorization_code&redirect_uri=https%3A%2F%2Fa.example%2Fcb&client_id=nobody&code_verifier=v",
+                "application/x-www-form-urlencoded",
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            (
+                "grant_type=authorization_code&code=c&redirect_uri=https%3A%2F%2Fa.example%2Fcb&client_id=nobody&code_verifier=v",
+                "application/x-www-form-urlencoded",
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+            ),
+            (
+                "grant_type=authorization_code&code=c&redirect_uri=https%3A%2F%2Fa.example%2Fcb&client_id=bookclerk-clerk&code_verifier=v",
+                "application/x-www-form-urlencoded",
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+            ),
+            (
+                r#"{"grant_type":"refresh_token"}"#,
+                "application/json",
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oidc/token")
+                        .header(header::CONTENT_TYPE, content_type)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), status, "{body}");
+            assert_eq!(
+                res.headers()[header::CONTENT_TYPE],
+                "application/json",
+                "{body}"
+            );
+            assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store", "{body}");
+            let json = json_body(res).await;
+            assert_eq!(json["error"], error, "{body}: {json}");
+            assert!(json["error_description"].is_string(), "{body}: {json}");
+        }
+    }
+
+    /// Each token-endpoint check answers the RFC 6749 code it names: a
+    /// client that fails to authenticate is `invalid_client`, a code or
+    /// refresh token that does not hold is `invalid_grant`.
+    #[tokio::test]
+    async fn token_checks_answer_their_rfc6749_codes() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use bookclerk_library::{UserRole, UserStatus};
+        use tower::ServiceExt;
+
+        const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        const REDIRECT: &str = "https://player.example/callback";
+        let (state, library) = oidc_test_state().await;
+        let scopes = [String::from("openid")];
+        let uris = [String::from(REDIRECT)];
+        for (id, secret, refresh, enabled) in [
+            ("conf", Some(hash_token("s3cret")), true, true),
+            ("pub", None, false, true),
+            ("off", None, true, false),
+        ] {
+            library
+                .insert_oidc_client(
+                    id,
+                    secret.as_deref(),
+                    &uris,
+                    None,
+                    refresh,
+                    &scopes,
+                    enabled,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let user = library
+            .create_user_with_profile(UserRole::Member, Some("A"), Some("a"), None, None)
+            .await
+            .unwrap();
+        let gone = library
+            .create_user_with_profile(UserRole::Member, Some("B"), Some("b"), None, None)
+            .await
+            .unwrap();
+        library
+            .set_user_status(gone.id, UserStatus::Disabled)
+            .await
+            .unwrap();
+        let expires = Utc::now() + ChronoDuration::minutes(5);
+        let challenge = pkce_s256_challenge(VERIFIER);
+        for (code, client, user_id, method) in [
+            ("c-redirect", "conf", user.id, "S256"),
+            ("c-pkce", "conf", user.id, "S256"),
+            ("c-plain", "conf", user.id, "plain"),
+            ("c-disabled", "pub", gone.id, "S256"),
+            ("c-ok", "pub", user.id, "S256"),
+        ] {
+            library
+                .insert_oidc_auth_code(
+                    &hash_token(code),
+                    client,
+                    user_id,
+                    REDIRECT,
+                    &challenge,
+                    method,
+                    "openid",
+                    expires,
+                )
+                .await
+                .unwrap();
+        }
+        let later = Utc::now() + ChronoDuration::days(1);
+        for (token, client) in [("r-conf", "conf"), ("r-pub", "pub"), ("r-off", "off")] {
+            library
+                .insert_oidc_refresh_token(&hash_token(token), client, user.id, "openid", later)
+                .await
+                .unwrap();
+        }
+        let app = crate::api::router(state, None);
+        let redirect = "https%3A%2F%2Fplayer.example%2Fcallback";
+        let code = |code: &str, client: &str, extra: &str| {
+            format!(
+                "grant_type=authorization_code&code={code}&redirect_uri={redirect}&client_id={client}&code_verifier={VERIFIER}{extra}"
+            )
+        };
+        let cases = [
+            (code("c-x", "conf", "&client_secret=wrong"), StatusCode::UNAUTHORIZED, "invalid_client"),
+            (code("c-x", "off", ""), StatusCode::UNAUTHORIZED, "invalid_client"),
+            (code("c-unknown", "conf", "&client_secret=s3cret"), StatusCode::BAD_REQUEST, "invalid_grant"),
+            (
+                code("c-redirect", "conf", "&client_secret=s3cret")
+                    .replace("callback&", "other&"),
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+            ),
+            (
+                code("c-pkce", "conf", "&client_secret=s3cret").replace(VERIFIER, "not-the-verifier"),
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+            ),
+            (code("c-plain", "conf", "&client_secret=s3cret"), StatusCode::BAD_REQUEST, "invalid_grant"),
+            (code("c-disabled", "pub", ""), StatusCode::BAD_REQUEST, "invalid_grant"),
+            (
+                format!("grant_type=authorization_code&code=c&client_id=pub&code_verifier={VERIFIER}"),
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            (
+                format!("grant_type=authorization_code&code=c&redirect_uri={redirect}&code_verifier={VERIFIER}"),
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            (
+                format!("grant_type=authorization_code&code=c&redirect_uri={redirect}&client_id=pub"),
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            ("grant_type=refresh_token".to_string(), StatusCode::BAD_REQUEST, "invalid_request"),
+            (
+                "grant_type=refresh_token&refresh_token=r-conf&client_id=pub".to_string(),
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+            ),
+            (
+                "grant_type=refresh_token&refresh_token=r-pub".to_string(),
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+            ),
+            (
+                "grant_type=refresh_token&refresh_token=r-conf&client_secret=wrong".to_string(),
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+            ),
+            (
+                "grant_type=refresh_token&refresh_token=r-off".to_string(),
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+            ),
+        ];
+        for (body, status, error) in cases {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oidc/token")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(Body::from(body.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), status, "{body}");
+            let json = json_body(res).await;
+            assert_eq!(json["error"], error, "{body}: {json}");
+        }
+        // The checks pass for a good code and a good refresh token.
+        for body in [
+            code("c-ok", "pub", ""),
+            "grant_type=refresh_token&refresh_token=r-conf&client_id=conf&client_secret=s3cret"
+                .to_string(),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oidc/token")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(Body::from(body.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{body}");
+        }
     }
 
     #[tokio::test]

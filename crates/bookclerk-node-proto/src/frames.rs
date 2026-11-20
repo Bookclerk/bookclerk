@@ -114,6 +114,12 @@ pub enum Body {
         /// Free bytes on the host's files directory.
         #[serde(default)]
         files_dir_free_bytes: Option<i64>,
+        /// The branch's `integrations.public_origin`, the address other
+        /// installs reach it at; absent for a branch that has none (a
+        /// local branch). The library keeps it only when
+        /// [`crate::BranchOrigin::parse`] accepts it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        public_origin: Option<String>,
     },
     /// Host → owner: pull one work item. Answered with [`Body::Work`] or
     /// [`Body::NoWork`].

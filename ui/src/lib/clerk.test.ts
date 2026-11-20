@@ -113,6 +113,9 @@ describe("card requests", () => {
       fingerprint: "kQ3n",
       clerk_name: "Study laptop",
     });
+    // A card that replaces a branch names the branch, not an address.
+    await startClerkSignIn({ from_branch: "lib-1", clerk_name: "" });
+    expect(sent(fetchMock, 2)).toEqual({ from_branch: "lib-1" });
   });
 
   it("finish a sign-in with what the library sent back", async () => {

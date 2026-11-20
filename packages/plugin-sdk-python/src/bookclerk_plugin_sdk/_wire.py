@@ -2029,6 +2029,7 @@ def _write_catalog_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
     s.set_bool(0, v["detailByIsbn"])
     s.set_bool(1, v["priceByIsbn"])
     s.set_bool(2, v["priceByAsin"])
+    s.set_bool(3, v["detailByProductId"])
 
 
 def _read_catalog_capabilities(s: _StructReader, caps: _CapTable) -> Any:
@@ -2036,6 +2037,7 @@ def _read_catalog_capabilities(s: _StructReader, caps: _CapTable) -> Any:
         "detailByIsbn": s.get_bool(0),
         "priceByIsbn": s.get_bool(1),
         "priceByAsin": s.get_bool(2),
+        "detailByProductId": s.get_bool(3),
     }
 
 

@@ -149,6 +149,9 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
   // No revision means the server could not read `core.output`: the fields
   // would show blanks rather than the document, so nothing is saved from them.
   const unavailable = revision === null;
+  // Fields lock while a save is in flight: the response replaces every
+  // value, so an edit made before it lands would be silently lost.
+  const locked = unavailable || busy;
 
   async function onSave(event: FormEvent) {
     event.preventDefault();
@@ -233,7 +236,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
                   id={field.key}
                   value={values[field.key] ?? ""}
                   onChange={(e) => set(field.key, e.target.value)}
-                  disabled={unavailable}
+                  disabled={locked}
                   className={selectClassName}
                 >
                   {field.options.some(([value]) => value === values[field.key]) ? null : (
@@ -250,7 +253,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
                   id={field.key}
                   value={values[field.key] ?? ""}
                   onChange={(e) => set(field.key, e.target.value)}
-                  disabled={unavailable}
+                  disabled={locked}
                   spellCheck={false}
                 />
               )}
@@ -270,7 +273,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
                 className="mt-1 h-4 w-4 shrink-0 accent-teal"
                 checked={values[field.key] === "true"}
                 onChange={(e) => set(field.key, String(e.target.checked))}
-                disabled={unavailable}
+                disabled={locked}
               />
             </div>
           ))}

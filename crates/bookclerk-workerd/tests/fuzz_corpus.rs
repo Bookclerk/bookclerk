@@ -1,6 +1,7 @@
-//! Replays the checked-in `granted_http` fuzz corpus in PR CI (no libFuzzer
-//! required), so a request that once broke the granted channel's parsing
-//! stays fixed (`docs/adr/untrusted-input-fuzzing.md`).
+//! Replays the checked-in `granted_http`, `workerd_control`, `socket_broker`,
+//! `socket_route` and `egress_bridge` fuzz corpora in PR CI (no libFuzzer
+//! required), so an input that once broke one of them stays fixed
+//! (`docs/adr/untrusted-input-fuzzing.md`).
 
 use std::path::{Path, PathBuf};
 
@@ -486,4 +487,123 @@ fn socket_route_seeds_are_current() {
             path.display()
         );
     }
+}
+
+/// The `egress_bridge` oracle, shared with the fuzz target: the Rust
+/// `EgressPolicy` side of the differential against the workerd egress gate
+/// (`bridge/egress.js`). It derives every probe of every seed with the Rust
+/// verdicts, which [`egress_bridge_vectors_are_current`] pins in
+/// `packages/plugin-sdk/scripts/egress_bridge_vectors.json` for the SDK's
+/// `test:egress-bridge` script to replay against `egress.js` under Node. A
+/// Rust change that moves a verdict makes the vectors stale here; a
+/// JavaScript change that breaks the differential fails the script.
+#[path = "../../../fuzz/oracles/egress_bridge.rs"]
+#[allow(dead_code)]
+mod egress_bridge_oracle;
+
+/// Regular files directly under `fuzz/corpus/egress_bridge/`, canonicalized
+/// and confined to that directory.
+// Test helper: a missing corpus is a failed test, not a handled error.
+#[allow(clippy::expect_used)]
+fn egress_bridge_corpus() -> Vec<PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/egress_bridge")
+        .canonicalize()
+        .expect("canonicalize fuzz corpus");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("fuzz corpus")
+        .map(|entry| entry.expect("entry").path())
+        // Inline canonicalize → starts_with at each sink (CodeQL two-state barrier).
+        .filter_map(|path| path.canonicalize().ok())
+        .filter(|path| path.starts_with(&dir) && path.is_file())
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "empty egress_bridge corpus");
+    files
+}
+
+/// One seed's policy and probes, as the Node replay reads them.
+#[derive(serde::Serialize)]
+struct SeedVectors {
+    /// Seed file name.
+    seed: String,
+    /// The `EGRESS_POLICY` value the bridge receives.
+    policy: serde_json::Value,
+    /// Every probe with its Rust verdicts.
+    probes: Vec<egress_bridge_oracle::Probe>,
+}
+
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn egress_bridge_vectors_are_current() {
+    let mut seeds = Vec::new();
+    for path in egress_bridge_corpus() {
+        let data = std::fs::read(&path).expect("read");
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("seed name")
+            .to_string();
+        let policy = egress_bridge_oracle::decode(&data)
+            .unwrap_or_else(|| panic!("{name} is not a policy the host can emit"));
+        seeds.push(SeedVectors {
+            seed: name,
+            policy: policy.to_policy_json(),
+            probes: egress_bridge_oracle::probes(&policy),
+        });
+    }
+    let mut text = serde_json::to_string_pretty(&seeds).expect("vectors serialize");
+    text.push('\n');
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/plugin-sdk/scripts/egress_bridge_vectors.json");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::write(&path, &text).expect("write vectors");
+    }
+    assert!(
+        std::fs::read_to_string(&path).expect("read vectors") == text,
+        "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+        path.display()
+    );
+}
+
+/// The bridge source still has the shape the fuzz target rewrites.
+#[test]
+fn egress_bridge_script_loads_the_gate_functions() {
+    let script = egress_bridge_oracle::bridge_script();
+    for name in [
+        "function allowsFetch(",
+        "function allowsRedirectTo(",
+        "function allowsTcp(",
+        "function canonicalSocketHost(",
+    ] {
+        assert!(script.contains(name), "egress.js has no {name}");
+    }
+}
+
+/// A sample of the Rust side, so the vectors are known to exercise both
+/// verdicts rather than refusing everything.
+#[test]
+fn egress_bridge_probes_cover_both_verdicts() {
+    let mut allowed = 0;
+    let mut refused = 0;
+    for path in egress_bridge_corpus() {
+        let Some(policy) = egress_bridge_oracle::decode(&std::fs::read(&path).unwrap_or_default())
+        else {
+            continue;
+        };
+        for probe in egress_bridge_oracle::probes(&policy) {
+            for verdict in [probe.rust.initial, probe.rust.redirect, probe.rust.tcp] {
+                if verdict {
+                    allowed += 1;
+                } else {
+                    refused += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        allowed > 0 && refused > 0,
+        "allowed {allowed}, refused {refused}"
+    );
 }

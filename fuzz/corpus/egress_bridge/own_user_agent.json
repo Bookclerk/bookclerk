@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":["api.example.com","*.cdn.example.com"],"maxRedirects":10,"userAgent":"bookclerk/0.1.0 (+https://bookclerk.app)","ownUserAgentHosts":["*.libro.fm","api.example.com"],"tcp":[{"host":"*.libro.fm","ports":[443]}]}

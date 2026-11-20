@@ -318,9 +318,9 @@ this book", before anything is downloaded.
 
 > [!NOTE]
 > A changed filter applies to acquires that start afterwards. Files that
-> are already stored stay where they are. An edition that is already
-> stored on one destination is not acquired again for another destination
-> that takes it; that changes when each destination's copy is tracked.
+> are already stored stay where they are. A destination whose filter now
+> takes an edition it has no copy of gets one from the next acquire run
+> (see [Several destinations](#several-destinations)).
 
 The same holds when a branch acquires a book for the library: the
 library works out the destinations that take each book and the branch
@@ -401,12 +401,49 @@ asks for the library's copy.
 
 ## Several destinations
 
+An acquire writes to every destination that takes the book at the same
+time:
+
+1. Each destination's write is tried up to three times.
+2. The acquire succeeds as soon as one destination holds the complete
+   files. It fails only when no destination stored them.
+3. Bookclerk records each destination's copy of the edition: **stored**,
+   **pending** (the write failed or the destination was unavailable) or
+   **failed** (the copy failed 8 times in a row).
+4. A pending copy is retried in the background, 5 minutes after it
+   failed, then with the delay doubling each time, up to a day. Every few
+   minutes the daemon queues an acquire for each edition with a retry
+   due on a destination it has deployed; the destinations that already
+   hold the edition are left alone. An acquire of one title tries its
+   pending copies at once, without waiting for the delay. A retry that
+   fails counts as an attempt on the copy, and the title stays acquired
+   from the destinations that hold it.
+5. A destination that cannot be listed when an acquire run starts sits
+   that run out. The titles go to the destinations that answer, and the
+   run clears nothing as missing and moves no files, since a title it
+   cannot see may be on the destination that did not answer. Each title
+   the run acquires gets a pending copy there, so the background retry
+   writes it once the destination answers. The run fails only when no
+   destination answers.
+
+An acquire run also visits an edition that is already acquired when a
+destination that takes it has no copy at all: one deployed after the
+acquire, or one whose filter took the edition later. A failed copy is
+left for you: other acquires of the edition write nothing there, and a
+forced acquire of the title (`bookclerk library acquire --force`) tries it
+again.
+
+> [!NOTE]
+> Editions acquired before copies were recorded get their copies from
+> the audio files the acquire recorded on each destination
+> (`edition_files`), the first time an acquire run looks at them.
+
 When some destinations already have a title and others don't,
 `output.multi_destination` decides what an acquire does:
 
 | Policy | What happens |
 | --- | --- |
-| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. This happens while the title is acquired; a title that is already stored is not copied to a destination whose filter now takes it. It copies the main output's copy only, so a destination whose copy rules refuse that copy gets nothing |
+| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. It copies the main output's copy only, so a destination whose copy rules refuse that copy gets nothing. A plain multi-part download is not matched on a destination by name, so it is downloaded again for the destination that lacks it |
 | `refetch_missing` | Downloads and encodes again, and writes only to the destinations missing the title |
 | `refetch_all` | Downloads and encodes again, and writes to every destination |
 

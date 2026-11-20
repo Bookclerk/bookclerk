@@ -100,7 +100,8 @@ fn clerk_topic(topic: LiveTopic) -> Option<ClerkTopic> {
         | LiveTopic::Config
         | LiveTopic::Consents
         | LiveTopic::Libraries
-        | LiveTopic::Users => None,
+        | LiveTopic::Users
+        | LiveTopic::Playback => None,
     }
 }
 
@@ -131,7 +132,7 @@ fn refusal(status: StatusCode, error: &str) -> Response {
         (status = 401, description = "No library card, or the card is not signed in (`unauthorized`)."),
         (status = 403, description = "The transport is not allowed (`transport_insecure`), or the card's person must enroll a second factor first (`mfa_enrollment_required`)."),
         (status = 404, description = "The node API is not mounted here (`node_api_unmounted`)."),
-        (status = 503, description = "The card could not be checked yet (`session_check_unavailable`), or too many clerk sockets are open (`clerk_sockets_busy`); retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
+        (status = 503, description = "The card could not be checked yet (`session_check_unavailable`), or too many clerk sockets are open (`clerk_sockets_busy`); retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), body = crate::http_error::ErrorMessage, example = json!({"error": "clerk_sockets_busy"})),
     ),
 )]
 pub async fn get_clerk_connect(State(state): State<Arc<AppState>>, request: Request) -> Response {

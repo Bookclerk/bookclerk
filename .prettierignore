@@ -23,6 +23,7 @@ crates/bookclerkd/openapi-3.0.json
 crates/bookclerk-library/fixtures/guest_receipt/
 crates/bookclerk-plugin-abi/schema/
 crates/bookclerk-plugin-manifest/schema/
+packages/plugin-sdk/scripts/egress_bridge_vectors.json
 examples/plugins-echo-workerd-rust/modules/pkg/
 examples/plugins-echo-workerd-ts/modules/
 crates/bookclerk-plugins/optional/covers/modules/

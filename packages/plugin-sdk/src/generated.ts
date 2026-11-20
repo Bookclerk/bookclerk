@@ -1895,6 +1895,14 @@ export interface CatalogCapabilities {
    * ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
    */
   priceByAsin: boolean;
+  /**
+   * True when `catalogDetail` resolves this store's own `productId` (an id
+   * its search, expand or deals hits gave) to a full bibliographic record.
+   * Catalog search then asks this store to fill lean result rows it listed
+   * itself, and title dialogs ask it for the editions it listed. A store
+   * that leaves it false is never woken for a detail lookup by product id.
+   */
+  detailByProductId: boolean;
 }
 
 /**
