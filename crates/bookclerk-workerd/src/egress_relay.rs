@@ -567,7 +567,7 @@ impl TunnelOpener for bookclerk_plugin_sdk::mux::Mux {
 /// # Errors
 ///
 /// When the stream cannot be opened, the host refuses (any status but 200),
-/// or the host does not answer within [`TUNNEL_TIMEOUT`].
+/// or the host does not answer within 30 seconds.
 pub async fn open_tunnel<O: TunnelOpener>(opener: &O, target: &TunnelTarget) -> Result<O::Stream> {
     let mut stream = opener.open().await?;
     let authority = target.authority();
