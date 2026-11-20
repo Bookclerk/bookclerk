@@ -432,7 +432,7 @@ it was last swept:
 
 ```text
 node-7f3a9c (this node) live target=- labels=-
-  shared node, owner -
+  shared branch, owner -
   cpu 8.0 cores (budget 6.4, reserved 1.6, busy 0.4) | memory …
   cache 700M of 1.0G, swept 12 min ago
 ```
@@ -528,7 +528,7 @@ Discovery document: `GET /.well-known/openid-configuration`.
 | Endpoint | Notes |
 | --- | --- |
 | `/oidc/authorize` | Authorization code with PKCE (`S256`). Needs a user's session; the operator Bearer is refused |
-| `/oidc/token` | `authorization_code` and `refresh_token` |
+| `/oidc/token` | `authorization_code` and `refresh_token`. Errors are RFC 6749 JSON (`{"error": "invalid_grant", "error_description": "…"}`) |
 | `/oidc/userinfo` | Takes a Bearer access token |
 | `/oidc/revoke` | Revokes a refresh token |
 

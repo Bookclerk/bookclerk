@@ -436,6 +436,84 @@ pub async fn enqueue_acquire(
     Ok(admitted)
 }
 
+/// Editions whose due copy retries one [`queue_copy_retries`] pass queues
+/// at most; the rest wait for the next pass.
+const COPY_RETRY_BATCH: u64 = 32;
+
+/// Queues an acquire for each edition with a pending copy whose retry is
+/// due (`edition_copies`), so a destination that failed or was
+/// unavailable gets the files once its delay passes, without a fetch when
+/// another destination already holds them.
+///
+/// Each acquire names one title of the edition, and every title of it is
+/// queued. The acquire's candidate selection sees the due copy and visits
+/// the title though it is acquired, when a destination with the due copy
+/// takes that title (see `titles_lacking_copies`). Admission drops a duplicate of a job
+/// still queued, so a pass that runs before the last one's jobs did adds
+/// nothing.
+///
+/// # Returns
+///
+/// How many acquire jobs were admitted.
+///
+/// # Errors
+///
+/// Returns the read or admission error.
+pub async fn queue_copy_retries(state: Arc<AppState>) -> anyhow::Result<usize> {
+    let deployed: Vec<String> = state
+        .destinations
+        .read()
+        .await
+        .destinations()
+        .iter()
+        .map(|dest| dest.id.as_str().to_owned())
+        .collect();
+    queue_copy_retries_on(state, &deployed).await
+}
+
+/// [`queue_copy_retries`] for the pending copies on `deployed`, the
+/// destinations this node has deployed.
+///
+/// # Errors
+///
+/// Returns the read or admission error.
+async fn queue_copy_retries_on(state: Arc<AppState>, deployed: &[String]) -> anyhow::Result<usize> {
+    let library = state.library_snapshot().await;
+    let now = chrono::Utc::now();
+    let due = library
+        .due_copy_editions(now, deployed, COPY_RETRY_BATCH)
+        .await?;
+    // Every title of the edition is named: the holdings may sit on
+    // different accounts, and a destination's filter may take one and not
+    // another. A title's acquire whose filters take none of its due copies
+    // finds nothing to do, and once one acquire stores a copy the others
+    // find it complete.
+    let mut titles = Vec::with_capacity(due.len());
+    for edition in &due {
+        titles.extend(library.books_of_edition(edition).await?);
+    }
+    if titles.is_empty() {
+        return Ok(0);
+    }
+    let admitted = enqueue_acquire(
+        state,
+        ScanRequester::Operator,
+        AcquireAsk {
+            titles,
+            ..AcquireAsk::default()
+        },
+        JobTrigger::Scheduler,
+    )
+    .await?;
+    // The queued acquires carry these retries now; a copy whose acquire
+    // never reaches it (its filter no longer takes the title, say) waits
+    // another delay instead of being queued again on every pass.
+    for edition in &due {
+        library.defer_copy_retries(edition, deployed, now).await?;
+    }
+    Ok(admitted.len())
+}
+
 /// Admit a listening-progress sync.
 pub async fn enqueue_listen_sync(
     state: Arc<AppState>,
@@ -895,11 +973,19 @@ pub async fn run_acquire(
     paths.ensure_dirs()?;
     let library = state.library.read().await.clone();
     // Filters are read before each title (below), not once per run.
-    let mut destinations = bookclerk_plugin_host::build_acquire_destinations(
+    let deployed = bookclerk_plugin_host::build_acquire_destinations(
         &cfg,
         &*state.destinations.read().await,
         &std::collections::BTreeMap::new(),
     )?;
+    // A destination that cannot be listed now sits this run out: the
+    // titles go to the ones that answer, and its missing copies are
+    // written by a later run once it is back.
+    let (mut destinations, unreachable) = deployed.reachable().await?;
+    for (id, error) in &unreachable {
+        tracing::warn!(destination = %id, %error, "run_acquire: destination unreachable, left out of this run");
+    }
+    let partial = !unreachable.is_empty();
     let destination_ids: Vec<String> = destinations
         .items
         .iter()
@@ -911,6 +997,9 @@ pub async fn run_acquire(
     let options = destinations.primary_destination().options.clone();
     let registry = registry_for_job(state).await;
 
+    // A checkpoint is bound to the listing it was written for: a run whose
+    // reachable destinations differ from the run that wrote it scans
+    // afresh.
     let mut index = bookclerk_acquire::scan_storage(
         &library,
         storage.as_ref(),
@@ -919,13 +1008,15 @@ pub async fn run_acquire(
         true,
     )
     .await?;
+    // With a destination left out, a title missing from the listing may
+    // simply be there: nothing is cleared or moved.
     let _ = bookclerk_acquire::match_storage_using_index(
         &library,
         storage.as_ref(),
         MatchStorageOptions {
             account: account.map(str::to_string),
-            clear_missing: true,
-            fix_layout: cfg.library.fix_storage_layout,
+            clear_missing: !partial,
+            fix_layout: cfg.library.fix_storage_layout && !partial,
             download: options.clone(),
             ..Default::default()
         },
@@ -936,7 +1027,27 @@ pub async fn run_acquire(
     let wanted = |t: &AcquireTitle| {
         acquire_mode_includes(t, mode, options.download_pdf, cfg.library.download_episodes)
     };
-    let mut targets = acquire_candidates(&library, account, title, wanted).await?;
+    // An acquired title is visited again while a destination that takes
+    // it lacks a stored copy (`edition_copies`); a forced or PDF-only run
+    // already decides by itself which acquired titles it visits.
+    let lacking = if mode.force || mode.pdf_only {
+        None
+    } else {
+        let filters = bookclerk_library::control_plane::destination_filters(
+            &library,
+            destination_ids.iter().map(String::as_str),
+        )
+        .await?;
+        destinations.set_filters(&filters);
+        Some(LackingCopies {
+            destinations: &destinations,
+            download_episodes: cfg.library.download_episodes,
+            now: chrono::Utc::now(),
+            honor_delay: title.is_none(),
+        })
+    };
+    let mut targets =
+        acquire_candidates(&library, account, title, wanted, lacking.as_ref()).await?;
     if mode.paced {
         // Audio not yet downloaded goes first, then companion PDFs of
         // acquired titles, then titles that failed before (the sort is
@@ -1204,6 +1315,11 @@ pub async fn run_acquire(
                 );
                 set_aside += 1;
                 break;
+            }
+            if result.is_ok() && !mode.pdf_only {
+                if let Some(facts) = req.placement.as_ref() {
+                    record_unreachable_copies(&library, &book, facts, &unreachable).await?;
+                }
             }
             match result {
                 Ok(result) if result.matched_existing => {
@@ -1510,7 +1626,8 @@ async fn wait_for_pace(
 /// ([`bookclerk_acquire::AcquireResult::store_fetches`]), even one a better
 /// copy from a joined library replaced; a copy matched in storage or taken
 /// from a joined library instead never reached the store. A title no
-/// destination takes is refused before any fetch, and a `rateLimited`
+/// destination takes, or a run no destination answers for, is refused
+/// before any fetch, and a `rateLimited`
 /// answer means the store refused it. Any other failure counts once: a
 /// source error is the store's own answer, and a storage, media or database
 /// failure can come after the store download finished (the pipeline
@@ -1524,7 +1641,7 @@ fn store_downloads(
     match result {
         Ok(result) => result.store_fetches,
         Err(AcquireError::Source(bookclerk_source::SourceError::RateLimited(_))) => 0,
-        Err(AcquireError::NoDestinationAccepts) => 0,
+        Err(AcquireError::NoDestinationAccepts | AcquireError::NoDestinationReachable { .. }) => 0,
         Err(
             AcquireError::Source(_)
             | AcquireError::Storage(_)
@@ -1677,22 +1794,19 @@ async fn acquire_candidates(
     account: Option<&str>,
     title: Option<&str>,
     wanted: impl Fn(&AcquireTitle) -> bool,
+    lacking: Option<&LackingCopies<'_>>,
 ) -> bookclerk_library::Result<Vec<AcquireTitle>> {
     let mut targets = Vec::new();
     if let Some(title) = title {
-        targets = library.acquire_titles_named(account, title).await?;
-        targets.retain(|t| t.book_uuid.is_some() && wanted(t));
+        let titles = library.acquire_titles_named(account, title).await?;
+        targets = select_candidates(library, titles, &wanted, lacking).await?;
     } else {
         let mut after = None;
         loop {
             let page = library
                 .acquire_titles_page(account, after.as_deref(), 64)
                 .await?;
-            targets.extend(
-                page.titles
-                    .into_iter()
-                    .filter(|t| t.book_uuid.is_some() && wanted(t)),
-            );
+            targets.extend(select_candidates(library, page.titles, &wanted, lacking).await?);
             match page.next {
                 Some(next) => after = Some(next),
                 None => break,
@@ -1701,6 +1815,177 @@ async fn acquire_candidates(
     }
     targets.sort_by(|a, b| a.title.cmp(&b.title));
     Ok(targets)
+}
+
+/// What candidate selection needs to find acquired titles a destination
+/// still lacks.
+pub(crate) struct LackingCopies<'a> {
+    /// Every destination deployed here, with its filter read for this run.
+    pub(crate) destinations: &'a bookclerk_acquire::AcquireDestinations,
+    /// Whether episodes are downloaded at all.
+    pub(crate) download_episodes: bool,
+    /// The time due retries are judged against.
+    pub(crate) now: chrono::DateTime<chrono::Utc>,
+    /// Whether a pending copy waits out its retry delay. A run that names
+    /// its title (a queued retry, or an operator's acquire of one title)
+    /// tries every pending copy of it at once.
+    pub(crate) honor_delay: bool,
+}
+
+/// The titles of one page an acquire run visits: those with a flat `books`
+/// row that `wanted` keeps, and, with `lacking`, acquired titles a
+/// destination whose filter takes them has no stored copy of
+/// ([`titles_lacking_copies`]). Page order is kept.
+///
+/// # Errors
+///
+/// Returns the read error for copies or placement facts.
+async fn select_candidates(
+    library: &bookclerk_library::LibraryStore,
+    titles: Vec<AcquireTitle>,
+    wanted: &impl Fn(&AcquireTitle) -> bool,
+    lacking: Option<&LackingCopies<'_>>,
+) -> bookclerk_library::Result<Vec<AcquireTitle>> {
+    let titles: Vec<AcquireTitle> = titles
+        .into_iter()
+        .filter(|t| t.book_uuid.is_some())
+        .collect();
+    let revisit = match lacking {
+        Some(lacking) => {
+            let acquired: Vec<&AcquireTitle> = titles
+                .iter()
+                .filter(|t| {
+                    !wanted(t)
+                        && t.status == AcquireStatus::Acquired
+                        && downloadable_kind(t.content_kind, lacking.download_episodes)
+                })
+                .collect();
+            titles_lacking_copies(library, &acquired, lacking).await?
+        }
+        None => std::collections::BTreeSet::new(),
+    };
+    Ok(titles
+        .into_iter()
+        .filter(|t| wanted(t) || revisit.contains(&t.holding_id))
+        .collect())
+}
+
+/// The holdings among `titles` (acquired titles) that some destination
+/// should still be given: one whose filter takes the title and that has no
+/// stored copy of its edition, unless that copy is waiting out a retry
+/// delay or has failed for good
+/// ([`bookclerk_library::EditionCopy::wants_attempt`]). A destination with
+/// no copy row at all lacks the edition (it was deployed, or its filter
+/// changed, after the acquire) (#1155).
+///
+/// Copies are read once for the whole page; placement facts only for a
+/// title some destination lacks.
+///
+/// # Errors
+///
+/// Returns the read error for copies or placement facts.
+async fn titles_lacking_copies(
+    library: &bookclerk_library::LibraryStore,
+    titles: &[&AcquireTitle],
+    lacking: &LackingCopies<'_>,
+) -> bookclerk_library::Result<std::collections::BTreeSet<String>> {
+    let mut revisit = std::collections::BTreeSet::new();
+    if titles.is_empty() {
+        return Ok(revisit);
+    }
+    let mut editions: Vec<String> = titles.iter().map(|t| t.edition_id.clone()).collect();
+    editions.sort();
+    editions.dedup();
+    let mut copies = library.copies_of_editions(&editions).await?;
+    // An edition acquired before copies were recorded has none: its audio
+    // file rows say where it is stored.
+    let unrecorded: Vec<String> = editions
+        .iter()
+        .filter(|edition| !copies.iter().any(|copy| &copy.edition_id == *edition))
+        .cloned()
+        .collect();
+    let mut backfilled = 0;
+    for edition in &unrecorded {
+        backfilled += library.record_copies_from_files(edition).await?;
+    }
+    if backfilled > 0 {
+        copies = library.copies_of_editions(&editions).await?;
+    }
+    for title in titles {
+        let missing: Vec<&bookclerk_acquire::AcquireDestination> = lacking
+            .destinations
+            .items
+            .iter()
+            .filter(|dest| {
+                let copy = copies.iter().find(|copy| {
+                    copy.edition_id == title.edition_id && copy.destination == dest.id.as_str()
+                });
+                copy.is_none_or(|copy| {
+                    if lacking.honor_delay {
+                        copy.wants_attempt(lacking.now)
+                    } else {
+                        copy.state == bookclerk_library::CopyState::Pending
+                    }
+                })
+            })
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        let facts = placement_facts(library, title).await?;
+        if missing.iter().any(|dest| dest.filter.accepts(&facts)) {
+            revisit.insert(title.holding_id.clone());
+        }
+    }
+    Ok(revisit)
+}
+
+/// Records a pending copy of `title`'s edition on each destination an
+/// acquire run left out as unreachable whose filter takes the title and
+/// that has no copy row yet, so the background retry writes it once the
+/// destination answers again. An existing row is left as it is: a stored
+/// copy stays stored, and a pending one keeps its own retry time.
+///
+/// # Arguments
+///
+/// * `title` - The title the run just acquired or matched.
+/// * `facts` - What the destination filters know about it.
+/// * `unreachable` - Each destination left out, with its listing error.
+///
+/// # Errors
+///
+/// Returns the read or write error.
+async fn record_unreachable_copies(
+    library: &bookclerk_library::LibraryStore,
+    title: &AcquireTitle,
+    facts: &bookclerk_config::PlacementFacts,
+    unreachable: &[(bookclerk_config::DestinationId, String)],
+) -> bookclerk_library::Result<()> {
+    if unreachable.is_empty() || title.edition_id.is_empty() {
+        return Ok(());
+    }
+    let mut filters = std::collections::BTreeMap::new();
+    for (id, _) in unreachable {
+        let one =
+            bookclerk_library::control_plane::destination_filters(library, [id.as_str()]).await?;
+        filters.extend(one);
+    }
+    let copies = library
+        .copies_of_editions(std::slice::from_ref(&title.edition_id))
+        .await?;
+    let now = chrono::Utc::now();
+    for (id, error) in unreachable {
+        let takes = filters
+            .get(id.as_str())
+            .is_none_or(|filter| filter.accepts(facts));
+        let recorded = copies.iter().any(|copy| copy.destination == id.as_str());
+        if takes && !recorded {
+            library
+                .set_copy_pending(&title.edition_id, id.as_str(), error, now)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// What a destination filter knows about `title` when its acquire starts:
@@ -1971,6 +2256,12 @@ mod tests {
             0
         );
         assert_eq!(store_downloads(&Err(AcquireError::NoDestinationAccepts)), 0);
+        assert_eq!(
+            store_downloads(&Err(AcquireError::NoDestinationReachable {
+                errors: "local: gone".into()
+            })),
+            0
+        );
         let done = |store_fetches, from_library| bookclerk_acquire::AcquireResult {
             asin: "B00TEST".into(),
             storage_key: "key".into(),
@@ -1978,6 +2269,7 @@ mod tests {
             matched_existing: false,
             from_library,
             store_fetches,
+            copies: Vec::new(),
         };
         // A store download replaced by a better library copy still counts,
         // and so does the second download after that copy failed packaging;
@@ -2044,6 +2336,286 @@ mod tests {
         );
     }
 
+    /// Two destinations on local folders under `root`: `local` (primary)
+    /// and `second`, both taking every book.
+    fn two_destinations(root: &std::path::Path) -> bookclerk_acquire::AcquireDestinations {
+        let destination = |id: &str| bookclerk_acquire::AcquireDestination {
+            id: bookclerk_config::DestinationId::new(id).unwrap(),
+            backend: Box::new(bookclerk_storage::LocalFsBackend::new(root.join(id)).unwrap()),
+            options: bookclerk_source::DownloadOptions::default(),
+            filter: bookclerk_config::DestinationFilter::default(),
+        };
+        bookclerk_acquire::AcquireDestinations {
+            items: vec![destination("local"), destination("second")],
+            primary: bookclerk_config::DestinationId::new("local").unwrap(),
+            multi_destination: bookclerk_config::MultiDestinationMode::SyncMissing,
+        }
+    }
+
+    /// Whether candidate selection visits `title` again for a copy some
+    /// destination lacks.
+    async fn revisited(
+        store: &LibraryStore,
+        title: &AcquireTitle,
+        destinations: &bookclerk_acquire::AcquireDestinations,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        let lacking = LackingCopies {
+            destinations,
+            download_episodes: true,
+            now,
+            honor_delay: true,
+        };
+        let picked = select_candidates(
+            store,
+            vec![title.clone()],
+            &|t: &AcquireTitle| acquire_job_includes_title(t, false, true),
+            Some(&lacking),
+        )
+        .await
+        .unwrap();
+        !picked.is_empty()
+    }
+
+    /// An acquired title is visited again while a destination that takes it
+    /// has no stored copy and is not waiting out a retry (#1155); a stored,
+    /// waiting or failed copy, or a filter that refuses the title, leaves it
+    /// alone.
+    #[tokio::test]
+    async fn an_acquired_title_is_visited_again_for_a_destination_without_a_copy() {
+        let store = test_store().await;
+        let book = book_with(
+            &store,
+            AcquireStatus::Acquired,
+            Some("A/Test.m4b"),
+            AcquireStatus::NotAcquired,
+            None,
+            "book",
+        )
+        .await;
+        let edition = book.edition_id.clone();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut destinations = two_destinations(tmp.path());
+        let now = chrono::Utc::now();
+        assert!(!acquire_job_includes_title(&book, false, true));
+
+        // Stored on the primary only: the second destination never got it.
+        store
+            .set_copy_stored(&edition, "local", "A/Test.m4b")
+            .await
+            .unwrap();
+        assert!(revisited(&store, &book, &destinations, now).await);
+
+        // A filter that refuses the title means nothing is missing.
+        destinations.items[1].filter = bookclerk_config::DestinationFilter {
+            rules: vec![bookclerk_config::FilterRule {
+                field: bookclerk_config::FilterField::Storefront,
+                value: "audible".into(),
+                effect: bookclerk_config::FilterEffect::Exclude,
+            }],
+        };
+        assert!(!revisited(&store, &book, &destinations, now).await);
+        destinations.items[1].filter = bookclerk_config::DestinationFilter::default();
+
+        // A failed write waits out its delay, then is due.
+        store
+            .set_copy_pending(&edition, "second", "offline", now)
+            .await
+            .unwrap();
+        assert!(!revisited(&store, &book, &destinations, now).await);
+        let later = now + chrono::Duration::days(2);
+        assert!(revisited(&store, &book, &destinations, later).await);
+
+        // Stored everywhere: nothing to do.
+        store
+            .set_copy_stored(&edition, "second", "A/Test.m4b")
+            .await
+            .unwrap();
+        assert!(!revisited(&store, &book, &destinations, later).await);
+    }
+
+    /// An edition acquired before copies were recorded gets its copies from
+    /// its audio file rows, so it is visited only for a destination without
+    /// its files.
+    #[tokio::test]
+    async fn an_edition_acquired_before_copies_were_recorded_is_backfilled() {
+        let store = test_store().await;
+        let book = book_with(
+            &store,
+            AcquireStatus::Acquired,
+            Some("A/Test.m4b"),
+            AcquireStatus::NotAcquired,
+            None,
+            "book",
+        )
+        .await;
+        let owner = bookclerk_library::FileOwner::Edition(book.edition_id.clone());
+        let tmp = tempfile::tempdir().unwrap();
+        let destinations = two_destinations(tmp.path());
+        let now = chrono::Utc::now();
+        store
+            .record_edition_file(
+                "local",
+                "A/Test.m4b",
+                &owner,
+                bookclerk_library::FileRole::Audio,
+            )
+            .await
+            .unwrap();
+        assert!(revisited(&store, &book, &destinations, now).await);
+        store
+            .record_edition_file(
+                "second",
+                "A/Test.m4b",
+                &owner,
+                bookclerk_library::FileRole::Audio,
+            )
+            .await
+            .unwrap();
+        // The primary's copy was backfilled already; the second's is not,
+        // because the edition has copy rows now.
+        assert!(revisited(&store, &book, &destinations, now).await);
+        let copies = store
+            .copies_of_editions(std::slice::from_ref(&book.edition_id))
+            .await
+            .unwrap();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].destination, "local");
+    }
+
+    /// A due copy retry queues one acquire naming a title of its edition;
+    /// a retry that is not due yet queues nothing.
+    #[tokio::test]
+    async fn a_due_copy_retry_queues_an_acquire_for_its_edition() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = crate::node_api::tests::test_state(&files).await;
+        let book = book_with(
+            &store,
+            AcquireStatus::Acquired,
+            Some("A/Test.m4b"),
+            AcquireStatus::NotAcquired,
+            None,
+            "book",
+        )
+        .await;
+        let long_ago = chrono::Utc::now() - chrono::Duration::days(2);
+        store
+            .set_copy_pending(&book.edition_id, "second", "offline", chrono::Utc::now())
+            .await
+            .unwrap();
+        let deployed = ["local".to_owned(), "second".to_owned()];
+        assert_eq!(
+            queue_copy_retries_on(state.clone(), &deployed)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(store.list_jobs(10).await.unwrap().is_empty());
+
+        store
+            .set_copy_pending(&book.edition_id, "second", "offline", long_ago)
+            .await
+            .unwrap();
+        // A destination this node no longer has is not retried here.
+        assert_eq!(
+            queue_copy_retries_on(state.clone(), &deployed[..1])
+                .await
+                .unwrap(),
+            0
+        );
+        // A second holding of the edition, on another account: a filter
+        // may take its account and not the first one's, so both titles are
+        // queued.
+        store
+            .upsert_account("audible", "user-2", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_book(&NewBook::minimal("B00TEST", "user-2", "us", "Test"))
+            .await
+            .unwrap();
+        let sibling = store
+            .acquire_title("audible", "user-2", "us", "B00TEST")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sibling.edition_id, book.edition_id);
+        assert_eq!(
+            queue_copy_retries_on(state.clone(), &deployed)
+                .await
+                .unwrap(),
+            2
+        );
+        let jobs = store.list_jobs(10).await.unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|job| job.kind == JobKind::Acquire));
+        let mut queued: Vec<_> = jobs.iter().map(|job| job.payload.title.clone()).collect();
+        queued.sort();
+        let mut expected = vec![book.book_uuid.clone(), sibling.book_uuid.clone()];
+        expected.sort();
+        assert_eq!(queued, expected);
+        // The queued acquire carries the retry: the next pass adds nothing.
+        assert_eq!(
+            queue_copy_retries_on(state.clone(), &deployed)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_destination_gets_a_pending_copy_to_retry() {
+        let store = test_store().await;
+        let book = book_with(
+            &store,
+            AcquireStatus::Acquired,
+            Some("A/Test.m4b"),
+            AcquireStatus::NotAcquired,
+            None,
+            "book",
+        )
+        .await;
+        store
+            .set_copy_stored(&book.edition_id, "local", "A/Test.m4b")
+            .await
+            .unwrap();
+        let facts = placement_facts(&store, &book).await.unwrap();
+        let unreachable = vec![
+            (
+                bookclerk_config::DestinationId::new("local").unwrap(),
+                "offline".to_owned(),
+            ),
+            (
+                bookclerk_config::DestinationId::new("second").unwrap(),
+                "offline".to_owned(),
+            ),
+        ];
+        for _ in 0..2 {
+            record_unreachable_copies(&store, &book, &facts, &unreachable)
+                .await
+                .unwrap();
+        }
+        let states: Vec<(String, bookclerk_library::CopyState, u32)> = store
+            .copies_of_editions(std::slice::from_ref(&book.edition_id))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|copy| (copy.destination, copy.state, copy.attempts))
+            .collect();
+        // The stored copy stays stored; the missing one is pending once.
+        assert_eq!(
+            states,
+            vec![
+                ("local".to_owned(), bookclerk_library::CopyState::Stored, 0),
+                (
+                    "second".to_owned(),
+                    bookclerk_library::CopyState::Pending,
+                    1
+                ),
+            ]
+        );
+    }
+
     /// Audio another account's title acquired is already in the library:
     /// the edition's state decides, so the sibling title is not visited.
     #[tokio::test]
@@ -2075,9 +2647,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!acquire_job_includes_title(&sibling, false, true));
-        let pending = acquire_candidates(&store, None, None, |t| {
-            acquire_job_includes_title(t, false, true)
-        })
+        let pending = acquire_candidates(
+            &store,
+            None,
+            None,
+            |t| acquire_job_includes_title(t, false, true),
+            None,
+        )
         .await
         .unwrap();
         assert!(pending.is_empty());
@@ -2098,7 +2674,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            acquire_candidates(&store, None, None, |_| true)
+            acquire_candidates(&store, None, None, |_| true, None)
                 .await
                 .unwrap()
                 .len(),
@@ -2115,7 +2691,7 @@ mod tests {
             .unwrap()
             .is_some());
         for title in [None, Some("B00TEST")] {
-            assert!(acquire_candidates(&store, None, title, |_| true)
+            assert!(acquire_candidates(&store, None, title, |_| true, None)
                 .await
                 .unwrap()
                 .is_empty());
@@ -2251,7 +2827,7 @@ mod tests {
         let titles =
             |books: &[AcquireTitle]| books.iter().map(|b| b.title.clone()).collect::<Vec<_>>();
 
-        let all = acquire_candidates(&store, None, None, |_| true)
+        let all = acquire_candidates(&store, None, None, |_| true, None)
             .await
             .unwrap();
         assert_eq!(all.len(), 70);
@@ -2259,23 +2835,29 @@ mod tests {
         sorted.sort();
         assert_eq!(titles(&all), sorted, "title order");
 
-        let nines = acquire_candidates(&store, Some("user-1"), None, |b| b.title.ends_with('9'))
-            .await
-            .unwrap();
+        let nines = acquire_candidates(
+            &store,
+            Some("user-1"),
+            None,
+            |b| b.title.ends_with('9'),
+            None,
+        )
+        .await
+        .unwrap();
         assert!(nines
             .iter()
             .all(|b| b.account_id == "user-1" && b.title.ends_with('9')));
         assert_eq!(nines.len(), 7, "i = 0, 10, ..., 60");
 
-        let one = acquire_candidates(&store, None, Some("b0003"), |_| true)
+        let one = acquire_candidates(&store, None, Some("b0003"), |_| true, None)
             .await
             .unwrap();
         assert_eq!(titles(&one), vec!["T096".to_string()]);
-        let elsewhere = acquire_candidates(&store, Some("user-1"), Some("B0003"), |_| true)
+        let elsewhere = acquire_candidates(&store, Some("user-1"), Some("B0003"), |_| true, None)
             .await
             .unwrap();
         assert!(elsewhere.is_empty(), "B0003 is on user-2");
-        let skipped = acquire_candidates(&store, None, Some("B0003"), |_| false)
+        let skipped = acquire_candidates(&store, None, Some("B0003"), |_| false, None)
             .await
             .unwrap();
         assert!(skipped.is_empty());

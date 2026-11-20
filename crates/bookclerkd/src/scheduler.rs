@@ -1,4 +1,5 @@
-//! Periodic scan / auto-acquire / listening-sync scheduler (queue producers).
+//! Periodic scan / auto-acquire / listening-sync / copy-retry scheduler
+//! (queue producers).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,7 +16,27 @@ use crate::jobs::{enqueue_acquire, enqueue_listen_sync, enqueue_scan};
 pub fn spawn_scheduler(state: Arc<AppState>) {
     spawn_scan_loop(state.clone());
     spawn_listen_sync_loop(state.clone());
+    spawn_copy_retry_loop(state.clone());
     spawn_discover_refresh_loop(state);
+}
+
+/// How often due copy retries are looked for. A copy's first retry is due
+/// five minutes after it failed (`bookclerk_library::COPY_RETRY_BASE_DELAY`).
+const COPY_RETRY_CHECK: Duration = Duration::from_secs(5 * 60);
+
+/// Every few minutes, queues an acquire for each edition whose failed copy
+/// on some destination is due for another attempt.
+fn spawn_copy_retry_loop(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(jittered_delay(COPY_RETRY_CHECK)).await;
+            match crate::jobs::queue_copy_retries(state.clone()).await {
+                Ok(0) => {}
+                Ok(queued) => info!(queued, "copy retries enqueued"),
+                Err(err) => warn!(error = %err, "copy retry enqueue failed"),
+            }
+        }
+    });
 }
 
 /// How often stored Discover data is checked for the daily refresh.

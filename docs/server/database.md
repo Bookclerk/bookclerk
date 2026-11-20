@@ -801,6 +801,14 @@ library holds as works, expressions and editions:
   `64k-mono`; see [Keeping several
   copies](output.md#keeping-several-copies)); both are empty for
   sidecars, the PDF and uploads.
+- `edition_copies`: each edition's copy on each destination: `stored`
+  with the edition's primary audio key there, `pending` with the last
+  error and when the next background attempt is due, or `failed` after 8
+  failed attempts in a row. An acquire records each destination's outcome
+  when it returns, and a branch's upload records the destinations it
+  wrote when it commits. Acquire runs read it to visit an acquired
+  edition a destination still lacks (see [Several
+  destinations](output.md#several-destinations)).
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that

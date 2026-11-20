@@ -1435,7 +1435,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         online_since_ms INTEGER NOT NULL,
         cache_bytes INTEGER,
         cache_budget_bytes INTEGER,
-        cache_swept_ms INTEGER
+        cache_swept_ms INTEGER,
+        public_origin TEXT
     )",
     ),
     MigrationOp::Schema(super::LIBRARY_LEASES_DDL),
@@ -1634,6 +1635,29 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         pdf_storage_key TEXT,
         pdf_holding_id TEXT
     )",
+    ),
+    // Each edition's copy at each destination (docs/adr/storage-destinations.md,
+    // decision 3): `stored` once the destination holds the complete files at
+    // `storage_key` (the primary audio key there), `pending` while a failed
+    // or unavailable target waits for its next attempt at `next_attempt_at`,
+    // and `failed` once `attempts` reached the retry limit. An acquire
+    // succeeds on the first stored copy; the rest are retried in the
+    // background. A destination with no row has no copy of the edition.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS edition_copies (
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        destination TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('stored', 'pending', 'failed')),
+        storage_key TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (edition_id, destination)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_edition_copies_due ON edition_copies(state, next_attempt_at)",
     ),
     // The library's page index (docs/adr/library-data-model.md, decision 8
     // and Consequences): one row per held top-level work, so list views
@@ -2118,6 +2142,11 @@ mod tests {
             "edition_files",
             "role",
             crate::FileRole::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "edition_copies",
+            "state",
+            crate::CopyState::ALL.iter().map(|k| k.as_str()),
         );
         assert_check(
             "edition_acquisitions",

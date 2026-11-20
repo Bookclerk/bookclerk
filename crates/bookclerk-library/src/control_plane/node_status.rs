@@ -127,8 +127,14 @@ pub struct NodeHeartbeat {
     pub memory_available_bytes: Option<i64>,
     /// Free bytes on the files directory's filesystem.
     pub files_dir_free_bytes: Option<i64>,
-    /// The image caches' use; `None` from a node that keeps none (a Host).
+    /// The image caches' use; `None` from a node that keeps none (a
+    /// branch).
     pub cache: Option<CacheUsage>,
+    /// The address other installs reach the node at, as a branch reports it
+    /// (already parsed into a [`bookclerk_node_proto::BranchOrigin`] by the
+    /// node API); `None` for a branch without one (a local branch) and for
+    /// a shared node, which reports none.
+    pub public_origin: Option<String>,
 }
 
 /// A node's latest heartbeat with budget, accounting, and availability.
@@ -197,6 +203,11 @@ pub struct NodeStatus {
     /// When the node's last cache sweep finished, in Unix milliseconds.
     #[schema(example = 1_793_212_800_000_i64)]
     pub cache_swept_ms: Option<i64>,
+    /// The address other installs reach this branch at, as it last
+    /// reported it; `null` for a local branch and for a shared node. A
+    /// branch with one is a remote branch of this library.
+    #[schema(example = "https://branch.example")]
+    pub public_origin: Option<String>,
 }
 
 impl NodeStatus {
@@ -333,6 +344,7 @@ impl NodeSampler {
             files_dir_free_bytes: bookclerk_sandbox::filesystem_free_bytes(&self.files_dir)
                 .and_then(fit),
             cache: None,
+            public_origin: None,
         }
     }
 }
@@ -431,6 +443,7 @@ pub async fn record_node_heartbeat(
         cache_bytes: heartbeat.cache.map(|cache| cache.bytes),
         cache_budget_bytes: heartbeat.cache.map(|cache| cache.budget_bytes),
         cache_swept_ms: heartbeat.cache.and_then(|cache| cache.swept_ms),
+        public_origin: heartbeat.public_origin.clone(),
     };
     upsert_node_status(store, &status).await?;
     Ok(status)
@@ -461,6 +474,7 @@ pub(crate) async fn upsert_node_status(store: &LibraryStore, status: &NodeStatus
         cache_bytes: Set(status.cache_bytes),
         cache_budget_bytes: Set(status.cache_budget_bytes),
         cache_swept_ms: Set(status.cache_swept_ms),
+        public_origin: Set(status.public_origin.clone()),
     };
     let upsert = node_status::Entity::insert(model).on_conflict(
         OnConflict::column(node_status::Column::NodeId)
@@ -486,6 +500,7 @@ pub(crate) async fn upsert_node_status(store: &LibraryStore, status: &NodeStatus
                 node_status::Column::CacheBytes,
                 node_status::Column::CacheBudgetBytes,
                 node_status::Column::CacheSweptMs,
+                node_status::Column::PublicOrigin,
             ])
             .to_owned(),
     );
@@ -522,6 +537,7 @@ fn status_from_model(row: node_status::Model) -> NodeStatus {
         cache_bytes: row.cache_bytes,
         cache_budget_bytes: row.cache_budget_bytes,
         cache_swept_ms: row.cache_swept_ms,
+        public_origin: row.public_origin,
     }
 }
 
@@ -703,6 +719,7 @@ mod tests {
             cache_bytes: None,
             cache_budget_bytes: None,
             cache_swept_ms: None,
+            public_origin: None,
         };
         // Measured use (2.5 cores) is above the reservations (1.6).
         assert_eq!(status.cpu_headroom_millicores(), 700);

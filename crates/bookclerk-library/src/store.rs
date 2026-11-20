@@ -7951,6 +7951,7 @@ pub(crate) mod acquire_title;
 pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
 pub(crate) mod discover;
+pub(crate) mod edition_copies;
 pub(crate) mod edition_enrichment;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
@@ -7981,6 +7982,10 @@ pub use acquire_title::{AcquireTitle, AcquireTitlePage};
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
+};
+pub use edition_copies::{
+    copy_retry_delay, CopyState, EditionCopy, COPY_RETRY_BASE_DELAY, COPY_RETRY_MAX_DELAY,
+    MAX_COPY_ATTEMPTS,
 };
 pub use edition_enrichment::{
     EditionAsin, EditionEnrichment, EnrichCandidate, EnrichCandidatePage,

@@ -143,6 +143,59 @@ impl NodeKind {
     }
 }
 
+/// How a node relates to the library, as people are told: a shared branch
+/// serves the library from its database, and a branch with its own
+/// database is a remote branch when it reports a public address (it is a
+/// core branch other installs can reach) and a local branch when it does
+/// not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[schema(example = "remote_branch")]
+pub enum BranchRelationship {
+    /// Shares the library's database and keys ([`NodeKind::Shared`]).
+    SharedBranch,
+    /// Its own install, reachable at the public address it reports.
+    RemoteBranch,
+    /// Its own install with no public address; it dials the library and is
+    /// never dialed.
+    LocalBranch,
+}
+
+impl BranchRelationship {
+    /// The relationship of a node of `kind` whose latest heartbeat reported
+    /// `public_origin`. A branch counts as local until a heartbeat reports
+    /// an address.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` - How the node joined.
+    /// * `public_origin` - The address its latest heartbeat reported, if any.
+    ///
+    /// # Returns
+    ///
+    /// [`Self::SharedBranch`] for a shared node, whatever it reports;
+    /// otherwise [`Self::RemoteBranch`] with an address and
+    /// [`Self::LocalBranch`] without.
+    #[must_use]
+    pub fn of(kind: NodeKind, public_origin: Option<&str>) -> Self {
+        match (kind, public_origin) {
+            (NodeKind::Shared, _) => Self::SharedBranch,
+            (NodeKind::Branch, Some(_)) => Self::RemoteBranch,
+            (NodeKind::Branch, None) => Self::LocalBranch,
+        }
+    }
+
+    /// Wire text (`shared_branch`, `remote_branch`, `local_branch`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SharedBranch => "shared_branch",
+            Self::RemoteBranch => "remote_branch",
+            Self::LocalBranch => "local_branch",
+        }
+    }
+}
+
 /// Bookclerk artifact target this binary runs as (`linux-x64-gnu`,
 /// `macos-arm64`, …). Matches `bookclerk_plugin_catalog::host_bookclerk_target`
 /// (a plugin-host test pins the two together).
@@ -704,4 +757,42 @@ fn write_create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = opts.open(path)?;
     file.write_all(bytes)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod relationship_tests {
+    use super::{BranchRelationship, NodeKind};
+
+    #[test]
+    fn a_branch_is_remote_only_while_it_reports_an_address() {
+        let origin = Some("https://branch.example");
+        assert_eq!(
+            BranchRelationship::of(NodeKind::Branch, origin),
+            BranchRelationship::RemoteBranch
+        );
+        assert_eq!(
+            BranchRelationship::of(NodeKind::Branch, None),
+            BranchRelationship::LocalBranch
+        );
+        for reported in [origin, None] {
+            assert_eq!(
+                BranchRelationship::of(NodeKind::Shared, reported),
+                BranchRelationship::SharedBranch
+            );
+        }
+    }
+
+    #[test]
+    fn wire_text_matches_serde() {
+        for relationship in [
+            BranchRelationship::SharedBranch,
+            BranchRelationship::RemoteBranch,
+            BranchRelationship::LocalBranch,
+        ] {
+            assert_eq!(
+                serde_json::to_value(relationship).expect("serializes"),
+                serde_json::Value::String(relationship.as_str().into())
+            );
+        }
+    }
 }
