@@ -61,8 +61,10 @@ The `bookclerk-keystore` crate reads, writes and deletes items: through the
 the Secret Service API over `zbus` itself. It opens a `plain` session there,
 because the encrypted session needs AES-CBC and the store-free host scan
 forbids block ciphers in the hosts. The session bus is the user's own local
-socket, the same boundary the keychain protects. Its errors never carry
-item bytes.
+socket, the same boundary the keychain protects. An existing item is
+updated where it is, a missing default collection is created, and a
+keychain prompt that gets no answer in five minutes fails the call. Its
+errors never carry item bytes.
 
 ### 2. `master.key` always says where the key is
 
@@ -128,8 +130,10 @@ it already, and one item per install means one macOS access prompt.
   each rebuild, because Keychain Services ties access to the code signature.
   `cargo dev` runs `bookclerkd`, whose default is the file.
 - No new untrusted-input boundary: `master.key` and the keychain item are
-  written by the branch itself. The pointer parser still has strict header
-  and length tests.
+  written by the branch itself, and `import --from` reads a file the
+  operator chose, with the same trust as `master.key` (whoever can hand the
+  CLI that file can already replace `master.key`). The pointer and envelope
+  parsers still have strict header and length tests.
 - `bookclerk-keystore` joins the security surface.
 - Headless Linux servers keep the password-wrapped file. A TPM-backed store
   (systemd-creds) is planned as a third store.

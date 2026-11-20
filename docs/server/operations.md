@@ -397,7 +397,13 @@ ExecStart=/usr/local/bin/bookclerkd-with-credential
 
 ```sh
 #!/bin/sh
+set -eu
 BOOKCLERK_AUTH_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/bookclerk-auth-password")"
+# An empty password would leave a fresh key unwrapped: refuse to start.
+if [ -z "$(printf '%s' "$BOOKCLERK_AUTH_PASSWORD" | tr -d '[:space:]')" ]; then
+  echo "bookclerk-auth-password is empty" >&2
+  exit 1
+fi
 export BOOKCLERK_AUTH_PASSWORD
 exec /usr/local/bin/bookclerkd
 ```

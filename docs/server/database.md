@@ -345,6 +345,8 @@ files directory no longer carries the key. The item holds the same
   command also sets `[auth].key_store`. Stop `bookclerkd` first.
 - **A set `key_store` is required.** With `keychain` configured, a keychain
   that can't be reached stops a first start instead of writing the file.
+  A config reload applies a changed `key_store` to the next key placed (a
+  shared-branch join); it does not move an existing key.
 
 > [!NOTE]
 > A headless Linux server usually has no Secret Service (no session

@@ -31,8 +31,13 @@ const COLLECTION_IFACE: &str = "org.freedesktop.Secret.Collection";
 const ITEM_IFACE: &str = "org.freedesktop.Secret.Item";
 /// The prompt interface.
 const PROMPT_IFACE: &str = "org.freedesktop.Secret.Prompt";
-/// The collection most desktops unlock at login.
-const DEFAULT_COLLECTION: &str = "/org/freedesktop/secrets/aliases/default";
+/// How long a keychain prompt may wait for the user (or a service that
+/// went away) before the call gives up.
+#[cfg(not(test))]
+const PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Tests' prompt wait, short so a silent fake fails fast.
+#[cfg(test)]
+const PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 /// Content type recorded with every item.
 const CONTENT_TYPE: &str = "application/octet-stream";
 
@@ -82,6 +87,22 @@ fn get_on(bus: Bus, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
 fn set_on(bus: Bus, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
     let bytes = Zeroizing::new(bytes.to_vec());
     run(bus, move |client| async move {
+        let secret = (
+            client.session.clone(),
+            Vec::<u8>::new(),
+            bytes.to_vec(),
+            CONTENT_TYPE.to_string(),
+        );
+        // An existing item is updated where it is, whichever collection
+        // holds it, so a changed default never leaves two copies.
+        if let Some(path) = client.find(item).await? {
+            client.unlock(std::slice::from_ref(&path)).await?;
+            let proxy = client.proxy(path.as_str(), ITEM_IFACE).await?;
+            return proxy
+                .call::<_, _, ()>("SetSecret", &(secret,))
+                .await
+                .map_err(dbus_error);
+        }
         let collection = client.default_collection().await?;
         client.unlock(std::slice::from_ref(&collection)).await?;
         let account = item.to_string();
@@ -100,12 +121,6 @@ fn set_on(bus: Bus, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
                 Value::from(attributes),
             ),
         ]);
-        let secret = (
-            client.session.clone(),
-            Vec::<u8>::new(),
-            bytes.to_vec(),
-            CONTENT_TYPE.to_string(),
-        );
         let proxy = client.proxy(collection.as_str(), COLLECTION_IFACE).await?;
         let (_, prompt): (OwnedObjectPath, OwnedObjectPath) = proxy
             .call("CreateItem", &(properties, secret, true))
@@ -168,19 +183,41 @@ impl Client {
         proxy(&self.conn, path, iface).await
     }
 
-    /// The object path of the default collection.
+    /// The object path of the default collection, creating it (through
+    /// the desktop's prompt when one is needed) when there is none.
     async fn default_collection(&self) -> Result<OwnedObjectPath> {
+        if let Some(path) = self.read_default_alias().await? {
+            return Ok(path);
+        }
+        let service = self.proxy(SERVICE_PATH, SERVICE_IFACE).await?;
+        let properties: HashMap<&str, Value<'_>> = HashMap::from([(
+            "org.freedesktop.Secret.Collection.Label",
+            Value::from("Login"),
+        )]);
+        let (created, prompt): (OwnedObjectPath, OwnedObjectPath) = service
+            .call("CreateCollection", &(properties, "default"))
+            .await
+            .map_err(dbus_error)?;
+        if created.as_str() != "/" {
+            return Ok(created);
+        }
+        self.complete(prompt).await?;
+        self.read_default_alias().await?.ok_or_else(|| {
+            KeystoreError::new(
+                KeystoreErrorKind::Unavailable,
+                "the keychain has no default collection",
+            )
+        })
+    }
+
+    /// The collection the `default` alias names, if it names one.
+    async fn read_default_alias(&self) -> Result<Option<OwnedObjectPath>> {
         let service = self.proxy(SERVICE_PATH, SERVICE_IFACE).await?;
         let path: OwnedObjectPath = service
             .call("ReadAlias", &("default",))
             .await
             .map_err(dbus_error)?;
-        if path.as_str() == "/" {
-            // No alias set: most services still answer on the alias path.
-            return OwnedObjectPath::try_from(DEFAULT_COLLECTION)
-                .map_err(|err| KeystoreError::new(KeystoreErrorKind::Rejected, err.to_string()));
-        }
-        Ok(path)
+        Ok((path.as_str() != "/").then_some(path))
     }
 
     /// The item for `item`, locked or not, if there is one.
@@ -230,9 +267,18 @@ impl Client {
             .call::<_, _, ()>("Prompt", &("",))
             .await
             .map_err(dbus_error)?;
-        let message = completed.next().await.ok_or_else(|| {
-            KeystoreError::new(KeystoreErrorKind::Unavailable, "the prompt went away")
-        })?;
+        // A service that exits mid-prompt never answers: give up in time.
+        let message = tokio::time::timeout(PROMPT_TIMEOUT, completed.next())
+            .await
+            .map_err(|_| {
+                KeystoreError::new(
+                    KeystoreErrorKind::Unavailable,
+                    "the keychain prompt got no answer in time",
+                )
+            })?
+            .ok_or_else(|| {
+                KeystoreError::new(KeystoreErrorKind::Unavailable, "the prompt went away")
+            })?;
         let (dismissed, _): (bool, OwnedValue) = message
             .body()
             .deserialize()

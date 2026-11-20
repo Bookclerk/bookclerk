@@ -9,7 +9,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use zbus::{fdo, ObjectServer};
 
-use super::{delete_on, get_on, set_on, Bus, DEFAULT_COLLECTION, SERVICE_PATH};
+use super::{delete_on, get_on, set_on, Bus, SERVICE_PATH};
 use crate::{KeychainItemId, KeystoreErrorKind, KEYCHAIN_SERVICE};
 
 /// Where the fake keeps its one collection.
@@ -38,6 +38,10 @@ struct State {
     locked: bool,
     /// Whether the user dismisses prompts.
     dismiss: bool,
+    /// Whether prompts never answer (the service went away mid-prompt).
+    silent: bool,
+    /// Whether creating the default collection needs a prompt.
+    prompt_to_create: bool,
     /// Whether the `default` alias is set (otherwise `ReadAlias` answers `/`).
     alias: bool,
     /// Whether `OpenSession` is refused.
@@ -116,6 +120,36 @@ impl FakeService {
         } else {
             (found, Vec::new())
         })
+    }
+
+    /// Creates the `default` collection (the fake's only one).
+    async fn create_collection(
+        &self,
+        _properties: HashMap<String, OwnedValue>,
+        alias: &str,
+        #[zbus(object_server)] server: &ObjectServer,
+    ) -> fdo::Result<(OwnedObjectPath, OwnedObjectPath)> {
+        if alias != "default" {
+            return Err(fdo::Error::InvalidArgs("only the default alias".into()));
+        }
+        let prompt = {
+            let mut state = lock(&self.state);
+            if !state.prompt_to_create {
+                state.alias = true;
+                return Ok((path(COLLECTION), path("/")));
+            }
+            state.next += 1;
+            format!("/org/freedesktop/secrets/prompt/{}", state.next)
+        };
+        server
+            .at(
+                prompt.as_str(),
+                FakePrompt {
+                    state: Arc::clone(&self.state),
+                },
+            )
+            .await?;
+        Ok((path("/"), path(&prompt)))
     }
 
     /// Unlocks objects, through a prompt when the collection is locked.
@@ -235,6 +269,20 @@ impl FakeItem {
         ))
     }
 
+    /// Replaces the item's secret.
+    async fn set_secret(
+        &self,
+        secret: (OwnedObjectPath, Vec<u8>, Vec<u8>, String),
+    ) -> fdo::Result<()> {
+        let mut state = lock(&self.state);
+        let item = state
+            .items
+            .get_mut(&self.id)
+            .ok_or_else(|| fdo::Error::UnknownObject("no such item".into()))?;
+        item.secret = secret.2;
+        Ok(())
+    }
+
     /// Deletes the item.
     async fn delete(&self) -> fdo::Result<OwnedObjectPath> {
         lock(&self.state).items.remove(&self.id);
@@ -256,14 +304,20 @@ impl FakePrompt {
         _window_id: &str,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
-        let dismissed = {
+        let (dismissed, silent) = {
             let mut state = lock(&self.state);
             state.prompts += 1;
             if !state.dismiss {
                 state.locked = false;
+                if state.prompt_to_create {
+                    state.alias = true;
+                }
             }
-            state.dismiss
+            (state.dismiss, state.silent)
         };
+        if silent {
+            return Ok(());
+        }
         Self::completed(&emitter, dismissed, Value::from(""))
             .await
             .map_err(fdo::Error::from)
@@ -342,12 +396,6 @@ async fn serve(
             FakeCollection {
                 state: Arc::clone(&state),
             },
-        )?
-        .serve_at(
-            DEFAULT_COLLECTION,
-            FakeCollection {
-                state: Arc::clone(&state),
-            },
         )?;
     for id in ids {
         builder = builder.serve_at(
@@ -400,12 +448,65 @@ fn items_of_other_installs_are_kept_apart() {
 }
 
 #[test]
-fn a_missing_alias_falls_back_to_the_default_path() {
+fn a_missing_default_collection_is_created() {
     let fake = Fake::new();
     fake.with(|state| state.alias = false);
     let item = KeychainItemId::random();
-    set_on(fake.bus(), item, b"key").expect("set through the alias path");
+    set_on(fake.bus(), item, b"key").expect("set into a new collection");
+    assert!(lock(&fake.state).alias);
     assert_eq!(get_on(fake.bus(), item).expect("get").as_slice(), b"key");
+}
+
+#[test]
+fn creating_the_default_collection_goes_through_its_prompt() {
+    let fake = Fake::new();
+    fake.with(|state| {
+        state.alias = false;
+        state.prompt_to_create = true;
+    });
+    let item = KeychainItemId::random();
+    set_on(fake.bus(), item, b"key").expect("set after the prompt");
+    assert_eq!(lock(&fake.state).prompts, 1);
+    assert_eq!(get_on(fake.bus(), item).expect("get").as_slice(), b"key");
+
+    let refused = Fake::new();
+    refused.with(|state| {
+        state.alias = false;
+        state.prompt_to_create = true;
+        state.dismiss = true;
+    });
+    let err = set_on(refused.bus(), item, b"key").expect_err("dismissed");
+    assert_eq!(err.kind, KeystoreErrorKind::AccessDenied);
+}
+
+#[test]
+fn an_existing_item_is_updated_where_it_is() {
+    let fake = Fake::new();
+    let item = KeychainItemId::random();
+    set_on(fake.bus(), item, b"first").expect("set");
+    // The default collection goes away; the item is still found and updated.
+    fake.with(|state| state.alias = false);
+    set_on(fake.bus(), item, b"second").expect("update");
+    let state = lock(&fake.state);
+    assert_eq!(state.items.len(), 1);
+    assert!(!state.alias, "no new collection was needed");
+    assert_eq!(
+        state.items.values().next().map(|i| i.secret.as_slice()),
+        Some(b"second".as_slice())
+    );
+}
+
+#[test]
+fn a_prompt_that_never_answers_times_out() {
+    let fake = Fake::new();
+    let item = KeychainItemId::random();
+    set_on(fake.bus(), item, b"key").expect("set");
+    fake.with(|state| {
+        state.locked = true;
+        state.silent = true;
+    });
+    let err = get_on(fake.bus(), item).expect_err("no answer");
+    assert_eq!(err.kind, KeystoreErrorKind::Unavailable);
 }
 
 #[test]

@@ -101,7 +101,8 @@ pub use master_key::{
     master_key_path, move_master_key, prepare_master_key_dir, require_master_key,
     resolve_master_key_detailed, set_key_store_preference, set_keychain_vault, store_master_key,
     uncache_master_key, warn_unwrapped_master_key, wrap_master_key, KeyStorePreference, MasterKey,
-    MasterKeyFormat, MasterKeyResolution, AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
+    MasterKeyFormat, MasterKeyResolution, StoredMasterKey,
+    AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
 };
 pub use migrations::{
     apply_plugin_migrations, binding_bootstrap_type_env, history_from_execute_reply,

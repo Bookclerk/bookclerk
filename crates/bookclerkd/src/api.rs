@@ -2282,6 +2282,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     }
 
     refresh_tray_after_reload(state, &new_cfg).await;
+    // A changed `[auth].key_store` applies to the next key placed.
+    crate::refresh_key_store_preference(&new_cfg);
 
     let mut detail = format!(
         "reloaded {} (master.key wrap={})",

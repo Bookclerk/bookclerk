@@ -878,49 +878,55 @@ pub fn apply_shared_branch_bootstrap(
     let password = password.map(str::trim).filter(|p| !p.is_empty());
     // Puts the key in this install's store first (the keychain item, when
     // that is the store), so `master.key` is either the envelope or the
-    // pointer to it. A rolled-back join restores the old `master.key`, which
-    // still names the old key; the new item is then unused.
+    // pointer to it. A join that fails before publishing deletes the new
+    // item again; the old `master.key` still names the old key.
     let master_key = bookclerk_library::store_master_key(bootstrap.dek.expose(), password)
         .map_err(|err| record("master.key", &err))?;
-    // `0700`, as for a minted key; done before any target changes.
-    bookclerk_library::prepare_master_key_dir(files_dir)
-        .map_err(|err| record("master.key", &err))?;
-    let config_text = cfg
-        .to_toml_string()
-        .map_err(|err| record("config.toml", &err))?;
-    let mut files = Vec::with_capacity(4);
-    if let Some(text) = &url {
-        // Recorded in the caller's form, as the other targets are, so the
-        // next start's `shared_branch_join_targets` names the same path; only the
-        // config holds the absolute one.
+    let publish = || -> Result<(), JoinError> {
+        // `0700`, as for a minted key; done before any target changes.
+        bookclerk_library::prepare_master_key_dir(files_dir)
+            .map_err(|err| record("master.key", &err))?;
+        let config_text = cfg
+            .to_toml_string()
+            .map_err(|err| record("config.toml", &err))?;
+        let mut files = Vec::with_capacity(4);
+        if let Some(text) = &url {
+            // Recorded in the caller's form, as the other targets are, so the
+            // next start's `shared_branch_join_targets` names the same path; only the
+            // config holds the absolute one.
+            files.push(NewFile {
+                what: "database URL file",
+                target: files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE),
+                bytes: text.as_bytes(),
+                private: true,
+            });
+        }
         files.push(NewFile {
-            what: "database URL file",
-            target: files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE),
-            bytes: text.as_bytes(),
+            what: "node identity",
+            target: node_identity_path(files_dir),
+            bytes: &identity,
             private: true,
         });
+        files.push(NewFile {
+            what: "master.key",
+            target: bookclerk_library::master_key_path(files_dir),
+            bytes: master_key.bytes(),
+            private: true,
+        });
+        // As `Config::write_toml_file` writes it: not a secret file of its own.
+        files.push(NewFile {
+            what: "config.toml",
+            target: config_file.to_path_buf(),
+            bytes: config_text.as_bytes(),
+            private: false,
+        });
+        replace_files(&files, &files_dir.join(SHARED_BRANCH_JOIN_MARKER))
+    };
+    if let Err(err) = publish() {
+        master_key.discard();
+        return Err(err);
     }
-    files.push(NewFile {
-        what: "node identity",
-        target: node_identity_path(files_dir),
-        bytes: &identity,
-        private: true,
-    });
-    files.push(NewFile {
-        what: "master.key",
-        target: bookclerk_library::master_key_path(files_dir),
-        bytes: &master_key,
-        private: true,
-    });
-    // As `Config::write_toml_file` writes it: not a secret file of its own.
-    files.push(NewFile {
-        what: "config.toml",
-        target: config_file.to_path_buf(),
-        bytes: config_text.as_bytes(),
-        private: false,
-    });
-    replace_files(&files, &files_dir.join(SHARED_BRANCH_JOIN_MARKER))?;
-    if password.is_none() && !master_key.starts_with(b"BCK3") {
+    if password.is_none() && !master_key.in_keychain() {
         bookclerk_library::warn_unwrapped_master_key(&bookclerk_library::master_key_path(
             files_dir,
         ));

@@ -375,13 +375,15 @@ enum HostMode {
 /// keychain can't take it, the key stays in the file and the start goes on.
 fn apply_key_store(config: &Config, mode: HostMode) {
     use bookclerk_config::KeyStoreKind;
-    use bookclerk_library::{KeyStorePreference, MasterKeyFormat};
+    use bookclerk_library::MasterKeyFormat;
     let default = match mode {
         HostMode::Listening => KeyStoreKind::File,
         HostMode::Embedded => KeyStoreKind::Keychain,
     };
-    let preference = KeyStorePreference::from_config(config.auth.key_store, default);
-    bookclerk_library::set_key_store_preference(preference);
+    if let Ok(mut slot) = KEY_STORE_HOST_DEFAULT.write() {
+        *slot = default;
+    }
+    let preference = refresh_key_store_preference(config);
     if preference.kind != KeyStoreKind::Keychain || preference.required {
         return;
     }
@@ -405,6 +407,32 @@ fn apply_key_store(config: &Config, mode: HostMode) {
             "the data-encryption key stays in master.key: the OS keychain could not take it ({err})"
         ),
     }
+}
+
+/// Where this host puts new keys when `[auth].key_store` is unset: the
+/// file for `bookclerkd`, the OS keychain for the desktop window. Set by
+/// [`apply_key_store`] at start.
+static KEY_STORE_HOST_DEFAULT: std::sync::RwLock<bookclerk_config::KeyStoreKind> =
+    std::sync::RwLock::new(bookclerk_config::KeyStoreKind::File);
+
+/// Sets where new keys go from `config`'s `[auth].key_store` and this
+/// host's default, as at start; a config reload calls it so a changed
+/// setting applies to the next key placed (a shared-branch join).
+///
+/// # Returns
+///
+/// The preference now in effect.
+pub(crate) fn refresh_key_store_preference(
+    config: &Config,
+) -> bookclerk_library::KeyStorePreference {
+    let default = KEY_STORE_HOST_DEFAULT
+        .read()
+        .map(|slot| *slot)
+        .unwrap_or(bookclerk_config::KeyStoreKind::File);
+    let preference =
+        bookclerk_library::KeyStorePreference::from_config(config.auth.key_store, default);
+    bookclerk_library::set_key_store_preference(preference);
+    preference
 }
 
 /// What [`start_host`] hands back: the running host and its router.
@@ -1054,6 +1082,17 @@ mod key_store_tests {
         // A second start finds the pointer and leaves it alone.
         apply_key_store(&config, HostMode::Embedded);
         assert_eq!(scope.vault.len(), 1);
+
+        // A reload that sets the store makes it required; unsetting it
+        // returns to this host's default.
+        let mut reloaded = config.clone();
+        reloaded.auth.key_store = Some(KeyStoreKind::File);
+        let preference = super::refresh_key_store_preference(&reloaded);
+        assert_eq!(preference.kind, KeyStoreKind::File);
+        assert!(preference.required);
+        let preference = super::refresh_key_store_preference(&config);
+        assert_eq!(preference.kind, KeyStoreKind::Keychain);
+        assert!(!preference.required);
     }
 
     #[test]

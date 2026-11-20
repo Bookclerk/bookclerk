@@ -306,8 +306,26 @@ pub fn master_key_is_wrapped(files_dir: &Path) -> Result<Option<bool>> {
     if !path.is_file() {
         return Ok(None);
     }
-    let (envelope, _) = read_envelope(&path)?;
-    Ok(Some(envelope.starts_with(MAGIC_WRAPPED)))
+    let (envelope, location) = read_envelope(&path)?;
+    envelope_is_wrapped(&envelope).map(Some).ok_or_else(|| {
+        let source = match location {
+            Location::File => format!("master key file {}", path.display()),
+            Location::Keychain(pointer) => format!("OS keychain item {}", pointer.item),
+        };
+        LibraryError::Other(anyhow::anyhow!("{source} is not a valid key envelope"))
+    })
+}
+
+/// Whether a structurally valid envelope is wrapped: `Some(false)` for a
+/// `BCK1` of the right length, `Some(true)` for a `BCK2` long enough to
+/// hold its salt, nonce and tag, and `None` for anything else. Needs no
+/// password.
+fn envelope_is_wrapped(envelope: &[u8]) -> Option<bool> {
+    match envelope.get(..4) {
+        Some(b"BCK1") if envelope.len() == 4 + DEK_LEN => Some(false),
+        Some(b"BCK2") if envelope.len() >= 4 + SALT_LEN + NONCE_LEN + 16 => Some(true),
+        _ => None,
+    }
 }
 
 /// Load or mint the DEK and cache it for this process.
@@ -461,20 +479,22 @@ pub fn uncache_master_key(key: &MasterKey) {
 pub fn discard_minted_master_key(files_dir: &Path, key: &MasterKey) -> Result<()> {
     let path = master_key_path(files_dir);
     if path.is_file() {
-        // A key minted into the keychain: delete its item as well.
-        if let Ok(raw) = std::fs::read(&path) {
-            if let Ok(pointer) = KeychainPointer::parse(&raw) {
-                if pointer.fingerprint == fingerprint_bytes(key) {
-                    delete_item_logged(pointer.item, "a minted key's keychain item");
-                }
-            }
-        }
+        // A key minted into the keychain: its item goes too, but only once
+        // the pointer is gone, so a pointer that stays still loads.
+        let minted_item = std::fs::read(&path)
+            .ok()
+            .and_then(|raw| KeychainPointer::parse(&raw).ok())
+            .filter(|pointer| pointer.fingerprint == fingerprint_bytes(key))
+            .map(|pointer| pointer.item);
         std::fs::remove_file(&path).map_err(|e| {
             LibraryError::Other(anyhow::anyhow!(
                 "failed to remove minted master key {}: {e}",
                 path.display()
             ))
         })?;
+        if let Some(item) = minted_item {
+            delete_item_logged(item, "a minted key's keychain item");
+        }
     }
     if let Ok(mut guard) = cache_slot().lock() {
         if guard
@@ -529,12 +549,23 @@ pub fn wrap_master_key(files_dir: &Path, password: &str) -> Result<MasterKey> {
 /// Returns an error when `dek` is not 32 bytes or the file cannot be
 /// written.
 pub fn install_master_key(files_dir: &Path, dek: &[u8], password: Option<&str>) -> Result<()> {
-    let encoded = store_master_key(dek, password)?;
     prepare_master_key_dir(files_dir)?;
     let path = master_key_path(files_dir);
-    write_secret_file_atomic(&path, &encoded)?;
+    // The item the current `master.key` names, retired once replaced.
+    let old_item = std::fs::read(&path)
+        .ok()
+        .and_then(|raw| KeychainPointer::parse(&raw).ok())
+        .map(|pointer| pointer.item);
+    let stored = store_master_key(dek, password)?;
+    if let Err(err) = write_secret_file_atomic(&path, stored.bytes()) {
+        stored.discard();
+        return Err(err);
+    }
+    let in_keychain = stored.item.is_some();
+    if let Some(old) = old_item.filter(|old| Some(*old) != stored.item) {
+        delete_item_logged(old, "the keychain item of the key this install replaced");
+    }
     let wrapped = password.map(str::trim).is_some_and(|p| !p.is_empty());
-    let in_keychain = encoded.starts_with(bookclerk_keystore::POINTER_MAGIC);
     tracing::info!(
         path = %path.display(),
         wrapped,
@@ -817,7 +848,34 @@ fn write_envelope(location: Location, path: &Path, envelope: &[u8]) -> Result<()
 }
 
 /// Loads the DEK `master.key` at `path` names, from the file or the keychain.
+///
+/// A raw (`BCK1`) key is re-wrapped in place under a newly set password,
+/// and only after a keychain key has matched its pointer's fingerprint.
 fn load_master_key_at(path: &Path, password: Option<&str>) -> Result<MasterKey> {
+    let (key, envelope, location) = read_key_snapshot(path, password)?;
+    if let Some(pw) = password.filter(|_| envelope.starts_with(MAGIC_RAW)) {
+        // Password newly set: re-wrap in place for at-rest protection.
+        let wrapped = Zeroizing::new(encode_wrapped_master_key(&key, pw)?);
+        write_envelope(location, path, &wrapped)?;
+        tracing::info!(
+            "re-wrapped the data-encryption key (BCK1→BCK2) in {} with the auth password",
+            envelope_source(location, path)
+        );
+    }
+    Ok(key)
+}
+
+/// Reads `master.key` (and the keychain item it names) once and decodes the
+/// key from that one read, writing nothing back. A keychain key must match
+/// its pointer's fingerprint.
+///
+/// # Returns
+///
+/// The key, the envelope it was decoded from, and where that envelope lives.
+fn read_key_snapshot(
+    path: &Path,
+    password: Option<&str>,
+) -> Result<(MasterKey, Zeroizing<Vec<u8>>, Location)> {
     let (envelope, location) = read_envelope(path)?;
     let key = parse_envelope(&envelope, location, password, path)?;
     if let Location::Keychain(pointer) = location {
@@ -829,22 +887,26 @@ fn load_master_key_at(path: &Path, password: Option<&str>) -> Result<MasterKey> 
             )));
         }
     }
-    Ok(key)
+    Ok((key, envelope, location))
 }
 
-/// Unwraps a `BCK1`/`BCK2` envelope; `BCK2` requires the auth password. A
-/// new password re-wraps `BCK1` in place (same DEK), in the file or the
-/// keychain item it came from.
+/// How an envelope's home is named in messages.
+fn envelope_source(location: Location, path: &Path) -> String {
+    match location {
+        Location::File => format!("master key file {}", path.display()),
+        Location::Keychain(pointer) => format!("OS keychain item {}", pointer.item),
+    }
+}
+
+/// Unwraps a `BCK1`/`BCK2` envelope without writing anything; `BCK2`
+/// requires the auth password.
 fn parse_envelope(
     raw: &[u8],
     location: Location,
     password: Option<&str>,
     path: &Path,
 ) -> Result<MasterKey> {
-    let source = match location {
-        Location::File => format!("master key file {}", path.display()),
-        Location::Keychain(pointer) => format!("OS keychain item {}", pointer.item),
-    };
+    let source = envelope_source(location, path);
     if raw.len() < 4 {
         return Err(LibraryError::Other(anyhow::anyhow!(
             "{source} is truncated"
@@ -856,14 +918,7 @@ fn parse_envelope(
                 LibraryError::Other(anyhow::anyhow!("{source} has invalid BCK1 length"))
             })?;
             let dek = MasterKey::from_bytes(bytes);
-            if let Some(pw) = password {
-                // Password newly set: re-wrap in place for at-rest protection.
-                let wrapped = Zeroizing::new(encode_wrapped_master_key(&dek, pw)?);
-                write_envelope(location, path, &wrapped)?;
-                tracing::info!("re-wrapped the data-encryption key (BCK1→BCK2) in {source} with the auth password");
-                return Ok(dek);
-            }
-            if matches!(location, Location::File) {
+            if password.is_none() && matches!(location, Location::File) {
                 tracing::warn!(
                     path = %path.display(),
                     "master.key is BCK1 (unwrapped). Set {AUTH_PASSWORD_ENV} or \
@@ -889,13 +944,17 @@ fn parse_envelope(
     }
 }
 
-/// Loads the existing DEK without minting one.
+/// Reads the existing DEK, and the envelope it came from, without minting
+/// one or writing anything back.
 ///
 /// # Errors
 ///
 /// Returns an error when `master.key` is missing, or the key can't be read
 /// or unwrapped.
-fn load_existing(files_dir: &Path, password: Option<&str>) -> Result<MasterKey> {
+fn load_existing(
+    files_dir: &Path,
+    password: Option<&str>,
+) -> Result<(MasterKey, Zeroizing<Vec<u8>>, Location)> {
     let path = master_key_path(files_dir);
     if !path.is_file() {
         return Err(LibraryError::Other(anyhow::anyhow!(
@@ -903,8 +962,15 @@ fn load_existing(files_dir: &Path, password: Option<&str>) -> Result<MasterKey> 
             path.display()
         )));
     }
-    let password = password.map(str::trim).filter(|p| !p.is_empty());
-    load_master_key_at(&path, password)
+    read_key_snapshot(&path, normalized_password(password))
+}
+
+/// A trimmed, non-empty password, registered with log redaction.
+fn normalized_password(password: Option<&str>) -> Option<&str> {
+    password
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .inspect(|p| bookclerk_config::register_secret(p))
 }
 
 /// The bytes `master.key` must hold for `dek`, after putting the envelope
@@ -923,16 +989,47 @@ fn load_existing(files_dir: &Path, password: Option<&str>) -> Result<MasterKey> 
 ///
 /// Returns [`LibraryError::Invalid`] when `dek` is not 32 bytes, the
 /// wrapping error, and a keychain failure when the keychain is required.
-pub fn store_master_key(dek: &[u8], password: Option<&str>) -> Result<Zeroizing<Vec<u8>>> {
+pub fn store_master_key(dek: &[u8], password: Option<&str>) -> Result<StoredMasterKey> {
     let bytes: [u8; DEK_LEN] = dek
         .try_into()
         .map_err(|_| LibraryError::Invalid(format!("a data-encryption key is {DEK_LEN} bytes")))?;
     let key = MasterKey::from_bytes(bytes);
-    let password = password
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .inspect(|p| bookclerk_config::register_secret(p));
-    Ok(place_envelope(&key, password)?.file_bytes)
+    let placed = place_envelope(&key, normalized_password(password))?;
+    Ok(StoredMasterKey {
+        bytes: placed.file_bytes,
+        item: placed.item,
+    })
+}
+
+/// A key [`store_master_key`] placed, waiting for its `master.key` to be
+/// published.
+pub struct StoredMasterKey {
+    /// `master.key`'s contents: the envelope, or a `BCK3` pointer.
+    bytes: Zeroizing<Vec<u8>>,
+    /// The keychain item now holding the envelope, when the key went there.
+    item: Option<KeychainItemId>,
+}
+
+impl StoredMasterKey {
+    /// The bytes `master.key` must hold (write them with mode `0600`).
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Whether the key went to the OS keychain (`master.key` is a pointer).
+    #[must_use]
+    pub fn in_keychain(&self) -> bool {
+        self.item.is_some()
+    }
+
+    /// Deletes the keychain item again, for a caller whose `master.key`
+    /// was never published. Does nothing for a key kept in the file.
+    pub fn discard(self) {
+        if let Some(item) = self.item {
+            delete_item_logged(item, "a keychain item whose master.key was never published");
+        }
+    }
 }
 
 /// Moves the existing key to `to`, keeping its bytes (and its password
@@ -963,8 +1060,8 @@ pub fn move_master_key(
     password: Option<&str>,
 ) -> Result<MasterKeyFormat> {
     let path = master_key_path(files_dir);
-    let key = load_existing(files_dir, password)?;
-    let (envelope, location) = read_envelope(&path)?;
+    // One read: the key and the envelope it came from always match.
+    let (key, envelope, location) = load_existing(files_dir, password)?;
     match (location, to) {
         (Location::File, KeyStoreKind::File) => Ok(if envelope.starts_with(MAGIC_WRAPPED) {
             MasterKeyFormat::Wrapped
@@ -990,12 +1087,15 @@ pub fn move_master_key(
         }
         (Location::Keychain(pointer), KeyStoreKind::File) => {
             write_secret_file_atomic(&path, &envelope)?;
-            let password = password.map(str::trim).filter(|p| !p.is_empty());
-            let reloaded = load_master_key_at(&path, password)?;
-            if reloaded.as_bytes() != key.as_bytes() {
+            let reloaded = read_key_snapshot(&path, normalized_password(password));
+            if !reloaded.is_ok_and(|(back, _, _)| back.as_bytes() == key.as_bytes()) {
+                // Put the pointer back: the item still holds the key.
+                write_secret_file_atomic(&path, &pointer.encode())?;
                 return Err(LibraryError::Other(anyhow::anyhow!(
-                    "master key file {} did not reload to the same key",
-                    path.display()
+                    "master key file {} did not reload to the same key; it still points at \
+                     OS keychain item {}",
+                    path.display(),
+                    pointer.item
                 )));
             }
             delete_item_logged(
@@ -1040,7 +1140,7 @@ pub fn export_master_key(
         ));
     }
     bookclerk_config::register_secret(recovery_password);
-    let key = load_existing(files_dir, password)?;
+    let (key, _, _) = load_existing(files_dir, password)?;
     Ok(Zeroizing::new(encode_wrapped_master_key(
         &key,
         recovery_password,
@@ -1080,7 +1180,7 @@ pub fn import_master_key(
             path.display()
         )));
     }
-    let recovery_password = recovery_password.map(str::trim).filter(|p| !p.is_empty());
+    let recovery_password = normalized_password(recovery_password);
     let key = match recovery.get(..4) {
         Some(b"BCK1") | Some(b"BCK2") => {
             // Never written back: the recovery copy is only read.
@@ -1093,8 +1193,7 @@ pub fn import_master_key(
         }
     };
     prepare_master_key_dir(files_dir)?;
-    let password = password.map(str::trim).filter(|p| !p.is_empty());
-    let placed = place_envelope(&key, password)?;
+    let placed = place_envelope(&key, normalized_password(password))?;
     if let Err(e) = write_secret_file_create_new(&path, &placed.file_bytes) {
         if let Some(item) = placed.item {
             delete_item_logged(item, "a keychain item whose pointer could not be written");
@@ -1232,9 +1331,14 @@ fn write_secret_file_create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()
         opts.mode(0o600);
     }
     let mut file = opts.open(path)?;
-    file.write_all(bytes)?;
-    harden_path_io(path, false)?;
-    Ok(())
+    // The file is ours (create_new): never leave a partial one behind, or a
+    // retry would find a `master.key` it can neither load nor replace.
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| harden_path_io(path, false))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(path);
+        })
 }
 
 /// Atomic replace via temp file + [`bookclerk_config::replace_file`] (for
@@ -1285,7 +1389,11 @@ fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
             path.display()
         ))
     })?;
-    harden_path(path, false)?;
+    // Committed: the temp file was already 0600 and hardened, so a failure
+    // here is logged rather than returned (an error means "not replaced").
+    if let Err(err) = harden_path(path, false) {
+        tracing::warn!("{err}");
+    }
     // Best effort: not every platform can open a directory.
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
@@ -1440,6 +1548,8 @@ mod tests {
     }
 
     impl KeychainScope {
+        /// Installs a fresh in-memory keychain and `preference` process-wide;
+        /// callers hold [`master_key_test_lock`] for the scope's life.
         fn new(preference: KeyStorePreference) -> Self {
             let vault = Arc::new(MemoryVault::new());
             set_keychain_vault(vault.clone());
@@ -1454,6 +1564,8 @@ mod tests {
         }
     }
 
+    /// The keychain preference: `required` makes an unreachable keychain an
+    /// error, otherwise placement falls back to the file.
     fn keychain(required: bool) -> KeyStorePreference {
         KeyStorePreference {
             kind: KeyStoreKind::Keychain,
@@ -1479,6 +1591,97 @@ mod tests {
         assert_eq!(master_key_is_wrapped(dir.path()).unwrap(), Some(false));
         let again = resolve_master_key(dir.path()).unwrap();
         assert_eq!(again.as_bytes(), key.as_bytes());
+    }
+
+    /// The keychain item `master.key` in `dir` points at.
+    fn pointed_item(dir: &Path) -> KeychainItemId {
+        let raw = std::fs::read(master_key_path(dir)).unwrap();
+        KeychainPointer::parse(&raw).unwrap().item
+    }
+
+    #[test]
+    fn a_damaged_item_is_reported_not_called_unwrapped() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let scope = KeychainScope::new(keychain(true));
+        let dir = tempdir().unwrap();
+        resolve_master_key(dir.path()).unwrap();
+        scope.vault.set(pointed_item(dir.path()), b"").unwrap();
+        let err = master_key_is_wrapped(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("not a valid key envelope"), "{err}");
+        assert_eq!(envelope_is_wrapped(b"BCK1short"), None);
+        assert_eq!(envelope_is_wrapped(b"BCK2short"), None);
+    }
+
+    #[test]
+    fn a_mismatched_item_is_refused_before_any_rewrap() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let scope = KeychainScope::new(keychain(true));
+        let dir = tempdir().unwrap();
+        resolve_master_key(dir.path()).unwrap();
+        let item = pointed_item(dir.path());
+        let other = encode_raw_master_key(&MasterKey::from_bytes([8u8; DEK_LEN]));
+        scope.vault.set(item, &other).unwrap();
+        let password = test_passphrase("mismatch");
+        let err = resolve_master_key_with(dir.path(), Some(&password))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("different key"), "{err}");
+        assert_eq!(scope.vault.get(item).unwrap().as_slice(), other.as_slice());
+    }
+
+    #[test]
+    fn move_and_export_never_rewrap_the_live_key() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let _scope = KeychainScope::new(DEFAULT_PREFERENCE);
+        let dir = tempdir().unwrap();
+        resolve_master_key_with(dir.path(), None).unwrap();
+        let path = master_key_path(dir.path());
+        let before = std::fs::read(&path).unwrap();
+        let password = test_passphrase("live");
+        let recovery = test_passphrase("copy");
+        export_master_key(dir.path(), Some(&password), &recovery).unwrap();
+        move_master_key(dir.path(), KeyStoreKind::File, Some(&password)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_install_retires_the_item_it_replaced_and_cleans_up_on_failure() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let scope = KeychainScope::new(keychain(true));
+        let dir = tempdir().unwrap();
+        install_master_key(dir.path(), &[1u8; DEK_LEN], None).unwrap();
+        let first = pointed_item(dir.path());
+        install_master_key(dir.path(), &[2u8; DEK_LEN], None).unwrap();
+        assert_ne!(pointed_item(dir.path()), first);
+        assert_eq!(scope.vault.len(), 1, "the replaced item is gone");
+
+        // A files directory that is a regular file: nothing is left behind.
+        let blocked = dir.path().join("not-a-dir");
+        std::fs::write(&blocked, b"").unwrap();
+        assert!(install_master_key(&blocked, &[3u8; DEK_LEN], None).is_err());
+        assert_eq!(scope.vault.len(), 1);
+
+        let stored = store_master_key(&[4u8; DEK_LEN], None).unwrap();
+        assert!(stored.in_keychain());
+        assert_eq!(scope.vault.len(), 2);
+        stored.discard();
+        assert_eq!(scope.vault.len(), 1);
+    }
+
+    #[test]
+    fn discarding_a_minted_keychain_key_removes_pointer_and_item() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let scope = KeychainScope::new(keychain(true));
+        let dir = tempdir().unwrap();
+        let key = resolve_master_key_with(dir.path(), None).unwrap();
+        discard_minted_master_key(dir.path(), &key).unwrap();
+        assert!(!master_key_path(dir.path()).exists());
+        assert!(scope.vault.is_empty());
     }
 
     #[test]

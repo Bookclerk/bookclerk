@@ -1301,6 +1301,10 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
                 String::new()
             }
         }
+        "auth.key_store" => config
+            .auth
+            .key_store
+            .map_or_else(String::new, |store| store.as_str().to_string()),
         // A confinement helper is normally unset, in which case it is found
         // beside the running executable — a path only the host resolving it can
         // report, so this shows what was configured rather than guessing.
@@ -1470,6 +1474,11 @@ mod tests {
         assert_eq!(scope.vault.len(), 1);
         let written = Config::load(Some(dir.path().to_path_buf()), None).expect("reload");
         assert_eq!(written.auth.key_store, Some(KeyStoreKind::Keychain));
+        assert_eq!(
+            lookup(&written, "auth.key_store").as_deref(),
+            Some("keychain")
+        );
+        assert_eq!(lookup(&config, "auth.key_store").as_deref(), Some(""));
         for format in [OutputFormat::Text, OutputFormat::Json] {
             master_key(MasterKeyCommand::Status, &config, format, "").expect("status");
         }
