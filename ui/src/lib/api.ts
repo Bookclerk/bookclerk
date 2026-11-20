@@ -3418,7 +3418,11 @@ async function changeIdentity<T>(change: () => Promise<T>): Promise<T> {
  * @returns Resolves when both passes settled or the wait ran out.
  */
 async function finishBeforeIdentityChange(): Promise<void> {
-  /** Starts every registered task; settles when all of them have. */
+  /**
+   * Starts every registered task.
+   *
+   * @returns Settles when all of them have.
+   */
   const pass = (): Promise<unknown> =>
     Promise.all(
       // Through `then`, so a task that throws before returning is caught too.
