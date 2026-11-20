@@ -25,17 +25,39 @@ cooldown_seconds = 86400
 
 [capabilities.network]
 mode = "outbound"
+# Every Audible marketplace: sign-in, token refresh and device
+# deregistration go to `api.amazon.<marketplace domain>` (or
+# `api.audible.<marketplace domain>` for older Audible accounts), and the
+# library API to `api.audible.<marketplace domain>`.
 tcp = [
     { host = "*.audible.com", ports = [443] },
     { host = "*.amazon.com", ports = [443] },
+    { host = "*.audible.co.uk", ports = [443] },
+    { host = "*.amazon.co.uk", ports = [443] },
+    { host = "*.audible.de", ports = [443] },
+    { host = "*.amazon.de", ports = [443] },
+    { host = "*.audible.fr", ports = [443] },
+    { host = "*.amazon.fr", ports = [443] },
+    { host = "*.audible.ca", ports = [443] },
+    { host = "*.amazon.ca", ports = [443] },
+    { host = "*.audible.it", ports = [443] },
+    { host = "*.amazon.it", ports = [443] },
+    { host = "*.audible.com.au", ports = [443] },
+    { host = "*.amazon.com.au", ports = [443] },
+    { host = "*.audible.in", ports = [443] },
+    { host = "*.amazon.in", ports = [443] },
+    { host = "*.audible.co.jp", ports = [443] },
+    { host = "*.amazon.co.jp", ports = [443] },
+    { host = "*.audible.es", ports = [443] },
+    { host = "*.amazon.es", ports = [443] },
+    { host = "*.audible.com.br", ports = [443] },
+    { host = "*.amazon.com.br", ports = [443] },
     { host = "*.media-amazon.com", ports = [443] },
     { host = "*.amazonaws.com", ports = [443] },
     { host = "api.audnex.us", ports = [443] },
 ]
 
 # Every other request (Audnexus included) carries Bookclerk's own agent.
-# Every Audible marketplace is listed, so a regional marketplace the operator
-# adds as a TCP destination keeps the app agent too.
 [capabilities.network.own_user_agent]
 hosts = [
     "*.audible.com", "*.amazon.com",
@@ -54,7 +76,9 @@ hosts = [
 reason = "Audible's sign-in, device registration, app API and content servers answer only Audible's own iOS and Android apps."
 # Native TCP via `bookclerk_plugin_sdk::http` / `connect`. Fetch `domains`
 # are workerd-only. CDNs and regional Amazon hosts match the wildcards;
-# operator additions can extend the set.
+# operator additions can extend the set. The TCP grants and the app-agent
+# hosts list the same marketplaces (`tests/manifest_grants.rs` checks both
+# against audible-rs's marketplace table).
 
 [vars]
 

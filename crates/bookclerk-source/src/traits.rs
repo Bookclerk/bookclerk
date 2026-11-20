@@ -195,6 +195,17 @@ pub trait ContentSource: Send + Sync {
         Ok(None)
     }
 
+    /// Whether [`Self::catalog_detail`] resolves this source's own product ids
+    /// (the ids its search, expand and deals hits carry) to a full record:
+    /// the guest's declared `CatalogCapabilities.detailByProductId`.
+    ///
+    /// Catalog search and title dialogs ask a source for an edition it listed
+    /// only when this is `true`, so a source without a detail lookup is never
+    /// woken for one. Default: `false`.
+    fn answers_catalog_detail_by_product_id(&self) -> bool {
+        false
+    }
+
     /// Whether [`Self::catalog_detail_by_isbn`] resolves any audiobook ISBN to
     /// a full record (the guest's declared `CatalogCapabilities.detailByIsbn`).
     ///

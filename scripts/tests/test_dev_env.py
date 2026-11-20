@@ -395,6 +395,8 @@ class ImagePublishWorkflowTests(unittest.TestCase):
         """Only push jobs write packages; only the attest job mints OIDC tokens."""
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
         for name, job in self.jobs.items():
+            if name == "desktop":
+                continue  # A reusable-workflow call; see test_desktop_packages_narrow_the_grant.
             perms = job.get("permissions", {})
             with self.subTest(job=name):
                 self.assertEqual(perms.get("contents"), "read")
@@ -408,6 +410,30 @@ class ImagePublishWorkflowTests(unittest.TestCase):
                 else:
                     self.assertNotIn("id-token", perms)
                     self.assertNotIn("attestations", perms)
+
+    def test_desktop_packages_narrow_the_grant(self) -> None:
+        """The desktop call grants release rights that only the called publish job uses."""
+        import yaml
+
+        call = self.jobs["desktop"]
+        self.assertEqual(call["uses"], "./.github/workflows/desktop-packages.yml")
+        self.assertEqual(call["needs"], "plan")
+        self.assertEqual(call["with"]["release-tag"], "${{ needs.plan.outputs.release_tag }}")
+        self.assertNotIn("packages", call["permissions"])
+        called = yaml.safe_load((PUBLISH_WORKFLOW.parent / "desktop-packages.yml").read_text(encoding="utf-8"))
+        self.assertEqual(called["permissions"], {"contents": "read"})
+        jobs = called["jobs"]
+        self.assertEqual(set(jobs), {"package", "publish"})
+        self.assertEqual(jobs["package"]["permissions"], {"contents": "read"})
+        self.assertEqual(
+            jobs["publish"]["permissions"],
+            {"contents": "write", "id-token": "write", "attestations": "write"},
+        )
+        self.assertEqual(jobs["publish"]["if"], "inputs.release-tag != ''")
+        # The tag reaches the shell only through the environment.
+        upload = next(step for step in jobs["publish"]["steps"] if "gh release upload" in step.get("run", ""))
+        self.assertNotIn("${{", upload["run"])
+        self.assertEqual(upload["env"]["TAG"], "${{ inputs.release-tag }}")
 
     def test_release_tag_goes_through_the_parser(self) -> None:
         """The release tag reaches the registry only through the fuzzed parser."""

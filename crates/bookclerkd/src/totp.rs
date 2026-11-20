@@ -24,8 +24,7 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::auth::{
-    authorize_operator_bearer_only, issue_portal_session, require_operator_or_recent_owner,
-    require_recent_portal_reauth, resolve_operator_session, timed_portal_identity_from_headers,
+    issue_portal_session, require_recent_portal_reauth, timed_portal_identity_from_headers,
     ClientIp,
 };
 
@@ -51,10 +50,14 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(enroll_begin))
         .routes(routes!(enroll_finish))
         .routes(routes!(disable_totp, totp_status));
-    let policy = OpenApiRouter::new().routes(routes!(get_mfa_policy, put_mfa_policy));
+    // An Owner may read the policy; changing it needs the operator (or an
+    // elevated Owner), since turning it off weakens every account's sign-in.
+    let policy = OpenApiRouter::new().routes(routes!(get_mfa_policy));
+    let policy_write = OpenApiRouter::new().routes(routes!(put_mfa_policy));
     vec![
         RouteGroup::new(public, Access::Public),
         RouteGroup::new(policy, Access::OperatorOrOwner),
+        RouteGroup::new(policy_write, Access::Operator),
     ]
 }
 
@@ -649,44 +652,8 @@ struct MfaPolicyPut {
     /// When true, password login requires TOTP or the user must use a passkey.
     #[schema(example = true)]
     require_second_factor: bool,
-    #[serde(default)]
-    /// Current password for Owner step-up (operators omit this).
-    #[schema(example = "correct horse battery staple")]
-    current_password: Option<String>,
 }
 
-/// JSON error for a failed step-up check on `PUT /api/auth/mfa-policy`.
-///
-/// # Arguments
-///
-/// * `status` - The status [`require_operator_or_recent_owner`] returned.
-///
-/// # Returns
-///
-/// `reauth_required` for a 401, `internal_error` for a 500,
-/// `too_many_requests` for a 429 (the account is locked out) and `forbidden`
-/// for everything else, each with that status.
-fn mfa_policy_gate_error(status: StatusCode) -> Response {
-    let (error, message) = if status == StatusCode::UNAUTHORIZED {
-        (
-            "reauth_required",
-            "Recent authentication is required to change the MFA policy.",
-        )
-    } else if status == StatusCode::INTERNAL_SERVER_ERROR {
-        (
-            "internal_error",
-            "The current password could not be checked.",
-        )
-    } else if status == StatusCode::TOO_MANY_REQUESTS {
-        (
-            "too_many_requests",
-            "Too many wrong passwords for this account. Try again later.",
-        )
-    } else {
-        ("forbidden", "You cannot change the MFA policy.")
-    };
-    crate::auth::json_auth_error(status, error, message)
-}
 /// Persists `daemon.auth.require_second_factor` to `config.toml`.
 #[utoipa::path(
     put,
@@ -694,48 +661,13 @@ fn mfa_policy_gate_error(status: StatusCode) -> Response {
     request_body = MfaPolicyPut,
     responses(
         (status = 200, description = "The policy after the change.", body = MfaPolicy),
-        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`reauth_required`).", body = crate::http_error::ErrorJson, examples(
-            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "reauth_required", "message": "Recent authentication is required to change the MFA policy.", "status": 401}))),
-            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
-        )),
-        (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout (`too_many_requests`).", body = crate::http_error::ErrorJson, example = json!({"error": "too_many_requests", "message": "Too many wrong passwords for this account. Try again later.", "status": 429})),
-        (status = 403, description = "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
-            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
-        )),
-        (status = 500, description = "The configuration path is unknown or the configuration file could not be written, or an Owner's current password could not be read or checked (`internal_error`).", body = crate::http_error::ErrorJson, examples(
-            ("config_write" = (summary = "The configuration file could not be written.", value = json!({"error": "internal_error", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500}))),
-            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "internal_error", "message": "The current password could not be checked.", "status": 500}))),
-        )),
+        (status = 500, description = "The configuration path is unknown or the configuration file could not be written (`internal_error`).", body = crate::http_error::ErrorJson, example = json!({"error": "internal_error", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500})),
     ),
 )]
 async fn put_mfa_policy(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Json(body): Json<MfaPolicyPut>,
 ) -> Result<Json<MfaPolicy>, Response> {
-    require_operator_or_recent_owner(&state, &headers, body.current_password.as_deref())
-        .await
-        .map_err(mfa_policy_gate_error)?;
-    let auth = state.auth_snapshot().await;
-    let operator_recovery = authorize_operator_bearer_only(&auth, &headers)
-        || resolve_operator_session(&state, &auth, &headers)
-            .await
-            .is_some_and(|op| op.impersonating_user_id.is_none());
-    if !operator_recovery {
-        let library = state.library_snapshot().await;
-        if let Some(identity) = timed_portal_identity_from_headers(&library, &headers).await {
-            if let Some(user_id) = identity.user_id {
-                if enrollment_blocks(&state, &library, user_id, "/api/auth/mfa-policy").await {
-                    return Err(crate::auth::json_auth_error(
-                        StatusCode::FORBIDDEN,
-                        "mfa_enrollment_required",
-                        "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
-                    ));
-                }
-            }
-        }
-    }
     let _reload_guard = state.reload_lock.lock().await;
     let config_path = {
         let cfg = state.config.read().await;
@@ -772,16 +704,6 @@ async fn put_mfa_policy(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn mfa_policy_lockout_answers_too_many_requests() {
-        use http_body_util::BodyExt;
-
-        let res = mfa_policy_gate_error(StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"], "too_many_requests");
-    }
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
     use http_body_util::BodyExt;
@@ -952,7 +874,7 @@ mod tests {
         assert_eq!(body["error"], "passkey_required");
     }
 
-    /// Owners can read and persist `daemon.auth.require_second_factor`.
+    /// Owners can read `daemon.auth.require_second_factor`; only the operator changes it.
     #[tokio::test]
     async fn mfa_policy_get_and_put() {
         let (state, app, library) = phase2_harness("op-token-mfa-put").await;
@@ -980,17 +902,31 @@ mod tests {
         assert_eq!(get_status, StatusCode::OK);
         assert_eq!(get_body["require_second_factor"], false);
 
-        let put = app
+        // An Owner's everyday session, however fresh, cannot change it.
+        let owner_put = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("PUT")
                     .uri("/api/auth/mfa-policy")
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(header::COOKIE, &cookie)
-                    .body(Body::from(format!(
-                        r#"{{"require_second_factor":true,"current_password":"{}"}}"#,
-                        phase2_owner_password()
-                    )))
+                    .body(Body::from(r#"{"require_second_factor":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(owner_put.status(), StatusCode::UNAUTHORIZED);
+        assert!(!state.config.read().await.daemon.auth.require_second_factor);
+
+        let put = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/auth/mfa-policy")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, "Bearer op-token-mfa-put")
+                    .body(Body::from(r#"{"require_second_factor":true}"#))
                     .unwrap(),
             )
             .await
@@ -999,6 +935,81 @@ mod tests {
         assert_eq!(put_status, StatusCode::OK);
         assert_eq!(put_body["require_second_factor"], true);
         assert!(state.config.read().await.daemon.auth.require_second_factor);
+    }
+
+    /// The actions that need elevation refuse an Owner's everyday session
+    /// and still let the Owner read; the operator can change them.
+    #[tokio::test]
+    async fn elevation_routes_refuse_owner_sessions() {
+        let (_state, app, library) = phase2_harness("op-token-elevation-moves").await;
+        let cookie = crate::auth::tests::portal_cookie_for(&library, "test", "admin-ext").await;
+        let client = r#"{"client_id":"abs","redirect_uris":["https://abs.example/cb"],"confidential":false}"#;
+        let refused: [(&str, &str, &str); 7] = [
+            ("POST", "/api/auth/oidc/clients", client),
+            ("PUT", "/api/auth/oidc/clients/abs", client),
+            ("DELETE", "/api/auth/oidc/clients/abs", ""),
+            ("POST", "/api/auth/oidc/clients/abs/rotate-secret", "{}"),
+            (
+                "PUT",
+                "/api/auth/mfa-policy",
+                r#"{"require_second_factor":true}"#,
+            ),
+            (
+                "PUT",
+                "/api/auth/oidc/config",
+                r#"{"enabled":true,"providers":[]}"#,
+            ),
+            ("DELETE", "/api/config/nodes/some-node", ""),
+        ];
+        for (method, uri, body) in refused {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{method} {uri}");
+        }
+        for uri in [
+            "/api/auth/oidc/clients",
+            "/api/auth/mfa-policy",
+            "/api/auth/oidc/config",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "GET {uri}");
+        }
+        let created = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/oidc/clients")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, "Bearer op-token-elevation-moves")
+                    .body(Body::from(client))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, body) = json_of(created).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["client_id"], "abs");
     }
 
     /// Wrong password is a JSON 401, not the branded operator-token copy.
@@ -1180,16 +1191,12 @@ mod tests {
                     .uri("/api/auth/mfa-policy")
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(header::COOKIE, &cookie)
-                    .body(Body::from(format!(
-                        r#"{{"require_second_factor":false,"current_password":"{password}"}}"#
-                    )))
+                    .body(Body::from(r#"{"require_second_factor":false}"#))
                     .unwrap(),
             )
             .await
             .unwrap();
-        let (put_status, put_body) = json_of(put).await;
-        assert_eq!(put_status, StatusCode::FORBIDDEN);
-        assert_eq!(put_body["error"], "mfa_enrollment_required");
+        assert_eq!(put.status(), StatusCode::UNAUTHORIZED);
         assert!(state.config.read().await.daemon.auth.require_second_factor);
 
         let recovery = app

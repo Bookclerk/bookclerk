@@ -50,6 +50,7 @@ impl PluginWorker for AudibleRoot {
                 detail_by_isbn: false,
                 price_by_isbn: false,
                 price_by_asin: true,
+                detail_by_product_id: false,
             },
             ..PluginDescribe::default()
         })

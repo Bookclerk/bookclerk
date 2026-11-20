@@ -83,6 +83,10 @@ impl ContentSource for FakeSource {
         true
     }
 
+    fn answers_catalog_detail_by_product_id(&self) -> bool {
+        true
+    }
+
     fn answers_price_by_isbn(&self) -> bool {
         true
     }
@@ -281,6 +285,7 @@ async fn a_sleeping_storefront_keeps_its_identity_and_lists_accounts_without_wak
     assert_eq!(proxy.portal_brand(), BRAND);
     assert_eq!(proxy.sort_key(), 7);
     assert!(proxy.answers_catalog_detail_by_isbn());
+    assert!(proxy.answers_catalog_detail_by_product_id());
     assert!(proxy.answers_price_by_isbn());
     assert!(!proxy.answers_price_by_asin());
     assert!(proxy.config_options().is_empty());
