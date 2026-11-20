@@ -545,6 +545,10 @@ export class Player {
     this.tick();
     this.tickedAt = null;
     if (this.state.status === "playing") {
+      // Paused by the listener or by the browser (another app took the
+      // audio): either way nothing should start it again unasked. A track
+      // that ends says so itself, after this.
+      this.wantPlay = false;
       this.set({ status: "paused", positionMs: this.position() });
       void this.report();
     }

@@ -1035,6 +1035,21 @@ describe("Player", () => {
     expect(w.audio.currentTime).toBe(30);
   });
 
+  it("stays paused through a seek into another track after the browser paused it", async () => {
+    const w = world({ tracks: 2, lengths: [60_000, 60_000] });
+    await w.player.play(TARGET);
+    w.audio.ready(60);
+    expect(w.player.state.status).toBe("playing");
+    // Not through the player: an interruption the browser reports.
+    w.audio.pause();
+    expect(w.player.state.status).toBe("paused");
+    w.player.seek(90_000);
+    w.audio.ready(60);
+    expect(w.audio.paused).toBe(true);
+    expect(w.player.state.status).toBe("paused");
+    expect(w.audio.currentTime).toBe(30);
+  });
+
   it("keeps a bookmark added before the list of bookmarks arrives", async () => {
     const w = world();
     let release = () => {};
