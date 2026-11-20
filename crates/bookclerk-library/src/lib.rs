@@ -54,7 +54,9 @@ mod wishlist_merge;
 
 pub use atomic_ops::{atomic_status, DbAtomicParams, DbAtomicResult};
 pub use atomic_txn::{AtomicTxnBackend, TypedAtomicExec};
-pub use backend_migrate::{migrate_library_backend, BackendMigrateOptions, BackendMigrateSummary};
+pub use backend_migrate::{
+    migrate_library_backend, BackendMigrateOptions, BackendMigrateSummary, LEFT_BEHIND_TABLES,
+};
 pub use backup::encode::{CanonicalObject, CHUNK_TARGET_UNCOMPRESSED_BYTES};
 pub use backup::repository::BackupRepository;
 pub use backup::restore::restore_backup_unit;
@@ -179,6 +181,7 @@ pub use store::{
         CatalogListing, CatalogListingRecord, ListingDetail, ListingOffer, OfferAudience,
         RecordedListings, CATALOG_LISTING_REFRESH,
     },
+    copy_retry_delay,
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,
     library_model::{
@@ -187,6 +190,21 @@ pub use store::{
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
+    playback::{
+        reaches_end, Bookmark, NewPlaybackSession, PlaybackChange, PlaybackEdition, PlaybackEvent,
+        PlaybackMs, PlaybackProgress, PlaybackProgressEdit, PlaybackSession, PlaybackSync,
+        PlayerKind, ProgressCursor, MAX_BOOKMARKS_PER_EDITION, MAX_BOOKMARK_TITLE_BYTES,
+        MAX_PLAYBACK_MS, MAX_PLAYER_NAME_BYTES,
+    },
+    playback_request::{
+        parse_bookmark_edit_request, parse_new_bookmark_request, parse_open_session_request,
+        parse_playback_sync_request, parse_progress_cursor, parse_progress_edit_request,
+        parse_track_path, progress_cursor_token, BookmarkEditBody, BookmarkEditRequest,
+        NewBookmarkBody, NewBookmarkRequest, OpenSessionBody, OpenSessionRequest, PlaybackSyncBody,
+        PlayerKindParam, ProgressEditBody, TrackPath, MAX_EDITION_ID_BYTES,
+        MAX_PLAYBACK_BODY_BYTES, MAX_PLAYBACK_SYNC_BYTES, MAX_PLAYBACK_TRACKS,
+        MAX_PROGRESS_CURSOR_BYTES,
+    },
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source,
@@ -203,14 +221,14 @@ pub use store::{
         MAX_SPLIT_EXPRESSIONS, MAX_SPLIT_EXPRESSION_ID_BYTES,
     },
     AcquireTitle, AcquireTitlePage, AcquiredTitleKey, AcquiredTitleKeyPage, BookPage, CandidateRef,
-    CatalogEnrichmentFields, DiscoverSubject, EditionAcquisition, EditionAsin, EditionEnrichment,
-    EditionFile, EnrichCandidate, EnrichCandidatePage, FileOwner, FileProbe, FileRole,
-    HeldIdentifiers, HoldingSelection, LibraryStore, NewBook, NewListeningProgress,
-    NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection, QueueRank, SavedFilterRecord,
-    ScannedTitle, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed,
-    StoredQueueRank, TitleHolding, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE,
-    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, HOLDING_REMOVED,
-    MAX_QUEUE_REASONS,
+    CatalogEnrichmentFields, CopyState, DiscoverSubject, EditionAcquisition, EditionAsin,
+    EditionCopy, EditionEnrichment, EditionFile, EnrichCandidate, EnrichCandidatePage, FileOwner,
+    FileProbe, FileRole, HeldIdentifiers, HoldingSelection, LibraryStore, NewBook,
+    NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection, QueueRank,
+    SavedFilterRecord, ScannedTitle, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
+    StoredFeed, StoredQueueRank, TitleHolding, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE,
+    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, COPY_RETRY_BASE_DELAY,
+    COPY_RETRY_MAX_DELAY, HOLDING_REMOVED, MAX_COPY_ATTEMPTS, MAX_QUEUE_REASONS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

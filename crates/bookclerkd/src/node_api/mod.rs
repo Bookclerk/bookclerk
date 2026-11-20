@@ -12,8 +12,8 @@
 //! host's credential: the operator or an Owner for any host, anyone else
 //! for the hosts they own.
 //!
-//! `/api/config/host-enrollment` reads and toggles the library's
-//! host-enrollment switch (`core.host_enrollment`). Any signed-in user may
+//! `/api/config/branch-enrollment` reads and toggles the library's
+//! branch-enrollment switch (`core.branch_enrollment`). Any signed-in user may
 //! read it; only the operator or an active Owner may change it.
 //!
 //! `POST /api/node/v1/enroll` redeems a link. It sits outside the cookie and
@@ -64,8 +64,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
-    list_enrollment_links, load_host_enrollment, mint_enrollment_link, redeem_enrollment_link,
-    revoke_enrollment_link, revoke_node_credential, set_host_enrollment_enabled,
+    list_enrollment_links, load_branch_enrollment, mint_enrollment_link, redeem_enrollment_link,
+    revoke_enrollment_link, revoke_node_credential, set_branch_enrollment_enabled,
     verify_library_owner, ConfigActor, EnrollmentActor, EnrollmentLink, EnrollmentSecret,
     NodeCredential, RedeemRequest,
 };
@@ -196,8 +196,8 @@ pub struct NodeCredentialRevoked {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-/// The host-enrollment switch.
-pub struct HostEnrollment {
+/// The branch-enrollment switch.
+pub struct BranchEnrollment {
     /// Whether branch nodes may enroll into this library.
     #[schema(example = true)]
     pub enabled: bool,
@@ -237,7 +237,7 @@ pub(crate) struct PostNodeInvite {
 }
 
 /// `POST /api/config/node-invites`: mint an enrollment link. Any user may
-/// mint one for themselves while host enrollment is on; the operator or an
+/// mint one for themselves while branch enrollment is on; the operator or an
 /// Owner may mint for any active user.
 ///
 /// # Arguments
@@ -267,9 +267,9 @@ pub(crate) struct PostNodeInvite {
             ("user_disabled" = (summary = "The user the link is for is disabled.", value = json!({"error": "user 7 is disabled"}))),
         )),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The user may not mint a link for that user, host enrollment is off, the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+        (status = 403, description = "The user may not mint a link for that user, branch enrollment is off, the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
             ("other_user" = (summary = "A member asked for another user's link.", value = json!({"error": "only the operator or an Owner may mint an enrollment link for another user"}))),
-            ("enrollment_disabled" = (summary = "Host enrollment is switched off.", value = json!({"error": "host enrollment is disabled for this library"}))),
+            ("enrollment_disabled" = (summary = "Branch enrollment is switched off.", value = json!({"error": "branch enrollment is disabled for this library"}))),
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
@@ -592,16 +592,16 @@ pub async fn delete_node_credential(
     }))
 }
 
-/// `PUT /api/config/host-enrollment` body.
+/// `PUT /api/config/branch-enrollment` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PutHostEnrollment {
+pub(crate) struct PutBranchEnrollment {
     /// Whether branch nodes may enroll into this library.
     #[schema(example = true)]
     enabled: bool,
 }
 
-/// `GET /api/config/host-enrollment`: whether branch nodes may enroll.
+/// `GET /api/config/branch-enrollment`: whether branch nodes may enroll.
 ///
 /// # Returns
 ///
@@ -613,9 +613,9 @@ pub(crate) struct PutHostEnrollment {
 /// Returns an error response when the switch cannot be read.
 #[utoipa::path(
     get,
-    path = "/api/config/host-enrollment",
+    path = "/api/config/branch-enrollment",
     responses(
-        (status = 200, description = "Whether branch nodes may enroll.", body = HostEnrollment),
+        (status = 200, description = "Whether branch nodes may enroll.", body = BranchEnrollment),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
@@ -624,18 +624,20 @@ pub(crate) struct PutHostEnrollment {
         (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
-pub async fn get_host_enrollment(
+pub async fn get_branch_enrollment(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<HostEnrollment>, Response> {
+) -> Result<Json<BranchEnrollment>, Response> {
     let library = state.library_snapshot().await;
-    let settings = load_host_enrollment(&library).await.map_err(events_error)?;
-    Ok(Json(HostEnrollment {
+    let settings = load_branch_enrollment(&library)
+        .await
+        .map_err(events_error)?;
+    Ok(Json(BranchEnrollment {
         enabled: settings.body.enabled,
         revision: settings.revision,
     }))
 }
 
-/// `PUT /api/config/host-enrollment`: turn host enrollment on or off. The
+/// `PUT /api/config/branch-enrollment`: turn branch enrollment on or off. The
 /// operator may always; a user only while the stored role is an active
 /// Owner.
 ///
@@ -654,25 +656,25 @@ pub async fn get_host_enrollment(
 /// and an error response when the switch cannot be written.
 #[utoipa::path(
     put,
-    path = "/api/config/host-enrollment",
-    request_body = PutHostEnrollment,
+    path = "/api/config/branch-enrollment",
+    request_body = PutBranchEnrollment,
     responses(
-        (status = 200, description = "The switch after the change.", body = HostEnrollment),
+        (status = 200, description = "The switch after the change.", body = BranchEnrollment),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The user is not an active Owner, the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
             ("not_owner" = (summary = "The user is not an active Owner.", value = json!({"error": "user 7 is not an active owner"}))),
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
-        (status = 409, description = "The setting kept changing under the write; retry.", body = crate::http_error::ErrorMessage, example = json!({"error": "core.host_enrollment kept changing; retry"})),
+        (status = 409, description = "The setting kept changing under the write; retry.", body = crate::http_error::ErrorMessage, example = json!({"error": "core.branch_enrollment kept changing; retry"})),
         (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
-pub async fn put_host_enrollment(
+pub async fn put_branch_enrollment(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
-    Json(body): Json<PutHostEnrollment>,
-) -> Result<Json<HostEnrollment>, Response> {
+    Json(body): Json<PutBranchEnrollment>,
+) -> Result<Json<BranchEnrollment>, Response> {
     let library = state.library_snapshot().await;
     let config_actor = match caller {
         UserCaller::Operator => ConfigActor::Operator {
@@ -682,10 +684,10 @@ pub async fn put_host_enrollment(
             .await
             .map_err(events_error)?,
     };
-    let doc = set_host_enrollment_enabled(&library, &config_actor, body.enabled)
+    let doc = set_branch_enrollment_enabled(&library, &config_actor, body.enabled)
         .await
         .map_err(events_error)?;
-    Ok(Json(HostEnrollment {
+    Ok(Json(BranchEnrollment {
         enabled: doc.body.enabled,
         revision: Some(doc.revision),
     }))
@@ -1227,7 +1229,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_operator_or_an_owner_toggles_host_enrollment() {
+    async fn only_the_operator_or_an_owner_toggles_branch_enrollment() {
         let _dek = crate::auth::tests::process_dek_lock().await;
         let files = tempfile::tempdir().unwrap();
         let (state, store) = test_state(&files).await;
@@ -1242,8 +1244,8 @@ pub(crate) mod tests {
         let routes = |caller| {
             axum::Router::new()
                 .route(
-                    "/api/config/host-enrollment",
-                    get(super::get_host_enrollment).put(super::put_host_enrollment),
+                    "/api/config/branch-enrollment",
+                    get(super::get_branch_enrollment).put(super::put_branch_enrollment),
                 )
                 .layer(axum::Extension(caller))
                 .with_state(Arc::clone(&state))
@@ -1251,7 +1253,7 @@ pub(crate) mod tests {
         let as_owner = routes(UserCaller::User { user_id: owner.id });
         let as_member = routes(UserCaller::User { user_id: member.id });
         let operator = routes(UserCaller::Operator);
-        let uri = "/api/config/host-enrollment";
+        let uri = "/api/config/branch-enrollment";
 
         let (status, read) = send(&as_member, "GET", uri, Value::Null).await;
         assert_eq!(status, StatusCode::OK, "{read}");

@@ -1289,6 +1289,15 @@
             "kind": "bool"
           },
           "offset": 2
+        },
+        {
+          "name": "detailByProductId",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 3
         }
       ]
     },

@@ -45,6 +45,10 @@ pub enum ExportCommand {
         /// Report only; do not write.
         #[arg(long)]
         dry_run: bool,
+        /// Write this person's tags, ratings and finished flags (login name
+        /// or user id); without it they are empty.
+        #[arg(long)]
+        user: Option<String>,
     },
     /// Export library titles as CSV / JSON / XLSX: the whole library, or
     /// with `--user` that person's view with their tags and finished flags.
@@ -113,12 +117,14 @@ pub async fn run(
             path,
             force,
             dry_run,
+            user,
         } => {
             let summary = export_libation(LibationExportOptions {
                 files_dir: config.paths().files_dir.clone(),
                 dest: path.clone(),
                 force,
                 dry_run,
+                user,
             })
             .await?;
             if !dry_run {

@@ -119,16 +119,19 @@ pub(crate) fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
         std::fs::copy(&req.input, &req.output)?;
     }
 
-    let ext = req
-        .output
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-
-    match ext.as_str() {
-        "mp3" => fixup_mp3(req),
-        _ => fixup_m4b(req),
+    // The writer follows what the file holds, never its name: an MP4 named
+    // `.mp3` must not be handed to the ID3 writer, nor a FLAC file to the
+    // MP4 writer.
+    match read_tag_record(&req.output)?.map(|record| record.container) {
+        Some(bookclerk_tags::Container::Mp4) => fixup_m4b(req),
+        Some(bookclerk_tags::Container::Mp3) => fixup_mp3(req),
+        Some(bookclerk_tags::Container::Flac) => Err(MediaError::Native(
+            "tag writing for FLAC is not supported yet".into(),
+        )),
+        None => Err(MediaError::Native(format!(
+            "cannot write tags into {}: not a container this build reads",
+            req.output.display()
+        ))),
     }
 }
 
@@ -611,8 +614,8 @@ fn mp3_chapter_spans(
         .collect()
 }
 
-/// Running time of the audio file at `path`, read from its headers by
-/// [`bookclerk_tags::TagReader`], with whether it is exact or estimated.
+/// Running time of the audio file at `path`, read from its headers
+/// ([`read_tag_record`]), with whether it is exact or estimated.
 ///
 /// # Returns
 ///
@@ -622,6 +625,20 @@ fn mp3_chapter_spans(
 ///
 /// Returns an error when the file cannot be opened or read.
 fn audio_duration(path: &Path) -> Result<Option<bookclerk_tags::Duration>> {
+    Ok(read_tag_record(path)?.and_then(|r| r.duration))
+}
+
+/// The headers of the audio file at `path`, read by
+/// [`bookclerk_tags::TagReader`].
+///
+/// # Returns
+///
+/// `None` when the reader does not recognise or cannot parse the file.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be opened or read.
+fn read_tag_record(path: &Path) -> Result<Option<bookclerk_tags::TagRecord>> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
     let mut file = std::fs::File::open(path)?;
@@ -630,7 +647,7 @@ fn audio_duration(path: &Path) -> Result<Option<bookclerk_tags::Duration>> {
     loop {
         match reader.poll() {
             bookclerk_tags::Poll::Done(record) => {
-                return Ok(record.ok().and_then(|r| r.duration));
+                return Ok(record.ok());
             }
             bookclerk_tags::Poll::Need(spans) => {
                 for span in spans {
@@ -859,6 +876,55 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn fixup_picks_the_writer_by_content_not_by_name() {
+        let dir = tempfile::tempdir().expect("dir");
+        // An MP4 named `.mp3` gets MP4 tags, not an ID3 tag glued to its front.
+        let m4b = dir.path().join("tone.m4b");
+        crate::package_m4b::package_m4b_from_pcm(&[0i16; 44_100], 44_100, 1, &m4b, &[])
+            .expect("package");
+        let misnamed = dir.path().join("book.mp3");
+        std::fs::rename(&m4b, &misnamed).expect("rename");
+        let mut req = mp3_request(&misnamed, &[], false);
+        req.title = "Renamed".into();
+        fixup_audiobook_sync(&req).expect("fixup");
+        let record =
+            bookclerk_tags::read_all(&std::fs::read(&misnamed).expect("read")).expect("tags");
+        assert_eq!(record.container, bookclerk_tags::Container::Mp4);
+        let title = Mp4Tag::read_from_path(&misnamed).expect("mp4 tag");
+        assert_eq!(title.title(), Some("Renamed"));
+
+        // An MP3 named `.m4b` gets ID3 tags.
+        let mp3 = fixture_mp3(false);
+        let renamed = dir.path().join("book.m4b");
+        std::fs::copy(mp3.path(), &renamed).expect("copy");
+        let mut req = mp3_request(&renamed, &[], false);
+        req.title = "Also renamed".into();
+        fixup_audiobook_sync(&req).expect("fixup");
+        let tag = Id3Tag::read_from_path(&renamed).expect("id3");
+        assert_eq!(tag.title(), Some("Also renamed"));
+    }
+
+    #[test]
+    fn fixup_refuses_containers_it_cannot_write() {
+        let dir = tempfile::tempdir().expect("dir");
+        let flac = dir.path().join("book.m4b");
+        std::fs::write(&flac, bookclerk_tags::fixtures::tagged_flac()).expect("write");
+        let before = std::fs::read(&flac).expect("read");
+        let err = fixup_audiobook_sync(&mp3_request(&flac, &[], false)).expect_err("flac");
+        assert!(err.to_string().contains("FLAC"), "{err}");
+        assert_eq!(
+            std::fs::read(&flac).expect("read"),
+            before,
+            "file untouched"
+        );
+
+        let text = dir.path().join("notes.mp3");
+        std::fs::write(&text, b"plain text, not audio").expect("write");
+        let err = fixup_audiobook_sync(&mp3_request(&text, &[], false)).expect_err("text");
+        assert!(err.to_string().contains("cannot write tags"), "{err}");
     }
 
     #[test]

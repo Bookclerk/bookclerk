@@ -27,6 +27,7 @@ mod covers;
 mod cron_worker;
 mod cross_origin;
 mod csrf;
+mod diagnostics_lookup;
 mod discover_events;
 mod discover_jobs;
 mod event_worker;
@@ -53,6 +54,7 @@ mod origin;
 mod passkeys;
 mod patron_scopes;
 mod placement;
+mod playback;
 mod plugin_installs;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].

@@ -8,8 +8,9 @@ use axum::body::Body as HttpBody;
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    load_node_credential, mint_enrollment_link, node_queue_name, publish_node_message,
-    redeem_enrollment_link, revoke_node_credential, EnrollmentActor, NodeMessage, RedeemRequest,
+    load_node_credential, load_node_status, mint_enrollment_link, node_queue_name,
+    publish_node_message, redeem_enrollment_link, revoke_node_credential, EnrollmentActor,
+    NodeMessage, RedeemRequest,
 };
 use bookclerk_library::secrets::{
     build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret, upsert_secret,
@@ -693,11 +694,39 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
                 cpu_used_millicores: None,
                 memory_available_bytes: None,
                 files_dir_free_bytes: None,
+                public_origin: Some(" HTTPS://Branch.Example/ ".into()),
             },
         ),
     )
     .await;
     assert!(matches!(beat.body, Body::Accepted {}), "{beat:?}");
+    // The branch's address is kept normalized: it is a remote branch.
+    let status = load_node_status(&store, &node_id).await.unwrap().unwrap();
+    assert_eq!(
+        status.public_origin.as_deref(),
+        Some("https://branch.example")
+    );
+    // An address that is not a plain origin is dropped, not stored.
+    let beat = request(
+        &mut client,
+        Frame::new(
+            "h2",
+            Body::Heartbeat {
+                started_at: "2026-10-15T00:00:00Z".into(),
+                interval_secs: 15,
+                cpu_millicores: 2000,
+                memory_bytes: Some(1 << 30),
+                cpu_used_millicores: None,
+                memory_available_bytes: None,
+                files_dir_free_bytes: None,
+                public_origin: Some("https://branch.example/path".into()),
+            },
+        ),
+    )
+    .await;
+    assert!(matches!(beat.body, Body::Accepted {}), "{beat:?}");
+    let status = load_node_status(&store, &node_id).await.unwrap().unwrap();
+    assert_eq!(status.public_origin, None);
 
     // Reconnect while the fence is still the job's: it is renewed.
     drop(client);

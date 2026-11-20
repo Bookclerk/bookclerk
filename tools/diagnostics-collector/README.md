@@ -13,7 +13,9 @@ fallback).
 
 | Method | Path | Who | Auth |
 |--------|------|-----|------|
-| `POST` | `/submit` | Bookclerk clients | none (validated + secret heuristics) |
+| `POST` | `/submit` | Bookclerk clients | none (body capped at 256 KiB while it streams, then validated + secret heuristics) |
+| `GET` | `/lookup` | anyone | none (the form page; no script) |
+| `POST` | `/lookup`, `/lookup/delete` | a report's sender | the report's access code in the body (see [Access codes](../../docs/server/diagnostics.md#access-codes)) |
 | `POST` | `/checkin` | Bookclerk clients that share usage | none (strict body, daily cap; see [Share usage](../../docs/server/diagnostics.md#share-usage)) |
 | `GET` | `/report?since=<ms>&after=<name>[&unfiled=1]` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `POST` | `/triage` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
@@ -31,7 +33,10 @@ script and fonts under `public/static/`.
 
 Each `/submit` is assigned a **`report_id` UUID**; the B2 object is
 `diagnostics/<version>/<report_id>.json`. Triage issues list these IDs
-for manual review.
+for manual review. With the dashboard database, the reply also carries an
+**`access_code`** that only the sender sees; the collector keeps its hash
+in D1 (`report_access`). The B2 key needs `deleteFiles` (and `listFiles`)
+for `/lookup/delete`.
 
 ## `/report` version filter
 

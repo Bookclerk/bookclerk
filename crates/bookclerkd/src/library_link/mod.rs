@@ -341,10 +341,16 @@ pub const LEAVE_NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 /// `left`, deletes its node keys, and stops the client. A link a join
 /// enrolled as another node meanwhile is not left (an error).
 ///
+/// # Arguments
+///
+/// * `node_id` - when set, the node the caller means to leave: a link now
+///   enrolled as another node is kept and the answer is `None`.
+///
 /// # Returns
 ///
 /// The link as it now stands and whether the owner accepted the notice;
-/// `None` when there is no such link.
+/// `None` when there is no such link, or it names another node than
+/// `node_id`.
 ///
 /// # Errors
 ///
@@ -352,11 +358,15 @@ pub const LEAVE_NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 pub async fn leave_link(
     state: &Arc<AppState>,
     library_id: &str,
+    node_id: Option<&str>,
 ) -> bookclerk_library::Result<Option<(LibraryLink, bool)>> {
     let library = state.library_snapshot().await;
     let Some(link) = load_library_link(&library, library_id).await? else {
         return Ok(None);
     };
+    if node_id.is_some_and(|node_id| node_id != link.remote_node_id) {
+        return Ok(None);
+    }
     // Only a client running as the node the link names may say it leaves;
     // one of an enrollment a re-join replaced would revoke the wrong node.
     let handle = link_handle(library_id, &link.remote_node_id);
@@ -443,6 +453,18 @@ const LINK_RETRY_MIN: Duration = Duration::from_secs(5);
 
 /// Longest delay between attempts to read the active links again.
 const LINK_RETRY_MAX: Duration = Duration::from_secs(300);
+
+/// Reads this install's `integrations.public_origin` for a link's
+/// heartbeat, so its library labels it a remote branch (or a local one
+/// when unset). The heartbeat samples on a blocking thread, where the
+/// config lock may be waited on.
+fn public_origin_source(state: &Arc<AppState>) -> capacity::PublicOriginSource {
+    let state = Arc::clone(state);
+    Box::new(move || {
+        let cfg = state.config.blocking_read();
+        crate::origin::configured_public_origin(cfg.integrations.public_origin.as_deref())
+    })
+}
 
 /// Runs the clients of the live library's active links until the library
 /// is swapped, then stops them (waiting for each to exit, so the same
@@ -726,6 +748,7 @@ async fn start_clients(
                 NodeSampler::new(&files_dir),
                 share,
                 Arc::clone(&state.capacity),
+                public_origin_source(state),
             )),
         ) {
             Ok(started) => started,

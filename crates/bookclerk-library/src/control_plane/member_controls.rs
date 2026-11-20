@@ -415,26 +415,26 @@ pub async fn assigned_member_controls(
     })
 }
 
-/// Whether member controls ever limit a role: Members, Hosts and
-/// Administrators can be limited; Owners never are.
+/// Whether member controls ever limit a role: Members and Administrators
+/// can be limited; Owners never are.
 ///
 /// An Administrator's controls are set only by an Owner or the operator,
 /// because an Administrator may manage Members alone.
 #[must_use]
 pub fn role_has_controls(role: UserRole) -> bool {
     match role {
-        UserRole::Member | UserRole::Host | UserRole::Administrator => true,
+        UserRole::Member | UserRole::Administrator => true,
         UserRole::Owner => false,
     }
 }
 
-/// Whether a role follows the library's default controls: Members and
-/// Hosts do. An Administrator may do everything except the controls set
+/// Whether a role follows the library's default controls: Members do.
+/// An Administrator may do everything except the controls set
 /// for them alone, so a default meant for patrons never limits staff.
 #[must_use]
 pub fn role_follows_default_controls(role: UserRole) -> bool {
     match role {
-        UserRole::Member | UserRole::Host => true,
+        UserRole::Member => true,
         UserRole::Administrator | UserRole::Owner => false,
     }
 }

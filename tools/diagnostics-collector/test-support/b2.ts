@@ -15,10 +15,14 @@ export const TEST_B2_AUTH: B2Auth = {
  *
  * @param objects - Stored text by file ID; a missing ID fails the download
  *   the way a deleted object would.
+ * @param deleted - Collects the object keys `deleteObject` was called with.
  * @returns The helpers the dashboard takes from worker.ts.
  */
-export function makeB2(objects: Record<string, string> = {}): B2Access {
+export function makeB2(objects: Record<string, string> = {}, deleted: string[] = []): B2Access {
   return {
+    deleteObject: async (_auth, objectKey) => {
+      deleted.push(objectKey);
+    },
     bucketId: "bucket",
     authorize: async () => TEST_B2_AUTH,
     downloadById: async (_auth, id) => {

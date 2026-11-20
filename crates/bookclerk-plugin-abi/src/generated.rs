@@ -1238,6 +1238,13 @@ pub struct CatalogCapabilities {
     /// ASIN (`lookup = asin`), as `priceByIsbn` does for ISBNs.
     #[serde(default)]
     pub price_by_asin: bool,
+    /// True when `catalogDetail` resolves this store's own `productId` (an id
+    /// its search, expand or deals hits gave) to a full bibliographic record.
+    /// Catalog search then asks this store to fill lean result rows it listed
+    /// itself, and title dialogs ask it for the editions it listed. A store
+    /// that leaves it false is never woken for a detail lookup by product id.
+    #[serde(default)]
+    pub detail_by_product_id: bool,
 }
 
 /// Portal brand crossing the RPC boundary. Distinct from `plugin.toml`
@@ -3457,6 +3464,7 @@ pub fn write_catalog_capabilities(
     b.set_detail_by_isbn(v.detail_by_isbn);
     b.set_price_by_isbn(v.price_by_isbn);
     b.set_price_by_asin(v.price_by_asin);
+    b.set_detail_by_product_id(v.detail_by_product_id);
     Ok(())
 }
 
@@ -3472,6 +3480,7 @@ pub fn read_catalog_capabilities(
         detail_by_isbn: r.get_detail_by_isbn(),
         price_by_isbn: r.get_price_by_isbn(),
         price_by_asin: r.get_price_by_asin(),
+        detail_by_product_id: r.get_detail_by_product_id(),
     })
 }
 

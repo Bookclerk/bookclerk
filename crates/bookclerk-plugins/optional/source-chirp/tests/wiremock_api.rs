@@ -394,6 +394,8 @@ async fn a_failed_pricing_query_leaves_the_titles_unpriced() {
     assert_eq!(source.purchase_hints(&[unpriced]).await.unwrap().len(), 1);
 }
 
+/// The search is built from the instance settings document, so its
+/// `graphql_url` override reaches the mock as it does for scans and fetches.
 #[tokio::test]
 async fn search_with_a_zero_limit_returns_the_default_page() {
     let server = MockServer::start().await;
@@ -423,7 +425,7 @@ async fn search_with_a_zero_limit_returns_the_default_page() {
         .await;
 
     // Page 2 skips typeahead, so the single request is the catalog search.
-    let hits = ChirpSource::with_graphql_url(server.uri())
+    let hits = ChirpSource::from_config(&serde_json::json!({ "graphql_url": server.uri() }))
         .search_catalog(&CatalogSearchOpts {
             query: "title".into(),
             limit: 0,

@@ -582,11 +582,11 @@ async fn add_branch_node(store: &LibraryStore, node_id: &str, role: UserRole) {
     .unwrap();
 }
 
-/// A cron fire whose instance runs only on a Host owned by a non-privileged
+/// A cron fire whose instance runs only on a branch node owned by a member
 /// user cannot be claimed by anyone, so it fails after the grace period;
-/// one on an administrator's Host stays routable.
+/// one on an administrator's branch node stays routable.
 async fn cron_fire_on_member_host_fails_after_grace(store_a: LibraryStore, store_b: LibraryStore) {
-    add_branch_node(&store_a, "host-member", UserRole::Host).await;
+    add_branch_node(&store_a, "host-member", UserRole::Member).await;
     add_branch_node(&store_a, "host-admin", UserRole::Administrator).await;
     let mut jobs = Vec::new();
     for host in ["host-member", "host-admin"] {
@@ -746,6 +746,7 @@ async fn pinned_job_of_a_silent_node_fails_after_grace() {
             budget_bytes: 1 << 30,
             swept_ms: Some(1_793_212_800_000),
         }),
+        public_origin: None,
     };
     let status = record_node_heartbeat(&store, "node-a", &heartbeat)
         .await
@@ -819,6 +820,7 @@ async fn a_live_pinned_job_still_has_its_requirements_reconciled() {
         memory_available_bytes: None,
         files_dir_free_bytes: None,
         cache: None,
+        public_origin: None,
     };
     record_node_heartbeat(&store, "node-a", &heartbeat)
         .await

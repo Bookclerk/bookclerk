@@ -384,7 +384,7 @@ fn status_code_slug(status: StatusCode) -> &'static str {
 }
 
 /// Prefer JSON when the client looks like an API consumer.
-fn wants_json(headers: &HeaderMap, path: &str) -> bool {
+pub(crate) fn wants_json(headers: &HeaderMap, path: &str) -> bool {
     if media_prefers_json(headers.get(header::CONTENT_TYPE)) {
         return true;
     }
