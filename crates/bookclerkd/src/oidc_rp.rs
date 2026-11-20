@@ -33,8 +33,8 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::auth::{
-    cookie_value, issue_elevation, issue_portal_session, resolve_portal_caller_identity,
-    timed_portal_identity_from_headers, too_many_requests, ClientIp,
+    cookie_value, issue_elevation, issue_portal_session, require_portal_identity,
+    resolve_portal_caller_identity, too_many_requests, CallerRefusal, ClientIp,
 };
 use crate::oidc_verify::{
     apple_client_secret_jwt, github_verified_email, json_subject, verify_id_token, UpstreamProfile,
@@ -1067,16 +1067,15 @@ async fn put_oidc_config(
         (status = 200, description = "The caller's linked identities.", body = LinkedIdentitiesResponse),
         (status = 401, description = "The caller is not signed in, or has no first-party user."),
         (status = 500, description = "The identities could not be read."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn list_identities(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<LinkedIdentitiesResponse>, StatusCode> {
+) -> Result<Json<LinkedIdentitiesResponse>, CallerRefusal> {
     let library = state.library_snapshot().await;
-    let identity = timed_portal_identity_from_headers(&library, &headers)
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let identity = require_portal_identity(&library, &headers).await?;
     let (_, _, user, _) = resolve_portal_caller_identity(&library, &identity).await;
     let user = user.ok_or(StatusCode::UNAUTHORIZED)?;
     let rows = library
@@ -1187,20 +1186,39 @@ async fn login_start(
             (crate::http_error::ErrorJson = "application/json"),
             (String = "text/html"),
         )),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", headers(("Retry-After" = u64, description = "Seconds to wait before asking again.")), content(
+            (String = "text/html"),
+        )),
     ),
 )]
 async fn elevate_start(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(q): Query<ProviderQuery>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, CallerRefusal> {
     let library = state.library_snapshot().await;
-    let identity = timed_portal_identity_from_headers(&library, &headers)
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let identity = match require_portal_identity(&library, &headers).await {
+        Ok(identity) => identity,
+        // A browser reaches this route by navigating, so it gets the
+        // branded page (with `Retry-After`) rather than a JSON body.
+        Err(CallerRefusal::SessionCheckUnavailable)
+            if !crate::http_error::wants_json(&headers, "/api/auth/oidc/elevate") =>
+        {
+            let mut page = crate::http_error::document_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                crate::auth::SESSION_CHECK_UNAVAILABLE_MESSAGE,
+            );
+            page.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from(crate::auth::SESSION_CHECK_RETRY_AFTER_SECS),
+            );
+            return Ok(page);
+        }
+        Err(refusal) => return Err(refusal),
+    };
     let (role, _, user, _) = resolve_portal_caller_identity(&library, &identity).await;
     if role != "owner" {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     let user = user.ok_or(StatusCode::FORBIDDEN)?;
     let provider_id = match q
@@ -1221,14 +1239,14 @@ async fn elevate_start(
                 .ok_or(StatusCode::BAD_REQUEST)?
         }
     };
-    start_authorize(
+    Ok(start_authorize(
         &state,
         Some(&headers),
         Some(&provider_id),
         "elevate",
         Some(user.id),
     )
-    .await
+    .await?)
 }
 
 /// Persists hashed RP state and redirects to the IdP authorize URL with PKCE.

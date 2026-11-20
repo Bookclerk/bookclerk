@@ -75,8 +75,8 @@ pub enum ConfigActor {
     /// document only. Built by [`super::verify_node_owner`], which checks
     /// `nodes.owner_user_id`, so a caller cannot claim a node it does not own.
     NodeOwner(VerifiedNodeOwner),
-    /// An active portal Owner. Writes the library's host-enrollment switch
-    /// (`core.host_enrollment`) and the default Administrator switches
+    /// An active portal Owner. Writes the library's branch-enrollment switch
+    /// (`core.branch_enrollment`) and the default Administrator switches
     /// (`core.admin_controls`) only; every other document stays an
     /// operator write. Built by [`super::verify_library_owner`], which reads
     /// the user's stored role and status.
@@ -176,7 +176,7 @@ impl ConfigActor {
             Self::LibraryOwner(_) => {
                 key.scope_type == LIBRARY_SCOPE_TYPE
                     && key.scope_id == LIBRARY_SCOPE_ID
-                    && (key.namespace == super::HOST_ENROLLMENT_NAMESPACE
+                    && (key.namespace == super::BRANCH_ENROLLMENT_NAMESPACE
                         || key.namespace == super::ADMIN_CONTROLS_NAMESPACE)
             }
             Self::PatronAdministrator(_) => {

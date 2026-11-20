@@ -52,7 +52,8 @@ There is no ordered rule list and no fallback destination.
    background.
 4. Each stored copy is recorded per destination instance, with the key
    it used and its state (stored, pending retry, failed). In the data
-   model these are `edition_files` rows keyed by destination; a holding
+   model these are `edition_copies` rows keyed by edition and
+   destination, beside the per-file `edition_files` rows; a holding
    remains a store entitlement
    ([library data model](library-data-model.md)).
 5. Changing a template or filter affects new acquires. Moving existing

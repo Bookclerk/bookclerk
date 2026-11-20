@@ -22,8 +22,12 @@ use crate::api::AppState;
 use crate::auth::{authorize_provisioner, Provisioner};
 use crate::http_error::ErrorMessage;
 
-/// Error answer of the switch routes: a status and an `error` message.
-type SwitchError = (StatusCode, Json<ErrorMessage>);
+/// Error answer of the switch routes: a status and an `error` message, or
+/// the session-check refusal.
+type SwitchError = axum::response::ErrorResponse;
+
+/// A refusal in the routes' own words: a status and an `error` message.
+type Refusal = (StatusCode, Json<ErrorMessage>);
 
 /// The message of a failed read or write.
 const FAILED: &str = "the administrator's switches could not be read or written";
@@ -68,7 +72,7 @@ pub(crate) struct DefaultAdminControlsJson {
 }
 
 /// The 500 answer for a failed read or write, logged with its route.
-fn failed(route: &str, err: &LibraryError) -> SwitchError {
+fn failed(route: &str, err: &LibraryError) -> Refusal {
     tracing::error!(error = %err, route, "administrator switch route failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -77,14 +81,14 @@ fn failed(route: &str, err: &LibraryError) -> SwitchError {
 }
 
 /// An answer with only a status and a message.
-fn refused(status: StatusCode, message: impl std::fmt::Display) -> SwitchError {
+fn refused(status: StatusCode, message: impl std::fmt::Display) -> Refusal {
     (status, Json(ErrorMessage::new(message)))
 }
 
 /// Maps a library error to the route's answer: 404 for an unknown user,
 /// 403 for a refused write, 409 for a default that kept changing, 500
 /// otherwise.
-fn library_error(route: &str, err: LibraryError) -> SwitchError {
+fn library_error(route: &str, err: LibraryError) -> Refusal {
     match err {
         LibraryError::NotFound(missing) => refused(StatusCode::NOT_FOUND, missing),
         LibraryError::Forbidden(message) => refused(StatusCode::FORBIDDEN, message),
@@ -99,19 +103,23 @@ async fn provisioner(state: &AppState, headers: &HeaderMap) -> Result<Provisione
     let library = state.library_snapshot().await;
     authorize_provisioner(state, &auth, headers, &library)
         .await
-        .map_err(|status| {
-            refused(
-                status,
-                status
-                    .canonical_reason()
-                    .unwrap_or("refused")
-                    .to_lowercase(),
-            )
+        .map_err(|refusal| {
+            refusal
+                .answer(|status| {
+                    refused(
+                        status,
+                        status
+                            .canonical_reason()
+                            .unwrap_or("refused")
+                            .to_lowercase(),
+                    )
+                })
+                .into()
         })
 }
 
 /// Refuses anyone but the operator or an Owner, who alone set switches.
-fn require_owner(actor: Provisioner) -> Result<(), SwitchError> {
+fn require_owner(actor: Provisioner) -> Result<(), Refusal> {
     match actor {
         Provisioner::Operator | Provisioner::ElevatedOwner { .. } | Provisioner::Owner { .. } => {
             Ok(())
@@ -155,7 +163,7 @@ async fn load_user(
     library: &bookclerk_library::LibraryStore,
     user_id: i64,
     route: &str,
-) -> Result<bookclerk_library::UserRecord, SwitchError> {
+) -> Result<bookclerk_library::UserRecord, Refusal> {
     library
         .get_user(user_id)
         .await

@@ -1,0 +1,119 @@
+//! What this build of the media worker can read and write.
+//!
+//! Hosts ask here before handing the worker audio, instead of keeping their
+//! own list of formats: the acquire pipeline takes a library's copy from
+//! another store only when an output that re-encodes or repackages audio
+//! can read it. The answers follow the crate's decode front: the
+//! Symphonia features this crate enables, and FDK for every AAC profile.
+
+use bookclerk_tags::AudioCodec;
+
+/// Media types of whole files the worker opens: MP4 (`.m4a`/`.m4b`, AAC
+/// or ALAC), MPEG audio layers I–III, FLAC, ADTS AAC, WAV, AIFF and Core
+/// Audio Format. The container is still sniffed from the bytes when the
+/// file is opened; this list only says which kinds are worth sending.
+pub const READABLE_CONTENT_TYPES: &[&str] = &[
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/flac",
+    "audio/aac",
+    "audio/wav",
+    "audio/aiff",
+    "audio/x-caf",
+];
+
+/// What the worker produces from decoded audio.
+pub const OUTPUT_ENCODINGS: &[OutputEncoding] = &[OutputEncoding::AacLcM4b, OutputEncoding::Mp3];
+
+/// One encoding the worker can write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputEncoding {
+    /// AAC-LC in an M4B, through FDK.
+    AacLcM4b,
+    /// MP3, through LAME.
+    Mp3,
+}
+
+/// The codecs, containers and output encodings this build handles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Capabilities {
+    /// Audio encodings the worker decodes, in [`AudioCodec`] order.
+    pub decodes: Vec<AudioCodec>,
+    /// Media types of files the worker opens ([`READABLE_CONTENT_TYPES`]).
+    pub reads: &'static [&'static str],
+    /// Encodings the worker writes ([`OUTPUT_ENCODINGS`]).
+    pub encodes: &'static [OutputEncoding],
+}
+
+/// Every [`AudioCodec`] the tag reader names, so [`capabilities`] can list
+/// the decodable ones. [`decodes`] matches exhaustively, so a new codec
+/// fails to compile there until it is decided.
+const ALL_CODECS: [AudioCodec; 7] = [
+    AudioCodec::Aac,
+    AudioCodec::Alac,
+    AudioCodec::Flac,
+    AudioCodec::Mp3,
+    AudioCodec::Opus,
+    AudioCodec::Eac3,
+    AudioCodec::Ac4,
+];
+
+/// True when the worker decodes audio encoded as `codec`.
+///
+/// AAC covers every profile (LC, HE, HE v2, xHE). MP3 covers MPEG audio
+/// layers I and II too, which the tag reader reports as MP3.
+#[must_use]
+pub fn decodes(codec: AudioCodec) -> bool {
+    match codec {
+        AudioCodec::Aac | AudioCodec::Alac | AudioCodec::Flac | AudioCodec::Mp3 => true,
+        AudioCodec::Opus | AudioCodec::Eac3 | AudioCodec::Ac4 => false,
+    }
+}
+
+/// True when the worker opens files of media type `content_type` (compared
+/// without case or parameters).
+#[must_use]
+pub fn reads_content_type(content_type: &str) -> bool {
+    let essence = content_type.split(';').next().unwrap_or_default().trim();
+    READABLE_CONTENT_TYPES
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(essence))
+}
+
+/// The report for this build.
+#[must_use]
+pub fn capabilities() -> Capabilities {
+    Capabilities {
+        decodes: ALL_CODECS.into_iter().filter(|c| decodes(*c)).collect(),
+        reads: READABLE_CONTENT_TYPES,
+        encodes: OUTPUT_ENCODINGS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_report_lists_what_decodes() {
+        let report = capabilities();
+        assert_eq!(
+            report.decodes,
+            [
+                AudioCodec::Aac,
+                AudioCodec::Alac,
+                AudioCodec::Flac,
+                AudioCodec::Mp3
+            ]
+        );
+        assert_eq!(report.encodes, OUTPUT_ENCODINGS);
+    }
+
+    #[test]
+    fn content_types_compare_by_essence() {
+        assert!(reads_content_type("audio/flac"));
+        assert!(reads_content_type("Audio/MP4; codecs=mp4a.40.2"));
+        assert!(!reads_content_type("audio/ogg"));
+        assert!(!reads_content_type(""));
+    }
+}

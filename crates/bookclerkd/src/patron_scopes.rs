@@ -27,8 +27,12 @@ use crate::api::AppState;
 use crate::auth::{authorize_provisioner, Provisioner};
 use crate::http_error::ErrorMessage;
 
-/// Error answer of the scope routes: a status and an `error` message.
-type ScopeError = (StatusCode, Json<ErrorMessage>);
+/// Error answer of the scope routes: a status and an `error` message, or
+/// the session-check refusal.
+type ScopeError = axum::response::ErrorResponse;
+
+/// A refusal in the routes' own words: a status and an `error` message.
+type Refusal = (StatusCode, Json<ErrorMessage>);
 
 /// A patron's scope as the scope routes report it.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -56,7 +60,7 @@ pub(crate) struct DefaultScopeJson {
 }
 
 /// The 500 answer for a failed read or write, logged with its route.
-fn failed(route: &str, err: &LibraryError) -> ScopeError {
+fn failed(route: &str, err: &LibraryError) -> Refusal {
     tracing::error!(error = %err, route, "patron scope route failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -67,13 +71,13 @@ fn failed(route: &str, err: &LibraryError) -> ScopeError {
 }
 
 /// An answer with only a status and a message.
-fn refused(status: StatusCode, message: impl std::fmt::Display) -> ScopeError {
+fn refused(status: StatusCode, message: impl std::fmt::Display) -> Refusal {
     (status, Json(ErrorMessage::new(message)))
 }
 
 /// Maps a library error to the route's answer: 400 for a scope outside its
 /// bounds, 404 for an unknown user, 403 for a refused write, 500 otherwise.
-fn library_error(route: &str, err: LibraryError) -> ScopeError {
+fn library_error(route: &str, err: LibraryError) -> Refusal {
     match err {
         LibraryError::Invalid(message) => refused(StatusCode::BAD_REQUEST, message),
         LibraryError::NotFound(missing) => refused(StatusCode::NOT_FOUND, missing),
@@ -88,14 +92,16 @@ async fn provisioner(state: &AppState, headers: &HeaderMap) -> Result<Provisione
     let library = state.library_snapshot().await;
     authorize_provisioner(state, &auth, headers, &library)
         .await
-        .map_err(|status| {
-            refused(
-                status,
-                status
-                    .canonical_reason()
-                    .unwrap_or("refused")
-                    .to_lowercase(),
-            )
+        .map_err(|refusal| {
+            refusal
+                .answer(|status| {
+                    let message = status
+                        .canonical_reason()
+                        .unwrap_or("refused")
+                        .to_lowercase();
+                    (status, Json(ErrorMessage::new(message)))
+                })
+                .into()
         })
 }
 
@@ -122,10 +128,7 @@ async fn managed_user(
             )
         })?;
     if !actor.can_manage_target(user.role, actor.user_id() == Some(user_id)) {
-        return Err(refused(
-            StatusCode::FORBIDDEN,
-            "you may not manage this user",
-        ));
+        return Err(refused(StatusCode::FORBIDDEN, "you may not manage this user").into());
     }
     Ok(user)
 }
@@ -150,6 +153,7 @@ async fn may_set_limits(
                     "the patron's scope or controls could not be read or written",
                 )
             }
+            .into()
         })
 }
 
@@ -175,6 +179,7 @@ fn user_scope_json(user: &bookclerk_library::UserRecord, assigned: AssignedScope
         (status = 403, description = "The caller may not manage this user.", body = ErrorMessage, example = json!({"error": "you may not manage this user"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
         (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn get_user_scope(
@@ -211,6 +216,7 @@ pub(crate) async fn get_user_scope(
         (status = 403, description = "The caller may not manage this user, or tried to set their own scope.", body = ErrorMessage, example = json!({"error": "you may not set your own scope"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
         (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn put_user_scope(
@@ -225,10 +231,7 @@ pub(crate) async fn put_user_scope(
     may_set_limits(&library, actor).await?;
     let user = managed_user(&library, actor, user_id, ROUTE).await?;
     if actor.user_id() == Some(user_id) {
-        return Err(refused(
-            StatusCode::FORBIDDEN,
-            "you may not set your own scope",
-        ));
+        return Err(refused(StatusCode::FORBIDDEN, "you may not set your own scope").into());
     }
     let own = body.scope.is_some();
     let assigned = set_patron_scope(&library, user_id, body.scope)
@@ -258,6 +261,7 @@ pub(crate) async fn put_user_scope(
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
         (status = 500, description = "The scope could not be read.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn get_default_scope(
@@ -287,6 +291,7 @@ pub(crate) async fn get_default_scope(
         (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
         (status = 409, description = "The default kept changing underneath the write; retry.", body = ErrorMessage, example = json!({"error": "core.patron_scope kept changing; retry"})),
         (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn put_default_scope(
@@ -399,6 +404,7 @@ fn audit_overrides(overrides: &ControlOverrides) -> String {
         (status = 403, description = "The caller may not manage this user.", body = ErrorMessage, example = json!({"error": "you may not manage this user"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
         (status = 500, description = "The controls could not be read.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn get_user_controls(
@@ -438,6 +444,7 @@ pub(crate) async fn get_user_controls(
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
         (status = 409, description = "The user's role changed since the caller was authorized for them; nothing was written.", body = ErrorMessage, example = json!({"error": "user 7 became administrator while their controls were being set; read them again"})),
         (status = 500, description = "The controls could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn put_user_controls(
@@ -452,10 +459,7 @@ pub(crate) async fn put_user_controls(
     may_set_limits(&library, actor).await?;
     let user = managed_user(&library, actor, user_id, ROUTE).await?;
     if actor.user_id() == Some(user_id) {
-        return Err(refused(
-            StatusCode::FORBIDDEN,
-            "you may not set your own controls",
-        ));
+        return Err(refused(StatusCode::FORBIDDEN, "you may not set your own controls").into());
     }
     // Guarded on the role the authorization above read, so a promotion
     // since then stops the write.
@@ -491,6 +495,7 @@ pub(crate) async fn put_user_controls(
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
         (status = 500, description = "The controls could not be read.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn get_default_controls(
@@ -521,6 +526,7 @@ pub(crate) async fn get_default_controls(
         (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
         (status = 409, description = "The default kept changing underneath the write; retry.", body = ErrorMessage, example = json!({"error": "core.member_controls kept changing; retry"})),
         (status = 500, description = "The controls could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 pub(crate) async fn put_default_controls(
@@ -574,7 +580,7 @@ async fn caller_allowed(
     state: &AppState,
     headers: &HeaderMap,
     control: MemberControl,
-) -> Result<bool, ScopeError> {
+) -> Result<bool, Refusal> {
     let library = state.library_snapshot().await;
     let user_id = match crate::auth::caller_subject(state, &library, headers).await {
         crate::auth::CallerSubject::Operator => return Ok(true),
@@ -617,7 +623,7 @@ pub(crate) async fn require_control(
     headers: &HeaderMap,
     control: MemberControl,
     message: &str,
-) -> Result<(), ScopeError> {
+) -> Result<(), Refusal> {
     if caller_allowed(state, headers, control).await? {
         Ok(())
     } else {
