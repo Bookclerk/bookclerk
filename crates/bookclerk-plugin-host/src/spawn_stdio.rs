@@ -267,8 +267,11 @@ pub(crate) async fn spawn_stdio_guest(
     tokio::task::yield_now().await;
     let alias = plugin.manifest.id.clone();
     let persisted_grant = spawn_grant(&config.paths().files_dir, plugin)?;
-    let grant = effective_spawn_grant(&persisted_grant, plugin, config, deployed_endpoint);
-    let spawn_config = spawn_config_for_grant(&grant, config_table);
+    let spawn_config = spawn_config_for_grant(&persisted_grant, config_table);
+    let mut grant = effective_spawn_grant(&persisted_grant, plugin, config, deployed_endpoint);
+    // Network settings reach the policy only once their destination is
+    // approved; the guest sees the same values in `CONFIG`.
+    crate::setting_grants::apply_setting_destinations(&mut grant, &plugin.manifest, &spawn_config);
     // Unix takes the cgroup and guest IPC directory out of the jail. Windows
     // only moves fields, so `mut` is unused there.
     #[cfg_attr(windows, allow(unused_mut))]

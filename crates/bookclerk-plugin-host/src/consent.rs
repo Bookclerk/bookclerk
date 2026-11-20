@@ -28,7 +28,7 @@
 //!                        − operator denials
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
@@ -39,7 +39,8 @@ use tokio::process::Command;
 use bookclerk_config::{resolve_postgres_url, Config, DatabasePluginKind};
 use bookclerk_plugin_abi::{PluginCapabilities, PortalAuthMode};
 use bookclerk_plugin_manifest::{
-    is_public_internet, is_restricted_hostname, EgressPolicy, NetworkMode, TcpGrant,
+    is_public_internet, is_restricted_hostname, EgressPolicy, NetworkMode, SettingDestination,
+    TcpGrant,
 };
 
 use crate::manifest::{PluginManifest, PluginRuntimeKind, WorkerdLimits};
@@ -405,6 +406,18 @@ pub fn granted_jobs_from_manifest(manifest: &PluginManifest) -> BTreeSet<String>
     manifest.triggers.jobs.iter().cloned().collect()
 }
 
+/// Network destinations one spawn adds from approved network settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingNetworkOverlay {
+    /// Fetch `host:port` entries ([`EgressPolicy::domains`]).
+    pub domains: BTreeSet<String>,
+    /// Raw TCP grants ([`EgressPolicy::tcp`]).
+    pub tcp: BTreeSet<TcpGrant>,
+    /// Names and local-network addresses bound to the local network
+    /// ([`EgressPolicy::local_names`]).
+    pub local_names: BTreeSet<String>,
+}
+
 /// One approved grant snapshot for a provenance-qualified plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -561,6 +574,27 @@ pub struct PluginGrant {
     pub extra_processes: Option<u32>,
     /// RFC 3339 time when the operator approved this grant.
     pub approved_at: String,
+    /// Destinations derived from network settings
+    /// (`[[settings]] network = …`) that the operator approved, by setting
+    /// key.
+    ///
+    /// A destination is used only while an instance's value for that
+    /// setting still derives it ([`crate::apply_setting_destinations`]), and
+    /// approving a setting again withdraws destinations no instance names
+    /// any more ([`crate::approve_setting_destinations`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub setting_destinations: BTreeMap<String, BTreeSet<SettingDestination>>,
+    /// What approved setting destinations add for this spawn.
+    ///
+    /// Filled at spawn by [`crate::apply_setting_destinations`] from the
+    /// instance's values; never stored. [`Self::egress_policy`] adds it to
+    /// the stored network grant. It is kept apart from [`Self::domains`] and
+    /// [`Self::tcp`] so the effective authority a session records stays the
+    /// stored grant's: the approvals themselves are in
+    /// [`Self::setting_destinations`] (part of the grant revision), and a
+    /// changed value changes the instance's configuration revision.
+    #[serde(skip)]
+    pub setting_network: SettingNetworkOverlay,
 }
 
 impl PluginGrant {
@@ -638,6 +672,8 @@ impl PluginGrant {
             cpu_rate_percent: None,
             extra_processes: None,
             approved_at: String::new(),
+            setting_destinations: BTreeMap::new(),
+            setting_network: SettingNetworkOverlay::default(),
         }
     }
 
@@ -650,10 +686,23 @@ impl PluginGrant {
             NetworkMode::Deny
         };
         let mut tcp: Vec<TcpGrant> = self.tcp.iter().cloned().collect();
+        for extra in &self.setting_network.tcp {
+            match tcp.iter_mut().find(|grant| grant.host == extra.host) {
+                Some(grant) => {
+                    for port in &extra.ports {
+                        if !grant.ports.contains(port) {
+                            grant.ports.push(*port);
+                        }
+                    }
+                    grant.ports.sort_unstable();
+                }
+                None => tcp.push(extra.clone()),
+            }
+        }
         tcp.sort();
         EgressPolicy {
             mode,
-            domains: self.domains.iter().cloned().collect(),
+            domains: self.effective_domains().into_iter().collect(),
             max_redirects: bookclerk_plugin_manifest::DEFAULT_MAX_REDIRECTS,
             subrequests: self.subrequests,
             allow_undeclared_public_redirects: self.allow_undeclared_public_redirects,
@@ -661,8 +710,18 @@ impl PluginGrant {
             address_cidrs: self.address_cidrs.iter().cloned().collect(),
             user_agent: Some(bookclerk_plugin_manifest::host_user_agent()),
             own_user_agent_hosts: self.effective_own_user_agent_hosts().into_iter().collect(),
-            local_names: Vec::new(),
+            local_names: self.setting_network.local_names.iter().cloned().collect(),
         }
+    }
+
+    /// The fetch allowlist this spawn uses: [`Self::domains`] plus what
+    /// approved setting destinations add.
+    #[must_use]
+    pub fn effective_domains(&self) -> BTreeSet<String> {
+        self.domains
+            .union(&self.setting_network.domains)
+            .cloned()
+            .collect()
     }
 
     /// Approved own-agent hosts; a legacy `None` grant approves none here.
@@ -1177,6 +1236,8 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
             Some(PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT)
         },
         approved_at: chrono::Utc::now().to_rfc3339(),
+        setting_destinations: BTreeMap::new(),
+        setting_network: SettingNetworkOverlay::default(),
     }
 }
 
@@ -2103,6 +2164,10 @@ pub fn effective_grant(existing: &PluginGrant, requested: &PluginGrant) -> Plugi
             .extra_processes
             .map(|v| effective_extra_processes(Some(v))),
         approved_at: existing.approved_at.clone(),
+        // Approvals of setting destinations are the operator's; spawn uses
+        // one only while a value still derives it.
+        setting_destinations: existing.setting_destinations.clone(),
+        setting_network: SettingNetworkOverlay::default(),
     }
 }
 
@@ -2389,6 +2454,11 @@ pub fn validate_approved_grant(
         cpu_rate_percent,
         extra_processes,
         approved_at: chrono::Utc::now().to_rfc3339(),
+        // The caller computes setting approvals from the instances' current
+        // values (`approve_setting_destinations`); an operator body cannot
+        // name its own.
+        setting_destinations: BTreeMap::new(),
+        setting_network: SettingNetworkOverlay::default(),
     })
 }
 
@@ -2650,7 +2720,17 @@ pub fn spawn_grant(
         // manifest exactly as a host grant would be.
         let requested = consent_request(&plugin.manifest, plugin.plugin_key());
         return if grant_covers(version_grant, &requested) {
-            Ok(effective_grant(version_grant, &requested))
+            let mut grant = effective_grant(version_grant, &requested);
+            // Setting destinations are approved on this host's consent form
+            // (they follow this host's instance values), not on the release.
+            if let Some(local) = PluginGrantStore::load(files_dir)?
+                .get_by_plugin_key(plugin.plugin_key().canonical())
+            {
+                grant
+                    .setting_destinations
+                    .clone_from(&local.setting_destinations);
+            }
+            Ok(grant)
         } else {
             Err(PluginError::message(format!(
                 "plugin `{}` release grant does not cover this release; re-approve with \
@@ -2681,7 +2761,11 @@ pub fn spawn_grant(
 /// * `grant` - Effective covering grant for this plugin.
 pub fn inject_workerd_grant_env(cmd: &mut Command, grant: &PluginGrant) {
     cmd.env(WORKERD_GRANT_NETWORK_MODE_ENV, &grant.network_mode);
-    let domains = grant.domains.iter().cloned().collect::<Vec<_>>().join(",");
+    let domains = grant
+        .effective_domains()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",");
     cmd.env(WORKERD_GRANT_DOMAINS_ENV, domains);
     if let Some(cpu_ms) = grant.cpu_ms {
         cmd.env(WORKERD_GRANT_CPU_MS_ENV, cpu_ms.to_string());
