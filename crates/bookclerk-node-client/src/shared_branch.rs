@@ -457,16 +457,20 @@ fn replace_files(files: &[NewFile<'_>], marker: &Path) -> Result<(), JoinError> 
     Ok(())
 }
 
-/// Whether `path` still holds `bytes`: after a failed join, a `master.key`
+/// Whether `path` may still hold `bytes`: after a failed join, a `master.key`
 /// the rollback could not restore still names the new key, so its keychain
-/// item must stay.
+/// item must stay. Only a file that is missing or reads back different
+/// counts as not published; a file that can't be read keeps the item.
 ///
 /// # Arguments
 ///
 /// * `path` - the `master.key` path.
 /// * `bytes` - what the join wrote there.
 fn still_published(path: &Path, bytes: &[u8]) -> bool {
-    std::fs::read(path).is_ok_and(|on_disk| on_disk == bytes)
+    match std::fs::read(path) {
+        Ok(on_disk) => on_disk == bytes,
+        Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+    }
 }
 
 /// The only host a shared branch bootstrap may name as its D1 API origin.
@@ -1355,6 +1359,10 @@ mod tests {
         assert!(!still_published(&key, b"new pointer"), "restored");
         std::fs::write(&key, b"new pointer").unwrap();
         assert!(still_published(&key, b"new pointer"), "rollback failed");
+        // A master.key that can't be read might still name the item.
+        std::fs::remove_file(&key).unwrap();
+        std::fs::create_dir(&key).unwrap();
+        assert!(still_published(&key, b"new pointer"), "unreadable");
     }
 
     #[test]
