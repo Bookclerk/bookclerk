@@ -289,8 +289,17 @@ schema validation is one; it only reads OpenAPI 3.0.
 ### Trusted proxies
 
 List your proxies in `daemon.trusted_proxies` (IP addresses or CIDRs).
-Only then does sign-in throttling honor `X-Forwarded-For`; an empty list
-means the direct TCP peer is always used.
+Only then does sign-in throttling honor `X-Forwarded-For` (or RFC 7239
+`Forwarded` when `X-Forwarded-For` is absent); an empty list means the
+direct TCP peer is always used.
+
+Each proxy appends the address it received the request from, so a client
+can put anything it likes at the left of the header. Bookclerk reads the
+addresses from the right, skips every one that is a trusted proxy, and
+uses the first one that isn't. List every proxy in the chain (for
+example both a CDN's ranges and your own nginx), or the throttle keys on
+the innermost proxy you left out. If a hop it has to read isn't an IP
+address, Bookclerk uses the direct peer instead.
 
 The tray's operator handoff ignores this list. **Open Bookclerk** always
 talks to `http://localhost:<listen-port>` directly. So browse the proxied
