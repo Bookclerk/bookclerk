@@ -397,6 +397,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "pace_request"
+path = "fuzz_targets/pace_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "sharing_request"
 path = "fuzz_targets/sharing_request.rs"
 test = false
@@ -462,6 +469,13 @@ bench = false
 [[bin]]
 name = "audible_catalog"
 path = "fuzz_targets/audible_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "throttle_reason"
+path = "fuzz_targets/throttle_reason.rs"
 test = false
 doc = false
 bench = false

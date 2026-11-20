@@ -479,6 +479,29 @@ fn fuzz_corpus_sharing_request_replays() {
     assert!(refused > 0, "every sharing_request seed was accepted");
 }
 
+/// The `pace_request` oracle, shared with the fuzz target: a store
+/// account's pace change body is accepted exactly when it has the
+/// documented shape, and only a custom pace carries numbers.
+#[path = "../../../fuzz/oracles/pace_request.rs"]
+mod pace_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_pace_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("pace_request") {
+        if pace_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no pace_request seed was accepted");
+    assert!(refused > 0, "every pace_request seed was accepted");
+}
+
 /// The `connections_request` oracle, shared with the fuzz target: a
 /// branch's "Add my connections" and disconnect bodies are accepted exactly
 /// when they have the documented shape.

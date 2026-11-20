@@ -28,6 +28,20 @@ See [Turn on your stores](getting-started.md#4-turn-on-your-stores).
 Your store passwords are stored encrypted in the library's database. They
 are never shown again, and nobody else in your household can see them.
 
+## Download pace
+
+Bookclerk downloads from each store account at a gentle pace, so the store
+doesn't see a burst of downloads. Under each connection on **Accounts** a
+line shows the pace, how many downloads started in the last day, and when
+the next automatic one can start.
+
+- The pace only slows downloads Bookclerk starts on its own, such as
+  auto-acquire. A book you choose to download starts right away.
+- If the store asks Bookclerk to slow down, the account pauses for a while
+  (a day for Audible, an hour for the others). **Clear pause** ends it
+  early.
+- **Change pace** picks the store's default, your own limits, or no limit.
+
 ## Disconnect a store
 
 On **Accounts**, remove the connection. Books you already downloaded stay

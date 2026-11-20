@@ -5,13 +5,14 @@
 //! renames, an object store copies and deletes. Each operation is optional
 //! and negotiated as a named `rpcFeatures` entry (`storage.move`,
 //! `storage.moveMany`, `storage.deleteMany`, `storage.headMany`,
-//! `storage.changes`, and `storage.conditionalWrite` for
+//! `storage.changes`, `storage.translateKeys`, and `storage.conditionalWrite` for
 //! [`crate::WriteOptions::if_match`]); the host keeps one fallback per
 //! operation built from the required primitives.
 //!
 //! Replies come from a jailed guest, so the host validates every one before
 //! using it ([`validate_key_outcomes`], [`validate_move_many_page`],
-//! [`validate_head_many`], [`validate_changes_page`]). The checks are
+//! [`validate_head_many`], [`validate_changes_page`],
+//! [`validate_translated_keys`]). The checks are
 //! sans-IO, and the `storage_reply` fuzz target drives them through
 //! [`decode_storage_reply_bytes`].
 
@@ -20,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::plugin_capnp::{
     changes_page, changes_request, head_many_result, head_ok, key_outcome, key_pair,
     move_many_page, move_many_request, move_many_target, move_options, move_result, object_change,
-    object_info, plugin_error, ObjectChangeKind as WireChangeKind,
+    object_info, plugin_error, translate_keys_result, ObjectChangeKind as WireChangeKind,
 };
 use crate::rpc::{non_empty, non_zero, read_error, strict_text, write_error};
 use crate::rpc_types::{ObjectInfo, ObjectMetadata};
@@ -29,6 +30,11 @@ use crate::{PluginError, Result};
 /// Maximum keys or key pairs in one `moveMany`, `deleteMany` or `headMany`
 /// call, and maximum outcomes in one reply.
 pub const MAX_BATCH_KEYS: u32 = crate::plugin_capnp::MAX_BATCH_KEYS;
+
+/// Longest key a guest may translate a host key into, in UTF-8 bytes.
+/// Generous next to any store's own limit (S3 keys stop at 1024 bytes,
+/// file-system paths usually at 4096).
+pub const MAX_TRANSLATED_KEY_BYTES: usize = 4096;
 
 /// Maximum changes in one `Destination.changes` page.
 pub const MAX_CHANGES_PAGE: u32 = crate::plugin_capnp::MAX_CHANGES_PAGE;
@@ -348,6 +354,45 @@ pub fn validate_head_many(sent: &[String], objects: &[Option<ObjectMetadata>]) -
         ));
     }
     Ok(())
+}
+
+/// Checks a guest's `translateKeys` answer against the host keys it was sent.
+///
+/// # Errors
+///
+/// Returns `internal` unless there is one key per host key and every key is
+/// relative (no leading `/`), at most [`MAX_TRANSLATED_KEY_BYTES`] long, free
+/// of control characters, and has no empty, `.` or `..` segment between `/`
+/// or `\` separators: a key the host can store and read back without
+/// leaving the destination.
+pub fn validate_translated_keys(sent: &[String], translated: &[String]) -> Result<()> {
+    if translated.len() != sent.len() {
+        return Err(PluginError::internal(format!(
+            "translateKeys returned {} keys for {} host keys",
+            translated.len(),
+            sent.len()
+        )));
+    }
+    for key in translated {
+        if !safe_relative_key(key) {
+            return Err(PluginError::internal(format!(
+                "translateKeys returned an unusable key ({} bytes)",
+                key.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// True when `key` is a relative key with only ordinary segments; see
+/// [`validate_translated_keys`].
+fn safe_relative_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= MAX_TRANSLATED_KEY_BYTES
+        && !key.chars().any(char::is_control)
+        && key
+            .split(['/', '\\'])
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 /// Checks a guest's change feed page against the cursor the host sent.
@@ -715,6 +760,45 @@ pub(crate) fn read_head_many_result(
     Ok(out)
 }
 
+/// Encodes one translated key per host key into a `TranslateKeysResult`.
+///
+/// # Errors
+///
+/// Returns `payload_too_large` when the list cannot be encoded.
+pub(crate) fn fill_translate_keys_result(
+    b: translate_keys_result::Builder<'_>,
+    keys: &[String],
+) -> Result<()> {
+    let mut list = b.init_keys(list_len(keys.len())?);
+    for (i, key) in keys.iter().enumerate() {
+        list.set(list_len(i)?, key);
+    }
+    Ok(())
+}
+
+/// Decodes a `TranslateKeysResult`.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when the result cannot be read, holds more than
+/// [`MAX_BATCH_KEYS`] keys, or a key is not valid UTF-8.
+pub(crate) fn read_translate_keys_result(
+    r: translate_keys_result::Reader<'_>,
+) -> Result<Vec<String>> {
+    let list = r.get_keys().map_err(from_capnp)?;
+    if list.len() > MAX_BATCH_KEYS {
+        return Err(PluginError::payload_too_large(format!(
+            "{} translated keys exceed {MAX_BATCH_KEYS}",
+            list.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(list.len() as usize);
+    for key in list.iter() {
+        out.push(strict_text(key)?);
+    }
+    Ok(out)
+}
+
 /// Encodes a [`ChangesRequest`].
 pub(crate) fn fill_changes_request(mut b: changes_request::Builder<'_>, request: &ChangesRequest) {
     if let Some(c) = &request.cursor {
@@ -834,6 +918,8 @@ pub enum StorageReply {
     Changes(ChangesPage),
     /// A `list` page.
     List(crate::ListPage),
+    /// `translateKeys` keys.
+    TranslateKeys(Vec<String>),
 }
 
 /// Which reply [`decode_storage_reply_bytes`] reads.
@@ -849,6 +935,8 @@ pub enum StorageReplyKind {
     Changes,
     /// `ListPage`.
     List,
+    /// `TranslateKeysResult`.
+    TranslateKeys,
 }
 
 /// Decodes one guest storage reply from an unpacked Cap'n Proto message,
@@ -890,6 +978,9 @@ pub fn decode_storage_reply_bytes(kind: StorageReplyKind, bytes: &[u8]) -> Resul
             reader.get_root().map_err(from_capnp)?,
             crate::MAX_LIST_PAGE,
         )?)),
+        StorageReplyKind::TranslateKeys => Ok(StorageReply::TranslateKeys(
+            read_translate_keys_result(reader.get_root().map_err(from_capnp)?)?,
+        )),
     }
 }
 
@@ -909,6 +1000,9 @@ pub fn encode_storage_reply_bytes(reply: &StorageReply) -> Result<Vec<u8>> {
         StorageReply::List(page) => {
             crate::rpc::fill_list_page(message.init_root(), page)?;
         }
+        StorageReply::TranslateKeys(keys) => {
+            fill_translate_keys_result(message.init_root(), keys)?;
+        }
     }
     Ok(capnp::serialize::write_message_to_words(&message))
 }
@@ -920,6 +1014,23 @@ mod tests {
 
     fn keys(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn translated_keys_must_be_one_safe_key_per_host_key() {
+        let sent = keys(&["a/b.m4b", "c.jpg"]);
+        assert!(validate_translated_keys(&sent, &keys(&["a/b.m4b", "C_.jpg"])).is_ok());
+        assert!(validate_translated_keys(&sent, &keys(&["a/b.m4b"])).is_err());
+        for bad in [
+            "", "/abs", "a//b", "a/./b", "../up", "a\\..\\b", "nul\0", "tab\tkey",
+        ] {
+            assert!(
+                validate_translated_keys(&sent[..1], &keys(&[bad])).is_err(),
+                "{bad:?}"
+            );
+        }
+        let long = "k".repeat(MAX_TRANSLATED_KEY_BYTES + 1);
+        assert!(validate_translated_keys(&sent[..1], &[long]).is_err());
     }
 
     #[test]
@@ -1104,6 +1215,7 @@ mod tests {
                 signatures_included: true,
                 modified_since_applied: false,
             }),
+            StorageReply::TranslateKeys(vec!["a/b.m4b".into(), "c_.jpg".into()]),
         ];
         for reply in replies {
             let kind = match &reply {
@@ -1112,6 +1224,7 @@ mod tests {
                 StorageReply::HeadMany(_) => StorageReplyKind::HeadMany,
                 StorageReply::Changes(_) => StorageReplyKind::Changes,
                 StorageReply::List(_) => StorageReplyKind::List,
+                StorageReply::TranslateKeys(_) => StorageReplyKind::TranslateKeys,
             };
             let bytes = encode_storage_reply_bytes(&reply).unwrap();
             assert_eq!(decode_storage_reply_bytes(kind, &bytes).unwrap(), reply);

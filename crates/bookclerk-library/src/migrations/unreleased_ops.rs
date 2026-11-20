@@ -2028,6 +2028,44 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
+    // How fast the host may download from each store account
+    // (`store::pacing`, `docs/internals/jobs.md#download-pacing`): the
+    // operator's override of the storefront's declared `[acquire]` pace
+    // (`pace_mode` `default`, `custom` or `unlimited`; a `custom` field left
+    // NULL keeps the storefront's value), and the end of the cool-down the
+    // store asked for with `rateLimited` (Unix ms; NULL or past for none).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_pace (
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        pace_mode TEXT NOT NULL DEFAULT 'default' CHECK (pace_mode IN ('default', 'custom', 'unlimited')),
+        downloads_per_day INTEGER,
+        min_gap_seconds INTEGER,
+        cooldown_until_ms INTEGER,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, account_id),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
+    // Each download that reached a store, per account (`store::pacing`):
+    // the rolling-24-hour budget counts these rows. `paced` is 1 for a
+    // download the host started itself, 0 for one a person started by
+    // hand (counted, never held). Rows older than two days are pruned when
+    // the account records its next download.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_downloads (
+        id TEXT PRIMARY KEY NOT NULL,
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        started_at_ms INTEGER NOT NULL,
+        job_id TEXT,
+        paced INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_account_downloads_account ON account_downloads(plugin_key, account_id, started_at_ms)",
+    ),
     // How far one person has listened to one edition (the built-in
     // player, `docs/adr/playback.md`): a position on the edition's
     // timeline, the runtime the last player reported, and whether they
@@ -2197,6 +2235,11 @@ mod tests {
             "library_work_rows",
             "acquire_status",
             crate::AcquireStatus::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "account_pace",
+            "pace_mode",
+            crate::pacing::PaceOverride::MODES.iter().copied(),
         );
         assert_check(
             "playback_sessions",

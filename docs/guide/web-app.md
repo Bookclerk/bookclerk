@@ -16,8 +16,10 @@ gives you.
   series, purchase date, date added or duration. Open a book to mark it
   finished, rate it (overall, story and narration) and give it your own
   tags under **Your copy**; these are yours alone, even when you share a
-  store account. People allowed to download books also see **Scan** and
-  **Acquire pending** here.
+  store account. Press **Play** on a book to listen to it; books you are
+  part way through are on the **Continue listening** shelf at the top. See
+  [Listen in the web app](listening.md). People allowed to download books
+  also see **Scan** and **Acquire pending** here.
 - **Wishlist**: your wishlist and the Global queue everyone shares.
 - **Accounts**: connect and disconnect your store accounts. See
   [Stores](stores.md).

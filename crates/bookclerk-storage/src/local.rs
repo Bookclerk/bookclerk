@@ -43,6 +43,9 @@ pub struct LocalFsBackend {
     /// Test override for the file-system kind of every path (see
     /// [`Self::with_fs_kind`]); `None` classifies each path.
     fs_kind_override: Option<FsKind>,
+    /// Keep host keys as written instead of translating them (see
+    /// [`Self::keeping_host_keys`]).
+    keep_host_keys: bool,
     /// The change feed, when [`Self::with_watch`] started one; shared by
     /// clones.
     #[cfg(feature = "watch")]
@@ -61,6 +64,7 @@ impl LocalFsBackend {
         head_many: true,
         conditional_write: true,
         changes: false,
+        translate_keys: true,
     };
 
     /// Create a backend rooted at `root` with no key prefix.
@@ -140,6 +144,7 @@ impl LocalFsBackend {
             placement_override: None,
             check_then_write: Arc::new(tokio::sync::Mutex::new(())),
             fs_kind_override: None,
+            keep_host_keys: false,
             #[cfg(feature = "watch")]
             watch: None,
         })
@@ -163,6 +168,18 @@ impl LocalFsBackend {
             "",
             self.fs_kind_override,
         )));
+        self
+    }
+
+    /// Stores host keys as written instead of translating them for this
+    /// file system, and says it does not translate keys.
+    ///
+    /// For a branch's outbox: the files it holds are uploaded to the owner
+    /// under host keys, and each of the owner's destinations translates
+    /// them there.
+    #[must_use]
+    pub fn keeping_host_keys(mut self) -> Self {
+        self.keep_host_keys = true;
         self
     }
 
@@ -507,8 +524,22 @@ impl StorageBackend for LocalFsBackend {
     fn capabilities(&self) -> StorageCapabilities {
         StorageCapabilities {
             changes: self.has_watch(),
+            translate_keys: !self.keep_host_keys,
             ..Self::CAPABILITIES
         }
+    }
+
+    /// File-system paths under the platform's naming rules
+    /// ([`crate::key_syntax::translate_for_filesystem`]).
+    async fn translate_keys(&self, keys: &[crate::key_syntax::HostKey]) -> Result<Vec<String>> {
+        if self.keep_host_keys {
+            return Ok(keys.iter().map(|key| key.as_str().to_string()).collect());
+        }
+        let rules = crate::key_syntax::FilesystemRules::native();
+        Ok(keys
+            .iter()
+            .map(|key| crate::key_syntax::translate_for_filesystem(key, rules))
+            .collect())
     }
 
     /// The watcher's journal (see [`Self::with_watch`]); `None` without

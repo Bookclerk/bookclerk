@@ -1706,6 +1706,11 @@ impl JobKind {
                 if payload.pdf_only {
                     key.push_str(":pdf=1");
                 }
+                // A paced acquire waits for its account's pace; a hand-started
+                // one must not be folded into it and held.
+                if payload.paced {
+                    key.push_str(":paced=1");
+                }
                 // A pinned acquire runs only that instance's plugin, so it
                 // must not stand in for an unpinned one or another pin.
                 if let Some(instance) = payload
@@ -1974,6 +1979,13 @@ pub struct JobPayload {
     /// handed such a job (`control_plane::node_may_claim_job`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pdf_only: bool,
+    /// For [`JobKind::Acquire`]: the host started this acquire itself
+    /// (auto-acquire, quality upgrades, acquire-all, a request from another
+    /// library), so each download waits for its store account's pace
+    /// (`crate::pacing`). An acquire a person starts by hand leaves it
+    /// false: its downloads are counted but never held.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paced: bool,
     /// Unix milliseconds when the requirements sweep first found this pending
     /// job's [`Self::requires`] unsettled: no node runs all of them, or one of
     /// them is no longer deployed anywhere.
@@ -2071,6 +2083,7 @@ impl Default for JobPayload {
             invocation_sequence: None,
             resume_pending: false,
             pdf_only: false,
+            paced: false,
             requires_unsettled_since_ms: None,
             cron: None,
             scheduled_time_ms: None,

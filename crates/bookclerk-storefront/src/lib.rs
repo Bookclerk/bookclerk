@@ -32,7 +32,7 @@ mod types;
 
 pub use brand::SourceBrand;
 pub use content_kind::{is_episode, is_podcast_parent};
-pub use error::{Result, SourceError};
+pub use error::{is_throttle_reason, Result, SourceError};
 pub use language::{default_preferred_language, language_rank, normalize_language};
 pub use media::{
     audio_extension, extension_from_bytes, extension_from_content_type, extension_from_url,
