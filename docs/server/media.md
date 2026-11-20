@@ -31,6 +31,16 @@ Moving the work out gives three properties:
   run at once, instead of however many threads tokio's blocking pool
   grows under load.
 
+### Uploaded archives
+
+An uploaded ZIP or tar archive is expanded by the `extract_archive` job
+into an empty folder the host made. The walk refuses links, devices,
+encrypted entries, nested archives and names that would leave the
+folder, and counts the bytes it writes against caps on entries, total
+size, entry size and compression ratio. The host checks the worker's
+report against the same caps and the files on disk before it moves
+anything. See [Uploads](uploads.md).
+
 ### What audio it reads
 
 The worker recognises a file's container and codec from its bytes, never
@@ -359,6 +369,7 @@ through `bookclerk-jail`, the launcher plugins use:
 | `align_chapters` | The input file | Nothing |
 | `covers` | Nothing (images arrive on stdin) | Nothing |
 | `tags` | Nothing (file ranges arrive on stdin) | Nothing |
+| `extract_archive` | The uploaded archive | The empty folder it expands into |
 
 Write grants are folders, not single files, because codecs stage output
 in temporary files beside the destination. Packaging can't know the final

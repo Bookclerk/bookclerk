@@ -10,7 +10,7 @@ import {
   type MemberControls,
 } from "@/lib/api";
 import {
-  ALL_ALLOWED,
+  LIBRARY_DEFAULT,
   MEMBER_CONTROLS,
   overrideChoice,
   withOverride,
@@ -38,7 +38,7 @@ export interface MemberControlsEditorProps {
  */
 export function MemberControlsEditor({ target, disabled = false }: MemberControlsEditorProps) {
   const [loaded, setLoaded] = useState(false);
-  const [defaults, setDefaults] = useState<MemberControls>(ALL_ALLOWED);
+  const [defaults, setDefaults] = useState<MemberControls>(LIBRARY_DEFAULT);
   const [overrides, setOverrides] = useState<ControlOverrides>({});
   const [applies, setApplies] = useState(true);
   const [followsDefault, setFollowsDefault] = useState(true);
