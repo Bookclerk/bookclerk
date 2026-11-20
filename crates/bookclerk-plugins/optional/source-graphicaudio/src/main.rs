@@ -54,13 +54,15 @@ impl PluginWorker for GraphicAudioRoot {
                     "https://www.google.com/s2/favicons?domain=graphicaudio.com&sz=128".into(),
                 ),
             }),
-            // GraphicAudio has no catalog detail lookup by ISBN, and its search
-            // knows no ISBN or ASIN, so prices come from title searches with
-            // records.
+            // GraphicAudio's product pages answer its own product ids, so
+            // catalog search and title dialogs fill its lean rows from them.
+            // It has no detail lookup by ISBN, and its search knows no ISBN or
+            // ASIN, so prices come from title searches with records.
             catalog: CatalogCapabilities {
                 detail_by_isbn: false,
                 price_by_isbn: false,
                 price_by_asin: false,
+                detail_by_product_id: true,
             },
             ..PluginDescribe::default()
         })
@@ -85,6 +87,13 @@ impl PluginWorker for GraphicAudioRoot {
         binding: &str,
     ) -> Result<Vec<PluginMigration>, PluginError> {
         Ok(bookclerk_scan_delta::migrations_for(binding))
+    }
+}
+
+impl GraphicAudioContentSource {
+    /// Catalog client for this instance's configured storefront origin.
+    fn catalog(&self) -> bookclerk_plugin_source_graphicaudio::GraphicAudioSource {
+        bookclerk_plugin_source_graphicaudio::GraphicAudioSource::from_config(&self.config)
     }
 }
 
@@ -164,7 +173,7 @@ impl ContentSourceRole for GraphicAudioContentSource {
         &self,
         params: SearchCatalogParams,
     ) -> Result<Vec<CatalogHit>, PluginError> {
-        let source = bookclerk_plugin_source_graphicaudio::GraphicAudioSource::new();
+        let source = self.catalog();
         source
             .search_catalog(&CatalogSearchOpts::from(params))
             .await
@@ -176,7 +185,7 @@ impl ContentSourceRole for GraphicAudioContentSource {
         &self,
         params: CatalogDetailParams,
     ) -> Result<Option<CatalogHit>, PluginError> {
-        let source = bookclerk_plugin_source_graphicaudio::GraphicAudioSource::new();
+        let source = self.catalog();
         source
             .catalog_detail(&params.product_id)
             .await
@@ -189,7 +198,7 @@ impl ContentSourceRole for GraphicAudioContentSource {
         params: ExpandCandidatesParams,
     ) -> Result<Vec<CatalogHit>, PluginError> {
         let (seed, limit) = expand_seed_from_params(params);
-        let source = bookclerk_plugin_source_graphicaudio::GraphicAudioSource::new();
+        let source = self.catalog();
         source
             .expand_candidates(&seed, limit)
             .await
@@ -201,7 +210,7 @@ impl ContentSourceRole for GraphicAudioContentSource {
         &self,
         params: PurchaseHintParams,
     ) -> Result<Option<PurchaseHint>, PluginError> {
-        let source = bookclerk_plugin_source_graphicaudio::GraphicAudioSource::new();
+        let source = self.catalog();
         source
             .purchase_hint(&PurchaseHintOpts::from(params))
             .await
@@ -215,7 +224,7 @@ impl ContentSourceRole for GraphicAudioContentSource {
         &self,
         params: PurchaseHintParams,
     ) -> Result<PurchaseHintResult, PluginError> {
-        let source = bookclerk_plugin_source_graphicaudio::GraphicAudioSource::new();
+        let source = self.catalog();
         source
             .purchase_answer(&PurchaseHintOpts::from(params))
             .await

@@ -1,39 +1,46 @@
 # Builds the desktop app's unsigned packages on Linux, Windows and macOS
 # (`cargo package-desktop`, see docs/contributing/ui/README.md#packages):
 # a .deb and an AppImage, an NSIS installer, and an app plus .dmg. Each job
-# uploads its packages as a workflow artifact; nothing is published or signed.
+# uploads its packages as a workflow artifact (kept 14 days).
 #
-# A full release build on three runners, so it runs only when the packaging
-# or the way the app finds its runtime changes, when asked, and weekly to
-# catch drift from the rest of the workspace.
+# A full release build on three runners, so it runs with the images, not on
+# every pull request: `images-publish.yml` calls it nightly when main has
+# moved, by hand, and for a published release, where the `publish` job
+# attaches the packages to the release with build provenance. A pull request
+# runs it only when it changes the packaging itself; CI's `desktop` job
+# covers the window's code on every pull request
+# (docs/contributing/packaging.md#desktop-packages).
 name: Desktop packages
 
 on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: >-
+          The published release to attach the packages to, already checked
+          to be v<major>.<minor>.<patch> on main; empty builds only.
+        type: string
+        default: ""
   pull_request:
     # Drafts skip this workflow's jobs; `ready_for_review` runs them
     # (docs/contributing/ci.md#draft-pull-requests).
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/desktop-packages.yml"
-      - ".cargo/config.toml"
-      - "crates/bookclerk-desktop/**"
-      - "crates/bookclerk-dev/src/main.rs"
+      - "crates/bookclerk-desktop/tauri.packaging.json"
+      - "crates/bookclerk-desktop/tauri.packaging.macos.json"
       - "crates/bookclerk-dev/src/package.rs"
-      - "crates/bookclerk-sandbox/src/spawn_path.rs"
-      - "crates/bookclerk-media/src/pool.rs"
-      - "crates/bookclerk-plugin-host/src/bundled_platform.rs"
-      - "crates/bookclerkd/src/api.rs"
   workflow_dispatch:
-  schedule:
-    - cron: "17 6 * * 3"
 
 # Least privilege: checkout and artifact upload only. Nothing is pushed.
 permissions:
   contents: read
 
+# A pull request's newer push cancels its older run; nightly and release
+# builds never cancel each other.
 concurrency:
-  group: desktop-packages-${{ github.ref }}
-  cancel-in-progress: true
+  group: desktop-packages-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -52,6 +59,8 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -128,3 +137,56 @@ jobs:
             target/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
+
+  # Attaches the packages to the release the caller names, each with a
+  # build-provenance attestation (`gh attestation verify <file> --owner
+  # <owner>`). Only this job can write to the release.
+  publish:
+    name: attach to the release
+    needs: package
+    if: inputs.release-tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bookclerk-desktop-*
+          path: ${{ runner.temp }}/packages
+          merge-multiple: true
+
+      # Each artifact keeps its `deb/`, `appimage/`, `nsis/` or `dmg/`
+      # folder (the upload's common root is `target/release/bundle`), so
+      # gather the installers into one flat folder before attesting.
+      - name: Collect the installers
+        env:
+          SRC: ${{ runner.temp }}/packages
+          DIR: ${{ runner.temp }}/release-assets
+        run: |
+          set -euo pipefail
+          mkdir -p "$DIR"
+          find "$SRC" -type f \( -name '*.deb' -o -name '*.AppImage' \
+            -o -name '*.exe' -o -name '*.dmg' \) -exec mv -n -t "$DIR" {} +
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/*
+
+      - name: Attach the packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.release-tag }}
+          DIR: ${{ runner.temp }}/release-assets
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=("$DIR"/*)
+          [[ ${#files[@]} -gt 0 ]]
+          # --clobber: a re-run replaces what an earlier attempt attached.
+          gh release upload "$TAG" "${files[@]}" --clobber
+          printf '%s\n' "${files[@]##*/}" >> "$GITHUB_STEP_SUMMARY"

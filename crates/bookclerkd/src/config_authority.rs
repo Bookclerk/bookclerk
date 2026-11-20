@@ -2316,9 +2316,9 @@ fn shared_branch_actor(
 
 /// `GET /api/config/shared-branches`: the shared nodes (this one and its shared branches) for
 /// Settings → Shared branches, shaped like `GET /api/config/nodes`. The operator or
-/// an Owner sees every one, as `DELETE /api/config/nodes/{node_id}` lets
-/// them remove any; another user only the ones they own, which the nodes
-/// listing already shows them. Branches are not listed.
+/// an Owner sees every one (only the operator may remove one, with
+/// `DELETE /api/config/nodes/{node_id}`); another user only the ones they
+/// own, which the nodes listing already shows them. Branches are not listed.
 #[utoipa::path(
     get,
     path = "/api/config/shared-branches",
@@ -2372,18 +2372,16 @@ pub(crate) struct SharedNodeRemoved {
 
 /// `DELETE /api/config/nodes/{node_id}`: remove a shared node (a shared branch, or
 /// any node sharing this database) that is no longer running from the
-/// library's node list. The operator or an Owner may remove any; another
-/// user only one they own. A running node, this node, or a branch is
-/// refused (a branch is revoked instead).
+/// library's node list. Only the operator (or an elevated Owner) may: it
+/// deletes the node and its rows, which is hard to undo. A running node,
+/// this node, or a branch is refused (a branch is revoked instead).
 #[utoipa::path(
     delete,
     path = "/api/config/nodes/{node_id}",
     params(("node_id" = String, Path, description = "Node id.")),
     responses(
         (status = 200, description = "The shared node was removed.", body = SharedNodeRemoved),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 404, description = "No such node, or not one the caller administers.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"})),
+        (status = 404, description = "No such node.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e not found"})),
         (status = 409, description = "The node is still running.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is running; stop Bookclerk there first"})),
         (status = 400, description = "The node is this node, or a branch (revoke it instead).", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is a branch: revoke it instead"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
@@ -2391,13 +2389,12 @@ pub(crate) struct SharedNodeRemoved {
 )]
 pub async fn delete_shared_node(
     State(state): State<Arc<AppState>>,
-    Extension(caller): Extension<NodeAdminCaller>,
     axum::extract::Path(node_id): axum::extract::Path<String>,
 ) -> Result<Json<SharedNodeRemoved>, Response> {
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
-    let actor = shared_branch_actor(caller);
+    let actor = shared_branch_actor(NodeAdminCaller::Operator);
     let node_id = node_id.trim().to_string();
     bookclerk_library::control_plane::remove_shared_node(&library, &actor, &node_id, &this_node)
         .await

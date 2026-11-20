@@ -81,6 +81,7 @@ boundary extends it.
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
+| `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta` and each entry of its batch route) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
@@ -573,6 +574,18 @@ only that. The others check:
   digits, `.`, `_` and `-`. The parser then returns those trimmed ids,
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/branch_request.rs`, replayed from `bookclerk-library`.
+- **`title_meta_fill`**: the first byte declares `detailByProductId` and
+  `detailByIsbn` for four fake stores; the rest is the query body, read as
+  untyped JSON. An object body is served exactly when its known fields
+  have the documented types, none is written twice, it names at most 16
+  store editions (each a `source` and `product_id` string), and its
+  trimmed title, ASIN and ISBN are not all empty. A served query plans at
+  most three lookups: at most two by product id, in edition order, at
+  listing stores that declared `detailByProductId`, then by ISBN (or an
+  ISBN-shaped ASIN) at the stores that declared `detailByIsbn`, never the
+  same store and id twice. Positional (array) forms are left to the typed
+  parser, and their plan is still checked. The shared oracle is
+  `fuzz/oracles/title_meta_fill.rs`, replayed from `bookclerk-discover`.
 - **`members_books_request`**: reads the body as an untyped JSON value.
   It is accepted exactly when it is one object with no repeated keys and
   exactly the keys `node_id` (a string) and `acquire` (a boolean), where

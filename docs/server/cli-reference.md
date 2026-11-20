@@ -923,6 +923,7 @@ Arguments:
 Options:
 
 - `-y, --yes`: Approve without interactive confirmation (required when stdin is not a TTY)
+- `--reset`: Approve the package's request as is, dropping the network destinations you added or denied earlier and your redirect answer. Without it a re-approval keeps them. (An installed version always records its package's request.)
 
 ### `bookclerk plugins registry`
 
@@ -1238,6 +1239,7 @@ Options:
 - `-p, --path <PATH>`: Destination classic Libation Files directory (required)
 - `--force`: Overwrite an existing destination directory
 - `--dry-run`: Report only; do not write
+- `--user <USER>`: Write this person's tags, ratings and finished flags (login name or user id); without it they are empty
 
 ### `bookclerk export library`
 
