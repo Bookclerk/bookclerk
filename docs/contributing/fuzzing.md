@@ -84,7 +84,7 @@ boundary extends it.
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `pace_request` | A person's pace for one of their store accounts, the body of `POST /api/portal/sources/{source}/connections/{account_id}/pace` | `bookclerk-library::pacing::parse_pace_request` |
 | `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta` and each entry of its batch route) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
-| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
+| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the window's own credential (the operator token or its patron's session cookies) unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
 
@@ -730,7 +730,8 @@ only that. The others check:
   headers the router sees never hold the page's cookies, credentials,
   `Referer` or forwarding headers, always hold one `Host: localhost` and
   one `Origin: http://localhost`, carry `Bearer <token>` only when a token
-  was given, and keep every other header unchanged. Navigation allows app
+  was given and the window's own `Cookie` text only when cookies were
+  given, and keep every other header unchanged. Navigation allows app
   pages always and, only while a join is open, `https` and loopback `http`
   sign-in pages, with the return to the join callback kept on its path. The
   `live` command answers only the webview labelled `main` on an app page.
