@@ -859,7 +859,7 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
         assert!(!trusted(refused.clone()).await, "{refused:?}");
     }
 
-    // Forced and PDF-only acquires run only where the library lives.
+    // Forced, PDF-only and paced acquires run only where the library lives.
     let forced = record(
         JobKind::Acquire,
         JobPayload {
@@ -874,6 +874,13 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
             ..acquire(Some("a1"), None)
         },
     );
+    let paced = record(
+        JobKind::Acquire,
+        JobPayload {
+            paced: true,
+            ..acquire(Some("a1"), None)
+        },
+    );
     let forced_scan = record(
         JobKind::Scan,
         JobPayload {
@@ -885,6 +892,8 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
     assert!(!claimant_may_run(Claimant::Remote, &pdf));
     assert!(claimant_may_run(Claimant::Local, &forced));
     assert!(claimant_may_run(Claimant::Local, &pdf));
+    assert!(!claimant_may_run(Claimant::Remote, &paced));
+    assert!(claimant_may_run(Claimant::Local, &paced));
     assert!(claimant_may_run(Claimant::Remote, &forced_scan));
     assert!(job_trusted(&host_db, &trust, &forced).await.unwrap());
     assert!(

@@ -365,6 +365,20 @@ pub trait StorageBackend: Send + Sync {
         Ok(crate::intent::fallback_delete_many(self, keys).await)
     }
 
+    /// Translates each host key into the key this backend stores it
+    /// under, one per key in order ([`crate::key_syntax`]).
+    ///
+    /// The default stores a host key as written. The same host key must
+    /// always translate to the same key, and two different host keys should
+    /// translate to different keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the whole call fails.
+    async fn translate_keys(&self, keys: &[crate::key_syntax::HostKey]) -> Result<Vec<String>> {
+        Ok(keys.iter().map(|key| key.as_str().to_string()).collect())
+    }
+
     /// Probe each key, one entry per key in order. The default loops
     /// [`Self::head`].
     ///

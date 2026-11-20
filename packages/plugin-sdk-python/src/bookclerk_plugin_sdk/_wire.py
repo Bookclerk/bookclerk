@@ -460,6 +460,20 @@ _head_many_result_codec = _Codec(0, 1, _write_head_many_result, _read_head_many_
 """Wire codec for ``HeadManyResult`` (0 data words, 1 pointers)."""
 
 
+def _write_translate_keys_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text_list(0, v["keys"])
+
+
+def _read_translate_keys_result(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "keys": s.get_text_list(0),
+    }
+
+
+_translate_keys_result_codec = _Codec(0, 1, _write_translate_keys_result, _read_translate_keys_result)
+"""Wire codec for ``TranslateKeysResult`` (0 data words, 1 pointers)."""
+
+
 def _write_changes_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["cursor"])
     s.set_u32(0, v["limit"])
@@ -1570,6 +1584,31 @@ def _read_head_many_reply(s: _StructReader, caps: _CapTable) -> Any:
 
 _head_many_reply_codec = _Codec(1, 1, _write_head_many_reply, _read_head_many_reply)
 """Wire codec for ``HeadManyReply`` (1 data words, 1 pointers)."""
+
+
+def _write_translate_keys_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _translate_keys_result_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown TranslateKeysReply union member: {kind}")
+
+
+def _read_translate_keys_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _translate_keys_result_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown TranslateKeysReply union member: {disc}")
+
+
+_translate_keys_reply_codec = _Codec(1, 1, _write_translate_keys_reply, _read_translate_keys_reply)
+"""Wire codec for ``TranslateKeysReply`` (1 data words, 1 pointers)."""
 
 
 def _write_changes_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -6640,6 +6679,35 @@ def _read_destination_changes_results(s: _StructReader, caps: _CapTable) -> Any:
 
 _destination_changes_results_codec = _Codec(0, 1, _write_destination_changes_results, _read_destination_changes_results)
 """Wire codec for ``DestinationChangesResults`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_translate_keys_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text_list(0, v["keys"])
+
+
+def _read_destination_translate_keys_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "keys": s.get_text_list(0),
+    }
+
+
+_destination_translate_keys_params_codec = _Codec(0, 1, _write_destination_translate_keys_params, _read_destination_translate_keys_params)
+"""Wire codec for ``DestinationTranslateKeysParams`` (0 data words, 1 pointers)."""
+
+
+def _write_destination_translate_keys_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _translate_keys_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_destination_translate_keys_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _translate_keys_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_destination_translate_keys_results_codec = _Codec(0, 1, _write_destination_translate_keys_results, _read_destination_translate_keys_results)
+"""Wire codec for ``DestinationTranslateKeysResults`` (0 data words, 1 pointers)."""
 
 
 def _write_source_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

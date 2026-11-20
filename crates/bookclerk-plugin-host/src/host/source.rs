@@ -87,6 +87,8 @@ pub struct ExternalSource {
     price_by_isbn: bool,
     /// Declared `CatalogCapabilities.priceByAsin` from `describe()`.
     price_by_asin: bool,
+    /// Declared `[acquire]` download pace from the manifest.
+    acquire_pace: bookclerk_library::pacing::AcquirePace,
     /// Scoped data directory for this plugin only.
     plugin_data_dir: PathBuf,
     /// `CONFIG` object delivered to the guest (also the spawn config table).
@@ -294,6 +296,16 @@ impl ExternalSource {
         let detail_by_product_id = describe.catalog.detail_by_product_id;
         let price_by_isbn = describe.catalog.price_by_isbn;
         let price_by_asin = describe.catalog.price_by_asin;
+        let acquire_pace = plugin.manifest.acquire.as_ref().map_or_else(
+            bookclerk_library::pacing::AcquirePace::default,
+            |declared| {
+                bookclerk_library::pacing::AcquirePace::from_declared(
+                    declared.downloads_per_day,
+                    declared.min_gap_seconds,
+                    declared.cooldown_seconds,
+                )
+            },
+        );
         let plugin_data_dir = plugin_data_dir(config, plugin)?;
         session.open(prepared.bindings).await?;
         Ok(Self {
@@ -309,6 +321,7 @@ impl ExternalSource {
             detail_by_product_id,
             price_by_isbn,
             price_by_asin,
+            acquire_pace,
             plugin_data_dir,
             source_config,
             plugin_instance_id: None,
@@ -761,6 +774,10 @@ impl ContentSource for ExternalSource {
         self.price_by_asin
     }
 
+    fn acquire_pace(&self) -> bookclerk_library::pacing::AcquirePace {
+        self.acquire_pace
+    }
+
     async fn login(
         &self,
         scope: &SourceScope,
@@ -880,9 +897,20 @@ impl ContentSource for ExternalSource {
             source_config: ExtensibleConfig::json(&self.source_config),
             fetch: (&opts.download).into(),
         };
-        let mut plain = self
-            .cs_call(move |src| async move { src.fetch_title(params).await })
-            .await?;
+        // The store's "slow down" reaches the acquire as `RateLimited`, so
+        // the host pauses automatic downloads on the account instead of
+        // retrying into the throttle (`bookclerk_library::pacing`).
+        let mut plain = match self
+            .session
+            .storefront(move |src| async move { src.fetch_title(params).await })
+            .await
+        {
+            Ok(plain) => plain,
+            Err(crate::PluginError::RateLimited { retry_after, .. }) => {
+                return Err(bookclerk_source::SourceError::RateLimited(retry_after));
+            }
+            Err(err) => return Err(bookclerk_source::SourceError::api(err.to_string())),
+        };
         if let Some(refreshed) = plain.refreshed_credentials.take() {
             // The title is already fetched: credentials that cannot be kept
             // are logged, not the fetch's failure.

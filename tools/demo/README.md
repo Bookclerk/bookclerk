@@ -77,7 +77,13 @@ every content signal to `no` (`use=immediate`).
    the session against the limits below and records it in D1. The Worker's
    pages load nothing from outside except Turnstile and the Cloudflare Web
    Analytics beacon the edge adds, as on the website, and their CSP allows
-   only those two (`PAGE_CSP` in `src/pages.ts`).
+   only those two (`PAGE_CSP` in `src/pages.ts`). `public/_demo/launch.js`
+   renders the check, and renders it again when a page left open comes
+   back without a usable one: on a restore from the back/forward cache
+   (Safari keeps pages there despite `no-store`), after four minutes or
+   more in a background tab (Turnstile answers last five), or when the
+   widget is missing or expired. If Turnstile's script is gone by then, the
+   page reloads.
 2. The visitor's `DemoSession` Durable Object (`src/session.ts`) starts the
    container with a fresh operator token and `master.key` password, and the
    demo's own origin as bookclerkd's `public_origin` (so bookclerkd's own

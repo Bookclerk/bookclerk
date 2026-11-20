@@ -320,6 +320,10 @@ impl Destination for S3Destination {
         guest::head_many(&self.backend, keys).await
     }
 
+    async fn translate_keys(&self, keys: Vec<String>) -> Result<Vec<String>> {
+        guest::translate_keys(&self.backend, keys).await
+    }
+
     async fn changes(&self, request: ChangesRequest) -> Result<ChangesPage> {
         guest::changes(&self.backend, request).await
     }
