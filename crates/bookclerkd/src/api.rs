@@ -1363,6 +1363,24 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
         .routes(routes!(crate::library_works::get_edition_cover))
+        .routes(routes!(crate::playback::get_edition_playback))
+        .routes(routes!(crate::playback::post_session))
+        .routes(routes!(crate::playback::post_session_sync))
+        .routes(routes!(crate::playback::post_session_close))
+        .routes(routes!(crate::playback::get_session_track))
+        .routes(routes!(crate::playback::list_progress))
+        .routes(routes!(
+            crate::playback::put_progress,
+            crate::playback::delete_progress
+        ))
+        .routes(routes!(
+            crate::playback::list_edition_bookmarks,
+            crate::playback::post_edition_bookmark
+        ))
+        .routes(routes!(
+            crate::playback::put_bookmark,
+            crate::playback::delete_bookmark
+        ))
         .routes(routes!(crate::covers::get_cover))
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))

@@ -1931,6 +1931,74 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
+    // How far one person has listened to one edition (the built-in
+    // player, `docs/adr/playback.md`): a position on the edition's
+    // timeline, the runtime the last player reported, and whether they
+    // reached its end. Keyed by person and edition, so two recordings of
+    // one book keep separate positions; "finished" for the book as a whole
+    // is `user_title_state.is_finished`, set in the same batch.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS playback_progress (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        position_ms INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER,
+        is_finished INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, edition_id)
+    )",
+    ),
+    // Continue listening reads one person's rows, most recent first.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_playback_progress_recent ON playback_progress(user_id, updated_at)",
+    ),
+    // One stretch of listening on one player. The row is also the leave to
+    // stream the edition's files from `destination` on `serving_node_id`:
+    // every stream request checks the person's right to the edition again
+    // and that the files are still the ones `files_digest` was made from.
+    // Closed sessions stay as listening history.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS playback_sessions (
+        id TEXT PRIMARY KEY NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        serving_node_id TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        files_digest TEXT NOT NULL,
+        client_kind TEXT NOT NULL CHECK (client_kind IN ('web', 'desktop', 'app')),
+        client_name TEXT NOT NULL DEFAULT '',
+        start_position_ms INTEGER NOT NULL DEFAULT 0,
+        position_ms INTEGER NOT NULL DEFAULT 0,
+        listened_ms INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        closed_at TEXT
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_playback_sessions_user ON playback_sessions(user_id, started_at)",
+    ),
+    // Places a person marked in an edition, listed in timeline order.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS bookmarks (
+        id TEXT PRIMARY KEY NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        position_ms INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_bookmarks_place ON bookmarks(user_id, edition_id, position_ms)",
+    ),
+    // The `playback` live topic: someone's progress or bookmarks changed.
+    MigrationOp::Data(
+        r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES ('playback', 0)",
+    ),
 ];
 
 #[cfg(test)]
@@ -2027,6 +2095,11 @@ mod tests {
             "library_work_rows",
             "acquire_status",
             crate::AcquireStatus::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "playback_sessions",
+            "client_kind",
+            crate::PlayerKind::ALL.iter().map(|k| k.as_str()),
         );
     }
 }

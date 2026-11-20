@@ -762,3 +762,130 @@ async fn files_a_frame_cannot_carry_are_not_listed() {
         CopyPlanned::NotFound
     );
 }
+
+/// A person is planned the edition's audio alone, in play order, on every
+/// destination that holds some; the plan's digest is the one a later
+/// request must still match, so a file added to the edition ends it.
+/// Under every database profile.
+#[tokio::test]
+async fn a_person_is_planned_an_editions_audio_to_play_under_every_profile() {
+    for profile in Profile::ALL {
+        let store = memory(profile).await.into_store();
+        let riley = library_with_a_copy(&store).await;
+        let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+        let edition = store
+            .edition_of_book(&record.uuid)
+            .await
+            .unwrap()
+            .expect("an edition");
+
+        let plan = plan_playback(&store, riley, &edition)
+            .await
+            .unwrap()
+            .expect("a plan");
+        assert_eq!(plan.person, riley);
+        assert_eq!(plan.edition_id, edition);
+        // The chapter file, the cover and the PDF are not tracks.
+        assert_eq!(
+            plan.destinations.get("local"),
+            Some(&vec![PlaybackTrack {
+                key: PRIMARY.into(),
+                content_type: Some("audio/mp4".into()),
+                bitrate_kbps: Some(125),
+                lossless: false,
+            }]),
+            "{profile:?}"
+        );
+        let digest = plan.digest("local").expect("a digest").to_string();
+        assert_eq!(plan.digest("elsewhere"), None);
+
+        let tracks = authorize_playback(&store, riley, &edition, "local", &digest)
+            .await
+            .unwrap()
+            .expect("still allowed");
+        assert_eq!(tracks.len(), 1);
+        // Another destination, another digest and an unknown edition are
+        // all refused.
+        for (edition, destination, digest) in [
+            (edition.as_str(), "elsewhere", digest.as_str()),
+            (edition.as_str(), "local", "0000"),
+            ("no-such-edition", "local", digest.as_str()),
+        ] {
+            assert!(
+                authorize_playback(&store, riley, edition, destination, digest)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{destination} {digest}"
+            );
+        }
+        assert!(plan_playback(&store, riley, "no-such-edition")
+            .await
+            .unwrap()
+            .is_none());
+
+        // Turning downloads off for Riley ends playing too, for a new
+        // plan and for a session's later check; turning them back on
+        // restores both.
+        for allowed in [false, true] {
+            crate::control_plane::set_member_control_overrides(
+                &store,
+                riley,
+                crate::control_plane::ControlOverrides {
+                    download: Some(allowed),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                plan_playback(&store, riley, &edition)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                allowed,
+                "{profile:?}: downloads {allowed}"
+            );
+            assert_eq!(
+                authorize_playback(&store, riley, &edition, "local", &digest)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                allowed,
+                "{profile:?}: downloads {allowed}"
+            );
+        }
+
+        // A second part joins the edition: it is a track after the
+        // primary, and the earlier digest no longer matches.
+        let owner = store
+            .file_owner_of_book(&record.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .record_edition_file(
+                "local",
+                "Ann Author/Title/Title - Part 2.m4b",
+                &owner,
+                FileRole::Part
+            )
+            .await
+            .unwrap());
+        let plan = plan_playback(&store, riley, &edition)
+            .await
+            .unwrap()
+            .unwrap();
+        let keys: Vec<&str> = plan.destinations["local"]
+            .iter()
+            .map(|track| track.key.as_str())
+            .collect();
+        assert_eq!(keys, [PRIMARY, "Ann Author/Title/Title - Part 2.m4b"]);
+        assert!(
+            authorize_playback(&store, riley, &edition, "local", &digest)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+}
