@@ -1071,7 +1071,7 @@ pub async fn finish_batch(
     Ok(())
 }
 
-/// Records outcomes the job decided, [`MEMBERS_PER_WRITE`] per host batch,
+/// Records outcomes the job decided, `MEMBERS_PER_WRITE` per host batch,
 /// while the batch is running.
 ///
 /// # Errors
