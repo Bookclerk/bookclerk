@@ -20,7 +20,7 @@
 
 use bookclerk_plugin_manifest::{
     host_matches, normalize_domain_pattern, normalize_hostname, normalize_tcp_host,
-    is_local_network, normalize_local_name, split_domain_entry, EgressPolicy, NetworkMode,
+    canonical_ip, is_local_network, normalize_local_name, split_domain_entry, EgressPolicy, NetworkMode,
     ANY_PUBLIC_HOST,
 };
 use libfuzzer_sys::fuzz_target;
@@ -388,8 +388,9 @@ fn restricted_spellings(host: &str) -> Vec<String> {
 }
 
 /// A name widens the address check only to local-network addresses, and only
-/// for a name listed (in normalized form) in `local_names`; loopback,
-/// link-local and other special addresses are never widened.
+/// for a name listed (in normalized form) in `local_names`; a listed literal
+/// widens only to itself; loopback, link-local and other special addresses
+/// are never widened.
 fn check_local_names(policy: &EgressPolicy) {
     let addresses: Vec<std::net::IpAddr> = [
         "192.168.1.20",
@@ -411,7 +412,9 @@ fn check_local_names(policy: &EgressPolicy) {
     .collect();
     let mut names: Vec<String> = policy.local_names.clone();
     names.extend(policy.local_names.iter().map(|n| format!("a.{n}")));
-    names.extend(["localhost", "example.com", "10.0.0.1", "[fd00::1]"].map(String::from));
+    names.extend(
+        ["localhost", "example.com", "10.0.0.1", "[fd00::1]", "192.168.1.20"].map(String::from),
+    );
     for name in &names {
         let listed = normalize_local_name(name).is_some_and(|normalized| {
             policy
@@ -421,8 +424,16 @@ fn check_local_names(policy: &EgressPolicy) {
         });
         for &ip in &addresses {
             let allowed = policy.allows_ip_for(name, ip);
+            // A literal entry binds exactly its own address.
+            let same_address = name
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .map_or(true, |literal| canonical_ip(literal) == canonical_ip(ip));
             let expected = policy.allows_ip(ip)
-                || (policy.mode == NetworkMode::Outbound && listed && is_local_network(ip));
+                || (policy.mode == NetworkMode::Outbound
+                    && listed
+                    && same_address
+                    && is_local_network(ip));
             assert_eq!(allowed, expected, "allows_ip_for({name:?}, {ip})");
         }
     }

@@ -15,8 +15,10 @@
  * - Redirect hops must also match `domains` unless `allowUndeclaredPublicRedirects`
  *   is set. That flag never grants loopback, RFC1918, link-local, or metadata,
  *   and an undeclared hop stays on ports 80 and 443.
- * - Workerd `internet` `allow = ["public", …cidrs]` is the resolved-address
- *   layer (SSRF / DNS rebinding). This script is hostname policy.
+ * - The host's CONNECT proxy is the resolved-address layer (SSRF / DNS
+ *   rebinding): it resolves each tunnel, checks every address and dials the
+ *   checked one. This script is hostname policy. A local-network IPv4
+ *   literal listed in `localNames` (a setting named it) passes here.
  * - TCP `connect` requires a matching `tcp[]` host+port grant. Fetch grants
  *   do not imply TCP. Author isolates keep using `import { connect } from
  *   "cloudflare:sockets"`; this worker is the gateway, not a polyfill.
@@ -181,10 +183,31 @@ function cidrContainsIpv4(cidr, addr) {
   return ((addr >>> 0) & mask) === ((net >>> 0) & mask);
 }
 
+/** RFC 1918 or RFC 6598 shared space: a LAN address a setting may name. */
+function isLocalNetworkIpv4(addr) {
+  const a = (addr >>> 24) & 0xff;
+  const b = (addr >>> 16) & 0xff;
+  return (
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127)
+  );
+}
+
+/**
+ * True when an IPv4 literal may be requested: public, inside a CIDR grant,
+ * or a local-network literal a setting named (`localNames`), which grants
+ * exactly that address.
+ */
 function ipv4Granted(addr, policy) {
   if (isPublicIpv4(addr)) return true;
   const cidrs = policy.addressCidrs || [];
-  return cidrs.some((c) => cidrContainsIpv4(c, addr));
+  if (cidrs.some((c) => cidrContainsIpv4(c, addr))) return true;
+  return (
+    isLocalNetworkIpv4(addr) &&
+    (policy.localNames || []).some((n) => parseIpv4(String(n)) === addr)
+  );
 }
 
 function isRestrictedHostname(host) {

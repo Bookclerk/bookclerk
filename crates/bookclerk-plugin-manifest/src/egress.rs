@@ -126,8 +126,9 @@ pub struct EgressPolicy {
     /// without a CIDR grant; see [`Self::allows_ip_for`].
     ///
     /// Each entry is one exact, IDNA-normalized host name (no wildcard, no
-    /// IP literal, no port). The binding is to the name: another name that
-    /// resolves to the same address gains nothing. The host fills this from
+    /// port) or one local-network IP literal, which then grants a connection
+    /// to exactly that address. The binding is to the entry: another name
+    /// that resolves to the same address gains nothing. The host fills this from
     /// approved settings whose value names a host (a server address on the
     /// operator's LAN). Loopback and link-local addresses still need an
     /// explicit CIDR. Wire name: `localNames`.
@@ -419,7 +420,7 @@ impl EgressPolicy {
                 let host = match classify_host(host) {
                     HostKind::Invalid => return false,
                     HostKind::Ip(ip) => {
-                        if !self.allows_ip(ip) {
+                        if !self.allows_literal(ip) {
                             return false;
                         }
                         ip.to_string()
@@ -483,14 +484,25 @@ impl EgressPolicy {
         if self.mode == NetworkMode::Deny || !crate::is_local_network(ip) {
             return false;
         }
-        let HostKind::Name(name) = classify_host(host) else {
-            return false;
+        let bound = match classify_host(host) {
+            HostKind::Name(name) if !is_restricted_hostname(&name) => name,
+            // A literal binds only itself: the dialed address must be the
+            // address the setting named.
+            HostKind::Ip(literal) if crate::canonical_ip(literal) == crate::canonical_ip(ip) => {
+                crate::canonical_ip(literal).to_string()
+            }
+            HostKind::Name(_) | HostKind::Ip(_) | HostKind::Invalid => return false,
         };
-        !is_restricted_hostname(&name)
-            && self
-                .local_names
-                .iter()
-                .any(|entry| normalize_local_name(entry).as_deref() == Some(name.as_str()))
+        self.local_names
+            .iter()
+            .any(|entry| normalize_local_name(entry).as_deref() == Some(bound.as_str()))
+    }
+
+    /// [`Self::allows_ip_for`] for an IP literal request host: the public
+    /// Internet, a CIDR grant, or a local-network literal listed in
+    /// [`Self::local_names`].
+    fn allows_literal(&self, ip: std::net::IpAddr) -> bool {
+        self.allows_ip_for(&ip.to_string(), ip)
     }
 
     /// Loopback / metadata hostnames need a matching CIDR, not any CIDR.
@@ -521,7 +533,7 @@ impl EgressPolicy {
         let host = match classify_host(host) {
             HostKind::Invalid => return false,
             HostKind::Ip(ip) => {
-                if !self.allows_ip(ip) {
+                if !self.allows_literal(ip) {
                     return false;
                 }
                 ip.to_string()
@@ -562,7 +574,7 @@ impl EgressPolicy {
                 let host = match classify_host(host) {
                     HostKind::Invalid => return false,
                     HostKind::Ip(ip) => {
-                        return self.allows_ip(ip)
+                        return self.allows_literal(ip)
                             && (self.allow_undeclared_public_redirects
                                 || self
                                     .domains
@@ -952,17 +964,18 @@ fn entry_grants_port(entry: &str, port: u16) -> bool {
     }
 }
 
-/// Normalizes a [`EgressPolicy::local_names`] entry: one exact host name,
-/// IDNA-normalized, never a wildcard, an IP literal, a port or a restricted
-/// name such as `localhost`.
+/// Normalizes a [`EgressPolicy::local_names`] entry: one exact host name
+/// (IDNA-normalized, never a wildcard, a port or a restricted name such as
+/// `localhost`) or one local-network IP literal ([`crate::is_local_network`],
+/// canonical spelling, IPv4-mapped IPv6 unwrapped).
 ///
 /// # Arguments
 ///
-/// * `host` - A host name taken from a setting value.
+/// * `host` - The host a setting value names.
 ///
 /// # Returns
 ///
-/// The normalized name, or `None` when it is not an exact host name.
+/// The normalized entry, or `None` when it is neither.
 #[must_use]
 pub fn normalize_local_name(host: &str) -> Option<String> {
     let host = host.trim();
@@ -971,6 +984,9 @@ pub fn normalize_local_name(host: &str) -> Option<String> {
     }
     match classify_host(host) {
         HostKind::Name(name) if !is_restricted_hostname(&name) && !name.contains(':') => Some(name),
+        HostKind::Ip(ip) if crate::is_local_network(ip) => {
+            Some(crate::canonical_ip(ip).to_string())
+        }
         HostKind::Name(_) | HostKind::Ip(_) | HostKind::Invalid => None,
     }
 }
@@ -1826,6 +1842,22 @@ mod tests {
         assert!(!policy.allows_ip_for("other.home.arpa", ip("192.168.1.20")));
         assert!(!policy.allows_ip_for("x.abs.home.arpa", ip("192.168.1.20")));
         assert!(!policy.allows_ip_for("192.168.1.20", ip("192.168.1.20")));
+        // A listed literal binds exactly that address, never another.
+        let literal = EgressPolicy {
+            local_names: vec!["192.168.1.5".into(), "::ffff:10.0.0.9".into()],
+            tcp: vec![TcpGrant {
+                host: "192.168.1.5".into(),
+                ports: vec![5432],
+            }],
+            ..policy.clone()
+        };
+        assert!(literal.allows_ip_for("192.168.1.5", ip("192.168.1.5")));
+        assert!(literal.allows_ip_for("10.0.0.9", ip("10.0.0.9")));
+        assert!(!literal.allows_ip_for("192.168.1.5", ip("192.168.1.6")));
+        assert!(!literal.allows_ip_for("192.168.1.6", ip("192.168.1.6")));
+        assert!(!literal.allows_ip_for("example.com", ip("192.168.1.5")));
+        assert!(literal.allows_tcp("192.168.1.5", 5432));
+        assert!(!literal.allows_tcp("192.168.1.5", 5433));
         // Public addresses pass as before; deny mode passes nothing.
         assert!(policy.allows_ip_for("abs.home.arpa", ip("1.1.1.1")));
         let denied = EgressPolicy {
@@ -1849,14 +1881,27 @@ mod tests {
             normalize_local_name(" NAS.Home.Arpa. ").as_deref(),
             Some("nas.home.arpa")
         );
+        assert_eq!(
+            normalize_local_name("192.168.1.2").as_deref(),
+            Some("192.168.1.2")
+        );
+        assert_eq!(
+            normalize_local_name("[FD00::1]").as_deref(),
+            Some("fd00::1")
+        );
+        assert_eq!(
+            normalize_local_name("::ffff:10.0.0.1").as_deref(),
+            Some("10.0.0.1")
+        );
         for refused in [
             "*.home.arpa",
             "*",
             "localhost",
             "a.localhost",
-            "192.168.1.2",
-            "[fd00::1]",
-            "fd00::1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "8.8.8.8",
+            "fe80::1",
             "nas.home.arpa:8080",
             "nas%2ehome.arpa",
             "",
