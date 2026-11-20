@@ -3137,6 +3137,108 @@ mod filter_tests {
             .unwrap()
             .takes_everything());
     }
+
+    #[tokio::test]
+    async fn a_drop_folder_is_set_changed_shown_and_cleared() {
+        use super::{run_intake, IntakeCommand};
+        use bookclerk_config::{AfterIngest, IntakeAttribution};
+        use bookclerk_library::control_plane::intake_settings;
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let instance = create_plugin_instance(&store, &cli_actor(), "local", "Drop")
+            .await
+            .unwrap();
+        let id = instance.id.to_string();
+        let set = |patron, subfolder, after: Option<&str>| IntakeCommand::Set {
+            instance: id.clone(),
+            patron,
+            subfolder,
+            settle_seconds: Some(30),
+            scan_interval_seconds: Some(600),
+            after_ingest: after.map(str::to_string),
+            ignore: vec!["*.nfo".into()],
+            prune_imported_days: Some(14),
+        };
+        run_intake(&store, set(Some(3), false, None), OutputFormat::Text)
+            .await
+            .unwrap();
+        let stored = intake_settings(&store, &id).await.unwrap().unwrap();
+        assert_eq!(stored.patron, Some(3));
+        assert_eq!(stored.settle_seconds, 30);
+        assert_eq!(stored.scan_interval_seconds, 600);
+        assert_eq!(stored.ignore, ["*.nfo"]);
+        assert_eq!(stored.prune_imported_days, Some(14));
+
+        run_intake(&store, set(None, true, Some("leave")), OutputFormat::Json)
+            .await
+            .unwrap_err();
+        // `leave` with pruning is refused; nothing changed.
+        assert_eq!(intake_settings(&store, &id).await.unwrap().unwrap(), stored);
+        run_intake(
+            &store,
+            IntakeCommand::Set {
+                instance: id.clone(),
+                patron: None,
+                subfolder: true,
+                settle_seconds: None,
+                scan_interval_seconds: None,
+                after_ingest: Some("delete".into()),
+                ignore: Vec::new(),
+                prune_imported_days: None,
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap_err();
+        assert!(run_intake(
+            &store,
+            set(None, false, Some("sideways")),
+            OutputFormat::Text
+        )
+        .await
+        .is_err());
+        run_intake(&store, set(None, true, Some("move")), OutputFormat::Text)
+            .await
+            .unwrap();
+        let moved = intake_settings(&store, &id).await.unwrap().unwrap();
+        assert_eq!(moved.attribute_to, IntakeAttribution::Subfolder);
+        assert_eq!(moved.patron, None);
+        assert_eq!(moved.after_ingest, AfterIngest::Move);
+
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            run_intake(
+                &store,
+                IntakeCommand::Get {
+                    instance: id.clone(),
+                },
+                format,
+            )
+            .await
+            .unwrap();
+        }
+        run_intake(
+            &store,
+            IntakeCommand::Clear {
+                instance: id.clone(),
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        assert!(intake_settings(&store, &id).await.unwrap().is_none());
+        run_intake(
+            &store,
+            IntakeCommand::Get {
+                instance: id.clone(),
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+    }
 }
 
 #[cfg(test)]
