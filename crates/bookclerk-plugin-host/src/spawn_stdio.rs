@@ -3018,9 +3018,28 @@ where
     }
 }
 
+/// Relays one helper or guest stderr line into the host's log at the level
+/// the line names (capped at WARN, see [`bookclerk_config::parse_relayed_line`]),
+/// without the line's own timestamp and level. The host's field is
+/// `guest_ref`, since the line itself often carries a `plugin=` field.
 fn emit_guest_stderr_record(plugin: &str, tag: &str, line: &str) {
     let line = truncate_utf8(line, STDERR_TAIL_LINE_BYTES);
-    tracing::info!(target: "bookclerk::spawn", plugin, sibling = tag, "{line}");
+    let relayed = bookclerk_config::parse_relayed_line(line);
+    let text = relayed.text;
+    match relayed.level {
+        bookclerk_config::RelayedLevel::Trace => {
+            tracing::trace!(target: "bookclerk::spawn", guest_ref = plugin, sibling = tag, "{text}");
+        }
+        bookclerk_config::RelayedLevel::Debug => {
+            tracing::debug!(target: "bookclerk::spawn", guest_ref = plugin, sibling = tag, "{text}");
+        }
+        bookclerk_config::RelayedLevel::Info => {
+            tracing::info!(target: "bookclerk::spawn", guest_ref = plugin, sibling = tag, "{text}");
+        }
+        bookclerk_config::RelayedLevel::Warn => {
+            tracing::warn!(target: "bookclerk::spawn", guest_ref = plugin, sibling = tag, "{text}");
+        }
+    }
     if spawn_diag_stderr_enabled() {
         eprintln!("bookclerk-spawn: [{tag}] {line}");
         let _ = std::io::Write::flush(&mut std::io::stderr());

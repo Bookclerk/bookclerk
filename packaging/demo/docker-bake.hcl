@@ -20,6 +20,12 @@ variable "RELEASE_CODEGEN_UNITS" {
   default = "16"
 }
 
+# The commit being built, recorded in diagnostics reports; the workflows set
+# it from the environment (BUILD_COMMIT=<sha> docker buildx bake ...).
+variable "BUILD_COMMIT" {
+  default = ""
+}
+
 variable "TAG" {
   default = "bookclerk-demo:local"
 }
@@ -30,6 +36,7 @@ target "_production" {
   args = {
     RELEASE_LTO           = RELEASE_LTO
     RELEASE_CODEGEN_UNITS = RELEASE_CODEGEN_UNITS
+    BUILD_COMMIT          = BUILD_COMMIT
   }
 }
 

@@ -5998,6 +5998,54 @@ async fn check_card_recording(
     }
 }
 
+/// How long a batch's recording check may take once its stores answered.
+///
+/// One pool read for the whole batch; well under the route's budget even
+/// after a resolve that used all of `BATCH_DEADLINE`.
+const RECORDING_CHECK_BUDGET: Duration = Duration::from_millis(1500);
+
+/// [`check_card_recording`] for a whole batch, with one pool read.
+///
+/// When the read fails or does not finish by `deadline`, every response
+/// is marked incomplete (one log line for the batch), so the client shows
+/// the hints for now but asks again rather than keep them.
+///
+/// # Arguments
+///
+/// * `library` - The library holding the shared listing pool.
+/// * `sources` - Maps each hint's store to its plugin key.
+/// * `queries` - The cards, in batch order.
+/// * `responses` - Their resolved prices, filtered in place.
+/// * `deadline` - When the check must give up.
+async fn check_card_recordings(
+    library: &LibraryStore,
+    sources: &bookclerk_source::SourceRegistry,
+    queries: &[bookclerk_discover::PurchaseHintsQuery],
+    responses: &mut [bookclerk_discover::PurchaseHintsResponse],
+    deadline: tokio::time::Instant,
+) {
+    let mut checked = responses.to_vec();
+    let check = bookclerk_discover::retain_card_recordings(library, sources, queries, &mut checked);
+    match tokio::time::timeout_at(deadline, check).await {
+        Ok(Ok(())) => responses.clone_from_slice(&checked),
+        Ok(Err(err)) => {
+            tracing::debug!(
+                cards = responses.len(),
+                error = %err,
+                "purchase-hint recording check failed"
+            );
+            responses.iter_mut().for_each(|r| r.incomplete = true);
+        }
+        Err(_) => {
+            tracing::debug!(
+                cards = responses.len(),
+                "purchase-hint recording check ran past the deadline"
+            );
+            responses.iter_mut().for_each(|r| r.incomplete = true);
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 /// Body for batched purchase-hint lookups (max 24 queries).
 struct PurchaseHintsBatchBody {
@@ -6045,19 +6093,20 @@ async fn discover_purchase_hints_batch(
         q.preferred_sources = preferred.clone();
         queries.push(q);
     }
-    // One deadline covers the store lookups and the recording checks.
-    let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
     let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
     let resolved =
         bookclerk_discover::resolve_purchase_hints_batch(&sources, Some(&library), &queries, 4)
             .await;
     let mut results = Vec::with_capacity(resolved.len().min(MAX_PURCHASE_HINT_QUERIES));
-    for (item, query) in resolved.into_iter().zip(&queries) {
-        let mut response = item.map_err(internal_err)?;
-        check_card_recording(&library, &sources, query, &mut response, deadline).await;
-        results.push(response);
+    for item in resolved {
+        results.push(item.map_err(internal_err)?);
     }
+    // The resolve spends up to `BATCH_DEADLINE` on the stores; the recording
+    // check gets its own short budget after it (still far under the route's
+    // budget), so slow stores cannot leave every card unchecked.
+    let deadline = tokio::time::Instant::now() + RECORDING_CHECK_BUDGET;
+    check_card_recordings(&library, &sources, &queries, &mut results, deadline).await;
     if !caller_sees_prices(&state, &headers).await {
         for response in &mut results {
             response.hide_prices_and_links();
@@ -6152,6 +6201,11 @@ struct TitleMetaBatchBody {
 struct TitleMetaBatchResponse {
     /// One optional metadata payload per query; enrichment errors become `None`.
     results: Vec<Option<bookclerk_discover::TitleMeta>>,
+    /// Per query, in order: `true` when its `null` is a failure or a query
+    /// that ran past the batch deadline, not an answer, so the client should
+    /// not keep it and may ask again later.
+    #[schema(example = json!([false, true]))]
+    incomplete: Vec<bool>,
 }
 
 /// Resolves up to 24 title-metadata queries without failing the whole batch on one error.
@@ -6186,23 +6240,31 @@ async fn discover_title_meta_batch(
     };
     // Per-query enrichment failures must not 500 the whole batch — Discover
     // search already has hits; missing meta is optional.
-    let results = resolved
-        .into_iter()
-        .map(|item| match item {
-            Ok(meta) => meta,
-            Err(err) => {
-                tracing::debug!(error = %err, "title-meta batch item failed");
-                None
+    let mut results: Vec<Option<bookclerk_discover::TitleMeta>> =
+        Vec::with_capacity(resolved.len());
+    let mut incomplete: Vec<bool> = Vec::with_capacity(resolved.len());
+    for (index, item) in resolved.into_iter().enumerate() {
+        match item {
+            Ok(meta) => {
+                results.push(meta);
+                incomplete.push(false);
             }
-        })
-        .collect();
-    let mut results: Vec<Option<bookclerk_discover::TitleMeta>> = results;
+            Err(err) => {
+                tracing::debug!(query = index, error = %err, "title-meta batch item failed");
+                results.push(None);
+                incomplete.push(true);
+            }
+        }
+    }
     for meta in results.iter_mut().flatten() {
         state
             .covers
             .decorate(meta.cover_url.as_deref(), &mut meta.cover_path);
     }
-    Ok(Json(TitleMetaBatchResponse { results }))
+    Ok(Json(TitleMetaBatchResponse {
+        results,
+        incomplete,
+    }))
 }
 
 /// Rejects a title-metadata query that has no title, ASIN, or ISBN, or that
@@ -6644,56 +6706,98 @@ async fn create_request_inner(
     // One deadline covers every store call, leaving the rest of the route's
     // budget to save the wish.
     let deadline = tokio::time::Instant::now() + WISH_ENRICH_BUDGET;
+    // The editions the wish itself names decide which work it is for, so
+    // they are looked up at the same time as the prices instead of after
+    // them: slow price lookups can no longer leave the wish no time to find
+    // its own editions.
+    let named: Vec<(String, String)> = sources
+        .iter()
+        .map(|s| (s.source.clone(), s.product_id.clone()))
+        .collect();
     let pooled = {
         let registry = state.sources.read().await;
-        let resolve =
-            bookclerk_discover::resolve_purchase_hints(&registry, Some(&library), &hint_query);
-        let hints = match tokio::time::timeout_at(deadline, resolve).await {
-            Ok(Ok(mut resolved)) => {
-                // Keep only prices for the recording the wish names, when the
-                // listing pool already knows it.
-                // The check shares the stores' deadline; when it fails or
-                // runs out the wish keeps the resolved hints.
-                check_card_recording(&library, &registry, &hint_query, &mut resolved, deadline)
-                    .await;
-                resolved.hints
-            }
-            Ok(Err(err)) => {
-                tracing::debug!(error = %err, "wishlist purchase-hint resolve soft-failed");
-                Vec::new()
-            }
-            Err(_) => {
-                tracing::debug!("wishlist purchase-hint resolve ran out of time");
-                Vec::new()
+        let hints_lookup = async {
+            let resolve =
+                bookclerk_discover::resolve_purchase_hints(&registry, Some(&library), &hint_query);
+            match tokio::time::timeout_at(deadline, resolve).await {
+                Ok(Ok(mut resolved)) => {
+                    // Keep only prices for the recording the wish names,
+                    // when the listing pool already knows it. The check
+                    // shares the stores' deadline; when it fails or runs
+                    // out the wish keeps the resolved hints.
+                    check_card_recording(&library, &registry, &hint_query, &mut resolved, deadline)
+                        .await;
+                    resolved.hints
+                }
+                Ok(Err(err)) => {
+                    tracing::debug!(error = %err, "wishlist purchase-hint resolve soft-failed");
+                    Vec::new()
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        stores = registry.all().len(),
+                        "wishlist purchase-hint resolve ran out of time"
+                    );
+                    Vec::new()
+                }
             }
         };
-        for hint in &hints {
-            sources.push(source_from_purchase_hint(hint, &body));
-        }
         // The server asks each store about the editions the wish names and
         // keeps only the stores' answers in the shared pool; the browser's
         // text and prices stay on the wish's own rows.
-        let editions: Vec<(String, String)> = sources
-            .iter()
-            .map(|s| (s.source.clone(), s.product_id.clone()))
-            .collect();
-        let pool = bookclerk_discover::pool_wish_editions(
-            &library,
-            &registry,
-            &editions,
-            &hints,
-            WISH_REGION,
-        );
-        match tokio::time::timeout_at(deadline, pool).await {
-            Ok(pooled) => pooled,
-            Err(_) => {
-                // Each pool write is its own atomic batch, so a lookup cut
-                // off here leaves only whole store answers; the wish then
-                // names no listing and resolves by its own text.
-                tracing::debug!("wishlist edition lookup ran out of time");
-                Vec::new()
+        let named_lookup = async {
+            let pool = bookclerk_discover::pool_wish_editions(
+                &library,
+                &registry,
+                &named,
+                &[],
+                WISH_REGION,
+            );
+            match tokio::time::timeout_at(deadline, pool).await {
+                Ok(pooled) => pooled,
+                Err(_) => {
+                    // Each pool write is its own atomic batch, so a lookup
+                    // cut off here leaves only whole store answers; the wish
+                    // then names no listing and resolves by its own text.
+                    tracing::debug!(
+                        editions = named.len(),
+                        "wishlist edition lookup ran out of time"
+                    );
+                    Vec::new()
+                }
+            }
+        };
+        let (hints, mut pooled) = tokio::join!(hints_lookup, named_lookup);
+        // Member prices the stores quoted for the named editions.
+        bookclerk_discover::record_wish_member_offers(&library, &pooled, &hints).await;
+        // Editions only the price lookups found are pooled with what time
+        // is left; they add prices, not the wish's identity.
+        let mut extra: Vec<(String, String)> = Vec::new();
+        for hint in &hints {
+            let source = source_from_purchase_hint(hint, &body);
+            let pair = (source.source.clone(), source.product_id.clone());
+            if !named.contains(&pair) && !extra.contains(&pair) {
+                extra.push(pair);
+            }
+            sources.push(source);
+        }
+        if !extra.is_empty() {
+            let pool = bookclerk_discover::pool_wish_editions(
+                &library,
+                &registry,
+                &extra,
+                &hints,
+                WISH_REGION,
+            );
+            match tokio::time::timeout_at(deadline, pool).await {
+                Ok(more) => pooled.extend(more),
+                Err(_) => tracing::debug!(
+                    editions = extra.len(),
+                    "wishlist price-edition lookup ran out of time"
+                ),
             }
         }
+        pooled
     };
     for source in &mut sources {
         let source_id = source.source.trim().to_ascii_lowercase();

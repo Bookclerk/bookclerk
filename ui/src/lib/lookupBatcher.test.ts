@@ -70,6 +70,32 @@ describe("createLookupBatcher", () => {
     expect(await Promise.all(later)).toEqual(["B", "C"]);
   });
 
+  it("runs up to maxInFlight batches at once, a split batch's parts together", async () => {
+    vi.useFakeTimers();
+    const sender = gatedSender();
+    const lookup = createLookupBatcher<string, string>({
+      maxBatch: 2,
+      windowMs: 10,
+      maxInFlight: 2,
+      keyOf: (q) => q,
+      send: sender.send,
+    });
+    const first = ["a", "b", "c"].map(lookup);
+    await vi.advanceTimersByTimeAsync(10);
+    // Both parts of the split batch are out before either answers.
+    expect(sender.batches).toEqual([["a", "b"], ["c"]]);
+    const later = lookup("d");
+    await vi.advanceTimersByTimeAsync(100);
+    // Two batches are in flight, so "d" waits for a slot.
+    expect(sender.batches).toHaveLength(2);
+    sender.release();
+    expect(await Promise.all(first)).toEqual(["A", "B", "C"]);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(sender.batches[2]).toEqual(["d"]);
+    sender.release();
+    expect(await later).toBe("D");
+  });
+
   it("asks once for the same key and rejects a failed batch's lookups", async () => {
     vi.useFakeTimers();
     let calls = 0;

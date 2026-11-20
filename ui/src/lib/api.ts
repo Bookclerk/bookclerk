@@ -4176,6 +4176,12 @@ const LOOKUP_BATCH_MAX = 24;
 /** How long the first card's lookup waits for other cards to join its batch. */
 const LOOKUP_BATCH_WINDOW_MS = 60;
 /**
+ * Batches of one kind in flight at once. Two lets the next page of cards go
+ * out while a slow store holds the first, without one lookup kind taking
+ * every connection the browser allows.
+ */
+const LOOKUP_BATCHES_IN_FLIGHT = 2;
+/**
  * Longest a lookup batch waits for the covers on screen to load first. Covers
  * are what the viewer sees first; prices and details follow.
  */
@@ -4252,6 +4258,7 @@ async function sendPurchaseHintsBatch(
 const purchaseHintsBatcher = createLookupBatcher<PurchaseHintsQuery, PurchaseHintsResponse>({
   maxBatch: LOOKUP_BATCH_MAX,
   windowMs: LOOKUP_BATCH_WINDOW_MS,
+  maxInFlight: LOOKUP_BATCHES_IN_FLIGHT,
   keyOf: (q) => purchaseHintsClientKey(q),
   send: sendPurchaseHintsBatch,
   before: coversFirst,
@@ -4473,10 +4480,18 @@ async function sendTitleMetaBatch(queries: TitleMetaQuery[]): Promise<(TitleMeta
     25_000,
     "Title metadata batch",
   );
-  const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
+  const data = (await parseJson(res)) as {
+    results: (TitleMeta | null)[];
+    incomplete?: boolean[];
+  };
   return queries.map((query, idx) => {
     const meta = data.results[idx] ?? null;
-    if (lookupGeneration() === asked) titleMetaClientCache.set(titleMetaClientKey(query), meta);
+    // A failed or late query is not an answer: keep it out of the cache so a
+    // later look asks again.
+    const keep = data.incomplete?.[idx] !== true;
+    if (keep && lookupGeneration() === asked) {
+      titleMetaClientCache.set(titleMetaClientKey(query), meta);
+    }
     return meta;
   });
 }
@@ -4485,6 +4500,7 @@ async function sendTitleMetaBatch(queries: TitleMetaQuery[]): Promise<(TitleMeta
 const titleMetaBatcher = createLookupBatcher<TitleMetaQuery, TitleMeta | null>({
   maxBatch: LOOKUP_BATCH_MAX,
   windowMs: LOOKUP_BATCH_WINDOW_MS,
+  maxInFlight: LOOKUP_BATCHES_IN_FLIGHT,
   keyOf: titleMetaClientKey,
   send: sendTitleMetaBatch,
   before: coversFirst,

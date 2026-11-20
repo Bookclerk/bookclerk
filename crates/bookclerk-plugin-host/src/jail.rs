@@ -37,6 +37,7 @@
 //! docs for why, and for what permitting `execve` costs.
 
 use std::path::{Path, PathBuf};
+
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -47,6 +48,12 @@ use crate::discover::{DiscoveredPlugin, StateScope};
 use crate::manifest::JailNetworkNeed;
 use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan};
 use crate::{PluginError, PluginGrant, PluginRuntimeKind, Result};
+
+/// Whether this process already warned that it cannot make session
+/// cgroups, so later spawns log the same cause at debug.
+#[cfg(target_os = "linux")]
+static SESSION_CGROUP_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Launcher binary that applies the jail.
 const JAIL_BIN_NAME: &str = "bookclerk-jail";
@@ -434,10 +441,19 @@ impl GuestJail {
             ) {
                 Ok(path) => Some(SessionCgroup::new(path)),
                 Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "session cgroup unavailable; process-group kill is the fallback and does not cover a descendant that calls setsid"
-                    );
+                    // The cause (no delegated cgroup) is the same for every
+                    // spawn of this process, so only the first one warns.
+                    if SESSION_CGROUP_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        tracing::debug!(
+                            error = %err,
+                            "session cgroup unavailable; process-group kill is the fallback"
+                        );
+                    } else {
+                        tracing::warn!(
+                            error = %err,
+                            "session cgroup unavailable; process-group kill is the fallback and does not cover a descendant that calls setsid (later spawns log this at debug)"
+                        );
+                    }
                     None
                 }
             }

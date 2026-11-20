@@ -152,6 +152,36 @@ pub async fn pool_wish_editions(
     out
 }
 
+/// Stores the member prices `hints` quote for editions already pooled.
+///
+/// [`pool_wish_editions`] records these itself when it is given the hints;
+/// a wish that looks its named editions up at the same time as the prices
+/// calls this once both are in.
+///
+/// # Arguments
+///
+/// * `library` - The library whose pool holds the listings.
+/// * `pooled` - The pooled editions, as [`pool_wish_editions`] returned them.
+/// * `hints` - The purchase hints the server resolved for the wish.
+pub async fn record_wish_member_offers(
+    library: &LibraryStore,
+    pooled: &[PooledEdition],
+    hints: &[PurchaseHint],
+) {
+    let offers: Vec<(String, ListingOffer)> = pooled
+        .iter()
+        .filter_map(|p| {
+            member_offer(hints, &p.source, &p.product_id).map(|o| (p.listing_id.clone(), o))
+        })
+        .collect();
+    if offers.is_empty() {
+        return;
+    }
+    if let Err(err) = library.record_listing_offers(&offers).await {
+        tracing::debug!(error = %err, "could not store a wish's member prices");
+    }
+}
+
 /// Asks `source` to describe `product_id`, within `EDITION_LOOKUP_TIMEOUT`.
 ///
 /// # Returns

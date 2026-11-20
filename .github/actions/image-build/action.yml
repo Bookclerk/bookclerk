@@ -44,7 +44,8 @@ runs:
         labels=(--label "org.opencontainers.image.source=$SOURCE" --label "org.opencontainers.image.revision=$SHA")
         case "$IMAGE" in
           bookclerk)
-            docker build "${labels[@]}" -f packaging/docker/Dockerfile -t local/image .
+            docker build "${labels[@]}" --build-arg "BUILD_COMMIT=$SHA" \
+              -f packaging/docker/Dockerfile -t local/image .
             ;;
           bookclerk-dev)
             # Inline cache metadata lets a Dev Container build use this
@@ -57,7 +58,7 @@ runs:
             # runtime stages and the demo layer in one bake, which never
             # exports the builder (packaging/demo/docker-bake.hcl).
             printf '%s\n' "$SHA" > packaging/demo/version.txt
-            docker buildx bake -f packaging/demo/docker-bake.hcl --load \
+            BUILD_COMMIT="$SHA" docker buildx bake -f packaging/demo/docker-bake.hcl --load \
               --set "demo.tags=local/image" \
               --set "demo.labels.org.opencontainers.image.source=$SOURCE" \
               --set "demo.labels.org.opencontainers.image.revision=$SHA" \

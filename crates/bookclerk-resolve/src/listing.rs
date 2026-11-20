@@ -236,7 +236,8 @@ pub struct Listing {
     pub expression_kind: ExpressionKind,
     /// Carrier of the edition.
     pub media_kind: MediaKind,
-    /// Lower-cased language code; `None` when unknown.
+    /// Language code in one spelling per language (see
+    /// [`canonical_language`]); `None` when unknown.
     pub language: Option<String>,
     /// Abridgement; [`Abridgement::Unknown`] when the source did not say.
     pub abridgement: Abridgement,
@@ -398,7 +399,7 @@ impl Listing {
             expression_kind,
             media_kind,
             language: clean_optional(draft.language.as_deref(), "language")?
-                .map(|l| l.to_ascii_lowercase()),
+                .map(|l| canonical_language(&l)),
             abridgement: draft.abridgement.unwrap_or(Abridgement::Unknown),
             subtitle: clean_optional(draft.subtitle.as_deref(), "subtitle")?,
             published_at: clean_optional(draft.published_at.as_deref(), "published_at")?,
@@ -516,6 +517,26 @@ pub struct HoldingDraft {
     pub entitlement: Entitlement,
     /// When they bought or added it (RFC 3339), when known.
     pub purchased_at: Option<String>,
+}
+
+/// The one spelling the resolver stores and compares for a language.
+///
+/// A language [`crate::normalize_language`] recognises becomes its short
+/// code (`English`, `eng` and `en-US` are all `en`), so the same recording
+/// sold by two stores lands in one expression. Anything else is kept,
+/// lower-cased, rather than dropped: an unrecognised language still only
+/// matches itself.
+///
+/// # Arguments
+///
+/// * `raw` - The language as a store or a stored row spells it.
+///
+/// # Returns
+///
+/// The canonical code.
+#[must_use]
+pub fn canonical_language(raw: &str) -> String {
+    crate::normalize_language(raw).unwrap_or_else(|| raw.trim().to_ascii_lowercase())
 }
 
 #[cfg(test)]
