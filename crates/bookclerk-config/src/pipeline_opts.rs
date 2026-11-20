@@ -71,8 +71,8 @@ pub enum OutputFormat {
     /// Split MP3 by target file size (see `split_mp3_max_mb`). Not yet
     /// implemented: the acquire pipeline rejects it before downloading.
     SplitMp3BySize,
-    /// One Ogg Opus file (libopus, 64 kbit/s stereo) with Vorbis comment
-    /// tags, chapters and cover.
+    /// One Ogg Opus file (libopus, 64 kbit/s, the source's channels up to
+    /// stereo) with Vorbis comment tags, chapters and cover.
     Opus,
     /// Leave store-delivered media as-is (no remux/transcode/re-encode).
     None,

@@ -191,14 +191,20 @@ fn read_comments(path: &Path, layout: Layout) -> Result<VorbisComments> {
 
 /// Writes `req.chapters` as `CHAPTERnnn` comments, replacing the file's
 /// own unless it has some and the request does not ask to replace them.
+///
+/// Only a `CHAPTERnnn` start counts as an existing chapter: a name with no
+/// start is not a chapter to players, so it does not stop the request's
+/// chapters from being written (and is removed with the rest).
 fn write_chapters(tag: &mut VorbisComments, req: &FixupRequest) {
-    let has_existing = tag.items().any(|(key, _)| chapter_key(key));
+    let has_existing = tag
+        .items()
+        .any(|(key, _)| chapter_key_kind(key) == Some(ChapterKey::Start));
     if req.chapters.is_empty() || (has_existing && !req.replace_chapters) {
         return;
     }
     let old: Vec<String> = tag
         .items()
-        .filter(|(key, _)| chapter_key(key))
+        .filter(|(key, _)| chapter_key_kind(key).is_some())
         .map(|(key, _)| key.to_string())
         .collect();
     for key in old {
@@ -221,14 +227,25 @@ fn write_chapters(tag: &mut VorbisComments, req: &FixupRequest) {
     }
 }
 
-/// Whether `key` is a `CHAPTERnnn` or `CHAPTERnnnNAME` comment key.
-fn chapter_key(key: &str) -> bool {
+/// Which part of a chapter a comment key holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChapterKey {
+    /// `CHAPTERnnn`: the chapter's start time.
+    Start,
+    /// `CHAPTERnnnNAME`: the chapter's title.
+    Name,
+}
+
+/// The chapter part `key` names, or `None` when it is neither a
+/// `CHAPTERnnn` nor a `CHAPTERnnnNAME` key (any case).
+fn chapter_key_kind(key: &str) -> Option<ChapterKey> {
     let upper = key.to_ascii_uppercase();
-    let Some(rest) = upper.strip_prefix("CHAPTER") else {
-        return false;
+    let rest = upper.strip_prefix("CHAPTER")?;
+    let (digits, kind) = match rest.strip_suffix("NAME") {
+        Some(digits) => (digits, ChapterKey::Name),
+        None => (rest, ChapterKey::Start),
     };
-    let digits = rest.strip_suffix("NAME").unwrap_or(rest);
-    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(kind)
 }
 
 /// `HH:MM:SS.mmm` for a start in milliseconds.
@@ -369,9 +386,43 @@ mod tests {
         assert_eq!(timestamp(0), "00:00:00.000");
         assert_eq!(timestamp(3_723_456), "01:02:03.456");
         assert_eq!(timestamp(100 * 3_600_000), "100:00:00.000");
-        assert!(chapter_key("CHAPTER001"));
-        assert!(chapter_key("chapter012name"));
-        assert!(!chapter_key("CHAPTERS"));
-        assert!(!chapter_key("CHAPTER"));
+        assert_eq!(chapter_key_kind("CHAPTER001"), Some(ChapterKey::Start));
+        assert_eq!(chapter_key_kind("chapter012name"), Some(ChapterKey::Name));
+        assert_eq!(chapter_key_kind("CHAPTERS"), None);
+        assert_eq!(chapter_key_kind("CHAPTER"), None);
+        assert_eq!(chapter_key_kind("CHAPTERNAME"), None);
+    }
+
+    #[test]
+    fn a_chapter_name_with_no_start_does_not_keep_chapters_out() {
+        let mut tag = VorbisComments::default();
+        tag.push("CHAPTER007NAME".into(), "Stray".into());
+        let req = request(
+            Path::new("book.opus"),
+            None,
+            &[("Opening", 0), ("Middle", 120)],
+        );
+        assert!(!req.replace_chapters);
+        write_chapters(&mut tag, &req);
+        let keys: Vec<_> = tag
+            .items()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("CHAPTER001".to_string(), "00:00:00.000".to_string()),
+                ("CHAPTER001NAME".to_string(), "Opening".to_string()),
+                ("CHAPTER002".to_string(), "00:00:00.120".to_string()),
+                ("CHAPTER002NAME".to_string(), "Middle".to_string()),
+            ]
+        );
+        // A real start keeps the file's chapters.
+        let before = tag.clone();
+        write_chapters(
+            &mut tag,
+            &request(Path::new("book.opus"), None, &[("Other", 50)]),
+        );
+        assert_eq!(tag.items().count(), before.items().count());
     }
 }

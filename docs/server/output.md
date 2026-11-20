@@ -352,8 +352,9 @@ re-encoding), a constant bitrate the MP3 encoder writes (`64k`, `96k`,
 (best) to `v9`. An Opus copy takes an Opus bitrate instead: `16k`,
 `24k`, `32k`, `48k`, `64k`, `96k` or `128k`, which the encoder targets
 in variable bitrate. A bitrate or VBR level may end in `-mono` to mix the
-copy down to one channel. Opus is an advanced format: fewer players open
-it than M4B and MP3, so settings list it under their advanced options.
+copy down to one channel; without it, a copy keeps the source's channels,
+up to stereo. Opus is an advanced format: fewer players open it than M4B
+and MP3.
 The main output is a copy too: an M4B or as-delivered output is
 `original`, an Opus output is `64k`, and an MP3 output takes its quality
 from the `output.lame` settings, named after the bitrate the encoder
@@ -362,10 +363,10 @@ copy may not repeat another or the main output.
 
 Each acquire downloads the book once and makes every copy from that
 download, main output first. When a library keeps more than one copy,
-every MP3 copy is encoded at its own quality, even when the store
-delivers MP3, so each copy holds the audio its name says. A library with
-only the main output keeps storing a store's MP3 as delivered, as
-before. Every destination receives each copy its
+every MP3 or Opus copy is encoded at its own quality, even when the
+store delivers that format, so each copy holds the audio its name says. A
+library with only the main output keeps storing a store's MP3 or Opus
+file as delivered, rather than encoding lossy audio a second time. Every destination receives each copy its
 filter takes (see
 [Choosing which books a destination takes](#choosing-which-books-a-destination-takes)).
 For example, to send only the MP3 copy to a bucket a phone syncs from:

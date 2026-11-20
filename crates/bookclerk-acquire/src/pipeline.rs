@@ -2180,6 +2180,9 @@ async fn store_plain_fetch(
         }
     }
     if want_opus {
+        // Like MP3 (`reencodes_mp3`): a store's Opus file is kept as
+        // delivered unless the library keeps several copies, which must
+        // each hold the audio their quality names.
         let ext = acquired_path
             .extension()
             .and_then(|e| e.to_str())

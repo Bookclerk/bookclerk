@@ -301,6 +301,21 @@ impl OpenedAudio {
             Ok(Some(packet)) => packet,
             Ok(None) => return Ok(NextPcm::End),
             Err(SymphoniaError::ResetRequired) => {
+                // A chained Ogg file replaces its tracks here. Decoding on
+                // with the old track id would skip the rest of the audio
+                // and still report success, so refuse the file instead.
+                if !self
+                    .format
+                    .tracks()
+                    .iter()
+                    .any(|track| track.id == self.track_id)
+                {
+                    return Err(MediaError::Native(
+                        "the audio stream changes partway through the file (a chained Ogg \
+                         file), which is not supported"
+                            .into(),
+                    ));
+                }
                 self.decoder.reset();
                 return Ok(NextPcm::Skipped);
             }
@@ -579,6 +594,43 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// `file` with every page moved to logical stream `serial`, checksums
+    /// recomputed.
+    fn with_serial(mut file: Vec<u8>, serial: u32) -> Vec<u8> {
+        let mut at = 0;
+        while at + 27 <= file.len() {
+            assert_eq!(&file[at..at + 4], b"OggS");
+            let segments = usize::from(file[at + 26]);
+            let body: usize = file[at + 27..at + 27 + segments]
+                .iter()
+                .map(|len| usize::from(*len))
+                .sum();
+            let end = at + 27 + segments + body;
+            file[at + 14..at + 18].copy_from_slice(&serial.to_le_bytes());
+            file[at + 22..at + 26].fill(0);
+            let crc = crate::opus_enc::ogg_crc(&file[at..end]);
+            file[at + 22..at + 26].copy_from_slice(&crc.to_le_bytes());
+            at = end;
+        }
+        file
+    }
+
+    #[test]
+    fn a_chained_ogg_file_is_refused_rather_than_cut_short() {
+        let corpus =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/media_decode");
+        let first = std::fs::read(corpus.join("tone_2ch.opus")).expect("first");
+        let second = std::fs::read(corpus.join("tone_1ch.opus")).expect("second");
+        // On its own, each stream decodes.
+        decode_pcm_bytes(first.clone(), OutChannels::SourceUpToStereo, |_, _| Ok(()))
+            .expect("one stream");
+        let mut chained = first;
+        chained.extend(with_serial(second, 0x5EC0_4D00));
+        let err = decode_pcm_bytes(chained, OutChannels::SourceUpToStereo, |_, _| Ok(()))
+            .expect_err("chained");
+        assert!(err.to_string().contains("chained Ogg"), "{err}");
     }
 
     /// Two seconds of a stereo 44.1 kHz tone, encoded as HE-AAC (or v2).

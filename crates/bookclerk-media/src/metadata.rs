@@ -388,8 +388,10 @@ fn fixup_mp3(req: &FixupRequest) -> Result<()> {
     if let Some(desc) = req.description.as_deref().filter(|s| !s.is_empty()) {
         // COMM is a comment frame (language, description, text); id3
         // refuses to write it as a plain text frame, which failed the
-        // whole fix-up of any MP3 with a description.
-        tag.remove("COMM");
+        // whole fix-up of any MP3 with a description. Only the comment
+        // with no descriptor (the book's description) is replaced; other
+        // comments the file carries stay.
+        tag.remove_comment(Some(""), None);
         tag.add_frame(Comment {
             lang: "eng".into(),
             description: String::new(),
@@ -920,10 +922,32 @@ mod tests {
         let file = fixture_mp3(false);
         let mut req = mp3_request(file.path(), &[], false);
         req.description = Some("A book about books.".into());
+        // The file already has a description and a comment of its own.
+        let mut before = Id3Tag::read_from_path(file.path()).unwrap_or_default();
+        for (description, text) in [("", "Old description."), ("ripper", "Encoded by hand.")] {
+            before.add_frame(Comment {
+                lang: "eng".into(),
+                description: description.into(),
+                text: text.into(),
+            });
+        }
+        before
+            .write_to_path(file.path(), id3::Version::Id3v24)
+            .expect("seed tag");
         fixup_audiobook_sync(&req).expect("fixup");
         let tag = Id3Tag::read_from_path(file.path()).expect("id3");
-        let comments: Vec<_> = tag.comments().map(|c| c.text.clone()).collect();
-        assert_eq!(comments, ["A book about books."]);
+        let mut comments: Vec<_> = tag
+            .comments()
+            .map(|c| (c.description.clone(), c.text.clone()))
+            .collect();
+        comments.sort();
+        assert_eq!(
+            comments,
+            [
+                (String::new(), "A book about books.".to_string()),
+                ("ripper".to_string(), "Encoded by hand.".to_string()),
+            ]
+        );
     }
 
     #[test]

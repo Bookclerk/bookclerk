@@ -286,23 +286,6 @@ pub fn tagged_flac() -> Vec<u8> {
     file
 }
 
-/// The Ogg page checksum: CRC-32 with polynomial `0x04C11DB7`, no
-/// reflection, zero initial value and no final XOR.
-fn ogg_crc(bytes: &[u8]) -> u32 {
-    let mut crc = 0u32;
-    for &byte in bytes {
-        crc ^= u32::from(byte) << 24;
-        for _ in 0..8 {
-            crc = if crc & 0x8000_0000 != 0 {
-                (crc << 1) ^ 0x04C1_1DB7
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc
-}
-
 /// One Ogg page of stream `serial` with header flags `flags` and granule
 /// position `granule`, holding `packets` laced in order. A packet whose
 /// length is a multiple of 255 ends with a zero lacing value unless it is
@@ -334,7 +317,7 @@ pub fn ogg_page(flags: u8, granule: u64, serial: u32, packets: &[&[u8]]) -> Vec<
     for packet in packets {
         page.extend_from_slice(packet);
     }
-    let crc = ogg_crc(&page);
+    let crc = crate::ogg::page_crc(&page[..22], &page[26..]);
     page[22..26].copy_from_slice(&crc.to_le_bytes());
     page
 }

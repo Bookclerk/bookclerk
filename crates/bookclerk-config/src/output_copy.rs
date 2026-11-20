@@ -23,7 +23,7 @@ pub const MAX_EXTRA_COPIES: usize = 8;
 pub const MAX_QUALITY_BYTES: usize = 16;
 
 /// The quality of the main output when it is Opus (`format = "opus"`):
-/// 64 kbit/s stereo. Another bitrate takes an Opus extra copy beside an
+/// 64 kbit/s, keeping the source's channels up to stereo. Another bitrate takes an Opus extra copy beside an
 /// M4B main output.
 pub const OPUS_MAIN_KBPS: u16 = 64;
 

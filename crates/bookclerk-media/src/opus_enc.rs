@@ -274,7 +274,10 @@ impl PacketStream<'_> {
     }
 
     /// Encodes one packet's samples (`real` of them audio, the rest
-    /// padding) and writes a page when it is full.
+    /// padding), first writing the queued page when it is full. A page is
+    /// written only when another packet needs room, so the last packets
+    /// always stay for the end-of-stream page that [`Self::finish`]
+    /// writes (RFC 7845 section 4.4 trims the end on that page).
     fn encode<W: Write>(
         &mut self,
         packet: &[f32],
@@ -285,12 +288,12 @@ impl PacketStream<'_> {
             .encoder
             .encode_float_to_slice(packet, &mut self.scratch)
             .map_err(|err| opus_error("encode", err))?;
-        self.page.push(self.scratch[..len].to_vec());
-        let frames = u64::try_from(real / self.channels()).unwrap_or(0);
-        self.encoded_frames += frames;
         if self.page.len() >= PACKETS_PER_PAGE {
             self.flush_page(0, ogg)?;
         }
+        self.page.push(self.scratch[..len].to_vec());
+        let frames = u64::try_from(real / self.channels()).unwrap_or(0);
+        self.encoded_frames += frames;
         Ok(())
     }
 
@@ -371,7 +374,7 @@ impl<W: Write> OggWriter<W> {
 
 /// The Ogg page checksum: CRC-32, polynomial `0x04C11DB7`, unreflected,
 /// zero initial value and no final XOR.
-fn ogg_crc(bytes: &[u8]) -> u32 {
+pub(crate) fn ogg_crc(bytes: &[u8]) -> u32 {
     /// The table for one byte at a time, built at compile time.
     const TABLE: [u32; 256] = {
         let mut table = [0u32; 256];
@@ -412,6 +415,52 @@ mod tests {
         let mut zeroed = page.clone();
         zeroed[22..26].fill(0);
         assert_eq!(ogg_crc(&zeroed).to_le_bytes(), page[22..26]);
+    }
+
+    #[test]
+    fn the_last_packets_ride_on_the_end_of_stream_page() {
+        // 48 packets of audio, then the padding and flush packets make 50:
+        // exactly a full page when the stream ends.
+        let mut encoder = Encoder::new(
+            OpusChannels::Stereo,
+            SampleRate::Hz48000,
+            Application::Audio,
+        )
+        .expect("encoder");
+        let mut out = Vec::new();
+        let mut ogg = OggWriter {
+            out: &mut out,
+            written: 0,
+            max: None,
+            sequence: 0,
+        };
+        let frame = 960 * 2;
+        let mut stream = PacketStream {
+            encoder: &mut encoder,
+            frame,
+            scale: 1,
+            pre_skip: 312,
+            pending: Vec::new(),
+            page: Vec::new(),
+            encoded_frames: 0,
+            scratch: vec![0u8; MAX_PACKET_BYTES],
+        };
+        stream.push(&vec![0.1; frame * 48], &mut ogg).expect("push");
+        stream.finish(&mut ogg).expect("finish");
+        // Every page carries packets; the last one ends the stream.
+        let mut at = 0;
+        let mut last_flags = 0;
+        while at < out.len() {
+            let segments = usize::from(out[at + 26]);
+            assert!(segments > 0, "empty page at {at}");
+            last_flags = out[at + 5];
+            let body: usize = out[at + 27..at + 27 + segments]
+                .iter()
+                .map(|len| usize::from(*len))
+                .sum();
+            at += 27 + segments + body;
+        }
+        assert_eq!(last_flags, END_OF_STREAM);
     }
 
     /// Encodes a corpus file and decodes the result back.
