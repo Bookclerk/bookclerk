@@ -65,12 +65,12 @@ futures.workspace = true
 tempfile.workspace = true
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 wiremock.workspace = true
+# The reconcile tests pack fixture artifacts: ZIP for Windows targets, tar.gz otherwise.
+flate2.workspace = true
+tar.workspace = true
+zip.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-
-# Windows plugin artifacts are ZIPs; the reconcile tests pack their fixtures.
-[target.'cfg(windows)'.dev-dependencies]
-zip.workspace = true
 
 [lints]
 workspace = true
