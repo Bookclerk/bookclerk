@@ -1071,6 +1071,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             "test:entrypoints",
             "test:entrypoints-codec",
             "test:egress-user-agent",
+            "test:egress-bridge",
         ):
             cmds.append(Command(f"npm run {script}", ["npm", "run", script], cwd=sdk))
         # `createTestDatabase` spawns the kit executable.

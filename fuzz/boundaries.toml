@@ -70,6 +70,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.egress_bridge]
+crate = "bookclerk-workerd"
+boundary = "The workerd egress gate (egress.js) against the Rust EgressPolicy"
+input_from = "plugin package"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.egress_policy]
 crate = "bookclerk-plugin-manifest"
 boundary = "Guest egress allowlist (EgressPolicy JSON wire form)"
@@ -81,13 +88,6 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-plugin-manifest"
 boundary = "plugin.toml parse, validation, derived egress and consent"
 input_from = "plugin package"
-side = "host"
-artifacts = ["bookclerk"]
-
-[targets.https_url_policy]
-crate = "bookclerk-plugin-manifest"
-boundary = "URLs from plugin output the host fetches itself"
-input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 

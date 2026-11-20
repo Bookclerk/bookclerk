@@ -26,10 +26,10 @@ boundary extends it.
 | `granted_http` | The granted reverse channel | `bookclerk-workerd::granted_http` |
 | `workerd_control` | Lines on workerd's stdout, shared with plugin isolates, that report the bridge RPC port on Windows (`--control-fd`) | `bookclerk-workerd::control` |
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
+| `egress_bridge` | The workerd egress gate (`bridge/egress.js`) every workerd guest's `fetch()` and `connect()` goes through, run in an embedded JavaScript engine against `EgressPolicy` | `bookclerk-workerd` bridge |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
-| `https_url_policy` | URLs from untrusted output checked against a host allowlist (no caller since covers moved to the cover service) | `bookclerk-plugin-manifest::https_url_on_hosts` |
-| `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
+| `abi_decode` | Every generated Cap'n Proto `read_*` codec, the database envelope decoders, and the reply helpers every payload-free guest reply and guest error goes through (`read_empty`, `read_error`) | `bookclerk-plugin-abi` |
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
@@ -89,9 +89,9 @@ Some boundaries need more than a cell:
 - **`granted_http`** covers the request head, body framing, chunked bodies
   and the query string.
 - **`egress_policy`** fuzzes the JSON wire form. The workerd `egress.js`
-  gate is a separate implementation: its User-Agent rule is fuzzed in
-  JavaScript ([egress bridge User-Agent rule](#egress-bridge-user-agent-rule)),
-  the rest is still to add (#335).
+  gate is a separate implementation: `egress_bridge` checks its host
+  decisions against `EgressPolicy`, and its User-Agent rule is fuzzed in
+  JavaScript ([egress bridge User-Agent rule](#egress-bridge-user-agent-rule)).
 - **`abi_decode`** goes through `read_any_message`, and
   **`abi_roundtrip`** through `roundtrip_any_message`.
 - **`guest_sql_authz`** lowers each policy as the SQLite adapter lowers it.
@@ -123,6 +123,26 @@ only that. The others check:
   guest's own `User-Agent` is kept only on hosts an own-agent pattern
   matches, never through a `*` entry however it is spelled, and every
   other request gets the host's agent.
+- **`egress_bridge`**: for a policy the host can emit (every pattern
+  already normalized, every CIDR in its `network/prefix` form), each probe
+  host (the grants' names and near misses, `localhost` and the metadata
+  name, and IP literals in every range and spelling) goes to
+  `allowsInitial` and `allowsRedirect` as the URL parser prints it and to
+  `allowsTcp` as `canonicalSocketHost` returns it, in QuickJS. QuickJS has
+  no URL parser, so the target models both with the `url` crate, and the
+  Node replay checks those models against Node's parser and the bridge's
+  own `canonicalSocketHost`.
+  The bridge never allows what `EgressPolicy` refuses, and on a hostname
+  the two agree exactly. The shared oracle is
+  `fuzz/oracles/egress_bridge.rs`. Its replay in `bookclerk-workerd`
+  pins the Rust verdicts in
+  `packages/plugin-sdk/scripts/egress_bridge_vectors.json`
+  (`UPDATE_FUZZ_SEEDS=1` rewrites it), and `npm run test:egress-bridge`
+  (in the `plugin_sdk_abi` check) replays them against the bridge under
+  Node, which also checks the oracle's model of the URL parser. Where a
+  newer Node accepts a host the model refuses (Node 26 passes invalid
+  `xn--` labels through), the replay holds the gate to the Rust verdicts
+  on the raw host instead.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
   yields a deny policy.
 - **`cron_schedule`**: an accepted schedule round-trips through its
@@ -130,15 +150,16 @@ only that. The others check:
   minute-by-minute scan of `matches`. The shared oracle is
   `fuzz/oracles/cron_schedule.rs`, replayed from
   `bookclerk-plugin-manifest`.
-- **`https_url_policy`**: the check is idempotent, and an accepted URL is
-  `https://` with no user info, port or IP literal, on a host the patterns
-  cover, read byte by byte rather than by the URL parser. The shared oracle
-  is `fuzz/oracles/https_url_policy.rs`, replayed from
-  `bookclerk-plugin-manifest`.
 - **`abi_decode`**: the traversal budget is derived from the input size.
   Structured seeds cover the book records, the metadata replies and the
   cover request and reply (`structured_*.bin`), plus the typed
-  `limit_exceeded` envelopes (`limit_error_reply.bin`, `caps_reply_*.bin`).
+  `limit_exceeded` envelopes (`limit_error_reply.bin`, `caps_reply_*.bin`,
+  `empty_reply_*.bin`, `plugin_error_*.bin`). A guest error's `details`
+  are kept only as one JSON object that serializes back to itself.
+  Selectors 0 to 5 are the hand-written decoders and the generated table
+  follows, so adding a hand-written decoder moves every generated seed's
+  selector byte (`structured_book_record_seeds_are_current` rewrites the
+  structured seeds with `UPDATE_FUZZ_SEEDS=1`).
 - **`db_stream`**: decoding a frame stream in one push and in chunks of
   any size agree (both the same reply, or both refused), an accepted
   reply has no statement over the row cap, and it re-encodes to frames
@@ -1107,6 +1128,16 @@ The tests and corpora live in `tools/diagnostics-collector/`.
     of JSON naming an object with exactly the five fields, a lowercase
     version-4 UUID checked by position, and version, platform and kind
     tokens checked character by character.
+- **Diagnostics report body** (`parseSubmit` in `submit.ts`). It is the
+  body anyone can send to `POST /submit`, read under the 256 KiB cap while
+  it streams (`readCapped`), and decides what report is stored in B2.
+  - Test and corpus: `submit.fuzz.test.ts`, `corpus/submit/`.
+  - Oracle: a report exactly when the body is JSON naming an object whose
+    trigger (1–64 characters), version (at most 64, not all whitespace)
+    and OS (at most 64) are strings, whose `archived_at_unix_ms` is absent
+    or a number, and whose `events` is an array of at most 500 objects
+    with no string `message`, `level` or `target` over 8,000, 32 or 256
+    characters. An admitted report equals the parsed body.
 - **Report lookup body** (`parseLookupInput` in `report-access.ts`). It
   is the body anyone can post to `/lookup` and `/lookup/delete`, as JSON
   or a form, and names the report a code is checked against and whether a
@@ -1544,9 +1575,6 @@ check); `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
 These are tracked in the fuzzing ADR's follow-ups:
 
 - a full RPC session against a scripted guest;
-- the rest of the workerd `egress.js` gate (destinations, redirects,
-  addresses) checked against `EgressPolicy` (#335; the User-Agent rule is
-  [covered](#egress-bridge-user-agent-rule));
 - Audible CENC/DASH parsing;
 - package extraction;
 - naming paths;
