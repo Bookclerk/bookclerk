@@ -120,13 +120,13 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
       {userId !== null && !applies ? (
         <p className="text-xs text-ink/55">
           Owners and Administrators always see the whole library. A scope set here applies if their
-          role changes to Member or Host.
+          role changes to Member.
         </p>
       ) : null}
       {userId === null ? (
         <p className="text-xs text-ink/55">
-          Members and Hosts without their own scope see this. Books they hold through their own
-          store accounts are always visible.
+          Members without their own scope see this. Books they hold through their own store accounts
+          are always visible.
         </p>
       ) : (
         <div className="flex flex-col gap-1 text-sm text-ink">

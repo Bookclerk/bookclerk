@@ -15,6 +15,8 @@ export interface AppNavProps {
   defaultView: AppView;
   /** Effective session role (Settings is available to all signed-in roles). */
   role?: AuthRole;
+  /** Whether the session administers nodes (adds Status to the links). */
+  administersNodes?: boolean;
 }
 
 /**
@@ -22,10 +24,10 @@ export interface AppNavProps {
  *
  * @param props - Current view and navigate callback.
  */
-export function AppNav({ view, onNavigate, role }: AppNavProps) {
+export function AppNav({ view, onNavigate, role, administersNodes }: AppNavProps) {
   return (
     <nav className="flex flex-wrap items-center gap-1 text-sm sm:gap-2">
-      {navLinksForRole(role).map((link) => (
+      {navLinksForRole(role, administersNodes).map((link) => (
         <a
           key={link.id}
           href={pathForView(link.id)}

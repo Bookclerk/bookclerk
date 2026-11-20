@@ -69,8 +69,7 @@ export function AccountsPage({
   const [notice, setNotice] = useState<string | null>(null);
   // Every library user links their own store accounts; only the operator
   // (a token, not a user) cannot.
-  const canConnect =
-    role === "owner" || role === "administrator" || role === "host" || role === "member";
+  const canConnect = role === "owner" || role === "administrator" || role === "member";
 
   async function refresh() {
     setError(null);
