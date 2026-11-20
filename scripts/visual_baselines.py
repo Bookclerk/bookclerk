@@ -202,8 +202,17 @@ MARKER = re.compile(
     re.ASCII,
 )
 
-#: Most rows the comment shows; the rest are counted.
-MAX_COMMENT_ROWS = 40
+#: The first line of each continuation comment, when the table does not fit
+#: in one: its place in the series and the set it shows. It never matches
+#: ``MARKER``, so a continuation is never mistaken for the review comment.
+PART_MARKER = re.compile(
+    r"<!-- bookclerk-visual-baselines v1 part=([1-9][0-9]{0,3}) set=([0-9a-f]{40}) -->",
+    re.ASCII,
+)
+
+#: Most characters one comment body holds; GitHub refuses bodies over
+#: 65,536, and the rest is headroom for the outcome notes ``approve`` appends.
+MAX_COMMENT_CHARS = 60_000
 
 #: Largest event or API document read, in bytes.
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
@@ -249,39 +258,37 @@ def diff_sets(
     return changes
 
 
-def render_comment(
+def render_comments(
     head: str,
     set_commit: str,
     approved_commit: str | None,
     changes: list[tuple[str, str]],
     raw_base: str,
     bot_login: str,
-) -> str:
-    """Renders the bot's review comment for a proposed set.
+) -> list[str]:
+    """Renders the bot's review comment for a proposed set, split to fit.
+
+    Every change gets a row; nothing is left out. Rows that would push the
+    review comment past ``MAX_COMMENT_CHARS`` go into continuation comments,
+    each opened by ``PART_MARKER``.
 
     # Arguments
     * ``head``: the pull request head the set was recorded from.
     * ``set_commit``: the baselines commit holding the proposed set.
-    * ``approved_commit``: the commit the pull request's lock names, or
-      ``None`` before any set was approved.
+    * ``approved_commit``: the approved set the pull request is compared
+      with, or ``None`` before any set was approved.
     * ``changes``: from ``diff_sets``; validated paths only.
     * ``raw_base``: the raw-file URL prefix of the baselines repository,
       such as ``https://raw.githubusercontent.com/<owner>/<repo>``.
+    * ``bot_login``: the automation App's login, for the reply command.
 
     # Returns
-    The comment body: the marker, a table of approved and proposed images,
-    and the unticked checkbox.
+    The review comment (the marker, a summary, the unticked checkbox and the
+    first rows of the table of approved and proposed images), then any
+    continuation comments in order.
     """
-    lines = [
-        f"<!-- bookclerk-visual-baselines v1 head={head} set={set_commit} -->",
-        "### Visual changes",
-        "",
-        f"{len(changes)} screenshot(s) differ from the approved baselines at `{head[:12]}`.",
-        "",
-        "| Screenshot | Approved | Proposed |",
-        "| --- | --- | --- |",
-    ]
-    for path, change in changes[:MAX_COMMENT_ROWS]:
+    rows = []
+    for path, change in changes:
         old = (
             "new"
             if change == "added" or approved_commit is None
@@ -292,17 +299,44 @@ def render_comment(
             if change == "removed"
             else f"![proposed]({raw_base}/{set_commit}/{path})"
         )
-        lines.append(f"| `{path[:-4]}` | {old} | {new} |")
-    if len(changes) > MAX_COMMENT_ROWS:
-        lines.append(f"| and {len(changes) - MAX_COMMENT_ROWS} more | | |")
-    lines += [
+        rows.append(f"| `{path[:-4]}` | {old} | {new} |")
+    table = ["| Screenshot | Approved | Proposed |", "| --- | --- | --- |"]
+
+    def fill(lead: list[str], start: int, reserve: int) -> tuple[list[str], int]:
+        # Always takes at least one row, so every body makes progress.
+        lines = lead + table
+        size = reserve + sum(len(line) + 1 for line in lines)
+        end = start
+        while end < len(rows) and (
+            end == start or size + len(rows[end]) + 1 <= MAX_COMMENT_CHARS
+        ):
+            size += len(rows[end]) + 1
+            lines.append(rows[end])
+            end += 1
+        return lines, end
+
+    lead = [
+        f"<!-- bookclerk-visual-baselines v1 head={head} set={set_commit} -->",
+        "### Visual changes",
+        "",
+        f"{len(changes)} screenshot(s) differ from the approved baselines at `{head[:12]}`.",
         "",
         checkbox(head, False),
         "",
         f"Without write access, a visual reviewer approves by replying `{approve_command(bot_login)}`.",
         "",
     ]
-    return "\n".join(lines)
+    # The reserve leaves room for the sentence pointing at the continuations.
+    first, end = fill(lead, 0, 80)
+    bodies = [first]
+    while end < len(rows):
+        marker = f"<!-- bookclerk-visual-baselines v1 part={len(bodies)} set={set_commit} -->"
+        lines, end = fill([marker, "### Visual changes, continued", ""], end, 0)
+        bodies.append(lines)
+    if len(bodies) > 1:
+        note = f"The table continues in the next {len(bodies) - 1} comment(s)."
+        bodies[0][len(lead) : len(lead)] = [note, ""]
+    return ["\n".join(lines) + "\n" for lines in bodies]
 
 
 def parse_role(raw: bytes) -> str:
