@@ -251,6 +251,67 @@ pub enum InstancesCommand {
         /// Nested get/set/clear action.
         command: FilterCommand,
     },
+    /// Show or change whether a storage instance is a drop folder: a folder
+    /// Bookclerk watches and adds whatever lands there to the library.
+    Intake {
+        #[command(subcommand)]
+        /// Nested get/set/clear action.
+        command: IntakeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// `plugins instances intake` subcommands.
+pub enum IntakeCommand {
+    /// Show whether a storage instance is a drop folder, and its settings.
+    Get {
+        /// Plugin alias, PluginKey, or plugin instance id of the storage
+        /// instance.
+        instance: String,
+    },
+    /// Make a storage instance a drop folder, or change a drop folder's
+    /// settings. Options left out keep their current value (or the
+    /// default, for a new drop folder). Turning a destination into a drop
+    /// folder needs the instance undeployed on every node.
+    Set {
+        /// Plugin alias, PluginKey, or plugin instance id of the storage
+        /// instance.
+        instance: String,
+        /// User id of the patron who holds every book the folder adds.
+        #[arg(long, value_name = "USER_ID", conflicts_with = "subfolder")]
+        patron: Option<i64>,
+        /// Each top-level folder is named after a patron's username and
+        /// holds that patron's books.
+        #[arg(long)]
+        subfolder: bool,
+        /// Seconds an item must stay unchanged before it is added (5 to
+        /// 86400; default 60).
+        #[arg(long, value_name = "SECONDS")]
+        settle_seconds: Option<u32>,
+        /// Seconds between two full listings of the folder (30 to 86400;
+        /// default 300).
+        #[arg(long, value_name = "SECONDS")]
+        scan_interval_seconds: Option<u32>,
+        /// What happens to an item once it is added: `move` (to
+        /// `_imported/`, the default), `delete` or `leave`.
+        #[arg(long, value_name = "ACTION")]
+        after_ingest: Option<String>,
+        /// Extra file name pattern to ignore, with `*` and `?` (repeatable;
+        /// replaces the current list).
+        #[arg(long, value_name = "PATTERN")]
+        ignore: Vec<String>,
+        /// With `--after-ingest move`, delete `_imported` day folders older
+        /// than this many days (1 to 3650).
+        #[arg(long, value_name = "DAYS")]
+        prune_imported_days: Option<u16>,
+    },
+    /// Make a drop folder a destination again. Needs the instance
+    /// undeployed on every node.
+    Clear {
+        /// Plugin alias, PluginKey, or plugin instance id of the storage
+        /// instance.
+        instance: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2245,6 +2306,7 @@ async fn run_instances(
             })
         }
         InstancesCommand::Filter { command } => run_filter(store, command, format).await,
+        InstancesCommand::Intake { command } => run_intake(store, command, format).await,
         InstancesCommand::Delete { instance } => {
             let id = PluginInstanceId::parse(&instance)?;
             delete_plugin_instance(store, &cli_actor(), &id).await?;
@@ -2256,6 +2318,99 @@ async fn run_instances(
                 },
             )
         }
+    }
+}
+
+/// `plugins instances intake` actions.
+async fn run_intake(
+    store: &LibraryStore,
+    command: IntakeCommand,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    use bookclerk_config::{AfterIngest, IntakeAttribution, IntakeSettings};
+    use bookclerk_library::control_plane::{intake_settings, set_intake};
+    let (instance, settings) = match command {
+        IntakeCommand::Get { instance } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let settings = intake_settings(store, instance.id.as_str()).await?;
+            (instance, settings)
+        }
+        IntakeCommand::Set {
+            instance,
+            patron,
+            subfolder,
+            settle_seconds,
+            scan_interval_seconds,
+            after_ingest,
+            ignore,
+            prune_imported_days,
+        } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let current = intake_settings(store, instance.id.as_str()).await?;
+            let mut settings = current.unwrap_or(IntakeSettings {
+                patron: None,
+                ..IntakeSettings::for_patron(1)
+            });
+            if subfolder {
+                settings.attribute_to = IntakeAttribution::Subfolder;
+                settings.patron = None;
+            }
+            if let Some(patron) = patron {
+                settings.attribute_to = IntakeAttribution::Owner;
+                settings.patron = Some(patron);
+            }
+            if let Some(seconds) = settle_seconds {
+                settings.settle_seconds = seconds;
+            }
+            if let Some(seconds) = scan_interval_seconds {
+                settings.scan_interval_seconds = seconds;
+            }
+            if let Some(action) = after_ingest {
+                settings.after_ingest = AfterIngest::parse(action.trim()).ok_or_else(|| {
+                    anyhow::anyhow!("--after-ingest is move, delete or leave, not `{action}`")
+                })?;
+            }
+            if !ignore.is_empty() {
+                settings.ignore = ignore;
+            }
+            if prune_imported_days.is_some() {
+                settings.prune_imported_days = prune_imported_days;
+            }
+            let stored = set_intake(store, &cli_actor(), &instance.id, Some(settings)).await?;
+            (instance, stored.body.intake)
+        }
+        IntakeCommand::Clear { instance } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let stored = set_intake(store, &cli_actor(), &instance.id, None).await?;
+            (instance, stored.body.intake)
+        }
+    };
+    emit(
+        format,
+        &json!({ "plugin_instance_id": instance.id.to_string(), "intake": settings }),
+        || print_intake(&instance.id, settings.as_ref()),
+    )
+}
+
+/// Prints whether a storage instance is a drop folder, and its settings.
+fn print_intake(instance: &PluginInstanceId, settings: Option<&bookclerk_config::IntakeSettings>) {
+    let Some(settings) = settings else {
+        println!("storage instance {instance} is a destination, not a drop folder");
+        return;
+    };
+    println!("storage instance {instance} is a drop folder:");
+    match settings.patron {
+        Some(patron) => println!("  books held by:  user {patron}"),
+        None => println!("  books held by:  the patron named by each top-level folder"),
+    }
+    println!("  settle:         {} s", settings.settle_seconds);
+    println!("  listing every:  {} s", settings.scan_interval_seconds);
+    println!("  after ingest:   {}", settings.after_ingest.as_str());
+    if let Some(days) = settings.prune_imported_days {
+        println!("  prune imported: after {days} days");
+    }
+    if !settings.ignore.is_empty() {
+        println!("  also ignore:    {}", settings.ignore.join(", "));
     }
 }
 
