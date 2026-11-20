@@ -38389,6 +38389,169 @@
         ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
+    },
+    "/api/portal/sources/{source}/connections/{account_id}/pace": {
+      "post": {
+        "tags": [
+          "Accounts"
+        ],
+        "summary": "Changes how fast Bookclerk downloads from one of the caller's store\naccounts when it starts the downloads itself, and returns the result.",
+        "description": "The body sets `mode` (`default`, `custom` or `unlimited`); a custom pace\ncarries `downloads_per_day` (1 to 10000) and/or `min_gap_seconds` (0 to\n86400). `clear_cooldown: true` also ends a cool-down the store asked\nfor. Downloads a person starts are never held, whatever the pace.",
+        "operationId": "portal_set_connection_pace",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "path",
+            "description": "Source plugin id or PluginKey.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Store account id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaceRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The pace was stored; the account's pace as it now stands.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaceView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body breaks a rule, or the account is not linked to this identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "invalid": {
+                    "summary": "A custom pace with no values.",
+                    "value": {
+                      "error": "invalid input: pace body: a custom pace needs downloads_per_day or min_gap_seconds"
+                    }
+                  },
+                  "not_linked": {
+                    "summary": "No link between this identity and the account.",
+                    "value": {
+                      "error": "account not linked to this identity"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the portal session expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "No portal session cookie.",
+                    "value": {
+                      "error": "not signed in"
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "The cookie names a session that is gone.",
+                    "value": {
+                      "error": "session expired"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is longer than 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "the body is at most 4096 bytes"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare an `application/json` body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "not_json": {
+                    "summary": "No JSON Content-Type.",
+                    "value": {
+                      "error": "the body must be sent as application/json"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
     }
   },
   "components": {
@@ -40903,7 +41066,8 @@
           "source",
           "plugin_key",
           "connection_status",
-          "source_enabled"
+          "source_enabled",
+          "pace"
         ],
         "properties": {
           "account_id": {
@@ -40969,6 +41133,14 @@
               }
             },
             "nullable": true
+          },
+          "pace": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PaceView"
+              }
+            ],
+            "description": "How fast Bookclerk downloads from this account when it starts the\ndownloads itself."
           }
         }
       },
@@ -47141,6 +47313,137 @@
             "example": [
               "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
             ]
+          }
+        }
+      },
+      "PaceModeSchema": {
+        "type": "string",
+        "description": "The `mode` of a [`PaceRequestBody`], for the API reference.",
+        "enum": [
+          "default",
+          "custom",
+          "unlimited"
+        ]
+      },
+      "PaceRequestBody": {
+        "type": "object",
+        "description": "Request body of the pace route, for the API reference (the route reads\nthe raw bytes with `bookclerk_library::pacing::parse_pace_request`).",
+        "properties": {
+          "mode": {
+            "description": "`default`, `custom` or `unlimited`. Leave it out to only end the\ncool-down (then `clear_cooldown` must be `true`) and keep the stored\npace.",
+            "type": "string",
+            "enum": [
+              "default",
+              "custom",
+              "unlimited",
+              null
+            ],
+            "nullable": true
+          },
+          "downloads_per_day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Custom downloads per rolling 24 hours; `custom` only.",
+            "example": 20,
+            "maximum": 10000,
+            "minimum": 1,
+            "nullable": true
+          },
+          "min_gap_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Custom seconds between downloads; `custom` only.",
+            "example": 60,
+            "maximum": 86400,
+            "minimum": 0,
+            "nullable": true
+          },
+          "clear_cooldown": {
+            "type": "boolean",
+            "description": "Also end a cool-down the store asked for.",
+            "example": false,
+            "nullable": true
+          }
+        }
+      },
+      "PaceView": {
+        "type": "object",
+        "description": "How fast Bookclerk downloads from one store account when it starts the\ndownloads itself, for the Accounts page.",
+        "required": [
+          "mode",
+          "min_gap_seconds",
+          "downloads_last_day"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "description": "`default` (the store's pace), `custom` or `unlimited`.",
+            "example": "default"
+          },
+          "downloads_per_day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Downloads allowed in any rolling 24 hours now in force; `null` for\nno daily budget.",
+            "example": 100,
+            "minimum": 0,
+            "nullable": true
+          },
+          "min_gap_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds between two downloads now in force.",
+            "example": 30,
+            "minimum": 0
+          },
+          "store_downloads_per_day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The store's declared daily budget; `null` when it declares none or\nits plugin is not deployed here.",
+            "example": 100,
+            "minimum": 0,
+            "nullable": true
+          },
+          "store_min_gap_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The store's declared gap in seconds; `null` when its plugin is not\ndeployed here.",
+            "example": 30,
+            "minimum": 0,
+            "nullable": true
+          },
+          "custom_downloads_per_day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Custom daily budget the operator set, when `mode` is `custom`.",
+            "example": null,
+            "minimum": 0,
+            "nullable": true
+          },
+          "custom_min_gap_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Custom gap the operator set, when `mode` is `custom`.",
+            "example": null,
+            "minimum": 0,
+            "nullable": true
+          },
+          "downloads_last_day": {
+            "type": "integer",
+            "description": "Downloads from this account in the last 24 hours, by hand or not.",
+            "example": 12,
+            "minimum": 0
+          },
+          "cooldown_until": {
+            "type": "string",
+            "description": "End of the cool-down the store asked for (RFC 3339), when one is\nrunning.",
+            "example": null,
+            "nullable": true
+          },
+          "next_automatic_at": {
+            "type": "string",
+            "description": "When the next automatic download may start (RFC 3339); `null` when\none may start now.",
+            "example": null,
+            "nullable": true
           }
         }
       },

@@ -4774,6 +4774,28 @@ impl StorageBackend for PluginStorage {
         Ok(out)
     }
 
+    /// Asks the guest to translate the host keys when it declared
+    /// `storage.translateKeys`; otherwise each host key is stored as
+    /// written.
+    async fn translate_keys(
+        &self,
+        keys: &[bookclerk_storage::key_syntax::HostKey],
+    ) -> bookclerk_storage::Result<Vec<String>> {
+        let written: Vec<String> = keys.iter().map(|key| key.as_str().to_string()).collect();
+        if !self.capabilities().translate_keys {
+            return Ok(written);
+        }
+        let mut out = Vec::with_capacity(written.len());
+        for batch in crate::storage_intent::batches(&written) {
+            let op = StorageOp::TranslateKeys(batch.to_vec());
+            match self.session.storage_op(op).await.map_err(Self::map_err)? {
+                StorageOpReply::TranslateKeys(translated) => out.extend(translated),
+                other => return Err(unexpected_reply("translateKeys", &other)),
+            }
+        }
+        Ok(out)
+    }
+
     async fn put_stream_conditional(
         &self,
         key: &str,

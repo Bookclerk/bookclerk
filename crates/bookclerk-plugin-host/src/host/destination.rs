@@ -7,9 +7,7 @@
 
 use std::sync::Arc;
 
-use bookclerk_config::{
-    Config, DestinationId, DestinationKeyStyle, DestinationNaming, NamingProfile,
-};
+use bookclerk_config::{Config, DestinationId, DestinationNaming, NamingProfile};
 use bookclerk_storage::StorageBackend;
 
 use crate::discover::DiscoveredPlugin;
@@ -18,27 +16,12 @@ use crate::protocol::OutputS3ContextDto;
 use crate::rpc_session::{PluginSession, PluginStorage};
 use crate::Result as PluginResult;
 
-/// How a destination served by `plugin` names keys: file-system paths for
-/// the first-party `local` plugin, object-store keys for every other one.
-///
-/// The destination's id is its plugin instance id, given when the guest is
-/// published, so several instances of one plugin are separate destinations.
-pub(crate) fn key_style_of(plugin: &DiscoveredPlugin) -> DestinationKeyStyle {
-    if crate::is_first_party_local_output(plugin) {
-        DestinationKeyStyle::Filesystem
-    } else {
-        DestinationKeyStyle::ObjectStore
-    }
-}
-
 /// A storage guest that has been spawned and not yet published.
 pub(crate) struct SpawnedDestination {
     /// Guest session.
     pub session: Arc<PluginSession>,
     /// Storage backend over `session`.
     backend: Arc<dyn StorageBackend>,
-    /// How the destination names keys.
-    key_style: DestinationKeyStyle,
     /// Key layout from the instance document.
     settings: DestinationSettings,
 }
@@ -49,8 +32,6 @@ pub(crate) struct OnDemandParts {
     pub session: Arc<PluginSession>,
     /// Storage backend over `session`.
     pub backend: Arc<dyn StorageBackend>,
-    /// How the destination names keys.
-    pub key_style: DestinationKeyStyle,
     /// Key layout from the instance document.
     pub settings: DestinationSettings,
 }
@@ -62,7 +43,6 @@ impl SpawnedDestination {
         OnDemandParts {
             session: self.session,
             backend: self.backend,
-            key_style: self.key_style,
             settings: self.settings,
         }
     }
@@ -112,8 +92,6 @@ pub async fn storage_role(
 pub struct DeployedIntake {
     /// The drop folder's plugin instance id.
     pub id: DestinationId,
-    /// How the folder names keys.
-    pub key_style: DestinationKeyStyle,
     /// Storage backend over the folder's guest.
     pub backend: Arc<dyn StorageBackend>,
     /// Key layout from the instance document (its `prefix`).
@@ -125,8 +103,6 @@ pub struct DeployedIntake {
 pub struct DeployedDestination {
     /// The destination's id: its plugin instance id.
     pub id: DestinationId,
-    /// How the destination names keys.
-    pub key_style: DestinationKeyStyle,
     /// Storage backend over the destination's guest.
     pub backend: Arc<dyn StorageBackend>,
     /// Key layout from the instance document.
@@ -292,8 +268,6 @@ struct DeployedSlot {
     backend: Arc<dyn StorageBackend>,
     /// The destination's id: the plugin instance id the slot is keyed by.
     id: DestinationId,
-    /// How the destination names keys.
-    key_style: DestinationKeyStyle,
     /// Key layout from the instance document.
     settings: DestinationSettings,
     /// Destination or drop folder.
@@ -311,8 +285,9 @@ pub struct DestinationRegistry {
 }
 
 impl DestinationRegistry {
-    /// Every deployed destination, one per plugin instance: destinations
-    /// that name files as paths first, then the rest, each group by id.
+    /// Every deployed destination, one per plugin instance, by id. No kind
+    /// of storage plugin comes first: each translates the host's keys
+    /// itself.
     ///
     /// Several instances of one plugin are separate destinations. Drop
     /// folders ([`StorageRole::Intake`]) are not destinations and are left
@@ -325,17 +300,11 @@ impl DestinationRegistry {
             .filter(|slot| slot.role == StorageRole::Destination)
             .map(|slot| DeployedDestination {
                 id: slot.id.clone(),
-                key_style: slot.key_style,
                 backend: Arc::clone(&slot.backend),
                 settings: slot.settings.clone(),
             })
             .collect();
-        out.sort_by(|a, b| {
-            b.key_style
-                .is_filesystem()
-                .cmp(&a.key_style.is_filesystem())
-                .then_with(|| a.id.cmp(&b.id))
-        });
+        out.sort_by(|a, b| a.id.cmp(&b.id));
         out
     }
 
@@ -348,7 +317,6 @@ impl DestinationRegistry {
             .filter(|slot| slot.role == StorageRole::Intake)
             .map(|slot| DeployedIntake {
                 id: slot.id.clone(),
-                key_style: slot.key_style,
                 backend: Arc::clone(&slot.backend),
                 settings: slot.settings.clone(),
             })
@@ -422,7 +390,6 @@ impl DestinationRegistry {
         plugin_instance_id: &str,
         guest: SlotGuest,
         backend: Arc<dyn StorageBackend>,
-        key_style: DestinationKeyStyle,
         settings: DestinationSettings,
         role: StorageRole,
     ) -> std::result::Result<(), String> {
@@ -433,7 +400,6 @@ impl DestinationRegistry {
                 guest,
                 backend,
                 id,
-                key_style,
                 settings,
                 role,
             },
@@ -466,7 +432,6 @@ impl DestinationRegistry {
             plugin_instance_id,
             SlotGuest::Resident(Arc::clone(&spawned.session)),
             spawned.backend,
-            spawned.key_style,
             spawned.settings,
             role,
         )?;
@@ -489,7 +454,6 @@ impl DestinationRegistry {
         plugin_instance_id: &str,
         first: &PluginSession,
         proxy: Arc<OnDemandStorage>,
-        key_style: DestinationKeyStyle,
         settings: DestinationSettings,
         role: StorageRole,
     ) -> std::result::Result<(), String> {
@@ -501,7 +465,6 @@ impl DestinationRegistry {
                 identity: Arc::new(SessionIdentity::of(first)),
             },
             backend,
-            key_style,
             settings,
             role,
         )
@@ -547,7 +510,6 @@ pub(crate) async fn spawn_deployed_storage(
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<SpawnedDestination> {
     let settings = DestinationSettings::from_granted_config(&prepared.granted_config);
-    let key_style = key_style_of(plugin);
     // First-party identity is the PluginKey plus verified provenance, never
     // the manifest alias: an `s3` or `local` alias twin spawns as a generic
     // storage guest with no implied endpoint grant or typed context.
@@ -556,7 +518,6 @@ pub(crate) async fn spawn_deployed_storage(
         return Ok(SpawnedDestination {
             session,
             backend: Arc::new(storage_backend),
-            key_style,
             settings,
         });
     }
@@ -566,7 +527,6 @@ pub(crate) async fn spawn_deployed_storage(
         return Ok(SpawnedDestination {
             session,
             backend: Arc::new(storage),
-            key_style,
             settings,
         });
     }
@@ -585,7 +545,6 @@ pub(crate) async fn spawn_deployed_storage(
     Ok(SpawnedDestination {
         backend: Arc::new(PluginStorage::new(Arc::clone(&session))),
         session,
-        key_style,
         settings,
     })
 }
@@ -958,20 +917,14 @@ mode = "outbound"
 #[cfg(test)]
 mod registry_tests {
     //! Every deployed storage guest is a destination named by its plugin
-    //! instance: ids, order, key styles and several instances of one plugin.
+    //! instance: ids, order and several instances of one plugin.
 
     use std::sync::Arc;
     use std::time::Duration;
 
-    use bookclerk_config::DestinationKeyStyle;
-
     use super::{
-        key_style_of, DestinationRegistry, DestinationSettings, SessionIdentity, SlotGuest,
-        StorageRole,
+        DestinationRegistry, DestinationSettings, SessionIdentity, SlotGuest, StorageRole,
     };
-    use crate::discover::DiscoveredPlugin;
-    use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
-    use bookclerk_plugin_manifest::PluginManifest;
 
     /// Records an on-demand destination slot of plugin `plugin` under
     /// `instance`, storing into `dir`.
@@ -979,17 +932,9 @@ mod registry_tests {
         registry: &mut DestinationRegistry,
         instance: &str,
         plugin: &str,
-        key_style: DestinationKeyStyle,
         dir: &tempfile::TempDir,
     ) -> std::result::Result<(), String> {
-        deploy_as(
-            registry,
-            instance,
-            plugin,
-            key_style,
-            dir,
-            StorageRole::Destination,
-        )
+        deploy_as(registry, instance, plugin, dir, StorageRole::Destination)
     }
 
     /// [`deploy`] with the slot's role.
@@ -997,7 +942,6 @@ mod registry_tests {
         registry: &mut DestinationRegistry,
         instance: &str,
         plugin: &str,
-        key_style: DestinationKeyStyle,
         dir: &tempfile::TempDir,
         role: StorageRole,
     ) -> std::result::Result<(), String> {
@@ -1016,7 +960,6 @@ mod registry_tests {
                 }),
             },
             backend,
-            key_style,
             DestinationSettings {
                 prefix: format!("{instance}/"),
                 ..DestinationSettings::default()
@@ -1029,19 +972,11 @@ mod registry_tests {
     async fn a_drop_folder_is_never_a_destination() {
         let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().unwrap()).collect();
         let mut registry = DestinationRegistry::default();
-        deploy(
-            &mut registry,
-            "books",
-            "local",
-            DestinationKeyStyle::Filesystem,
-            &dirs[0],
-        )
-        .unwrap();
+        deploy(&mut registry, "books", "local", &dirs[0]).unwrap();
         deploy_as(
             &mut registry,
             "drop",
             "local",
-            DestinationKeyStyle::Filesystem,
             &dirs[1],
             StorageRole::Intake,
         )
@@ -1061,48 +996,25 @@ mod registry_tests {
     }
 
     #[tokio::test]
-    async fn every_storage_instance_is_a_destination_paths_first() {
+    async fn every_storage_instance_is_a_destination_by_id() {
         let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
         let mut registry = DestinationRegistry::default();
         assert!(registry.destinations().is_empty());
-        deploy(
-            &mut registry,
-            "a-r2",
-            "r2",
-            DestinationKeyStyle::ObjectStore,
-            &dirs[0],
-        )
-        .unwrap();
-        deploy(
-            &mut registry,
-            "z-local",
-            "local",
-            DestinationKeyStyle::Filesystem,
-            &dirs[1],
-        )
-        .unwrap();
-        deploy(
-            &mut registry,
-            "b-r2",
-            "r2",
-            DestinationKeyStyle::ObjectStore,
-            &dirs[2],
-        )
-        .unwrap();
+        deploy(&mut registry, "a-r2", "r2", &dirs[0]).unwrap();
+        deploy(&mut registry, "z-local", "local", &dirs[1]).unwrap();
+        deploy(&mut registry, "b-r2", "r2", &dirs[2]).unwrap();
 
         let deployed = registry.destinations();
         let ids: Vec<&str> = deployed.iter().map(|d| d.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["z-local", "a-r2", "b-r2"],
-            "path destinations first, then by instance id; two r2 instances are two destinations"
+            ["a-r2", "b-r2", "z-local"],
+            "by instance id, whatever the plugin; two r2 instances are two destinations"
         );
-        assert_eq!(deployed[0].key_style, DestinationKeyStyle::Filesystem);
-        assert_eq!(deployed[2].key_style, DestinationKeyStyle::ObjectStore);
-        assert_eq!(deployed[2].settings.prefix, "b-r2/");
+        assert_eq!(deployed[1].settings.prefix, "b-r2/");
 
         // A third-party destination stores through its backend like any other.
-        deployed[2]
+        deployed[1]
             .backend
             .put(
                 "a/b.m4b",
@@ -1119,21 +1031,14 @@ mod registry_tests {
             .iter()
             .map(|d| d.id.to_string())
             .collect();
-        assert_eq!(ids, ["z-local", "b-r2"]);
+        assert_eq!(ids, ["b-r2", "z-local"]);
     }
 
     #[tokio::test]
     async fn an_instance_id_that_is_not_a_destination_id_is_not_recorded() {
         let dir = tempfile::tempdir().unwrap();
         let mut registry = DestinationRegistry::default();
-        let err = deploy(
-            &mut registry,
-            "Not/An/Id",
-            "r2",
-            DestinationKeyStyle::ObjectStore,
-            &dir,
-        )
-        .unwrap_err();
+        let err = deploy(&mut registry, "Not/An/Id", "r2", &dir).unwrap_err();
         assert!(err.contains("invalid destination id"), "{err}");
         assert!(registry.destinations().is_empty());
     }
@@ -1155,14 +1060,7 @@ mod registry_tests {
 
         let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().unwrap()).collect();
         let mut registry = DestinationRegistry::default();
-        deploy(
-            &mut registry,
-            "a-r2",
-            "r2",
-            DestinationKeyStyle::ObjectStore,
-            &dirs[0],
-        )
-        .unwrap();
+        deploy(&mut registry, "a-r2", "r2", &dirs[0]).unwrap();
         let single = crate::build_storage_backend(&registry).unwrap();
         single
             .put(
@@ -1174,14 +1072,7 @@ mod registry_tests {
             .unwrap();
         assert!(dirs[0].path().join("one.m4b").exists());
 
-        deploy(
-            &mut registry,
-            "z-local",
-            "local",
-            DestinationKeyStyle::Filesystem,
-            &dirs[1],
-        )
-        .unwrap();
+        deploy(&mut registry, "z-local", "local", &dirs[1]).unwrap();
         let acquire = crate::build_acquire_destinations(
             &config,
             &registry,
@@ -1190,46 +1081,11 @@ mod registry_tests {
         .unwrap();
         assert_eq!(
             acquire.primary.as_str(),
-            "z-local",
-            "path destinations lead"
+            "a-r2",
+            "the first destination by id leads, whatever its plugin"
         );
         let ids: Vec<&str> = acquire.items.iter().map(|d| d.id.as_str()).collect();
-        assert_eq!(ids, ["z-local", "a-r2"]);
+        assert_eq!(ids, ["a-r2", "z-local"]);
         assert!(crate::build_storage_backend(&registry).is_ok());
-    }
-
-    /// A storage plugin's manifest under `root`, with `id`.
-    fn discovered(root: &std::path::Path, id: &str) -> DiscoveredPlugin {
-        let toml = format!(
-            "api_version = 3\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"native\"\n\
-             command = \"./guest\"\nentrypoints = [\"storage\"]\n\n\
-             [capabilities.network]\nmode = \"outbound\"\n\n[vars]\n"
-        );
-        std::fs::create_dir_all(root).unwrap();
-        std::fs::write(root.join("plugin.toml"), &toml).unwrap();
-        let command = root.join("guest");
-        std::fs::write(&command, b"#!/bin/sh\n").unwrap();
-        let manifest = PluginManifest::parse(&toml).unwrap();
-        DiscoveredPlugin::try_new(manifest, root.to_path_buf(), command, None)
-            .expect("test plugin tree must evaluate")
-    }
-
-    #[test]
-    fn only_the_first_party_local_plugin_names_files_as_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut local = discovered(&dir.path().join("a"), "local");
-        let key = PluginKey::platform("bookclerk-plugin-destination-local", "local").unwrap();
-        local.identity.plugin_key = key.clone();
-        local.identity.artifact.plugin_key = key;
-        local.identity.provenance = PluginProvenance::VerifiedStaged;
-        assert_eq!(key_style_of(&local), DestinationKeyStyle::Filesystem);
-
-        // An alias twin of `local` stores object keys: it is not the
-        // first-party package.
-        let twin = discovered(&dir.path().join("b"), "local");
-        assert_eq!(key_style_of(&twin), DestinationKeyStyle::ObjectStore);
-
-        let r2 = discovered(&dir.path().join("c"), "r2");
-        assert_eq!(key_style_of(&r2), DestinationKeyStyle::ObjectStore);
     }
 }

@@ -267,8 +267,10 @@ async fn job_pin_plugin(store: &LibraryStore, job: &JobRecord) -> Result<Option<
 }
 
 /// True when a `claimant` may run `job` at all, whatever it is trusted
-/// with: a forced or PDF-only acquire runs only on a node that holds the
-/// library database, since the host acquire path does neither. An
+/// with: a forced, PDF-only or paced acquire runs only on a node that holds
+/// the library database, since the host acquire path does none of them (a
+/// paced acquire checks and records the account's pace in the library
+/// database before each download, `crate::pacing`). An
 /// interlibrary request ([`JobKind::BranchRequest`]) is never run through
 /// the routed claim: only its branch claims it, over `requests.claim`
 /// (`super::claim_branch_requests`). An ingest batch runs only on a node
@@ -284,7 +286,8 @@ pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
         return claimant == Claimant::Local;
     }
     claimant == Claimant::Local
-        || !(job.kind == JobKind::Acquire && (job.payload.force || job.payload.pdf_only))
+        || !(job.kind == JobKind::Acquire
+            && (job.payload.force || job.payload.pdf_only || job.payload.paced))
 }
 
 /// The store accounts a scan or acquire touches: its items.

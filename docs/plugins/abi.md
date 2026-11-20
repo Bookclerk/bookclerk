@@ -1020,7 +1020,7 @@ methods on [`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) and
 | `scan` | Returns one page of one account's library (see [Paged scans](#paged-scans)). Params carry `pluginDataDir`, `accountId`, filters, that account's host-injected `credential` (`{ accountId, credentials }`, the credentials as opaque JSON bytes; **no** library database path), `cursor` and `syncToken`. The reply is a `ScanPage` of `books[]` records (see [Book records](#book-records)); the host stores them with `source` forced to the plugin id |
 | `searchCatalog` | `{ query, region, limit, page, sort, field }` → `CatalogHit[]` (see [Book records](#book-records)). A `limit` of `0` means the storefront's default page of 20 hits; an empty query returns `[]` |
 | `catalogDetail` | `{ productId, isbn? }` → `{ found, hit }`: the full record for one product (description, narrators, runtime, genres). The host calls it only on a store that declares `detailByProductId` (for its own product ids) or `detailByIsbn` (which also answers a bare ISBN, sent in both fields) |
-| `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns a `PlainFetch` of **plain** files (DRM guests decrypt before returning): `mediaKind`, the carrier it fetched, which must be in its declared [`fetches`](#declaring-media); `files`, each `{ path, role, contentType?, title?, durationMs? }` with `role` `part` (ordered pieces), `whole` (the edition in one file, such as an M4B) or `cover`; `chapters`; and an optional `pdfUrl`. A reply lists `part`s or one `whole` file, never both, and at most one `cover`. The host acquires audio editions only today |
+| `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns a `PlainFetch` of **plain** files (DRM guests decrypt before returning): `mediaKind`, the carrier it fetched, which must be in its declared [`fetches`](#declaring-media); `files`, each `{ path, role, contentType?, title?, durationMs? }` with `role` `part` (ordered pieces), `whole` (the edition in one file, such as an M4B) or `cover`; `chapters`; and an optional `pdfUrl`. A reply lists `part`s or one `whole` file, never both, and at most one `cover`. The host acquires audio editions only today. When the store throttles the account, fail with `rate_limited` (and `details.retryAfterMs` when the store said how long): the host pauses automatic downloads on that account (see [`[acquire]`](manifest.md#acquire-download-pace)). A native Rust storefront whose store reports throttling only in words can test the refusal text with `bookclerk_storefront::is_throttle_reason` |
 | `purchaseHint` | Purchase link and, when `withPrice` is set, the live price of one title. `null` when the store does not sell it. `lookup` says how the host names the title (see [Price lookups](#price-lookups)) |
 | `purchaseHints` | The same for several titles in one call (`{ queries }`, one answer per query in order). The default in every SDK asks `purchaseHint` for each query, four at a time, those with a product id first, and stops starting lookups after 4 s, answering `null` for the rest, so the host's batch gets what the store managed; a store whose catalog prices many products per request (Audible's `products?asins=` takes fifty, Chirp's GraphQL takes aliased ids) overrides it to make one request, so a page of Discover cards costs one call per store |
 
@@ -1573,6 +1573,7 @@ operation, or `storage.conditionalWrite`, and enforces it natively.
 | `storage.moveMany` | `moveMany(request)` | Moves explicit pairs, or one page of every object under a prefix. |
 | `storage.deleteMany` | `deleteMany(keys)` | Removes up to `maxBatchKeys` (256) objects. |
 | `storage.headMany` | `headMany(keys)` | Probes up to `maxBatchKeys` objects. |
+| `storage.translateKeys` | `translateKeys(keys)` | Turns up to `maxBatchKeys` host keys into the keys it stores ([Translating keys](#translating-keys)). |
 | `storage.conditionalWrite` | `put` with `ifMatch` / `ifNoneMatch` | Publishes only while the precondition holds, else fails with `conflict`. |
 | `storage.changes` | `changes(request)` | Returns keys changed since a cursor. |
 
@@ -1675,6 +1676,30 @@ the guest awake instead of stopping it when idle. A page without them, a
 honours `liveWatch` only from the first-party storage plugins it starts on
 demand, which today means the `local` destination with `watch` on (see
 [decision 13](../adr/event-delivery-model.md#decision)).
+
+#### Translating keys
+
+The host names every file with one **host key**: segments joined by `/`,
+each non-empty, never `.` or `..`, with no `\` or control characters, at
+most 1024 bytes. A destination that declares `storage.translateKeys`
+receives host keys in `translateKeys(keys)` and returns, in the same order,
+the key it will store each one under: a path its file system accepts, or an
+object key its store can hold. The host then writes, checks for and records
+that key, and never passes a translated key back through `translateKeys`.
+
+A destination without the feature stores each host key as written, and the
+host does not wake a sleeping guest to ask. The host checks every reply: it
+has one key per host key, and each key is relative, at most
+4 KiB, with no control characters and no empty,
+`.` or `..` segment when split on `/` or `\`. A reply that breaks a rule
+fails with `internal`, and the host stores host keys for that write.
+
+Translation should be deterministic: the same host key must give the same
+key on every call, because the host recomputes it to find files it wrote
+earlier. The SDKs' `translateKeys` default returns the keys unchanged. The
+`local` destination applies the host platform's file-name rules, and `s3`
+the object-store rules and 1024-byte limit including its prefix (see
+[Keys each destination stores](../server/output.md#keys-each-destination-stores)).
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming

@@ -462,6 +462,13 @@ input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.pace_request]
+crate = "bookclerk-library"
+boundary = "A person's pace for one of their store accounts, from POST /api/portal/sources/{source}/connections/{account_id}/pace"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.window_policy]
 crate = "bookclerk-window-policy"
 boundary = "Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates"
@@ -483,6 +490,14 @@ input_from = "store"
 # The audible guest parses them for Discover, and host enrichment links the
 # same crate.
 side = "host"
+artifacts = ["bookclerk"]
+
+[targets.throttle_reason]
+crate = "bookclerk-storefront"
+boundary = "A store's refusal text, classified as a throttle or a plain refusal"
+input_from = "store"
+# The audible guest classifies refused license requests with it.
+side = "guest"
 artifacts = ["bookclerk"]
 
 [targets.graphicaudio_catalog]

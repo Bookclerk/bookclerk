@@ -1328,6 +1328,30 @@ impl dest_iface::Server for DestinationServer {
         Ok(())
     }
 
+    async fn translate_keys(
+        self: Rc<Self>,
+        params: dest_iface::TranslateKeysParams,
+        mut results: dest_iface::TranslateKeysResults,
+    ) -> capnp::Result<()> {
+        let keys = read_key_list("translateKeys", params.get()?.get_keys()?);
+        let result = results.get().init_result();
+        let outcome = match keys {
+            Ok(keys) => self.inner.translate_keys(keys).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(keys) => {
+                if let Err(err) =
+                    crate::storage_ops::fill_translate_keys_result(result.init_ok(), &keys)
+                {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
     async fn changes(
         self: Rc<Self>,
         params: dest_iface::ChangesParams,
@@ -1673,6 +1697,31 @@ impl Destination for DestinationClient {
         };
         crate::storage_ops::validate_head_many(&keys, &objects)?;
         Ok(objects)
+    }
+
+    async fn translate_keys(&self, keys: Vec<String>) -> Result<Vec<String>> {
+        crate::storage_ops::require_batch_len("translateKeys", keys.len())?;
+        let mut req = self.client.translate_keys_request();
+        fill_key_list(
+            req.get().init_keys(capnp_u32_len(keys.len(), "key list")?),
+            &keys,
+        )?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let translated = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::translate_keys_reply::Ok(r) => {
+                crate::storage_ops::read_translate_keys_result(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::translate_keys_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_translated_keys(&keys, &translated)?;
+        Ok(translated)
     }
 
     async fn changes(&self, request: crate::ChangesRequest) -> Result<crate::ChangesPage> {

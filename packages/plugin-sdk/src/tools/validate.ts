@@ -50,6 +50,18 @@ export type Manifest = {
     fetches?: string[];
   };
   /**
+   * `[acquire]` — how fast the host may download from one store account when
+   * it starts the downloads itself. Optional, storefronts only.
+   */
+  acquire?: {
+    /** Downloads per store account in any rolling 24 hours (1 to 10000). */
+    downloads_per_day?: number;
+    /** Seconds between two downloads on one store account (0 to 86400). */
+    min_gap_seconds?: number;
+    /** Seconds to pause after `rateLimited` without a retry time (1 to 604800). */
+    cooldown_seconds?: number;
+  };
+  /**
    * `[metadata_files]` — the metadata file dialects a `metadataFiles` plugin
    * implements. Required for that entrypoint, forbidden for others.
    */
@@ -980,6 +992,7 @@ export function validateManifest(m: Manifest): void {
     validateLogo(String(m.logo));
   }
   validateMedia(m);
+  validateAcquire(m);
   validateMetadataFiles(m);
   validateSurface(m);
   validateSettings(m);
@@ -1096,6 +1109,58 @@ function validateMedia(m: Manifest): void {
     throw new Error(
       `plugin.toml: \`[media].fetches\` names \`${unlisted}\`, which \`lists\` does not`,
     );
+  }
+}
+
+/** Each `[acquire]` field with its allowed range, in check order. */
+const ACQUIRE_RANGES = [
+  ["downloads_per_day", 1, 10_000],
+  ["min_gap_seconds", 0, 86_400],
+  ["cooldown_seconds", 1, 604_800],
+] as const;
+
+/**
+ * Checks `[acquire]` against the entrypoints and its ranges, with the host's
+ * rules and messages (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When a plugin without the `storefront` entrypoint declares
+ *   the table, the table names a field the host does not know, or a value is
+ *   not a whole number in its range.
+ */
+function validateAcquire(m: Manifest): void {
+  const acquire = m.acquire;
+  if (acquire == null) {
+    return;
+  }
+  const entrypoints = (m.entrypoints ?? []) as readonly string[];
+  if (!entrypoints.includes("storefront")) {
+    throw new Error("plugin.toml: `[acquire]` needs the `storefront` entrypoint");
+  }
+  // A TOML table parses to a plain object; an array, a date (an object with
+  // no keys of its own) or any other value is not one.
+  const table: unknown = acquire;
+  const proto: unknown =
+    typeof table === "object" && table !== null ? Object.getPrototypeOf(table) : undefined;
+  if (Array.isArray(table) || (proto !== Object.prototype && proto !== null)) {
+    throw new Error("plugin.toml: `[acquire]` must be a table");
+  }
+  const known: readonly string[] = ACQUIRE_RANGES.map(([field]) => field);
+  const unknown = Object.keys(acquire).filter((key) => !known.includes(key));
+  if (unknown.length > 0) {
+    throw new Error(
+      `plugin.toml: \`[acquire]\`: unknown field \`${unknown[0]}\` (expected ${known.join(", ")})`,
+    );
+  }
+  for (const [field, min, max] of ACQUIRE_RANGES) {
+    const raw: unknown = acquire[field];
+    if (raw === undefined) {
+      continue;
+    }
+    const value = typeof raw === "bigint" ? Number(raw) : raw;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+      throw new Error(`plugin.toml: \`[acquire].${field}\` must be between ${min} and ${max}`);
+    }
   }
 }
 
@@ -1333,7 +1398,7 @@ function validateSurface(m: Manifest): void {
 }
 
 /** Newest compatibility date the pinned workerd binary honors. */
-export const WORKERD_PIN_COMPAT_DATE = "2026-11-12";
+export const WORKERD_PIN_COMPAT_DATE = "2026-11-13";
 
 /** Author flags allowed on this pin. Required together for Python guests. */
 export const PYTHON_COMPATIBILITY_FLAGS = [

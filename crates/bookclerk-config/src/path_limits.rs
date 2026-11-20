@@ -1,17 +1,21 @@
-//! Filesystem / object-store path length limits for acquired storage keys.
+//! Length limits for the host keys acquire builds from naming templates.
 //!
 //! Classic Libation enforces [`DEFAULT_MAX_FILENAME_LENGTH`] (255) per path
-//! component via `LongPath.MaxFilenameLength`. S3 object keys are capped at
-//! [`S3_MAX_OBJECT_KEY_BYTES`] (1024) UTF-8 bytes. Acquire applies these when
-//! building storage keys so long titles/series do not fail at write time.
+//! component via `LongPath.MaxFilenameLength`, and a host key is at most
+//! [`MAX_HOST_KEY_BYTES`] (1024) UTF-8 bytes including the destination's
+//! prefix, which every file system and S3-compatible store accepts. Acquire
+//! shortens long titles and series to fit, keeping the call number, so a
+//! destination's storage plugin rarely has to shorten a key itself when it
+//! translates it.
 
 use serde::{Deserialize, Serialize};
 
 /// Classic Libation `LongPath.MaxFilenameLength` — per path component.
 pub const DEFAULT_MAX_FILENAME_LENGTH: usize = 255;
 
-/// AWS S3 maximum object key length (UTF-8 bytes), including any prefix.
-pub const S3_MAX_OBJECT_KEY_BYTES: usize = 1024;
+/// Largest host key, in UTF-8 bytes, including the destination's prefix:
+/// the S3 object-key limit, which file systems also accept.
+pub const MAX_HOST_KEY_BYTES: usize = 1024;
 
 /// How to measure path component length when truncating.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -30,7 +34,7 @@ pub struct PathLimits {
     /// Max length per folder / file-stem segment. `0` disables per-segment caps.
     pub max_filename_length: usize,
     /// Max UTF-8 bytes for the full relative storage key (`folder/…/file.ext`).
-    /// `0` disables. For S3, set to [`S3_MAX_OBJECT_KEY_BYTES`] minus prefix len.
+    /// `0` disables. Host keys use [`MAX_HOST_KEY_BYTES`] minus the prefix length.
     pub max_storage_key_bytes: usize,
     /// Whether segment truncation counts Unicode scalars or UTF-8 bytes.
     pub measure: PathLengthMeasure,
@@ -47,55 +51,22 @@ impl Default for PathLimits {
 }
 
 impl PathLimits {
-    /// Local-filesystem defaults: 255-length segments, no full-key cap.
+    /// Host-key limits for a destination whose keys sit under `prefix`:
+    /// segments of at most `max_filename_length` UTF-8 bytes, and a whole
+    /// key of [`MAX_HOST_KEY_BYTES`] minus the normalized `prefix` length
+    /// (its trailing `/` included when the prefix is non-empty).
+    ///
+    /// Bytes are counted for every destination: a name that fits in bytes
+    /// fits in characters and UTF-16 units too.
     #[must_use]
-    pub fn local(measure: PathLengthMeasure) -> Self {
-        Self {
-            max_filename_length: DEFAULT_MAX_FILENAME_LENGTH,
-            max_storage_key_bytes: 0,
-            measure,
-        }
-    }
-
-    /// S3 defaults: 255-byte segments plus a full-key budget of
-    /// [`S3_MAX_OBJECT_KEY_BYTES`] minus the normalized `prefix` UTF-8 length
-    /// (trailing `/` included when the prefix is non-empty).
-    #[must_use]
-    pub fn s3(prefix: &str) -> Self {
+    pub fn for_host_keys(max_filename_length: u32, prefix: &str) -> Self {
         let prefix_len = crate::output::normalize_storage_prefix(prefix).len();
-        let budget = S3_MAX_OBJECT_KEY_BYTES.saturating_sub(prefix_len);
         Self {
-            max_filename_length: DEFAULT_MAX_FILENAME_LENGTH,
-            max_storage_key_bytes: budget,
+            max_filename_length: usize::try_from(max_filename_length)
+                .unwrap_or(DEFAULT_MAX_FILENAME_LENGTH),
+            max_storage_key_bytes: MAX_HOST_KEY_BYTES.saturating_sub(prefix_len),
             measure: PathLengthMeasure::Utf8Bytes,
         }
-    }
-
-    /// Resolve from config: Windows sanitization → char measure; S3 → key budget.
-    #[must_use]
-    pub fn resolve(
-        max_filename_length: u32,
-        storage_is_s3: bool,
-        s3_prefix: &str,
-        path_sanitization_is_windows: bool,
-    ) -> Self {
-        let measure = if path_sanitization_is_windows {
-            PathLengthMeasure::Chars
-        } else {
-            PathLengthMeasure::Utf8Bytes
-        };
-        let mut limits = if storage_is_s3 {
-            Self::s3(s3_prefix)
-        } else {
-            Self::local(measure)
-        };
-        limits.max_filename_length = max_filename_length as usize;
-        limits.measure = if storage_is_s3 {
-            PathLengthMeasure::Utf8Bytes
-        } else {
-            measure
-        };
-        limits
     }
 }
 
@@ -315,16 +286,21 @@ mod tests {
     }
 
     #[test]
-    fn s3_budget_normalizes_prefix_trailing_slash() {
-        let with_slash = PathLimits::s3("library/");
-        let without = PathLimits::s3("library");
+    fn host_key_budget_normalizes_prefix_trailing_slash() {
+        let with_slash = PathLimits::for_host_keys(255, "library/");
+        let without = PathLimits::for_host_keys(255, "library");
         assert_eq!(
             with_slash.max_storage_key_bytes,
             without.max_storage_key_bytes
         );
         assert_eq!(
             without.max_storage_key_bytes,
-            S3_MAX_OBJECT_KEY_BYTES - "library/".len()
+            MAX_HOST_KEY_BYTES - "library/".len()
         );
+        assert_eq!(
+            PathLimits::for_host_keys(80, "").max_storage_key_bytes,
+            MAX_HOST_KEY_BYTES
+        );
+        assert_eq!(PathLimits::for_host_keys(80, "").max_filename_length, 80);
     }
 }

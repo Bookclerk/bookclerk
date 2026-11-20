@@ -136,14 +136,14 @@ pub async fn download_licensed_audio(
     speed_limit_kbps: u32,
 ) -> Result<EncryptedDownload> {
     if !license.is_granted() {
-        return Err(AudibleError::License(format!(
-            "license denied for {}: {}",
-            license.asin,
-            license
-                .denial_message
-                .as_deref()
-                .unwrap_or("no reason given")
-        )));
+        let reason = license
+            .denial_message
+            .as_deref()
+            .unwrap_or("no reason given");
+        return Err(AudibleError::license_refused(
+            reason,
+            format!("license denied for {}: {reason}", license.asin),
+        ));
     }
 
     let url = license
@@ -275,13 +275,14 @@ pub async fn fetch_and_download_with_client(
         Ok(license) => {
             let summary = summarize_license(&license);
             if !summary.granted {
-                return Err(AudibleError::License(format!(
-                    "license denied for {asin}: {}",
-                    summary
-                        .denial_message
-                        .as_deref()
-                        .unwrap_or("no reason given")
-                )));
+                let reason = summary
+                    .denial_message
+                    .as_deref()
+                    .unwrap_or("no reason given");
+                return Err(AudibleError::license_refused(
+                    reason,
+                    format!("license denied for {asin}: {reason}"),
+                ));
             }
             let format = license
                 .content_format

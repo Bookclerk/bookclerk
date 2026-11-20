@@ -15,6 +15,12 @@ works = ["book"]
 lists = ["audio"]
 fetches = ["audio"]
 
+# Pace for downloads Bookclerk starts itself (auto-acquire, requests).
+[acquire]
+downloads_per_day = 100
+min_gap_seconds = 10
+cooldown_seconds = 3600
+
 [capabilities.network]
 mode = "outbound"
 tcp = [

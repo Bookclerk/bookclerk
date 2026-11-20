@@ -56,6 +56,7 @@ Commands:
 
 - [`bookclerk library accounts`](#bookclerk-library-accounts): List configured bookstore accounts
 - [`bookclerk library set-scan`](#bookclerk-library-set-scan): Enable or disable an account for library scans (GUI: Include in library scan)
+- [`bookclerk library set-pace`](#bookclerk-library-set-pace): Show or set how fast Bookclerk downloads from an account when it starts the downloads itself (auto-acquire, upgrades, requests from other libraries). With no option, prints the account's pace
 - [`bookclerk library status`](#bookclerk-library-status): Show token validity / refresh health across sources
 - [`bookclerk library revoke-account`](#bookclerk-library-revoke-account): Remove store credentials but keep acquired books and account rows
 - [`bookclerk library scan`](#bookclerk-library-scan): Sync the library from the content sources: queues one scan job per account (every scan-enabled account when none is named) for a bookclerkd node to run, and waits for them
@@ -98,6 +99,27 @@ Options:
 
 - `--source <SOURCE>`: Content source, when the same account id exists on several plugins
 - `--scan <SCAN>`: Include this account when scanning (default: true) (one of `true`, `false`)
+
+### `bookclerk library set-pace`
+
+Show or set how fast Bookclerk downloads from an account when it starts the downloads itself (auto-acquire, upgrades, requests from other libraries). With no option, prints the account's pace
+
+```text
+bookclerk library set-pace [OPTIONS] <ACCOUNT>
+```
+
+Arguments:
+
+- `<ACCOUNT>`: Account id, auth-file stem, or nickname
+
+Options:
+
+- `--source <SOURCE>`: Content source, when the same account id exists on several plugins
+- `--per-day <PER_DAY>`: Downloads allowed in any rolling 24 hours (1 to 10000)
+- `--gap-seconds <GAP_SECONDS>`: Seconds between two downloads (0 to 86400)
+- `--unlimited`: No daily budget and no gap (a store's cool-down still applies)
+- `--default`: Go back to the storefront's declared pace
+- `--clear-cooldown`: End the cool-down the store asked for
 
 ### `bookclerk library status`
 
@@ -188,6 +210,7 @@ Arguments:
 Options:
 
 - `--no-wait`: Commit the upload and print its job id without waiting for the ingest job
+- `--resume <UPLOAD_ID>`: Continue an earlier upload of the same paths that did not finish, from the bytes the daemon already holds
 
 ### `bookclerk library set-status`
 

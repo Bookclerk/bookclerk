@@ -135,16 +135,13 @@ mod test_destinations {
     use std::path::{Path, PathBuf};
     use std::sync::{LazyLock, Mutex};
 
-    use bookclerk_config::{DestinationId, DestinationKeyStyle, DestinationNaming};
+    use bookclerk_config::{DestinationId, DestinationNaming};
 
-    /// One stand-in destination: its id, key style, root and naming
-    /// overrides.
+    /// One stand-in destination: its id, root and naming overrides.
     #[derive(Clone)]
     pub(crate) struct TestDestination {
         /// The destination id it stands in for.
         pub id: DestinationId,
-        /// How the destination it stands in for names keys.
-        pub key_style: DestinationKeyStyle,
         /// Where its files go.
         pub root: PathBuf,
         /// Its naming overrides.
@@ -161,7 +158,6 @@ mod test_destinations {
             files_dir,
             vec![TestDestination {
                 id: DestinationId::new("local").unwrap(),
-                key_style: DestinationKeyStyle::Filesystem,
                 root: root.to_path_buf(),
                 naming: DestinationNaming::default(),
             }],
@@ -230,12 +226,7 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
             out.push(OwnerDestination {
                 id: stand_in.id.to_string(),
                 backend: Box::new(bookclerk_storage::LocalFsBackend::new(stand_in.root)?),
-                options: DownloadOptions::for_destination(
-                    &cfg,
-                    stand_in.key_style,
-                    &stand_in.naming,
-                    "",
-                ),
+                options: DownloadOptions::for_destination(&cfg, &stand_in.naming, ""),
             });
         }
         return Ok(out);

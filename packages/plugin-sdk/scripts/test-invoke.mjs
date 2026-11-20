@@ -279,6 +279,9 @@ class Storage extends StorageEntrypoint {
   async headMany(keys) {
     return keys.map((key) => (key === "present" ? { key, size: 3, versionId: "v1" } : null));
   }
+  async translateKeys(keys) {
+    return keys.map((key) => key.replaceAll(":", "_"));
+  }
   async changes(request) {
     calls.changes = request;
     return {
@@ -1113,6 +1116,15 @@ function decodeReply(reply, resultsCodec, caps) {
   assert.equal(heads.value.objects[0].found, true);
   assert.equal(heads.value.objects[0].meta.versionId, "v1");
   assert.equal(heads.value.objects[1].found, false);
+
+  const translated = decodeReply(
+    await invoke("Destination", "translateKeys", W.DestinationTranslateKeysParamsCodec, {
+      keys: ["A: B/c.m4b", "plain.jpg"],
+    }),
+    W.DestinationTranslateKeysResultsCodec,
+  );
+  assert.equal(translated.kind, "ok");
+  assert.deepEqual(translated.value.keys, ["A_ B/c.m4b", "plain.jpg"]);
 
   const feed = decodeReply(
     await invoke("Destination", "changes", W.DestinationChangesParamsCodec, {

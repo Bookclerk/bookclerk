@@ -212,9 +212,9 @@ pub async fn match_storage_using_index(
             }
 
             if options.fix_layout {
-                let planned =
-                    planned_storage_key(library, &request_from_title(title, &options.download))
-                        .await;
+                let mut planned_req = request_from_title(title, &options.download);
+                planned_req.destination_keys = crate::keys::DestinationKeys::of(storage);
+                let planned = planned_storage_key(library, &planned_req).await;
                 if planned != key {
                     match relocate_with_sidecars(storage, &key, &planned).await {
                         Ok(()) => {

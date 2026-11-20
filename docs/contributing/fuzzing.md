@@ -46,7 +46,7 @@ boundary extends it.
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
-| `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany` and `changes` pages and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
+| `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
@@ -66,6 +66,7 @@ boundary extends it.
 | `diagnostics_lookup_reply` | The diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue and pull request links | `bookclerk-config::parse_lookup_reply`, `parse_delete_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
+| `throttle_reason` | A store's refusal text, which the `audible` guest reads from a refused license request to tell throttling (which pauses the whole account) from a plain refusal | `bookclerk-storefront::is_throttle_reason` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
@@ -86,8 +87,9 @@ boundary extends it.
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
+| `pace_request` | A person's pace for one of their store accounts, the body of `POST /api/portal/sources/{source}/connections/{account_id}/pace` | `bookclerk-library::pacing::parse_pace_request` |
 | `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta` and each entry of its batch route) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
-| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
+| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the window's own credential (the operator token or its patron's session cookies) unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
 
@@ -375,13 +377,15 @@ only that. The others check:
   survives `write` then `read` unchanged and stays inside the cursor and
   list bounds. The shared oracle is `fuzz/oracles/event_read.rs`, replayed
   from `bookclerk-plugin-abi`.
-- **`storage_reply`**: byte 0 modulo 5 picks a Cap'n Proto `moveMany`
+- **`storage_reply`**: byte 0 modulo 6 picks a Cap'n Proto `moveMany`
   page (0), `deleteMany` result (1), `headMany` result (2), `changes` page
-  (3) or hinted `list` page (4). A decoded reply survives encode then
+  (3), hinted `list` page (4) or `translateKeys` result (5). A decoded reply survives encode then
   decode unchanged, and each validator accepts the reply, against a fixed
   request, exactly when an independent restatement of its rules does: one
   outcome per sent key in order, prefix pages under the prefix with a
-  cursor that advances, change pages within the page and cursor bounds. A
+  cursor that advances, change pages within the page and cursor bounds,
+  and one translated key per host key, each relative, at most 4096 bytes,
+  with no control characters and no empty, `.` or `..` segment. A
   per-key error whose code is unreadable decodes as an `unknown` failure,
   never as success. The shared oracle is `fuzz/oracles/storage_reply.rs`,
   replayed from `bookclerk-plugin-abi`.
@@ -753,6 +757,25 @@ only that. The others check:
   or a boolean, and nothing else. Anything else is refused as `Invalid`.
   The shared oracle is `fuzz/oracles/connections_request.rs`, replayed
   from `bookclerk-library`.
+- **`pace_request`**: reads the body as an untyped JSON value. It is
+  accepted exactly when it is one object with no repeated keys and no keys
+  besides `mode`, `downloads_per_day`, `min_gap_seconds` and
+  `clear_cooldown`; `mode` is `default`, `custom` or `unlimited`;
+  `clear_cooldown` is absent, `null` or a boolean; and each number is
+  absent, `null` or a whole number in range (1 to 10000 downloads, 0 to
+  86400 seconds). Only `custom` may carry a number, and it needs at least
+  one. Anything else is refused as `Invalid`. The shared oracle is
+  `fuzz/oracles/pace_request.rs`, replayed from `bookclerk-library`.
+- **`throttle_reason`**: restates the throttle words byte by byte. Refusal
+  text is a throttle exactly when it contains `throttl`, `rate limit`,
+  `rate-limit`, `ratelimit`, `too many requests` or `429`, ignoring ASCII
+  case;
+  changing the text's case never changes the answer, adding "Too Many
+  Requests" always makes it a throttle, and adding other limit wording
+  (a device or download limit, "Too many devices registered") never
+  makes a plain refusal one. The
+  shared oracle is `fuzz/oracles/throttle_reason.rs`, replayed from
+  `bookclerk-storefront`.
 - **`window_policy`**: restates the policy from the bytes. A request is
   refused as foreign exactly when its `Origin` is not byte for byte one of
   the two app origins, or when it has no `Origin`, is a write, and its
@@ -761,7 +784,8 @@ only that. The others check:
   headers the router sees never hold the page's cookies, credentials,
   `Referer` or forwarding headers, always hold one `Host: localhost` and
   one `Origin: http://localhost`, carry `Bearer <token>` only when a token
-  was given, and keep every other header unchanged. Navigation allows app
+  was given and the window's own `Cookie` text only when cookies were
+  given, and keep every other header unchanged. Navigation allows app
   pages always and, only while a join is open, `https` and loopback `http`
   sign-in pages, with the return to the join callback kept on its path. The
   `live` command answers only the webview labelled `main` on an app page.

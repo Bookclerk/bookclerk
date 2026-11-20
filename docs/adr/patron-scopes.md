@@ -94,7 +94,7 @@ on.
 | Control | Turning it off stops |
 | --- | --- |
 | Link store accounts | Connecting a store account, signing in to one again, and bringing accounts from another library. Accounts already connected keep working, and an Administrator can still remove them. |
-| Download | Taking copies of the library's files: downloads to a branch or clerk, streaming, and library-card sync |
+| Download | Taking copies of the library's files: downloads to a branch or clerk, an app's offline downloads, and library-card sync. Listening by streaming is not a copy and stays allowed ([playback ADR](playback.md)) |
 | Edit metadata | Changing book metadata. Patrons can't change metadata yet, so this switch is stored but does not restrict anything until they can. |
 | Upload | Adding books by uploading files, folders or archives ([uploads](uploads-and-ingest.md)). Off by default. |
 | Request books | Asking a branch for a book it listed (interlibrary requests) |

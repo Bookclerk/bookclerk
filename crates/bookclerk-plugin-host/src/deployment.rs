@@ -1710,7 +1710,6 @@ async fn spawn_storage(
             &request.plugin_instance_id,
             &parts.session,
             Arc::clone(&proxy),
-            parts.key_style,
             parts.settings,
             role,
         );
