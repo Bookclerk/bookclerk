@@ -680,6 +680,47 @@ async fn a_destination_with_its_own_naming_is_planned_from_its_own_primary() {
     assert_eq!(download.files.len(), 3);
 }
 
+/// Only the primary audio's own library copy is offered: a destination
+/// that holds just another copy (an MP3 the library keeps beside its M4B)
+/// is not, and that copy's files are not listed beside the primary's.
+#[tokio::test]
+async fn only_the_primary_audios_own_copy_is_offered() {
+    let store = memory(Profile::ALL[0]).await.into_store();
+    let riley = library_with_a_copy(&store).await;
+    add_branch(&store, BRANCH, riley).await;
+    let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+    let owner = store
+        .file_owner_of_book(&record.uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    let m4b = bookclerk_config::OutputCopy::parse("m4b:original").unwrap();
+    let mp3 = bookclerk_config::OutputCopy::parse("mp3:64k-mono").unwrap();
+    for (destination, key, copy) in [
+        ("local", PRIMARY, &m4b),
+        ("local", "Ann Author/Title/Title.mp3", &mp3),
+        ("phone", "Ann Author/Title/Title.mp3", &mp3),
+    ] {
+        assert!(store
+            .record_edition_copy_file(destination, key, &owner, FileRole::Audio, Some(copy))
+            .await
+            .unwrap());
+    }
+    assert_eq!(
+        store
+            .edition_file_copy("phone", "Ann Author/Title/Title.mp3")
+            .await
+            .unwrap(),
+        Some(mp3)
+    );
+    let plan = planned(&store, BRANCH).await;
+    assert_eq!(plan.destinations.keys().collect::<Vec<_>>(), ["local"]);
+    assert!(plan.destinations["local"]
+        .iter()
+        .all(|file| file.key != "Ann Author/Title/Title.mp3"));
+    assert_eq!(plan.destinations["local"][0].key, PRIMARY);
+}
+
 /// A file the answer frame cannot carry (a name past the limit) is left
 /// out, and an edition with more files than a frame lists is not offered
 /// from that destination.

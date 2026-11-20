@@ -855,6 +855,16 @@ library it joined, in turn, for the copy of that listing.
   than the acquire's scratch budget, or holds audio the media worker
   can't read, the branch removes what it downloaded and fetches from the
   store.
+- **Audio that doesn't package: the store.** The copy is checked by its
+  tags before it is taken, so a copy whose tags read but whose audio
+  doesn't decode fails only when the output repackages or re-encodes it.
+  The branch then removes the copy and fetches the title from its store
+  (again, for a copy from another store that replaced the download) and
+  stores the copy that failed, and every copy after it, from that
+  download. Nothing of a copy reaches a destination before its audio is
+  packaged, so no destination is left with the library's broken audio;
+  copies already stored keep the library's audio, which was recorded as
+  taken before anything was stored.
 
 Only the audio, the cover and the companion PDF are taken. The branch
 writes its own sidecars (`.cue`, chapter JSON). The PDF is taken only

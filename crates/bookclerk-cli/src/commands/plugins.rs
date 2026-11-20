@@ -263,10 +263,14 @@ pub enum FilterCommand {
     },
     /// Replace a destination's filter. Each rule is `FIELD=VALUE`, where
     /// FIELD is `patron` (a user id), `storefront` (a plugin alias such as
-    /// `audible`), `account` (a store account id) or `media_kind` (`book`
-    /// or `podcast`). With any `--include`, the destination takes only
-    /// books that match one; an `--exclude` always wins. Acquires that
-    /// start afterwards use the new filter.
+    /// `audible`), `account` (a store account id), `media_kind` (`book`
+    /// or `podcast`), `format` (a copy format: `m4b`, `mp3`,
+    /// `mp3_chapters` or `original`) or `quality` (a copy quality such as
+    /// `original`, `64k-mono` or `v2`). With any `--include`, the
+    /// destination takes only books that match one; an `--exclude` always
+    /// wins. `format` and `quality` rules choose which of the library's
+    /// copies (`output.copies`) the destination receives, the same way
+    /// among themselves. Acquires that start afterwards use the new filter.
     Set {
         /// Plugin alias, PluginKey, or plugin instance id of the destination.
         instance: String,
@@ -2268,15 +2272,13 @@ fn filter_rule(
     let (field, value) = arg
         .split_once('=')
         .ok_or_else(|| anyhow::anyhow!("a filter rule is FIELD=VALUE, not `{arg}`"))?;
-    let field = match field.trim() {
-        "patron" => FilterField::Patron,
-        "storefront" => FilterField::Storefront,
-        "account" => FilterField::Account,
-        "media_kind" => FilterField::MediaKind,
-        other => anyhow::bail!(
-            "unknown filter field `{other}`; use patron, storefront, account or media_kind"
-        ),
-    };
+    let field = FilterField::parse(field.trim()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown filter field `{}`; use patron, storefront, account, media_kind, \
+             format or quality",
+            field.trim()
+        )
+    })?;
     Ok(bookclerk_config::FilterRule {
         field,
         value: value.to_string(),
@@ -2336,6 +2338,7 @@ async fn run_filter(
                 DestinationFilter { rules },
             )
             .await?;
+            warn_about_copy_rules(store, &stored.body.filter).await;
             (instance, stored.body.filter)
         }
         FilterCommand::Clear { instance } => {
@@ -2355,6 +2358,57 @@ async fn run_filter(
         &json!({ "plugin_instance_id": instance.id.to_string(), "filter": filter }),
         || print_filter(&instance.id, &filter),
     )
+}
+
+/// Warns on stderr about `format` and `quality` rules that name no copy
+/// the library makes (`output.copies` and the main output), and when the
+/// destination would receive none of them. The filter is stored either
+/// way: the copy list may change later.
+async fn warn_about_copy_rules(store: &LibraryStore, filter: &bookclerk_config::DestinationFilter) {
+    if !filter.has_copy_rules() {
+        return;
+    }
+    let Ok(output) = bookclerk_library::control_plane::load_output(store).await else {
+        return;
+    };
+    let mut config = bookclerk_config::OutputConfig::default();
+    output.body.apply_to(&mut config, None);
+    let copies = config.copies_to_make();
+    for warning in copy_rule_warnings(filter, &copies) {
+        eprintln!("warning: {warning}");
+    }
+}
+
+/// The warnings [`warn_about_copy_rules`] prints for `filter` against the
+/// library's `copies`.
+fn copy_rule_warnings(
+    filter: &bookclerk_config::DestinationFilter,
+    copies: &[bookclerk_config::OutputCopy],
+) -> Vec<String> {
+    let names = copies
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut warnings: Vec<String> = filter
+        .rules
+        .iter()
+        .filter(|rule| rule.field.is_copy_field())
+        .filter(|rule| !copies.iter().any(|copy| rule.matches_copy(copy)))
+        .map(|rule| {
+            format!(
+                "the {} rule `{}` names no copy the library makes ({names})",
+                rule.field.as_str(),
+                rule.value
+            )
+        })
+        .collect();
+    if !copies.iter().any(|copy| filter.accepts_copy(copy)) {
+        warnings.push(format!(
+            "this destination receives none of the library's copies ({names})"
+        ));
+    }
+    warnings
 }
 
 /// `plugins config` actions.
@@ -2700,6 +2754,37 @@ mod filter_tests {
     use super::{cli_actor, filter_rule, run_filter, FilterCommand, OutputFormat};
 
     #[test]
+    fn copy_rules_that_name_no_library_copy_are_warned_about() {
+        use bookclerk_config::{DestinationFilter, OutputCopy};
+        let copies = [
+            OutputCopy::parse("m4b:original").unwrap(),
+            OutputCopy::parse("mp3:64k-mono").unwrap(),
+        ];
+        let filter = |rules: &[(&str, FilterEffect)]| DestinationFilter {
+            rules: rules
+                .iter()
+                .map(|(arg, effect)| filter_rule(arg, *effect).unwrap())
+                .collect(),
+        };
+        assert!(super::copy_rule_warnings(
+            &filter(&[("format=mp3", FilterEffect::Include)]),
+            &copies
+        )
+        .is_empty());
+        let warnings =
+            super::copy_rule_warnings(&filter(&[("quality=v2", FilterEffect::Include)]), &copies);
+        assert_eq!(
+            warnings,
+            [
+                "the quality rule `v2` names no copy the library makes \
+                 (m4b:original, mp3:64k-mono)",
+                "this destination receives none of the library's copies \
+                 (m4b:original, mp3:64k-mono)",
+            ]
+        );
+    }
+
+    #[test]
     fn rules_are_read_as_field_equals_value() {
         let rule = filter_rule("media_kind=podcast", FilterEffect::Exclude).unwrap();
         assert_eq!(rule.field, FilterField::MediaKind);
@@ -2709,6 +2794,8 @@ mod filter_tests {
             ("patron=3", FilterField::Patron),
             ("storefront=audible", FilterField::Storefront),
             ("account=a=b", FilterField::Account),
+            ("format=mp3", FilterField::Format),
+            ("quality=64k-mono", FilterField::Quality),
         ] {
             assert_eq!(
                 filter_rule(arg, FilterEffect::Include).unwrap().field,

@@ -41,6 +41,13 @@ pub struct Model {
     pub probed_at: Option<String>,
     /// Lowercase hex SHA-256 of the content, when known (host uploads).
     pub sha256: Option<String>,
+    /// Format of the library copy (`output.copies`) this audio file belongs
+    /// to (`m4b`, `mp3`, `mp3_chapters`, `original`); `None` for a file of
+    /// no one copy (a sidecar, the PDF) or an upload.
+    pub copy_format: Option<String>,
+    /// Quality of that copy (`original`, `64k-mono`, `v2`); `None` exactly
+    /// when [`Self::copy_format`] is.
+    pub copy_quality: Option<String>,
     /// The host upload id that claimed the key last, or
     /// [`crate::store::ACQUIRE_WRITER`] for an acquire run on this node.
     pub writer: String,

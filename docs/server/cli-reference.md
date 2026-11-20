@@ -800,7 +800,7 @@ bookclerk plugins instances filter [OPTIONS] <COMMAND>
 Commands:
 
 - [`bookclerk plugins instances filter get`](#bookclerk-plugins-instances-filter-get): Show a destination's filter
-- [`bookclerk plugins instances filter set`](#bookclerk-plugins-instances-filter-set): Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id) or `media_kind` (`book` or `podcast`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. Acquires that start afterwards use the new filter
+- [`bookclerk plugins instances filter set`](#bookclerk-plugins-instances-filter-set): Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id), `media_kind` (`book` or `podcast`), `format` (a copy format: `m4b`, `mp3`, `mp3_chapters` or `original`) or `quality` (a copy quality such as `original`, `64k-mono` or `v2`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. `format` and `quality` rules choose which of the library's copies (`output.copies`) the destination receives, the same way among themselves. Acquires that start afterwards use the new filter
 - [`bookclerk plugins instances filter clear`](#bookclerk-plugins-instances-filter-clear): Remove a destination's filter so it takes every book
 
 ##### `bookclerk plugins instances filter get`
@@ -817,7 +817,7 @@ Arguments:
 
 ##### `bookclerk plugins instances filter set`
 
-Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id) or `media_kind` (`book` or `podcast`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. Acquires that start afterwards use the new filter
+Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id), `media_kind` (`book` or `podcast`), `format` (a copy format: `m4b`, `mp3`, `mp3_chapters` or `original`) or `quality` (a copy quality such as `original`, `64k-mono` or `v2`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. `format` and `quality` rules choose which of the library's copies (`output.copies`) the destination receives, the same way among themselves. Acquires that start afterwards use the new filter
 
 ```text
 bookclerk plugins instances filter set [OPTIONS] <INSTANCE>

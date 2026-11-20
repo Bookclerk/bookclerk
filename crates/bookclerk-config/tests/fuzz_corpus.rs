@@ -17,6 +17,10 @@ mod destination_filter_oracle;
 #[path = "../../../fuzz/oracles/destination_id.rs"]
 mod destination_id_oracle;
 
+/// The `output_copies` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/output_copies.rs"]
+mod output_copies_oracle;
+
 /// The `diagnostics_submit_reply` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/diagnostics_submit_reply.rs"]
 mod diagnostics_submit_reply_oracle;
@@ -87,4 +91,17 @@ fn fuzz_corpus_destination_filter_holds_invariants() {
         checked += 1;
     }
     assert!(checked > 0, "no destination_filter seed");
+}
+
+/// Mirrors `fuzz/fuzz_targets/output_copies.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_output_copies_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("output_copies") {
+        output_copies_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no output_copies seed");
 }
