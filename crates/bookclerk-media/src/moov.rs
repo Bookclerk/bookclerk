@@ -41,8 +41,10 @@ pub(crate) fn write_moov(path: &Path, at: MoovLocation, moov: Vec<u8>) -> Result
 
 /// Copy the file past a `moov` that no longer fits where the old one was.
 ///
-/// Only reachable for a faststart layout: when `moov` is last there is nothing
-/// after it to move, so the in-place write always succeeds.
+/// Reached when something follows `moov`: the audio in a faststart layout, or
+/// the chapter title samples appended after a `moov` that was last. When `moov`
+/// is truly last there is nothing after it to move, so the in-place write
+/// always succeeds.
 fn rebuild_around_moov(path: &Path, at: MoovLocation, mut moov: Vec<u8>) -> Result<()> {
     let delta = i64::try_from(moov.len())
         .ok()
