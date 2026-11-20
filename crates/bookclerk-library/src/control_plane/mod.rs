@@ -71,6 +71,8 @@ use serde::{Deserialize, Serialize};
 pub use account_links::{
     account_slot, link_signed_in_account, revoke_account_link, LinkRevoked, SignInLink,
 };
+#[cfg(test)]
+pub(crate) use artifacts::chunk_bytes;
 pub use artifacts::{load_artifact_blob, put_artifact_blob, MAX_ARTIFACT_BLOB_BYTES};
 pub use branch_catalog::{
     accept_catalog_batch, begin_catalog, branch_provenance, branch_title_counts,
