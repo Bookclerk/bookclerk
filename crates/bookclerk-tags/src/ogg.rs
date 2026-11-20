@@ -353,20 +353,27 @@ pub(crate) fn page_crc(before: &[u8], after: &[u8]) -> u32 {
     after.iter().fold(crc, step)
 }
 
-/// How many pages past the headers [`opus_initial_granule`] looks for the
-/// first audio page.
+/// How many pages past the headers [`opus_initial_granule`] reads to find
+/// the first page that ends a packet.
 const MAX_AUDIO_SEARCH_PAGES: usize = 64;
 
 /// The granule position an Opus stream starts at: zero for a stream
 /// encoded from the start, more for one cropped from a longer stream
 /// (RFC 7845 section 4.5).
 ///
-/// It is the first audio page's granule less the samples of the packets
-/// that end on that page, worked out from each packet's TOC byte. Zero when
-/// the first audio page cannot be read this way: not found within
-/// [`MAX_AUDIO_SEARCH_PAGES`] pages, it continues a packet, it also ends the
-/// stream, or its granule is below its packets' samples.
+/// It is the granule of the first page that ends a packet, less the samples
+/// of every packet completed by then, worked out from each packet's TOC
+/// byte. Packets may span pages, so pages before it (which end no packet
+/// and carry no granule) are read through. Zero when the stream cannot be
+/// read this way: no such page within [`MAX_AUDIO_SEARCH_PAGES`] pages, the
+/// first audio page continues a packet, that page also ends the stream, or
+/// its granule is below the packets' samples.
 fn opus_initial_granule(src: &Source<'_>, mut at: u64, serial: u32) -> Step<u64> {
+    let mut first = true;
+    let mut samples = 0u64;
+    // The first two bytes of the packet in progress: its TOC byte and, for
+    // a code 3 packet, the frame count.
+    let mut head: Vec<u8> = Vec::with_capacity(2);
     for _ in 0..MAX_AUDIO_SEARCH_PAGES {
         if at >= src.size {
             return Ok(0);
@@ -382,25 +389,32 @@ fn opus_initial_granule(src: &Source<'_>, mut at: u64, serial: u32) -> Step<u64>
         }
         // An end-of-stream page's granule may be end-trimmed (RFC 7845
         // section 4.4), so it says nothing about where the stream starts.
-        if flags & (CONTINUED | END_OF_STREAM) != 0 || granule == NO_GRANULE {
+        if flags & END_OF_STREAM != 0 || (first && flags & CONTINUED != 0) {
             return Ok(0);
         }
+        first = false;
         let body = src.bytes(page.body_at, page.body_len, NAME)?;
-        let mut samples = 0u64;
-        let mut start = 0usize;
         let mut offset = 0usize;
         for lace in page.lacing {
-            offset += usize::from(*lace);
+            let len = usize::from(*lace);
+            if head.len() < 2 {
+                let want = 2 - head.len();
+                let take = body.get(offset..offset + len.min(want)).unwrap_or(&[]);
+                head.extend_from_slice(take);
+            }
+            offset += len;
             if *lace == 255 {
                 continue;
             }
-            let Some(count) = body.get(start..offset).and_then(opus_packet_samples) else {
+            let Some(count) = opus_packet_samples(&head) else {
                 return Ok(0);
             };
             samples += count;
-            start = offset;
+            head.clear();
         }
-        return Ok(granule.saturating_sub(samples));
+        if granule != NO_GRANULE {
+            return Ok(granule.saturating_sub(samples));
+        }
     }
     Ok(0)
 }
@@ -565,6 +579,22 @@ mod tests {
         assert_eq!(opus_packet_samples(&[0x63, 0x03]), Some(3 * 480));
         assert_eq!(opus_packet_samples(&[0x83]), None);
         assert_eq!(opus_packet_samples(&[]), None);
+    }
+
+    #[test]
+    fn a_cropped_stream_whose_first_packet_spans_pages() {
+        // A 20 ms code 0 packet of 65,100 bytes laid across two pages: the
+        // first ends no packet (no granule), the second ends it.
+        let mut packet = vec![0xF8];
+        packet.resize(65_100, 0);
+        let (head, tail) = packet.split_at(255 * 255);
+        let file = opus_with(&[
+            ogg_page(0, NO_GRANULE, 9, &[head]),
+            ogg_page(CONTINUED, 480_960, 9, &[tail]),
+            ogg_page(END_OF_STREAM, 480_000 + 312 + 480_000, 9, &[&[0xF8]]),
+        ]);
+        let record = drive(&file).expect("read");
+        assert_eq!(record.duration.map(|d| d.ms), Some(10_000));
     }
 
     #[test]

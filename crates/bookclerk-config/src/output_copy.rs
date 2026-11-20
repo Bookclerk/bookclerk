@@ -33,7 +33,8 @@ pub const OPUS_KBPS: [u16; 7] = [16, 24, 32, 48, 64, 96, 128];
 
 /// The Opus encoder settings one output is written with.
 ///
-/// The main output uses [`OPUS_MAIN_KBPS`] stereo; an Opus copy takes the
+/// The main output uses [`OPUS_MAIN_KBPS`], keeping the source's channels
+/// up to stereo; an Opus copy takes the
 /// bitrate and channel choice its quality names ([`OutputCopy::opus_kbps`]).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpusSettings {
