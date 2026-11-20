@@ -81,10 +81,8 @@ page, so another device is at most a few seconds behind.
 ## If a book does not play
 
 - **"This book cannot be played from this server."** The book is not
-  acquired, its files are kept by another computer of the library, or the
-  library's **Download** control is off for you, which covers listening
-  too. Acquire it, listen from the computer that keeps it, or ask an
-  administrator.
+  acquired, or its files are kept by another computer of the library.
+  Acquire it, or listen from the computer that keeps it.
 - **"The browser blocked playback. Press play again."** Some browsers
   refuse to start sound unless you have just pressed something. Press
   play once more.

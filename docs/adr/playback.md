@@ -84,9 +84,10 @@ A patron scope is applied before it, as on every library page: an edition
 outside the caller's scope is `404`, the same answer as an unknown id.
 
 The **Download** member control
-([patron scopes ADR](patron-scopes.md#member-controls)) covers streaming:
-`plan_playback` is the one place that reads it, so a patron who may not
-download is planned nothing to play.
+([patron scopes ADR](patron-scopes.md#member-controls)) does not cover
+streaming. It stops taking copies to keep: downloads to a branch or a
+clerk, and an app's offline downloads. A patron who can see a book may
+listen to it, which is what the apps the `/player` API serves expect.
 
 ### 5. A session is the leave to stream, checked on every request
 

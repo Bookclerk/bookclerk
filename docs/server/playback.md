@@ -29,11 +29,10 @@ Progress imported from other servers stays in `listening_progress`.
 Every route needs a signed-in library user. The operator token has no
 user and gets `403`. An edition outside the caller's
 [patron scope](../guide/sharing.md#limit-what-a-patron-sees) is `404`.
-A patron whose **Download**
-[control](../guide/sharing.md#limit-what-a-patron-may-do) is off has
-nothing to play: the manifest lists no tracks, a new session answers
-`404` `not_playable`, and a session already open stops streaming with
-`409` `session_ended`.
+The **Download**
+[control](../guide/sharing.md#limit-what-a-patron-may-do) does not apply
+to playing: it stops taking copies to keep, and a patron who can see a
+book may listen to it.
 
 | Route | Purpose |
 | --- | --- |
