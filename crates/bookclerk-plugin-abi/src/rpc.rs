@@ -4777,9 +4777,13 @@ impl Notifier for NotifierClient {
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let validated = crate::generated::read_notify_validate_reply(reply_result!(reply))
             .map_err(from_capnp)??;
-        crate::notifications::check_validated(&validated)
+        let address = crate::notifications::check_validated(&validated)
             .map_err(|err| PluginError::internal(format!("validateDestination: {err}")))?;
-        Ok(validated)
+        // Hand back the canonical text, so equal addresses store equal.
+        Ok(crate::NotifyValidated {
+            address_json: address.to_json(),
+            label: validated.label,
+        })
     }
 }
 

@@ -187,8 +187,36 @@ pub fn is_notify_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= MAX_NOTIFY_ID_BYTES && id.bytes().all(|b| b.is_ascii_graphic())
 }
 
-/// Checks one text value: within `max` bytes and free of control
-/// characters, except tab and line breaks when `multiline`; non-blank when
+/// Whether `c` breaks a line or reorders text without being a control
+/// character: the Unicode line and paragraph separators and the
+/// bidirectional marks, embeddings, overrides and isolates. A one-line
+/// value refuses them so it shows as written.
+///
+/// # Arguments
+///
+/// * `c` - The character to test.
+///
+/// # Returns
+///
+/// True for U+2028, U+2029, U+061C, U+200E, U+200F, U+202A to U+202E and
+/// U+2066 to U+2069.
+#[must_use]
+pub fn is_layout_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{2028}'
+            | '\u{2029}'
+            | '\u{061C}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Checks one text value: within `max` bytes and free of control and
+/// [layout](is_layout_char) characters, except tab, line breaks and the
+/// line and paragraph separators when `multiline`; non-blank when
 /// `required`.
 ///
 /// # Errors
@@ -201,10 +229,12 @@ fn check_text(
     required: bool,
     what: &'static str,
 ) -> Result<(), NotificationError> {
-    let allowed = |c: char| multiline && matches!(c, '\n' | '\r' | '\t');
+    let allowed = |c: char| multiline && matches!(c, '\n' | '\r' | '\t' | '\u{2028}' | '\u{2029}');
     if value.len() > max
         || (required && value.trim().is_empty())
-        || value.chars().any(|c| c.is_control() && !allowed(c))
+        || value
+            .chars()
+            .any(|c| (c.is_control() || is_layout_char(c)) && !allowed(c))
     {
         return Err(NotificationError::BadText(what));
     }
@@ -354,10 +384,13 @@ pub fn check_link(link: &str) -> Result<(), NotificationError> {
     Ok(())
 }
 
-/// Whether `s` is `:` followed by 1 to 5 digits.
+/// Whether `s` is `:` followed by a port number from 1 to 65535.
 fn is_port_suffix(s: &str) -> bool {
-    s.strip_prefix(':')
-        .is_some_and(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
+    s.strip_prefix(':').is_some_and(|p| {
+        (1..=5).contains(&p.len())
+            && p.bytes().all(|b| b.is_ascii_digit())
+            && p.parse::<u16>().is_ok_and(|port| port != 0)
+    })
 }
 
 /// Checks a path inside the library that the host will prefix with its
@@ -546,12 +579,15 @@ pub fn parse_address_document(text: &str) -> Result<NotifyAddress, NotificationE
 /// Counts the keys of the top-level JSON object in `text` without
 /// deduplicating them, or `None` when `text` is not an object.
 fn count_top_level_keys(text: &str) -> Option<usize> {
+    /// Visitor that counts map entries; the field is the running count.
     struct Counter(usize);
     impl<'de> serde::de::Visitor<'de> for Counter {
         type Value = usize;
+        /// What the visitor accepts, for serde's error messages.
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("a JSON object")
         }
+        /// Counts every entry, duplicates included.
         fn visit_map<A: serde::de::MapAccess<'de>>(
             mut self,
             mut map: A,
@@ -726,7 +762,8 @@ pub enum SendOutcome {
 
 /// Turns a `Notifier.send` reply into what the host does next.
 ///
-/// `rate_limited` and `unavailable` are retried, `rate_limited` after the
+/// `rate_limited`, `unavailable`, `deadline_exceeded` and `cancelled` are
+/// retried, `rate_limited` after the
 /// service's `retryAfterMs` when it gave one; every other error is a
 /// permanent failure for this destination. A delivered reply with a
 /// malformed provider id is still delivered, without the id.
@@ -748,7 +785,7 @@ pub fn classify_send_reply(reply: &Result<NotifySent, PluginError>) -> SendOutco
                 .filter(|id| {
                     !id.is_empty()
                         && id.len() <= cap(MAX_NOTIFICATION_FIELD_BYTES)
-                        && !id.chars().any(char::is_control)
+                        && !id.chars().any(|c| c.is_control() || is_layout_char(c))
                 })
                 .map(str::to_string),
         },
@@ -761,7 +798,11 @@ pub fn classify_send_reply(reply: &Result<NotifySent, PluginError>) -> SendOutco
                         .map(|wait| wait.min(MAX_NOTIFY_RETRY_AFTER)),
                     reason,
                 },
-                PluginErrorCode::Unavailable => SendOutcome::Retry {
+                // The service was down, the call ran out of time, or the
+                // host cancelled it (shutdown): none is the message's fault.
+                PluginErrorCode::Unavailable
+                | PluginErrorCode::DeadlineExceeded
+                | PluginErrorCode::Cancelled => SendOutcome::Retry {
                     after: None,
                     reason,
                 },
@@ -772,9 +813,7 @@ pub fn classify_send_reply(reply: &Result<NotifySent, PluginError>) -> SendOutco
                 | PluginErrorCode::Unsupported
                 | PluginErrorCode::Internal
                 | PluginErrorCode::PayloadTooLarge
-                | PluginErrorCode::DeadlineExceeded
                 | PluginErrorCode::InvalidCursor
-                | PluginErrorCode::Cancelled
                 | PluginErrorCode::Conflict
                 | PluginErrorCode::LimitExceeded
                 | PluginErrorCode::Unknown => SendOutcome::Failed { reason },
@@ -798,7 +837,11 @@ pub fn classify_send_reply(reply: &Result<NotifySent, PluginError>) -> SendOutco
 pub fn sanitize_reason(reason: &str) -> String {
     let mut out = String::with_capacity(reason.len().min(MAX_NOTIFY_REASON_BYTES));
     for c in reason.chars() {
-        let c = if c.is_control() { ' ' } else { c };
+        let c = if c.is_control() || is_layout_char(c) {
+            ' '
+        } else {
+            c
+        };
         if out.len() + c.len_utf8() > MAX_NOTIFY_REASON_BYTES {
             break;
         }
@@ -1024,6 +1067,8 @@ mod tests {
             "https://books.example.com/a b",
             "https://bo\\oks/",
             "https://books.example.com:99999999/",
+            "https://books.example.com:65536/",
+            "https://books.example.com:0/",
             "//books.example.com",
             "https://[::1/x",
         ] {
@@ -1146,6 +1191,18 @@ mod tests {
             classify_send_reply(&Err(PluginError::unavailable("down"))),
             SendOutcome::Retry { after: None, .. }
         ));
+        for code in [
+            PluginErrorCode::DeadlineExceeded,
+            PluginErrorCode::Cancelled,
+        ] {
+            assert!(
+                matches!(
+                    classify_send_reply(&Err(PluginError::new(code, "stopped"))),
+                    SendOutcome::Retry { after: None, .. }
+                ),
+                "{code} is retried"
+            );
+        }
         assert!(matches!(
             classify_send_reply(&Err(PluginError::new(
                 PluginErrorCode::Unauthorized,
@@ -1161,6 +1218,21 @@ mod tests {
         assert!(cut.starts_with("a b"));
         assert!(cut.len() <= MAX_NOTIFY_REASON_BYTES);
         assert!(!cut.contains('\n'));
+        assert_eq!(sanitize_reason("ok\u{2028}fake\u{202E}x"), "ok fake x");
+    }
+
+    #[test]
+    fn one_line_texts_refuse_separators_and_bidi() {
+        let mut m = message();
+        m.title = "Done\u{2028}Not done".into();
+        assert_eq!(check_message(&m), Err(NotificationError::BadText("title")));
+        m.title = "\u{202E}enod".into();
+        assert_eq!(check_message(&m), Err(NotificationError::BadText("title")));
+        m.title = "Done".into();
+        m.text = "line one\u{2028}line two".into();
+        check_message(&m).expect("a body may use line separators");
+        m.text = "\u{2066}x\u{2069}".into();
+        assert_eq!(check_message(&m), Err(NotificationError::BadText("text")));
     }
 
     #[test]

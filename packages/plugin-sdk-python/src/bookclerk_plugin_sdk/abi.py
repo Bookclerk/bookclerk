@@ -3025,9 +3025,10 @@ class Notifier(Protocol):
     destination (an email address, a chat webhook, a push subscription). The
     host decides what is worth a notification, who gets it and which instance
     carries it; the plugin only sends. Each send is one claimed `notify.send`
-    job, so the host owns retries: a reply of `rate_limited` or `unavailable`
-    is retried (honouring `details.retryAfterMs`), any other error is a
-    permanent failure for that destination.
+    job, so the host owns retries: a reply of `rate_limited`, `unavailable`,
+    `deadline_exceeded` or `cancelled` is retried (`rate_limited` honouring
+    `details.retryAfterMs`), any other error is a permanent failure for that
+    destination.
     """
 
     async def health(self) -> HealthReply:
@@ -5908,11 +5909,12 @@ class NotifySendReplyOk(TypedDict):
 class NotifySendReplyErr(TypedDict):
     """``NotifySendReply`` member ``err``.
 
-    Typed failure; `rate_limited` and `unavailable` are retried.
+    Typed failure; `rate_limited`, `unavailable`, `deadline_exceeded` and `cancelled` are retried.
 
     Attributes:
         kind: Always ``"err"``.
-        value: Typed failure; `rate_limited` and `unavailable` are retried.
+        value: Typed failure; `rate_limited`, `unavailable`, `deadline_exceeded` and
+            `cancelled` are retried.
     """
 
     kind: Literal["err"]

@@ -1563,7 +1563,9 @@ How `send` fails decides what happens next:
 - `rate_limited` is retried, after `details.retryAfterMs` when the
   service said how long (capped at one hour), otherwise on the job's
   backoff;
-- `unavailable` is retried on the job's backoff;
+- `unavailable`, `deadline_exceeded` (the call ran out of time) and
+  `cancelled` (the host stopped it, for example on shutdown) are retried on
+  the job's backoff;
 - any other error fails this destination for this message.
 
 The host checks both directions:

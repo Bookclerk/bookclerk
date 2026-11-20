@@ -713,6 +713,12 @@
       "error": "plugin.toml: `[notifier].destinations` names a kind twice"
     },
     {
+      "name": "notifier with empty formats",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"channel\"]\nformats = []\n",
+      "error": "plugin.toml: `[notifier].formats` must include `text`"
+    },
+    {
       "name": "notifier formats without text",
       "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
       "tables": "[notifier]\ndestinations = [\"channel\"]\nformats = [\"markdown\"]\n",

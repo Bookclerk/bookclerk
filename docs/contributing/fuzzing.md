@@ -329,9 +329,10 @@ only that. The others check:
 - **`notifier_reply`**: byte 0 modulo 2 picks a `NotifySendReply` message
   (0) or an address document as text (1). A reply is delivered exactly when
   it is the `ok` arm, keeping a provider id only when it is a non-empty line
-  within the field cap; it is retried exactly for `rate_limited` and
-  `unavailable`, waiting only on `rate_limited` and never past an hour; and
-  every reason is the error text with control characters blanked, cut to
+  within the field cap; it is retried exactly for `rate_limited`,
+  `unavailable`, `deadline_exceeded` and `cancelled`, waiting only on
+  `rate_limited` and never past an hour; and every reason is the error
+  text with control, line-separator and bidi characters blanked, cut to
   512 bytes on a character boundary. The reply round-trips through the
   codec. An address document is accepted exactly when it is one JSON
   object of at most 16 distinct identifier keys with one-line string values

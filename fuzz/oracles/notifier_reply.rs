@@ -7,7 +7,7 @@
 //! - **0**: an unpacked `NotifySendReply` message, a notifier's answer to
 //!   `Notifier.send`. [`classify_send_reply`] must deliver exactly the `ok`
 //!   arm, keep a provider id exactly when it is a non-empty line within the
-//!   field cap, retry exactly `rate_limited` and `unavailable` (waiting only
+//!   field cap, retry exactly `rate_limited`, `unavailable`, `deadline_exceeded` and `cancelled` (waiting only
 //!   on `rate_limited`, never past an hour), and cut every reason to one line
 //!   of at most 512 bytes that is a prefix of the full text with control
 //!   characters blanked. The reply round-trips through the codec.
@@ -39,6 +39,18 @@ const REASON: usize = 512;
 /// Longest wait the host honours.
 const HOUR: Duration = Duration::from_secs(3_600);
 
+/// Characters that break a line or reorder text without being control
+/// characters, restated as a list: line and paragraph separators, the
+/// Arabic letter mark, LRM / RLM, the embeddings and overrides, and the
+/// isolates.
+fn layout(c: char) -> bool {
+    const LIST: [u32; 14] = [
+        0x2028, 0x2029, 0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066,
+        0x2067, 0x2068, 0x2069,
+    ];
+    LIST.contains(&u32::from(c))
+}
+
 /// Runs the invariants on one input.
 ///
 /// # Panics
@@ -66,7 +78,9 @@ fn check_send_reply(bytes: &[u8]) {
     match (&reply, &outcome) {
         (Ok(sent), SendOutcome::Delivered { provider_id }) => {
             let usable = sent.provider_id.as_deref().filter(|id| {
-                !id.is_empty() && id.len() <= FIELD && id.chars().all(|c| !c.is_control())
+                !id.is_empty()
+                    && id.len() <= FIELD
+                    && id.chars().all(|c| !c.is_control() && !layout(c))
             });
             assert_eq!(provider_id.as_deref(), usable, "provider id kept wrongly");
         }
@@ -74,12 +88,15 @@ fn check_send_reply(bytes: &[u8]) {
             assert!(
                 matches!(
                     err.code,
-                    PluginErrorCode::RateLimited | PluginErrorCode::Unavailable
+                    PluginErrorCode::RateLimited
+                        | PluginErrorCode::Unavailable
+                        | PluginErrorCode::DeadlineExceeded
+                        | PluginErrorCode::Cancelled
                 ),
                 "retried a permanent error"
             );
-            if err.code == PluginErrorCode::Unavailable {
-                assert!(after.is_none(), "waited on unavailable");
+            if err.code != PluginErrorCode::RateLimited {
+                assert!(after.is_none(), "waited without a rate limit");
             }
             let asked = err
                 .details
@@ -96,7 +113,10 @@ fn check_send_reply(bytes: &[u8]) {
             assert!(
                 !matches!(
                     err.code,
-                    PluginErrorCode::RateLimited | PluginErrorCode::Unavailable
+                    PluginErrorCode::RateLimited
+                        | PluginErrorCode::Unavailable
+                        | PluginErrorCode::DeadlineExceeded
+                        | PluginErrorCode::Cancelled
                 ),
                 "gave up on a retryable error"
             );
@@ -118,7 +138,7 @@ fn check_send_reply(bytes: &[u8]) {
 fn check_reason(reason: &str, full: &str) {
     let blanked: String = full
         .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .map(|c| if c.is_control() || layout(c) { ' ' } else { c })
         .collect();
     assert!(reason.len() <= REASON, "reason too long");
     assert!(blanked.starts_with(reason), "reason is not a prefix");

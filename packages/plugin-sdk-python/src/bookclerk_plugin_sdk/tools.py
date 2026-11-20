@@ -1027,7 +1027,7 @@ def _validate_notifier(m: dict[str, Any]) -> None:
         raise ValueError("plugin.toml: `[notifier].destinations` is empty")
     if len(set(destinations)) != len(destinations):
         raise ValueError("plugin.toml: `[notifier].destinations` names a kind twice")
-    formats = list(table.get("formats") or ["text"]) if "formats" in table else ["text"]
+    formats = list(table["formats"]) if "formats" in table else ["text"]
     for fmt in formats:
         if fmt not in ("text", "markdown", "html"):
             raise ValueError(f"plugin.toml: `[notifier].formats` names unknown format `{fmt}`")

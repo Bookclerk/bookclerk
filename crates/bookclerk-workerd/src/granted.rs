@@ -53,8 +53,9 @@ use crate::granted_http::{
 pub const MAX_EVENT_PUBLISH_BODY_BYTES: u32 = MAX_EVENT_PAYLOAD_BYTES * 2 + 8 * 1024;
 
 /// Largest `/notify/raise` request body: a raise of up to
-/// `maxNotificationFields` fields at their caps, plus the envelope.
-pub const MAX_NOTIFY_RAISE_BODY_BYTES: u32 = 64 * 1024;
+/// `maxNotificationFields` fields at their caps with every character
+/// JSON-escaped to two bytes (about 70 KiB), plus the envelope.
+pub const MAX_NOTIFY_RAISE_BODY_BYTES: u32 = 128 * 1024;
 
 /// Largest `/events/read` request body: a cursor plus up to `maxListPage`
 /// event types.

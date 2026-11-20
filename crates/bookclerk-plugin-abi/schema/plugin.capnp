@@ -1565,9 +1565,10 @@ interface MetadataFiles {
 # destination (an email address, a chat webhook, a push subscription). The
 # host decides what is worth a notification, who gets it and which instance
 # carries it; the plugin only sends. Each send is one claimed `notify.send`
-# job, so the host owns retries: a reply of `rate_limited` or `unavailable`
-# is retried (honouring `details.retryAfterMs`), any other error is a
-# permanent failure for that destination.
+# job, so the host owns retries: a reply of `rate_limited`, `unavailable`,
+# `deadline_exceeded` or `cancelled` is retried (`rate_limited` honouring
+# `details.retryAfterMs`), any other error is a permanent failure for that
+# destination.
 interface Notifier {
   # Liveness / readiness probe: credentials and reachability.
   health @0 () -> (result :HealthReply);
@@ -3586,7 +3587,7 @@ struct NotifySendReply {
   union {
     # Delivered.
     ok @0 :NotifySent;
-    # Typed failure; `rate_limited` and `unavailable` are retried.
+    # Typed failure; `rate_limited`, `unavailable`, `deadline_exceeded` and `cancelled` are retried.
     err @1 :PluginError;
   }
 }

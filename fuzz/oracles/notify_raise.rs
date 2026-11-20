@@ -22,7 +22,7 @@ use bookclerk_plugin_abi::notifications::{
 };
 use bookclerk_plugin_abi::{NotificationAlertAction, NotifyRaiseParams};
 
-/// Largest input worth decoding; the bridge caps a raise body at 64 KiB.
+/// Largest input worth decoding; the bridge caps a raise body at 128 KiB.
 pub const MAX_INPUT_BYTES: usize = 128 * 1024;
 
 /// Title and field-name cap in bytes (`maxNotificationTitleBytes`).
@@ -31,6 +31,18 @@ const TITLE: usize = 256;
 const FIELD: usize = 1_024;
 /// Field count cap (`maxNotificationFields`).
 const FIELDS: usize = 25;
+
+/// Characters that break a line or reorder text without being control
+/// characters, restated as a list: line and paragraph separators, the
+/// Arabic letter mark, LRM / RLM, the embeddings and overrides, and the
+/// isolates.
+fn layout(c: char) -> bool {
+    const LIST: [u32; 14] = [
+        0x2028, 0x2029, 0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066,
+        0x2067, 0x2068, 0x2069,
+    ];
+    LIST.contains(&u32::from(c))
+}
 
 /// Runs the invariants on one input.
 ///
@@ -77,9 +89,10 @@ pub fn check(data: &[u8]) {
 
 /// No control character at all, unless `multiline` allows tab and breaks.
 fn clean(value: &str, multiline: bool) -> bool {
-    value
-        .chars()
-        .all(|c| !c.is_control() || (multiline && matches!(c, '\t' | '\n' | '\r')))
+    value.chars().all(|c| {
+        !(c.is_control() || layout(c))
+            || (multiline && matches!(c, '\t' | '\n' | '\r' | '\u{2028}' | '\u{2029}'))
+    })
 }
 
 /// A non-blank single line within `max` bytes.
