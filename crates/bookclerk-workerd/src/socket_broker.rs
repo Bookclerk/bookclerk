@@ -382,7 +382,7 @@ async fn allowed_addresses(
     };
     let allowed: Vec<SocketAddr> = resolved
         .into_iter()
-        .filter(|addr| policy.allows_ip(addr.ip()))
+        .filter(|addr| policy.allows_ip_for(&target.host, addr.ip()))
         .collect();
     if allowed.is_empty() {
         return Err(PluginError::forbidden(format!(

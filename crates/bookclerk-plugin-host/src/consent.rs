@@ -661,6 +661,7 @@ impl PluginGrant {
             address_cidrs: self.address_cidrs.iter().cloned().collect(),
             user_agent: Some(bookclerk_plugin_manifest::host_user_agent()),
             own_user_agent_hosts: self.effective_own_user_agent_hosts().into_iter().collect(),
+            local_names: Vec::new(),
         }
     }
 

@@ -13,13 +13,15 @@
 //! redirect reaches exactly the ports its `domains` entry grants (its own
 //! `:port`, else 80 and 443), judged by an independent entry parser; the
 //! isolate tunnel rule is exactly the union of the fetch, redirect and TCP
-//! rules on each port.
+//! rules on each port; a `localNames` entry widens the address check only to
+//! local-network addresses and only for that exact name.
 
 #![no_main]
 
 use bookclerk_plugin_manifest::{
     host_matches, normalize_domain_pattern, normalize_hostname, normalize_tcp_host,
-    split_domain_entry, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
+    is_local_network, normalize_local_name, split_domain_entry, EgressPolicy, NetworkMode,
+    ANY_PUBLIC_HOST,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -270,6 +272,7 @@ fn check_policy(policy: &EgressPolicy) {
         "hop budget exceeded"
     );
     check_user_agent(policy);
+    check_local_names(policy);
 }
 /// Plain lowercase ASCII form of `raw` (trimmed, trailing dots dropped), or
 /// `None` when it holds anything an IDNA step could reinterpret.
@@ -382,4 +385,45 @@ fn restricted_spellings(host: &str) -> Vec<String> {
         host.to_ascii_uppercase(),
         fullwidth,
     ]
+}
+
+/// A name widens the address check only to local-network addresses, and only
+/// for a name listed (in normalized form) in `local_names`; loopback,
+/// link-local and other special addresses are never widened.
+fn check_local_names(policy: &EgressPolicy) {
+    let addresses: Vec<std::net::IpAddr> = [
+        "192.168.1.20",
+        "10.0.0.1",
+        "172.16.0.1",
+        "100.64.0.1",
+        "fd00::1",
+        "::ffff:10.0.0.1",
+        "127.0.0.1",
+        "::1",
+        "169.254.169.254",
+        "fe80::1",
+        "0.0.0.0",
+        "224.0.0.1",
+        "1.1.1.1",
+    ]
+    .iter()
+    .filter_map(|text| text.parse().ok())
+    .collect();
+    let mut names: Vec<String> = policy.local_names.clone();
+    names.extend(policy.local_names.iter().map(|n| format!("a.{n}")));
+    names.extend(["localhost", "example.com", "10.0.0.1", "[fd00::1]"].map(String::from));
+    for name in &names {
+        let listed = normalize_local_name(name).is_some_and(|normalized| {
+            policy
+                .local_names
+                .iter()
+                .any(|entry| normalize_local_name(entry).as_deref() == Some(normalized.as_str()))
+        });
+        for &ip in &addresses {
+            let allowed = policy.allows_ip_for(name, ip);
+            let expected = policy.allows_ip(ip)
+                || (policy.mode == NetworkMode::Outbound && listed && is_local_network(ip));
+            assert_eq!(allowed, expected, "allows_ip_for({name:?}, {ip})");
+        }
+    }
 }

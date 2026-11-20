@@ -120,6 +120,19 @@ pub struct EgressPolicy {
     /// name: `ownUserAgentHosts`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub own_user_agent_hosts: Vec<String>,
+
+    /// Host names that may resolve to a local-network address
+    /// ([`crate::is_local_network`]: RFC 1918, shared CGNAT space, IPv6 ULA)
+    /// without a CIDR grant; see [`Self::allows_ip_for`].
+    ///
+    /// Each entry is one exact, IDNA-normalized host name (no wildcard, no
+    /// IP literal, no port). The binding is to the name: another name that
+    /// resolves to the same address gains nothing. The host fills this from
+    /// approved settings whose value names a host (a server address on the
+    /// operator's LAN). Loopback and link-local addresses still need an
+    /// explicit CIDR. Wire name: `localNames`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_names: Vec<String>,
 }
 
 /// Home page named in [`host_user_agent`], so a site operator who sees the
@@ -228,6 +241,8 @@ impl EgressPolicy {
             address_cidrs,
             user_agent: None,
             own_user_agent_hosts,
+            // Local names come from approved settings, never the manifest.
+            local_names: Vec::new(),
         })
     }
 
@@ -311,6 +326,7 @@ impl EgressPolicy {
             address_cidrs: Vec::new(),
             user_agent: None,
             own_user_agent_hosts: Vec::new(),
+            local_names: Vec::new(),
         }
     }
 
@@ -436,6 +452,45 @@ impl EgressPolicy {
             return false;
         }
         address_allowed(ip, &self.cidr_grants())
+    }
+
+    /// True when a connection to `host` may use the resolved address `ip`.
+    ///
+    /// [`Self::allows_ip`], plus one widening: when `host` is a name listed
+    /// in [`Self::local_names`], a local-network address
+    /// ([`crate::is_local_network`]) is allowed too, so a setting that names
+    /// a LAN server by host name works when local DNS answers with a private
+    /// address. Loopback, link-local and other special addresses are never
+    /// widened this way.
+    ///
+    /// Callers resolve `host` once, check every address with this method and
+    /// dial only an address that passed, so a later DNS answer cannot swap
+    /// in another address.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - The name the connection was asked for (or an IP literal).
+    /// * `ip` - One resolved address for it.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the address may be dialed for that name.
+    #[must_use]
+    pub fn allows_ip_for(&self, host: &str, ip: std::net::IpAddr) -> bool {
+        if self.allows_ip(ip) {
+            return true;
+        }
+        if self.mode == NetworkMode::Deny || !crate::is_local_network(ip) {
+            return false;
+        }
+        let HostKind::Name(name) = classify_host(host) else {
+            return false;
+        };
+        !is_restricted_hostname(&name)
+            && self
+                .local_names
+                .iter()
+                .any(|entry| normalize_local_name(entry).as_deref() == Some(name.as_str()))
     }
 
     /// Loopback / metadata hostnames need a matching CIDR, not any CIDR.
@@ -894,6 +949,29 @@ fn entry_grants_port(entry: &str, port: u16) -> bool {
         Some((_, Some(granted))) => granted == port,
         Some((_, None)) => FETCH_DEFAULT_PORTS.contains(&port),
         None => false,
+    }
+}
+
+/// Normalizes a [`EgressPolicy::local_names`] entry: one exact host name,
+/// IDNA-normalized, never a wildcard, an IP literal, a port or a restricted
+/// name such as `localhost`.
+///
+/// # Arguments
+///
+/// * `host` - A host name taken from a setting value.
+///
+/// # Returns
+///
+/// The normalized name, or `None` when it is not an exact host name.
+#[must_use]
+pub fn normalize_local_name(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.starts_with("*.") || host == ANY_PUBLIC_HOST {
+        return None;
+    }
+    match classify_host(host) {
+        HostKind::Name(name) if !is_restricted_hostname(&name) && !name.contains(':') => Some(name),
+        HostKind::Name(_) | HostKind::Ip(_) | HostKind::Invalid => None,
     }
 }
 
@@ -1706,6 +1784,85 @@ mod tests {
         // callers that judge the port separately) still sees the host.
         assert!(policy.allows_initial("api.example.com"));
         assert!(host_matches("api.example.com", "api.example.com:8443"));
+    }
+
+    #[test]
+    fn a_local_name_may_resolve_to_a_lan_address_and_nothing_wider() {
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["abs.home.arpa:13378".into()],
+            local_names: vec!["ABS.home.arpa.".into()],
+            ..EgressPolicy::deny()
+        };
+        let ip = |text: &str| text.parse::<std::net::IpAddr>().expect("ip");
+        // The bound name reaches every local-network range.
+        for lan in [
+            "192.168.1.20",
+            "10.1.2.3",
+            "172.20.0.4",
+            "100.64.0.9",
+            "fd12::1",
+        ] {
+            assert!(policy.allows_ip_for("abs.home.arpa", ip(lan)), "{lan}");
+            assert!(policy.allows_ip_for("ABS.home.arpa.", ip(lan)), "{lan}");
+        }
+        assert!(policy.allows_ip_for("abs.home.arpa", ip("::ffff:192.168.1.20")));
+        // Never loopback, link-local (metadata), unspecified or multicast.
+        for special in [
+            "127.0.0.1",
+            "::1",
+            "169.254.169.254",
+            "fe80::1",
+            "0.0.0.0",
+            "224.0.0.1",
+        ] {
+            assert!(
+                !policy.allows_ip_for("abs.home.arpa", ip(special)),
+                "{special}"
+            );
+        }
+        // The binding is to the name: another name, a subdomain or the
+        // address itself gains nothing.
+        assert!(!policy.allows_ip_for("other.home.arpa", ip("192.168.1.20")));
+        assert!(!policy.allows_ip_for("x.abs.home.arpa", ip("192.168.1.20")));
+        assert!(!policy.allows_ip_for("192.168.1.20", ip("192.168.1.20")));
+        // Public addresses pass as before; deny mode passes nothing.
+        assert!(policy.allows_ip_for("abs.home.arpa", ip("1.1.1.1")));
+        let denied = EgressPolicy {
+            mode: NetworkMode::Deny,
+            ..policy.clone()
+        };
+        assert!(!denied.allows_ip_for("abs.home.arpa", ip("192.168.1.20")));
+        // A wire policy that lists a restricted or wildcard name gains nothing.
+        let odd = EgressPolicy {
+            local_names: vec!["localhost".into(), "*.home.arpa".into(), "*".into()],
+            ..policy
+        };
+        assert!(!odd.allows_ip_for("localhost", ip("10.0.0.1")));
+        assert!(!odd.allows_ip_for("a.home.arpa", ip("10.0.0.1")));
+        assert!(!odd.allows_ip_for("example.com", ip("10.0.0.1")));
+    }
+
+    #[test]
+    fn local_names_are_exact_host_names() {
+        assert_eq!(
+            normalize_local_name(" NAS.Home.Arpa. ").as_deref(),
+            Some("nas.home.arpa")
+        );
+        for refused in [
+            "*.home.arpa",
+            "*",
+            "localhost",
+            "a.localhost",
+            "192.168.1.2",
+            "[fd00::1]",
+            "fd00::1",
+            "nas.home.arpa:8080",
+            "nas%2ehome.arpa",
+            "",
+        ] {
+            assert!(normalize_local_name(refused).is_none(), "{refused:?}");
+        }
     }
 
     #[test]

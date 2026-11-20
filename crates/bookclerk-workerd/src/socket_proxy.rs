@@ -316,7 +316,7 @@ where
         }
     };
     let mut addrs: Vec<std::net::SocketAddr> = looked_up
-        .filter(|addr| policy.egress.allows_ip(addr.ip()))
+        .filter(|addr| policy.egress.allows_ip_for(&host, addr.ip()))
         .collect();
     if addrs.is_empty() {
         write_fenced(

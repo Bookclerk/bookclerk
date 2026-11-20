@@ -113,6 +113,7 @@ fn policy(echo_port: u16, http_port: u16, allow_public_redirects: bool) -> Egres
         address_cidrs: vec!["127.0.0.1/32".into()],
         user_agent: None,
         own_user_agent_hosts: Vec::new(),
+        local_names: Vec::new(),
     }
 }
 
@@ -414,6 +415,7 @@ async fn workerd_any_public_host_grants_no_address_socket_or_other_port() {
         address_cidrs: vec!["127.0.0.1/32".into()],
         user_agent: None,
         own_user_agent_hosts: Vec::new(),
+        local_names: Vec::new(),
     };
     let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
@@ -516,6 +518,7 @@ async fn workerd_fetch_carries_the_host_user_agent_except_on_approved_hosts() {
         user_agent: Some(host_agent.into()),
         // A padded or dotted `*` must not exempt every host.
         own_user_agent_hosts: vec!["127.0.0.1".into(), " * ".into(), "*.".into()],
+        local_names: Vec::new(),
     };
     let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();

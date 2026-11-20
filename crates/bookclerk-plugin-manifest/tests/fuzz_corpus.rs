@@ -10,9 +10,9 @@
 use std::path::{Path, PathBuf};
 
 use bookclerk_plugin_manifest::{
-    consent_domains_for, format_manifest, host_matches, normalize_domain_pattern,
-    normalize_hostname, normalize_tcp_host, parse, split_domain_entry, EgressPolicy, NetworkMode,
-    ANY_PUBLIC_HOST,
+    consent_domains_for, format_manifest, host_matches, is_local_network, normalize_domain_pattern,
+    normalize_hostname, normalize_local_name, normalize_tcp_host, parse, split_domain_entry,
+    EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
 };
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
@@ -215,6 +215,7 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
         }
         check_user_agent(&policy);
         check_ports(&policy);
+        check_local_names(&policy);
     }
     assert!(parsed > 0, "no egress_policy seed parsed");
 }
@@ -456,4 +457,45 @@ fn fuzz_corpus_table_setting_seed_parses_and_round_trips() {
     assert_eq!(spec.columns.len(), 4);
     let formatted = format_manifest(&manifest).expect("format");
     assert_eq!(parse(&formatted).expect("reparse"), manifest);
+}
+
+/// A name widens the address check only to local-network addresses, and only
+/// for a name listed (in normalized form) in `local_names`; loopback,
+/// link-local and other special addresses are never widened.
+fn check_local_names(policy: &EgressPolicy) {
+    let addresses: Vec<std::net::IpAddr> = [
+        "192.168.1.20",
+        "10.0.0.1",
+        "172.16.0.1",
+        "100.64.0.1",
+        "fd00::1",
+        "::ffff:10.0.0.1",
+        "127.0.0.1",
+        "::1",
+        "169.254.169.254",
+        "fe80::1",
+        "0.0.0.0",
+        "224.0.0.1",
+        "1.1.1.1",
+    ]
+    .iter()
+    .filter_map(|text| text.parse().ok())
+    .collect();
+    let mut names: Vec<String> = policy.local_names.clone();
+    names.extend(policy.local_names.iter().map(|n| format!("a.{n}")));
+    names.extend(["localhost", "example.com", "10.0.0.1", "[fd00::1]"].map(String::from));
+    for name in &names {
+        let listed = normalize_local_name(name).is_some_and(|normalized| {
+            policy
+                .local_names
+                .iter()
+                .any(|entry| normalize_local_name(entry).as_deref() == Some(normalized.as_str()))
+        });
+        for &ip in &addresses {
+            let allowed = policy.allows_ip_for(name, ip);
+            let expected = policy.allows_ip(ip)
+                || (policy.mode == NetworkMode::Outbound && listed && is_local_network(ip));
+            assert_eq!(allowed, expected, "allows_ip_for({name:?}, {ip})");
+        }
+    }
 }
