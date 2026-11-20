@@ -439,7 +439,7 @@ describe("/lookup", () => {
     assert.equal(res?.status, 200);
     const page = await res!.text();
     assert.ok(page.includes("scan failed"));
-    assert.ok(page.includes("https://github.com/Bookclerk/bookclerk/issues/42"));
+    assert.match(page, /href="https:\/\/github\.com\/Bookclerk\/bookclerk\/issues\/42"/);
     assert.ok(page.includes("in Bookclerk 0.9.1"));
     assert.match(page, /action="\/lookup\/delete"/);
     assert.ok(!page.includes("<script"));
