@@ -7,17 +7,18 @@ it never checks out or runs pull request code
 
 - ``propose`` (``workflow_run`` of CI): reads the set the pull request's
   ``ui-visual`` job recorded, validates it, compares it with the set the
-  pull request's ``baselines.lock`` names, and when they differ commits it
-  to ``pending/pr-<number>`` in the baselines repository and posts (or
-  updates) one review comment with the approved and proposed images and an
-  approval checkbox, then requests a review from the ``visual-reviewers``
-  team.
+  ``baselines.lock`` of the pull request merged into its base names (what
+  CI compared with), and when they differ commits it to
+  ``pending/pr-<number>`` in the baselines repository and posts one review
+  comment with the changes grouped by category and an approval checkbox,
+  then requests a review from the ``visual-reviewers`` team. An unapproved
+  comment is updated in place; once one is approved, later changes get a
+  new comment.
 - ``approve`` (``issue_comment`` ``edited``): when a user ticks that
   checkbox, or replies ``@<app> approve-visuals`` (for someone without write
   access), checks that they are a maintainer or in the ``visual-reviewers``
-  team and that the comment is
-  still for the pull request's head, tags the set ``approved/<commit>`` so
-  it is kept, and writes the new lock to the pull request's branch (or, for
+  team and that the pull request is open, tags the set
+  ``approved/<commit>`` so it is kept, and writes the new lock to the pull request's branch (or, for
   a fork, tells the author the line to commit). Any other tick is undone.
 
 Every parser lives in ``visual_baselines.py``; this module only moves bytes
@@ -65,6 +66,10 @@ Transport = cla_check.Transport
 
 class BotError(RuntimeError):
     """A GitHub or git step failed."""
+
+
+class NotFound(BotError):
+    """GitHub answered 404."""
 
 
 def call(
@@ -212,13 +217,20 @@ def is_approved(send: Transport, baselines: str, commit: str) -> bool:
 
 
 def head_lock(send: Transport, repository: str, sha: str) -> str | None:
-    """Reads the lock at commit ``sha`` of this repository.
+    """Reads the lock at ``sha`` (a commit or ref) of this repository.
 
     # Errors
-    ``BotError`` when it cannot be fetched; ``VisualBaselinesError`` when it
+    ``NotFound`` when the ref or the file is missing; ``BotError`` when it
+    cannot be fetched otherwise; ``VisualBaselinesError`` when it
     is malformed.
     """
-    raw = call(send, "GET", f"repos/{repository}/contents/{LOCK_PATH}?ref={sha}")
+    status, raw = send(
+        "GET", f"repos/{repository}/contents/{LOCK_PATH}?ref={sha}", None
+    )
+    if status == 404:
+        raise NotFound(f"no lock at {sha}")
+    if status != 200:
+        raise BotError(f"lock contents: HTTP {status}")
     obj = vb._json_object(raw, "lock contents")
     content = obj.get("content")
     if not isinstance(content, str):
@@ -232,12 +244,19 @@ def head_lock(send: Transport, repository: str, sha: str) -> str | None:
 
 def find_comment(
     send: Transport, repository: str, number: int, bot_login: str
-) -> int | None:
-    """Returns the id of the bot's review comment on pull request ``number``.
+) -> tuple[int, str] | None:
+    """Returns the bot's latest review comment on pull request ``number``.
+
+    Only comments by ``bot_login`` count, so a user who pastes the marker
+    cannot pose as one.
+
+    # Returns
+    The comment's id and body, or ``None`` before the bot posted one.
 
     # Errors
     ``BotError`` when the listing fails.
     """
+    latest: tuple[int, str] | None = None
     for page in range(1, 11):
         raw = call(
             send,
@@ -253,20 +272,18 @@ def find_comment(
         for item in items:
             if not isinstance(item, dict):
                 continue
-            user = item.get("user")
-            body = item.get("body")
+            user, body, cid = item.get("user"), item.get("body"), item.get("id")
             if (
                 isinstance(user, dict)
                 and user.get("login") == bot_login
                 and isinstance(body, str)
+                and type(cid) is int
                 and vb.MARKER.match(body)
             ):
-                cid = item.get("id")
-                if type(cid) is int:
-                    return cid
+                latest = (cid, body)
         if len(items) < 100:
-            return None
-    return None
+            break
+    return latest
 
 
 def post_or_update(
@@ -288,6 +305,31 @@ def post_or_update(
             f"repos/{repository}/issues/comments/{comment_id}",
             {"body": body},
         )
+
+
+def compared_lock(
+    send: Transport, repository: str, baselines: str, number: int, head: str
+) -> str | None:
+    """Returns the approved set pull request ``number`` is compared with.
+
+    CI checks out the pull request merged into its base, so the lock it
+    used is the merge ref's: a pull request that leaves the lock alone
+    inherits the base branch's, and one approved elsewhere and merged stops
+    showing as a change here. Without a merge ref (a conflict), the head's
+    lock stands in. A lock the approval workflow never tagged reads as
+    ``None``, so every image needs approval.
+
+    # Errors
+    ``BotError`` when a read fails; ``VisualBaselinesError`` when the lock
+    is malformed.
+    """
+    try:
+        lock = head_lock(send, repository, f"refs/pull/{number}/merge")
+    except NotFound:
+        lock = head_lock(send, repository, head)
+    if lock and not is_approved(send, baselines, lock):
+        return None
+    return lock
 
 
 def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
@@ -318,23 +360,41 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
     files = vb.read_set(artifact / ARTIFACT_SET)
     vb.validate_set(files)
     proposed = dict(files)
-    lock = head_lock(send, repository, head.sha)
-    if lock and not is_approved(send, baselines, lock):
-        # A lock the approval workflow did not write (say, a pending set's
-        # commit copied by hand): compare with nothing, so every image needs
-        # approval.
-        lock = None
-    approved = fetch_set(baselines, lock, env["BASELINES_TOKEN"]) if lock else {}
-    changes = vb.diff_sets(approved, proposed)
+    raw_base = f"https://raw.githubusercontent.com/{baselines}"
     done = []
     for number in numbers:
-        comment_id = find_comment(send, repository, number, bot_login)
+        lock = compared_lock(send, repository, baselines, number, head.sha)
+        approved = fetch_set(baselines, lock, env["BASELINES_TOKEN"]) if lock else {}
+        changes = vb.diff_sets(approved, proposed)
+        latest = find_comment(send, repository, number, bot_login)
+        shown = vb.MARKER.match(latest[1]) if latest else None
+        # An approved comment is a record: later changes go in a new comment.
+        # An unapproved one is the open question, so it is updated in place.
+        open_id = (
+            latest[0]
+            if latest is not None
+            and shown is not None
+            and not is_approved(send, baselines, shown.group(2))
+            else None
+        )
         if not changes:
-            if comment_id is not None:
+            if open_id is not None:
                 note = f"<!-- bookclerk-visual-baselines v1 head={head.sha} set={lock or '0' * 40} -->\n"
                 note += f"No visual changes left to approve at `{head.sha[:12]}`.\n"
-                post_or_update(write, repository, number, comment_id, note)
+                post_or_update(write, repository, number, open_id, note)
             done.append(f"#{number}: matches the approved baselines")
+            continue
+        # A rerun that recorded the same images keeps the open comment as it
+        # is, so a tick in progress is not lost.
+        if (
+            open_id is not None
+            and shown is not None
+            and shown.group(2) != "0" * 40
+            and fetch_set(baselines, shown.group(2), env["BASELINES_TOKEN"]) == proposed
+        ):
+            done.append(
+                f"#{number}: {shown.group(2)} still pending ({len(changes)} changes)"
+            )
             continue
         commit = push_set(
             baselines,
@@ -343,12 +403,11 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
             f"Proposed baselines for {repository}#{number} at {head.sha}",
             env["BASELINES_TOKEN"],
         )
-        raw_base = f"https://raw.githubusercontent.com/{baselines}"
         post_or_update(
             write,
             repository,
             number,
-            comment_id,
+            open_id,
             vb.render_comment(head.sha, commit, lock, changes, raw_base, bot_login),
         )
         done.append(
@@ -428,8 +487,8 @@ def approve(
 
     A tick of the bot's checkbox (``edited``) or an ``approve_command`` reply
     (``created``) approves the set the bot's comment proposes, once the
-    approver passes ``may_approve`` and the comment is still for the pull
-    request's head.
+    approver passes ``may_approve`` and the pull request is open (pushes
+    since the comment do not matter).
 
     # Arguments
     * ``env``: the environment described in the module docs.
@@ -455,14 +514,10 @@ def approve(
         if command is None:
             return "not an approval"
         number, sender = command
-        comment_id = find_comment(send, repository, number, bot_login)
-        if comment_id is None:
+        latest = find_comment(send, repository, number, bot_login)
+        if latest is None:
             return "no proposed set to approve"
-        comment = vb._json_object(
-            call(send, "GET", f"repos/{repository}/issues/comments/{comment_id}"),
-            "comment",
-        )
-        body = str(comment.get("body", ""))
+        comment_id, body = latest
         match = vb.MARKER.match(body)
         if match is None or vb.checkbox(match.group(1), False) not in body:
             return "no proposed set to approve"
@@ -487,25 +542,13 @@ def approve(
         call(send, "GET", f"repos/{repository}/pulls/{approval.number}"), "pull request"
     )
     pull_head = pull.get("head")
-    if (
-        pull.get("state") != "open"
-        or not isinstance(pull_head, dict)
-        or pull_head.get("sha") != approval.head
-    ):
-        return refuse(
-            "Not approved: the pull request's head has moved; a new comment follows the next CI run."
-        )
-    ref = vb._json_object(
-        call(
-            baselines_write,
-            "GET",
-            f"repos/{baselines}/git/ref/heads/pending/pr-{approval.number}",
-        ),
-        "ref",
-    )
-    obj = ref.get("object")
-    if not isinstance(obj, dict) or obj.get("sha") != approval.set_commit:
-        return refuse("Not approved: this set is no longer the pending one.")
+    # The approval is of the images the comment shows, not of a commit: a
+    # push since then does not void it. The set commit comes from the bot's
+    # own marker (an edit may only tick the box), and the run after the lock
+    # lands compares the new head with it, so screenshots that changed since
+    # get a new comment and the rest stay approved.
+    if pull.get("state") != "open" or not isinstance(pull_head, dict):
+        return refuse("Not approved: the pull request is no longer open.")
     call(
         baselines_write,
         "POST",
@@ -516,6 +559,10 @@ def approve(
         },
         ok=(201, 422),
     )
+    if not is_approved(baselines_write, baselines, approval.set_commit):
+        return refuse(
+            "Not approved: the proposed set is no longer in the baselines repository."
+        )
     head_repo = pull_head.get("repo")
     branch = pull_head.get("ref")
     if (
