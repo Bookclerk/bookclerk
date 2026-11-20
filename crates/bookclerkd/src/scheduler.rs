@@ -92,7 +92,11 @@ fn spawn_scan_loop(state: Arc<AppState>) {
                 match enqueue_acquire(
                     state.clone(),
                     ScanRequester::Operator,
-                    crate::jobs::AcquireAsk::default(),
+                    // Auto-acquire: every download waits for its account's pace.
+                    crate::jobs::AcquireAsk {
+                        paced: true,
+                        ..crate::jobs::AcquireAsk::default()
+                    },
                     JobTrigger::Scheduler,
                 )
                 .await

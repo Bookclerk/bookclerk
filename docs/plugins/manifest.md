@@ -222,6 +222,35 @@ fetches = ["audio"]           # what fetchTitle can deliver
 `describe()` returns the same declaration, and the host refuses records
 outside it. See [Declaring media](abi.md#declaring-media) for the rules.
 
+### `[acquire]` (download pace)
+
+A storefront can say how fast Bookclerk should download from one store
+account. The table is optional, and only a plugin with the `storefront`
+entrypoint may carry it.
+
+```toml
+[acquire]
+downloads_per_day = 100   # 1 to 10000, over a rolling 24 hours
+min_gap_seconds = 30      # 0 to 86400, between two downloads
+cooldown_seconds = 86400  # 1 to 604800, pause after the store says slow down
+```
+
+- `downloads_per_day`: how many downloads Bookclerk starts on its own for
+  one account in any 24 hours. Leave it out for no daily limit.
+- `min_gap_seconds`: the shortest time between two downloads Bookclerk
+  starts on its own. Leave it out for no gap.
+- `cooldown_seconds`: how long the account rests after `fetchTitle` fails
+  with `rate_limited` and no `retryAfterMs`. It defaults to one hour. When
+  the store sends `retryAfterMs`, the account rests that long instead (at
+  most a week).
+
+The pace holds only downloads Bookclerk starts itself: auto-acquire and
+requests from other libraries. A download a person starts is counted
+toward the day but never held. The account's person (on **Accounts**) or
+the operator (`bookclerk library set-pace`) can replace the declared pace
+for one account with a custom pace or no limit. See
+[Download pacing](../internals/jobs.md#download-pacing).
+
 ### `[metadata_files]` (metadata file dialects)
 
 A plugin with the `metadataFiles` entrypoint lists the file formats it

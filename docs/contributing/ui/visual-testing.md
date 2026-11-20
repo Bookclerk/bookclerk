@@ -135,9 +135,13 @@ public, so this needs no token and works the same on a pull request from a
 fork. It sets `CI_VISUAL_BASELINES` to that checkout, and the check
 compares after recording.
 
-The `Visual baselines` workflow applies the same rule when it proposes: it
-compares a pull request's screenshots with an untagged lock's set as if
-there were none, so every image needs approval.
+The `Visual baselines` workflow compares against the same lock CI used:
+the one in the pull request merged into its base branch. A pull request
+that leaves the lock alone is compared with the base branch's approved set,
+so it only gets a comment when its own change alters a screenshot. Without
+a merge ref (the pull request conflicts with its base), the head's lock
+stands in. Like CI, the workflow treats an untagged lock as no set at all,
+so every image needs approval.
 
 ### How a pull request changes them
 
@@ -146,29 +150,40 @@ its new screenshots are approved. The `Visual baselines` workflow
 (`.github/workflows/visual-baselines.yml`) handles the rest:
 
 1. When CI finishes, the workflow reads the run's recorded set. If it
-   differs from the set the pull request's lock names, it pushes the set to
+   differs from the approved set CI compared with, it pushes the set to
    `pending/pr-<number>` and posts one comment on the pull request. The
-   comment shows the approved and proposed image of each changed
-   screenshot, and an approval checkbox for that head commit. The workflow
-   then requests a review from the `visual-reviewers` team, so its members
-   are notified.
+   comment opens with how many screenshots are changed, new and removed,
+   and the approval checkbox. Below that, each category is a collapsed
+   section: changed screenshots show the approved and proposed image, new
+   ones only the proposed image and removed ones only the approved image.
+   Every screenshot is listed; only a set too large for one GitHub comment
+   (65,536 characters) shows the last rows by name alone. The workflow then
+   requests a review from the `visual-reviewers` team, so its members are
+   notified.
 2. An approver ticks the checkbox. Ticking needs write access, so a visual
    reviewer without it replies `@bookclerk approve-visuals` instead, the
    same form as the other bot commands.
-3. The workflow checks the approver and that the comment is still for the
-   pull request's head. It then tags the set `approved/<commit>` and commits
+3. The workflow checks the approver and that the pull request is open. It
+   then tags the set `approved/<commit>` and commits
    the new lock to the pull request's branch through the API, so GitHub
    signs the commit. For a fork, the comment gives the author the lock line
    to commit.
 4. The next run compares against the new set and passes.
 
-A tick from anyone else is undone with the reason. A push after the
-comment makes it stale: the approval is refused, and the next CI run
-updates the comment for the new head.
+A tick from anyone else is undone with the reason. The approval is of the
+images the comment shows, not of a commit, so a push after the comment
+doesn't void it. Later runs compare with the approved set, so screenshots
+that haven't changed since stay approved. Ones that changed need approval
+again, in a new comment; the approved comment stays as the record. Until a
+comment is approved, a run that records different images updates it in
+place, and a run that records the same images leaves it alone.
 
 Because the pull request carries its own lock, the merge queue checks each
-pull request against its own approved images, and two pull requests that
-change baselines at once don't break each other.
+pull request against its own approved images. Two pull requests that both
+approve new images change the same lock line, so the second one to merge
+conflicts. Merging the base branch into it resolves that: CI then compares
+with the newly approved set, and the comment shows only that pull
+request's own changes.
 
 ### Who can approve
 
@@ -213,7 +228,11 @@ Before the first approval, an organization owner:
    request for a team that can see the repository; Read grants no code
    write.
 
-The lock stays `none` until the first set is approved.
+The lock stays `none` until the first set is approved. Until then every
+pull request that touches `ui/` is compared with an empty set and its
+comment shows every screenshot as new. Approving one of them and merging
+it sets the lock on the default branch, and later pull requests are
+compared with that set.
 
 ### Keeping the repository small
 
