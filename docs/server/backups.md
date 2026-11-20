@@ -200,6 +200,10 @@ This writes `Settings.json`, `AccountsSettings.json` (account details
 only) and `LibationContext.db`, for classic tools. Credentials are never
 exported; they stay in `encrypted_secrets`.
 
+`LibationContext.db` lists every store account title. Tags, ratings and
+finished flags belong to each person, so they are empty unless
+`--user <login name or id>` names whose to write.
+
 ## Export the library as a spreadsheet
 
 ```sh

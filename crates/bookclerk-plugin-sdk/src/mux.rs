@@ -1655,6 +1655,12 @@ fn take_ready_closes(state: &WriterState) -> Vec<ReadyClose> {
                 continue;
             }
             if !closes[index].close_pending.load(Ordering::Acquire) {
+                // The trailing `Close` went out with the stream's last Data
+                // frame, possibly before `queue_close` pushed this hold, so
+                // `note_close_written` found nothing to flag then. Flag it
+                // here: the hold is removed before `note_close_written` runs
+                // again, and `poll_shutdown` waits on this flag.
+                closes[index].close_flag.store(true, Ordering::Release);
                 finished.push(closes[index].generation);
                 closes.remove(index);
                 continue;
@@ -2134,6 +2140,17 @@ mod tests {
                             .shutdown()
                             .await
                             .unwrap_or_else(|err| panic!("shutdown {i}: {err}"));
+                        // Wait for the peer's Close before the next open. The
+                        // client never waits on the server otherwise, so under
+                        // load it could run more than `MAX_LIVE_STREAMS` opens
+                        // ahead and the server's cap would refuse one, leaving
+                        // the accept loop waiting for a stream that never comes.
+                        let mut rest = Vec::new();
+                        local
+                            .read_to_end(&mut rest)
+                            .await
+                            .unwrap_or_else(|err| panic!("peer close {i}: {err}"));
+                        assert!(rest.is_empty(), "stream {i} carried no reply");
                     }
                     accept
                         .await
@@ -2726,6 +2743,58 @@ mod tests {
         assert!(
             written <= INITIAL_WINDOW as usize,
             "queued {written} bytes for an unread peer"
+        );
+    }
+
+    /// A `Close` sent with the last Data frame before `queue_close` pushed its
+    /// hold still lets `shutdown` finish.
+    ///
+    /// The writer swaps `close_pending` as soon as `queue_close` sets it, so it
+    /// can write the trailing `Close` and run `note_close_written` while the
+    /// hold is not in `closes` yet. The next `take_ready_closes` then removes
+    /// the hold and has to set `close_flag` itself, or `poll_shutdown` waits
+    /// forever.
+    #[test]
+    fn a_close_sent_before_its_hold_was_queued_still_completes_shutdown() {
+        let close_flag = Arc::new(AtomicBool::new(false));
+        let state = WriterState {
+            credits: Mutex::new(Vec::new()),
+            closes: Mutex::new(vec![CloseHold {
+                id: 7,
+                generation: 1,
+                outbound_queued: Arc::new(AtomicUsize::new(0)),
+                // Already swapped by the writer that sent the trailing Close.
+                close_pending: Arc::new(AtomicBool::new(false)),
+                close_flag: Arc::clone(&close_flag),
+                emitting: false,
+            }]),
+            records: Mutex::new(vec![BookRecord {
+                generation: 1,
+                credit_done: true,
+                close_done: false,
+            }]),
+            pending_opens: Mutex::new(VecDeque::new()),
+            local_gens: Mutex::new(Vec::new()),
+            admit_wake: Arc::new(Notify::new()),
+            fault: Mutex::new(None),
+            flush_wakers: Mutex::new(Vec::new()),
+            writer_stopped: AtomicBool::new(false),
+            stop: Arc::new(AtomicBool::new(false)),
+            wake: Arc::new(Notify::new()),
+            credit_hwm: AtomicUsize::new(0),
+            close_hwm: AtomicUsize::new(0),
+            record_hwm: AtomicUsize::new(0),
+        };
+        let ready = take_ready_closes(&state);
+        assert!(ready.is_empty(), "the Close is not written twice");
+        assert!(lock_closes(&state.closes).is_empty(), "hold retired");
+        assert!(
+            lock_records(&state.records).is_empty(),
+            "admission released"
+        );
+        assert!(
+            close_flag.load(Ordering::Acquire),
+            "shutdown would wait forever on an unset close flag"
         );
     }
 
