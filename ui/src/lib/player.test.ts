@@ -310,9 +310,25 @@ describe("Player", () => {
     expect(w.player.state.positionMs).toBe(100_000);
     expect(w.player.state.finished).toBe(true);
     expect(w.synced.at(-1)?.report.position_ms).toBe(100_000);
+  });
+
+  it("opens a new session to listen again to a book played to its end", async () => {
+    const w = world();
+    w.flags.finishedNow = true;
+    await w.player.play(TARGET);
+    w.audio.ready(100);
+    w.audio.at(100);
+    w.audio.paused = true;
+    w.audio.emit("ended");
+    await settle();
     w.player.resume();
-    expect(w.audio.currentTime).toBe(0);
+    await settle();
+    // The session that finished the book is closed before the next opens.
+    expect(w.closed.map((c) => c.id)).toEqual(["s1"]);
+    expect(w.opened).toEqual(["ed1", "ed1"]);
+    expect(w.audio.src).toBe("/api/playback/sessions/s2/tracks/0");
     expect(w.player.state.finished).toBe(false);
+    expect(w.player.state.positionMs).toBe(0);
   });
 
   it("pauses when the sleep timer runs out", async () => {

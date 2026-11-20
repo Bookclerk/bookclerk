@@ -260,6 +260,16 @@ export class Player {
       this.resume();
       return;
     }
+    await this.begin(target);
+  }
+
+  /**
+   * Opens a new session for an edition, closing whatever played before,
+   * the same edition's earlier session included.
+   *
+   * @param target - What to play.
+   */
+  private async begin(target: PlayTarget): Promise<void> {
     // Everything that decides which request is the latest happens before
     // the first await, so a slow close of the book before cannot let an
     // earlier request overtake a later one.
@@ -559,7 +569,13 @@ export class Player {
       return;
     }
     const duration = this.state.durationMs;
-    if (duration && this.state.positionMs >= duration) this.seek(0);
+    if (duration && this.state.positionMs >= duration && this.state.target) {
+      // Played to the end: listening again is a new session. Opening one is
+      // what tells the server the book is in progress again; reports on the
+      // session that finished it leave it finished.
+      void this.begin(this.state.target);
+      return;
+    }
     this.wantPlay = true;
     if (this.pendingSeekMs === null) {
       this.set({ error: null });
