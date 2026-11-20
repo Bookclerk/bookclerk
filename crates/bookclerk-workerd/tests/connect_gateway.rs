@@ -160,7 +160,7 @@ fn attach_host_egress(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::{FromRawHandle, IntoRawHandle};
+        use std::os::windows::io::IntoRawHandle;
         let ends = bookclerk_sandbox::StdioEnds::pair_overlapped().expect("pipes");
         let bookclerk_sandbox::StdioEnds {
             host_stdin,

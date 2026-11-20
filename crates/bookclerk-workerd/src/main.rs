@@ -846,7 +846,12 @@ async fn spawn_and_find_bridge(
 
     let mut child = spawn_workerd_process(cmd, spawn_bin)?;
     // workerd now owns the listening socket; close our copy after spawn.
+    // (On Windows the listener type is uninhabited, so there is nothing to
+    // close.)
+    #[cfg(unix)]
     drop(rpc_listener);
+    #[cfg(windows)]
+    let _ = rpc_listener;
 
     control::forward_lines(child.stderr.take());
     if let Some(addr) = known {
