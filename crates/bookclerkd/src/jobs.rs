@@ -950,13 +950,14 @@ pub async fn run_acquire(
     let options = destinations.primary_destination().options.clone();
     let registry = registry_for_job(state).await;
 
-    // A checkpoint is bound to the listing of every destination, so a run
-    // that left one out scans afresh.
+    // A checkpoint is bound to the listing it was written for: a run whose
+    // reachable destinations differ from the run that wrote it scans
+    // afresh.
     let mut index = bookclerk_acquire::scan_storage(
         &library,
         storage.as_ref(),
         ctx.map(|c| &c.fence),
-        ctx.and_then(|c| c.checkpoint.as_ref()).filter(|_| !partial),
+        ctx.and_then(|c| c.checkpoint.as_ref()),
         true,
     )
     .await?;

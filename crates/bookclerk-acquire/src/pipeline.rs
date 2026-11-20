@@ -2033,7 +2033,63 @@ async fn store_copies_from(
             fetch.clone(),
             library_pdf,
         ))
-        .await?;
+        .await;
+        let stored = match stored {
+            Ok(stored) => stored,
+            // A later copy no destination stored, once an earlier one is:
+            // the acquire keeps what is stored, and the copy is retried on
+            // each destination that was to receive it. A packaging failure
+            // still stops here, so a library's copy falls back to the store.
+            Err(err)
+                if !matches!(err, AcquireError::Media(_))
+                    && progress
+                        .result
+                        .as_ref()
+                        .is_some_and(|result| !result.storage_key.is_empty()) =>
+            {
+                let error = err.to_string();
+                tracing::warn!(
+                    id = %status_key(req),
+                    copy = %target.copy,
+                    %error,
+                    "a copy was not stored; it is retried in the background"
+                );
+                let copies = target
+                    .destinations
+                    .items
+                    .iter()
+                    .filter(|dest| {
+                        copy_req
+                            .write_destinations
+                            .as_deref()
+                            .is_none_or(|only| only.is_empty() || only.contains(&dest.id))
+                    })
+                    .map(|dest| CopyOutcome {
+                        destination: dest.id.clone(),
+                        result: CopyResult::Failed {
+                            error: error.clone(),
+                        },
+                    })
+                    .collect();
+                fold_copy_result(
+                    &mut progress.result,
+                    AcquireResult {
+                        asin: req.asin.clone(),
+                        storage_key: String::new(),
+                        written_keys: Vec::new(),
+                        matched_existing: false,
+                        from_library: false,
+                        copies,
+                    },
+                );
+                if several {
+                    remove_scratch_dir(&copy_dir, "failed to clean a copy's scratch dir").await;
+                }
+                progress.next += 1;
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
         let mut stored = stored;
         if extra_pdf {
             copy_req.options.download_pdf = true;
@@ -7035,6 +7091,120 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), 2, "no PDF is fetched again");
+    }
+
+    /// A later copy that no destination stores leaves the main output
+    /// stored: the acquire succeeds and the copy is pending where it was to
+    /// go.
+    #[tokio::test]
+    async fn a_copy_no_destination_stores_is_retried_while_the_main_one_stays() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00COPY", "user-1", "Twin", None).await;
+        let owner = store.file_owner_of_book(&uuid).await.unwrap().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let local_puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let phone_puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // The library keeps the store's files and an MP3 copy per chapter;
+        // `local` takes every copy, `phone` only the MP3 one.
+        let mut destinations =
+            title_named_destinations(&tmp.path().join("local"), local_puts.clone());
+        destinations.items[0].options.copies = vec![output_copy("mp3_chapters:64k-mono")];
+        let mut phone = title_named_destinations(&tmp.path().join("phone"), phone_puts.clone())
+            .items
+            .remove(0);
+        phone.id = DestinationId::new("phone").unwrap();
+        phone.filter = format_filter("mp3_chapters", bookclerk_config::FilterEffect::Include);
+        destinations.items.push(phone);
+        // `local` keeps only the store's files, and every write to `phone`
+        // fails.
+        destinations.items[0].filter =
+            format_filter("original", bookclerk_config::FilterEffect::Include);
+        std::fs::remove_dir_all(tmp.path().join("phone")).ok();
+        std::fs::write(tmp.path().join("phone"), b"not a folder").unwrap();
+
+        let plan = destinations.copy_plan();
+        let copies: Vec<CopyTarget> = plan
+            .into_iter()
+            .map(|(copy, targets)| CopyTarget {
+                destinations: recording_copy_destinations(
+                    &store,
+                    &targets,
+                    Some(&owner),
+                    "audible",
+                    &crate::library_copies::StoredFrom::default(),
+                    &copy,
+                ),
+                copy,
+            })
+            .collect();
+        let job = job_id(&store).await;
+        let mut req = edition_req(&cache, job, "B00COPY", "user-1", &uuid);
+        req.options = destinations.primary_destination().options.clone();
+        pin_call_number(&mut req, Some(&owner));
+        let work_dir = cache.join("acquire").join(&uuid);
+        tokio::fs::create_dir_all(&work_dir).await.unwrap();
+        // The MP3 copy is encoded again from the store's MP3 parts, so the
+        // parts are real audio and this test runs the codec in-process.
+        bookclerk_media::replace_pool(bookclerk_media::MediaPool::new(
+            bookclerk_media::MediaPoolConfig {
+                confinement: bookclerk_media::Confinement::Off,
+                ..bookclerk_media::MediaPoolConfig::default()
+            },
+        ));
+        let source = work_dir.join("source.m4b");
+        bookclerk_media::package_m4b_from_pcm(
+            &vec![0i16; 48_000 * 2],
+            48_000,
+            2,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .unwrap();
+        let delivered = bookclerk_config::LameConfig {
+            target: "bitrate".into(),
+            constant_bitrate: true,
+            bitrate_kbps: 192,
+            ..bookclerk_config::LameConfig::default()
+        };
+        let mut parts = Vec::new();
+        let mut delivered_bytes = Vec::new();
+        for n in 1..=2 {
+            let path = work_dir.join(format!("part{n}.mp3"));
+            encode_to_mp3(&source, &path, &delivered, None, None)
+                .await
+                .unwrap();
+            delivered_bytes.push(std::fs::read(&path).unwrap());
+            parts.push(bookclerk_source::PlainAudioPart {
+                path,
+                title: Some(format!("Chapter {n}")),
+                duration_ms: Some(1_000),
+            });
+        }
+        let fetch = PlainFetch {
+            parts,
+            m4b_path: None,
+            cover_path: None,
+            chapters: Vec::new(),
+            pdf_url: None,
+        };
+
+        let result = store_copies(&store, &copies, &req, &work_dir, fetch, None)
+            .await
+            .expect("the main output is stored");
+        assert!(!result.storage_key.is_empty());
+        let outcomes: Vec<(&str, bool)> = result
+            .copies
+            .iter()
+            .map(|copy| {
+                (
+                    copy.destination.as_str(),
+                    matches!(copy.result, CopyResult::Stored { .. }),
+                )
+            })
+            .collect();
+        assert_eq!(outcomes, [("local", true), ("phone", false)]);
     }
 
     #[tokio::test]
