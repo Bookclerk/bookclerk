@@ -1403,11 +1403,16 @@ pub struct UploadAnswer {
     /// `misdirected`, `unauthorized`, `unavailable`.
     #[schema(example = "received")]
     pub status: String,
-    /// Why, for `refused`, and `restart_file` for an `unavailable` part
-    /// that does not continue an open file.
+    /// Why, for `refused`, and `resume` for an `unavailable` part that
+    /// does not continue the open file at [`Self::offset`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "size_mismatch")]
     pub reason: Option<String>,
+    /// For `partial`, and an `unavailable` part with reason `resume`: the
+    /// offset of the next byte of the file the owner needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 67_108_864)]
+    pub offset: Option<u64>,
     /// For `committed`: the job is finished.
     #[serde(default)]
     #[schema(example = false)]

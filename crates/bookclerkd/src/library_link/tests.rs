@@ -3527,6 +3527,7 @@ mod results_and_uploads {
         let first = put_part(world.addr, &upload_id, &token, "bytes 0-4/15", &FILE[..5]).await;
         assert!(first.starts_with("HTTP/1.1 200"), "{first}");
         assert!(first.contains("\"partial\""), "{first}");
+        assert!(first.contains("\"offset\":5"), "{first}");
         let second = put_part(world.addr, &upload_id, &token, "bytes 5-9/15", &FILE[5..10]).await;
         assert!(second.contains("\"partial\""), "{second}");
         assert!(!stored.exists(), "nothing lands before the last part");
@@ -3548,21 +3549,26 @@ mod results_and_uploads {
         assert!(committed.starts_with("HTTP/1.1 200"), "{committed}");
     }
 
-    /// A part that does not continue the open file (a gap, or no earlier
-    /// part on this node) is answered `restart_file` and drops what the
-    /// file's earlier parts had written; the host then sends the file
-    /// again from its first part, which lands whole.
+    /// A part that does not start where the open file stands (a gap, or
+    /// no earlier part on this node) is told where to resume and changes
+    /// nothing; the status query says the same, and the file then lands
+    /// whole from there.
     #[tokio::test]
-    async fn a_part_out_of_order_restarts_the_file() {
+    async fn a_part_out_of_order_is_told_where_to_resume() {
         let _dek = crate::auth::tests::process_dek_lock().await;
         const FILE: &[u8] = b"audio-in-parts!";
         let (world, owner_out, upload_id, token) = granted_local_file(FILE).await;
         let stored = owner_out.path().join("Author/Title t1/t1.m4b");
+        let status = put_part(world.addr, &upload_id, &token, "bytes */15", b"").await;
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        assert!(status.contains("\"offset\":0"), "{status}");
         let orphan = put_part(world.addr, &upload_id, &token, "bytes 5-9/15", &FILE[5..10]).await;
         assert!(orphan.starts_with("HTTP/1.1 503"), "{orphan}");
-        assert!(orphan.contains("restart_file"), "{orphan}");
+        assert!(orphan.contains("\"resume\""), "{orphan}");
+        assert!(orphan.contains("\"offset\":0"), "{orphan}");
         let first = put_part(world.addr, &upload_id, &token, "bytes 0-4/15", &FILE[..5]).await;
         assert!(first.contains("\"partial\""), "{first}");
+        assert!(first.contains("\"offset\":5"), "{first}");
         let gap = put_part(
             world.addr,
             &upload_id,
@@ -3571,19 +3577,57 @@ mod results_and_uploads {
             &FILE[10..],
         )
         .await;
-        assert!(gap.contains("restart_file"), "{gap}");
-        // The gap dropped the open file: its next part no longer fits.
-        let late = put_part(world.addr, &upload_id, &token, "bytes 5-9/15", &FILE[5..10]).await;
-        assert!(late.contains("restart_file"), "{late}");
-        assert!(files_under(owner_out.path()).is_empty());
+        assert!(gap.starts_with("HTTP/1.1 503"), "{gap}");
+        assert!(gap.contains("\"offset\":5"), "{gap}");
+        let status = put_part(world.addr, &upload_id, &token, "bytes */15", b"").await;
+        assert!(status.contains("\"offset\":5"), "{status}");
         for (range, body) in [
-            ("bytes 0-4/15", &FILE[..5]),
             ("bytes 5-9/15", &FILE[5..10]),
             ("bytes 10-14/15", &FILE[10..]),
         ] {
             let put = put_part(world.addr, &upload_id, &token, range, body).await;
             assert!(put.starts_with("HTTP/1.1 200"), "{put}");
         }
+        assert_eq!(std::fs::read(&stored).unwrap(), FILE);
+        let status = put_part(world.addr, &upload_id, &token, "bytes */15", b"").await;
+        assert!(status.contains("\"received\""), "{status}");
+    }
+
+    /// A part whose connection breaks part way keeps what reached the
+    /// write: the status query names the next byte (inside the part), and
+    /// only the rest is sent again.
+    #[tokio::test]
+    async fn a_broken_part_resumes_from_its_last_byte() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        const FILE: &[u8] = b"audio-in-parts!";
+        let (world, owner_out, upload_id, token) = granted_local_file(FILE).await;
+        let stored = owner_out.path().join("Author/Title t1/t1.m4b");
+        let first = put_part(world.addr, &upload_id, &token, "bytes 0-4/15", &FILE[..5]).await;
+        assert!(first.contains("\"offset\":5"), "{first}");
+        // Declares bytes 5-14 but sends only 5-7, then the connection drops.
+        let mut tcp = tokio::net::TcpStream::connect(world.addr).await.unwrap();
+        let head = format!(
+            "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {token}\r\n\
+             Content-Range: bytes 5-14/15\r\nContent-Length: 10\r\nConnection: close\r\n\r\n",
+            world.addr.port(),
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        tcp.write_all(&FILE[5..8]).await.unwrap();
+        tcp.flush().await.unwrap();
+        drop(tcp);
+        eventually("the owner to keep the broken part's bytes", || {
+            let (upload_id, token) = (upload_id.clone(), token.clone());
+            async move {
+                put_part(world.addr, &upload_id, &token, "bytes */15", b"")
+                    .await
+                    .contains("\"offset\":8")
+            }
+        })
+        .await;
+        let rest = put_part(world.addr, &upload_id, &token, "bytes 8-14/15", &FILE[8..]).await;
+        assert!(rest.starts_with("HTTP/1.1 200"), "{rest}");
+        assert!(rest.contains("\"received\""), "{rest}");
         assert_eq!(std::fs::read(&stored).unwrap(), FILE);
     }
 

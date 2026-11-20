@@ -89,7 +89,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 use zeroize::Zeroizing;
 
-use crate::endpoint::{DialError, OwnerEndpoint, OwnerSocket};
+use crate::endpoint::{DialError, OwnerEndpoint, OwnerSocket, UploadSource};
 use crate::jobs::{
     HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload, OwnerCallError,
     WriteBackError,
@@ -780,15 +780,16 @@ impl Shared {
         }
     }
 
-    /// Streams one declared file of `upload` from `body`.
-    pub(crate) async fn upload_file<R: tokio::io::AsyncRead + Unpin + Send>(
+    /// Streams one declared file of `upload` from `source`, resuming an
+    /// interrupted one where the owner stands.
+    pub(crate) async fn upload_file<S: UploadSource + ?Sized>(
         &self,
         job_id: &str,
         fence: i64,
         upload: &HostUpload,
         index: usize,
         length: u64,
-        body: R,
+        source: &S,
     ) -> Result<(), OwnerCallError> {
         if !self.holds(job_id, fence) {
             return Err(OwnerCallError::Lost);
@@ -797,7 +798,7 @@ impl Shared {
         let path = format!("{UPLOADS_PATH}{}/files/{index}", upload.upload_id);
         let (status, answer) = self
             .endpoint
-            .put_file(&path, &authorization, length, UPLOAD_PART_BYTES, body)
+            .put_file(&path, &authorization, length, UPLOAD_PART_BYTES, source)
             .await
             .map_err(|err| {
                 tracing::warn!(job_id, fence, upload_id = %upload.upload_id, index, error = %err, "an upload request failed");
@@ -1556,24 +1557,25 @@ impl HostClientHandle {
     }
 
     /// Streams declared file `index` of a catalog `upload` (`length` bytes
-    /// of `body`) to the library's upload endpoint.
+    /// read from `source`) to the library's upload endpoint, resuming an
+    /// interrupted file where the library stands.
     ///
     /// # Errors
     ///
     /// Returns [`OwnerCallError`].
-    pub async fn upload_catalog_file<R: tokio::io::AsyncRead + Unpin + Send>(
+    pub async fn upload_catalog_file<S: UploadSource + ?Sized>(
         &self,
         upload: &HostUpload,
         index: usize,
         length: u64,
-        body: R,
+        source: &S,
     ) -> Result<(), OwnerCallError> {
         let authorization = Shared::upload_authorization(upload)?;
         let path = format!("{UPLOADS_PATH}{}/files/{index}", upload.upload_id);
         let (status, answer) = self
             .shared
             .endpoint
-            .put_file(&path, &authorization, length, UPLOAD_PART_BYTES, body)
+            .put_file(&path, &authorization, length, UPLOAD_PART_BYTES, source)
             .await
             .map_err(|err| {
                 tracing::warn!(upload_id = %upload.upload_id, index, error = %err, "a catalog upload request failed");

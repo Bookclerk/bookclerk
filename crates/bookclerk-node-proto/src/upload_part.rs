@@ -4,14 +4,18 @@
 //! A relay in front of a library (an ingress plugin's Cloudflare Worker,
 //! for one) caps request bodies, so a host sends a file larger than
 //! [`UPLOAD_PART_BYTES`] as consecutive parts, each its own request, in
-//! order from offset 0. A file that fits is sent whole, without the header.
-//! The owner streams the parts of one file into a single write per
-//! destination, so a file is still never staged
-//! (see `docs/adr/ingress-plugins.md`).
+//! order. A file that fits is sent whole, without the header. The owner
+//! streams the parts of one file into a single write per destination, so a
+//! file is still never staged (see `docs/adr/ingress-plugins.md`).
+//!
+//! An interrupted file resumes: the host asks where the owner is with an
+//! empty `PUT` carrying `Content-Range: bytes */<size>`
+//! ([`UploadRange::Status`]), and sends the rest from the offset the owner
+//! answers. Parts need not fall on [`UPLOAD_PART_BYTES`] boundaries.
 //!
 //! The header comes from the holder of an upload token, so
-//! [`parse_upload_part`] accepts exactly one spelling of a part that lies
-//! inside the file and refuses everything else.
+//! [`parse_upload_range`] accepts exactly one spelling of each form and
+//! refuses everything else.
 
 /// Largest part a host sends (64 MiB): under the request-body caps of the
 /// relays an install can sit behind (100 MB on Cloudflare's Free plan).
@@ -44,7 +48,7 @@ impl UploadPart {
     }
 
     /// The `Content-Range` value naming this part of a file of `size`
-    /// bytes, as [`parse_upload_part`] reads it.
+    /// bytes, as [`parse_upload_range`] reads it.
     #[must_use]
     pub fn content_range(&self, size: u64) -> String {
         format!(
@@ -74,6 +78,25 @@ pub fn upload_parts(size: u64, part_bytes: u64) -> Vec<UploadPart> {
     parts
 }
 
+/// What a `Content-Range` on an upload `PUT` asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadRange {
+    /// The body is this part of the file.
+    Part(UploadPart),
+    /// No body: answer with the offset the owner needs next
+    /// (`bytes */<size>`).
+    Status,
+}
+
+impl UploadRange {
+    /// The status query's `Content-Range` value for a file of `size`
+    /// bytes.
+    #[must_use]
+    pub fn status_header(size: u64) -> String {
+        format!("bytes */{size}")
+    }
+}
+
 /// One number of the header: 1 to [`MAX_DIGITS`] ASCII digits with no
 /// leading zero (except `0` itself).
 fn number(text: &[u8]) -> Option<u64> {
@@ -86,8 +109,8 @@ fn number(text: &[u8]) -> Option<u64> {
     })
 }
 
-/// Reads a `Content-Range` header value as a part of a declared file of
-/// `size` bytes.
+/// Reads a `Content-Range` header value on an upload `PUT` of a declared
+/// file of `size` bytes.
 ///
 /// # Arguments
 ///
@@ -96,13 +119,17 @@ fn number(text: &[u8]) -> Option<u64> {
 ///
 /// # Returns
 ///
-/// The part for exactly `bytes <first>-<last>/<size>`, with canonical
-/// decimal numbers, `first <= last < size` and the declared size; `None`
-/// for anything else, including an empty file (which is always sent
-/// whole).
+/// [`UploadRange::Part`] for exactly `bytes <first>-<last>/<size>`, with
+/// canonical decimal numbers, `first <= last < size` and the declared size;
+/// [`UploadRange::Status`] for exactly `bytes */<size>` with the declared
+/// size; `None` for anything else, including a part of an empty file
+/// (which is always sent whole).
 #[must_use]
-pub fn parse_upload_part(header: &[u8], size: u64) -> Option<UploadPart> {
+pub fn parse_upload_range(header: &[u8], size: u64) -> Option<UploadRange> {
     let spec = header.strip_prefix(b"bytes ")?;
+    if let Some(total) = spec.strip_prefix(b"*/") {
+        return (number(total)? == size).then_some(UploadRange::Status);
+    }
     let dash = spec.iter().position(|byte| *byte == b'-')?;
     let slash = spec.iter().position(|byte| *byte == b'/')?;
     if slash < dash {
@@ -114,10 +141,10 @@ pub fn parse_upload_part(header: &[u8], size: u64) -> Option<UploadPart> {
     if total != size || first > last || last >= size {
         return None;
     }
-    Some(UploadPart {
+    Some(UploadRange::Part(UploadPart {
         offset: first,
         length: last - first + 1,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -150,8 +177,8 @@ mod tests {
         assert!(!parts[1].is_last(25));
         for part in parts {
             assert_eq!(
-                parse_upload_part(part.content_range(25).as_bytes(), 25),
-                Some(part)
+                parse_upload_range(part.content_range(25).as_bytes(), 25),
+                Some(UploadRange::Part(part))
             );
         }
     }
@@ -159,12 +186,17 @@ mod tests {
     #[test]
     fn only_the_canonical_spelling_is_a_part() {
         assert_eq!(
-            parse_upload_part(b"bytes 0-9/25", 25),
-            Some(UploadPart {
+            parse_upload_range(b"bytes 0-9/25", 25),
+            Some(UploadRange::Part(UploadPart {
                 offset: 0,
                 length: 10
-            })
+            }))
         );
+        assert_eq!(
+            parse_upload_range(b"bytes */25", 25),
+            Some(UploadRange::Status)
+        );
+        assert_eq!(UploadRange::status_header(25), "bytes */25");
         for refused in [
             &b"bytes 0-9/26"[..],
             b"bytes 0-25/25",
@@ -177,14 +209,20 @@ mod tests {
             b"bytes 0-9",
             b"bytes 0/9-25",
             b"bytes 0-9/*",
-            b"bytes */25",
+            b"bytes */26",
+            b"bytes */025",
+            b"bytes * /25",
             b"bytes -9/25",
             b"bytes 0-+9/25",
             b"bytes 0-0/0",
             b"",
         ] {
-            assert_eq!(parse_upload_part(refused, 25), None, "{refused:?}");
+            assert_eq!(parse_upload_range(refused, 25), None, "{refused:?}");
         }
-        assert_eq!(parse_upload_part(b"bytes 0-0/0", 0), None);
+        assert_eq!(parse_upload_range(b"bytes 0-0/0", 0), None);
+        assert_eq!(
+            parse_upload_range(b"bytes */0", 0),
+            Some(UploadRange::Status)
+        );
     }
 }

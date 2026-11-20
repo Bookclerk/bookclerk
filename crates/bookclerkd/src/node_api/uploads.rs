@@ -61,18 +61,24 @@
 //! failing attempt's cleanup never deletes the copy a retry just wrote.
 //!
 //! A file sent in parts carries `Content-Range: bytes <first>-<last>/<size>`
-//! on each, in order from byte 0 ([`bookclerk_node_proto::parse_upload_part`]
-//! accepts exactly one spelling of a part inside the declared file, else
-//! 422 `invalid_range`). The first part opens the file's write in a task of
+//! on each, in order ([`bookclerk_node_proto::parse_upload_range`] accepts
+//! exactly one spelling of a part inside the declared file, else 422
+//! `invalid_range`). The first part opens the file's write in a task of
 //! its own ([`PartStream`]); each part's request feeds it and answers 200
-//! `partial`, and the last part ends the stream and answers as a whole
-//! file does, so the parts are one write per destination and the size,
-//! digest, fence and key checks above cover the whole file. Nothing is
-//! resumed: a part that does not continue the open file (an earlier part
-//! failed, no part arrived for [`PART_IDLE`], or this node restarted) gets
-//! 503 `unavailable` with reason `restart_file`, the open write is
-//! discarded, and the host sends the file again from its first part; a new
-//! first part likewise discards what an earlier attempt left open.
+//! `partial` with the `offset` it needs next, and the last part ends the
+//! stream and answers as a whole file does, so the parts are one write per
+//! destination and the size, digest, fence and key checks above cover the
+//! whole file.
+//!
+//! An interrupted file resumes from the last byte the write was handed: a
+//! part whose request breaks keeps the write open, and an empty `PUT` with
+//! `Content-Range: bytes */<size>` answers 200 `partial` with the offset
+//! the owner needs (0 when no write is open here). A part that does not
+//! start there gets 503 `unavailable`, reason `resume`, with that offset,
+//! and the write is kept. A write left without a part for [`PART_IDLE`] is
+//! discarded, as is everything when this node restarts; the host then
+//! sends the file again from byte 0. A file sent whole (no range) is not
+//! resumed: it starts again, discarding what an earlier attempt left open.
 //!
 //! The token is accepted for an hour past its latest extension: each
 //! accepted file and each renewal of the job's lease extend it, and only
@@ -102,7 +108,8 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{AcquireTitle, LibraryStore};
 use bookclerk_node_proto::{
-    parse_upload_part, UploadAnswer, UploadCommitRequest, UploadPart, UPLOAD_AUTH_SCHEME,
+    parse_upload_range, UploadAnswer, UploadCommitRequest, UploadPart, UploadRange,
+    UPLOAD_AUTH_SCHEME,
 };
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{ObjectMeta, StorageBackend};
@@ -129,9 +136,10 @@ const FILE_LOCK_WAIT: Duration = Duration::from_secs(30);
 const TEARDOWN_WAIT: Duration = Duration::from_secs(30);
 
 /// Longest the owner keeps a file whose parts are arriving open while it
-/// waits for the next part ([`PartStream`]); past it the file's writes
-/// are discarded and the host sends the file again from its first part.
-const PART_IDLE: Duration = Duration::from_secs(120);
+/// waits for the next part, or for a broken one to resume ([`PartStream`]);
+/// past it the file's writes are discarded and the host sends the file
+/// again from byte 0.
+const PART_IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// Largest commit body.
 const MAX_COMMIT_BODY: usize = 16 * 1024;
@@ -362,6 +370,7 @@ fn answer(code: StatusCode, status: &str, reason: Option<&str>, job_completed: b
         Json(UploadAnswer {
             status: status.into(),
             reason: reason.map(str::to_string),
+            offset: None,
             job_completed,
         }),
     )
@@ -1240,13 +1249,13 @@ async fn record_written(
     params(
         ("upload_id" = String, Path, description = "Upload id."),
         ("index" = u32, Path, description = "File index in the upload."),
-        ("Content-Range" = Option<String>, Header, description = "For a file sent in parts: `bytes <first>-<last>/<size>`, the part this body is. Parts go in order from byte 0, each its own request; a file sent whole carries no range."),
+        ("Content-Range" = Option<String>, Header, description = "For a file sent in parts: `bytes <first>-<last>/<size>`, the part this body is, each its own request in order; or `bytes */<size>` with an empty body, which asks for the offset the owner needs next (to resume). A file sent whole carries no range."),
     ),
     request_body(content = crate::openapi::BinaryBody, content_type = "application/octet-stream"),
     responses(
-        (status = 200, description = "The file was stored (`received`), or a part that is not the file's last was taken and the next one is awaited (`partial`).", body = bookclerk_node_proto::UploadAnswer, examples(
+        (status = 200, description = "The file was stored (`received`), or a part that is not the file's last was taken, or a status query was answered, with the offset the owner needs next (`partial`).", body = bookclerk_node_proto::UploadAnswer, examples(
             ("received" = (summary = "The whole file was stored.", value = json!({"status": "received", "job_completed": false}))),
-            ("partial" = (summary = "A part was taken; send the next.", value = json!({"status": "partial", "job_completed": false}))),
+            ("partial" = (summary = "Send the file from this offset.", value = json!({"status": "partial", "offset": 67_108_864, "job_completed": false}))),
         )),
         (status = 401, description = "The upload token is missing or wrong, or names no live upload (`unauthorized`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "unauthorized", "job_completed": false})),
         (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`).", body = crate::http_error::TransportRefused, example = json!({"error": "transport_insecure", "reason": "plain_http"})),
@@ -1261,9 +1270,9 @@ async fn record_written(
             ("destinations_changed" = (summary = "The destinations changed since the grant.", value = json!({"status": "refused", "reason": "destinations_changed", "job_completed": false}))),
             ("key_taken" = (summary = "The storage key now belongs to another title or writer.", value = json!({"status": "refused", "reason": "key_taken", "job_completed": false}))),
         )),
-        (status = 503, description = "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`). With reason `restart_file`, a part did not continue an open file (an earlier part failed, timed out, or this node restarted): send the file again from its first part.", body = bookclerk_node_proto::UploadAnswer, examples(
+        (status = 503, description = "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`). With reason `resume`, a part did not start where the open file stands, or broke part way: send the file from `offset` (0 when no write is open here).", body = bookclerk_node_proto::UploadAnswer, examples(
             ("unavailable" = (summary = "Retry the request.", value = json!({"status": "unavailable", "job_completed": false}))),
-            ("restart_file" = (summary = "Send the file again from its first part.", value = json!({"status": "unavailable", "reason": "restart_file", "job_completed": false}))),
+            ("resume" = (summary = "Send the file from this offset.", value = json!({"status": "unavailable", "reason": "resume", "offset": 67_108_864, "job_completed": false}))),
         )),
     ),
 )]
@@ -1312,14 +1321,10 @@ pub async fn put_file(
         return answer(StatusCode::OK, "received", None, false);
     }
     let size = session.files[index].size;
-    let part = match parts.headers.get(header::CONTENT_RANGE) {
-        // A file that fits in one request is sent whole, without a range.
-        None => UploadPart {
-            offset: 0,
-            length: size,
-        },
-        Some(range) => match parse_upload_part(range.as_bytes(), size) {
-            Some(part) => part,
+    let range = match parts.headers.get(header::CONTENT_RANGE) {
+        None => None,
+        Some(range) => match parse_upload_range(range.as_bytes(), size) {
+            Some(range) => Some(range),
             None => return refused("invalid_range"),
         },
     };
@@ -1328,42 +1333,74 @@ pub async fn put_file(
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok());
+    let key = file_lock_name(&session.upload_id, index);
+    let part = match range {
+        Some(UploadRange::Status) => {
+            if declared != Some(0) {
+                return refused("size_mismatch");
+            }
+            // Where the open file stands (0 when none is open here).
+            let next = take_part_stream(&key).map_or(0, |stream| {
+                let next = stream.next;
+                put_part_stream(stream);
+                next
+            });
+            return partial(StatusCode::OK, None, next);
+        }
+        Some(UploadRange::Part(part)) => Some(part),
+        // A file that fits in one request is sent whole, without a range.
+        None => None,
+    };
+    let ranged = part.is_some();
+    let part = part.unwrap_or(UploadPart {
+        offset: 0,
+        length: size,
+    });
     if declared != Some(part.length) {
         return refused("size_mismatch");
     }
-    let key = file_lock_name(&session.upload_id, index);
     let earlier = take_part_stream(&key);
-    let mut stream = if part.offset == 0 {
-        // A first part starts the file again: whatever an earlier attempt
-        // left open is discarded first.
-        if let Some(stale) = earlier {
-            stale.abandon().await;
+    let mut stream = match earlier {
+        Some(stream) if ranged && stream.next == part.offset => stream,
+        Some(stream) if ranged => {
+            // Not where the open file stands: say where, and keep it.
+            let next = stream.next;
+            put_part_stream(stream);
+            return partial(StatusCode::SERVICE_UNAVAILABLE, Some("resume"), next);
         }
-        match start_file(&state, &library, &session, index, key).await {
-            Ok(stream) => stream,
-            Err(refusal) => return refusal,
-        }
-    } else {
-        match earlier {
-            Some(stream) if stream.next == part.offset => stream,
-            other => {
-                // The earlier parts' write is gone (it failed, timed out,
-                // or this node restarted) or this part is out of order:
-                // the host sends the file again from its first part.
-                if let Some(stale) = other {
-                    stale.abandon().await;
-                }
-                tracing::warn!(upload_id = %session.upload_id, index, offset = part.offset, "an upload part does not continue an open file; asked to send the file again");
-                return restart_file();
+        earlier if part.offset == 0 => {
+            // A whole file starts again: whatever an earlier attempt left
+            // open is discarded first.
+            if let Some(stale) = earlier {
+                stale.abandon().await;
+            }
+            match start_file(&state, &library, &session, index, key).await {
+                Ok(stream) => stream,
+                Err(refusal) => return refusal,
             }
         }
+        _ => {
+            // No write is open here for this file (an earlier one failed,
+            // timed out, or this node restarted): it starts at byte 0.
+            tracing::warn!(upload_id = %session.upload_id, index, offset = part.offset, "an upload part does not continue an open file; asked to resume from its start");
+            return partial(StatusCode::SERVICE_UNAVAILABLE, Some("resume"), 0);
+        }
     };
-    match feed_part(&stream.feed, body, part.length).await {
+    let (fed, bytes) = feed_part(&stream.feed, body, part.length).await;
+    match fed {
         Fed::Part if part.is_last(size) => stream.finish().await,
         Fed::Part => {
             stream.next = part.end();
             put_part_stream(stream);
-            answer(StatusCode::OK, "partial", None, false)
+            partial(StatusCode::OK, None, part.end())
+        }
+        // A ranged part that broke keeps what reached the write, so the
+        // host resends only the rest; a whole file starts again.
+        Fed::BodyBroken if ranged => {
+            stream.next = part.offset.saturating_add(bytes);
+            let next = stream.next;
+            put_part_stream(stream);
+            partial(StatusCode::SERVICE_UNAVAILABLE, Some("resume"), next)
         }
         Fed::BodyBroken => {
             stream.abandon().await;
@@ -1373,6 +1410,26 @@ pub async fn put_file(
         // a failed destination): its answer says why.
         Fed::WriteEnded => stream.finish().await,
     }
+}
+
+/// `partial` (200), or `unavailable` with `reason` (503), naming the
+/// offset of the next byte of the file the owner needs.
+fn partial(code: StatusCode, reason: Option<&str>, next: u64) -> Response {
+    let status = if code == StatusCode::OK {
+        "partial"
+    } else {
+        "unavailable"
+    };
+    (
+        code,
+        Json(UploadAnswer {
+            status: status.into(),
+            reason: reason.map(str::to_string),
+            offset: Some(next),
+            job_completed: false,
+        }),
+    )
+        .into_response()
 }
 
 /// How one part's body went into its file's write.
@@ -1385,36 +1442,39 @@ enum Fed {
     WriteEnded,
 }
 
-/// Hands `length` bytes of `body` to a file's write through `feed`.
-async fn feed_part(feed: &mpsc::Sender<io::Result<Bytes>>, body: Body, length: u64) -> Fed {
+/// Hands `length` bytes of `body` to a file's write through `feed`;
+/// answers how it went and how many bytes the write was handed.
+async fn feed_part(feed: &mpsc::Sender<io::Result<Bytes>>, body: Body, length: u64) -> (Fed, u64) {
     let mut stream = body.into_data_stream();
-    let mut seen = 0u64;
+    let mut handed = 0u64;
     loop {
         // A write that fails (a lost fence) answers at once, without
         // waiting for a stalled host's next byte.
         let next = tokio::select! {
             next = stream.next() => next,
-            () = feed.closed() => return Fed::WriteEnded,
+            () = feed.closed() => return (Fed::WriteEnded, handed),
         };
         let Some(next) = next else {
             break;
         };
         let Ok(chunk) = next else {
-            return Fed::BodyBroken;
+            return (Fed::BodyBroken, handed);
         };
-        seen = seen.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-        if seen > length {
-            return Fed::BodyBroken;
+        let size = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+        if handed.saturating_add(size) > length {
+            return (Fed::BodyBroken, handed);
         }
         if feed.send(Ok(chunk)).await.is_err() {
-            return Fed::WriteEnded;
+            return (Fed::WriteEnded, handed);
         }
+        handed += size;
     }
-    if seen == length {
+    let fed = if handed == length {
         Fed::Part
     } else {
         Fed::BodyBroken
-    }
+    };
+    (fed, handed)
 }
 
 /// A file whose parts are arriving, between requests: the write that
@@ -1512,18 +1572,6 @@ fn part_body(rx: mpsc::Receiver<io::Result<Bytes>>) -> Body {
             )),
         }
     }))
-}
-
-/// Answers a part that does not continue an open file: 503 `unavailable`
-/// with reason `restart_file`, which the host answers by sending the
-/// file again from its first part.
-fn restart_file() -> Response {
-    answer(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "unavailable",
-        Some("restart_file"),
-        false,
-    )
 }
 
 /// Checks that file `index` of `session` may be written now (the fence is

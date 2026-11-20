@@ -345,7 +345,7 @@ artifacts = ["bookclerk"]
 
 [targets.upload_part]
 crate = "bookclerk-node-proto"
-boundary = "The Content-Range header of an upload part, PUT /api/node/v1/uploads/{upload_id}/files/{n}, which decides which bytes of a declared file the body is"
+boundary = "The Content-Range header of an upload PUT, /api/node/v1/uploads/{upload_id}/files/{n}, which decides which bytes of a declared file the body is, or that it only asks where the owner is"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]

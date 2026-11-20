@@ -191,7 +191,9 @@ pub use signature::{
     verify_auth, ArtifactRequest, AuthContext, AuthError, ARTIFACT_AUTH_SCHEME, ARTIFACT_DOMAIN,
     ARTIFACT_REQUEST_MAX_SKEW_SECS, AUTH_DOMAIN, NONCE_LEN,
 };
-pub use upload_part::{parse_upload_part, upload_parts, UploadPart, UPLOAD_PART_BYTES};
+pub use upload_part::{
+    parse_upload_range, upload_parts, UploadPart, UploadRange, UPLOAD_PART_BYTES,
+};
 pub use window::{
     window_page_problem, WindowCopy, WindowCursor, WindowEdition, WindowWork,
     MAX_COPY_CONTENT_TYPE_BYTES, MAX_COPY_VERSION_BYTES, MAX_WINDOW_WORKS,

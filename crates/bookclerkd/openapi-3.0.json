@@ -34734,7 +34734,7 @@
           {
             "name": "Content-Range",
             "in": "header",
-            "description": "For a file sent in parts: `bytes <first>-<last>/<size>`, the part this body is. Parts go in order from byte 0, each its own request; a file sent whole carries no range.",
+            "description": "For a file sent in parts: `bytes <first>-<last>/<size>`, the part this body is, each its own request in order; or `bytes */<size>` with an empty body, which asks for the offset the owner needs next (to resume). A file sent whole carries no range.",
             "required": false,
             "schema": {
               "type": "string",
@@ -34754,7 +34754,7 @@
         },
         "responses": {
           "200": {
-            "description": "The file was stored (`received`), or a part that is not the file's last was taken and the next one is awaited (`partial`).",
+            "description": "The file was stored (`received`), or a part that is not the file's last was taken, or a status query was answered, with the offset the owner needs next (`partial`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -34762,9 +34762,10 @@
                 },
                 "examples": {
                   "partial": {
-                    "summary": "A part was taken; send the next.",
+                    "summary": "Send the file from this offset.",
                     "value": {
                       "job_completed": false,
+                      "offset": 67108864,
                       "status": "partial"
                     }
                   },
@@ -34909,18 +34910,19 @@
             }
           },
           "503": {
-            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`). With reason `restart_file`, a part did not continue an open file (an earlier part failed, timed out, or this node restarted): send the file again from its first part.",
+            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`). With reason `resume`, a part did not start where the open file stands, or broke part way: send the file from `offset` (0 when no write is open here).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
                 "examples": {
-                  "restart_file": {
-                    "summary": "Send the file again from its first part.",
+                  "resume": {
+                    "summary": "Send the file from this offset.",
                     "value": {
                       "job_completed": false,
-                      "reason": "restart_file",
+                      "offset": 67108864,
+                      "reason": "resume",
                       "status": "unavailable"
                     }
                   },
@@ -52654,8 +52656,16 @@
           },
           "reason": {
             "type": "string",
-            "description": "Why, for `refused`, and `restart_file` for an `unavailable` part\nthat does not continue an open file.",
+            "description": "Why, for `refused`, and `resume` for an `unavailable` part that\ndoes not continue the open file at [`Self::offset`].",
             "example": "size_mismatch",
+            "nullable": true
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "For `partial`, and an `unavailable` part with reason `resume`: the\noffset of the next byte of the file the owner needs.",
+            "example": 67108864,
+            "minimum": 0,
             "nullable": true
           },
           "job_completed": {

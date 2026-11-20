@@ -311,20 +311,30 @@ fn fuzz_corpus_copy_answer_replays() {
 // A missing or unreadable seed is the test failing.
 #[allow(clippy::expect_used)]
 fn fuzz_corpus_upload_part_replays() {
-    let (mut parts, mut others) = (0, 0);
+    use upload_part_oracle::Read;
+
+    let (mut parts, mut statuses, mut others) = (0, 0, 0);
     for path in corpus_files("upload_part") {
         let data = std::fs::read(&path).expect("read");
-        let part = upload_part_oracle::check(&data);
+        let read = upload_part_oracle::check(&data);
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         // Seeds say what they are read as in their name.
-        assert_eq!(part, name.starts_with("part"), "seed {name}");
-        if part {
-            parts += 1;
+        let named = if name.starts_with("part") {
+            Read::Part
+        } else if name.starts_with("status") {
+            Read::Status
         } else {
-            others += 1;
+            Read::Refused
+        };
+        assert_eq!(read, named, "seed {name}");
+        match read {
+            Read::Part => parts += 1,
+            Read::Status => statuses += 1,
+            Read::Refused => others += 1,
         }
     }
-    // The seeds reach both sides.
+    // The seeds reach every answer.
     assert!(parts > 0, "no upload_part seed named a part");
-    assert!(others > 0, "every upload_part seed named a part");
+    assert!(statuses > 0, "no upload_part seed named a status query");
+    assert!(others > 0, "no upload_part seed named a refusal");
 }

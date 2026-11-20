@@ -1,7 +1,8 @@
-//! Coverage-guided fuzzing of an upload part's `Content-Range`
-//! (`bookclerk-node-proto::parse_upload_part`): the header a host sends
+//! Coverage-guided fuzzing of an upload `PUT`'s `Content-Range`
+//! (`bookclerk-node-proto::parse_upload_range`): the header a host sends
 //! with each part of a file larger than one request, which decides which
-//! bytes of the declared file the body is. The oracle in
+//! bytes of the declared file the body is, or that the request only asks
+//! where the owner is. The oracle in
 //! `fuzz/oracles/upload_part.rs` is shared with the crate's corpus replay
 //! test.
 
