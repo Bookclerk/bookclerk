@@ -48,6 +48,9 @@ a later change supersedes one, its **Status** says so.
 - [Storage destinations](storage-destinations.md): every storage plugin
   instance is a destination with its own template and filter,
   opportunistic change feeds and host-held webhooks.
+- [Notifications](notifications.md): the host routes events into send
+  jobs by administrator rules and patron preferences, notifier plugins
+  send them, and account mail carries reset and recovery.
 
 ## Adding a record
 
