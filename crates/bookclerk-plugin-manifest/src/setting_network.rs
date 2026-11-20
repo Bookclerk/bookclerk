@@ -291,6 +291,10 @@ pub fn derive_setting_destination(
 }
 
 /// Refuses a URL that carries a user name or password.
+///
+/// # Errors
+///
+/// [`SettingDestinationError::Credentials`] when the URL has either.
 fn refuse_credentials(url: &url::Url) -> Result<(), SettingDestinationError> {
     if url.username().is_empty() && url.password().is_none() {
         Ok(())
@@ -300,6 +304,11 @@ fn refuse_credentials(url: &url::Url) -> Result<(), SettingDestinationError> {
 }
 
 /// The normalized host of a parsed URL.
+///
+/// # Errors
+///
+/// [`SettingDestinationError::Host`] when the URL has no host or the name
+/// does not normalize.
 fn url_host(url: &url::Url) -> Result<String, SettingDestinationError> {
     match url.host() {
         Some(url::Host::Domain(name)) => normalize_host(name),
@@ -311,6 +320,11 @@ fn url_host(url: &url::Url) -> Result<String, SettingDestinationError> {
 
 /// Splits `host:port`, `[v6]:port`, `[v6]`, a bare IPv6 literal or a bare
 /// host. A port must be plain decimal.
+///
+/// # Errors
+///
+/// [`SettingDestinationError::Host`] for an unclosed bracket and
+/// [`SettingDestinationError::Port`] for a malformed port.
 fn split_host_port(value: &str) -> Result<(&str, Option<u16>), SettingDestinationError> {
     if let Some(rest) = value.strip_prefix('[') {
         let (host, after) = rest.split_once(']').ok_or(SettingDestinationError::Host)?;
@@ -331,6 +345,10 @@ fn split_host_port(value: &str) -> Result<(&str, Option<u16>), SettingDestinatio
 }
 
 /// A port of plain decimal digits in 1-65535 (leading zeros refused).
+///
+/// # Errors
+///
+/// [`SettingDestinationError::Port`] for anything else.
 fn parse_port(text: &str) -> Result<u16, SettingDestinationError> {
     if text.is_empty() || text.starts_with('0') || !text.bytes().all(|b| b.is_ascii_digit()) {
         return Err(SettingDestinationError::Port);
@@ -339,6 +357,11 @@ fn parse_port(text: &str) -> Result<u16, SettingDestinationError> {
 }
 
 /// A canonical IP literal or IDNA-normalized name; never a wildcard.
+///
+/// # Errors
+///
+/// [`SettingDestinationError::Host`] for an empty, wildcard, zone-scoped or
+/// otherwise invalid host.
 fn normalize_host(host: &str) -> Result<String, SettingDestinationError> {
     let host = host.trim_end_matches('.');
     if host.is_empty() || host.contains('*') || host.contains('%') {
@@ -379,8 +402,13 @@ fn scope_of(host: &str) -> DestinationScope {
 
 #[cfg(test)]
 mod tests {
-    // Test code: unwrap on known-good literals is the assertion.
-    #![allow(clippy::unwrap_used)]
+    // Test code: unwrap on known-good literals is the assertion; tests carry
+    // no Errors or Panics sections.
+    #![allow(
+        clippy::unwrap_used,
+        clippy::missing_panics_doc,
+        clippy::missing_errors_doc
+    )]
 
     use super::*;
 
