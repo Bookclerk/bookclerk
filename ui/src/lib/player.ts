@@ -234,6 +234,11 @@ export class Player {
   private recovery: Promise<void> | null = null;
   /** Closes not yet answered, so a later stop can wait for them too. */
   private readonly closing = new Set<Promise<void>>();
+  /**
+   * One function per close still waiting for reports; calling it sends that
+   * close at once, as a `keepalive` request.
+   */
+  private readonly hurries = new Set<() => void>();
   /** Counts bookmarks added and removed, so a list read earlier is not shown over them. */
   private bookmarkEdits = 0;
   /** Counts loads, so an answer for an earlier one is dropped. */
@@ -658,12 +663,24 @@ export class Player {
     body: PlaybackReport,
     keepalive: boolean,
   ): Promise<void> {
+    let urgent = keepalive;
     if (!keepalive && meter.pending.size > 0) {
-      await Promise.race([Promise.all([...meter.pending]), this.deps.wait(CLOSE_WAIT_MS)]);
+      // The page may go away during the wait; then this close cannot wait
+      // either, and must outlive the page.
+      let hurry = () => {};
+      const hurried = new Promise<void>((resolve) => {
+        hurry = () => {
+          urgent = true;
+          resolve();
+        };
+      });
+      this.hurries.add(hurry);
+      await Promise.race([Promise.all([...meter.pending]), this.deps.wait(CLOSE_WAIT_MS), hurried]);
+      this.hurries.delete(hurry);
     }
     body.listened_ms = Math.round(Math.max(0, meter.listened - meter.reserved));
     try {
-      await this.deps.close(session.session_id, body, keepalive);
+      await this.deps.close(session.session_id, body, urgent);
     } catch {
       // The last periodic report stands.
     }
@@ -929,11 +946,13 @@ export class Player {
    * Ends the session with a last report and unloads the edition. It also
    * waits for closes sent earlier and not yet answered, so a caller that
    * must not go on before the last report (a sign-out) can rely on it even
-   * when the listener had already pressed stop.
+   * when the listener had already pressed stop. While the page is going
+   * away, a close still waiting for reports is sent at once instead.
    *
    * @param keepalive - True while the page is going away.
    */
   async stop(keepalive = false): Promise<void> {
+    if (keepalive) for (const hurry of this.hurries) hurry();
     await this.unload(keepalive);
     await Promise.all([...this.closing]);
   }

@@ -1002,6 +1002,23 @@ describe("Player", () => {
     expect(w.closed.map((sent) => sent.id)).toEqual(["s1"]);
   });
 
+  it("sends a close that was waiting at once when the page goes away", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    w.holds.sync = new Promise<void>(() => {});
+    w.holds.wait = new Promise<void>(() => {});
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    void w.player.stop();
+    await settle();
+    expect(w.closed).toEqual([]);
+    await w.player.stop(true);
+    expect(w.closed).toHaveLength(1);
+    expect(w.closed[0]).toMatchObject({ id: "s1", keepalive: true });
+  });
+
   it("does not send a page that is going away waiting for a report", async () => {
     const w = world();
     await w.player.play(TARGET);

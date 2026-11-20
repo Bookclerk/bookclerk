@@ -337,7 +337,9 @@ Rules the engine keeps:
   for the next report. A close waits up to two seconds (`CLOSE_WAIT_MS`)
   for reports still on their way, so it carries the time of one that
   failed; the `keepalive` close on page hide cannot wait and assumes they
-  were accepted.
+  were accepted, and a close still waiting when the page hides is sent at
+  once the same way. `stop()` also waits for closes sent earlier, so the
+  wait before a change of identity covers them.
 - Playing again a book played to its end opens a new session, because
   only opening one marks a finished edition as in progress again.
 - An edition in several files has every file's length read from its
