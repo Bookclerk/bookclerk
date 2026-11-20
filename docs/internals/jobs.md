@@ -598,7 +598,10 @@ holds across plugin instances and every node of the cluster.
   after its fetch (converting or storing it), since the store download
   already happened, and a store download that a better copy from a
   joined library then replaced, and a missing companion PDF fetched for a
-  title whose audio was already stored (`AcquireResult::fetched_from_store`). A
+  title whose audio was already stored (`AcquireResult::store_fetches`). A
+  library copy from another store that replaced the download and then
+  failed packaging sends the acquire back to the store, and that second
+  download is a second row. A
   copy matched in storage or taken straight from a joined library is not
   counted, nor is a title no destination takes or one the
   store refused with `rateLimited`. A title a Host downloaded for a

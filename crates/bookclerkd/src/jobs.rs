@@ -1151,7 +1151,7 @@ pub async fn run_acquire(
             // time it started, so a retry moves the gap on. A row that
             // cannot be written stays pending (`unrecorded`) under its one
             // identity.
-            if reached_store(&result) {
+            for _ in 0..store_downloads(&result) {
                 let download_id = DownloadId::new();
                 if !record_download(
                     &library,
@@ -1503,28 +1503,28 @@ async fn wait_for_pace(
     }
 }
 
-/// Whether an acquire attempt's outcome may mean the store was asked for
-/// the title, so it counts against the account's pace.
+/// How many store downloads an acquire attempt's outcome stands for, each
+/// counting against the account's pace.
 ///
-/// A success counts when the store download ran
-/// ([`bookclerk_acquire::AcquireResult::fetched_from_store`]), even if a
-/// better copy from a joined library replaced it; a copy matched in storage
-/// or taken from a joined library instead never reached the store. A title
-/// no destination takes is refused before any fetch, and
-/// a `rateLimited` answer means the store refused it. Any other failure
-/// counts: a source error is the store's own answer, and a storage, media
-/// or database failure can come after the store download finished (the
-/// pipeline fetches before it converts and stores). Counting a local
-/// failure that happened before the fetch only makes the pace stricter,
-/// and each attempt that asked the store counts.
-fn reached_store(
+/// A success counts each store download it ran
+/// ([`bookclerk_acquire::AcquireResult::store_fetches`]), even one a better
+/// copy from a joined library replaced; a copy matched in storage or taken
+/// from a joined library instead never reached the store. A title no
+/// destination takes is refused before any fetch, and a `rateLimited`
+/// answer means the store refused it. Any other failure counts once: a
+/// source error is the store's own answer, and a storage, media or database
+/// failure can come after the store download finished (the pipeline
+/// fetches before it converts and stores). Counting a local failure that
+/// happened before the fetch only makes the pace stricter, and each attempt
+/// that asked the store counts.
+fn store_downloads(
     result: &Result<bookclerk_acquire::AcquireResult, bookclerk_acquire::AcquireError>,
-) -> bool {
+) -> u32 {
     use bookclerk_acquire::AcquireError;
     match result {
-        Ok(result) => result.fetched_from_store,
-        Err(AcquireError::Source(bookclerk_source::SourceError::RateLimited(_))) => false,
-        Err(AcquireError::NoDestinationAccepts) => false,
+        Ok(result) => result.store_fetches,
+        Err(AcquireError::Source(bookclerk_source::SourceError::RateLimited(_))) => 0,
+        Err(AcquireError::NoDestinationAccepts) => 0,
         Err(
             AcquireError::Source(_)
             | AcquireError::Storage(_)
@@ -1532,7 +1532,7 @@ fn reached_store(
             | AcquireError::Library(_)
             | AcquireError::Io(_)
             | AcquireError::Other(_),
-        ) => true,
+        ) => 1,
     }
 }
 
@@ -1962,29 +1962,34 @@ mod tests {
         use bookclerk_acquire::AcquireError;
         use bookclerk_source::SourceError;
 
-        assert!(reached_store(&Err(AcquireError::Source(SourceError::api(
-            "boom"
-        )))));
-        assert!(!reached_store(&Err(AcquireError::Source(
-            SourceError::RateLimited(None)
-        ))));
-        assert!(!reached_store(&Err(AcquireError::NoDestinationAccepts)));
-        let done = |fetched_from_store, from_library| bookclerk_acquire::AcquireResult {
+        assert_eq!(
+            store_downloads(&Err(AcquireError::Source(SourceError::api("boom")))),
+            1
+        );
+        assert_eq!(
+            store_downloads(&Err(AcquireError::Source(SourceError::RateLimited(None)))),
+            0
+        );
+        assert_eq!(store_downloads(&Err(AcquireError::NoDestinationAccepts)), 0);
+        let done = |store_fetches, from_library| bookclerk_acquire::AcquireResult {
             asin: "B00TEST".into(),
             storage_key: "key".into(),
             written_keys: Vec::new(),
             matched_existing: false,
             from_library,
-            fetched_from_store,
+            store_fetches,
         };
-        // A store download replaced by a better library copy still counts;
+        // A store download replaced by a better library copy still counts,
+        // and so does the second download after that copy failed packaging;
         // a copy taken straight from the library does not.
-        assert!(reached_store(&Ok(done(true, true))));
-        assert!(!reached_store(&Ok(done(false, true))));
+        assert_eq!(store_downloads(&Ok(done(1, true))), 1);
+        assert_eq!(store_downloads(&Ok(done(2, true))), 2);
+        assert_eq!(store_downloads(&Ok(done(0, true))), 0);
         // A failure after the fetch (converting, storing) still counts.
-        assert!(reached_store(&Err(AcquireError::Other(anyhow::anyhow!(
-            "disk full"
-        )))));
+        assert_eq!(
+            store_downloads(&Err(AcquireError::Other(anyhow::anyhow!("disk full")))),
+            1
+        );
     }
 
     async fn book_with(

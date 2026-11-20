@@ -176,12 +176,21 @@ pub struct AcquireResult {
     /// joined already held, instead of fetched from the store.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_library: bool,
-    /// True when this acquire downloaded the title from the store, even if
-    /// a better copy from a joined library replaced that download
-    /// afterwards. Download pacing counts it against the account
-    /// (`bookclerk_library::pacing`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub fetched_from_store: bool,
+    /// How many times this acquire downloaded the title (or its companion
+    /// PDF) from the store: 0 for a copy matched in storage or taken from a
+    /// joined library, 1 for a store download (even one a better copy from
+    /// a joined library replaced afterwards), 2 when that library copy then
+    /// failed packaging and the store was asked again. Download pacing
+    /// counts each against the account (`bookclerk_library::pacing`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub store_fetches: u32,
+}
+
+/// Whether a count is zero, so serde leaves [`AcquireResult::store_fetches`]
+/// out of a result that never reached the store.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+fn is_zero(count: &u32) -> bool {
+    *count == 0
 }
 
 /// Run the acquire pipeline for one book.
@@ -373,7 +382,7 @@ async fn acquire_book_recorded(
                     written_keys: Vec::new(),
                     matched_existing: true,
                     from_library: false,
-                    fetched_from_store: fetched_pdf,
+                    store_fetches: u32::from(fetched_pdf),
                 });
             }
             let backends: Vec<(&str, &dyn StorageBackend)> = destinations
@@ -395,7 +404,7 @@ async fn acquire_book_recorded(
                     written_keys: Vec::new(),
                     matched_existing: true,
                     from_library: false,
-                    fetched_from_store: fetched_pdf,
+                    store_fetches: u32::from(fetched_pdf),
                 });
             }
         }
@@ -427,7 +436,7 @@ async fn acquire_book_recorded(
                     written_keys: Vec::new(),
                     matched_existing: true,
                     from_library: false,
-                    fetched_from_store: fetched_pdf,
+                    store_fetches: u32::from(fetched_pdf),
                 });
             }
             ExistingPlan::SyncMissing {
@@ -472,7 +481,7 @@ async fn acquire_book_recorded(
                     written_keys: written,
                     matched_existing: true,
                     from_library: false,
-                    fetched_from_store: fetched_pdf,
+                    store_fetches: u32::from(fetched_pdf),
                 });
             }
             ExistingPlan::Fetch {
@@ -1310,7 +1319,7 @@ async fn run_source_pipeline(
         }
         Some(_) | None => None,
     };
-    let mut fetched_from_store = taken.is_none();
+    let mut store_fetches = u32::from(taken.is_none());
     let (fetch, library_pdf, from_library) = match taken {
         Some(taken) => (taken.fetch, taken.pdf, true),
         None => {
@@ -1355,8 +1364,9 @@ async fn run_source_pipeline(
     let stored = match stored {
         Err(AcquireError::Media(err)) if from_library => {
             drop(fetch);
-            // The rest comes from the store, so this acquire asks it.
-            fetched_from_store = true;
+            // The rest comes from the store, so this acquire asks it (again,
+            // when its first download was replaced by the library's copy).
+            store_fetches += 1;
             store_rest_from_store(library, copies, req, source, &work_dir, &mut progress, &err)
                 .await
         }
@@ -1371,7 +1381,7 @@ async fn run_source_pipeline(
     // True when any copy was stored from the library's audio: copies made
     // before a fallback to the store keep it.
     result.from_library = from_library && progress.library_copies > 0;
-    result.fetched_from_store = fetched_from_store;
+    result.store_fetches = store_fetches;
     Ok(result)
 }
 
@@ -2409,7 +2419,7 @@ async fn store_plain_fetch(
         written_keys,
         matched_existing: false,
         from_library: false,
-        fetched_from_store: false,
+        store_fetches: 0,
     })
 }
 
@@ -2485,7 +2495,7 @@ async fn store_plain_parts(
         written_keys,
         matched_existing: false,
         from_library: false,
-        fetched_from_store: false,
+        store_fetches: 0,
     })
 }
 
@@ -2812,7 +2822,7 @@ async fn record_companion_pdf_failure(
 ///
 /// Whether the PDF was fetched from the store, or a fetch was attempted
 /// and failed after it may have reached the store: either counts toward
-/// the account's download pace ([`AcquireResult::fetched_from_store`]).
+/// the account's download pace ([`AcquireResult::store_fetches`]).
 ///
 /// # Errors
 ///
@@ -2840,7 +2850,7 @@ async fn resume_missing_companion_pdf(
         }
     }
     match acquire_pdf_only_recorded(library, destinations, req, source).await {
-        Ok(result) => Ok(result.fetched_from_store),
+        Ok(result) => Ok(result.store_fetches > 0),
         Err(err) => {
             record_companion_pdf_failure(library, req, &err).await;
             // The store asking the account to slow down is the job's to
@@ -4146,7 +4156,7 @@ async fn acquire_pdf_only_recorded(
                 written_keys: Vec::new(),
                 matched_existing: true,
                 from_library: false,
-                fetched_from_store: false,
+                store_fetches: 0,
             });
         }
     }
@@ -4239,7 +4249,7 @@ async fn download_and_store_companion_pdf(
         written_keys,
         matched_existing: false,
         from_library: false,
-        fetched_from_store: true,
+        store_fetches: 1,
     })
 }
 
@@ -4815,7 +4825,7 @@ mod tests {
             .await
             .unwrap();
         assert!(result.from_library);
-        assert!(!result.fetched_from_store);
+        assert_eq!(result.store_fetches, 0);
         assert!(!result.matched_existing);
         assert_eq!(fetches.load(Ordering::SeqCst), 0, "the store is not asked");
         assert_eq!(copy_fetches.load(Ordering::SeqCst), 1, "only the audio");
@@ -4901,7 +4911,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.from_library);
-        assert!(result.fetched_from_store);
+        assert_eq!(result.store_fetches, 1);
         assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
         assert_eq!(taken.load(Ordering::SeqCst), 0);
 
@@ -4914,7 +4924,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.from_library);
-        assert!(result.fetched_from_store);
+        assert_eq!(result.store_fetches, 1);
         assert_eq!(fetches.load(Ordering::SeqCst), before + 1);
         assert_eq!(none.asked.lock().unwrap().len(), 1);
     }
@@ -5844,6 +5854,7 @@ mod tests {
             1,
             "then the store was asked"
         );
+        assert_eq!(result.store_fetches, 1, "one store download to count");
         assert!(!result.from_library);
         assert!(result.storage_key.ends_with(".mp3"), "{result:?}");
         let probe = store
@@ -5891,6 +5902,7 @@ mod tests {
             "the copy won and was taken"
         );
         assert_eq!(fetches.load(Ordering::SeqCst), before + 2, "fetched again");
+        assert_eq!(result.store_fetches, 2, "both store downloads count");
         assert!(!result.from_library);
         let probe = store
             .edition_file_probe("local", &result.storage_key)
@@ -6317,7 +6329,7 @@ mod tests {
             written_keys: written.iter().map(|key| (*key).to_string()).collect(),
             matched_existing: false,
             from_library: false,
-            fetched_from_store: false,
+            store_fetches: 0,
         };
         let mut result = None;
         fold_copy_result(&mut result, stored("", &["skipped.json"]));
@@ -7416,8 +7428,8 @@ mod tests {
             .await
             .expect("retry must keep acquired audio and resume the companion PDF");
         assert!(second.matched_existing);
-        assert!(
-            second.fetched_from_store,
+        assert_eq!(
+            second.store_fetches, 1,
             "the resumed PDF went to the store, so it counts toward the pace"
         );
         assert_eq!(puts.load(Ordering::SeqCst), 1);
