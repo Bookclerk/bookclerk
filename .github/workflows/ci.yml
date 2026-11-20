@@ -743,6 +743,8 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.os_test_matrix) }}
     env:
       BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
+      # The `ci-os` nextest profile (OS_SUITE_ENV in scripts/ci_plan/execute.py).
+      CI_OS_SUITE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

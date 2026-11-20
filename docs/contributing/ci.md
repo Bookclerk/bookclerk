@@ -96,16 +96,18 @@ they leave out (#1228, #1229). The `test-os` job runs the whole
   30 minutes. A Linux-only pull request run has no legs; a build-only
   `main` push has one per OS, which only compiles and saves the job's own
   cache (see [Caches](#caches)).
-- On Windows and macOS `rust_test` uses the `ci-os` nextest profile
-  (`.config/nextest.toml`) instead of the merge group's retry and
-  fail-fast: every test runs, a failing one gets one retry, and a test
-  still running after five minutes is stopped and named, so a hang fails
-  one test instead of holding the job until its timeout.
+- The job sets `CI_OS_SUITE=1`, so its `rust_test` run uses the `ci-os`
+  nextest profile (`.config/nextest.toml`) instead of the merge group's
+  retry and fail-fast: every test runs, a failing one gets one retry, and a
+  test still running after ten minutes is stopped and named, so a hang
+  fails one test instead of holding the job until its timeout. Running
+  `rust_test` on Windows or macOS without it keeps the usual behavior.
 - **It only reports for now.** The job is listed in `REPORT_JOBS`
   (`scripts/ci_plan/plan.py`), has `continue-on-error`, says "report only"
   in its name, and `CI Gate` doesn't need it. The merge-queue fail-fast
   watcher ignores it, so its failure cancels nothing, and a group can land
-  while its legs still run. It becomes required, in place of the curated
+  while its legs still run. Once only report-only jobs are left in a
+  merge group's run, the [lent lanes](#pull-request-lanes) open again. It becomes required, in place of the curated
   Windows and macOS legs, once each OS has three green runs in a row.
 
 ### Pull request lanes
@@ -139,8 +141,11 @@ without leaving runners idle, heavy pull request jobs wait in shared
   at least 24: enough for two groups' fan-outs at build concurrency 2.
   Actions expressions have no modulo, so a run picks its CodeQL and
   ClusterFuzzLite slot from whether its run id ends in an even digit.
-- **Lent lanes** 30 to 53 are open only while no `merge_group` CI run is
-  active, and only when nothing runs or waits in them, so each normally
+- **Lent lanes** 30 to 53 are open only while no `merge_group` CI run has
+  a gating job running or waiting (a run whose jobs are listed as "report
+  only" no longer counts once only those are left; the script reads each
+  active merge group's jobs to tell), and only when nothing runs or waits
+  in them, so each normally
   holds one job. When the queue is idle, pull requests can use all 60
   runners. When a group arrives, no new job enters a lent lane, and those
   lanes are back to the queue within one pull request job. There is no

@@ -12,7 +12,8 @@ a ``pull_request`` event to pick each of its jobs' lanes:
   runners pull requests may always hold, so the merge queue keeps at least
   24 whatever pull requests do.
 - Lanes ``BASE_LANES`` to ``BASE_LANES + BORROWED_LANES - 1`` are lent to
-  pull requests only while no ``merge_group`` CI run is active, and only
+  pull requests only while no ``merge_group`` CI run has a gating job
+  running or waiting (its report-only jobs don't count), and only
   when nothing runs or waits in them, so each normally holds one job. When
   a merge group arrives, no new job enters them and they empty within one
   pull request job, giving the queue its runners back. There is no lock:
@@ -102,6 +103,10 @@ ACTIVE_RUN_STATUSES = ("queued", "in_progress", "pending", "waiting", "requested
 # Job statuses of a job that holds or waits for a lane.
 ACTIVE_JOB_STATUSES = frozenset({"queued", "in_progress", "pending", "waiting", "requested"})
 
+# Text in the name of a report-only CI job (`REPORT_JOBS` in
+# scripts/ci_plan/plan.py), which never holds the merge queue up.
+REPORT_ONLY_LABEL = "report only"
+
 # How many active pull request runs' jobs are read at most; a longer list
 # is cut, so loads are a lower bound.
 MAX_RUNS_READ = 40
@@ -141,15 +146,15 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def active_runs(raw: bytes, repo: str) -> tuple[bool, list[int]] | None:
-    """Reads one page of CI runs: is a merge group active, and which pull request runs are.
+def active_runs(raw: bytes, repo: str) -> tuple[list[int], list[int]] | None:
+    """Reads one page of CI runs: which merge group runs and pull request runs are active.
 
     Args:
         raw: The JSON body of ``GET /repos/{repo}/actions/workflows/ci.yml/runs``.
         repo: ``OWNER/NAME`` of this repository.
 
     Returns:
-        ``(merge group active, pull request run ids)`` counting only runs of
+        ``(merge group run ids, pull request run ids)`` counting only runs of
         ``CI_WORKFLOW_PATH`` in ``repo`` whose status is in
         ``ACTIVE_RUN_STATUSES``; None when the body is not a run listing or
         any entry is malformed, so the caller falls back.
@@ -160,7 +165,7 @@ def active_runs(raw: bytes, repo: str) -> tuple[bool, list[int]] | None:
     runs = doc.get("workflow_runs")
     if not isinstance(runs, list):
         return None
-    queue = False
+    queue: list[int] = []
     prs: list[int] = []
     for run in runs:
         if not isinstance(run, dict):
@@ -173,11 +178,48 @@ def active_runs(raw: bytes, repo: str) -> tuple[bool, list[int]] | None:
             continue
         if status not in ACTIVE_RUN_STATUSES:
             continue
-        if event == "merge_group":
-            queue = True
+        if event == "merge_group" and run_id > 0:
+            queue.append(run_id)
         elif event == "pull_request" and run_id > 0:
             prs.append(run_id)
     return queue, prs
+
+
+def queue_holds_runners(raw: bytes) -> bool | None:
+    """Whether a merge group run still has a job that gates it running or waiting.
+
+    A run stays active while its report-only jobs (``REPORT_ONLY_LABEL`` in
+    the name, the Windows and macOS full suite) finish, often long after
+    CI Gate has decided and the group has landed. Those jobs don't hold the
+    queue up, so lanes are lent again once only they are left.
+
+    Args:
+        raw: The JSON body of ``GET /repos/{repo}/actions/runs/{id}/jobs``.
+
+    Returns:
+        True when any job whose status is in ``ACTIVE_JOB_STATUSES`` is not
+        report-only, or the listing has no jobs yet (a run that has just
+        started); None when the body is not a job listing or any entry is
+        malformed, so the caller counts the queue as busy.
+    """
+    doc = _load(raw)
+    if not isinstance(doc, dict):
+        return None
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, list):
+        return None
+    if not jobs:
+        return True
+    busy = False
+    for job in jobs:
+        if not isinstance(job, dict):
+            return None
+        name, status = job.get("name"), job.get("status")
+        if not isinstance(name, str) or not isinstance(status, str):
+            return None
+        if status in ACTIVE_JOB_STATUSES and REPORT_ONLY_LABEL not in name:
+            busy = True
+    return busy
 
 
 def lane_loads(raw: bytes) -> dict[int, int] | None:
@@ -304,6 +346,7 @@ def read_state(repo: str, own_run: int, gh: Gh) -> tuple[dict[int, int] | None, 
         couldn't be read, and the queue then counts as active.
     """
     queue = False
+    groups: list[int] = []
     runs: list[int] = []
     for status in ACTIVE_RUN_STATUSES:
         try:
@@ -313,8 +356,19 @@ def read_state(repo: str, own_run: int, gh: Gh) -> tuple[dict[int, int] | None, 
         listed = active_runs(raw, repo)
         if listed is None:
             return None, True, f"unreadable {status} CI run listing"
-        queue = queue or listed[0]
+        groups.extend(r for r in listed[0] if r not in groups)
         runs.extend(r for r in listed[1] if r != own_run and r not in runs)
+    for run_id in groups[:MAX_RUNS_READ]:
+        try:
+            raw = gh(["api", f"repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100"])
+        except subprocess.CalledProcessError:
+            return None, True, f"could not list the jobs of merge group run {run_id}"
+        holds = queue_holds_runners(raw)
+        if holds is None:
+            return None, True, f"unreadable job listing of merge group run {run_id}"
+        queue = queue or holds
+    if len(groups) > MAX_RUNS_READ:
+        queue = True
     loads: dict[int, int] = {}
     for run_id in runs[:MAX_RUNS_READ]:
         try:

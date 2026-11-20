@@ -271,6 +271,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("test-os", self.jobs["ci-gate"]["needs"])
         self.assertEqual(job["strategy"]["matrix"], {"include": "${{ fromJSON(needs.plan.outputs.os_test_matrix) }}"})
         self.assertEqual(job["runs-on"], "${{ matrix.os }}")
+        self.assertEqual(job["env"]["CI_OS_SUITE"], "1")
         self.assertEqual({runner for runner, _ in OS_TEST_PARTS}, {"windows-latest", "macos-latest"})
         runs = [RUN_CHECK.search(s["run"]).group(1) for s in job["steps"] if RUN_CHECK.search(s.get("run", ""))]
         self.assertEqual(runs, ["rust_test"])

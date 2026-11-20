@@ -55,7 +55,7 @@ def edited_runs(name: str, index: int, **over: object) -> bytes:
 ACTIVE = {"queued", "in_progress", "pending", "waiting", "requested"}
 
 
-def oracle_runs(raw: bytes) -> tuple[bool, list[int]] | None:
+def oracle_runs(raw: bytes) -> tuple[list[int], list[int]] | None:
     """An independent walk of a run listing, with exact type checks."""
     try:
         doc = json.loads(raw)
@@ -63,7 +63,8 @@ def oracle_runs(raw: bytes) -> tuple[bool, list[int]] | None:
         return None
     if type(doc) is not dict or type(doc.get("workflow_runs")) is not list:
         return None
-    queue, prs = False, []
+    queue: list[int] = []
+    prs: list[int] = []
     for run in doc["workflow_runs"]:
         if type(run) is not dict:
             return None
@@ -74,11 +75,27 @@ def oracle_runs(raw: bytes) -> tuple[bool, list[int]] | None:
             continue
         if run.get("path") != ".github/workflows/ci.yml" or run["status"] not in ACTIVE:
             continue
-        if run["event"] == "merge_group":
-            queue = True
+        if run["event"] == "merge_group" and run["id"] > 0:
+            queue.append(run["id"])
         elif run["event"] == "pull_request" and run["id"] > 0:
             prs.append(run["id"])
     return queue, prs
+
+
+def oracle_holds(raw: bytes) -> bool | None:
+    """An independent walk of a merge group's job listing: any gating job unfinished."""
+    try:
+        doc = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return None
+    if type(doc) is not dict or type(doc.get("jobs")) is not list:
+        return None
+    if doc["jobs"] == []:
+        return True
+    for job in doc["jobs"]:
+        if type(job) is not dict or type(job.get("name")) is not str or type(job.get("status")) is not str:
+            return None
+    return any(j["status"] in ACTIVE and j["name"].find("report only") < 0 for j in doc["jobs"])
 
 
 def oracle_loads(raw: bytes) -> dict[int, int] | None:
@@ -101,7 +118,8 @@ def oracle_loads(raw: bytes) -> dict[int, int] | None:
         if len(tail) == 2 and tail[0] == "0":
             continue
         lane = int(tail)
-        if lane < 17:
+        # 30 base lanes and 24 lent ones (GitHub Team, 60 runners).
+        if lane < 54:
             loads[lane] = loads.get(lane, 0) + 1
     return loads
 
@@ -110,6 +128,7 @@ def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> No
     with case.subTest(input=label):
         case.assertEqual(cl.active_runs(raw, REPO), oracle_runs(raw))
         case.assertEqual(cl.lane_loads(raw), oracle_loads(raw))
+        case.assertEqual(cl.queue_holds_runners(raw), oracle_holds(raw))
 
 
 class ActiveRunsTests(unittest.TestCase):
@@ -117,14 +136,14 @@ class ActiveRunsTests(unittest.TestCase):
 
     def test_reads_pull_request_runs(self) -> None:
         queue, prs = cl.active_runs(seed("runs__pending_prs.json"), REPO)
-        self.assertFalse(queue)
+        self.assertEqual(queue, [])
         self.assertEqual(len(prs), 4)
-        self.assertEqual(cl.active_runs(seed("runs__empty.json"), REPO), (False, []))
+        self.assertEqual(cl.active_runs(seed("runs__empty.json"), REPO), ([], []))
 
     def test_an_active_merge_group_marks_the_queue_busy(self) -> None:
-        self.assertEqual(cl.active_runs(seed("runs__merge_group_active.json"), REPO), (True, []))
+        self.assertEqual(cl.active_runs(seed("runs__merge_group_active.json"), REPO), ([43109448349], []))
         done = edited_runs("runs__merge_group_active.json", 0, status="completed", conclusion="success")
-        self.assertEqual(cl.active_runs(done, REPO), (False, []))
+        self.assertEqual(cl.active_runs(done, REPO), ([], []))
 
     def test_skips_other_runs(self) -> None:
         cases = {
@@ -134,8 +153,8 @@ class ActiveRunsTests(unittest.TestCase):
         }
         for name, raw in cases.items():
             with self.subTest(case=name):
-                self.assertEqual(cl.active_runs(raw, REPO), (False, []))
-        self.assertEqual(cl.active_runs(seed("runs__pending_prs.json"), "other/repo"), (False, []))
+                self.assertEqual(cl.active_runs(raw, REPO), ([], []))
+        self.assertEqual(cl.active_runs(seed("runs__pending_prs.json"), "other/repo"), ([], []))
 
     def test_malformed_listings_are_unreadable(self) -> None:
         bad = {
@@ -150,6 +169,21 @@ class ActiveRunsTests(unittest.TestCase):
         for name, raw in bad.items():
             with self.subTest(case=name):
                 self.assertIsNone(cl.active_runs(raw, REPO))
+
+
+class QueueHoldsRunnersTests(unittest.TestCase):
+    """A merge group whose gating jobs are done no longer holds the lent lanes back."""
+
+    def test_only_report_only_jobs_left(self) -> None:
+        self.assertIs(cl.queue_holds_runners(seed("jobs__merge_group_report_only.json")), False)
+        self.assertIs(cl.queue_holds_runners(seed("jobs__merge_group_gating.json")), True)
+        # A run whose jobs don't exist yet holds the queue.
+        self.assertIs(cl.queue_holds_runners(b'{"jobs": []}'), True)
+
+    def test_malformed_listings_are_unreadable(self) -> None:
+        for raw in (b"{", b"[]", b"{}", b'{"jobs": [1]}', b'{"jobs": [{"name": "x"}]}'):
+            with self.subTest(raw=raw):
+                self.assertIsNone(cl.queue_holds_runners(raw))
 
 
 class LaneLoadsTests(unittest.TestCase):
@@ -333,7 +367,10 @@ class MainTests(unittest.TestCase):
 
     def test_busy_queue_lends_nothing(self) -> None:
         gh = FakeGh(
-            {f"repos/{REPO}/actions/workflows/ci.yml/runs?status=in_progress": seed("runs__merge_group_active.json")}
+            {
+                f"repos/{REPO}/actions/workflows/ci.yml/runs?status=in_progress": seed("runs__merge_group_active.json"),
+                f"repos/{REPO}/actions/runs/43109448349/jobs": seed("jobs__merge_group_gating.json"),
+            }
         )
         many = json.dumps({"job_test": "true", "job_check": "true", "job_postgres": "true", "job_e2e": "true",
                            "job_release": "true", "job_site": "true", "job_tray": "true", "job_confinement": "true",
@@ -341,6 +378,27 @@ class MainTests(unittest.TestCase):
         lanes = self.run_main(gh, many)
         self.assertEqual(len(lanes), 11)
         self.assertTrue(all(int(v["group"].rsplit("-", 1)[1]) < cl.BASE_LANES for v in lanes.values()))
+
+    def test_a_group_with_only_report_only_jobs_left_lends_lanes(self) -> None:
+        pending = json.loads(seed("runs__pending_prs.json"))
+        pending["workflow_runs"] = pending["workflow_runs"][:1]
+        run_id = pending["workflow_runs"][0]["id"]
+        # Every base lane holds a pull request job, so only a lent lane is empty.
+        busy = {"jobs": [{"name": f"x · lane {n}", "status": "pending"} for n in range(cl.BASE_LANES)]}
+        for jobs, lends in (("jobs__merge_group_report_only.json", True), ("jobs__merge_group_gating.json", False)):
+            gh = FakeGh(
+                {
+                    f"repos/{REPO}/actions/workflows/ci.yml/runs?status=pending": json.dumps(pending).encode(),
+                    f"repos/{REPO}/actions/workflows/ci.yml/runs?status=in_progress": seed("runs__merge_group_active.json"),
+                    f"repos/{REPO}/actions/runs/{run_id}/jobs": json.dumps(busy).encode(),
+                    f"repos/{REPO}/actions/runs/43109448349/jobs": seed(jobs),
+                }
+            )
+            with self.subTest(jobs=jobs):
+                lanes = self.run_main(gh)
+                lent = [v for v in lanes.values() if int(v["group"].rsplit("-", 1)[1]) >= cl.BASE_LANES]
+                self.assertEqual(bool(lent), lends)
+                self.assertIn(f"repos/{REPO}/actions/runs/43109448349/jobs?filter=latest&per_page=100", gh.calls)
 
     def test_api_failure_falls_back_to_base_lanes(self) -> None:
         for fail in ("status=pending", "/jobs"):
@@ -382,8 +440,8 @@ class FuzzTests(unittest.TestCase):
 
     VALUES: list[object] = [
         None, True, False, 0, 1, -1, 1.5, "", "x", "pending", "queued", "in_progress", "completed",
-        "merge_group", "pull_request", "push", ".github/workflows/ci.yml", "t · lane 3", "t · lane 16",
-        "t · lane 17", "t · lane 07", {"full_name": REPO}, REPO, [], {}, [1], {"a": 1},
+        "merge_group", "pull_request", "push", ".github/workflows/ci.yml", "t · lane 3", "t · lane 53",
+        "t · lane 54", "t · lane 07", "t (windows-latest, 1/3, report only)", {"full_name": REPO}, REPO, [], {}, [1], {"a": 1},
     ]  # fmt: skip
 
     def mutate_json(self, rng: random.Random, node: object) -> object:

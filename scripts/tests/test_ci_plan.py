@@ -2199,20 +2199,31 @@ class RunnerLayoutTests(unittest.TestCase):
                     self.assertEqual(argv[argv.index("--retries") + 1], "1")
 
     def test_windows_and_macos_use_the_report_profile(self) -> None:
-        """`rust_test` on Windows or macOS runs every test under the `ci-os` profile, whatever the event."""
+        """The `test-os` job's `rust_test` runs every test under the `ci-os` profile, whatever the event."""
         p = plan("crates/bookclerk-cli/src/main.rs")
         for os_name in ("Windows", "Darwin"):
             ctx = dataclasses.replace(CTX, os_name=os_name)
             for event in ("merge_group", "pull_request", "push"):
                 with self.subTest(os=os_name, event=event):
                     art = dict(artifact(p), event=event)
-                    argv = [c.argv for key, c in planned_commands(art, "rust_test", ctx) if not key][0]
+                    # Only the job's own signal picks the profile, not the OS.
+                    plain = [c.argv for key, c in planned_commands(art, "rust_test", ctx) if not key][0]
+                    self.assertNotIn(execute.NEXTEST_OS_PROFILE, plain)
+                    with mock.patch.dict(os.environ, {execute.OS_SUITE_ENV: "1"}):
+                        argv = [c.argv for key, c in planned_commands(art, "rust_test", ctx) if not key][0]
                     self.assertEqual(argv[argv.index("--profile") + 1], execute.NEXTEST_OS_PROFILE)
                     self.assertFalse({"--retries", "--fail-fast", "--no-fail-fast"} & set(argv))
+        art = artifact(p)
+        with mock.patch.dict(os.environ, {execute.OS_SUITE_ENV: "yes"}), self.assertRaises(ExecError):
+            planned_commands(art, "rust_test", CTX)
+        with tempfile.TemporaryDirectory() as cov, mock.patch.dict(
+            os.environ, {execute.OS_SUITE_ENV: "1", execute.COVERAGE_DIR_ENV: cov}
+        ), self.assertRaises(ExecError):
+            planned_commands(art, "rust_test", CTX)
         with (REPO / ".config" / "nextest.toml").open("rb") as f:
             profile = tomllib.load(f)["profile"][execute.NEXTEST_OS_PROFILE]
         self.assertIs(profile["fail-fast"], False)
-        self.assertEqual(profile["slow-timeout"], {"period": "60s", "terminate-after": 5})
+        self.assertEqual(profile["slow-timeout"], {"period": "60s", "terminate-after": 10})
 
     def test_whole_workspace_tests_split_into_parts(self) -> None:
         full = build_plan(["docs/x.md"], INDEX, RELATIONS, force_full=True, guests=GUESTS)

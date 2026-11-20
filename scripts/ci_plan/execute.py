@@ -98,17 +98,18 @@ NEXTEST_RUN = (
 MERGE_GROUP_TEST_RETRIES = 1
 
 
-def _nextest_mode(event: str, os_name: str = "Linux") -> list[str]:
-    """Failure handling for one nextest run, by the event and the runner OS.
+def _nextest_mode(event: str, os_suite: bool = False) -> list[str]:
+    """Failure handling for one nextest run, by the event and the job.
 
     A merge group only needs to know whether it can land, so it retries once and
     stops at the first test that still fails. Pull requests run every test, so
-    one round of CI shows every failure to fix. On Windows and macOS the
-    ``test-os`` job only reports (``REPORT_JOBS``), so every run there uses
-    ``NEXTEST_OS_PROFILE``: every test runs, and a hung test is stopped and
-    named instead of holding the job until its timeout.
+    one round of CI shows every failure to fix. The ``test-os`` job
+    (``os_suite``, set through ``OS_SUITE_ENV``) only reports
+    (``REPORT_JOBS``), so it uses ``NEXTEST_OS_PROFILE`` whatever the event:
+    every test runs, and a hung test is stopped and named instead of holding
+    the job until its timeout.
     """
-    if os_name != "Linux":
+    if os_suite:
         return ["--profile", NEXTEST_OS_PROFILE]
     if event == "merge_group":
         return ["--retries", str(MERGE_GROUP_TEST_RETRIES), "--fail-fast"]
@@ -643,10 +644,13 @@ VISUAL_BASELINES_ENV = "CI_VISUAL_BASELINES"
 # report into the coverage directory even when tests fail.
 NEXTEST_JUNIT_PROFILE = "ci"
 NEXTEST_JUNIT_DIR = "target/nextest/ci"
-# The nextest profile (.config/nextest.toml) of `rust_test` runs on Windows
-# and macOS: no fail-fast, one retry, and a test still running after five
-# minutes is stopped (see _nextest_mode).
+# The nextest profile (.config/nextest.toml) of the `test-os` job's
+# `rust_test` runs on Windows and macOS: no fail-fast, one retry, and a test
+# still running after ten minutes is stopped (see _nextest_mode).
 NEXTEST_OS_PROFILE = "ci-os"
+# Set to "1" by the `test-os` job: its `rust_test` run uses
+# NEXTEST_OS_PROFILE (see _nextest_mode). Any other value is refused.
+OS_SUITE_ENV = "CI_OS_SUITE"
 
 
 def _db_testkit(ctx: Context) -> tuple[Command, dict[str, str]]:
@@ -1294,7 +1298,12 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         if os.environ.get("BOOKCLERK_SKIP_WORKERD"):
             raise ExecError("CI must run the workerd contract (do not set BOOKCLERK_SKIP_WORKERD)")
         env = {**runtime_env, "BOOKCLERK_REQUIRE_TEST_GUESTS": "1"}
-        failure_mode = _nextest_mode(event, ctx.os_name)
+        os_suite = os.environ.get(OS_SUITE_ENV, "")
+        if os_suite not in ("", "1"):
+            raise ExecError(f"{OS_SUITE_ENV} must be 1 or unset, not {os_suite!r}")
+        if os_suite and _coverage_report("rust") is not None:
+            raise ExecError(f"{OS_SUITE_ENV} runs without coverage (unset {COVERAGE_DIR_ENV})")
+        failure_mode = _nextest_mode(event, bool(os_suite))
         cmds: list[Command] = []
         part = test_part()
         if part is not None and part[1] > 1 and not params.get("workspace"):
