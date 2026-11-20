@@ -15655,7 +15655,7 @@
             }
           },
           "503": {
-            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -15671,10 +15671,15 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "session_check_unavailable",
-                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
-                  "status": 503
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
                 }
               }
             }
@@ -15857,7 +15862,7 @@
             }
           },
           "503": {
-            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -15873,10 +15878,345 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/library/collections": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Reads the library's collections.",
+        "description": "Only the operator, an Owner or an Administrator may call it; patrons see\ncollection names through the Library's collection filter, inside their\nscope.",
+        "operationId": "get_collections",
+        "responses": {
+          "200": {
+            "description": "The collections, in the order shown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryCollections"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
                 "example": {
-                  "error": "session_check_unavailable",
-                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
-                  "status": 503
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can read the collections here"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The collections could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the collections could not be read or saved"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "put": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Replaces the library's collections.",
+        "description": "Names are trimmed and must differ ignoring case; each prefix gets a\nclosing `/`. When the collections change, the page index is rebuilt so\nthe Library filter and patron scopes follow. Only the operator, an\nOwner, or an Administrator whom an Owner lets set patron limits may\ncall it.",
+        "operationId": "put_collections",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryCollections"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The collections after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryCollections"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The collections are invalid. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid collections: two collections are named Kids"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator, or an Owner turned off setting patron limits for them. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator whom an Owner lets set patron limits can change collections"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The collections kept changing underneath the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "core.collections kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `collections` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The collections could not be saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the collections could not be read or saved"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
                 }
               }
             }
@@ -21143,6 +21483,7 @@
                 "source",
                 "tag",
                 "library_tag",
+                "collection",
                 "progress"
               ]
             }
@@ -21771,6 +22112,7 @@
                 "source",
                 "tag",
                 "library_tag",
+                "collection",
                 "progress"
               ]
             }
@@ -44904,6 +45246,52 @@
           }
         }
       },
+      "LibraryCollection": {
+        "type": "object",
+        "description": "One collection: a name and the storage key prefixes whose files belong\nto it.",
+        "required": [
+          "name",
+          "prefixes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name people see and scope rules match, 1 to 64 bytes, distinct\nignoring case.",
+            "example": "Kids"
+          },
+          "prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Storage key prefixes, 1 to 8, each a folder relative to the\ndestination's root (no leading `/`); a closing `/` is added when\nmissing, so `kids` matches `kids/…` but not `kidsbooks/…`.",
+            "example": [
+              "kids/",
+              "children/"
+            ],
+            "maxItems": 8
+          }
+        },
+        "additionalProperties": false
+      },
+      "LibraryCollections": {
+        "type": "object",
+        "description": "The library's collections: the `core.collections` document and the\nbody of `PUT /api/library/collections`.",
+        "required": [
+          "collections"
+        ],
+        "properties": {
+          "collections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LibraryCollection"
+            },
+            "description": "The collections, at most 32, in the order shown.",
+            "maxItems": 32
+          }
+        },
+        "additionalProperties": false
+      },
       "LibraryConsentsResponse": {
         "type": "object",
         "description": "JSON body for `GET /api/config/library-consents`.",
@@ -53483,7 +53871,8 @@
           "series",
           "author",
           "narrator",
-          "tag"
+          "tag",
+          "collection"
         ]
       },
       "ScopeRule": {

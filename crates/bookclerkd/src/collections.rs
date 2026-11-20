@@ -20,8 +20,8 @@ use bookclerk_library::LibraryError;
 use crate::api::AppState;
 use crate::http_error::ErrorMessage;
 
-/// An error answer: its status and JSON body.
-type CollectionsError = (StatusCode, Json<ErrorMessage>);
+/// An error answer: a status and JSON body, or the session-check refusal.
+type CollectionsError = axum::response::ErrorResponse;
 
 /// The caller, refused unless they are the operator, an Owner, or an
 /// Administrator (with `control` on, when given).
@@ -32,7 +32,9 @@ async fn administrator(
 ) -> Result<Option<i64>, CollectionsError> {
     crate::auth::library_administrator(state, headers, control)
         .await
-        .map_err(|status| {
+        .map_err(|refusal| {
+            refusal
+                .answer(|status| {
             let message = if status == StatusCode::UNAUTHORIZED {
                 "sign in first"
             } else if status == StatusCode::INTERNAL_SERVER_ERROR {
@@ -43,12 +45,14 @@ async fn administrator(
                 "only an Administrator can read the collections here"
             };
             (status, Json(ErrorMessage::new(message)))
+                })
+                .into()
         })
 }
 
 /// Maps a library error to its answer.
 fn library_error(route: &str, err: LibraryError) -> CollectionsError {
-    match err {
+    let answer: (StatusCode, Json<ErrorMessage>) = match err {
         LibraryError::Invalid(message) => {
             (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message)))
         }
@@ -62,7 +66,8 @@ fn library_error(route: &str, err: LibraryError) -> CollectionsError {
                 )),
             )
         }
-    }
+    };
+    answer.into()
 }
 
 /// Reads the library's collections.

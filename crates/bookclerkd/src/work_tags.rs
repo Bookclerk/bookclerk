@@ -18,8 +18,8 @@ use serde::Serialize;
 use crate::api::AppState;
 use crate::http_error::ErrorMessage;
 
-/// An error answer: its status and JSON body.
-type TagError = (StatusCode, Json<ErrorMessage>);
+/// An error answer: a status and JSON body, or the session-check refusal.
+type TagError = axum::response::ErrorResponse;
 
 /// A work's library tags.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -40,7 +40,9 @@ async fn administrator(
 ) -> Result<Option<i64>, TagError> {
     crate::auth::library_administrator(state, headers, control)
         .await
-        .map_err(|status| {
+        .map_err(|refusal| {
+            refusal
+                .answer(|status| {
             let message = if status == StatusCode::UNAUTHORIZED {
                 "sign in first"
             } else if status == StatusCode::INTERNAL_SERVER_ERROR {
@@ -51,12 +53,14 @@ async fn administrator(
                 "only an Administrator can read library tags here"
             };
             (status, Json(ErrorMessage::new(message)))
+                })
+                .into()
         })
 }
 
 /// Maps a store error to its answer.
 fn store_error(route: &str, err: LibraryError) -> TagError {
-    match err {
+    let answer: (StatusCode, Json<ErrorMessage>) = match err {
         LibraryError::NotFound(_) => (StatusCode::NOT_FOUND, Json(ErrorMessage::new(err))),
         LibraryError::Invalid(message) => {
             (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message)))
@@ -70,7 +74,8 @@ fn store_error(route: &str, err: LibraryError) -> TagError {
                 )),
             )
         }
-    }
+    };
+    answer.into()
 }
 
 /// Reads a work's library tags.
