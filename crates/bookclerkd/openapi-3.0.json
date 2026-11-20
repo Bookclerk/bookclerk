@@ -32934,6 +32934,16 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Content-Range",
+            "in": "header",
+            "description": "For a file sent in parts: `bytes <first>-<last>/<size>`, the part this body is. Parts go in order from byte 0, each its own request; a file sent whole carries no range.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
           }
         ],
         "requestBody": {
@@ -32948,15 +32958,27 @@
         },
         "responses": {
           "200": {
-            "description": "The file was stored (`received`).",
+            "description": "The file was stored (`received`), or a part that is not the file's last was taken and the next one is awaited (`partial`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
-                "example": {
-                  "job_completed": false,
-                  "status": "received"
+                "examples": {
+                  "partial": {
+                    "summary": "A part was taken; send the next.",
+                    "value": {
+                      "job_completed": false,
+                      "status": "partial"
+                    }
+                  },
+                  "received": {
+                    "summary": "The whole file was stored.",
+                    "value": {
+                      "job_completed": false,
+                      "status": "received"
+                    }
+                  }
                 }
               }
             }
@@ -33031,7 +33053,7 @@
             }
           },
           "422": {
-            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
+            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a `Content-Range` that is not exactly a part of the declared file (`invalid_range`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -33051,6 +33073,14 @@
                     "value": {
                       "job_completed": false,
                       "reason": "destinations_changed",
+                      "status": "refused"
+                    }
+                  },
+                  "invalid_range": {
+                    "summary": "The range is not a part of the declared file.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "invalid_range",
                       "status": "refused"
                     }
                   },
@@ -33083,15 +33113,28 @@
             }
           },
           "503": {
-            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`).",
+            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`). With reason `restart_file`, a part did not continue an open file (an earlier part failed, timed out, or this node restarted): send the file again from its first part.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
-                "example": {
-                  "job_completed": false,
-                  "status": "unavailable"
+                "examples": {
+                  "restart_file": {
+                    "summary": "Send the file again from its first part.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "restart_file",
+                      "status": "unavailable"
+                    }
+                  },
+                  "unavailable": {
+                    "summary": "Retry the request.",
+                    "value": {
+                      "job_completed": false,
+                      "status": "unavailable"
+                    }
+                  }
                 }
               }
             }
@@ -50745,12 +50788,12 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
+            "description": "Stable outcome: `received`, `partial` (a part that is not the\nfile's last was taken), `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
             "example": "received"
           },
           "reason": {
             "type": "string",
-            "description": "Why, for `refused`.",
+            "description": "Why, for `refused`, and `restart_file` for an `unavailable` part\nthat does not continue an open file.",
             "example": "size_mismatch",
             "nullable": true
           },

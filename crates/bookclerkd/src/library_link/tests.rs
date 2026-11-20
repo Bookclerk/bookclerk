@@ -3447,6 +3447,181 @@ mod results_and_uploads {
         assert!(!owner_out.path().join("Author/Title t1/t1.m4b").exists());
     }
 
+    /// Sends `body` as the part of file 0 of `upload_id` that `range`
+    /// names (a `Content-Range` value) over plain HTTP; answers the raw
+    /// response.
+    async fn put_part(
+        addr: SocketAddr,
+        upload_id: &str,
+        token: &str,
+        range: &str,
+        body: &[u8],
+    ) -> String {
+        let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {token}\r\n\
+             Content-Range: {range}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            addr.port(),
+            body.len()
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        tcp.write_all(body).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    /// Grants a one-file upload of `bytes` at `Author/Title t1/t1.m4b`
+    /// into a local stand-in destination; answers the world, the
+    /// destination's root, and the upload id and token.
+    async fn granted_local_file(bytes: &[u8]) -> (Linked, tempfile::TempDir, String, String) {
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let scope = local_scope("Author/Title t1");
+        let files = vec![local_file("Author/Title t1/t1.m4b", bytes)];
+        let (upload_id, token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+        (world, owner_out, upload_id, token)
+    }
+
+    /// A file sent in parts (each its own request, as through a relay that
+    /// caps request bodies) is one write: the destination gets the whole,
+    /// verified file once the last part arrives, and the upload commits.
+    #[tokio::test]
+    async fn a_file_sent_in_parts_is_written_once_whole() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        const FILE: &[u8] = b"audio-in-parts!";
+        let (world, owner_out, upload_id, token) = granted_local_file(FILE).await;
+        let stored = owner_out.path().join("Author/Title t1/t1.m4b");
+        let first = put_part(world.addr, &upload_id, &token, "bytes 0-4/15", &FILE[..5]).await;
+        assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+        assert!(first.contains("\"partial\""), "{first}");
+        let second = put_part(world.addr, &upload_id, &token, "bytes 5-9/15", &FILE[5..10]).await;
+        assert!(second.contains("\"partial\""), "{second}");
+        assert!(!stored.exists(), "nothing lands before the last part");
+        let last = put_part(
+            world.addr,
+            &upload_id,
+            &token,
+            "bytes 10-14/15",
+            &FILE[10..],
+        )
+        .await;
+        assert!(last.starts_with("HTTP/1.1 200"), "{last}");
+        assert!(last.contains("\"received\""), "{last}");
+        assert_eq!(std::fs::read(&stored).unwrap(), FILE);
+        // A part of a file already received is answered from the record.
+        let again = put_part(world.addr, &upload_id, &token, "bytes 0-4/15", &FILE[..5]).await;
+        assert!(again.contains("\"received\""), "{again}");
+        let committed = commit_raw(world.addr, &upload_id, &token, "{}").await;
+        assert!(committed.starts_with("HTTP/1.1 200"), "{committed}");
+    }
+
+    /// A part that does not continue the open file (a gap, or no earlier
+    /// part on this node) is answered `restart_file` and drops what the
+    /// file's earlier parts had written; the host then sends the file
+    /// again from its first part, which lands whole.
+    #[tokio::test]
+    async fn a_part_out_of_order_restarts_the_file() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        const FILE: &[u8] = b"audio-in-parts!";
+        let (world, owner_out, upload_id, token) = granted_local_file(FILE).await;
+        let stored = owner_out.path().join("Author/Title t1/t1.m4b");
+        let orphan = put_part(world.addr, &upload_id, &token, "bytes 5-9/15", &FILE[5..10]).await;
+        assert!(orphan.starts_with("HTTP/1.1 503"), "{orphan}");
+        assert!(orphan.contains("restart_file"), "{orphan}");
+        let first = put_part(world.addr, &upload_id, &token, "bytes 0-4/15", &FILE[..5]).await;
+        assert!(first.contains("\"partial\""), "{first}");
+        let gap = put_part(
+            world.addr,
+            &upload_id,
+            &token,
+            "bytes 10-14/15",
+            &FILE[10..],
+        )
+        .await;
+        assert!(gap.contains("restart_file"), "{gap}");
+        // The gap dropped the open file: its next part no longer fits.
+        let late = put_part(world.addr, &upload_id, &token, "bytes 5-9/15", &FILE[5..10]).await;
+        assert!(late.contains("restart_file"), "{late}");
+        assert!(files_under(owner_out.path()).is_empty());
+        for (range, body) in [
+            ("bytes 0-4/15", &FILE[..5]),
+            ("bytes 5-9/15", &FILE[5..10]),
+            ("bytes 10-14/15", &FILE[10..]),
+        ] {
+            let put = put_part(world.addr, &upload_id, &token, range, body).await;
+            assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        }
+        assert_eq!(std::fs::read(&stored).unwrap(), FILE);
+    }
+
+    /// A part whose bytes do not match the manifest fails the whole file
+    /// once it is found out (here at the last part's digest check), and
+    /// nothing is written.
+    #[tokio::test]
+    async fn a_file_sent_in_parts_is_verified_whole() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        const FILE: &[u8] = b"audio-in-parts!";
+        let (world, owner_out, upload_id, token) = granted_local_file(FILE).await;
+        let first = put_part(
+            world.addr,
+            &upload_id,
+            &token,
+            "bytes 0-9/15",
+            b"AUDIO-IN-P",
+        )
+        .await;
+        assert!(first.contains("\"partial\""), "{first}");
+        let last = put_part(
+            world.addr,
+            &upload_id,
+            &token,
+            "bytes 10-14/15",
+            &FILE[10..],
+        )
+        .await;
+        assert!(last.starts_with("HTTP/1.1 422"), "{last}");
+        assert!(last.contains("content_mismatch"), "{last}");
+        assert!(files_under(owner_out.path()).is_empty());
+    }
+
+    /// A range that is not exactly a part of the declared file is refused
+    /// before anything is opened.
+    #[tokio::test]
+    async fn an_upload_part_with_a_bad_range_is_refused() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        const FILE: &[u8] = b"audio-in-parts!";
+        let (world, owner_out, upload_id, token) = granted_local_file(FILE).await;
+        for range in [
+            "bytes 0-4/16",
+            "bytes 0-15/15",
+            "bytes=0-4/15",
+            "bytes 4-0/15",
+        ] {
+            let put = put_part(world.addr, &upload_id, &token, range, &FILE[..5]).await;
+            assert!(put.starts_with("HTTP/1.1 422"), "{range}: {put}");
+            assert!(put.contains("invalid_range"), "{range}: {put}");
+        }
+        // A part whose body is not the length its range names.
+        let short = put_part(world.addr, &upload_id, &token, "bytes 0-4/15", &FILE[..4]).await;
+        assert!(short.contains("size_mismatch"), "{short}");
+        assert!(files_under(owner_out.path()).is_empty());
+    }
+
     /// A commit that arrives once the receiving shared node has no output
     /// destination deployed is answered `unavailable`, and the title is
     /// not marked acquired.

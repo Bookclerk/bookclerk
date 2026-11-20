@@ -771,6 +771,19 @@ title, and the host fails it without fetching anything.
    the host.
    It checks the size and SHA-256 as it streams, and re-checks the job's
    fence about once a second.
+
+   A file larger than 64 MiB goes in parts, so a relay that caps
+   request bodies (such as an ingress plugin's Cloudflare Worker, 100 MB
+   on the Free plan) passes it. Each part is its own `PUT` of the same
+   URL with `Content-Range: bytes <first>-<last>/<size>`, in order from
+   byte 0. The owner answers `200 partial` until the last part, which is
+   answered like a whole file. The parts feed one write per destination,
+   so the file is still never staged and the checks cover the whole
+   file. Nothing is resumed: if a part doesn't continue the file (an
+   earlier part failed, no part came for two minutes, or the owner
+   restarted), the owner answers `503` with reason `restart_file`,
+   discards what it had written, and the host sends the file again from
+   its first part.
 3. **Commit.** The host sends `POST /api/node/v1/uploads/{upload_id}/commit`.
    One canonical batch, gated on the live fence, marks the title
    acquired, publishes `book_acquired`, and (for the job's last title)
@@ -786,6 +799,8 @@ destination's stream with an error, so each discards what it wrote.
 | `421 misdirected` | Another shared node granted it |
 | `409 lost` | The fence is gone |
 | `422 refused`, `422 destinations_changed` | The shared node's destinations aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
+| `422 invalid_range` | A part's `Content-Range` isn't exactly a part of the declared file |
+| `503 unavailable`, reason `restart_file` | A part didn't continue the open file; send the file again from its first part |
 
 Limits: 512 files per title, 8 GiB per file, 16 copies per file and 1 KiB
 keys.

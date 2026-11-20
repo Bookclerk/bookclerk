@@ -1,8 +1,10 @@
 //! The owner's upload endpoint (H-4 design, section 6; decision 4).
 //!
 //! A host that ran an acquire streams each title's files here, one HTTP
-//! request per declared file, after `upload.grant` opened the upload on
-//! the node socket:
+//! request per declared file (or, for a file larger than
+//! [`bookclerk_node_proto::UPLOAD_PART_BYTES`], one per part, so a relay
+//! that caps request bodies passes it), after `upload.grant` opened the
+//! upload on the node socket:
 //!
 //! | Request | Answer |
 //! |---|---|
@@ -58,6 +60,20 @@
 //! streaming waits for it, then is answered from what it recorded, so a
 //! failing attempt's cleanup never deletes the copy a retry just wrote.
 //!
+//! A file sent in parts carries `Content-Range: bytes <first>-<last>/<size>`
+//! on each, in order from byte 0 ([`bookclerk_node_proto::parse_upload_part`]
+//! accepts exactly one spelling of a part inside the declared file, else
+//! 422 `invalid_range`). The first part opens the file's write in a task of
+//! its own ([`PartStream`]); each part's request feeds it and answers 200
+//! `partial`, and the last part ends the stream and answers as a whole
+//! file does, so the parts are one write per destination and the size,
+//! digest, fence and key checks above cover the whole file. Nothing is
+//! resumed: a part that does not continue the open file (an earlier part
+//! failed, no part arrived for [`PART_IDLE`], or this node restarted) gets
+//! 503 `unavailable` with reason `restart_file`, the open write is
+//! discarded, and the host sends the file again from its first part; a new
+//! first part likewise discards what an earlier attempt left open.
+//!
 //! The token is accepted for an hour past its latest extension: each
 //! accepted file and each renewal of the job's lease extend it, and only
 //! while the fence is live.
@@ -85,7 +101,9 @@ use bookclerk_library::control_plane::{
     upload_owns_key, JobClaimLimits, UploadCommit, UploadFinish, UploadSession,
 };
 use bookclerk_library::{AcquireTitle, LibraryStore};
-use bookclerk_node_proto::{UploadAnswer, UploadCommitRequest, UPLOAD_AUTH_SCHEME};
+use bookclerk_node_proto::{
+    parse_upload_part, UploadAnswer, UploadCommitRequest, UploadPart, UPLOAD_AUTH_SCHEME,
+};
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{ObjectMeta, StorageBackend};
 use futures::StreamExt as _;
@@ -109,6 +127,11 @@ const FILE_LOCK_WAIT: Duration = Duration::from_secs(30);
 /// Longest a failed file's teardown waits for each destination to
 /// discard its write ([`finish_write`]).
 const TEARDOWN_WAIT: Duration = Duration::from_secs(30);
+
+/// Longest the owner keeps a file whose parts are arriving open while it
+/// waits for the next part ([`PartStream`]); past it the file's writes
+/// are discarded and the host sends the file again from its first part.
+const PART_IDLE: Duration = Duration::from_secs(120);
 
 /// Largest commit body.
 const MAX_COMMIT_BODY: usize = 16 * 1024;
@@ -1214,23 +1237,34 @@ async fn record_written(
     put,
     path = "/api/node/v1/uploads/{upload_id}/files/{index}",
     security(("uploadToken" = [])),
-    params(("upload_id" = String, Path, description = "Upload id."), ("index" = u32, Path, description = "File index in the upload.")),
+    params(
+        ("upload_id" = String, Path, description = "Upload id."),
+        ("index" = u32, Path, description = "File index in the upload."),
+        ("Content-Range" = Option<String>, Header, description = "For a file sent in parts: `bytes <first>-<last>/<size>`, the part this body is. Parts go in order from byte 0, each its own request; a file sent whole carries no range."),
+    ),
     request_body(content = crate::openapi::BinaryBody, content_type = "application/octet-stream"),
     responses(
-        (status = 200, description = "The file was stored (`received`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "received", "job_completed": false})),
+        (status = 200, description = "The file was stored (`received`), or a part that is not the file's last was taken and the next one is awaited (`partial`).", body = bookclerk_node_proto::UploadAnswer, examples(
+            ("received" = (summary = "The whole file was stored.", value = json!({"status": "received", "job_completed": false}))),
+            ("partial" = (summary = "A part was taken; send the next.", value = json!({"status": "partial", "job_completed": false}))),
+        )),
         (status = 401, description = "The upload token is missing or wrong, or names no live upload (`unauthorized`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "unauthorized", "job_completed": false})),
         (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`).", body = crate::http_error::TransportRefused, example = json!({"error": "transport_insecure", "reason": "plain_http"})),
         (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
         (status = 409, description = "The upload lost its fence to a newer one (`lost`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "lost", "job_completed": false})),
         (status = 421, description = "This node is not the upload's receiving node (`misdirected`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "misdirected", "job_completed": false})),
-        (status = 422, description = "The file was refused (`refused`): not in the upload (`unknown_file`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).", body = bookclerk_node_proto::UploadAnswer, examples(
+        (status = 422, description = "The file was refused (`refused`): not in the upload (`unknown_file`), a `Content-Range` that is not exactly a part of the declared file (`invalid_range`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).", body = bookclerk_node_proto::UploadAnswer, examples(
             ("unknown_file" = (summary = "The index names no file of the upload.", value = json!({"status": "refused", "reason": "unknown_file", "job_completed": false}))),
+            ("invalid_range" = (summary = "The range is not a part of the declared file.", value = json!({"status": "refused", "reason": "invalid_range", "job_completed": false}))),
             ("size_mismatch" = (summary = "The body is not the granted size.", value = json!({"status": "refused", "reason": "size_mismatch", "job_completed": false}))),
             ("content_mismatch" = (summary = "The body's digest is not the granted one.", value = json!({"status": "refused", "reason": "content_mismatch", "job_completed": false}))),
             ("destinations_changed" = (summary = "The destinations changed since the grant.", value = json!({"status": "refused", "reason": "destinations_changed", "job_completed": false}))),
             ("key_taken" = (summary = "The storage key now belongs to another title or writer.", value = json!({"status": "refused", "reason": "key_taken", "job_completed": false}))),
         )),
-        (status = 503, description = "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`).", body = bookclerk_node_proto::UploadAnswer, example = json!({"status": "unavailable", "job_completed": false})),
+        (status = 503, description = "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`). With reason `restart_file`, a part did not continue an open file (an earlier part failed, timed out, or this node restarted): send the file again from its first part.", body = bookclerk_node_proto::UploadAnswer, examples(
+            ("unavailable" = (summary = "Retry the request.", value = json!({"status": "unavailable", "job_completed": false}))),
+            ("restart_file" = (summary = "Send the file again from its first part.", value = json!({"status": "unavailable", "reason": "restart_file", "job_completed": false}))),
+        )),
     ),
 )]
 pub async fn put_file(
@@ -1277,37 +1311,260 @@ pub async fn put_file(
     if session.received.contains(&index) {
         return answer(StatusCode::OK, "received", None, false);
     }
+    let size = session.files[index].size;
+    let part = match parts.headers.get(header::CONTENT_RANGE) {
+        // A file that fits in one request is sent whole, without a range.
+        None => UploadPart {
+            offset: 0,
+            length: size,
+        },
+        Some(range) => match parse_upload_part(range.as_bytes(), size) {
+            Some(part) => part,
+            None => return refused("invalid_range"),
+        },
+    };
     let declared = parts
         .headers
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok());
-    if declared != Some(session.files[index].size) {
+    if declared != Some(part.length) {
         return refused("size_mismatch");
     }
-    match upload_fence_live(&library, &session).await {
+    let key = file_lock_name(&session.upload_id, index);
+    let earlier = take_part_stream(&key);
+    let mut stream = if part.offset == 0 {
+        // A first part starts the file again: whatever an earlier attempt
+        // left open is discarded first.
+        if let Some(stale) = earlier {
+            stale.abandon().await;
+        }
+        match start_file(&state, &library, &session, index, key).await {
+            Ok(stream) => stream,
+            Err(refusal) => return refusal,
+        }
+    } else {
+        match earlier {
+            Some(stream) if stream.next == part.offset => stream,
+            other => {
+                // The earlier parts' write is gone (it failed, timed out,
+                // or this node restarted) or this part is out of order:
+                // the host sends the file again from its first part.
+                if let Some(stale) = other {
+                    stale.abandon().await;
+                }
+                tracing::warn!(upload_id = %session.upload_id, index, offset = part.offset, "an upload part does not continue an open file; asked to send the file again");
+                return restart_file();
+            }
+        }
+    };
+    match feed_part(&stream.feed, body, part.length).await {
+        Fed::Part if part.is_last(size) => stream.finish().await,
+        Fed::Part => {
+            stream.next = part.end();
+            put_part_stream(stream);
+            answer(StatusCode::OK, "partial", None, false)
+        }
+        Fed::BodyBroken => {
+            stream.abandon().await;
+            unavailable()
+        }
+        // The write ended early (a lost fence, a mismatch, a taken key or
+        // a failed destination): its answer says why.
+        Fed::WriteEnded => stream.finish().await,
+    }
+}
+
+/// How one part's body went into its file's write.
+enum Fed {
+    /// Every byte of the part was handed to the write.
+    Part,
+    /// The request body broke, or was not the part's length.
+    BodyBroken,
+    /// The write stopped reading: it already failed.
+    WriteEnded,
+}
+
+/// Hands `length` bytes of `body` to a file's write through `feed`.
+async fn feed_part(feed: &mpsc::Sender<io::Result<Bytes>>, body: Body, length: u64) -> Fed {
+    let mut stream = body.into_data_stream();
+    let mut seen = 0u64;
+    loop {
+        // A write that fails (a lost fence) answers at once, without
+        // waiting for a stalled host's next byte.
+        let next = tokio::select! {
+            next = stream.next() => next,
+            () = feed.closed() => return Fed::WriteEnded,
+        };
+        let Some(next) = next else {
+            break;
+        };
+        let Ok(chunk) = next else {
+            return Fed::BodyBroken;
+        };
+        seen = seen.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        if seen > length {
+            return Fed::BodyBroken;
+        }
+        if feed.send(Ok(chunk)).await.is_err() {
+            return Fed::WriteEnded;
+        }
+    }
+    if seen == length {
+        Fed::Part
+    } else {
+        Fed::BodyBroken
+    }
+}
+
+/// A file whose parts are arriving, between requests: the write that
+/// streams every part into the file's destinations ([`tee`]) runs in a task
+/// of its own, so the parts of one file are one write per destination and
+/// the file is still never staged. Each part's request holds the file's
+/// lock ([`lock_file`]) while it feeds the write, so parts never
+/// interleave. Dropping it (a request cancelled mid-part) ends the write's
+/// stream early, which fails the write and deletes its copies.
+struct PartStream {
+    /// Offset the file's next part must start at.
+    next: u64,
+    /// The write's input.
+    feed: mpsc::Sender<io::Result<Bytes>>,
+    /// The write; answers the file's PUT once its stream ends.
+    write: tokio::task::JoinHandle<Response>,
+    /// Tells this stream's entry in [`PART_STREAMS`] from a newer one of
+    /// the same file.
+    generation: u64,
+    /// The file's [`file_lock_name`], its key in [`PART_STREAMS`].
+    key: String,
+}
+
+impl PartStream {
+    /// Ends the file's stream after its last part and answers with the
+    /// write's outcome.
+    async fn finish(self) -> Response {
+        drop(self.feed);
+        self.write.await.unwrap_or_else(|_| unavailable())
+    }
+
+    /// Fails the write (its copies are deleted) and waits for it to end.
+    async fn abandon(self) {
+        let _ = self
+            .feed
+            .try_send(Err(io::Error::other("the upload part was abandoned")));
+        drop(self.feed);
+        let _ = self.write.await;
+    }
+}
+
+/// Files whose parts are arriving on this node, by [`file_lock_name`]. An
+/// entry is out of the map while a part's request feeds it.
+static PART_STREAMS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, PartStream>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Hands out [`PartStream::generation`] values.
+static PART_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Takes the open file called `key` out of [`PART_STREAMS`].
+fn take_part_stream(key: &str) -> Option<PartStream> {
+    PART_STREAMS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(key)
+}
+
+/// Puts an open file back into [`PART_STREAMS`] to wait for its next part.
+fn put_part_stream(stream: PartStream) {
+    PART_STREAMS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(stream.key.clone(), stream);
+}
+
+/// Removes the entry of `key` once its write ended, unless it is a newer
+/// stream of the same file.
+fn forget_part_stream(key: &str, generation: u64) {
+    let mut streams = PART_STREAMS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if streams
+        .get(key)
+        .is_some_and(|stream| stream.generation == generation)
+    {
+        streams.remove(key);
+    }
+}
+
+/// The write's input: what the parts feed, failing once no part arrives
+/// for [`PART_IDLE`].
+fn part_body(rx: mpsc::Receiver<io::Result<Bytes>>) -> Body {
+    Body::from_stream(futures::stream::unfold(Some(rx), |rx| async move {
+        let mut rx = rx?;
+        match tokio::time::timeout(PART_IDLE, rx.recv()).await {
+            Ok(Some(item)) => Some((item, Some(rx))),
+            Ok(None) => None,
+            Err(_) => Some((
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "no next upload part arrived",
+                )),
+                None,
+            )),
+        }
+    }))
+}
+
+/// Answers a part that does not continue an open file: 503 `unavailable`
+/// with reason `restart_file`, which the host answers by sending the
+/// file again from its first part.
+fn restart_file() -> Response {
+    answer(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "unavailable",
+        Some("restart_file"),
+        false,
+    )
+}
+
+/// Checks that file `index` of `session` may be written now (the fence is
+/// live and the title's destinations here are the granted ones) and starts
+/// its write ([`tee`]) in a task of its own, fed through the returned
+/// stream.
+///
+/// # Errors
+///
+/// The answer to send instead: `lost`, `destinations_changed` or
+/// `unavailable`.
+async fn start_file(
+    state: &Arc<AppState>,
+    library: &LibraryStore,
+    session: &UploadSession,
+    index: usize,
+    key: String,
+) -> Result<PartStream, Response> {
+    match upload_fence_live(library, session).await {
         Ok(true) => {}
         Ok(false) => {
-            abort_and_discard(&state, &library, &session.upload_id).await;
-            return lost();
+            abort_and_discard(state, library, &session.upload_id).await;
+            return Err(lost());
         }
         Err(err) => {
             tracing::warn!(upload_id = %session.upload_id, error = %err, "upload fence check failed");
-            return unavailable();
+            return Err(unavailable());
         }
     }
-    let destinations = match owner_destinations(&state).await {
+    let destinations = match owner_destinations(state).await {
         Ok(destinations) if !destinations.is_empty() => destinations,
         Ok(_) | Err(_) => {
             tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this shared node");
-            return unavailable();
+            return Err(unavailable());
         }
     };
-    let destinations = match session_target_set(&library, destinations, &session).await {
+    let destinations = match session_target_set(library, destinations, session).await {
         Ok(destinations) => destinations,
         Err(err) => {
             tracing::warn!(upload_id = %session.upload_id, error = %err, "could not read the title's destination filters");
-            return unavailable();
+            return Err(unavailable());
         }
     };
     if destination_ids(&destinations) != session.destinations {
@@ -1315,28 +1572,53 @@ pub async fn put_file(
         // writing them to a changed set would mis-name, skip one, or write
         // where a filter now says not to.
         tracing::warn!(upload_id = %session.upload_id, "the title's destinations on this shared node changed since the upload was granted; aborted");
-        abort_and_discard(&state, &library, &session.upload_id).await;
-        return refused("destinations_changed");
+        abort_and_discard(state, library, &session.upload_id).await;
+        return Err(refused("destinations_changed"));
     }
-    let count = destinations.len();
-    let ids = destination_ids(&destinations);
-    match tee(&library, &session, index, body, destinations).await {
-        // From here the record runs in a task of its own, so a handler
-        // dropped meanwhile cannot stop it half way: it records the file,
-        // or deletes the copies itself. (Rolling back instead could delete
-        // the copies of a file whose record already landed.)
+    let (feed, rx) = mpsc::channel(CHANNEL_CHUNKS);
+    let generation = PART_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let write = {
+        let state = Arc::clone(state);
+        let library = library.clone();
+        let session = session.clone();
+        let key = key.clone();
+        tokio::spawn(async move {
+            let count = destinations.len();
+            let ids = destination_ids(&destinations);
+            let outcome = tee(&library, &session, index, part_body(rx), destinations).await;
+            let response =
+                settle_file(&state, &library, &session, index, count, &ids, outcome).await;
+            forget_part_stream(&key, generation);
+            response
+        })
+    };
+    Ok(PartStream {
+        next: 0,
+        feed,
+        write,
+        generation,
+        key,
+    })
+}
+
+/// Records a written file, or rolls a failed one back, and answers its PUT.
+async fn settle_file(
+    state: &AppState,
+    library: &LibraryStore,
+    session: &UploadSession,
+    index: usize,
+    count: usize,
+    ids: &[String],
+    outcome: Result<Unrecorded, StreamFailure>,
+) -> Response {
+    match outcome {
         Ok(unrecorded) => {
             unrecorded.keep();
-            let state = Arc::clone(&state);
-            let session = session.clone();
-            let task = tokio::spawn(async move {
-                record_written(&state, &library, &session, index, count, &ids).await
-            });
-            task.await.unwrap_or_else(|_| unavailable())
+            record_written(state, library, session, index, count, ids).await
         }
         Err(StreamFailure::Lost) => {
             tracing::warn!(upload_id = %session.upload_id, job_id = %session.job_id, index, "the job's fence was lost mid-upload; aborted");
-            abort_and_discard(&state, &library, &session.upload_id).await;
+            abort_and_discard(state, library, &session.upload_id).await;
             lost()
         }
         Err(StreamFailure::Mismatch) => {

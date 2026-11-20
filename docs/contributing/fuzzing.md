@@ -69,6 +69,7 @@ boundary extends it.
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
 | `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
+| `upload_part` | The `Content-Range` header of an upload part, `PUT /api/node/v1/uploads/{upload_id}/files/{n}`, which decides which bytes of a declared file the body is | `bookclerk-node-proto::parse_upload_part` |
 | `copy_answer` | A library's answer to a copy download, read on the branch or clerk that took the copy: where its head ends, how many bytes follow and where in the file they are written | `bookclerk-node-proto::copy_answer_head_end`, `parse_copy_answer` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics, pages of the library's books with the person's marked, and the grant of a copy with its download token) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `instance_config` | A plugin instance's settings, table rows included: the `settings` object of `PUT /api/config/plugin-instances/{id}/config` and the row text of `bookclerk plugins config set` | `bookclerk-library::control_plane::PluginInstanceConfigV1::validate`, `parse_setting_text` |
@@ -501,6 +502,17 @@ only that. The others check:
   reading the header a second way (digits folded into a wide integer).
   Seeds named `part-*` must parse as a part and the others must not. The
   shared oracle is `fuzz/oracles/copy_range.rs`, replayed from
+  `bookclerk-node-proto`.
+- **`upload_part`**: the input is the file's declared size (eight bytes,
+  big endian) and then the header as sent. A part the parser answers lies
+  inside the file (at least one byte, ending at or before the end), so the
+  owner never writes past the declared size; only `bytes <first>-<last>/<size>`
+  with canonical decimal numbers and the declared size is a part, so
+  each part has one spelling (the part names the header back exactly);
+  and the answer equals the one the oracle works out by reading the
+  header a second way (digits folded into a wide integer). Seeds named
+  `part-*` must parse as a part and the others must not. The shared
+  oracle is `fuzz/oracles/upload_part.rs`, replayed from
   `bookclerk-node-proto`.
 - **`copy_answer`**: the input is the byte the reader asked to resume
   from and the file's size (eight bytes each, big endian) and then the

@@ -77,7 +77,7 @@ use bookclerk_node_proto::{
     UploadCommitRequest, UploadFile, WindowCursor, WindowWork, ACCOUNT_BUNDLE_VERSION,
     ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS,
     IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH,
-    UPLOAD_AUTH_SCHEME,
+    UPLOAD_AUTH_SCHEME, UPLOAD_PART_BYTES,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -797,7 +797,7 @@ impl Shared {
         let path = format!("{UPLOADS_PATH}{}/files/{index}", upload.upload_id);
         let (status, answer) = self
             .endpoint
-            .put_stream(&path, &authorization, length, body)
+            .put_file(&path, &authorization, length, UPLOAD_PART_BYTES, body)
             .await
             .map_err(|err| {
                 tracing::warn!(job_id, fence, upload_id = %upload.upload_id, index, error = %err, "an upload request failed");
@@ -1573,7 +1573,7 @@ impl HostClientHandle {
         let (status, answer) = self
             .shared
             .endpoint
-            .put_stream(&path, &authorization, length, body)
+            .put_file(&path, &authorization, length, UPLOAD_PART_BYTES, body)
             .await
             .map_err(|err| {
                 tracing::warn!(upload_id = %upload.upload_id, index, error = %err, "a catalog upload request failed");

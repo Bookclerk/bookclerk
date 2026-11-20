@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_node_proto::{
-    canonical_origin, CLERK_AUTH_SCHEME, CLERK_CONNECT_PATH, CLERK_SUBPROTOCOL, MAX_FRAME_BYTES,
-    SUBPROTOCOL,
+    canonical_origin, upload_parts, UploadAnswer, CLERK_AUTH_SCHEME, CLERK_CONNECT_PATH,
+    CLERK_SUBPROTOCOL, MAX_FRAME_BYTES, SUBPROTOCOL,
 };
 use sha2::Digest as _;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
@@ -519,14 +519,75 @@ impl OwnerEndpoint {
         length: u64,
         body: R,
     ) -> Result<(u16, Vec<u8>), DialError> {
-        if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
+        self.put_stream_range(path, authorization, length, None, body)
+            .await
+    }
+
+    /// `PUT path` of a declared upload file of `size` bytes from `body`:
+    /// in one request when it fits in `part_bytes`, otherwise as
+    /// consecutive parts of at most `part_bytes`, each its own request
+    /// with `Content-Range` ([`upload_parts`]), so a relay that caps
+    /// request bodies passes it. Answers the status and body of the request
+    /// that settled it: the last part's, the first that was not `200`, or
+    /// the first that says the owner already holds the whole file
+    /// (`received`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::put_stream`], for any part.
+    pub async fn put_file<R: AsyncRead + Unpin + Send>(
+        &self,
+        path: &str,
+        authorization: &str,
+        size: u64,
+        part_bytes: u64,
+        mut body: R,
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        let parts = upload_parts(size, part_bytes);
+        if parts.is_empty() {
+            return self.put_stream(path, authorization, size, body).await;
+        }
+        let mut settled = Err(DialError::Http);
+        for part in parts {
+            let range = part.content_range(size);
+            let (status, answer) = self
+                .put_stream_range(path, authorization, part.length, Some(&range), &mut body)
+                .await?;
+            let whole = serde_json::from_slice::<UploadAnswer>(&answer)
+                .is_ok_and(|answer| answer.status == "received");
+            let done = status != 200 || whole || part.is_last(size);
+            settled = Ok((status, answer));
+            if done {
+                break;
+            }
+        }
+        settled
+    }
+
+    /// [`Self::put_stream`], with an optional `Content-Range` value sent
+    /// as a header (an upload part).
+    async fn put_stream_range<R: AsyncRead + Unpin + Send>(
+        &self,
+        path: &str,
+        authorization: &str,
+        length: u64,
+        content_range: Option<&str>,
+        body: R,
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        if authorization.contains(['\r', '\n'])
+            || path.contains(['\r', '\n', ' '])
+            || content_range.is_some_and(|range| range.contains(['\r', '\n']))
+        {
             return Err(DialError::Http);
         }
         let mut io = self.connect().await?;
+        let range = content_range
+            .map(|range| format!("Content-Range: {range}\r\n"))
+            .unwrap_or_default();
         let head = format!(
             "PUT {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: {authorization}\r\n\
              Content-Type: application/octet-stream\r\nAccept: application/json\r\n\
-             Content-Length: {length}\r\nConnection: close\r\n\r\n",
+             {range}Content-Length: {length}\r\nConnection: close\r\n\r\n",
             self.authority(),
         );
         let sent = async {
@@ -1622,6 +1683,115 @@ mod tests {
             "{out:?}"
         );
         held.abort();
+    }
+
+    /// Accepts `requests` uploads one after another, answering each with
+    /// `answers` in turn; hands back each request's `Content-Range` (if
+    /// any) and body.
+    async fn recording_owner(
+        answers: Vec<&'static str>,
+    ) -> (
+        OwnerEndpoint,
+        tokio::task::JoinHandle<Vec<(Option<String>, Vec<u8>)>>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for answer in answers {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0u8; 1];
+                    socket.read_exact(&mut byte).await.unwrap();
+                    head.push(byte[0]);
+                }
+                let head = String::from_utf8(head).unwrap();
+                let header = |name: &str| {
+                    head.lines().find_map(|line| {
+                        line.split_once(": ")
+                            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                            .map(|(_, value)| value.to_string())
+                    })
+                };
+                let length: usize = header("content-length").unwrap().parse().unwrap();
+                let mut body = vec![0u8; length];
+                socket.read_exact(&mut body).await.unwrap();
+                seen.push((header("content-range"), body));
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{answer}",
+                    answer.len()
+                );
+                socket.write_all(reply.as_bytes()).await.unwrap();
+            }
+            seen
+        });
+        let endpoint = OwnerEndpoint::new(&format!("http://127.0.0.1:{port}"), None).unwrap();
+        (endpoint, served)
+    }
+
+    const PARTIAL: &str = r#"{"status":"partial","job_completed":false}"#;
+    const RECEIVED: &str = r#"{"status":"received","job_completed":false}"#;
+
+    /// A file larger than a part goes as consecutive ranged requests that
+    /// add up to the file; one that fits goes whole, with no range.
+    #[tokio::test]
+    async fn a_large_upload_goes_in_parts() {
+        let (endpoint, served) = recording_owner(vec![PARTIAL, PARTIAL, RECEIVED]).await;
+        let file: Vec<u8> = (0..25u8).collect();
+        let (status, answer) = endpoint
+            .put_file("/upload", "Bookclerk-Upload t", 25, 10, &file[..])
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(answer, RECEIVED.as_bytes());
+        let seen = served.await.unwrap();
+        let ranges: Vec<_> = seen.iter().map(|(range, _)| range.clone()).collect();
+        assert_eq!(
+            ranges,
+            vec![
+                Some("bytes 0-9/25".to_string()),
+                Some("bytes 10-19/25".to_string()),
+                Some("bytes 20-24/25".to_string()),
+            ]
+        );
+        assert_eq!(seen.concat_bodies(), file);
+
+        let (endpoint, served) = recording_owner(vec![RECEIVED]).await;
+        endpoint
+            .put_file("/upload", "Bookclerk-Upload t", 10, 10, &file[..10])
+            .await
+            .unwrap();
+        let seen = served.await.unwrap();
+        assert_eq!(seen[0].0, None);
+        assert_eq!(seen[0].1, file[..10]);
+    }
+
+    /// An owner that already holds the whole file (an earlier attempt
+    /// finished) answers `received` to the first part, and no more parts
+    /// are sent.
+    #[tokio::test]
+    async fn an_upload_stops_once_the_owner_holds_the_file() {
+        let (endpoint, served) = recording_owner(vec![RECEIVED]).await;
+        let file = [7u8; 25];
+        let (status, answer) = endpoint
+            .put_file("/upload", "Bookclerk-Upload t", 25, 10, &file[..])
+            .await
+            .unwrap();
+        assert_eq!((status, answer), (200, RECEIVED.as_bytes().to_vec()));
+        assert_eq!(served.await.unwrap().len(), 1);
+    }
+
+    /// The bodies of recorded requests, joined in order.
+    trait ConcatBodies {
+        /// Every body, one after another.
+        fn concat_bodies(&self) -> Vec<u8>;
+    }
+
+    impl ConcatBodies for Vec<(Option<String>, Vec<u8>)> {
+        fn concat_bodies(&self) -> Vec<u8> {
+            self.iter().flat_map(|(_, body)| body.clone()).collect()
+        }
     }
 
     #[test]

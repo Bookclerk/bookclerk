@@ -343,6 +343,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.upload_part]
+crate = "bookclerk-node-proto"
+boundary = "The Content-Range header of an upload part, PUT /api/node/v1/uploads/{upload_id}/files/{n}, which decides which bytes of a declared file the body is"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.clerk_socket_frame]
 crate = "bookclerk-node-proto"
 boundary = "The clerk socket's frames, GET /api/clerk/v1/connect: what a library reads from a clerk (pages asked for, a copy asked for) and what a clerk reads back (topics, pages, a granted copy and its token)"

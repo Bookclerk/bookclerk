@@ -41,7 +41,8 @@
 //! complete full pass. An acquire asks
 //! [`Body::AcquirePlan`] for its titles, then for each title asks
 //! [`Body::UploadGrant`] and streams the files over HTTP at
-//! [`UPLOADS_PATH`] with the token sealed in [`Body::UploadGranted`]; the
+//! [`UPLOADS_PATH`] with the token sealed in [`Body::UploadGranted`] (a file
+//! larger than [`UPLOAD_PART_BYTES`] as consecutive [`UploadPart`]s); the
 //! owner streams them on to its output destinations without staging them,
 //! and the job completes when the last title's upload commits.
 //!
@@ -100,6 +101,7 @@ mod requests;
 mod sealed;
 mod shared_branch;
 mod signature;
+mod upload_part;
 mod window;
 
 pub use accounts::{
@@ -187,6 +189,7 @@ pub use signature::{
     verify_auth, ArtifactRequest, AuthContext, AuthError, ARTIFACT_AUTH_SCHEME, ARTIFACT_DOMAIN,
     ARTIFACT_REQUEST_MAX_SKEW_SECS, AUTH_DOMAIN, NONCE_LEN,
 };
+pub use upload_part::{parse_upload_part, upload_parts, UploadPart, UPLOAD_PART_BYTES};
 pub use window::{
     window_page_problem, WindowCopy, WindowCursor, WindowEdition, WindowWork,
     MAX_COPY_CONTENT_TYPE_BYTES, MAX_COPY_VERSION_BYTES, MAX_WINDOW_WORKS,
