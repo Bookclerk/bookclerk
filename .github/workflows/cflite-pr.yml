@@ -35,6 +35,7 @@ on:
       - "crates/bookclerk-plugins/platform/database-sqlite/**"
       - "crates/bookclerk-window-policy/**"
       - "crates/bookclerk-storage/**"
+      - "crates/bookclerk-player-api/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite-*.yml"
   workflow_dispatch:
