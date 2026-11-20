@@ -108,6 +108,10 @@ impl DestinationNaming {
 pub struct OutputConfig {
     /// Post-acquire packaging format (default: enriched M4B).
     pub format: OutputFormat,
+    /// Further copies of every acquired book, beside the main output
+    /// ([`Self::format`] with [`Self::lame`]), at most
+    /// [`crate::MAX_EXTRA_COPIES`]. Empty (the default) keeps one copy.
+    pub copies: Vec<crate::OutputCopy>,
     /// Prefer Widevine/CENC (also enables Adrm→Widevine fallback; auto-provisions L3 CDM).
     pub widevine: bool,
     /// Prefer xHE-AAC on the Widevine path when offered.
@@ -193,6 +197,7 @@ impl Default for OutputConfig {
     fn default() -> Self {
         Self {
             format: OutputFormat::default(),
+            copies: Vec::new(),
             widevine: false,
             xhe_aac: false,
             widevine_cdm: None,
@@ -240,6 +245,16 @@ impl OutputConfig {
     #[must_use]
     pub fn effective_format(&self) -> OutputFormat {
         self.format
+    }
+
+    /// Every copy an acquire makes, main output first
+    /// ([`crate::copies_to_make`]).
+    #[must_use]
+    pub fn copies_to_make(&self) -> Vec<crate::OutputCopy> {
+        crate::copies_to_make(
+            crate::OutputCopy::main(self.format, &self.lame),
+            &self.copies,
+        )
     }
 
     /// Resolved chapter JSON sidecar mode (default off).

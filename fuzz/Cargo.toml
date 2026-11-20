@@ -137,6 +137,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "output_copies"
+path = "fuzz_targets/output_copies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "plain_fetch"
 path = "fuzz_targets/plain_fetch.rs"
 test = false

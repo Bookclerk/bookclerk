@@ -1580,7 +1580,7 @@ export function SettingsPage({
                 onSessionExpired={onSessionExpired}
                 sharingOnly={!showOperatorChrome}
               />
-              <ClerkCardsPanel onSessionExpired={onSessionExpired} />
+              <ClerkCardsPanel onSessionExpired={onSessionExpired} canJoin={showOperatorChrome} />
             </div>
           ) : null}
 

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use bookclerk_config::{
     resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DestinationKeyStyle,
-    DestinationNaming, FileTimestampMode, LameConfig, NamingProfile, OutputConfig, OutputFormat,
-    PathLimits, PathSanitizationMode, ReplacementRule, ResolvedNamingTemplates,
+    DestinationNaming, FileTimestampMode, LameConfig, NamingProfile, OutputConfig, OutputCopy,
+    OutputFormat, PathLimits, PathSanitizationMode, ReplacementRule, ResolvedNamingTemplates,
 };
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +78,10 @@ pub struct DownloadOptions {
     pub download_speed_limit_kbps: u32,
     /// LAME encoder knobs used when packaging to MP3.
     pub lame: LameConfig,
+    /// Further copies of each book beside the one [`Self::format`] and
+    /// [`Self::lame`] make (`output.copies`).
+    #[serde(default)]
+    pub copies: Vec<OutputCopy>,
     /// Optional ceiling for output sample rate in Hz (`None` = leave source rate).
     pub max_sample_rate: Option<u32>,
     /// How to set the file creation / birth timestamp after acquire.
@@ -135,6 +139,7 @@ impl From<&OutputConfig> for DownloadOptions {
             retain_aax_file: cfg.retain_aax_file,
             download_speed_limit_kbps: cfg.download_speed_limit_kbps,
             lame: cfg.lame.clone(),
+            copies: cfg.copies.clone(),
             max_sample_rate: cfg.max_sample_rate,
             creation_time: cfg.creation_time,
             last_write_time: cfg.last_write_time,
@@ -213,6 +218,25 @@ impl DownloadOptions {
     #[must_use]
     pub fn effective_output(&self) -> OutputFormat {
         self.format
+    }
+
+    /// Every copy an acquire makes, the one [`Self::format`] and
+    /// [`Self::lame`] make first ([`bookclerk_config::copies_to_make`]).
+    #[must_use]
+    pub fn copies_to_make(&self) -> Vec<OutputCopy> {
+        bookclerk_config::copies_to_make(OutputCopy::main(self.format, &self.lame), &self.copies)
+    }
+
+    /// The options packaging `copy`: its format and the encoder settings
+    /// its quality gives, with chapter splitting on exactly for
+    /// `mp3_chapters`.
+    #[must_use]
+    pub fn for_copy(&self, copy: &OutputCopy) -> Self {
+        let mut options = self.clone();
+        options.format = copy.format.output();
+        options.lame = copy.quality.lame(&self.lame);
+        options.split_files_by_chapter = options.format.wants_split_by_chapter();
+        options
     }
 
     /// True when the effective format re-encodes to MP3.

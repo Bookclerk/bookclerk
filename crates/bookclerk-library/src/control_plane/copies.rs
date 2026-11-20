@@ -295,6 +295,12 @@ fn digest_of(rows: &[&edition_files::Model]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// The library copy (`output.copies`) `row` belongs to, as its format and
+/// quality names; `None` for a file of no one copy.
+fn copy_of(row: &edition_files::Model) -> Option<(&str, &str)> {
+    Some((row.copy_format.as_deref()?, row.copy_quality.as_deref()?))
+}
+
 /// The key of the primary audio among one destination's `rows`: the
 /// acquisition's `primary` where the destination holds it, else the only
 /// row it recorded as the primary audio ([`FileRole::Audio`]), since a
@@ -348,9 +354,26 @@ async fn files_of(
             .or_default()
             .push(row);
     }
+    // Only the main output's copy is stored at the plain names (every other
+    // copy sits under a folder named after it), so any row at `primary`
+    // names the main copy, whichever destination holds it.
+    let primary_copy = rows
+        .iter()
+        .find(|row| row.storage_key == primary)
+        .and_then(copy_of);
     let mut files = BTreeMap::new();
     let mut digests = BTreeMap::new();
-    for (destination, mut rows) in by_destination {
+    for (destination, rows) in by_destination {
+        // Only the primary audio's own library copy is offered: another
+        // copy (an MP3 at a lower bitrate, say) is not the library's copy
+        // of the edition, even on a destination that holds nothing else.
+        let mut rows: Vec<&edition_files::Model> = rows
+            .into_iter()
+            .filter(|row| match (copy_of(row), primary_copy) {
+                (Some(copy), Some(primary)) => copy == primary,
+                (None, _) | (_, None) => true,
+            })
+            .collect();
         // Destinations may name files differently, so each has its own
         // primary audio key: the acquisition's where this destination
         // holds it, else the one row it recorded as the primary audio.
