@@ -17,7 +17,6 @@
 #[path = "native_gateway/harness.rs"]
 mod ng_harness;
 
-use std::path::Path;
 use std::time::Duration;
 
 use bookclerk_config::{Config, Isolation, Paths};
@@ -281,7 +280,7 @@ fn assert_no_ip_sockets(session: &PluginSession) {
 fn ip_socket_inodes(pid: u32) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     for table in ["tcp", "tcp6", "udp", "udp6", "raw", "raw6"] {
-        let path = Path::new("/proc")
+        let path = std::path::Path::new("/proc")
             .join(pid.to_string())
             .join("net")
             .join(table);
