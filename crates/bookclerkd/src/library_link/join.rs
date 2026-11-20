@@ -16,10 +16,16 @@
 //!   browser to. The redirect URI is this install's own `/join/callback`.
 //!   With `shared_branch: true` the sign-in also offers to join as a shared branch; only an
 //!   empty install may ([`bookclerk_node_client::install_problem`]).
+//!   With `{from_card}` instead of an address, the branch replaces this
+//!   install's library card for that library: the address and pin come
+//!   from the card, and the branch name defaults to the card's.
 //! - `POST /api/config/join/callback` `{code, state, connection?}`: the
 //!   browser came back. The daemon matches `state` to its pending join and
 //!   redeems the code with the verifier only it holds. As a branch it
-//!   records the link and starts its client at once. As a shared branch (only for
+//!   records the link and starts its client at once; a library card this
+//!   install held for the library is signed out, as the branch replaces it
+//!   (`replaced_card` says whether that worked; if it did not, the card
+//!   stays listed and the branch stands; an invite join does the same). As a shared branch (only for
 //!   a pending join that offered it, and only while the install is still
 //!   empty) it opens the sealed bootstrap with the node key, checks the
 //!   library's database guest is installed here, writes the bootstrap as
@@ -220,6 +226,40 @@ pub struct BranchJoined {
     /// bring to this branch; left out when none came.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connections: Option<BroughtConnectionsView>,
+    /// Set when this install held a library card for the library: the
+    /// branch replaced it. Whether the card is gone here and whether the
+    /// library ended its session are in [`ReplacedCard`]. Left out when
+    /// there was none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaced_card: Option<ReplacedCard>,
+}
+
+/// The library card a branch join replaced.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct ReplacedCard {
+    /// Whether the card was dropped here. False when it could not be read
+    /// or dropped: it is then still listed under Library cards, and the
+    /// person signs it out there. The branch join stands either way.
+    #[schema(example = true)]
+    pub card_removed: bool,
+    /// Whether the library ended the card's session too. False when it
+    /// could not be reached, or the card was not dropped here.
+    #[schema(example = true)]
+    pub library_signed_out: bool,
+}
+
+/// Replaces this install's library card for `library_id` with the branch
+/// just joined, if it holds one ([`crate::clerk_link::api::retire_card_for_branch`]).
+///
+/// # Arguments
+///
+/// * `store` - the store the join recorded the branch in, so a database
+///   swap meanwhile cannot drop a card from another store than the branch's.
+async fn replace_card(
+    store: &bookclerk_library::LibraryStore,
+    library_id: &str,
+) -> Option<ReplacedCard> {
+    crate::clerk_link::api::retire_card_for_branch(store, library_id).await
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -408,6 +448,59 @@ impl utoipa::ToSchema for JoinConflict {
     }
 }
 
+/// What a sign-in is about to replace, which picks the refusal's wording in
+/// [`refuse_other_library`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Replacing {
+    /// A library card becoming a branch of the card's library.
+    Card,
+    /// A branch becoming a library card for the branch's library.
+    Branch,
+}
+
+/// Why a sign-in may not replace a card or branch held for `library_id`
+/// with `library` (the library read again at the held address), or `None`:
+/// the address must still be that library, presenting the certificate
+/// pinned when the card or branch was made.
+///
+/// # Returns
+///
+/// A 409 `origin_mismatch` when the address now answers for another
+/// library, a 409 `fingerprint_unconfirmed` when its certificate pin
+/// changed, or `None` when it may go ahead.
+pub(crate) fn refuse_other_library(
+    library: &InspectedLibrary,
+    library_id: &str,
+    spki_pin: Option<&str>,
+    replacing: Replacing,
+) -> Option<Response> {
+    let (other_library, changed_pin) = match replacing {
+        Replacing::Card => (
+            "the library at this card's address is not the library it signed in to",
+            "the library's certificate changed since this install signed in to it; join from its address and confirm the new fingerprint",
+        ),
+        Replacing::Branch => (
+            "the library at this branch's address is not the library it joined",
+            "the library's certificate changed since this install joined it; sign in with a library card from its address and confirm the new fingerprint",
+        ),
+    };
+    if library.info.library_id != library_id {
+        return Some(join_error(
+            StatusCode::CONFLICT,
+            "origin_mismatch",
+            other_library,
+        ));
+    }
+    if library.spki_pin.as_deref() != spki_pin {
+        return Some(join_error(
+            StatusCode::CONFLICT,
+            "fingerprint_unconfirmed",
+            changed_pin,
+        ));
+    }
+    None
+}
+
 /// The answer for a failed join step. Never echoes a link or code.
 pub(crate) fn join_failed(err: &JoinError) -> Response {
     match err {
@@ -594,9 +687,18 @@ pub async fn post_join_inspect(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartBody {
-    /// The library's address.
+    /// The library's address. Left out with `from_card`.
+    #[serde(default)]
     #[schema(example = "https://books.example.com")]
     address: String,
+    /// The library id of a library this install holds an active library
+    /// card for: the branch replaces the card. The library's address and
+    /// pinned certificate come from the card, so `address` and
+    /// `fingerprint` are left out, and the branch name defaults to the
+    /// card's name. Not with `shared_branch`.
+    #[serde(default)]
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
+    from_card: Option<String>,
     /// The fingerprint the operator confirmed (self-signed libraries).
     #[serde(default)]
     #[schema(example = "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o")]
@@ -619,16 +721,18 @@ pub struct StartBody {
     request_body = StartBody,
     responses(
         (status = 200, description = "The library's sign-in URL to open.", body = JoinStarted),
-        (status = 400, description = "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`).", body = crate::http_error::ErrorDetail, examples(
+        (status = 400, description = "The address is not a library (`invalid_address`), is plain HTTP off this machine (`transport_insecure`), or a shared branch would replace a card (`invalid_request`).", body = crate::http_error::ErrorDetail, examples(
             ("invalid_address" = (summary = "The address does not name a library.", value = json!({"error": "invalid_address", "detail": "not an enrollment link: no host"}))),
             ("transport_insecure" = (summary = "The address is plain HTTP to another machine.", value = json!({"error": "transport_insecure", "detail": "plain HTTP is allowed only on this machine (insecure transport refused: http:// to a host that is not loopback)"}))),
+            ("invalid_request" = (summary = "A shared branch join from a card.", value = json!({"error": "invalid_request", "detail": "a shared branch cannot replace a library card: only an empty install may join as one"}))),
         )),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The library is not accepting new branches (`enrollment_disabled`), or the session is impersonating a user (the standard error body).", body = crate::http_error::ErrorAnswer, examples(
             ("enrollment_disabled" = (summary = "The library has host enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "This library isn't accepting new branches"}))),
             ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
         )),
-        (status = 409, description = "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`).", body = JoinConflict, examples(
+        (status = 404, description = "With `from_card`: this install holds no active library card for that library (`not_found`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_found", "detail": "this install holds no library card for that library"})),
+        (status = 409, description = "The library's fingerprint is not confirmed, or changed since the card signed in (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given, or no longer the card's library (`origin_mismatch`).", body = JoinConflict, examples(
             ("fingerprint_unconfirmed" = (summary = "A self-signed library's fingerprint was not confirmed.", value = json!({"error": "fingerprint_unconfirmed", "detail": "confirm the library's fingerprint first; it must match the one on its Settings → Branches page"}))),
             ("not_empty" = (summary = "This install already holds library data (shared branch join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a shared branch"}))),
             ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
@@ -646,9 +750,24 @@ pub async fn post_join_start(
     headers: HeaderMap,
     Json(body): Json<StartBody>,
 ) -> Response {
+    let card = match body.from_card.as_deref().map(str::trim) {
+        Some(_) if body.shared_branch => return join_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "a shared branch cannot replace a library card: only an empty install may join as one",
+        ),
+        Some(library_id) => match card_to_replace(&state, library_id).await {
+            Ok(card) => Some(card),
+            Err(refused) => return refused,
+        },
+        None => None,
+    };
+    let address = card
+        .as_ref()
+        .map_or(body.address.as_str(), |card| card.origin.as_str());
     // Read the library again: the browser's copy of the fingerprint is
     // only what the operator confirmed, never what is trusted.
-    let library = match inspect_library(&body.address).await {
+    let library = match inspect_library(address).await {
         Ok(library) => library,
         Err(err) => return join_failed(&err),
     };
@@ -663,7 +782,16 @@ pub async fn post_join_start(
             "This library isn't accepting new branches",
         );
     }
-    if let Some(pin) = library.spki_pin.as_deref() {
+    if let Some(card) = &card {
+        if let Some(refusal) = refuse_other_library(
+            &library,
+            &card.library_id,
+            card.spki_pin.as_deref(),
+            Replacing::Card,
+        ) {
+            return refusal;
+        }
+    } else if let Some(pin) = library.spki_pin.as_deref() {
         let confirmed = body.fingerprint.as_deref().map(str::trim);
         if confirmed != Some(pin) {
             return join_error(
@@ -680,11 +808,17 @@ pub async fn post_join_start(
             Err(err) => return join_failed(&err),
         }
     }
+    // A card's name carries over when it is one a branch may have.
+    let card_name = card
+        .as_ref()
+        .map(|card| card.clerk_name.as_str())
+        .filter(|name| is_branch_name(name));
     let branch_name = body
         .branch_name
         .as_deref()
         .map(str::trim)
         .filter(|name| !name.is_empty())
+        .or(card_name)
         .map_or_else(default_branch_name, str::to_string);
     let redirect_uri = {
         let cfg = state.config.read().await;
@@ -723,6 +857,7 @@ pub async fn post_join_start(
         origin = %library.origin,
         library_id = %library.info.library_id,
         shared_branch_offered = body.shared_branch,
+        replaces_card = card.is_some(),
         "branch sign-in started"
     );
     no_store(
@@ -735,6 +870,23 @@ pub async fn post_join_start(
         })
         .into_response(),
     )
+}
+
+/// The active library card a join `from_card` replaces.
+async fn card_to_replace(
+    state: &Arc<AppState>,
+    library_id: &str,
+) -> Result<bookclerk_library::control_plane::ClerkLink, Response> {
+    let store = state.library_snapshot().await;
+    match bookclerk_library::control_plane::load_clerk_link(&store, library_id).await {
+        Ok(Some(card)) if card.is_active() => Ok(card),
+        Ok(_) => Err(join_error(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "this install holds no library card for that library",
+        )),
+        Err(err) => Err(crate::config_authority::events_error(err)),
+    }
 }
 
 /// `POST /api/config/join/callback` body.
@@ -977,12 +1129,14 @@ pub async fn post_join_callback(
         }
         None => None,
     };
+    let replaced_card = replace_card(&store, &link.parent_library_id).await;
     let running = super::start_link_now(&state, &link.parent_library_id).await;
     Json(JoinCompleted::Branch(BranchJoined {
         library: link_json(&link),
         library_name: Some(taken.join.library_name),
         running,
         connections,
+        replaced_card,
     }))
     .into_response()
 }
@@ -1228,11 +1382,12 @@ pub async fn post_join_invite(
 ) -> Response {
     let link_text = Zeroizing::new(body.link);
     let store = state.library_snapshot().await;
+    let join_store = store.clone();
     // The invite is spent once the library has it, and the node keys exist
     // only in this exchange, so the join runs on its own task: a slow
     // library, or a request cut short, does not drop it half way.
     let mut joining = tokio::spawn(async move {
-        let joined = join_library(&store, &link_text, env!("CARGO_PKG_VERSION")).await;
+        let joined = join_library(&join_store, &link_text, env!("CARGO_PKG_VERSION")).await;
         drop(link_text);
         joined
     });
@@ -1248,11 +1403,13 @@ pub async fn post_join_invite(
         Err(_) => {
             // Start the link's client once the join lands.
             let state = Arc::clone(&state);
+            let store = store.clone();
             // The page has already answered, so a join that fails after
             // all is reported in this daemon's log.
             tokio::spawn(async move {
                 match joining.await {
                     Ok(Ok(link)) => {
+                        replace_card(&store, &link.parent_library_id).await;
                         super::start_link_now(&state, &link.parent_library_id).await;
                     }
                     Ok(Err(err)) => {
@@ -1280,12 +1437,14 @@ pub async fn post_join_invite(
         }
         Err(err) => return join_failed(&err),
     };
+    let replaced_card = replace_card(&store, &link.parent_library_id).await;
     let running = super::start_link_now(&state, &link.parent_library_id).await;
     Json(BranchJoined {
         library: link_json(&link),
         library_name: None,
         running,
         connections: None,
+        replaced_card,
     })
     .into_response()
 }
@@ -1322,7 +1481,7 @@ pub async fn post_join_leave(
     Json(body): Json<LeaveBody>,
 ) -> Response {
     let library_id = body.library_id.trim().to_string();
-    let leaving = tokio::spawn(async move { super::leave_link(&state, &library_id).await });
+    let leaving = tokio::spawn(async move { super::leave_link(&state, &library_id, None).await });
     let Ok(left) = leaving.await else {
         return join_error(
             StatusCode::INTERNAL_SERVER_ERROR,

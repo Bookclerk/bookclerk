@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use sea_orm::{ActiveValue::Set, EntityTrait};
+use sea_orm::sea_query::Expr;
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
 
 use super::*;
 use crate::error::LibraryError;
@@ -32,6 +33,24 @@ async fn expired_kv(store: &LibraryStore, prefix: &str, count: usize) {
         .await
         .unwrap();
     }
+}
+
+/// Moves a lease's expiry into the past, as if its holder had stalled past
+/// the TTL. Tests that need a lapsed lease use this instead of sleeping past
+/// a short TTL, because a short TTL also lapses for the holder that is
+/// meant to keep it whenever a loaded runner pauses the test (#871).
+async fn lapse_lease(store: &LibraryStore, name: &str) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let res = crate::entities::library_leases::Entity::update_many()
+        .col_expr(
+            crate::entities::library_leases::Column::ExpiresAtMs,
+            Expr::value(now_ms - 1),
+        )
+        .filter(crate::entities::library_leases::Column::Name.eq(name))
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert_eq!(res.rows_affected, 1, "lease `{name}` exists");
 }
 
 /// One maintenance pass as a daemon runs it: poll, fence, prune.
@@ -81,7 +100,9 @@ async fn the_lease_passes_on_when_the_holder_dies_and_the_stale_holder_is_fenced
     let db = dir.path().join("library.db");
     let a = file_store(&db).await;
     let b = file_store(&db).await;
-    let ttl = Duration::from_millis(200);
+    // Long enough that no runner pause lapses a lease the test means to keep;
+    // node A's stall is simulated by `lapse_lease`.
+    let ttl = Duration::from_secs(60);
     let interval = Duration::from_secs(3600);
     let mut duty_a = SingletonDuty::new(JOB_RETENTION_LEASE, "node-a", ttl, interval);
     let mut duty_b = SingletonDuty::new(JOB_RETENTION_LEASE, "node-b", ttl, interval);
@@ -93,7 +114,7 @@ async fn the_lease_passes_on_when_the_holder_dies_and_the_stale_holder_is_fenced
 
     // Node A stalls (or dies) past the TTL; node B's next tick takes over
     // with a larger fencing token and runs at once.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    lapse_lease(&a, JOB_RETENTION_LEASE).await;
     let mut fence_b = duty_b.poll(&b).await.unwrap().expect("handover");
     assert_eq!(fence_b.lease().token, 2);
     assert_eq!(fence_b.lease().holder, "node-b");

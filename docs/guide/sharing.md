@@ -37,13 +37,12 @@ join the shared library; their passwords stay theirs.
 
 ## Limit what a patron sees
 
-An Owner or Administrator can limit which books a Member or Host sees, for
+An Owner or Administrator can limit which books a Member sees, for
 example to keep a child to the children's shelf. This is their **patron
 scope**. Owners and Administrators always see the whole library.
 
 As with other changes to a person, an Administrator can set the scope of
-a Member, while a Host's scope takes an Owner or the operator. Anyone who
-can set scopes can edit the library's default.
+a Member. Anyone who can set scopes can edit the library's default.
 
 A scope is a list of rules. Each rule names a field (genre, series, author
 or narrator), one value of it, and whether it **shows only** books with
@@ -83,7 +82,7 @@ on out of the box.
 | Control | Turning it off stops |
 | --- | --- |
 | Link store accounts | Connecting a store, signing in to one again, and bringing connections from another library. Connections already here keep working. |
-| Download | Taking copies of the library's files to a branch or a clerk app |
+| Download | Taking copies of the library's files to a branch or a clerk app, and playing them |
 | Edit metadata | Changing a book's details |
 | Upload | Adding books by uploading files |
 | Request books | Asking a branch for a book it listed |

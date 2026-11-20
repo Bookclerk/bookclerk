@@ -673,6 +673,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
+`playback_progress`, `playback_sessions`, `bookmarks`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
@@ -698,7 +699,11 @@ library the last one applied from its keeper branch, on that branch the
 last one sent to each library, with a fingerprint of the sign-in sent
 (`observed`). It is removed with the account. When an
 account is taken back with no link left, its `node:` rows in both tables
-go too, so the library picks its next keeper afresh.
+go too, so the library picks its next keeper afresh. Writes that link a
+signed-in store account, take back a refused sign-in, or revoke a link
+are serialized per account by the `bookclerk_slots` row
+`store-account:<plugin key length>:<plugin key>:<account id>`, which is
+kept once created.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:
@@ -799,6 +804,13 @@ work and, when known, its edition) keep no title, authors, ASIN or ISBN of
 their own; readers take those from the work and the wish's store sources.
 A wish for a book the library does not hold creates a catalog work and
 edition with no listing or holding.
+
+The built-in player keeps its own rows, each pointing at an edition and
+removed with its user (see [Playback reference](playback.md)):
+`playback_progress` (one row per user and edition: position, reported
+runtime and finished flag), `playback_sessions` (one row per stretch of
+listening, kept as history after it closes) and `bookmarks` (places a
+user marked). `listening_progress` stays what other servers reported.
 
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at the key the
