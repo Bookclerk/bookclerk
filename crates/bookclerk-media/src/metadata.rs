@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use id3::frame::{
-    Chapter as Id3Chapter, ExtendedText, Frame, Picture, PictureType, TableOfContents,
+    Chapter as Id3Chapter, Comment, ExtendedText, Frame, Picture, PictureType, TableOfContents,
 };
 use id3::{Tag as Id3Tag, TagLike, Version as Id3Version};
 use mp4ameta::{Data, FreeformIdent, Img, ImgFmt, MediaType, Tag as Mp4Tag, WriteConfig};
@@ -386,7 +386,15 @@ fn fixup_mp3(req: &FixupRequest) -> Result<()> {
         tag.set_text("TIT3", subtitle);
     }
     if let Some(desc) = req.description.as_deref().filter(|s| !s.is_empty()) {
-        tag.set_text("COMM", desc);
+        // COMM is a comment frame (language, description, text); id3
+        // refuses to write it as a plain text frame, which failed the
+        // whole fix-up of any MP3 with a description.
+        tag.remove("COMM");
+        tag.add_frame(Comment {
+            lang: "eng".into(),
+            description: String::new(),
+            text: desc.to_string(),
+        });
         set_txxx(&mut tag, "description", desc);
     }
     if let Some(lang) = req.language.as_deref().filter(|s| !s.is_empty()) {
@@ -908,18 +916,27 @@ mod tests {
     }
 
     #[test]
+    fn mp3_fixup_writes_the_description_as_a_comment() {
+        let file = fixture_mp3(false);
+        let mut req = mp3_request(file.path(), &[], false);
+        req.description = Some("A book about books.".into());
+        fixup_audiobook_sync(&req).expect("fixup");
+        let tag = Id3Tag::read_from_path(file.path()).expect("id3");
+        let comments: Vec<_> = tag.comments().map(|c| c.text.clone()).collect();
+        assert_eq!(comments, ["A book about books."]);
+    }
+
+    #[test]
     fn fixup_refuses_containers_it_cannot_write() {
         let dir = tempfile::tempdir().expect("dir");
-        let flac = dir.path().join("book.m4b");
-        std::fs::write(&flac, bookclerk_tags::fixtures::tagged_flac()).expect("write");
-        let before = std::fs::read(&flac).expect("read");
-        let err = fixup_audiobook_sync(&mp3_request(&flac, &[], false)).expect_err("flac");
-        assert!(err.to_string().contains("FLAC"), "{err}");
-        assert_eq!(
-            std::fs::read(&flac).expect("read"),
-            before,
-            "file untouched"
-        );
+        // A WAV file decodes but has no tag format the worker writes.
+        let wav = dir.path().join("book.m4b");
+        let mut bytes = b"RIFF\x24\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0".to_vec();
+        bytes.extend_from_slice(b"\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\0\0\0\0");
+        std::fs::write(&wav, &bytes).expect("write");
+        let err = fixup_audiobook_sync(&mp3_request(&wav, &[], false)).expect_err("wav");
+        assert!(err.to_string().contains("cannot write tags"), "{err}");
+        assert_eq!(std::fs::read(&wav).expect("read"), bytes, "file untouched");
 
         let text = dir.path().join("notes.mp3");
         std::fs::write(&text, b"plain text, not audio").expect("write");
