@@ -12,6 +12,7 @@ import {
   type RemoteGrantView,
 } from "@/lib/api";
 import { JoinWizard } from "@/components/JoinWizard";
+import { clerkErrorMessage, startClerkSignIn } from "@/lib/clerk";
 import {
   fetchBranchSharing,
   fetchJoinStatus,
@@ -373,6 +374,32 @@ function LinkRow({
     }
   }
 
+  // The card replaces the branch: the library signs you in, hands over a
+  // card, and then this server leaves it as a branch.
+  async function onUseCard() {
+    if (
+      !window.confirm(
+        `Keep only a library card for ${link.owner_origin}? You sign in with your account there; once the library hands over the card, this server leaves it as a branch: it stops running its work, its branch keys are deleted, and your books there show through the card.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setNote(null);
+    try {
+      const started = await startClerkSignIn({ from_branch: link.library_id, clerk_name: "" });
+      // The library sends the browser back to this server's /clerk/callback.
+      window.location.assign(started.authorize_url);
+    } catch (err) {
+      setNote(
+        isApiError(err) && err.code === "not_found"
+          ? "This server is no longer a branch of that library, so there is no branch to swap for a card. Sign in with a library card from its address instead."
+          : clerkErrorMessage(err, "Could not start the sign-in."),
+      );
+      setBusy(false);
+    }
+  }
+
   return (
     <li className="flex flex-wrap items-center gap-2 px-4 py-3 text-sm">
       <span className="font-semibold text-ink">{link.owner_origin}</span>
@@ -403,6 +430,17 @@ function LinkRow({
           onClick={() => void onLeave()}
         >
           Leave library
+        </Button>
+      ) : null}
+      {link.state === "active" && canLeave ? (
+        <Button
+          type="button"
+          variant="secondary"
+          className="h-8"
+          disabled={busy}
+          onClick={() => void onUseCard()}
+        >
+          Use a library card instead
         </Button>
       ) : null}
       {link.state === "active" ? <KeepCopiesSetting link={link} onSaved={onLeft} /> : null}

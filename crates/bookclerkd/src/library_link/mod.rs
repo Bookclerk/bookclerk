@@ -341,10 +341,16 @@ pub const LEAVE_NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 /// `left`, deletes its node keys, and stops the client. A link a join
 /// enrolled as another node meanwhile is not left (an error).
 ///
+/// # Arguments
+///
+/// * `node_id` - when set, the node the caller means to leave: a link now
+///   enrolled as another node is kept and the answer is `None`.
+///
 /// # Returns
 ///
 /// The link as it now stands and whether the owner accepted the notice;
-/// `None` when there is no such link.
+/// `None` when there is no such link, or it names another node than
+/// `node_id`.
 ///
 /// # Errors
 ///
@@ -352,11 +358,15 @@ pub const LEAVE_NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 pub async fn leave_link(
     state: &Arc<AppState>,
     library_id: &str,
+    node_id: Option<&str>,
 ) -> bookclerk_library::Result<Option<(LibraryLink, bool)>> {
     let library = state.library_snapshot().await;
     let Some(link) = load_library_link(&library, library_id).await? else {
         return Ok(None);
     };
+    if node_id.is_some_and(|node_id| node_id != link.remote_node_id) {
+        return Ok(None);
+    }
     // Only a client running as the node the link names may say it leaves;
     // one of an enrollment a re-join replaced would revoke the wrong node.
     let handle = link_handle(library_id, &link.remote_node_id);

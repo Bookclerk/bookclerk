@@ -9833,7 +9833,7 @@
             }
           },
           "400": {
-            "description": "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The address is not a library (`invalid_address`), is plain HTTP off this machine (`transport_insecure`), or a shared branch would replace a card (`invalid_request`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9845,6 +9845,13 @@
                     "value": {
                       "detail": "not an enrollment link: no host",
                       "error": "invalid_address"
+                    }
+                  },
+                  "invalid_request": {
+                    "summary": "A shared branch join from a card.",
+                    "value": {
+                      "detail": "a shared branch cannot replace a library card: only an empty install may join as one",
+                      "error": "invalid_request"
                     }
                   },
                   "transport_insecure": {
@@ -9906,8 +9913,22 @@
               }
             }
           },
+          "404": {
+            "description": "With `from_card`: this install holds no active library card for that library (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "this install holds no library card for that library",
+                  "error": "not_found"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`).",
+            "description": "The library's fingerprint is not confirmed, or changed since the card signed in (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given, or no longer the card's library (`origin_mismatch`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9965,7 +9986,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `address` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: address: invalid type: integer `1`, expected a string at line 1 column 12"
               }
             }
           },
@@ -16902,7 +16923,7 @@
             }
           },
           "403": {
-            "description": "The user is not an active Owner, or the session has no user account. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The user is not an active Owner, the session has no user account, or a sign-in `from_branch` is not the operator's. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16934,8 +16955,22 @@
               }
             }
           },
+          "404": {
+            "description": "With `from_branch`: this install is not an active branch of that library (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "this install is not a branch of that library",
+                  "error": "not_found"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install already joined that library as a branch (`already_joined`), or the library's address is not the one given (`origin_mismatch`).",
+            "description": "The library's fingerprint is not confirmed, or changed since the branch joined (`fingerprint_unconfirmed`), this install already joined that library as a branch (`already_joined`), or the library's address is not the one given or no longer the library the branch joined (`origin_mismatch`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -16978,7 +17013,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `address` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: address: invalid type: integer `1`, expected a string at line 1 column 12"
               }
             }
           },
@@ -17079,7 +17114,7 @@
         },
         "responses": {
           "200": {
-            "description": "This install holds a library card for the library now.",
+            "description": "This install holds a library card for the library now; a sign-in that replaced a branch left it first (`left_branch`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -17165,15 +17200,27 @@
             }
           },
           "409": {
-            "description": "This install joined that library as a branch meanwhile (`already_joined`).",
+            "description": "This install joined that library as a branch meanwhile (`already_joined`), or joined it again after a sign-in that replaces its branch started (`enrollment_changed`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
                 },
-                "example": {
-                  "detail": "this install already joined that library; its books are read through that link",
-                  "error": "already_joined"
+                "examples": {
+                  "already_joined": {
+                    "summary": "This install is already a branch of that library.",
+                    "value": {
+                      "detail": "this install already joined that library; its books are read through that link",
+                      "error": "already_joined"
+                    }
+                  },
+                  "enrollment_changed": {
+                    "summary": "The branch was replaced by a new join.",
+                    "value": {
+                      "detail": "this install joined the library again after the sign-in started; start again from the library list",
+                      "error": "enrollment_changed"
+                    }
+                  }
                 }
               }
             }
@@ -17211,6 +17258,20 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: code: invalid type: integer `1`, expected a string at line 1 column 9"
+              }
+            }
+          },
+          "500": {
+            "description": "The sign-in stopped before it finished (`sign_in_failed`), or the branch it replaces could not be left (the library database could not be read or written).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorAnswer"
+                },
+                "example": {
+                  "detail": "the sign-in stopped before it finished; check the library list",
+                  "error": "sign_in_failed"
+                }
               }
             }
           },
@@ -32879,6 +32940,17 @@
                 "type": "null"
               }
             ]
+          },
+          "replaced_card": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReplacedCard",
+                "description": "Set when this install held a library card for the library: the\nbranch replaced it. Whether the card is gone here and whether the\nlibrary ended its session are in [`ReplacedCard`]. Left out when\nthere was none."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -33942,6 +34014,17 @@
           "card": {
             "$ref": "#/components/schemas/ClerkLinkView",
             "description": "The library this install now holds a card for."
+          },
+          "left_branch": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LeftBranch",
+                "description": "Set when the card replaced this install's branch link to the\nlibrary (a sign-in started `from_branch`): the branch was left."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -33968,14 +34051,19 @@
       "ClerkStartBody": {
         "type": "object",
         "description": "`POST /api/config/clerk/start` body.",
-        "required": [
-          "address"
-        ],
         "properties": {
           "address": {
             "type": "string",
-            "description": "The library's address.",
+            "description": "The library's address. Left out with `from_branch`.",
             "example": "https://books.example.com"
+          },
+          "from_branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The library id of a library this install is an active branch of:\nthe card replaces the branch. The library's address and pinned\ncertificate come from the branch link, so `address` and\n`fingerprint` are left out; once the library hands over the card,\nthe callback leaves the branch (as Leave library does) and records\nthe card. Only the operator may, as only the operator leaves a\nlibrary.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "fingerprint": {
             "type": [
@@ -37103,6 +37191,20 @@
           "owner_notified": {
             "type": "boolean",
             "description": "Whether the library was told (otherwise it notices the missed heartbeats).",
+            "example": true
+          }
+        }
+      },
+      "LeftBranch": {
+        "type": "object",
+        "description": "The branch a card sign-in left.",
+        "required": [
+          "owner_notified"
+        ],
+        "properties": {
+          "owner_notified": {
+            "type": "boolean",
+            "description": "Whether the library accepted the leave notice. False when it could\nnot be told: the branch then stays in its list until it is removed\nthere.",
             "example": true
           }
         }
@@ -43841,6 +43943,26 @@
         },
         "additionalProperties": false
       },
+      "ReplacedCard": {
+        "type": "object",
+        "description": "The library card a branch join replaced.",
+        "required": [
+          "card_removed",
+          "library_signed_out"
+        ],
+        "properties": {
+          "card_removed": {
+            "type": "boolean",
+            "description": "Whether the card was dropped here. False when it could not be read\nor dropped: it is then still listed under Library cards, and the\nperson signs it out there. The branch join stands either way.",
+            "example": true
+          },
+          "library_signed_out": {
+            "type": "boolean",
+            "description": "Whether the library ended the card's session too. False when it\ncould not be reached, or the card was not dropped here.",
+            "example": true
+          }
+        }
+      },
       "ReplacementRule": {
         "type": "object",
         "description": "Character replacement rule (`ReplacementCharacters` in classic Settings.json).",
@@ -44890,14 +45012,19 @@
       "StartBody": {
         "type": "object",
         "description": "`POST /api/config/join/start` body.",
-        "required": [
-          "address"
-        ],
         "properties": {
           "address": {
             "type": "string",
-            "description": "The library's address.",
+            "description": "The library's address. Left out with `from_card`.",
             "example": "https://books.example.com"
+          },
+          "from_card": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The library id of a library this install holds an active library\ncard for: the branch replaces the card. The library's address and\npinned certificate come from the card, so `address` and\n`fingerprint` are left out, and the branch name defaults to the\ncard's name. Not with `shared_branch`.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
           },
           "fingerprint": {
             "type": [
