@@ -26,6 +26,7 @@ mod destination_filters;
 mod documents;
 mod enrollment;
 mod identity;
+mod ingest;
 mod instance_config;
 mod instances;
 mod job_routing;
@@ -156,6 +157,17 @@ pub use identity::{
     current_process_incarnation, encode_node_identity_file, install_node_identity, list_node_ids,
     list_nodes, load_node, load_or_create_node_identity, node_identity_path, node_target,
     NodeIdentity, NodeKind, NodeRecord, NODE_IDENTITY_FILE,
+};
+pub use ingest::{
+    add_expanded_members, batch_exists, batch_members, cancel_batch, create_intake_batch,
+    create_upload_batch, delete_finished_before, final_batches_on, finish_batch,
+    first_active_owner, idle_upload_batches, load_batch, load_member, mark_committed,
+    parse_upload_manifest, parse_upload_offset, patron_holding_id, record_ingest_acquired,
+    record_received, review_items, set_member_outcomes, staged_bytes, start_batch, user_batches,
+    CreateRefusal, ExpandedEntry, IngestBatch, IngestBatchId, IngestMember, IngestSource,
+    IngestState, IntakeRef, ManifestError, ManifestFile, MemberOutcome, MemberSpec, OutcomeUpdate,
+    ReviewItem, Sha256Hex, UploadManifest, UploadQuota, MAX_BATCH_FILES, MAX_INTAKE_REF_BYTES,
+    MAX_REASON_BYTES,
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,

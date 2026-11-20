@@ -7,9 +7,11 @@ use crate::models::UserRole;
 use crate::test_support::{sqlite, Profile};
 
 #[test]
-fn an_empty_document_allows_everything() {
+fn an_empty_document_allows_everything_but_upload() {
     let controls: MemberControls = serde_json::from_str("{}").unwrap();
-    assert_eq!(controls, MemberControls::all(true));
+    assert_eq!(controls, MemberControls::default());
+    assert!(!controls.upload);
+    assert!(controls.download && controls.see_prices);
     let overrides: ControlOverrides = serde_json::from_str("{}").unwrap();
     assert!(overrides.is_empty());
     assert_eq!(serde_json::to_string(&overrides).unwrap(), "{}");
@@ -214,7 +216,7 @@ async fn only_administrators_write_the_default() {
         );
         assert_eq!(
             default_member_controls(store).await.unwrap(),
-            MemberControls::all(true)
+            MemberControls::default()
         );
     }
 }

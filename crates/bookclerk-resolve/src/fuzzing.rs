@@ -175,6 +175,7 @@ fn decode(cursor: &mut Cursor<'_>) -> (ListingDraft, HoldingDraft, bool) {
             Holder::Account("a1".into()),
             Holder::Account("a2".into()),
             Holder::Node("n1".into()),
+            Holder::Patron(1),
         ]),
         entitlement: Entitlement::Purchase,
         purchased_at: None,

@@ -67,15 +67,18 @@ pub enum Holder {
     Account(String),
     /// A branch library, by node id (`node:<node_id>` provenance).
     Node(String),
+    /// A patron who uploaded the book, by user id (`patron:<user id>`).
+    Patron(i64),
 }
 
 impl Holder {
-    /// The stored text: `account:<id>` or `node:<id>`.
+    /// The stored text: `account:<id>`, `node:<id>` or `patron:<user id>`.
     #[must_use]
     pub fn stored(&self) -> String {
         match self {
             Self::Account(id) => format!("account:{id}"),
             Self::Node(id) => format!("node:{id}"),
+            Self::Patron(id) => format!("patron:{id}"),
         }
     }
 
@@ -87,6 +90,11 @@ impl Holder {
         }
         if let Some(id) = text.strip_prefix("node:") {
             return (!id.is_empty()).then(|| Self::Node(id.to_string()));
+        }
+        if let Some(id) = text.strip_prefix("patron:") {
+            // Only the canonical decimal form, so one person has one key.
+            let user = id.parse::<i64>().ok().filter(|user| *user > 0)?;
+            return (user.to_string() == id).then_some(Self::Patron(user));
         }
         None
     }
@@ -650,11 +658,25 @@ mod tests {
 
     #[test]
     fn holders_round_trip() {
-        for h in [Holder::Account("a1".into()), Holder::Node("n1".into())] {
+        for h in [
+            Holder::Account("a1".into()),
+            Holder::Node("n1".into()),
+            Holder::Patron(7),
+        ] {
             assert_eq!(Holder::parse(&h.stored()), Some(h));
         }
         assert_eq!(Holder::parse("account:"), None);
         assert_eq!(Holder::parse("user:1"), None);
+        for odd in [
+            "patron:",
+            "patron:0",
+            "patron:-1",
+            "patron:07",
+            "patron:+7",
+            "patron:x",
+        ] {
+            assert_eq!(Holder::parse(odd), None, "{odd}");
+        }
     }
 
     #[test]

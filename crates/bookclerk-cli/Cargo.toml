@@ -55,6 +55,10 @@ bookclerk-tls.workspace = true
 url.workspace = true
 secrecy.workspace = true
 zeroize.workspace = true
+# `library upload`: walking folders and declaring each file's digest.
+hex.workspace = true
+sha2.workspace = true
+walkdir.workspace = true
 
 # Reading a secret from a terminal with echo off (`secret_input`).
 [target.'cfg(unix)'.dependencies]

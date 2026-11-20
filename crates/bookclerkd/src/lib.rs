@@ -66,6 +66,7 @@ mod search_index;
 mod startup_tests;
 mod totp;
 mod tray_companion;
+mod uploads;
 
 pub mod embedded;
 
@@ -571,6 +572,7 @@ async fn assemble_host(
     clerk_link::spawn_clerk_links(state.clone());
     placement::spawn_placement_scheduler(state.clone());
     maintenance::spawn_maintenance(state.clone());
+    uploads::spawn_prune(state.clone());
     cron_worker::spawn_cron_worker(state.clone());
     requirements_sweep::spawn_requirements_sweep(state.clone());
     spawn_scheduler(state.clone());

@@ -29,6 +29,7 @@ bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-tags = { path = "../crates/bookclerk-tags" }
+bookclerk-archive = { path = "../crates/bookclerk-archive" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
 bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
@@ -468,6 +469,27 @@ bench = false
 [[bin]]
 name = "s3_event"
 path = "fuzz_targets/s3_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_extract"
+path = "fuzz_targets/archive_extract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_report"
+path = "fuzz_targets/archive_report.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "upload_manifest"
+path = "fuzz_targets/upload_manifest.rs"
 test = false
 doc = false
 bench = false
