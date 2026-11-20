@@ -56,9 +56,13 @@ and the CLI use the file. The desktop default falls back to the file, with a
 warning, when the keychain can't take the key; a configured store is
 required.
 
-The `bookclerk-keystore` crate reads, writes and deletes items through the
-`keyring-core` stores for each platform (the pure-Rust `zbus` Secret Service
-store on Linux). Its errors never carry item bytes.
+The `bookclerk-keystore` crate reads, writes and deletes items: through the
+`keyring-core` native stores on macOS and Windows, and on Linux by speaking
+the Secret Service API over `zbus` itself. It opens a `plain` session there,
+because the encrypted session needs AES-CBC and the store-free host scan
+forbids block ciphers in the hosts. The session bus is the user's own local
+socket, the same boundary the keychain protects. Its errors never carry
+item bytes.
 
 ### 2. `master.key` always says where the key is
 

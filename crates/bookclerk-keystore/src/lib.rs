@@ -7,7 +7,7 @@
 //! | --- | --- |
 //! | macOS | Keychain Services (the login keychain) |
 //! | Windows | Credential Manager (DPAPI, per user) |
-//! | Linux and other Unix | Secret Service over the session D-Bus (GNOME Keyring, KWallet) |
+//! | Linux and other Unix | Secret Service over the session D-Bus (GNOME Keyring, KWallet), in a `plain` session so the hosts link no block cipher |
 //!
 //! This crate is deliberately small. It names one keychain item per install
 //! ([`KeychainItemId`], a random UUID minted with the key), reads, writes and
@@ -26,9 +26,15 @@
 //! See `docs/adr/master-key-store.md`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use zeroize::Zeroizing;
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
+mod secret_service;
 
 /// Keychain service name every Bookclerk master-key item is stored under.
 ///
@@ -243,88 +249,153 @@ fn check_len(bytes: &[u8]) -> Result<()> {
 
 /// The operating system's credential store.
 ///
-/// The platform store is opened on first use and reused. On Linux, opening
-/// it needs a session D-Bus with a Secret Service provider; a headless server
-/// usually has none, and every call then fails with
-/// [`KeystoreErrorKind::Unavailable`].
+/// On macOS and Windows the native store (through `keyring-core`) is opened
+/// on first use and reused. On Linux and other Unix systems each call talks
+/// to the Secret Service on the session D-Bus; a headless server usually has
+/// none, and every call then fails with [`KeystoreErrorKind::Unavailable`].
 #[derive(Default)]
 pub struct OsKeychain {
-    /// The opened platform store, once a call has needed it.
-    store: Mutex<Option<Arc<keyring_core::CredentialStore>>>,
+    /// Nothing to hold: the platform store is process-wide.
+    _private: (),
 }
 
 impl OsKeychain {
-    /// A handle that opens the platform store lazily.
+    /// A handle to this machine's credential store.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Opens (or returns the already opened) platform store.
-    fn store(&self) -> Result<Arc<keyring_core::CredentialStore>> {
-        let mut guard = self.store.lock().map_err(|_| {
-            KeystoreError::new(KeystoreErrorKind::Unavailable, "store lock poisoned")
-        })?;
-        if let Some(store) = guard.as_ref() {
-            return Ok(Arc::clone(store));
-        }
-        let store = open_platform_store()?;
-        *guard = Some(Arc::clone(&store));
-        Ok(store)
-    }
-
-    /// The entry for `item` under [`KEYCHAIN_SERVICE`].
-    fn entry(&self, item: KeychainItemId) -> Result<keyring_core::Entry> {
-        let store = self.store()?;
-        store
-            .build(KEYCHAIN_SERVICE, &item.to_string(), None)
-            .map_err(map_error)
     }
 }
 
 impl Vault for OsKeychain {
     fn get(&self, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
-        self.entry(item)?
+        platform::get(item)
+    }
+
+    fn set(&self, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
+        check_len(bytes)?;
+        platform::set(item, bytes)
+    }
+
+    fn delete(&self, item: KeychainItemId) -> Result<()> {
+        platform::delete(item)
+    }
+}
+
+/// The Secret Service backend (Linux and other Unix desktops).
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
+use secret_service as platform;
+
+/// The native backends of macOS and Windows, through `keyring-core`.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod platform {
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use zeroize::Zeroizing;
+
+    use crate::{KeychainItemId, KeystoreError, KeystoreErrorKind, Result, KEYCHAIN_SERVICE};
+
+    /// The opened platform store, once a call has needed it.
+    static STORE: OnceLock<Mutex<Option<Arc<keyring_core::CredentialStore>>>> = OnceLock::new();
+
+    /// Opens (or returns the already opened) platform store.
+    fn store() -> Result<Arc<keyring_core::CredentialStore>> {
+        let mut guard = STORE.get_or_init(|| Mutex::new(None)).lock().map_err(|_| {
+            KeystoreError::new(KeystoreErrorKind::Unavailable, "store lock poisoned")
+        })?;
+        if let Some(store) = guard.as_ref() {
+            return Ok(Arc::clone(store));
+        }
+        let store = open()?;
+        *guard = Some(Arc::clone(&store));
+        Ok(store)
+    }
+
+    /// Opens this platform's native credential store.
+    #[cfg(target_os = "macos")]
+    fn open() -> Result<Arc<keyring_core::CredentialStore>> {
+        let store = apple_native_keyring_store::keychain::Store::new().map_err(map_error)?;
+        Ok(store)
+    }
+
+    /// Opens this platform's native credential store.
+    #[cfg(target_os = "windows")]
+    fn open() -> Result<Arc<keyring_core::CredentialStore>> {
+        let store = windows_native_keyring_store::Store::new().map_err(map_error)?;
+        Ok(store)
+    }
+
+    /// The entry for `item` under [`KEYCHAIN_SERVICE`].
+    fn entry(item: KeychainItemId) -> Result<keyring_core::Entry> {
+        store()?
+            .build(KEYCHAIN_SERVICE, &item.to_string(), None)
+            .map_err(map_error)
+    }
+
+    /// Reads an item's bytes.
+    pub(crate) fn get(item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
+        entry(item)?
             .get_secret()
             .map(Zeroizing::new)
             .map_err(map_error)
     }
 
-    fn set(&self, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
-        check_len(bytes)?;
-        self.entry(item)?.set_secret(bytes).map_err(map_error)
+    /// Creates or replaces an item.
+    pub(crate) fn set(item: KeychainItemId, bytes: &[u8]) -> Result<()> {
+        entry(item)?.set_secret(bytes).map_err(map_error)
     }
 
-    fn delete(&self, item: KeychainItemId) -> Result<()> {
-        match self.entry(item)?.delete_credential() {
+    /// Deletes an item; a missing item is not an error.
+    pub(crate) fn delete(item: KeychainItemId) -> Result<()> {
+        match entry(item)?.delete_credential() {
             Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
             Err(err) => Err(map_error(err)),
         }
     }
-}
 
-/// Opens this platform's native credential store.
-#[cfg(target_os = "macos")]
-fn open_platform_store() -> Result<Arc<keyring_core::CredentialStore>> {
-    let store = apple_native_keyring_store::keychain::Store::new().map_err(map_error)?;
-    Ok(store)
-}
-
-/// Opens this platform's native credential store.
-#[cfg(target_os = "windows")]
-fn open_platform_store() -> Result<Arc<keyring_core::CredentialStore>> {
-    let store = windows_native_keyring_store::Store::new().map_err(map_error)?;
-    Ok(store)
-}
-
-/// Opens this platform's native credential store.
-#[cfg(all(
-    unix,
-    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
-))]
-fn open_platform_store() -> Result<Arc<keyring_core::CredentialStore>> {
-    let store = zbus_secret_service_keyring_store::Store::new().map_err(map_error)?;
-    Ok(store)
+    /// Maps a keyring error to a [`KeystoreError`] without copying any bytes
+    /// it carries (`BadEncoding` and `BadDataFormat` hold the item's contents).
+    fn map_error(err: keyring_core::Error) -> KeystoreError {
+        use keyring_core::Error as E;
+        match err {
+            E::NoEntry => KeystoreError::new(KeystoreErrorKind::NotFound, "no such item"),
+            E::NoStorageAccess(inner) => {
+                KeystoreError::new(KeystoreErrorKind::AccessDenied, inner.to_string())
+            }
+            E::PlatformFailure(inner) => {
+                KeystoreError::new(KeystoreErrorKind::Unavailable, inner.to_string())
+            }
+            E::NoDefaultStore => {
+                KeystoreError::new(KeystoreErrorKind::Unavailable, "no credential store")
+            }
+            E::BadEncoding(_) | E::BadDataFormat(_, _) => KeystoreError::new(
+                KeystoreErrorKind::Corrupt,
+                "the item's contents are not in the expected format",
+            ),
+            E::BadStoreFormat(msg) => KeystoreError::new(KeystoreErrorKind::Corrupt, msg),
+            E::TooLong(attr, limit) => KeystoreError::new(
+                KeystoreErrorKind::Rejected,
+                format!("{attr} is longer than {limit}"),
+            ),
+            E::Invalid(attr, reason) => {
+                KeystoreError::new(KeystoreErrorKind::Rejected, format!("{attr}: {reason}"))
+            }
+            E::Ambiguous(found) => KeystoreError::new(
+                KeystoreErrorKind::Rejected,
+                format!("{} items match", found.len()),
+            ),
+            E::NotSupportedByStore(what) => KeystoreError::new(KeystoreErrorKind::Rejected, what),
+            // `keyring_core::Error` is `#[non_exhaustive]`; a variant added
+            // upstream is reported without its contents.
+            _ => KeystoreError::new(
+                KeystoreErrorKind::Unavailable,
+                "unrecognized keychain error",
+            ),
+        }
+    }
 }
 
 /// No native credential store is supported on this platform.
@@ -336,51 +407,32 @@ fn open_platform_store() -> Result<Arc<keyring_core::CredentialStore>> {
         not(any(target_os = "macos", target_os = "ios", target_os = "android"))
     )
 )))]
-fn open_platform_store() -> Result<Arc<keyring_core::CredentialStore>> {
-    Err(KeystoreError::new(
-        KeystoreErrorKind::Unavailable,
-        "this platform has no supported credential store",
-    ))
-}
+mod platform {
+    use zeroize::Zeroizing;
 
-/// Maps a keyring error to a [`KeystoreError`] without copying any bytes it
-/// carries (`BadEncoding` and `BadDataFormat` hold the item's contents).
-fn map_error(err: keyring_core::Error) -> KeystoreError {
-    use keyring_core::Error as E;
-    match err {
-        E::NoEntry => KeystoreError::new(KeystoreErrorKind::NotFound, "no such item"),
-        E::NoStorageAccess(inner) => {
-            KeystoreError::new(KeystoreErrorKind::AccessDenied, inner.to_string())
-        }
-        E::PlatformFailure(inner) => {
-            KeystoreError::new(KeystoreErrorKind::Unavailable, inner.to_string())
-        }
-        E::NoDefaultStore => {
-            KeystoreError::new(KeystoreErrorKind::Unavailable, "no credential store")
-        }
-        E::BadEncoding(_) | E::BadDataFormat(_, _) => KeystoreError::new(
-            KeystoreErrorKind::Corrupt,
-            "the item's contents are not in the expected format",
-        ),
-        E::BadStoreFormat(msg) => KeystoreError::new(KeystoreErrorKind::Corrupt, msg),
-        E::TooLong(attr, limit) => KeystoreError::new(
-            KeystoreErrorKind::Rejected,
-            format!("{attr} is longer than {limit}"),
-        ),
-        E::Invalid(attr, reason) => {
-            KeystoreError::new(KeystoreErrorKind::Rejected, format!("{attr}: {reason}"))
-        }
-        E::Ambiguous(found) => KeystoreError::new(
-            KeystoreErrorKind::Rejected,
-            format!("{} items match", found.len()),
-        ),
-        E::NotSupportedByStore(what) => KeystoreError::new(KeystoreErrorKind::Rejected, what),
-        // `keyring_core::Error` is `#[non_exhaustive]`; a variant added
-        // upstream is reported without its contents.
-        _ => KeystoreError::new(
+    use crate::{KeychainItemId, KeystoreError, KeystoreErrorKind, Result};
+
+    /// The error every call returns here.
+    fn unsupported() -> KeystoreError {
+        KeystoreError::new(
             KeystoreErrorKind::Unavailable,
-            "unrecognized keychain error",
-        ),
+            "this platform has no supported credential store",
+        )
+    }
+
+    /// Always fails: no store.
+    pub(crate) fn get(_item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
+        Err(unsupported())
+    }
+
+    /// Always fails: no store.
+    pub(crate) fn set(_item: KeychainItemId, _bytes: &[u8]) -> Result<()> {
+        Err(unsupported())
+    }
+
+    /// Always fails: no store.
+    pub(crate) fn delete(_item: KeychainItemId) -> Result<()> {
+        Err(unsupported())
     }
 }
 
