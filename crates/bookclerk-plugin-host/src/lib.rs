@@ -110,7 +110,9 @@ pub use authority::{
     SessionShutdown, GRANT_WATCH_INTERVAL,
 };
 pub use bookclerk_plugin_catalog::host_bookclerk_target;
-pub use bookclerk_plugin_manifest::TcpGrant;
+pub use bookclerk_plugin_manifest::{
+    derive_setting_destination, DestinationScope, SettingDestination, TcpGrant,
+};
 pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
 pub use bundled_platform::install_bundled_platform_plugins;
 pub use callback_proxy::CallbackProxy;
@@ -220,8 +222,9 @@ pub use rpc_session::{
     RpcBackupOps, SessionServices, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 pub use setting_grants::{
-    apply_setting_destinations, approve_setting_destinations, network_settings,
-    setting_grant_statuses, SettingGrantState, SettingGrantStatus,
+    apply_setting_destinations, approve_setting_destinations, destinations_in_use,
+    library_setting_statuses, network_settings, setting_grant_statuses, InstanceSettingStatuses,
+    SettingDestinationMap, SettingGrantState, SettingGrantStatus,
 };
 pub use socket_broker::{BrokerSockets, SocketBroker, SocketEvent, SocketSink};
 pub use spawn_plan::{

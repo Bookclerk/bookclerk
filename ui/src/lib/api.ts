@@ -2294,6 +2294,49 @@ export interface PluginConsentResponse {
   limits: PluginConsentLimits;
   /** The `User-Agent` the host sends, except to the request's `ownUserAgentHosts`. */
   host_user_agent?: string;
+  /**
+   * The destination each network setting names on each instance and whether it
+   * is approved. A `pending` row is unreachable until approved, and `covered` is
+   * false while one is.
+   */
+  setting_destinations?: PluginSettingDestination[];
+}
+
+/** Where a setting's destination points, which decides how the grant reaches it. */
+export type SettingDestinationScope = "name" | "publicAddress" | "localAddress" | "restricted";
+
+/** One network setting's destination on one plugin instance. */
+export interface PluginSettingDestination {
+  /** The instance whose settings name it; absent while the plugin has no instance. */
+  instanceId?: string;
+  /** The setting key the grant is stored under. */
+  setting: string;
+  /** The setting's label. */
+  label: string;
+  /** `fetch` (HTTP requests) or `tcp` (a raw socket). */
+  network: "fetch" | "tcp";
+  /** `scheme://host:port` for a fetch, `host:port` for TCP; absent when unset or invalid. */
+  destination?: string;
+  /**
+   * `name` may resolve to a local-network address for this name only;
+   * `localAddress` is exactly that one local-network address; `restricted`
+   * (loopback, link-local, `localhost`) also needs an address grant.
+   */
+  scope?: SettingDestinationScope;
+  /** True for an `https` fetch; false trusts the network's DNS answer. */
+  tls?: boolean;
+  /** Approval state of the destination. */
+  state: "approved" | "pending" | "unset" | "invalid";
+  /** Why the value names no destination, when `state` is `invalid`. */
+  error?: string;
+}
+
+/** A setting destination the operator approves, as the consent response shows it. */
+export interface PluginSettingDestinationApproval {
+  /** The setting key. */
+  setting: string;
+  /** The destination exactly as `PluginSettingDestination.destination` shows it. */
+  destination: string;
 }
 
 /** The difference between a plugin's request and its stored grant. */
@@ -2345,6 +2388,9 @@ export async function fetchPluginConsent(
  * @param id - Display alias from Settings.
  * @param grant - Operator-approved grant overlay; omitted fields keep defaults.
  * @param pluginKey - Provenance-qualified PluginKey when the alias is ambiguous.
+ * @param settingDestinations - Setting destinations to approve; one left out
+ *   stays pending, and omitting the list keeps earlier approvals that a setting
+ *   still names.
  * @returns Updated consent response after approval.
  */
 export async function approvePluginConsent(
@@ -2366,6 +2412,7 @@ export async function approvePluginConsent(
     extraProcesses?: number;
   },
   pluginKey?: string,
+  settingDestinations?: PluginSettingDestinationApproval[],
 ): Promise<PluginConsentResponse> {
   const res = await fetch(
     `/api/plugins/${encodeURIComponent(id)}/consent${consentQuery(pluginKey)}`,
@@ -2373,7 +2420,11 @@ export async function approvePluginConsent(
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approve: true, ...(grant ? { grant } : {}) }),
+      body: JSON.stringify({
+        approve: true,
+        ...(grant ? { grant } : {}),
+        ...(settingDestinations ? { setting_destinations: settingDestinations } : {}),
+      }),
     },
   );
   return parseJson<PluginConsentResponse>(res);

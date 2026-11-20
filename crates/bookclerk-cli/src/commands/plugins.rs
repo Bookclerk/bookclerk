@@ -794,7 +794,7 @@ pub async fn run(
             {
                 return Ok(());
             }
-            run_approve(config, &id, yes, format)
+            run_approve(config, &id, yes, format).await
         }
         PluginsCommand::Registry { command } => run_registry(config, command, format),
         PluginsCommand::Db { command } => run_plugin_db(config, command, format).await,
@@ -1668,24 +1668,49 @@ async fn diagnose_plugin(
 }
 
 /// Interactively (or `--yes`) records a network/binding grant for the plugin.
-fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> anyhow::Result<()> {
+///
+/// The grant also approves every destination the plugin's network settings
+/// name now (listed under "Destinations from settings"), and withdraws any
+/// approved destination no setting names any more.
+async fn run_approve(
+    config: &Config,
+    id: &str,
+    yes: bool,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
     use std::io::{self, IsTerminal, Write};
 
     let plugin = find_plugin(config, id)?;
-    let grant = consent_request(&plugin.manifest, plugin.plugin_key());
+    let mut grant = consent_request(&plugin.manifest, plugin.plugin_key());
     let summary = consent_summary(&grant);
     let files_dir = &config.paths().files_dir;
     let store = PluginGrantStore::load(files_dir)?;
+    let stored = store.get_by_plugin_key(plugin.plugin_key().canonical());
     // What this version asks for beyond the stored grant: the same diff
     // `plugins info` and the web consent dialog show.
-    let pending = store
-        .get_by_plugin_key(plugin.plugin_key().canonical())
+    let pending = stored
         .map(|stored| bookclerk_plugin_host::pending_structural(stored, &grant).summary_lines())
         .unwrap_or_default();
+    let setting_rows = if bookclerk_plugin_host::network_settings(&plugin.manifest)
+        .next()
+        .is_some()
+    {
+        let library = crate::registry::open_library(config).await?;
+        bookclerk_plugin_host::library_setting_statuses(
+            &library,
+            &plugin.manifest,
+            plugin.plugin_key().canonical(),
+            stored,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    let setting_lines = setting_destination_lines(&setting_rows);
 
     // With `--format json` stdout carries only the JSON document (which has
     // both lists), so the review copy goes to stderr beside the prompt.
-    for line in pending.iter().chain(&summary) {
+    for line in pending.iter().chain(&summary).chain(&setting_lines) {
         match format {
             OutputFormat::Text => println!("{line}"),
             OutputFormat::Json => eprintln!("{line}"),
@@ -1716,6 +1741,17 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
     // while the operator was reading, and saving the early copy would
     // drop that change.
     let mut store = PluginGrantStore::load(files_dir)?;
+    let in_use = bookclerk_plugin_host::destinations_in_use(&setting_rows);
+    let kept = store
+        .get_by_plugin_key(plugin.plugin_key().canonical())
+        .map(|stored| stored.setting_destinations.clone())
+        .unwrap_or_default();
+    grant.setting_destinations = bookclerk_plugin_host::approve_setting_destinations(
+        &kept,
+        &plugin.manifest,
+        &in_use,
+        &in_use,
+    );
     store.upsert(grant.clone());
     store.save(files_dir)?;
 
@@ -1725,6 +1761,7 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
         "grant": grant,
         "summary": summary,
         "pending": pending,
+        "setting_destinations": setting_lines,
         "grants_file": PluginGrantStore::path(files_dir),
     });
     emit(format, &payload, || {
@@ -1734,6 +1771,67 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
             PluginGrantStore::path(files_dir).display()
         );
     })
+}
+
+/// The review lines for the destinations a plugin's network settings name:
+/// a heading, then one line per instance and setting with its source label
+/// and whether it may reach the local network.
+///
+/// # Returns
+///
+/// No lines when the plugin declares no network setting.
+fn setting_destination_lines(
+    rows: &[bookclerk_plugin_host::InstanceSettingStatuses],
+) -> Vec<String> {
+    use bookclerk_plugin_host::DestinationScope;
+    use bookclerk_plugin_host::SettingGrantState;
+
+    let mut lines = Vec::new();
+    for row in rows {
+        for status in &row.statuses {
+            let instance = row
+                .instance_id
+                .as_deref()
+                .map(|id| format!(" (instance {id})"))
+                .unwrap_or_default();
+            let Some(destination) = &status.destination else {
+                let why = match (&status.state, &status.error) {
+                    (SettingGrantState::Invalid, Some(err)) => err.to_string(),
+                    _ => "not set".to_string(),
+                };
+                lines.push(format!("  {}{instance}: {why}", status.label));
+                continue;
+            };
+            let scope = match destination.scope {
+                DestinationScope::Name => "may resolve to your local network, for this name only",
+                DestinationScope::PublicAddress => "public address",
+                DestinationScope::LocalAddress => "local network, this address only",
+                DestinationScope::Restricted => {
+                    "loopback or special address, also needs an address CIDR"
+                }
+            };
+            let encryption = if destination.tls {
+                ""
+            } else {
+                ", not encrypted"
+            };
+            let state = match status.state {
+                SettingGrantState::Approved => "approved",
+                SettingGrantState::Pending => "new",
+                SettingGrantState::Unset | SettingGrantState::Invalid => "",
+            };
+            lines.push(format!(
+                "  {}: {} from {}{instance} ({scope}{encryption}) [{state}]",
+                status.network.as_str(),
+                destination.display(),
+                status.label,
+            ));
+        }
+    }
+    if !lines.is_empty() {
+        lines.insert(0, "Destinations from settings:".to_string());
+    }
+    lines
 }
 
 /// Operator actor recorded on control-plane writes from the CLI.
@@ -2532,18 +2630,47 @@ async fn run_plugin_config(
                         )
                     })?;
             }
+            // A network setting's new value names a destination that waits
+            // for consent; say so rather than let the plugin fail later.
+            let destination = pinned
+                .schema
+                .get(&key)
+                .and_then(|spec| spec.network.map(|network| (network, spec.default_port)))
+                .and_then(|(network, default_port)| match body.settings.get(&key) {
+                    Some(SettingValue::String(text)) => {
+                        Some(bookclerk_plugin_host::derive_setting_destination(
+                            network,
+                            default_port,
+                            text,
+                        ))
+                    }
+                    _ => None,
+                });
+            let note = destination.as_ref().map(|derived| match derived {
+                Ok(destination) => format!(
+                    "`{key}` names the network destination {}; the plugin reaches it only once it \
+                     is approved (`bookclerk plugins approve {}`)",
+                    destination.display(),
+                    instance.plugin_key
+                ),
+                Err(err) => format!("`{key}` names no network destination: {err}"),
+            });
             emit(
                 format,
                 &json!({
                     "plugin_instance_id": instance.id.to_string(),
                     "key": key,
                     "revision": revision,
+                    "network_note": note,
                 }),
                 || {
                     println!(
                         "set {key} on instance {} (revision {revision})",
                         instance.id
-                    )
+                    );
+                    if let Some(note) = &note {
+                        println!("{note}");
+                    }
                 },
             )
         }

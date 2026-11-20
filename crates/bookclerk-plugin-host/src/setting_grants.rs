@@ -134,6 +134,104 @@ pub fn setting_grant_statuses(
         .collect()
 }
 
+/// The network-setting statuses of one plugin instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceSettingStatuses {
+    /// The instance; `None` when the plugin has no instance yet and the
+    /// statuses judge the settings' defaults.
+    pub instance_id: Option<String>,
+    /// One status per network setting, in declaration order.
+    pub statuses: Vec<SettingGrantStatus>,
+}
+
+/// Per setting key, the destinations a plugin's instances name now.
+pub type SettingDestinationMap = BTreeMap<String, BTreeSet<SettingDestination>>;
+
+/// Judges the network settings of every instance of a plugin in the library.
+///
+/// Each instance's configuration document is read and its defaults applied
+/// as at spawn; an instance without a document runs on its defaults, and a
+/// plugin with no instance yet is judged on its defaults alone. Nothing is
+/// read when the plugin declares no network setting.
+///
+/// # Arguments
+///
+/// * `library` - The library holding the instances.
+/// * `manifest` - The plugin; its schema supplies the defaults.
+/// * `plugin_key` - The plugin's canonical key, which its instances carry.
+/// * `grant` - The stored grant, which decides approved against pending.
+///
+/// # Returns
+///
+/// One entry per instance, oldest first.
+///
+/// # Errors
+///
+/// Returns an error when the instances or a document cannot be read.
+pub async fn library_setting_statuses(
+    library: &bookclerk_library::LibraryStore,
+    manifest: &PluginManifest,
+    plugin_key: &str,
+    grant: Option<&PluginGrant>,
+) -> bookclerk_library::Result<Vec<InstanceSettingStatuses>> {
+    use bookclerk_library::control_plane::{
+        list_plugin_instances_for_key, load_instance_config, SettingValue,
+    };
+    if network_settings(manifest).next().is_none() {
+        return Ok(Vec::new());
+    }
+    let mut documents = Vec::new();
+    for instance in list_plugin_instances_for_key(library, plugin_key).await? {
+        let stored: BTreeMap<String, Value> =
+            match load_instance_config(library, &instance.id).await {
+                Ok(document) => document
+                    .body
+                    .settings
+                    .iter()
+                    .map(|(key, value)| (key.clone(), SettingValue::to_json(value)))
+                    .collect(),
+                Err(bookclerk_library::LibraryError::NotFound(_)) => BTreeMap::new(),
+                Err(err) => return Err(err),
+            };
+        documents.push((Some(instance.id.to_string()), stored));
+    }
+    if documents.is_empty() {
+        documents.push((None, BTreeMap::new()));
+    }
+    let schema = manifest.settings_schema();
+    Ok(documents
+        .into_iter()
+        .map(|(instance_id, stored)| {
+            let config = Value::Object(
+                schema
+                    .effective_config(&stored)
+                    .config
+                    .into_iter()
+                    .collect(),
+            );
+            InstanceSettingStatuses {
+                instance_id,
+                statuses: setting_grant_statuses(manifest, &config, grant),
+            }
+        })
+        .collect())
+}
+
+/// The destinations `rows` name, per setting key, for
+/// [`approve_setting_destinations`]'s `in_use`.
+#[must_use]
+pub fn destinations_in_use(rows: &[InstanceSettingStatuses]) -> SettingDestinationMap {
+    let mut out = SettingDestinationMap::new();
+    for status in rows.iter().flat_map(|row| &row.statuses) {
+        if let Some(destination) = &status.destination {
+            out.entry(status.key.clone())
+                .or_default()
+                .insert(destination.clone());
+        }
+    }
+    out
+}
+
 /// Adds every approved destination the instance's settings name to `grant`.
 ///
 /// A fetch destination adds its `host:port`, a TCP destination its host and
