@@ -1,6 +1,8 @@
 # ADR: Metadata claims and two-way sync with files
 
-- **Status:** Accepted; nothing implemented yet (see [Order of work](#order-of-work))
+- **Status:** Accepted; the claims tables and resolver are built for
+  chapters ([Edition chapters](edition-chapters.md)); the rest follows the
+  [Order of work](#order-of-work)
 - **Date:** 2026-11-17
 - **Related:** [Library data model](library-data-model.md),
   [Event delivery model](event-delivery-model.md),
@@ -299,6 +301,9 @@ revision ([event delivery model](event-delivery-model.md)).
 1. This record.
 2. The work matcher, with the listing fields it needs.
 3. The claims tables and the resolver, writing into today's columns.
+   Chapters came first, before the work matcher, because they are
+   edition-only ([Edition chapters](edition-chapters.md)); their pins live
+   on the claim rows and their changes are announced as `edition_updated`.
 4. The storage interface: signatures, conditional writes, the optional
    operations and change feeds.
 5. Tag reading in the media worker, then the paged import.

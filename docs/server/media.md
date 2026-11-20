@@ -180,6 +180,18 @@ used to choose between two copies of the same edition.
 > Files stored before probes were recorded have unprobed rows. They are
 > not probed again by this change.
 
+### Chapters an acquire records
+
+An acquire writes chapters into the files and also records, in the
+database, every chapter list it computed for the edition: the markers the
+store returned (or one chapter per delivered part when it returned none),
+the layout a metadata provider answered, and the provider's chapters after
+the worker's `align_chapters` job snapped them to the spoken titles. Each
+is a claim from its own source, and the library chooses the list the
+edition plays (see [Chapters](playback.md#chapters)). A failed record is
+logged and never fails the acquire, because the files already hold their
+chapters.
+
 ## Install the worker
 
 Build the worker and ship it with the hosts, beside the plugin jail's

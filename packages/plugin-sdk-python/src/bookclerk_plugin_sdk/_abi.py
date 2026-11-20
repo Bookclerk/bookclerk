@@ -252,6 +252,12 @@ FETCHED_FILE_ROLES: tuple[str, ...] = ("unspecified", "part", "whole", "cover")
 Ordinal-ordered ``FetchedFileRole`` wire names (index = Cap'n Proto ordinal).
 """
 
+CHAPTER_KINDS: tuple[str, ...] = ("unknown", "chapters", "tracks")
+"""What a storefront's chapter markers mark (`PlainFetch.chapterKind`).
+
+Ordinal-ordered ``ChapterKind`` wire names (index = Cap'n Proto ordinal).
+"""
+
 CATALOG_SORTS: tuple[str, ...] = ("relevance", "popularity", "rating", "title", "author")
 """Catalog search ordering.
 
@@ -381,6 +387,7 @@ __all__ = [
     "CREDIT_ROLES",
     "CREDIT_LEVELS",
     "FETCHED_FILE_ROLES",
+    "CHAPTER_KINDS",
     "CATALOG_SORTS",
     "CATALOG_FIELDS",
     "PRICE_LOOKUPS",

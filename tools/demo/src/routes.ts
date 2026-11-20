@@ -210,6 +210,13 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/library/works/{id}/state", "allow"],
   ["GET", "/api/library/works/facets/{facet}", "allow"],
   ["GET", "/api/library/editions/{id}/cover", "allow"],
+  // Chapters: an Administrator's edits stay in the visitor's own library.
+  ["GET", "/api/library/editions/{id}/chapters", "allow"],
+  ["PUT", "/api/library/editions/{id}/chapters", "allow"],
+  ["DELETE", "/api/library/editions/{id}/chapters", "allow"],
+  ["GET", "/api/library/editions/{id}/chapters/claims", "allow"],
+  ["PUT", "/api/library/editions/{id}/chapters/pin", "allow"],
+  ["DELETE", "/api/library/editions/{id}/chapters/pin", "allow"],
   ["GET", "/api/library/conflicts", "allow"],
   ["PUT", "/api/library/listings/{id}/pin", "allow"],
   ["DELETE", "/api/library/listings/{id}/pin", "allow"],

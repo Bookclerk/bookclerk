@@ -477,3 +477,27 @@ fn fuzz_corpus_connections_request_replays() {
     assert!(accepted > 0, "no connections_request seed was accepted");
     assert!(refused > 0, "every connections_request seed was accepted");
 }
+
+/// The `chapter_request` oracle, shared with the fuzz target: an
+/// Administrator's chapter edit is accepted exactly when it has the
+/// documented shape and every chapter keeps the rules, and a pin exactly
+/// when it names a known source kind and a bounded source id.
+#[path = "../../../fuzz/oracles/chapter_request.rs"]
+mod chapter_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_chapter_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("chapter_request") {
+        if chapter_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no chapter_request seed was accepted");
+    assert!(refused > 0, "every chapter_request seed was accepted");
+}

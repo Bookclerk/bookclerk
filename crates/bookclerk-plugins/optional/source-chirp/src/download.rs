@@ -79,6 +79,7 @@ pub async fn fetch_title_materials(
         m4b_path: None,
         cover_path,
         chapters,
+        chapter_kind: bookclerk_storefront::ChapterKind::Tracks,
         pdf_url: None,
     })
 }

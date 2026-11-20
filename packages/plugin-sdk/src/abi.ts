@@ -310,6 +310,16 @@ export const FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"] as c
 export type FetchedFileRole = (typeof FETCHED_FILE_ROLES)[number];
 
 /**
+ * What a storefront's chapter markers mark (`PlainFetch.chapterKind`).
+ *
+ * Ordinal-ordered `ChapterKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const CHAPTER_KINDS = ["unknown", "chapters", "tracks"] as const;
+
+/** Union of `CHAPTER_KINDS` wire names. */
+export type ChapterKind = (typeof CHAPTER_KINDS)[number];
+
+/**
  * Catalog search ordering.
  *
  * Ordinal-ordered `CatalogSort` wire names (index = Cap'n Proto ordinal).

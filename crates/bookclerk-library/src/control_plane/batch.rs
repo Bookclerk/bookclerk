@@ -110,7 +110,7 @@ pub(crate) fn rows_affected(reply: &ExecuteReply, index: usize) -> u64 {
 }
 
 /// Rows from one statement.
-pub(super) fn rows(reply: &ExecuteReply, index: usize) -> &[DbRow] {
+pub(crate) fn rows(reply: &ExecuteReply, index: usize) -> &[DbRow] {
     reply
         .statements
         .get(index)

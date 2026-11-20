@@ -28,14 +28,15 @@ use crate::column_read::only_column;
 use crate::control_plane::{load_artifact_blob, put_artifact_blob};
 use crate::entities::{
     account_credential_revisions, account_links, account_scan_state, account_shares, accounts,
-    bookclerk_receipts, bookmarks, books, catalog_listing_optouts, catalog_lookups, claim_tickets,
-    clerk_links, configuration_audit, configuration_changes, configuration_documents, contributors,
-    copy_grants, credits, domain_events, edition_acquisitions, edition_copies, edition_files,
+    bookclerk_receipts, bookmarks, books, catalog_listing_optouts, catalog_lookups,
+    chapter_list_entries, chapter_lists, claim_tickets, clerk_links, configuration_audit,
+    configuration_changes, configuration_documents, contributors, copy_grants, credits,
+    domain_events, edition_acquisitions, edition_chapters, edition_copies, edition_files,
     edition_identifiers, editions, embeddings, encrypted_secrets, event_deliveries,
     event_outbox_stats, expressions, holdings, ignored_titles, job_secret_handoffs, job_temp_paths,
     jobs, library_identity, library_links, link_imports, link_requests, listening_progress,
-    listing_offers, node_credentials, node_enrollment_links, node_upload_sessions, nodes,
-    oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
+    listing_offers, metadata_claims, node_credentials, node_enrollment_links, node_upload_sessions,
+    nodes, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
     patron_controls, patron_scope_keys, patron_scopes, pending_joins, playback_progress,
     playback_sessions, plugin_artifacts, plugin_cron_cursors, plugin_deployments, plugin_installs,
     plugin_instances, plugin_kv, plugin_placements, plugin_schemas, plugin_versions,
@@ -194,6 +195,11 @@ macro_rules! copied_entities {
         $each!(edition_files);
         $each!(edition_acquisitions);
         $each!(edition_copies);
+        // A list before the claims and the resolution that name it.
+        $each!(chapter_lists);
+        $each!(chapter_list_entries);
+        $each!(metadata_claims);
+        $each!(edition_chapters);
         $each!(ignored_titles);
         $each!(saved_filters);
         $each!(claim_tickets);

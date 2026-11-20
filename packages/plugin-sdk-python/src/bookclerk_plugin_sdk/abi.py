@@ -114,6 +114,9 @@ a guest sets this only when a credit departs from it.
 FetchedFileRole = Literal["unspecified", "part", "whole", "cover"]
 """What one fetched file is to the edition it belongs to."""
 
+ChapterKind = Literal["unknown", "chapters", "tracks"]
+"""What a storefront's chapter markers mark (`PlainFetch.chapterKind`)."""
+
 CatalogSort = Literal["relevance", "popularity", "rating", "title", "author"]
 """Catalog search ordering."""
 
@@ -3894,6 +3897,8 @@ class PlainFetch(TypedDict):
         refreshedCredentials: The account's credentials as the guest holds them after
             refreshing them during the fetch, as in `ScanPage.refreshedCredentials`.
             Empty when nothing changed. Omitted when absent (wire zero value).
+        chapterKind: What `chapters` marks. The host ranks literary chapters above track
+            boundaries when it decides an edition's chapters.
     """
 
     mediaKind: MediaKind
@@ -3901,6 +3906,7 @@ class PlainFetch(TypedDict):
     chapters: list[ChapterMarker]
     pdfUrl: NotRequired[str]
     refreshedCredentials: NotRequired[bytes]
+    chapterKind: ChapterKind
 
 
 class FetchTitleReplyOk(TypedDict):
@@ -7324,6 +7330,7 @@ __all__ = [
     "CreditRole",
     "CreditLevel",
     "FetchedFileRole",
+    "ChapterKind",
     "CatalogSort",
     "CatalogField",
     "PriceLookup",

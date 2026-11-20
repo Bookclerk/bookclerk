@@ -765,6 +765,63 @@ impl From<plugin_capnp::FetchedFileRole> for FetchedFileRole {
     }
 }
 
+/// What a storefront's chapter markers mark (`PlainFetch.chapterKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChapterKind {
+    /// The storefront does not say.
+    #[default]
+    Unknown,
+    /// Literary chapters: what a listener would call the book's chapters.
+    Chapters,
+    /// Track or part boundaries: where the store cut its files, which need
+    /// not fall on a chapter.
+    Tracks,
+}
+
+impl ChapterKind {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Chapters => "chapters",
+            Self::Tracks => "tracks",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "unknown" => Some(Self::Unknown),
+            "chapters" => Some(Self::Chapters),
+            "tracks" => Some(Self::Tracks),
+            _ => None,
+        }
+    }
+}
+
+impl From<ChapterKind> for plugin_capnp::ChapterKind {
+    fn from(value: ChapterKind) -> Self {
+        match value {
+            ChapterKind::Unknown => Self::Unknown,
+            ChapterKind::Chapters => Self::Chapters,
+            ChapterKind::Tracks => Self::Tracks,
+        }
+    }
+}
+
+impl From<plugin_capnp::ChapterKind> for ChapterKind {
+    fn from(value: plugin_capnp::ChapterKind) -> Self {
+        match value {
+            plugin_capnp::ChapterKind::Unknown => Self::Unknown,
+            plugin_capnp::ChapterKind::Chapters => Self::Chapters,
+            plugin_capnp::ChapterKind::Tracks => Self::Tracks,
+        }
+    }
+}
+
 /// Catalog search ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1959,6 +2016,10 @@ pub struct PlainFetch {
         with = "crate::json_bytes::opt_b64"
     )]
     pub refreshed_credentials: Option<Vec<u8>>,
+    /// What `chapters` marks. The host ranks literary chapters above track
+    /// boundaries when it decides an edition's chapters.
+    #[serde(default)]
+    pub chapter_kind: ChapterKind,
 }
 
 /// Success payload of `ContentSource.listAccounts`.
@@ -4800,6 +4861,7 @@ pub fn write_plain_fetch(
     if let Some(value) = &v.refreshed_credentials {
         b.set_refreshed_credentials(value);
     }
+    b.set_chapter_kind(v.chapter_kind.into());
     Ok(())
 }
 
@@ -4823,6 +4885,7 @@ pub fn read_plain_fetch(r: plugin_capnp::plain_fetch::Reader<'_>) -> capnp::Resu
             .collect::<capnp::Result<Vec<_>>>()?,
         pdf_url: opt_text(r.get_pdf_url()?)?,
         refreshed_credentials: opt_data(r.get_refreshed_credentials()?),
+        chapter_kind: r.get_chapter_kind()?.into(),
     })
 }
 

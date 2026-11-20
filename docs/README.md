@@ -107,6 +107,7 @@ Build and agent conventions for this repository live in
 - [Event delivery model](adr/event-delivery-model.md): events fan out to every subscriber, jobs have one handler, subscriptions follow deployments
 - [Library catalog network](adr/library-catalog-network.md): a branch of several libraries, what each library owns, and how libraries list and lend books
 - [Metadata claims and file sync](adr/metadata-claims-and-file-sync.md): every value is a claim with its source, one resolver, evidence-based works, and two-way sync with tags and sidecar files
+- [Edition chapters](adr/edition-chapters.md): chapters belong to the edition, each source's list is a claim, and Bookclerk's aligned result wins unless an Administrator edits or pins
 - [Patron scopes and linked sign-in](adr/patron-scopes.md): which part of the library a Member sees, and how a linked server's permissions follow one authority
 - [Playback](adr/playback.md): playback is a host feature with one core that the web player, the desktop window and app-compatible clients share
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks

@@ -1284,6 +1284,15 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::library_overrides::delete_listing_pin
         ))
         .routes(routes!(crate::library_overrides::list_conflicts))
+        .routes(routes!(crate::library_chapters::list_chapter_claims))
+        .routes(routes!(
+            crate::library_chapters::put_edition_chapters,
+            crate::library_chapters::delete_edition_chapters
+        ))
+        .routes(routes!(
+            crate::library_chapters::put_chapter_pin,
+            crate::library_chapters::delete_chapter_pin
+        ))
         .routes(routes!(crate::library_overrides::post_work_split))
         .routes(routes!(
             crate::node_api::get_node_invites,
@@ -1369,6 +1378,7 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
         .routes(routes!(crate::library_works::get_edition_cover))
+        .routes(routes!(crate::library_chapters::get_edition_chapters))
         .routes(routes!(crate::playback::get_edition_playback))
         .routes(routes!(crate::playback::post_session))
         .routes(routes!(crate::playback::post_session_sync))

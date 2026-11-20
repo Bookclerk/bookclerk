@@ -781,6 +781,17 @@ library holds as works, expressions and editions:
   Postgres; each write of the row gets a new `revision`) and `resolution_conflicts` (identifier clashes the resolver
   recorded instead of merging, listed by `GET /api/library/conflicts` and
   dropped when the listing is pinned);
+- `metadata_claims`, `chapter_lists`, `chapter_list_entries` and
+  `edition_chapters`: an edition's chapters as claims, one per source
+  (an Administrator's edit, Bookclerk's aligned result, a metadata
+  provider, the store's markers or part names), each naming a chapter
+  list by SHA-256 digest. A list's chapters are written in batches the
+  database plugin accepts and its `chapter_lists` head row last, so a list
+  with a head row is complete and a claim on an unfinished list never
+  wins. `edition_chapters` holds the list the resolver chose; it is
+  written only when no claim changed since the resolver read them (the
+  edition's highest claim `revision`), with an `edition_updated` event
+  in the same batch (see [Chapters](playback.md#chapters));
 - `edition_files`: every key an acquire or a host upload wrote, per
   destination, with the edition it belongs to (a branch's delivered
   title's included), its role (`audio`, `part`,

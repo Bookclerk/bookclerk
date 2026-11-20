@@ -423,6 +423,7 @@ pub(crate) async fn fetch_library_copy(
         m4b_path: None,
         cover_path: None,
         chapters: Vec::new(),
+        chapter_kind: bookclerk_source::ChapterKind::Unknown,
         pdf_url: None,
     };
     let mut pdf = None;

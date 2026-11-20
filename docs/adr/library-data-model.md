@@ -129,6 +129,9 @@ Each enum is a Rust enum matched exhaustively, a capnp enum on the wire, and a
 | `edition_acquisitions` | An edition's acquire state (`status`, primary `storage_key`, last error) and the account holding whose title's write set it (`holding_id`), plus its companion PDF's state (`pdf_status`, `pdf_storage_key`, `pdf_holding_id`); only the holding that acquired the audio or the PDF changes it | `edition_id` |
 | `user_title_state` | One user's finished flag, ratings and tags for a work (listening progress stays per provider in `listening_progress`, keyed by work) | `(user_id, work_id)` |
 | `resolution_overrides` | An Administrator's manual merge or split, which the resolver obeys | `(subject_kind, subject_id)` |
+| `metadata_claims` | One source's value for one field of an edition (chapters only so far), naming a long value by digest, with the runtime it was measured on, a per-edition `revision` and an Administrator's pin ([edition chapters](edition-chapters.md)) | `(subject_kind, subject_id, field, source_kind, source_id, locale)` |
+| `chapter_lists`, `chapter_list_entries` | A chapter list stored once by its SHA-256 digest: a head row written last, and one row per chapter (`position`, `start_ms`, `depth`, `title`) | `digest`; `(digest, position)` |
+| `edition_chapters` | The chapter list an edition plays, as the resolver chose it from the claims, with its source and runtime | `edition_id` |
 
 Identifiers have a strength, fixed per scheme:
 

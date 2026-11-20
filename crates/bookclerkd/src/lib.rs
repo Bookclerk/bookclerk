@@ -36,6 +36,7 @@ mod http_error;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod library_chapters;
 mod library_index;
 mod library_link;
 mod library_overrides;

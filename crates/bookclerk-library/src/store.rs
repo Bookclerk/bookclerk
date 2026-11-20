@@ -7950,6 +7950,8 @@ impl LibraryStore {
 pub(crate) mod acquire_title;
 pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
+pub(crate) mod chapters;
+pub(crate) mod chapters_request;
 pub(crate) mod discover;
 pub(crate) mod edition_copies;
 pub(crate) mod edition_enrichment;
