@@ -1641,7 +1641,7 @@ pub async fn migrate_database_plugin(
     }
     let source = open_library_store_for_plugin(config, from_plugin).await?;
     let dest = open_library_store_for_plugin(config, to_plugin).await?;
-    bookclerk_library::migrate_library_backend(source.db(), dest.db(), opts).await
+    bookclerk_library::migrate_library_backend(&source, &dest, opts).await
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

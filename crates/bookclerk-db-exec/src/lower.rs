@@ -703,9 +703,15 @@ fn rewrite_variadic_fn(sql: &str, name: &str, pg_name: &str) -> String {
                     .iter()
                     .map(|a| rewrite_variadic_fn(a, name, pg_name))
                     .collect();
-                if rewritten.len() >= 2 && rewritten.iter().any(|a| a.contains('?')) {
-                    // Same NULL poisoning, but each argument is evaluated
-                    // once: writing it twice would bind its `?` twice.
+                if rewritten.len() >= 2
+                    && rewritten
+                        .iter()
+                        .any(|a| a.contains('?') || has_unclosed_dollar_tag(a))
+                {
+                    // Same NULL poisoning, but each argument is written
+                    // once: writing it twice would bind its `?` twice, and
+                    // an unclosed `$tag$` written twice closes on its own
+                    // copy, quoting the SQL between them.
                     let names: Vec<String> =
                         (0..rewritten.len()).map(|k| format!("_bc_m{k}")).collect();
                     let nulls = names
@@ -2387,6 +2393,33 @@ fn scan_quote(s: &str, q: char) -> Option<usize> {
     Some(s.len())
 }
 
+/// True when `s` holds a `$tag$` opener that no later `$tag$` closes, which
+/// would start a dollar quote if the same text were written again after it.
+///
+/// Closed dollar quotes, strings, identifiers and comments are skipped as
+/// whole tokens, so a `$` inside them does not count.
+fn has_unclosed_dollar_tag(s: &str) -> bool {
+    let mut i = 0;
+    while i < s.len() {
+        if let Some(len) = literal_or_comment_len(&s[i..]) {
+            i += len;
+            continue;
+        }
+        let rest = &s[i..];
+        if let Some(tail) = rest.strip_prefix('$') {
+            if tail.find('$').is_some_and(|end| {
+                tail[..end]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }) {
+                return true;
+            }
+        }
+        i += rest.chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
 /// Length of a PostgreSQL `$tag$…$tag$` dollar quote at `s`.
 fn dollar_quote_len(s: &str) -> Option<usize> {
     let rest = s.get(1..)?;
@@ -2556,6 +2589,18 @@ mod tests {
         assert!(sql.contains("$tag$?$tag$"), "{sql}");
         assert!(sql.contains("$1"), "{sql}");
         assert!(!sql.contains("$2"), "{sql}");
+    }
+
+    #[test]
+    fn min_max_never_writes_an_unclosed_dollar_tag_twice() {
+        // Found by the `sql_lower` oracle: `$A$` closed nothing, but the
+        // NULL-poisoning form wrote the argument twice, so the copies quoted
+        // the SQL between them and the `?` in the string became `$1`.
+        let sql = lower_canonical_to_postgres("MIN($A$$$$,)'$$?'");
+        assert!(sql.ends_with("'$$?'"), "{sql}");
+        assert_eq!(sql.matches("$A$").count(), 1, "{sql}");
+        assert!(has_unclosed_dollar_tag("$A$$$$"));
+        assert!(!has_unclosed_dollar_tag("$a$ x $a$, '$b$', $1"));
     }
 
     #[test]

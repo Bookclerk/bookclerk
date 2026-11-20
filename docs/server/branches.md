@@ -30,8 +30,9 @@ the older names:
 | Library | Library (`libraries`) |
 | The library's own daemons, shared branches included | Shared nodes (`kind = shared`) |
 | Branch | Branch node (`nodes`, `kind = branch`) |
+| Remote branch, local branch, shared branch | `relationship` on each node: `remote_branch`, `local_branch` or `shared_branch` |
 | Branch invite | Enrollment link |
-| "Let new branches join" | `core.host_enrollment` |
+| "Let new branches join" | `core.branch_enrollment` |
 
 The design record is
 [ADR: Control plane](../adr/control-plane.md#branch-node-enrollment-and-transport)
@@ -75,7 +76,7 @@ same wizard.
 To stop new branches joining from the command line:
 
 ```sh
-bookclerk config set host_enrollment.enabled false
+bookclerk config set branch_enrollment.enabled false
 ```
 
 Turning it off stops new sign-ins and invites. Branches already joined
@@ -97,6 +98,26 @@ A branch's node appears among the nodes (`bookclerk nodes list`,
 Revoke a branch at any time from **Settings → Nodes** or with
 `bookclerk nodes revoke <node_id>`. Its socket closes with 4403 and it
 stops dialing.
+
+### Remote and local branches
+
+Each heartbeat a branch sends carries its own `integrations.public_origin`
+when its operator set one. The library keeps it when it is a plain
+`http` or `https` origin (no path, query or user) of at most 255 bytes,
+and shows it as the branch's `status.public_origin`:
+
+- A branch that reports an address is a **remote branch**: a core branch
+  other installs can reach.
+- A branch that reports none, or one the library does not keep, is a
+  **local branch**.
+- The library's own daemons, shared branches included, are **shared
+  branches** whatever they report.
+
+**Status**, **Settings → Nodes**, `GET /api/config/nodes` (`relationship`)
+and `bookclerk nodes list` show the label. It follows the latest heartbeat,
+so a branch that sets or clears its address changes label within one
+heartbeat, without joining again. A remote branch and a local branch are
+trusted, and work, the same way.
 
 ### Branch invites
 
@@ -520,7 +541,9 @@ node, this server first, and who approved it (`GET /api/config/shared-branches`)
 Another user sees only the ones they own.
 
 A shared branch that isn't running can be removed there
-(`DELETE /api/config/nodes/{node_id}`). Stop Bookclerk on it first.
+(`DELETE /api/config/nodes/{node_id}`) by the operator, or by an Owner after
+elevating, since removing one deletes its records. Stop Bookclerk on it
+first.
 
 > [!WARNING]
 > Removing a shared branch doesn't take back the database credentials or key it
@@ -771,8 +794,9 @@ title, and the host fails it without fetching anything.
    fence about once a second.
 3. **Commit.** The host sends `POST /api/node/v1/uploads/{upload_id}/commit`.
    One canonical batch, gated on the live fence, marks the title
-   acquired, publishes `book_acquired`, and (for the job's last title)
-   completes the job.
+   acquired, records a stored copy of the edition on each destination
+   the primary audio was written to (`edition_copies`), publishes
+   `book_acquired`, and (for the job's last title) completes the job.
 
 A destination sees the end of its stream only after the whole body
 matched. A mismatch, a lost fence or a broken connection ends every
@@ -861,11 +885,11 @@ library it joined, in turn, for the copy of that listing.
   downloads the library's copy too, probes it itself, and stores it in
   place of its own download only when its own probe agrees. Otherwise it
   keeps its own, as it does when the two don't fit in the acquire's
-  scratch budget together. A lossless copy (FLAC or ALAC) is taken only
-  by a branch whose output keeps files as delivered: every other output
-  repackages the audio, and the media worker decodes AAC and MP3
-  audio only (so a copy in another encoding, such as Opus, is not taken
-  by such a branch either). The comparison runs once, in that acquire. The stored
+  scratch budget together. A branch whose output re-encodes or
+  repackages the audio takes only a copy the media worker reads (AAC,
+  ALAC, FLAC or MP3; see [what audio it reads](media.md#what-audio-it-reads)),
+  so a copy in another encoding, such as Opus, is taken only by a branch
+  that keeps files as delivered. The comparison runs once, in that acquire. The stored
   file's row names the store the audio really came from, and the cover
   and companion PDF of the branch's own download are kept (the library's
   cover is used only when the store sent none).

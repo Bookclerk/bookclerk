@@ -23,6 +23,12 @@ export type B2Access = {
   authorize(): Promise<B2Auth>;
   /** Downloads one object's text by its file ID. */
   downloadById(auth: B2Auth, fileId: string): Promise<string>;
+  /**
+   * Deletes every version of one object (and any hide marker), so nothing
+   * of it is left to restore. Deleting an object that is already gone does
+   * nothing.
+   */
+  deleteObject(auth: B2Auth, objectKey: string): Promise<void>;
   /** The bucket reports are stored in. */
   bucketId: string;
 };
@@ -59,6 +65,30 @@ export async function listPage(
   });
   if (!res.ok) throw new Error("b2 list failed");
   return decodeListPage(await res.json().catch(() => null));
+}
+
+/**
+ * Reads a `b2_list_file_versions` answer for one object. Sans-IO and never
+ * throws.
+ *
+ * @param data - Parsed response body.
+ * @param objectKey - The object whose versions are wanted.
+ * @returns The file IDs of every entry named exactly `objectKey` (uploads
+ *   and hide markers alike), and whether the listing continues past them
+ *   with more versions of the same name.
+ */
+export function decodeVersionPage(
+  data: unknown,
+  objectKey: string,
+): { fileIds: string[]; more: boolean } {
+  const d = asObject(data);
+  const fileIds: string[] = [];
+  for (const f of Array.isArray(d.files) ? d.files : []) {
+    if (isObject(f) && f.fileName === objectKey && typeof f.fileId === "string") {
+      fileIds.push(f.fileId);
+    }
+  }
+  return { fileIds, more: d.nextFileName === objectKey && typeof d.nextFileId === "string" };
 }
 
 /**

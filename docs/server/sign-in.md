@@ -43,6 +43,21 @@ An Owner can **elevate** to operator, with an IdP step-up, a passkey or
 their password. Elevated, they get **Server** and **Plugins** settings and
 impersonation. Administrators can add users but cannot elevate.
 
+Some changes need elevation because each one decides who can sign in, or
+deletes something hard to rebuild. An Owner's everyday session can read
+these but not change them:
+
+- the second-factor policy (`PUT /api/auth/mfa-policy`);
+- upstream sign-in providers and the public origin
+  (`PUT /api/auth/oidc/config`);
+- Bookclerk-as-identity-provider clients (create, update, rotate the
+  secret, delete);
+- removing a shared branch (`DELETE /api/config/nodes/{node_id}`).
+
+Because the second-factor policy and the sign-in providers need elevation,
+an Owner who can't elevate also can't weaken the checks that guard
+elevation.
+
 Wrong elevation passwords count toward the same lockout as other sign-in
 attempts, both for the client address and for the Owner. After too many
 misses, `POST /api/auth/elevate` answers `429` with a `Retry-After` header,
@@ -51,9 +66,9 @@ still works meanwhile.
 
 The Owner's count is the account's password lockout, which every password
 re-check by a signed-in user shares: elevation, changing your password, and
-the `current_password` that sensitive changes ask for once a session is
-more than fifteen minutes old (authenticator, passkey, sign-in provider and
-OIDC client changes). Misses on any of them add up, and while the account
+the `current_password` that changes to your own sign-in ask for once a
+session is more than fifteen minutes old (authenticator and passkey
+changes). Misses on any of them add up, and while the account
 is locked each answers `429`. A correct password clears the count.
 
 ## Sign-in methods
@@ -375,11 +390,11 @@ A branch in Settings → Library has **Use a library card instead**. See
 | Profile | `PATCH /api/auth/profile` `{ display_name?, email?, avatar_source? }`; `PUT`/`DELETE /api/auth/profile/avatar`; `GET /api/users/{id}/avatar` (any signed-in user) |
 | Elevation | `POST /api/auth/elevate` `{ password }`, `DELETE /api/auth/elevate`, `GET /api/auth/oidc/elevate`, `POST /api/auth/passkeys/elevate/*` (Owner only) |
 | SSO | `GET /api/auth/oidc/providers`, `/login`, `GET`/`POST /callback` |
-| SSO settings | `GET`/`PUT /api/auth/oidc/config` (providers, `public_origin`, `detected_origin`, issuer URLs; Owner or operator) |
-| Bookclerk as IdP | `GET`/`POST`/`PUT`/`DELETE /api/auth/oidc/clients` |
+| SSO settings | `GET`/`PUT /api/auth/oidc/config` (providers, `public_origin`, `detected_origin`, issuer URLs; Owner or operator reads, operator changes) |
+| Bookclerk as IdP | `GET`/`POST /api/auth/oidc/clients`, `PUT`/`DELETE /api/auth/oidc/clients/{client_id}`, `POST /api/auth/oidc/clients/{client_id}/rotate-secret` (Owner or operator lists, operator changes) |
 | Passkeys | `GET`/`POST`/`DELETE /api/auth/passkeys…` (sign-in, register, elevate) |
 | TOTP | `POST /api/auth/totp/enroll/begin` and `/finish`, `GET`/`DELETE /api/auth/totp`, `POST /api/auth/totp/login` |
-| Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator) |
+| Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator reads, operator changes) |
 | Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}`, `portal:{identity_id}` or `operator`) |
 | Portal | `/api/portal/*` (Accounts, invite claims) |
 | Library cards | `GET`/`POST /api/auth/clerk-consent` (the consent page, any signed-in user), `POST /api/clerk/v1/token` (the clerk redeems its code), `GET /api/clerk/v1/connect` (the clerk socket) |
@@ -401,10 +416,15 @@ When the library does not answer in time to check a portal session (a
 busy or still-starting server), `/api/auth/me` and the signed-in API routes
 answer `503` with `Retry-After` and the slug `session_check_unavailable`,
 not `401`. The request is still refused, but the web app waits and asks
-again instead of showing the sign-in screen. A few handlers that check the
-session again themselves, such as elevation and the session list, still
-answer `401` in that case
-([#726](https://github.com/Bookclerk/bookclerk/issues/726)).
+again instead of showing the sign-in screen. The routes that check the
+session themselves (elevation, passwords, users, sessions, passkeys, the
+authenticator app, the profile and linked sign-in identities) answer the
+same way.
+
+> [!NOTE]
+> A request that carries the operator token still goes ahead when it also
+> carries a portal cookie that cannot be checked: deleting a user and
+> setting a user's password do not wait on the portal session.
 
 ## Client routes
 

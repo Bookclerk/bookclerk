@@ -1633,6 +1633,27 @@ pub async fn commit_upload(
     Ok(outcome)
 }
 
+/// Each destination the upload wrote the title's primary audio file to,
+/// with that file's key there: the copies of the file whose key on some
+/// destination is the session's primary key.
+fn primary_copies(session: &UploadSession) -> Vec<(&str, &str)> {
+    session
+        .files
+        .iter()
+        .find(|file| {
+            file.copies
+                .iter()
+                .any(|copy| copy.key == session.primary_key)
+        })
+        .map(|file| {
+            file.copies
+                .iter()
+                .map(|copy| (copy.destination.as_str(), copy.key.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// [`commit_upload`] without the probes: every check, and the batch that
 /// commits the title.
 ///
@@ -1874,6 +1895,41 @@ async fn commit_upload_checked(
                     binds,
                 ));
             }
+        }
+        // Each destination the primary audio was written to now holds a
+        // stored copy of the edition (`edition_copies`), under its own key
+        // there, so acquire runs on the library see the copies the branch
+        // delivered.
+        for (destination, key) in primary_copies(&session) {
+            let edition = title.edition_id.as_str();
+            let mut binds = vec![
+                text(edition),
+                text(destination),
+                text(key),
+                text(&now),
+                text(edition),
+            ];
+            binds.extend(gate());
+            statements.push(exec(
+                &format!(
+                    "INSERT OR IGNORE INTO edition_copies (\
+                        edition_id, destination, state, storage_key, attempts, \
+                        next_attempt_at, last_error, updated_at\
+                     ) SELECT ?, ?, 'stored', ?, 0, NULL, NULL, ? \
+                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND {gate_sql}"
+                ),
+                binds,
+            ));
+            let mut binds = vec![text(key), text(&now), text(edition), text(destination)];
+            binds.extend(gate());
+            statements.push(exec(
+                &format!(
+                    "UPDATE edition_copies SET state = 'stored', storage_key = ?, \
+                       attempts = 0, next_attempt_at = NULL, last_error = NULL, updated_at = ? \
+                      WHERE edition_id = ? AND destination = ? AND {gate_sql}"
+                ),
+                binds,
+            ));
         }
         // `book_acquired` names the uploading holding.
         {
