@@ -21,7 +21,7 @@ const COMPATIBILITY_DATE = /^compatibility_date = "([0-9-]+)"$/m.exec(
 if (COMPATIBILITY_DATE === undefined) throw new Error("wrangler.toml has no compatibility_date");
 
 /** Tests that run outside the Workers runtime. */
-const NODE_TESTS = ["test/pages.test.ts", "test/live-page.test.ts"];
+const NODE_TESTS = ["test/pages.test.ts", "test/live-page.test.ts", "test/launch-page.test.ts"];
 
 export default defineConfig({
   test: {

@@ -25,7 +25,7 @@ export interface WelcomeScreenProps {
  *
  * In the desktop window joining comes first: the window opens on signing
  * in to the library with a library card (the library's address, then
- * signing in as a patron there), and hosting a library on this computer is
+ * signing in as a patron there), and starting a library on this computer is
  * the alternative below it. A card makes this computer a clerk of that
  * library: it shows the books there and runs none of the library's work.
  * The library sends the browser back to `/clerk/callback`.
@@ -95,7 +95,7 @@ export function WelcomeScreen({
         <ClerkSignInForm defaultName={defaultBranchName ?? ""} />
         <div className="mt-6 border-t border-ink/10 pt-4">
           <Button type="button" variant="secondary" onClick={() => setStartingNew(true)}>
-            Host a library on this computer instead
+            Start a library on this computer instead
           </Button>
         </div>
       </JoinShell>

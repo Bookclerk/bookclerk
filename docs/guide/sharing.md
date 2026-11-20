@@ -82,7 +82,7 @@ on out of the box.
 | Control | Turning it off stops |
 | --- | --- |
 | Link store accounts | Connecting a store, signing in to one again, and bringing connections from another library. Connections already here keep working. |
-| Download | Taking copies of the library's files to a branch or a clerk app, and playing them |
+| Download | Taking copies of the library's files to a branch or a clerk app. Listening in the web app stays allowed |
 | Edit metadata | Changing a book's details |
 | Upload | Adding books by uploading files |
 | Request books | Asking a branch for a book it listed |

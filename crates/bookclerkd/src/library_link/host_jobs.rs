@@ -709,6 +709,7 @@ pub fn acquire_request(
         parent_call_number: None,
         metadata: bookclerk_acquire::AcquireMetadata::default(),
         library_copies: bookclerk_acquire::LibraryCopySource::default(),
+        destination_keys: bookclerk_acquire::DestinationKeys::default(),
     }
 }
 
@@ -752,7 +753,9 @@ async fn acquire_into(
         tokio::fs::create_dir_all(&dir).await?;
         items.push(bookclerk_acquire::AcquireDestination {
             id: destination.id.clone(),
-            backend: Box::new(bookclerk_storage::LocalFsBackend::new(dir)?),
+            // The owner's destinations translate the keys when the files
+            // reach them, so the outbox keeps host keys.
+            backend: Box::new(bookclerk_storage::LocalFsBackend::new(dir)?.keeping_host_keys()),
             options: destination.options.clone(),
             // The owner chose these destinations for the title.
             filter: bookclerk_config::DestinationFilter::default(),

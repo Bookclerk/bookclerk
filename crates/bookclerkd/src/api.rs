@@ -4836,6 +4836,8 @@ async fn trigger_acquire(
         plugin_instance_id: body.plugin_instance_id,
         force: body.force,
         pdf_only: body.pdf_only,
+        // A person asked for it: counted against the pace, never held.
+        paced: false,
     };
     match enqueue_acquire(state, requester, ask, JobTrigger::Api).await {
         Ok(admits) => plan_response("acquire", admits),

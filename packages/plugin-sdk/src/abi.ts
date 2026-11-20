@@ -173,6 +173,9 @@ export const FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite" as c
 /** Guest implements `Destination.changes` (`storage.changes`). */
 export const FEATURE_STORAGE_CHANGES = "storage.changes" as const;
 
+/** Guest implements `Destination.translateKeys` (`storage.translateKeys`). */
+export const FEATURE_STORAGE_TRANSLATE_KEYS = "storage.translateKeys" as const;
+
 /**
  * What happened to an object in a change feed. Unknown codes are kept and
  * treated as `changed`.
