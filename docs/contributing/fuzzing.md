@@ -54,6 +54,8 @@ boundary extends it.
 | `node_frame` | Node-to-node frames on the library socket | `bookclerk-node-proto::Frame` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
+| `intake_settings` | A drop folder's settings: the body of `PUT /api/config/plugin-instances/{id}/intake` and the stored `core.intake` document | `bookclerk-config::parse_intake_settings` |
+| `intake_items` | A drop folder's listing: object keys, sizes and change signatures grouped into items and settled | `bookclerk-intake::ItemGrouper`, `step` |
 | `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
@@ -180,6 +182,26 @@ only that. The others check:
   JSON round trip, and takes or refuses sample books and sample copies
   exactly as the oracle's reading does. The shared oracle is
   `fuzz/oracles/destination_filter.rs`, replayed from `bookclerk-config`.
+- **`intake_settings`**: the input is the request body. It is accepted
+  exactly when an independent reading, built on `serde_json::Value` and a
+  separate scan for repeated keys, accepts it: at most 16 KiB, one object
+  of the documented keys with none repeated, whole numbers in range, the
+  documented names for `after_ingest` and `attribute_to`, a positive
+  `patron` exactly when `attribute_to` is `owner`, `prune_imported_days`
+  only with `after_ingest = move`, and at most 64 distinct ignore patterns
+  of 1 to 128 bytes with no path separator or control character. Accepted
+  settings equal the oracle's reading and survive a JSON round trip. The
+  shared oracle is `fuzz/oracles/intake_settings.rs`, replayed from
+  `bookclerk-config`.
+- **`intake_items`**: the first byte picks the attribution mode and a quiet
+  period, and the rest is lines of `key<TAB>size<TAB>signature`. Every
+  object is ignored, a stray or a member of the same item as an independent
+  reading of the key rules says, the items hold the oracle's members, the
+  signature does not depend on listing order and moves with any size
+  change, and `step` makes an item ready only once the quiet period has
+  passed, never past the member cap, and never forgets a queued item. The
+  shared oracle is `fuzz/oracles/intake_items.rs`, replayed from
+  `bookclerk-intake`.
 - **`output_copies`**: the first byte picks the main output's copy and the
   rest is the `copies` array, read as the server reads it (`OutputCopy`'s
   serde derive, then `validate_copies`). It is accepted exactly when an

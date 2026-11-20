@@ -27,6 +27,7 @@ on:
       - "crates/bookclerk-cover/**"
       - "crates/bookclerk-tags/**"
       - "crates/bookclerk-config/**"
+      - "crates/bookclerk-intake/**"
       - "crates/bookclerk-storefront/**"
       - "crates/bookclerk-plugins/optional/source-libro/**"
       - "crates/bookclerk-audible-catalog/**"
