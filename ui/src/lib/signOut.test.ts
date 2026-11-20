@@ -44,7 +44,8 @@ describe("signOut", () => {
       throw new Error("offline");
     });
     await signOut("member");
-    expect(order).toEqual(["closed", "/api/portal/logout"]);
+    // Twice: the second pass ends what started while the first was out.
+    expect(order).toEqual(["closed", "closed", "/api/portal/logout"]);
 
     remove();
     failing();
@@ -92,6 +93,23 @@ describe("signOut", () => {
     expect(order).toEqual(["closing 1", "closing 2", "/api/portal/logout"]);
   });
 
+  it("ends what started during a wait that did not run out, and waits for it", async () => {
+    const order: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      order.push(url);
+      return new Response("{}", { status: 200 });
+    });
+    let runs = 0;
+    register(async () => {
+      runs += 1;
+      const run = runs;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      order.push(`closed ${run}`);
+    });
+    await signOut("member");
+    expect(order).toEqual(["closed 1", "closed 2", "/api/portal/logout"]);
+  });
+
   it("finishes registered work before impersonation starts or stops", async () => {
     const order: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
@@ -105,7 +123,9 @@ describe("signOut", () => {
     await stopImpersonate();
     expect(order).toEqual([
       "closed",
+      "closed",
       "POST /api/auth/impersonate",
+      "closed",
       "closed",
       "DELETE /api/auth/impersonate",
     ]);

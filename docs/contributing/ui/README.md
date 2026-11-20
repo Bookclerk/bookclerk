@@ -323,9 +323,10 @@ Rules the engine keeps:
 - Stopping, signing out, starting or stopping impersonation, and leaving
   the page close the session. The close on page hide is a `keepalive`
   request. A change of identity waits up to three seconds for the close
-  (`beforeSignOut` in `api.ts`) and then goes ahead. When the wait runs
-  out, the registered work runs once more without a wait, so a book
-  started meanwhile is closed as the identity being left.
+  (`beforeSignOut` in `api.ts`) and then goes ahead. The registered work
+  runs a second time within the same wait, or without a wait once it has
+  run out, so a book started meanwhile is closed as the identity being
+  left.
 - `409 session_ended` on a report, or a stream error, opens one new
   session at the place the listener is, and a report the ended session
   refused is sent once to the new one. A second stream error within a

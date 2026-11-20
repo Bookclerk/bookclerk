@@ -3360,8 +3360,9 @@ export const BEFORE_SIGN_OUT_WAIT_MS = 3000;
  * Registers work that must finish while the signed-in identity still
  * holds, such as the player's last position report.
  *
- * @param task - Run at the start of every sign-out and before
- *   impersonation starts or stops, and awaited for up to
+ * @param task - Run twice at the start of every sign-out and before
+ *   impersonation starts or stops, so it must do nothing when there is
+ *   nothing left to finish, and awaited for up to
  *   {@link BEFORE_SIGN_OUT_WAIT_MS}. A task that fails, throws or takes
  *   longer does not stop the change.
  * @returns Removes the task.
@@ -3376,17 +3377,22 @@ export function beforeSignOut(task: () => Promise<void>): () => void {
  * but no longer than {@link BEFORE_SIGN_OUT_WAIT_MS}: a request that never
  * answers must not keep someone signed in.
  *
- * @returns Resolves when every task settled or the wait ran out.
+ * The tasks run twice, within the one wait: the second pass ends what
+ * started while the first was out.
+ *
+ * @returns Resolves when both passes settled or the wait ran out.
  */
 async function finishBeforeIdentityChange(): Promise<void> {
-  const tasks = Promise.all(
-    // Through `then`, so a task that throws before returning is caught too.
-    [...signOutTasks].map((task) =>
-      Promise.resolve()
-        .then(task)
-        .catch(() => undefined),
-    ),
-  );
+  /** Starts every registered task; settles when all of them have. */
+  const pass = (): Promise<unknown> =>
+    Promise.all(
+      // Through `then`, so a task that throws before returning is caught too.
+      [...signOutTasks].map((task) =>
+        Promise.resolve()
+          .then(task)
+          .catch(() => undefined),
+      ),
+    );
   let timer: ReturnType<typeof setTimeout> | undefined;
   let ranOut = false;
   const waited = new Promise<void>((resolve) => {
@@ -3395,18 +3401,15 @@ async function finishBeforeIdentityChange(): Promise<void> {
       resolve();
     }, BEFORE_SIGN_OUT_WAIT_MS);
   });
-  await Promise.race([tasks, waited]);
-  clearTimeout(timer);
-  if (!ranOut) return;
-  // Something may have started during a wait that long (a book chosen
-  // while a slow close was out). It is ended too, as the identity being
-  // left, without another wait: its requests are sent before the one that
+  await Promise.race([pass(), waited]);
+  // Something may have started during the wait (a book chosen while a
+  // close was out). It is ended too, as the identity being left: a second
+  // pass, awaited for what is left of the same wait. Once the wait has run
+  // out the pass still runs, so its requests are sent before the one that
   // changes the identity.
-  for (const task of signOutTasks) {
-    void Promise.resolve()
-      .then(task)
-      .catch(() => undefined);
-  }
+  const again = pass();
+  if (!ranOut) await Promise.race([again, waited]);
+  clearTimeout(timer);
 }
 
 /**
