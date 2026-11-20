@@ -2629,6 +2629,182 @@ mod tests {
         }
     }
 
+    /// Each token-endpoint check answers the RFC 6749 code it names: a
+    /// client that fails to authenticate is `invalid_client`, a code or
+    /// refresh token that does not hold is `invalid_grant`.
+    #[tokio::test]
+    async fn token_checks_answer_their_rfc6749_codes() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use bookclerk_library::{UserRole, UserStatus};
+        use tower::ServiceExt;
+
+        const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        const REDIRECT: &str = "https://player.example/callback";
+        let (state, library) = oidc_test_state().await;
+        let scopes = [String::from("openid")];
+        let uris = [String::from(REDIRECT)];
+        for (id, secret, refresh, enabled) in [
+            ("conf", Some(hash_token("s3cret")), true, true),
+            ("pub", None, false, true),
+            ("off", None, true, false),
+        ] {
+            library
+                .insert_oidc_client(
+                    id,
+                    secret.as_deref(),
+                    &uris,
+                    None,
+                    refresh,
+                    &scopes,
+                    enabled,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let user = library
+            .create_user_with_profile(UserRole::Member, Some("A"), Some("a"), None, None)
+            .await
+            .unwrap();
+        let gone = library
+            .create_user_with_profile(UserRole::Member, Some("B"), Some("b"), None, None)
+            .await
+            .unwrap();
+        library
+            .set_user_status(gone.id, UserStatus::Disabled)
+            .await
+            .unwrap();
+        let expires = Utc::now() + ChronoDuration::minutes(5);
+        let challenge = pkce_s256_challenge(VERIFIER);
+        for (code, client, user_id, method) in [
+            ("c-redirect", "conf", user.id, "S256"),
+            ("c-pkce", "conf", user.id, "S256"),
+            ("c-plain", "conf", user.id, "plain"),
+            ("c-disabled", "pub", gone.id, "S256"),
+            ("c-ok", "pub", user.id, "S256"),
+        ] {
+            library
+                .insert_oidc_auth_code(
+                    &hash_token(code),
+                    client,
+                    user_id,
+                    REDIRECT,
+                    &challenge,
+                    method,
+                    "openid",
+                    expires,
+                )
+                .await
+                .unwrap();
+        }
+        let later = Utc::now() + ChronoDuration::days(1);
+        for (token, client) in [("r-conf", "conf"), ("r-pub", "pub"), ("r-off", "off")] {
+            library
+                .insert_oidc_refresh_token(&hash_token(token), client, user.id, "openid", later)
+                .await
+                .unwrap();
+        }
+        let app = crate::api::router(state, None);
+        let redirect = "https%3A%2F%2Fplayer.example%2Fcallback";
+        let code = |code: &str, client: &str, extra: &str| {
+            format!(
+                "grant_type=authorization_code&code={code}&redirect_uri={redirect}&client_id={client}&code_verifier={VERIFIER}{extra}"
+            )
+        };
+        let cases = [
+            (code("c-x", "conf", "&client_secret=wrong"), StatusCode::UNAUTHORIZED, "invalid_client"),
+            (code("c-x", "off", ""), StatusCode::UNAUTHORIZED, "invalid_client"),
+            (code("c-unknown", "conf", "&client_secret=s3cret"), StatusCode::BAD_REQUEST, "invalid_grant"),
+            (
+                code("c-redirect", "conf", "&client_secret=s3cret")
+                    .replace("callback&", "other&"),
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+            ),
+            (
+                code("c-pkce", "conf", "&client_secret=s3cret").replace(VERIFIER, "not-the-verifier"),
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+            ),
+            (code("c-plain", "conf", "&client_secret=s3cret"), StatusCode::BAD_REQUEST, "invalid_grant"),
+            (code("c-disabled", "pub", ""), StatusCode::BAD_REQUEST, "invalid_grant"),
+            (
+                format!("grant_type=authorization_code&code=c&client_id=pub&code_verifier={VERIFIER}"),
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            (
+                format!("grant_type=authorization_code&code=c&redirect_uri={redirect}&code_verifier={VERIFIER}"),
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            (
+                format!("grant_type=authorization_code&code=c&redirect_uri={redirect}&client_id=pub"),
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            ("grant_type=refresh_token".to_string(), StatusCode::BAD_REQUEST, "invalid_request"),
+            (
+                "grant_type=refresh_token&refresh_token=r-conf&client_id=pub".to_string(),
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+            ),
+            (
+                "grant_type=refresh_token&refresh_token=r-pub".to_string(),
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+            ),
+            (
+                "grant_type=refresh_token&refresh_token=r-conf&client_secret=wrong".to_string(),
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+            ),
+            (
+                "grant_type=refresh_token&refresh_token=r-off".to_string(),
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+            ),
+        ];
+        for (body, status, error) in cases {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oidc/token")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(Body::from(body.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), status, "{body}");
+            let json = json_body(res).await;
+            assert_eq!(json["error"], error, "{body}: {json}");
+        }
+        // The checks pass for a good code and a good refresh token.
+        for body in [
+            code("c-ok", "pub", ""),
+            "grant_type=refresh_token&refresh_token=r-conf&client_id=conf&client_secret=s3cret"
+                .to_string(),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oidc/token")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(Body::from(body.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{body}");
+        }
+    }
+
     #[tokio::test]
     async fn client_create_returns_secret_once_and_list_omits_it() {
         use axum::body::Body;

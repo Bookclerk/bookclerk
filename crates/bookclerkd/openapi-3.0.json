@@ -31984,9 +31984,22 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorJson"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
                 },
                 "examples": {
+                  "clerk_sockets_busy": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "clerk_sockets_busy"
+                    }
+                  },
                   "session_check_unavailable": {
                     "summary": "The sign-in could not be checked in time",
                     "value": {

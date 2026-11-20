@@ -5136,14 +5136,7 @@ async fn discover_status_for_caller(
     let library = state.library_snapshot().await;
     let (subject_key, _) = auth::prefs_subject_for_caller(state, headers)
         .await
-        .map_err(|refusal| {
-            refusal.answer(|status| {
-                (
-                    status,
-                    status.canonical_reason().unwrap_or("error").to_string(),
-                )
-            })
-        })?;
+        .map_err(prefs_refusal)?;
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     // A feed that does not decode (another release wrote it) counts as
@@ -5815,14 +5808,7 @@ async fn discover_recommendations(
 
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(|refusal| {
-            refusal.answer(|status| {
-                (
-                    status,
-                    status.canonical_reason().unwrap_or("error").to_string(),
-                )
-            })
-        })?;
+        .map_err(prefs_refusal)?;
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     let disabled_shelves = library
@@ -6939,14 +6925,7 @@ async fn get_preferences(
     const PREFERENCES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(|refusal| {
-            refusal.answer(|status| {
-                (
-                    status,
-                    status.canonical_reason().unwrap_or("error").to_string(),
-                )
-            })
-        })?;
+        .map_err(prefs_refusal)?;
     let library = state.library_snapshot().await;
     let prefs = timeout(
         PREFERENCES_TIMEOUT,
@@ -6986,14 +6965,7 @@ async fn patch_preferences(
     const PREFERENCES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(|refusal| {
-            refusal.answer(|status| {
-                (
-                    status,
-                    status.canonical_reason().unwrap_or("error").to_string(),
-                )
-            })
-        })?;
+        .map_err(prefs_refusal)?;
     let library = state.library_snapshot().await;
     let current = timeout(
         PREFERENCES_TIMEOUT,
@@ -7116,6 +7088,25 @@ fn normalize_disabled_shelves(raw: Vec<String>) -> Vec<String> {
         }
     }
     out
+}
+
+/// The answer for a caller whose preferences subject could not be
+/// resolved: the status's reason as plain text, or the session-check 503.
+///
+/// # Arguments
+///
+/// * `refusal` - Why [`auth::prefs_subject_for_caller`] refused.
+///
+/// # Returns
+///
+/// The response to send.
+fn prefs_refusal(refusal: auth::CallerRefusal) -> Response {
+    refusal.answer(|status| {
+        (
+            status,
+            status.canonical_reason().unwrap_or("error").to_string(),
+        )
+    })
 }
 
 /// Maps an internal error into HTTP 500 plus the display string.
