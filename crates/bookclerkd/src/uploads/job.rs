@@ -10,6 +10,8 @@
 //! nothing is retried member by member.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail};
 use bookclerk_acquire::{storage_key_with_contexts, NamingContext};
@@ -23,12 +25,13 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{call_number, AcquireStatus, FileOwner, JobPayload, LibraryStore};
 use bookclerk_resolve::{Entitlement, Holder, HoldingDraft, LinkReason, Listing};
-use bookclerk_storage::ObjectMeta;
+use bookclerk_storage::{ByteRange, ObjectMeta};
 use chrono::Utc;
 use serde::Serialize;
 use tracing::warn;
 
 use super::identify::{self, BookGroup, Candidate, FileKind};
+use super::intake_copy::{self, CopyFailure};
 use super::staging;
 use crate::api::AppState;
 use crate::job_handler::JobExecCtx;
@@ -278,7 +281,9 @@ impl Run<'_> {
     ///
     /// `intake_unavailable` when the drop folder is not deployed here or the
     /// object cannot be read; `intake_changed` when the object no longer
-    /// has the size it settled with (it is still being written).
+    /// has the size it settled with (it is still being written). A read
+    /// that breaks partway resumes from the staged length, a few times with
+    /// backoff, before the member fails.
     async fn copy_intake(&self, member: &IngestMember, path: &Path) -> Result<(), OutcomeUpdate> {
         let unavailable = || {
             outcome(
@@ -296,32 +301,31 @@ impl Run<'_> {
         let Some(source) = intake_source(self.state, instance).await else {
             return Err(unavailable());
         };
-        let (_, body) = source
-            .get_stream(key, None)
-            .await
-            .map_err(|_| unavailable())?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|_| unavailable())?;
-        }
-        let mut file = tokio::fs::File::create(path)
-            .await
-            .map_err(|_| unavailable())?;
-        // One byte past the settled size is enough to see it grew.
-        let mut limited = tokio::io::AsyncReadExt::take(body, member.size.saturating_add(1));
-        let copied = tokio::io::copy(&mut limited, &mut file)
-            .await
-            .map_err(|_| unavailable())?;
-        if copied != member.size {
-            return Err(outcome(
+        // The copy caps each body itself; a range never reaches past the
+        // end, which backends refuse.
+        let open = |offset: u64, _length: u64| {
+            let source = Arc::clone(&source);
+            async move {
+                let range = (offset > 0).then_some(ByteRange {
+                    offset,
+                    length: None,
+                });
+                source
+                    .get_stream(key, range)
+                    .await
+                    .map(|(_, body)| body)
+                    .map_err(std::io::Error::other)
+            }
+        };
+        match intake_copy::copy_resumable(open, path, member.size, INTAKE_COPY_BACKOFF).await {
+            Ok(()) => Ok(()),
+            Err(CopyFailure::Unavailable) => Err(unavailable()),
+            Err(CopyFailure::Changed) => Err(outcome(
                 member.member_no,
                 MemberOutcome::Failed,
                 "intake_changed",
-            ));
+            )),
         }
-        file.sync_all().await.map_err(|_| unavailable())?;
-        Ok(())
     }
 
     /// Expands the archives among `ready` and returns every file left to
@@ -843,6 +847,10 @@ fn stop_code(stop: StopReason) -> &'static str {
         StopReason::Corrupt => "archive_corrupt",
     }
 }
+
+/// Wait before the first resumption of a broken drop folder read; it
+/// doubles for each one after.
+const INTAKE_COPY_BACKOFF: Duration = Duration::from_millis(500);
 
 /// The storage an intake batch reads: the drop folder with that plugin
 /// instance id deployed on this node.

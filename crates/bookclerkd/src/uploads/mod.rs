@@ -14,6 +14,7 @@
 //! batch idles, finishes or loses its row.
 
 pub(crate) mod identify;
+pub(crate) mod intake_copy;
 pub(crate) mod job;
 pub(crate) mod staging;
 

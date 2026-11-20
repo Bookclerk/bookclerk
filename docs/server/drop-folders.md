@@ -25,7 +25,8 @@ destination: acquired books are not written into it.
 4. Bookclerk hands the ready item to the ingest job as one batch, the
    same job an [upload](uploads.md) runs. The job copies the files from the
    folder, checks that they still have the size that settled, and adds the
-   book. Files it does not keep, such as a stray `.exe`, are refused on
+   book. A read that breaks partway, as a network share or S3 prefix can,
+   picks up where it stopped, up to three times, before that file fails. Files it does not keep, such as a stray `.exe`, are refused on
    their own without failing the book.
 5. When the batch ends, the item is moved to `_imported/<date>/` (the
    default, with the date in UTC), deleted, or left where it is. An item
