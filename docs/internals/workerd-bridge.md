@@ -55,6 +55,16 @@ lives, and before allocating a new one it removes this plugin's sibling
 directories whose lock it can take, plus any older than two minutes that
 never got a lock. Links are never followed.
 
+Killing the launcher must also end its `workerd` child. On Linux and macOS
+the jail's session cgroup or process group does that. On Windows the
+launcher puts each `workerd.exe` in its own kill-on-close Job (nested in
+the jail's Job when there is one) and never closes it, so the kernel ends
+`workerd.exe` whenever the launcher process ends, including an unjailed
+launcher killed with `TerminateProcess`. The launcher also clears
+`HANDLE_FLAG_INHERIT` on its standard handles and on every inherited link
+it adopts, the Windows counterpart of `FD_CLOEXEC`, so `workerd.exe` holds
+none of the host's pipes and cannot keep them open after the launcher exits.
+
 ## The bridge socket
 
 The bridge listens on an ephemeral loopback port that only the launcher

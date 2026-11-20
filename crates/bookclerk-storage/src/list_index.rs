@@ -132,28 +132,32 @@ fn rebuild_index(
     note_build();
     let index_root = prepare_index_root(root)?;
     sweep_abandoned_builds(&index_root)?;
-    let build_id = uuid::Uuid::new_v4();
-    // Private until the lock is held. The sweeper only visits `builds/`, so a
-    // directory that is not locked yet is never published there.
-    let preparing = index_root.join(".preparing").join(build_id.to_string());
+    let build_id = uuid::Uuid::new_v4().to_string();
+    // The lock is taken in `.preparing/`, which the sweeper never visits, and
+    // only then moved into `builds/`, so the sweeper never sees an unlocked
+    // live build. The lock is a sibling of the scratch directory, not inside
+    // it: Windows refuses to rename a directory that holds an open file
+    // ("Access is denied"), while moving the open file itself is allowed.
+    let preparing = index_root.join(".preparing");
     fs::create_dir_all(&preparing)?;
-    pause_before_lock();
-    let lock_path = preparing.join("active.lock");
+    let preparing_lock = preparing.join(format!("{build_id}.lock"));
     let build_lock = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(&lock_path)?;
+        .open(&preparing_lock)?;
+    pause_before_lock();
     fs4::FileExt::lock(&build_lock)?;
-    let build_dir = index_root.join("builds").join(build_id.to_string());
-    if let Some(parent) = build_dir.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::rename(&preparing, &build_dir)?;
-    let generation = claim_generation(&generation_path(final_path))?;
-    wait_for_test_gate();
+    let builds = index_root.join("builds");
+    fs::create_dir_all(&builds)?;
+    let lock_path = build_lock_path(&builds, &build_id);
+    fs::rename(&preparing_lock, &lock_path)?;
+    let build_dir = builds.join(&build_id);
     let published = (|| {
+        fs::create_dir(&build_dir)?;
+        let generation = claim_generation(&generation_path(final_path))?;
+        wait_for_test_gate();
         let runs = spill_runs(root, storage_prefix, list_prefix, &build_dir)?;
         let building = build_dir.join("index.building");
         merge_runs(&runs, &building)?;
@@ -162,10 +166,49 @@ fn rebuild_index(
         }
         ensure_published(&index_root, &build_dir, final_path, &building, generation)
     })();
+    // Scratch first, while the lock still marks the build live; then the lock.
+    let _ = fs::remove_dir_all(&build_dir);
     let _ = fs4::FileExt::unlock(&build_lock);
     drop(build_lock);
-    let _ = fs::remove_dir_all(&build_dir);
+    let _ = fs::remove_file(&lock_path);
     published
+}
+
+/// Lock file that marks the build `build_id` under `builds` live.
+fn build_lock_path(builds: &Path, build_id: &str) -> PathBuf {
+    builds.join(format!("{build_id}.lock"))
+}
+
+/// Whether some process holds the lock of the build at `build_dir`.
+///
+/// The lock is `builds/<id>.lock`. A scratch directory from an older build
+/// layout keeps it inside as `active.lock`, so that one is checked too. A
+/// directory with neither is abandoned: the lock is always moved into place
+/// before the directory is created.
+fn build_is_live(build_dir: &Path) -> bool {
+    let sibling = build_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .zip(build_dir.parent())
+        .map(|(name, builds)| build_lock_path(builds, name));
+    sibling
+        .into_iter()
+        .chain(std::iter::once(build_dir.join("active.lock")))
+        .any(|lock_path| lock_is_held(&lock_path))
+}
+
+/// Whether `lock_path` exists and another handle holds its lock.
+fn lock_is_held(lock_path: &Path) -> bool {
+    let Ok(file) = OpenOptions::new().read(true).write(true).open(lock_path) else {
+        return false;
+    };
+    match fs4::FileExt::try_lock(&file) {
+        Ok(()) => {
+            let _ = fs4::FileExt::unlock(&file);
+            false
+        }
+        Err(_) => true,
+    }
 }
 
 fn pause_before_lock() {
@@ -329,20 +372,14 @@ fn other_builds_active(index_root: &Path, ours: &Path) -> Result<bool> {
         if path == ours || !path.is_dir() {
             continue;
         }
-        let lock_path = path.join("active.lock");
-        let Ok(file) = OpenOptions::new().read(true).write(true).open(&lock_path) else {
-            continue;
-        };
-        match fs4::FileExt::try_lock(&file) {
-            Ok(()) => {
-                let _ = fs4::FileExt::unlock(&file);
-            }
-            Err(_) => return Ok(true),
+        if build_is_live(&path) {
+            return Ok(true);
         }
     }
     Ok(false)
 }
 
+/// Removes build scratch directories and lock files no live build holds.
 fn sweep_abandoned_builds(index_root: &Path) -> Result<()> {
     let builds = index_root.join("builds");
     let Ok(entries) = fs::read_dir(&builds) else {
@@ -351,23 +388,17 @@ fn sweep_abandoned_builds(index_root: &Path) -> Result<()> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let lock_path = path.join("active.lock");
-        let Some(file) = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .ok()
-        else {
-            let _ = fs::remove_dir_all(&path);
-            continue;
-        };
-        if let Ok(()) = fs4::FileExt::try_lock(&file) {
-            let _ = fs4::FileExt::unlock(&file);
-            drop(file);
-            let _ = fs::remove_dir_all(&path);
+        if path.is_dir() {
+            if !build_is_live(&path) {
+                let _ = fs::remove_dir_all(&path);
+                let _ = fs::remove_file(path.with_extension("lock"));
+            }
+        } else if path.extension().is_some_and(|ext| ext == "lock")
+            && !path.with_extension("").is_dir()
+            && !lock_is_held(&path)
+        {
+            // A finished or crashed build whose directory is already gone.
+            let _ = fs::remove_file(&path);
         }
     }
     Ok(())
@@ -900,12 +931,14 @@ mod tests {
     fn sweep_removes_abandoned_build_scratch_and_keeps_a_locked_one() {
         let root = tempfile::tempdir().unwrap();
         let index = root.path().join(".bookclerk-list-index");
-        let abandoned = index.join("builds").join("abandoned");
-        let active = index.join("builds").join("active");
+        let builds = index.join("builds");
+        let abandoned = builds.join("abandoned");
+        let active = builds.join("active");
         fs::create_dir_all(&abandoned).unwrap();
         fs::create_dir_all(&active).unwrap();
         fs::write(abandoned.join("run-0.bin"), b"stale").unwrap();
-        let lock_path = active.join("active.lock");
+        fs::write(builds.join("abandoned.lock"), b"").unwrap();
+        let lock_path = builds.join("active.lock");
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -917,8 +950,33 @@ mod tests {
         fs::write(active.join("run-0.bin"), b"live").unwrap();
         sweep_abandoned_builds(&index).unwrap();
         assert!(!abandoned.exists());
+        assert!(!builds.join("abandoned.lock").exists());
+        assert!(active.join("run-0.bin").is_file());
+        assert!(lock_path.is_file());
+        drop(lock);
+    }
+
+    /// Scratch from the earlier layout kept its lock inside the directory.
+    #[test]
+    fn sweep_keeps_a_build_locked_with_the_earlier_inner_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let index = root.path().join(".bookclerk-list-index");
+        let active = index.join("builds").join("legacy");
+        fs::create_dir_all(&active).unwrap();
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(active.join("active.lock"))
+            .unwrap();
+        fs4::FileExt::lock(&lock).unwrap();
+        fs::write(active.join("run-0.bin"), b"live").unwrap();
+        sweep_abandoned_builds(&index).unwrap();
         assert!(active.join("run-0.bin").is_file());
         drop(lock);
+        sweep_abandoned_builds(&index).unwrap();
+        assert!(!active.exists());
     }
 
     #[test]

@@ -68,5 +68,9 @@ wiremock.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
+# Windows plugin artifacts are ZIPs; the reconcile tests pack their fixtures.
+[target.'cfg(windows)'.dev-dependencies]
+zip.workspace = true
+
 [lints]
 workspace = true

@@ -217,17 +217,46 @@ fn write_archive(dir: &Path, id: &str, secrets: bool) -> PathBuf {
     )
     .unwrap();
     std::fs::write(staging.join("echo"), b"#!/bin/sh\necho ok\n").unwrap();
-    let archive = dir.join(format!("{id}.tar.gz"));
-    let status = std::process::Command::new("tar")
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&staging)
-        .args(["plugin.toml", "echo"])
-        .status()
-        .expect("tar");
-    assert!(status.success(), "tar czf failed");
-    archive
+    pack_fixture(&staging, dir, id)
+}
+
+/// Packs `plugin.toml` and `echo` from `staging` into `dir/<stem>.<ext>`.
+///
+/// The format is the one the installer reads for this host's target: ZIP for
+/// `windows-*` targets and tar.gz everywhere else (see
+/// `bookclerk_plugin_catalog::Installer`). A tar.gz on Windows fails to
+/// extract with "Could not find EOCD".
+fn pack_fixture(staging: &Path, dir: &Path, stem: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::io::Write as _;
+        let archive = dir.join(format!("{stem}.zip"));
+        let file = std::fs::File::create(&archive).expect("create zip");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for name in ["plugin.toml", "echo"] {
+            zip.start_file(name, options).expect("zip start_file");
+            let bytes = std::fs::read(staging.join(name)).expect("read staged file");
+            zip.write_all(&bytes).expect("zip write");
+        }
+        zip.finish().expect("finish zip");
+        archive
+    }
+    #[cfg(not(windows))]
+    {
+        let archive = dir.join(format!("{stem}.tar.gz"));
+        let status = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(staging)
+            .args(["plugin.toml", "echo"])
+            .status()
+            .expect("tar");
+        assert!(status.success(), "tar czf failed");
+        archive
+    }
 }
 
 fn package_manifest(id: &str) -> bookclerk_plugin_catalog::BookclerkPackageManifest {
@@ -523,16 +552,7 @@ async fn publish_version(world: &World, version: &str, activate: crate::Activate
     )
     .unwrap();
     std::fs::write(stage.join("echo"), format!("#!/bin/sh\necho {version}\n")).unwrap();
-    let archive = world.files.join(format!("fxdep-{version}.tar.gz"));
-    let status = std::process::Command::new("tar")
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&stage)
-        .args(["plugin.toml", "echo"])
-        .status()
-        .expect("tar");
-    assert!(status.success());
+    let archive = pack_fixture(&stage, &world.files, &format!("fxdep-{version}"));
     let grant = PluginGrantStore::load(&world.files)
         .unwrap()
         .get_by_plugin_key(&world.key)
@@ -2459,7 +2479,7 @@ async fn exercise_intent_operations(
     );
 }
 
-/// A tar.gz artifact whose `plugin.toml` is the fixture manifest with
+/// An artifact (see [`pack_fixture`]) whose `plugin.toml` is the fixture manifest with
 /// `extra` prepended (top-level keys) and `command` set, and its digest.
 fn variant_archive(dir: &Path, name: &str, extra: &str, command: &str) -> (PathBuf, String) {
     let staging = dir.join(format!("{name}-stage"));
@@ -2471,16 +2491,7 @@ fn variant_archive(dir: &Path, name: &str, extra: &str, command: &str) -> (PathB
     );
     std::fs::write(staging.join("plugin.toml"), manifest).unwrap();
     std::fs::write(staging.join("echo"), b"#!/bin/sh\necho ok\n").unwrap();
-    let archive = dir.join(format!("{name}.tar.gz"));
-    let status = std::process::Command::new("tar")
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&staging)
-        .args(["plugin.toml", "echo"])
-        .status()
-        .expect("tar");
-    assert!(status.success(), "tar czf failed");
+    let archive = pack_fixture(&staging, dir, name);
     let digest = bookclerk_plugin_catalog::sha256_file(&archive).expect("digest");
     (archive, digest)
 }

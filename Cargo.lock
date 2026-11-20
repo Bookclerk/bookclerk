@@ -2224,6 +2224,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "wiremock",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
