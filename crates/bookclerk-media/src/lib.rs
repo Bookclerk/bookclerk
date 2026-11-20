@@ -49,6 +49,10 @@ pub use mp3::write_output_within_budget;
 mod mux_aac;
 mod native;
 mod package_m4b;
+/// Decoded samples for a player, from a confined worker.
+mod pcm_stream;
+pub mod pcm_wire;
+mod pcm_worker;
 mod pool;
 mod probe;
 mod tag_worker;
@@ -71,6 +75,9 @@ pub use job::{MediaJob, MediaJobOutput, MediaJobReply};
 pub use metadata::{bookclerk_tool_tag, fixup_audiobook, FixupRequest, BOOKCLERK_TOOL_NAME};
 pub use native::remux_trimmed;
 pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};
+pub use pcm_stream::PcmStream;
+pub use pcm_wire::{PcmHeader, PCM_WORKER_ARG};
+pub use pcm_worker::serve_pcm;
 pub use pool::{
     init_pool, init_pool_from_config, pool, replace_pool, Confinement, MediaPool, MediaPoolConfig,
     JAIL_BIN_ENV, JAIL_BIN_NAME, WORKER_BIN_ENV, WORKER_BIN_NAME, WORKER_ENFORCEMENT_ENV,

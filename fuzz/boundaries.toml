@@ -217,6 +217,13 @@ input_from = "store"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.media_pcm_wire]
+crate = "bookclerk-media"
+boundary = "PCM worker frames (requests the worker reads, replies and reply streams the host reads while a player plays)"
+input_from = "media worker"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.tags_read]
 crate = "bookclerk-tags"
 boundary = "Embedded tags of media files on storage (MP4 ilst and chapter tracks, ID3v2/ID3v1, FLAC metadata), read in the tag worker"

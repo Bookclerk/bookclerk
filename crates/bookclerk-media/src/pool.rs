@@ -34,6 +34,7 @@ use tokio::sync::Semaphore;
 use crate::cover_worker::{CoverRunner, CoverWorker};
 use crate::error::{MediaError, Result};
 use crate::job::{MediaJob, MediaJobOutput, MediaJobReply};
+use crate::pcm_stream::{PcmRunner, PcmStream};
 use crate::tag_worker::{RangeSource, TagRunner, TagWorker};
 
 /// Environment variable naming the worker binary explicitly.
@@ -168,6 +169,9 @@ pub struct MediaPool {
     /// The long-lived worker that reads embedded tags, sharing the job
     /// runner's isolation.
     tags: Box<TagWorker>,
+    /// Where a player's PCM is decoded: a confined worker per stream, or a
+    /// refusal (isolation off counts as one, see [`crate::pcm_stream`]).
+    pcm: PcmRunner,
 }
 
 impl Drop for MediaPool {
@@ -223,10 +227,21 @@ impl MediaPool {
             Runner::InProcess => TagRunner::InProcess,
             Runner::Refuse(detail) => TagRunner::Refuse(detail.clone()),
         };
+        let pcm = match &runner {
+            Runner::Worker(launch) => PcmRunner::Worker {
+                launch: WorkerLaunch::clone(launch),
+                confinement: config.confinement,
+            },
+            Runner::InProcess => PcmRunner::Refuse(
+                "media.isolation is off, and playback decodes only in the media worker".into(),
+            ),
+            Runner::Refuse(detail) => PcmRunner::Refuse(detail.clone()),
+        };
         Self {
             permits: Arc::new(Semaphore::new(config.workers)),
             covers: Box::new(CoverWorker::new(cover_runner, config.workers)),
             tags: Box::new(TagWorker::new(tag_runner)),
+            pcm,
             config,
             runner,
         }
@@ -353,6 +368,39 @@ impl MediaPool {
         source: &S,
     ) -> Result<bookclerk_tags::TagRecord> {
         self.tags.read(size, source).await
+    }
+
+    /// Decodes one audio file to PCM for a player, from `start_ms` to its
+    /// end (`bookclerk-media-worker pcm`).
+    ///
+    /// Each call starts its own worker, jailed to no path and no network,
+    /// which asks for the byte ranges its demuxer reads; this call fetches
+    /// them from `source`. It does not take a job slot. The stream holds
+    /// at most a few chunks ahead of the player, so a paused player keeps
+    /// the worker waiting rather than decoding the whole book. Seeking is a
+    /// new call; dropping the stream stops its worker. With isolation off,
+    /// playback is refused, never decoded in this process.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The file's size in bytes.
+    /// * `start_ms` - Where to start, in milliseconds into the file.
+    /// * `source` - Where its bytes come from.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::NotIsolated`] when isolation is off or no worker was
+    /// found, [`MediaError::Native`] when the file cannot be decoded,
+    /// [`MediaError::Io`] when `source` fails, and [`MediaError::Worker`]
+    /// when the worker cannot be started, stalls for 30 s before its
+    /// format, or breaks the protocol.
+    pub async fn open_pcm<S: RangeSource + 'static>(
+        &self,
+        size: u64,
+        start_ms: u64,
+        source: S,
+    ) -> Result<PcmStream> {
+        self.pcm.open(size, start_ms, source).await
     }
 
     /// Run `job`, waiting for a free slot first.

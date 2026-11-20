@@ -1809,8 +1809,7 @@ enum CopyCover {
 /// open that kind of file ([`bookclerk_media::capabilities`]). The encoding
 /// itself is checked on the downloaded file ([`output_can_decode`]).
 fn output_can_use(req: &AcquireRequest, probe: &FileProbe) -> bool {
-    keeps_delivered(req)
-        || bookclerk_media::capabilities::reads_content_type(&probe.content_type)
+    keeps_delivered(req) || bookclerk_media::capabilities::reads_content_type(&probe.content_type)
 }
 
 /// True when the request's output can be made from audio encoded as
