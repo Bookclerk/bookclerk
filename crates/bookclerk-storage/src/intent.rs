@@ -40,6 +40,9 @@ pub struct StorageCapabilities {
     pub conditional_write: bool,
     /// A change feed ([`StorageBackend::changes`]).
     pub changes: bool,
+    /// Its own translation of host keys ([`StorageBackend::translate_keys`]);
+    /// without it a host key is stored as written.
+    pub translate_keys: bool,
 }
 
 /// Outcome for one key of a batch operation.

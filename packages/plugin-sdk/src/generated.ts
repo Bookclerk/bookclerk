@@ -346,6 +346,16 @@ export interface HeadManyResult {
   objects: HeadOk[];
 }
 
+/** Success payload of `Destination.translateKeys`. */
+export interface TranslateKeysResult {
+  /**
+   * One translated key per requested host key, in request order: the key
+   * the guest stores that host key under. Each is a relative key with no
+   * empty, `.` or `..` segment.
+   */
+  keys: string[];
+}
+
 /** Argument of `Destination.changes`. Fields are only ever appended. */
 export interface ChangesRequest {
   /**
@@ -984,6 +994,11 @@ export type HeadManyReply =
   | { kind: "ok"; value: HeadManyResult } // Success: one probe per key.
   | { kind: "err"; value: PluginError }; // Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
 
+/** Result union of `Destination.translateKeys`. */
+export type TranslateKeysReply =
+  | { kind: "ok"; value: TranslateKeysResult } // Success: one translated key per host key.
+  | { kind: "err"; value: PluginError }; // Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
 /** Result union of `Destination.changes`. */
 export type ChangesReply =
   | { kind: "ok"; value: ChangesPage } // Success: one page of changes.
@@ -1180,6 +1195,17 @@ export interface Destination {
    * @returns {@link ChangesReply}
    */
   changes(request: ChangesRequest): Promise<ChangesReply>;
+  /**
+   * Translate up to `maxBatchKeys` host keys into the keys the guest stores
+   * them under (requires `storage.translateKeys`). A host key is `/`-joined
+   * segments, none empty, `.`, `..` or holding `\` or a control character.
+   * The same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param keys - Host keys to translate.
+   * @returns {@link TranslateKeysReply}
+   */
+  translateKeys(keys: string[]): Promise<TranslateKeysReply>;
 }
 
 /** Read-only byte source for job inputs (not a storefront). */

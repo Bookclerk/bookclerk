@@ -608,6 +608,21 @@ export class Destination extends RpcTarget {
   changes(_request: ChangesRequest): Promise<ChangesPage> {
     return Promise.reject(unsupported("changes"));
   }
+
+  /**
+   * Translate up to `MAX_BATCH_KEYS` host keys into the keys this
+   * destination stores them under (declare `storage.translateKeys`). A host
+   * key is `/`-joined segments, none empty, `.`, `..` or holding `\` or a
+   * control character; return a relative key with the same properties. The
+   * same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param _keys - Host keys.
+   * @returns One translated key per host key, in order.
+   */
+  translateKeys(_keys: string[]): Promise<string[]> {
+    return Promise.reject(unsupported("translateKeys"));
+  }
 }
 
 /** Byte source capability: `job.input`. */
@@ -2440,6 +2455,7 @@ const STORAGE_METHODS = Object.freeze([
   "deleteMany",
   "headMany",
   "changes",
+  "translateKeys",
 ]);
 
 /**
@@ -2587,6 +2603,21 @@ export class StorageEntrypoint<
    */
   changes(_request: ChangesRequest): Promise<ChangesPage> {
     return Promise.reject(unsupported("changes"));
+  }
+
+  /**
+   * Translate up to `MAX_BATCH_KEYS` host keys into the keys this
+   * destination stores them under (declare `storage.translateKeys`). A host
+   * key is `/`-joined segments, none empty, `.`, `..` or holding `\` or a
+   * control character; return a relative key with the same properties. The
+   * same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param _keys - Host keys.
+   * @returns One translated key per host key, in order.
+   */
+  translateKeys(_keys: string[]): Promise<string[]> {
+    return Promise.reject(unsupported("translateKeys"));
   }
 }
 

@@ -19,8 +19,8 @@ const NO_DESTINATION: &str =
 
 /// Build destination backends for acquire from the deployed output plugins.
 ///
-/// Every deployed storage plugin instance is a destination; path
-/// destinations come first, and the first destination is the primary.
+/// Every deployed storage plugin instance is a destination, in id order,
+/// and the first destination is the primary.
 ///
 /// # Arguments
 ///
@@ -49,7 +49,6 @@ pub fn build_acquire_destinations(
         .map(|dest| AcquireDestination {
             options: DownloadOptions::for_destination(
                 config,
-                dest.key_style,
                 &dest.settings.naming,
                 &dest.settings.prefix,
             ),
