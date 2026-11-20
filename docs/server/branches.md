@@ -825,8 +825,11 @@ title, and the host fails it without fetching anything.
    `book_acquired`, and (for the job's last title) completes the job.
 
 A destination sees the end of its stream only after the whole body
-matched. A mismatch, a lost fence or a broken connection ends every
-destination's stream with an error, so each discards what it wrote.
+matched. A mismatch or a lost fence ends every destination's stream with
+an error, so each discards what it wrote. So does a broken connection
+while a file is sent whole. A part whose connection breaks keeps the
+bytes that arrived: the file stays open at that offset until its last
+part, an abort, or 10 minutes without a part.
 
 | Refusal | Meaning |
 | --- | --- |

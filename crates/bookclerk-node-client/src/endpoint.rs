@@ -1956,8 +1956,14 @@ mod tests {
     #[tokio::test]
     async fn an_upload_resumes_from_the_owners_offset() {
         let file: Vec<u8> = (0..25u8).collect();
-        let (endpoint, served) =
-            recording_owner(vec![partial(5), partial(15), resume(12), received()]).await;
+        let (endpoint, served) = recording_owner(vec![
+            partial(5),
+            partial(15),
+            resume(12),
+            partial(22),
+            received(),
+        ])
+        .await;
         let (status, _) = endpoint
             .put_file(
                 "/upload",
@@ -1977,11 +1983,13 @@ mod tests {
                 Some("bytes 5-14/25"),
                 Some("bytes 15-24/25"),
                 Some("bytes 12-21/25"),
+                Some("bytes 22-24/25"),
             ]
         );
         assert_eq!(seen[1].1, file[5..15]);
         assert_eq!(seen[2].1, file[15..]);
         assert_eq!(seen[3].1, file[12..22]);
+        assert_eq!(seen[4].1, file[22..]);
     }
 
     #[test]

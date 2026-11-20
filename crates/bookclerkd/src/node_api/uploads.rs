@@ -1360,7 +1360,7 @@ pub async fn put_file(
         return refused("size_mismatch");
     }
     let earlier = take_part_stream(&key);
-    let mut stream = match earlier {
+    let stream = match earlier {
         Some(stream) if ranged && stream.next == part.offset => stream,
         Some(stream) if ranged => {
             // Not where the open file stands: say where, and keep it.
@@ -1386,7 +1386,21 @@ pub async fn put_file(
             return partial(StatusCode::SERVICE_UNAVAILABLE, Some("resume"), 0);
         }
     };
-    let (fed, bytes) = feed_part(&stream.feed, body, part.length).await;
+    // Held in a guard while the body is read: a request cancelled part way
+    // (its connection dropped before the body ended) keeps what a ranged
+    // part handed to the write, exactly as a broken body does.
+    let feed = stream.feed.clone();
+    let mut feeding = Feeding {
+        stream: Some(stream),
+        resume_at: ranged.then_some(part.offset),
+        handed: 0,
+    };
+    let fed = feed_part(&feed, body, part.length, &mut feeding.handed).await;
+    drop(feed);
+    let bytes = feeding.handed;
+    let Some(mut stream) = feeding.stream.take() else {
+        return unavailable();
+    };
     match fed {
         Fed::Part if part.is_last(size) => stream.finish().await,
         Fed::Part => {
@@ -1442,39 +1456,73 @@ enum Fed {
     WriteEnded,
 }
 
-/// Hands `length` bytes of `body` to a file's write through `feed`;
-/// answers how it went and how many bytes the write was handed.
-async fn feed_part(feed: &mpsc::Sender<io::Result<Bytes>>, body: Body, length: u64) -> (Fed, u64) {
+/// Hands `length` bytes of `body` to a file's write through `feed`, adding
+/// each chunk to `handed` once the write has it; answers how it went.
+///
+/// A body that breaks only after the part's last byte still delivered the
+/// whole part, so it counts as [`Fed::Part`]: the write checks the file's
+/// size and digest either way.
+async fn feed_part(
+    feed: &mpsc::Sender<io::Result<Bytes>>,
+    body: Body,
+    length: u64,
+    handed: &mut u64,
+) -> Fed {
     let mut stream = body.into_data_stream();
-    let mut handed = 0u64;
     loop {
         // A write that fails (a lost fence) answers at once, without
         // waiting for a stalled host's next byte.
         let next = tokio::select! {
             next = stream.next() => next,
-            () = feed.closed() => return (Fed::WriteEnded, handed),
+            () = feed.closed() => return Fed::WriteEnded,
         };
-        let Some(next) = next else {
+        let Some(Ok(chunk)) = next else {
             break;
-        };
-        let Ok(chunk) = next else {
-            return (Fed::BodyBroken, handed);
         };
         let size = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
         if handed.saturating_add(size) > length {
-            return (Fed::BodyBroken, handed);
+            return Fed::BodyBroken;
         }
         if feed.send(Ok(chunk)).await.is_err() {
-            return (Fed::WriteEnded, handed);
+            return Fed::WriteEnded;
         }
-        handed += size;
+        *handed += size;
     }
-    let fed = if handed == length {
+    if *handed == length {
         Fed::Part
     } else {
         Fed::BodyBroken
-    };
-    (fed, handed)
+    }
+}
+
+/// A file's [`PartStream`] while one request's body feeds it.
+///
+/// Dropped with the stream still inside (the request was cancelled before
+/// [`put_file`] took it back), it keeps a ranged part's progress: the
+/// stream goes back into [`PART_STREAMS`] at the bytes handed so far, so a
+/// status query answers that offset. A whole-file request, or a part that
+/// handed its file's last byte, drops the stream instead; that ends the
+/// write's input, which completes a whole file and fails a short one.
+struct Feeding {
+    /// The open file; `None` once [`put_file`] took it back.
+    stream: Option<PartStream>,
+    /// Offset of the ranged part's first byte; `None` for a whole file.
+    resume_at: Option<u64>,
+    /// Bytes of the part handed to the write so far.
+    handed: u64,
+}
+
+impl Drop for Feeding {
+    fn drop(&mut self) {
+        let (Some(mut stream), Some(offset)) = (self.stream.take(), self.resume_at) else {
+            return;
+        };
+        stream.next = offset.saturating_add(self.handed);
+        if stream.next < stream.size {
+            tracing::debug!(key = %stream.key, offset = stream.next, "an upload part's request was cancelled; its bytes so far are kept");
+            put_part_stream(stream);
+        }
+    }
 }
 
 /// A file whose parts are arriving, between requests: the write that
@@ -1482,8 +1530,9 @@ async fn feed_part(feed: &mpsc::Sender<io::Result<Bytes>>, body: Body, length: u
 /// of its own, so the parts of one file are one write per destination and
 /// the file is still never staged. Each part's request holds the file's
 /// lock ([`lock_file`]) while it feeds the write, so parts never
-/// interleave. Dropping it (a request cancelled mid-part) ends the write's
-/// stream early, which fails the write and deletes its copies.
+/// interleave. Dropping it short of the file's end ends the write's stream
+/// early, which fails the write and deletes its copies; a request cancelled
+/// mid-part puts it back instead ([`Feeding`]).
 struct PartStream {
     /// Offset the file's next part must start at.
     next: u64,
@@ -1496,6 +1545,8 @@ struct PartStream {
     generation: u64,
     /// The file's [`file_lock_name`], its key in [`PART_STREAMS`].
     key: String,
+    /// The file's declared size in bytes.
+    size: u64,
 }
 
 impl PartStream {
@@ -1533,8 +1584,13 @@ fn take_part_stream(key: &str) -> Option<PartStream> {
         .remove(key)
 }
 
-/// Puts an open file back into [`PART_STREAMS`] to wait for its next part.
+/// Puts an open file back into [`PART_STREAMS`] to wait for its next part,
+/// unless its write already ended (then a later part starts the file
+/// again).
 fn put_part_stream(stream: PartStream) {
+    if stream.write.is_finished() {
+        return;
+    }
     PART_STREAMS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1646,6 +1702,7 @@ async fn start_file(
         write,
         generation,
         key,
+        size: session.files[index].size,
     })
 }
 
@@ -1808,5 +1865,59 @@ pub async fn post_commit(
             tracing::warn!(upload_id = %session.upload_id, error = %err, "upload commit failed");
             unavailable()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A [`PartStream`] called `key` whose write drains its input until
+    /// the input ends, then answers `received`.
+    fn draining_stream(key: &str, size: u64) -> PartStream {
+        let (feed, mut rx) = mpsc::channel::<io::Result<Bytes>>(CHANNEL_CHUNKS);
+        let write = tokio::spawn(async move {
+            while rx.recv().await.is_some() {}
+            answer(StatusCode::OK, "received", None, false)
+        });
+        PartStream {
+            next: 0,
+            feed,
+            write,
+            generation: PART_GENERATION.fetch_add(1, Ordering::Relaxed),
+            key: key.into(),
+            size,
+        }
+    }
+
+    /// A ranged part's request cancelled part way puts its file back at
+    /// the bytes it handed over; a whole-file request, or one that handed
+    /// the file's last byte, lets the write end instead.
+    #[tokio::test]
+    async fn a_cancelled_part_keeps_its_bytes() {
+        let key = "feeding-test-ranged";
+        drop(Feeding {
+            stream: Some(draining_stream(key, 25)),
+            resume_at: Some(10),
+            handed: 4,
+        });
+        let kept = take_part_stream(key).map(|stream| stream.next);
+        assert_eq!(kept, Some(14));
+
+        let whole = "feeding-test-whole";
+        drop(Feeding {
+            stream: Some(draining_stream(whole, 25)),
+            resume_at: None,
+            handed: 4,
+        });
+        assert!(take_part_stream(whole).is_none());
+
+        let ended = "feeding-test-ended";
+        drop(Feeding {
+            stream: Some(draining_stream(ended, 25)),
+            resume_at: Some(20),
+            handed: 5,
+        });
+        assert!(take_part_stream(ended).is_none());
     }
 }
