@@ -28,6 +28,7 @@ boundary extends it.
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `egress_relay_head` | Request heads workerd sends the launcher's egress relay (plugin code) and response heads from the servers a plugin reached | `bookclerk-workerd::egress_relay` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
+| `setting_destination` | Operator-entered values of network settings: the one destination each grants | `bookclerk-plugin-manifest::derive_setting_destination` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
 | `https_url_policy` | URLs from untrusted output checked against a host allowlist (no caller since covers moved to the cover service) | `bookclerk-plugin-manifest::https_url_on_hosts` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
@@ -129,9 +130,24 @@ only that. The others check:
   matches, never through a `*` entry however it is spelled, and every
   other request gets the host's agent. The isolate tunnel rule
   (`allows_isolate_tunnel`) is exactly the union of the fetch, redirect and
-  TCP rules, on any port.
+  TCP rules, on any port. A fetch entry grants only its own port, or 80
+  and 443 when it names none. A local name lets only that exact name, or
+  the identical literal, reach a local-network address, and never
+  loopback or link-local. A pending setting destination grants nothing:
+  every rule answers the same without it, and it labels only its own host
+  and port.
+- **`setting_destination`**: an accepted value derives one destination
+  with a port and a host free of wildcards, percent signs and whitespace,
+  never from a value with credentials. Deriving its display form gives it
+  back, its grant entries are already normalized (the `domains` entry
+  names exactly its port), and its scope agrees with an independent
+  reading of the host. The shared oracle is
+  `fuzz/oracles/setting_destination.rs`, replayed from
+  `bookclerk-plugin-manifest`.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
-  yields a deny policy.
+  yields a deny policy. No binding takes the reserved `NETWORK` name, only
+  a string setting with `network` carries `default_port`, and a destination
+  derived from a network setting's default has a host and a nonzero port.
 - **`cron_schedule`**: an accepted schedule round-trips through its
   normalized source, and `next_after` / `latest_at_or_before` agree with a
   minute-by-minute scan of `matches`. The shared oracle is

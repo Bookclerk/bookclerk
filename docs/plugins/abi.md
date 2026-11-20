@@ -682,6 +682,38 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   connection dropped without one, and 1001 when the broker itself
   stopped.
 
+## Network grant (`env.NETWORK`)
+
+Every `open` carries `Bindings.network`, the network grant in effect, so a
+plugin can tell an unapproved destination from an unreachable one and
+say so. It is feedback only: the host enforces the grant whatever the
+plugin does with it.
+
+| Field | Meaning |
+| --- | --- |
+| `outbound` | False when the network is denied |
+| `domains` | Fetch entries in effect (`host`, `*.host`, `host:port`, `*`), including approved setting destinations |
+| `tcp` | Raw TCP destinations as `host:port`, one per port |
+| `settings` | One row per [network setting](capabilities.md#network-settings): `key`, `network` (`fetch` or `tcp`), `destination`, `state` (`approved`, `pending`, `unset` or `invalid`) and `error` |
+
+TypeScript and Python read it as `env.NETWORK`; Rust reads
+`Bindings::network`. No declared binding may be named `NETWORK`.
+
+A connection the grant does not cover fails with `network_not_granted`.
+`details.destination` names the `host:port`, and `details.setting` names
+the network setting whose destination awaits approval, when one does:
+
+- a refused `fetch()` answers `403` with an `x-bookclerk-error:
+  network_not_granted` header and a JSON body
+  `{"error": {"code", "message", "details"}}`;
+- a refused `connect()` or native socket fails with that code (the native
+  socket proxy answers `403` with the same body);
+- a refused pushed socket (`env.SOCKETS.connect`) rejects with the typed
+  error.
+
+Tell the operator to approve the destination on the plugin's consent
+form; don't retry until the grant changes.
+
 ## Entrypoint methods
 
 The methods each capability entrypoint answers, by capability.

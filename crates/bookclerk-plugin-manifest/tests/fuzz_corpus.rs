@@ -10,9 +10,10 @@
 use std::path::{Path, PathBuf};
 
 use bookclerk_plugin_manifest::{
-    canonical_ip, consent_domains_for, format_manifest, host_matches, is_local_network,
-    normalize_domain_pattern, normalize_hostname, normalize_local_name, normalize_tcp_host, parse,
-    split_domain_entry, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
+    canonical_ip, consent_domains_for, derive_setting_destination, format_manifest, host_matches,
+    is_local_network, normalize_domain_pattern, normalize_hostname, normalize_local_name,
+    normalize_tcp_host, parse, split_domain_entry, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
+    NETWORK_BINDING,
 };
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
@@ -109,6 +110,31 @@ fn fuzz_corpus_plugin_manifest_round_trips() {
             assert_eq!(policy.mode, NetworkMode::Deny, "{}", path.display());
         }
         let _ = policy.to_policy_json();
+        assert!(
+            !manifest
+                .binding_names()
+                .iter()
+                .any(|n| n == NETWORK_BINDING),
+            "{}",
+            path.display()
+        );
+        for setting in &manifest.settings {
+            if setting.default_port.is_some() {
+                assert!(setting.network.is_some(), "{}", path.display());
+            }
+            let (Some(network), Some(value)) = (
+                setting.network,
+                setting.default.as_ref().and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            if let Ok(destination) =
+                derive_setting_destination(network, setting.default_port, value)
+            {
+                assert_eq!(destination.network, network);
+                assert_ne!(destination.port, 0, "{}", path.display());
+            }
+        }
     }
     assert!(parsed > 0, "no plugin_manifest seed parsed");
 }
@@ -216,8 +242,36 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
         check_user_agent(&policy);
         check_ports(&policy);
         check_local_names(&policy);
+        check_pending_settings(&policy);
     }
     assert!(parsed > 0, "no egress_policy seed parsed");
+}
+
+/// Pending setting destinations grant nothing and label only their own host
+/// and port (the fuzz target's pending oracle).
+fn check_pending_settings(policy: &EgressPolicy) {
+    let without = EgressPolicy {
+        pending_settings: Vec::new(),
+        ..policy.clone()
+    };
+    for pending in &policy.pending_settings {
+        let (host, port) = (pending.host.as_str(), pending.port);
+        assert_eq!(
+            policy.allows_fetch(host, port),
+            without.allows_fetch(host, port)
+        );
+        assert_eq!(
+            policy.allows_tcp(host, port),
+            without.allows_tcp(host, port)
+        );
+        let Some(found) = policy.pending_setting_for(host, port) else {
+            panic!("pending entry {host}:{port} does not label its own destination");
+        };
+        assert_eq!(found.port, port);
+        assert!(policy
+            .pending_setting_for(host, port.wrapping_add(1))
+            .is_none_or(|other| other.port == port.wrapping_add(1)));
+    }
 }
 
 /// The port an entry names, parsed without the crate's splitter (mirrors the

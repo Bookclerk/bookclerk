@@ -14,13 +14,14 @@
 //! `:port`, else 80 and 443), judged by an independent entry parser; the
 //! isolate tunnel rule is exactly the union of the fetch, redirect and TCP
 //! rules on each port; a `localNames` entry widens the address check only to
-//! local-network addresses and only for that exact name.
+//! local-network addresses and only for that exact name; a pending setting
+//! destination grants nothing and labels only its own host and port.
 
 #![no_main]
 
 use bookclerk_plugin_manifest::{
-    host_matches, normalize_domain_pattern, normalize_hostname, normalize_tcp_host,
-    canonical_ip, is_local_network, normalize_local_name, split_domain_entry, EgressPolicy, NetworkMode,
+    canonical_ip, host_matches, is_local_network, normalize_domain_pattern, normalize_hostname,
+    normalize_local_name, normalize_tcp_host, split_domain_entry, EgressPolicy, NetworkMode,
     ANY_PUBLIC_HOST,
 };
 use libfuzzer_sys::fuzz_target;
@@ -142,7 +143,12 @@ fn check_policy(policy: &EgressPolicy) {
             assert!(!initial && !redirect && !tcp, "deny mode allowed {host}");
         }
         let mut ports = vec![1_u16, 80, 443, 8443, 65535];
-        ports.extend(policy.domains.iter().filter_map(|d| oracle_entry_port(d).flatten()));
+        ports.extend(
+            policy
+                .domains
+                .iter()
+                .filter_map(|d| oracle_entry_port(d).flatten()),
+        );
         for port in ports {
             // A fetch or redirect reaches a port only when some entry grants
             // it (independent parser of the entry's port), and an entry that
@@ -157,7 +163,10 @@ fn check_policy(policy: &EgressPolicy) {
                     && oracle_entry_grants(d, port)
             });
             let fetch = policy.allows_fetch(host, port);
-            assert!(!fetch || (initial && some_grants), "fetch widened {host}:{port}");
+            assert!(
+                !fetch || (initial && some_grants),
+                "fetch widened {host}:{port}"
+            );
             assert!(
                 fetch || !(initial && plainly_granted),
                 "fetch refused a granted {host}:{port}"
@@ -273,6 +282,65 @@ fn check_policy(policy: &EgressPolicy) {
     );
     check_user_agent(policy);
     check_local_names(policy);
+    check_pending_settings(policy);
+}
+
+/// Pending setting destinations grant nothing and only label a refusal:
+/// every rule answers the same with them removed, and a pending lookup
+/// returns only an entry with that exact port and (case-insensitively) host.
+fn check_pending_settings(policy: &EgressPolicy) {
+    let without = EgressPolicy {
+        pending_settings: Vec::new(),
+        ..policy.clone()
+    };
+    let mut probes: Vec<(String, u16)> = policy
+        .pending_settings
+        .iter()
+        .map(|p| (p.host.clone(), p.port))
+        .collect();
+    probes.push(("example.com".into(), 443));
+    probes.push(("127.0.0.1".into(), 9));
+    for (host, port) in &probes {
+        assert_eq!(
+            policy.allows_fetch(host, *port),
+            without.allows_fetch(host, *port),
+            "pending entry changed fetch for {host}:{port}"
+        );
+        assert_eq!(
+            policy.allows_tcp(host, *port),
+            without.allows_tcp(host, *port),
+            "pending entry changed tcp for {host}:{port}"
+        );
+        assert_eq!(
+            policy.allows_redirect_to(host, *port, 0),
+            without.allows_redirect_to(host, *port, 0),
+            "pending entry changed redirects for {host}:{port}"
+        );
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            assert_eq!(
+                policy.allows_ip_for(host, ip),
+                without.allows_ip_for(host, ip),
+                "pending entry changed the address check for {host}"
+            );
+        }
+        if let Some(found) = policy.pending_setting_for(host, *port) {
+            assert_eq!(found.port, *port, "pending lookup returned another port");
+            let bare = host
+                .strip_prefix('[')
+                .and_then(|h| h.strip_suffix(']'))
+                .unwrap_or(host);
+            let wanted = normalize_hostname(bare).expect("lookup host normalized");
+            assert!(
+                found.host.eq_ignore_ascii_case(&wanted),
+                "pending lookup returned another host: {} for {host}",
+                found.host
+            );
+        }
+        assert!(
+            without.pending_setting_for(host, *port).is_none(),
+            "lookup found an entry in an empty list"
+        );
+    }
 }
 /// Plain lowercase ASCII form of `raw` (trimmed, trailing dots dropped), or
 /// `None` when it holds anything an IDNA step could reinterpret.
@@ -413,7 +481,14 @@ fn check_local_names(policy: &EgressPolicy) {
     let mut names: Vec<String> = policy.local_names.clone();
     names.extend(policy.local_names.iter().map(|n| format!("a.{n}")));
     names.extend(
-        ["localhost", "example.com", "10.0.0.1", "[fd00::1]", "192.168.1.20"].map(String::from),
+        [
+            "localhost",
+            "example.com",
+            "10.0.0.1",
+            "[fd00::1]",
+            "192.168.1.20",
+        ]
+        .map(String::from),
     );
     for name in &names {
         let listed = normalize_local_name(name).is_some_and(|normalized| {

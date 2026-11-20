@@ -52,7 +52,6 @@ from bookclerk_plugin_sdk.workerd import (
     json_payload,
 )
 
-
 class Cli(CliEntrypoint):
     async def describe(self):
         return {"commands": [{"name": "ping", "about": "Probe", "args": []}]}
@@ -65,7 +64,6 @@ class Cli(CliEntrypoint):
             "stderr": "",
             "payload": json_payload({"pong": message}),
         }
-
 
 class Default(BookclerkEntrypoint):
     async def event(self, batch: EventBatch):
@@ -156,6 +154,22 @@ for the socket's life.
 A remote library whose message announced a new user returns
 `{"poll_events": True}` from `web_socket_message`, and the host calls
 `poll_events` right away instead of at its next scheduled poll.
+
+## Network grant
+
+`self.env.NETWORK` is the grant in effect, as a dict (see
+[Network grant](../../abi.md#network-grant-envnetwork)). A setting whose
+destination still awaits approval shows `"state": "pending"`:
+
+```python
+rows = self.env.NETWORK["settings"]
+row = next((r for r in rows if r["key"] == "server_url"), None)
+if row and row["state"] == "pending":
+    raise RuntimeError(f"Approve {row['destination']} on the plugin's consent form")
+```
+
+A refused fetch answers `403` with an `x-bookclerk-error:
+network_not_granted` header; report it rather than retrying.
 
 ## Testing database code
 
