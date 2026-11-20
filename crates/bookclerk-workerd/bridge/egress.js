@@ -34,12 +34,7 @@
 
 import { connect } from "cloudflare:sockets";
 
-const CREDENTIAL_HEADERS = [
-  "authorization",
-  "cookie",
-  "cookie2",
-  "proxy-authorization",
-];
+const CREDENTIAL_HEADERS = ["authorization", "cookie", "cookie2", "proxy-authorization"];
 
 /** Fetch request-body-header names — removed when method becomes GET. */
 const REQUEST_BODY_HEADERS = [
@@ -205,8 +200,7 @@ function ipv4Granted(addr, policy) {
   const cidrs = policy.addressCidrs || [];
   if (cidrs.some((c) => cidrContainsIpv4(c, addr))) return true;
   return (
-    isLocalNetworkIpv4(addr) &&
-    (policy.localNames || []).some((n) => parseIpv4(String(n)) === addr)
+    isLocalNetworkIpv4(addr) && (policy.localNames || []).some((n) => parseIpv4(String(n)) === addr)
   );
 }
 
@@ -305,11 +299,7 @@ function withUserAgent(request, hostname, policy) {
 }
 
 function sameOrigin(a, b) {
-  return (
-    a.protocol === b.protocol &&
-    a.hostname === b.hostname &&
-    a.port === b.port
-  );
+  return a.protocol === b.protocol && a.hostname === b.hostname && a.port === b.port;
 }
 
 /**
@@ -421,6 +411,49 @@ function loadPolicy(raw) {
   throw new Error("invalid egress policy type");
 }
 
+/**
+ * The pending network setting whose destination is `host:port`, if any.
+ * Pending settings grant nothing; they only let a refusal name the setting.
+ */
+function pendingSetting(host, port, policy) {
+  const want = unbracketed(String(host)).toLowerCase().replace(/\.$/, "");
+  return (policy.pendingSettings || []).find(
+    (p) => p && Number(p.port) === port && String(p.host).toLowerCase() === want,
+  );
+}
+
+/** `host:port` as a refusal names it (IPv6 in brackets). */
+function destinationOf(host, port) {
+  const bare = unbracketed(String(host));
+  return bare.includes(":") ? `[${bare}]:${port}` : `${bare}:${port}`;
+}
+
+/**
+ * The typed `network_not_granted` refusal: a 403 whose JSON body names the
+ * destination and, when a pending network setting names it, that setting.
+ * `x-bookclerk-error` repeats the code so a plugin can tell this refusal
+ * from an upstream 403.
+ */
+function notGranted(host, port, policy, fallback) {
+  const destination = destinationOf(host, port);
+  const pending = pendingSetting(host, port, policy);
+  const details = { destination };
+  if (pending) details.setting = String(pending.setting);
+  const message = pending
+    ? `${destination} is named by setting \`${pending.setting}\` and awaits the operator's approval`
+    : fallback;
+  return new Response(
+    JSON.stringify({ error: { code: "network_not_granted", message, details } }),
+    {
+      status: 403,
+      headers: {
+        "content-type": "application/json",
+        "x-bookclerk-error": "network_not_granted",
+      },
+    },
+  );
+}
+
 export default {
   async fetch(request, env) {
     let policy;
@@ -449,17 +482,22 @@ export default {
       const port = effectivePort(url);
       if (hop === 0) {
         if (!allowsInitial(url.hostname, port, policy)) {
-          return new Response(
+          return notGranted(
+            url.hostname,
+            port,
+            policy,
             `host \`${url.host}\` not in capabilities.network.domains`,
-            { status: 403 },
           );
         }
       } else if (!allowsRedirect(url.hostname, port, hop, policy, maxRedirects)) {
-        return new Response(
-          hop >= maxRedirects
-            ? "too many redirects"
-            : `redirect host \`${url.host}\` is not permitted`,
-          { status: hop >= maxRedirects ? 508 : 403 },
+        if (hop >= maxRedirects) {
+          return new Response("too many redirects", { status: 508 });
+        }
+        return notGranted(
+          url.hostname,
+          port,
+          policy,
+          `redirect host \`${url.host}\` is not permitted`,
         );
       }
 
@@ -527,8 +565,11 @@ export default {
       } catch {
         /* already closed */
       }
+      const pending = pendingSetting(hostname, port, policy);
       throw new Error(
-        `tcp connect \`${hostname}:${port}\` is not in capabilities.network.tcp`,
+        pending
+          ? `network_not_granted: ${destinationOf(hostname, port)} is named by setting \`${pending.setting}\` and awaits the operator's approval`
+          : `network_not_granted: tcp connect \`${hostname}:${port}\` is not in capabilities.network.tcp`,
       );
     }
     const outbound = connect({ hostname, port });

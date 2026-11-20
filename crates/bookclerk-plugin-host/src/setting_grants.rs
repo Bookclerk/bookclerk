@@ -25,33 +25,7 @@ use serde_json::Value;
 
 use crate::consent::PluginGrant;
 
-/// Where one network setting's grant stands for one set of values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum SettingGrantState {
-    /// The value names a destination the operator approved for this setting;
-    /// the plugin reaches it.
-    Approved,
-    /// The value names a destination the operator has not approved yet; the
-    /// plugin cannot reach it until the consent form is answered.
-    Pending,
-    /// The setting is empty or unset: it names no destination.
-    Unset,
-    /// The value does not name a usable destination.
-    Invalid,
-}
-
-impl SettingGrantState {
-    /// Wire name (`approved`, `pending`, `unset`, `invalid`).
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Approved => "approved",
-            Self::Pending => "pending",
-            Self::Unset => "unset",
-            Self::Invalid => "invalid",
-        }
-    }
-}
+pub use bookclerk_plugin_abi::SettingGrantState;
 
 /// One network setting, the destination its value names, and its state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +234,18 @@ pub fn apply_setting_destinations(
         return statuses;
     }
     for status in &statuses {
+        if let (SettingGrantState::Pending, Some(destination)) = (status.state, &status.destination)
+        {
+            grant.setting_network.pending.insert(
+                bookclerk_plugin_manifest::PendingSettingDestination {
+                    setting: status.key.clone(),
+                    destination: destination.display(),
+                    host: destination.host.clone(),
+                    port: destination.port,
+                },
+            );
+            continue;
+        }
         let (SettingGrantState::Approved, Some(destination)) = (status.state, &status.destination)
         else {
             continue;
@@ -276,6 +262,67 @@ pub fn apply_setting_destinations(
         }
     }
     statuses
+}
+
+/// The `NETWORK` binding a guest receives at `open`: the grant in effect
+/// (after [`apply_setting_destinations`] filled its setting overlay) and
+/// each network setting's destination and state.
+///
+/// # Arguments
+///
+/// * `grant` - The effective spawn grant.
+/// * `statuses` - What [`apply_setting_destinations`] returned for it.
+///
+/// # Returns
+///
+/// The grant as the ABI carries it, within the schema's list bound.
+#[must_use]
+pub fn network_grant_binding(
+    grant: &PluginGrant,
+    statuses: &[SettingGrantStatus],
+) -> bookclerk_plugin_abi::NetworkGrant {
+    let policy = grant.egress_policy();
+    let outbound = grant.network_mode.eq_ignore_ascii_case("outbound");
+    let mut out = bookclerk_plugin_abi::NetworkGrant {
+        outbound,
+        domains: if outbound {
+            grant.effective_domains().into_iter().collect()
+        } else {
+            Vec::new()
+        },
+        tcp: if outbound {
+            policy
+                .tcp
+                .iter()
+                .flat_map(|tcp| {
+                    let host = if tcp.host.contains(':') {
+                        format!("[{}]", tcp.host)
+                    } else {
+                        tcp.host.clone()
+                    };
+                    tcp.ports.iter().map(move |port| format!("{host}:{port}"))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        settings: statuses
+            .iter()
+            .map(|status| bookclerk_plugin_abi::SettingNetworkGrant {
+                key: status.key.clone(),
+                network: status.network,
+                destination: status
+                    .destination
+                    .as_ref()
+                    .map(SettingDestination::display)
+                    .unwrap_or_default(),
+                state: status.state,
+                error: status.error.map(|err| err.to_string()).unwrap_or_default(),
+            })
+            .collect(),
+    };
+    out.truncate_to_bound();
+    out
 }
 
 /// Adds `grant`'s ports to the entry for its host, or inserts it.
@@ -417,10 +464,30 @@ type = "string"
         assert!(statuses
             .iter()
             .all(|s| s.state == SettingGrantState::Pending));
-        assert_eq!(
-            grant.setting_network,
-            crate::consent::SettingNetworkOverlay::default()
+        // Pending destinations grant nothing; they only let a refusal name
+        // the setting.
+        let policy = grant.egress_policy();
+        assert!(
+            policy.domains.is_empty() && policy.tcp.is_empty() && policy.local_names.is_empty()
         );
+        assert_eq!(
+            policy
+                .pending_setting_for("ABS.home.lan", 13378)
+                .map(|p| (p.setting.as_str(), p.destination.as_str())),
+            Some(("server_url", "http://abs.home.lan:13378"))
+        );
+        assert_eq!(
+            policy
+                .pending_setting_for("192.168.1.5", 5432)
+                .map(|p| p.setting.as_str()),
+            Some("db")
+        );
+        assert!(policy.pending_setting_for("abs.home.lan", 443).is_none());
+        let binding = network_grant_binding(&grant, &statuses);
+        assert!(binding.outbound);
+        assert_eq!(binding.settings.len(), 2);
+        assert_eq!(binding.settings[0].state, SettingGrantState::Pending);
+        assert_eq!(binding.settings[0].destination, "http://abs.home.lan:13378");
 
         let mut approved = outbound();
         for status in &statuses {

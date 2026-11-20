@@ -30,6 +30,7 @@ const RESERVED_BINDINGS: ReadonlySet<string> = new Set([
   "KV",
   "OAUTH",
   "SOCKETS",
+  "NETWORK",
 ]);
 
 /** One property of the generated `Env` interface. */

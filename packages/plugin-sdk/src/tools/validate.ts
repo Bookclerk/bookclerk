@@ -1271,6 +1271,11 @@ function validateSurface(m: Manifest): void {
         `plugin.toml: [[databases]] binding \`${name}\` must be \`[A-Z][A-Z0-9_]*\` and at most 32 chars`,
       );
     }
+    if (name === "NETWORK") {
+      throw new Error(
+        "plugin.toml: [[databases]] binding `NETWORK` is reserved for the network grant",
+      );
+    }
     if (bindings.has(name)) {
       throw new Error(`plugin.toml: [[databases]] binding \`${name}\` is duplicated`);
     }
@@ -1300,7 +1305,7 @@ function validateSurface(m: Manifest): void {
     if ((table === "kv_namespaces" || table === "queues.producers") && reserved.has(name)) {
       throw new Error(`plugin.toml: [${table}][${index}] binding collides with another binding`);
     }
-    if (name === "CONFIG" || bindings.has(name)) {
+    if (name === "CONFIG" || name === "NETWORK" || bindings.has(name)) {
       throw new Error(`plugin.toml: [${table}][${index}] binding collides with another binding`);
     }
   }

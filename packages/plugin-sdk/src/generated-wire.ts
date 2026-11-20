@@ -2542,13 +2542,13 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
 };
 
 /**
- * Wire codec for `Bindings` (0 data words, 10 pointers).
+ * Wire codec for `Bindings` (0 data words, 11 pointers).
  *
  * @internal
  */
 export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
-  pointerCount: 10,
+  pointerCount: 11,
   write(s, v, caps) {
     if (v.config != null) {
       ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
@@ -2592,6 +2592,9 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (v.sockets != null) {
       s.setCap(9, caps.exportCap(v.sockets));
     }
+    if (v.network != null) {
+      NetworkGrantCodec.write(s.initStruct(10, 1, 3), v.network, caps);
+    }
   },
   read(s, caps) {
     const out: T.Bindings = {
@@ -2601,6 +2604,7 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
       databases: s.getStructList(4, 0, 2).map((item) => NamedDatabaseCodec.read(item, caps)),
       queues: s.getStructList(7, 0, 3).map((item) => NamedQueueCodec.read(item, caps)),
       kv: s.getStructList(8, 0, 3).map((item) => NamedKvCodec.read(item, caps)),
+      network: NetworkGrantCodec.read(s.getStruct(10, 1, 3), caps),
     };
     const eventsValue = caps.importCap(s.getCapIndex(3)) as T.EventPublisher;
     if (!(eventsValue == null)) {
@@ -2617,6 +2621,75 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     const socketsValue = caps.importCap(s.getCapIndex(9)) as T.Sockets;
     if (!(socketsValue == null)) {
       out.sockets = socketsValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `NetworkGrant` (1 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const NetworkGrantCodec: StructCodec<T.NetworkGrant> = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setBool(0, v.outbound ?? false);
+    s.setTextList(0, v.domains ?? []);
+    s.setTextList(1, v.tcp ?? []);
+    {
+      const list = v.settings ?? [];
+      const items = s.initStructList(2, list.length, 1, 3);
+      for (let i = 0; i < items.length; i++) {
+        SettingNetworkGrantCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      outbound: s.getBool(0),
+      domains: s.getTextList(0),
+      tcp: s.getTextList(1),
+      settings: s.getStructList(2, 1, 3).map((item) => SettingNetworkGrantCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `SettingNetworkGrant` (1 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const SettingNetworkGrantCodec: StructCodec<T.SettingNetworkGrant> = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.key ?? "");
+    s.setUint16(0, ord(A.SETTING_NETWORK_KINDS, v.network ?? A.SETTING_NETWORK_KINDS[0]!, "SettingNetworkKind"));
+    if (v.destination !== undefined) {
+      s.setText(1, v.destination ?? "");
+    }
+    s.setUint16(1, ord(A.SETTING_GRANT_STATES, v.state ?? A.SETTING_GRANT_STATES[0]!, "SettingGrantState"));
+    if (v.error !== undefined) {
+      s.setText(2, v.error ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.SettingNetworkGrant = {
+      key: s.getText(0),
+      network: fromOrd(A.SETTING_NETWORK_KINDS, s.getUint16(0), "SettingNetworkKind"),
+      state: fromOrd(A.SETTING_GRANT_STATES, s.getUint16(1), "SettingGrantState"),
+    };
+    const destinationValue = s.getText(1);
+    if (!(destinationValue === "")) {
+      out.destination = destinationValue;
+    }
+    const errorValue = s.getText(2);
+    if (!(errorValue === "")) {
+      out.error = errorValue;
     }
     return out;
   },
@@ -14031,13 +14104,13 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
       InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
     }
     if (v.bindings != null) {
-      BindingsCodec.write(s.initStruct(1, 0, 10), v.bindings, caps);
+      BindingsCodec.write(s.initStruct(1, 0, 11), v.bindings, caps);
     }
   },
   read(s, caps) {
     return {
       invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
-      bindings: BindingsCodec.read(s.getStruct(1, 0, 10), caps),
+      bindings: BindingsCodec.read(s.getStruct(1, 0, 11), caps),
     };
   },
 };

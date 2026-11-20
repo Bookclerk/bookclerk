@@ -1131,6 +1131,10 @@ def _validate_surface(m: dict[str, Any]) -> None:
                 f"plugin.toml: [[databases]] binding `{name}` must be `[A-Z][A-Z0-9_]*` "
                 "and at most 32 chars"
             )
+        if name == "NETWORK":
+            raise ValueError(
+                "plugin.toml: [[databases]] binding `NETWORK` is reserved for the network grant"
+            )
         if name in bindings:
             raise ValueError(f"plugin.toml: [[databases]] binding `{name}` is duplicated")
         bindings.add(name)
@@ -1163,7 +1167,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
             raise ValueError(
                 f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
-        if name == "CONFIG" or name in bindings:
+        if name in ("CONFIG", "NETWORK") or name in bindings:
             raise ValueError(
                 f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
@@ -1881,7 +1885,7 @@ TYPES_OUTPUT_FILE = "bookclerk_configuration.py"
 """Default ``types`` output filename next to ``plugin.toml``."""
 
 _RESERVED_BINDINGS = frozenset(
-    {"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV, "SOCKETS"}
+    {"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV, "SOCKETS", "NETWORK"}
 )
 
 

@@ -45,7 +45,8 @@ async function run(params) {
   const args = cliArgs(params);
   if (params.command === "fetch") {
     const res = await fetch(args.url);
-    return `${res.status} ${await res.text()}`;
+    const refusal = res.headers.get("x-bookclerk-error");
+    return `${res.status} ${refusal ? refusal + " " : ""}${await res.text()}`;
   }
   const socket = connect({ hostname: "127.0.0.1", port: Number(args.port) }, { secureTransport: "off" });
   await socket.opened;
@@ -249,9 +250,11 @@ async fn a_jailed_isolate_reaches_granted_hosts_only_through_the_host() {
         &format!("http://127.0.0.1:{refused_port}/"),
     )
     .await;
+    assert_eq!(code, 0, "{text}");
     assert!(
-        code != 0 || !text.starts_with("200"),
-        "ungranted fetch port must fail: {text}"
+        text.starts_with("403 network_not_granted ")
+            && text.contains(&format!("\"destination\":\"127.0.0.1:{refused_port}\"")),
+        "an ungranted fetch port gets the typed refusal: {text}"
     );
     assert!(
         tokio::time::timeout(Duration::from_millis(300), refused.accept())

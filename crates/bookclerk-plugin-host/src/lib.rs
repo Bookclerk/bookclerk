@@ -223,8 +223,8 @@ pub use rpc_session::{
 };
 pub use setting_grants::{
     apply_setting_destinations, approve_setting_destinations, destinations_in_use,
-    library_setting_statuses, network_settings, setting_grant_statuses, InstanceSettingStatuses,
-    SettingDestinationMap, SettingGrantState, SettingGrantStatus,
+    library_setting_statuses, network_grant_binding, network_settings, setting_grant_statuses,
+    InstanceSettingStatuses, SettingDestinationMap, SettingGrantState, SettingGrantStatus,
 };
 pub use socket_broker::{BrokerSockets, SocketBroker, SocketEvent, SocketSink};
 pub use spawn_plan::{

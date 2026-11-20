@@ -88,6 +88,7 @@ mod limits;
 pub mod media;
 pub mod metadata_files;
 pub mod methods;
+pub mod network_grant;
 pub mod package_version;
 mod plugin_migration;
 mod roles;
@@ -274,6 +275,9 @@ pub use metadata_files::{
     check_render_params, check_rendered, decode_metadata_file_record_bytes,
     encode_metadata_file_record_bytes, validate_metadata_file_record, MetadataFileDialect,
     MetadataFileError,
+};
+pub use network_grant::{
+    NetworkGrant, SettingGrantState, SettingNetworkGrant, MAX_NETWORK_GRANT_ENTRIES,
 };
 pub use roles::{
     hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,

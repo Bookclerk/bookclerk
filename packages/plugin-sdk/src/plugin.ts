@@ -116,6 +116,7 @@ import type {
   MetadataLookupParams,
   MetadataRecord,
   MetadataSearchParams,
+  NetworkGrant,
   OidcClientTemplate,
   PlainFetch,
   PluginCapabilities as WirePluginCapabilities,
@@ -197,6 +198,7 @@ export type {
   MetadataLookupParams,
   MetadataRecord,
   MetadataSearchParams,
+  NetworkGrant,
   OidcClientTemplate,
   PluginCapabilities,
   PluginMigration,
@@ -780,6 +782,8 @@ export interface GrantedContext {
   kv?: NamedKv[];
   /** The `[sockets]` binding, when granted (at most one entry). */
   sockets?: NamedSockets[];
+  /** The network grant in effect, handed to the author as `env.NETWORK`. */
+  network?: NetworkGrant;
 }
 
 /** The granted `[sockets]` binding on the granted context. */
@@ -1011,8 +1015,27 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     }
     const sockets = socketsTransportOf(context);
     if (sockets) merged[sockets.name] = socketsBinding(sockets.sockets);
+    if (context.network && typeof context.network === "object") {
+      merged.NETWORK = Object.freeze(normalizeNetworkGrant(context.network));
+    }
   }
   return Object.freeze(merged) as BookclerkEnv;
+}
+
+/**
+ * Fills the lists a bridge context leaves out, so `env.NETWORK` always has
+ * every field.
+ *
+ * @param grant - The context's `network` value.
+ * @returns The grant with `domains`, `tcp` and `settings` arrays.
+ */
+function normalizeNetworkGrant(grant: Partial<NetworkGrant>): NetworkGrant {
+  return {
+    outbound: grant.outbound === true,
+    domains: Array.isArray(grant.domains) ? grant.domains : [],
+    tcp: Array.isArray(grant.tcp) ? grant.tcp : [],
+    settings: Array.isArray(grant.settings) ? grant.settings : [],
+  };
 }
 
 /**

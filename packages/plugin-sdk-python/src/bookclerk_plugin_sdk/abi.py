@@ -17,6 +17,12 @@ ObjectChangeKind = Literal["changed", "upserted", "removed"]
 treated as `changed`.
 """
 
+SettingNetworkKind = Literal["fetch", "tcp"]
+"""How a setting's destination is reached."""
+
+SettingGrantState = Literal["approved", "pending", "unset", "invalid"]
+"""Where a network setting's destination stands."""
+
 PluginErrorCode = Literal[
     "invalid_params",
     "unauthorized",
@@ -32,6 +38,7 @@ PluginErrorCode = Literal[
     "conflict",
     "limit_exceeded",
     "rate_limited",
+    "network_not_granted",
 ]
 """Stable `PluginError.code` strings. Unknown future codes are forwarded
 as-is; SDKs surface them as a local `unknown` while keeping the raw wire
@@ -738,6 +745,9 @@ class Bindings(TypedDict):
         sockets: `SOCKETS`: host-brokered outbound WebSockets that stay open while the
             guest sleeps; null unless `[sockets]` is declared and granted. Null when the
             guest does not export this capability.
+        network: `NETWORK`: what the operator granted this plugin's network, including
+            the destination each network setting names and whether it is approved, so a
+            guest can tell an unapproved destination from an unreachable one.
     """
 
     config: ExtensibleConfig
@@ -750,6 +760,49 @@ class Bindings(TypedDict):
     queues: list[NamedQueue]
     kv: list[NamedKv]
     sockets: NotRequired[Sockets | None]
+    network: NetworkGrant
+
+
+class NetworkGrant(TypedDict):
+    """The network grant in effect for one `PluginWorker.open`. Read-only
+    feedback: the host enforces the grant whatever the guest does with this.
+
+    Attributes:
+        outbound: True when the grant allows outbound connections; false for `deny`.
+        domains: Fetch destinations in effect, as `plugin.toml` `domains` entries
+            (`host`, `*.host`, `host:port`, or `*` for any public host), including
+            approved setting destinations; at most `maxNetworkGrantEntries`.
+        tcp: Raw TCP destinations in effect, as `host:port` (IPv6 in brackets), one per
+            granted port; at most `maxNetworkGrantEntries`.
+        settings: One entry per `[[settings]]` entry that declares `network`, in
+            declaration order; at most `maxNetworkGrantEntries`.
+    """
+
+    outbound: bool
+    domains: list[str]
+    tcp: list[str]
+    settings: list[SettingNetworkGrant]
+
+
+class SettingNetworkGrant(TypedDict):
+    """One network setting and the destination its value names.
+
+    Attributes:
+        key: The setting key.
+        network: Whether the plugin fetches the destination or opens a socket to it.
+        destination: The destination as the consent form shows it: `scheme://host:port`
+            for a fetch, `host:port` for TCP (IPv6 in brackets); empty when `state` is
+            `unset` or `invalid`. Omitted when absent (wire zero value).
+        state: Where the destination stands.
+        error: Why the value names no destination, when `state` is `invalid`. Omitted
+            when absent (wire zero value).
+    """
+
+    key: str
+    network: SettingNetworkKind
+    destination: NotRequired[str]
+    state: SettingGrantState
+    error: NotRequired[str]
 
 
 class Entrypoints(TypedDict):
@@ -7306,6 +7359,8 @@ class PluginWorker(Protocol):
 
 __all__ = [
     "ObjectChangeKind",
+    "SettingNetworkKind",
+    "SettingGrantState",
     "PluginErrorCode",
     "Entrypoint",
     "PortalAuthMode",
@@ -7361,6 +7416,8 @@ __all__ = [
     "OidcClientsReply",
     "ExtensibleConfig",
     "Bindings",
+    "NetworkGrant",
+    "SettingNetworkGrant",
     "Entrypoints",
     "EntrypointsReplyOk",
     "EntrypointsReplyErr",

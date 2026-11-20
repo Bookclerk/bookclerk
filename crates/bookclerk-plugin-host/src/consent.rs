@@ -416,6 +416,10 @@ pub struct SettingNetworkOverlay {
     /// Names and local-network addresses bound to the local network
     /// ([`EgressPolicy::local_names`]).
     pub local_names: BTreeSet<String>,
+    /// Destinations settings name that await approval; they grant nothing
+    /// and only let a refusal name its setting
+    /// ([`EgressPolicy::pending_settings`]).
+    pub pending: BTreeSet<bookclerk_plugin_manifest::PendingSettingDestination>,
 }
 
 /// One approved grant snapshot for a provenance-qualified plugin.
@@ -711,6 +715,7 @@ impl PluginGrant {
             user_agent: Some(bookclerk_plugin_manifest::host_user_agent()),
             own_user_agent_hosts: self.effective_own_user_agent_hosts().into_iter().collect(),
             local_names: self.setting_network.local_names.iter().cloned().collect(),
+            pending_settings: self.setting_network.pending.iter().cloned().collect(),
         }
     }
 

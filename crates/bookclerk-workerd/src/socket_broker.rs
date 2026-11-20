@@ -355,21 +355,32 @@ pub fn target_granted(policy: &EgressPolicy, target: &SocketTarget) -> bool {
     policy.allows_fetch(&target.host, target.port) || policy.allows_tcp(&target.host, target.port)
 }
 
+/// The typed refusal for a target the grant does not cover, naming the
+/// pending network setting whose value names it, when one does.
+fn not_granted(policy: &EgressPolicy, target: &SocketTarget) -> PluginError {
+    let destination = if target.host.contains(':') {
+        format!("[{}]:{}", target.host, target.port)
+    } else {
+        format!("{}:{}", target.host, target.port)
+    };
+    let setting = policy
+        .pending_setting_for(&target.host, target.port)
+        .map(|pending| pending.setting.as_str());
+    PluginError::network_not_granted(&destination, setting)
+}
+
 /// Addresses for `target` that the policy allows, after the host check.
 ///
 /// # Errors
 ///
-/// `forbidden` when the host is not an approved domain or every address
-/// is outside the grant; `unavailable` when the name does not resolve.
+/// `network_not_granted` when the host is not an approved domain,
+/// `forbidden` when every address is outside the grant; `unavailable` when the name does not resolve.
 async fn allowed_addresses(
     policy: &EgressPolicy,
     target: &SocketTarget,
 ) -> Result<Vec<SocketAddr>> {
     if !target_granted(policy, target) {
-        return Err(PluginError::forbidden(format!(
-            "`{}` is not on the plugin's network grant",
-            target.host
-        )));
+        return Err(not_granted(policy, target));
     }
     let resolved: Vec<SocketAddr> = match target.host.parse::<IpAddr>() {
         Ok(ip) => vec![SocketAddr::new(ip, target.port)],
@@ -477,10 +488,7 @@ async fn dial(
             // Same refusal text as a direct dial; the host checks again and
             // resolves and checks every address itself.
             if !target_granted(&shared.policy, target) {
-                return Err(PluginError::forbidden(format!(
-                    "`{}` is not on the plugin's network grant",
-                    target.host
-                )));
+                return Err(not_granted(&shared.policy, target));
             }
             let tunnel_target = crate::egress_relay::TunnelTarget {
                 host: target.host.to_ascii_lowercase(),

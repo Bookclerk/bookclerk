@@ -546,18 +546,42 @@ async fn the_network_grant_decides_every_dial() {
                 domains: vec!["abs.example.com".into()],
                 ..loopback_policy()
             };
-            let (broker, _seen) = new_broker(policy);
+            let (broker, _seen) = new_broker(policy.clone());
             let err = broker.connect(request(9)).await.expect_err("not granted");
-            assert_eq!(err.code, PluginErrorCode::Forbidden);
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
+            assert!(err
+                .details
+                .as_ref()
+                .is_some_and(|d| !d.contains_key("setting")));
 
-            // Loopback named, but no address grant for it.
+            // A destination a pending setting names is refused the same way,
+            // and the refusal names the setting.
             let policy = EgressPolicy {
+                pending_settings: vec![bookclerk_plugin_manifest::PendingSettingDestination {
+                    setting: "server_url".into(),
+                    destination: "http://127.0.0.1:9".into(),
+                    host: "127.0.0.1".into(),
+                    port: 9,
+                }],
+                ..policy
+            };
+            let (broker, _seen) = new_broker(policy);
+            let err = broker.connect(request(9)).await.expect_err("pending");
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
+            let details = err.details.clone().unwrap_or_default();
+            assert_eq!(details["setting"], "server_url", "{err}");
+            assert_eq!(details["destination"], "127.0.0.1:9");
+
+            // Loopback named, but no address grant for it: a literal binds
+            // its own address, so the target itself is not granted.
+            let policy = EgressPolicy {
+                domains: vec!["127.0.0.1:9".into()],
                 address_cidrs: Vec::new(),
                 ..loopback_policy()
             };
             let (broker, _seen) = new_broker(policy);
             let err = broker.connect(request(9)).await.expect_err("no cidr");
-            assert_eq!(err.code, PluginErrorCode::Forbidden);
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
 
             // A TCP grant for the host and port covers the socket too.
             let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -601,7 +625,7 @@ async fn the_network_grant_decides_every_dial() {
             // Deny mode refuses everything.
             let (broker, _seen) = new_broker(EgressPolicy::deny());
             let err = broker.connect(request(9)).await.expect_err("deny");
-            assert_eq!(err.code, PluginErrorCode::Forbidden);
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
             assert!(broker.shared.table.borrow().is_empty(), "no pending leak");
         })
         .await;

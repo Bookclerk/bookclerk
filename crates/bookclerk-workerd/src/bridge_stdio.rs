@@ -181,6 +181,7 @@ impl WorkerdRoot {
             queues: BTreeMap::new(),
             kv: BTreeMap::new(),
             sockets: BTreeMap::new(),
+            network: bindings.network.clone(),
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -355,6 +356,7 @@ impl WorkerdRoot {
             queues,
             kv,
             sockets,
+            network: bindings.network,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
@@ -541,6 +543,9 @@ struct BridgeContext {
     /// most one entry.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     sockets: BTreeMap<String, String>,
+    /// `NETWORK`: the network grant in effect, which the adapter hands the
+    /// author as `env.NETWORK`.
+    network: bookclerk_plugin_abi::NetworkGrant,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -952,6 +957,7 @@ mod tests {
             queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
             sockets: BTreeMap::from([("SOCKETS".to_string(), "stok".to_string())]),
+            network: bookclerk_plugin_abi::NetworkGrant::default(),
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,
@@ -967,5 +973,6 @@ mod tests {
         assert_eq!(v["kv"]["KV"], "ktok");
         assert_eq!(v["sockets"]["SOCKETS"], "stok");
         assert!(v.get("config").is_some());
+        assert_eq!(v["network"]["outbound"], false, "{v}");
     }
 }

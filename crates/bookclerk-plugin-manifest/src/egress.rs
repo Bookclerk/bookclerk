@@ -134,6 +134,30 @@ pub struct EgressPolicy {
     /// explicit CIDR. Wire name: `localNames`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub local_names: Vec<String>,
+
+    /// Destinations that network settings name but the operator has not
+    /// approved yet. They grant nothing: a refused connection to one says
+    /// which setting names it (`network_not_granted`), so the operator knows
+    /// what to approve. Wire name: `pendingSettings`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_settings: Vec<PendingSettingDestination>,
+}
+
+/// A destination a network setting names that awaits the operator's
+/// approval ([`EgressPolicy::pending_settings`]).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSettingDestination {
+    /// The setting key.
+    pub setting: String,
+    /// The destination as the consent form shows it
+    /// (`https://abs.home.lan:13378`, `db.home.lan:5432`).
+    pub destination: String,
+    /// The host: an IDNA-normalized name or canonical IP literal (no
+    /// brackets).
+    pub host: String,
+    /// The port, 1-65535.
+    pub port: u16,
 }
 
 /// Home page named in [`host_user_agent`], so a site operator who sees the
@@ -244,6 +268,7 @@ impl EgressPolicy {
             own_user_agent_hosts,
             // Local names come from approved settings, never the manifest.
             local_names: Vec::new(),
+            pending_settings: Vec::new(),
         })
     }
 
@@ -328,7 +353,23 @@ impl EgressPolicy {
             user_agent: None,
             own_user_agent_hosts: Vec::new(),
             local_names: Vec::new(),
+            pending_settings: Vec::new(),
         }
+    }
+
+    /// The pending network setting whose destination is `host:port`, for a
+    /// refusal that names it.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - The refused host, as the guest asked for it.
+    /// * `port` - The refused port.
+    #[must_use]
+    pub fn pending_setting_for(&self, host: &str, port: u16) -> Option<&PendingSettingDestination> {
+        let host = normalize_hostname(unbracketed(host))?;
+        self.pending_settings
+            .iter()
+            .find(|pending| pending.port == port && pending.host.eq_ignore_ascii_case(&host))
     }
 
     /// The agent the host sends: [`Self::user_agent`] or [`host_user_agent`].

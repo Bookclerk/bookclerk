@@ -103,19 +103,76 @@ impl LinkPolicy {
         }
     }
 
-    /// The denial body naming the grant that was missing.
-    fn denied_body(&self) -> &'static [u8] {
-        match self.rule {
-            TunnelRule::TcpGrants => {
-                b"HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n\
-tcp connect is not in capabilities.network.tcp"
-            }
-            TunnelRule::IsolateEgress => {
-                b"HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n\
-destination is not in capabilities.network"
-            }
-        }
+    /// The typed `network_not_granted` refusal for `host:port`: a 403 whose
+    /// JSON body names the destination and, when a network setting names it
+    /// and awaits approval, that setting.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - `CONNECT` target host.
+    /// * `port` - `CONNECT` target port.
+    fn denied_response(&self, host: &str, port: u16) -> Vec<u8> {
+        let grant = match self.rule {
+            TunnelRule::TcpGrants => "capabilities.network.tcp",
+            TunnelRule::IsolateEgress => "capabilities.network",
+        };
+        network_not_granted_response(&self.egress, host, port, grant)
     }
+}
+
+/// A 403 `network_not_granted` refusal for `host:port`.
+///
+/// The body is `{"error": {"code", "message", "details"}}`; `details` carries
+/// `destination` and, when a pending network setting names the destination,
+/// `setting`. The `x-bookclerk-error` header repeats the code so a client can
+/// tell this refusal from an upstream 403 without reading the body.
+///
+/// # Arguments
+///
+/// * `egress` - The policy that refused, for its pending settings.
+/// * `host` - The refused host.
+/// * `port` - The refused port.
+/// * `grant` - The grant the destination is missing from, for the message.
+#[must_use]
+pub fn network_not_granted_response(
+    egress: &EgressPolicy,
+    host: &str,
+    port: u16,
+    grant: &str,
+) -> Vec<u8> {
+    let destination = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let pending = egress.pending_setting_for(host, port);
+    let message = match pending {
+        Some(pending) => format!(
+            "{destination} is named by setting `{}` and awaits the operator's approval",
+            pending.setting
+        ),
+        None => format!("{destination} is not in {grant}"),
+    };
+    let mut details = serde_json::Map::new();
+    details.insert("destination".into(), destination.into());
+    if let Some(pending) = pending {
+        details.insert("setting".into(), pending.setting.clone().into());
+    }
+    let body = serde_json::json!({
+        "error": {
+            "code": "network_not_granted",
+            "message": message,
+            "details": details,
+        }
+    })
+    .to_string();
+    format!(
+        "HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\n\
+         x-bookclerk-error: network_not_granted\r\ncontent-length: {}\r\n\
+         connection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
 }
 
 impl From<EgressPolicy> for LinkPolicy {
@@ -305,7 +362,7 @@ where
         }
     }
     if !policy.admits(&host, port) {
-        write_fenced(&mut writer, policy.denied_body(), &fence).await?;
+        write_fenced(&mut writer, &policy.denied_response(&host, port), &fence).await?;
         bail!("grant denied for {host}:{port}");
     }
     let looked_up = tokio::select! {

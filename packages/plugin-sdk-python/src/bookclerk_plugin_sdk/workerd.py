@@ -512,6 +512,29 @@ class _EnvView:
             return default
 
 
+def _network_grant(network: Any) -> dict[str, Any]:
+    """The ``env.NETWORK`` dict: the grant in effect, with every list present.
+
+    Args:
+        network: The bridge context's ``network`` value.
+
+    Returns:
+        ``outbound``, ``domains``, ``tcp`` and ``settings`` (each setting a
+        dict with ``key``, ``network``, ``state`` and, when set,
+        ``destination`` and ``error``).
+    """
+
+    def as_list(value: Any) -> list[Any]:
+        return [py(item) for item in py(value)] if value is not None else []
+
+    return {
+        "outbound": _get(network, "outbound") is True,
+        "domains": as_list(_get(network, "domains")),
+        "tcp": as_list(_get(network, "tcp")),
+        "settings": as_list(_get(network, "settings")),
+    }
+
+
 def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
     granted: dict[str, Any] = {}
     if isinstance(raw_env, _EnvView):
@@ -524,6 +547,9 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
     secrets = _get(ctx, "secrets")
     if secrets is not None:
         granted["SECRETS"] = decode_extensible_config(secrets)
+    network = _get(ctx, "network")
+    if network is not None:
+        granted["NETWORK"] = _network_grant(network)
     storage = _get(ctx, "storage")
     if storage is not None:
         granted["WORK_FS"] = storage

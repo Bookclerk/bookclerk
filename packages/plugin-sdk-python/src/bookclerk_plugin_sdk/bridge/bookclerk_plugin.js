@@ -41,7 +41,7 @@ var FEATURE_STORAGE_HEAD_MANY = "storage.headMany";
 var FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite";
 var FEATURE_STORAGE_CHANGES = "storage.changes";
 var OBJECT_CHANGE_KINDS = ["changed", "upserted", "removed"];
-var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited"];
+var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited", "network_not_granted"];
 var CLI_ARG_KINDS = ["string", "bool", "int", "path"];
 var WORK_KINDS = ["unspecified", "book", "podcast"];
 var EXPRESSION_KINDS = ["unspecified", "text", "narration", "dramatisation", "graphic", "originalAudio"];
@@ -11194,8 +11194,19 @@ function invocationEnv(rawEnv, context) {
     const sockets = socketsTransportOf(context);
     if (sockets)
       merged[sockets.name] = socketsBinding(sockets.sockets);
+    if (context.network && typeof context.network === "object") {
+      merged.NETWORK = Object.freeze(normalizeNetworkGrant(context.network));
+    }
   }
   return Object.freeze(merged);
+}
+function normalizeNetworkGrant(grant) {
+  return {
+    outbound: grant.outbound === true,
+    domains: Array.isArray(grant.domains) ? grant.domains : [],
+    tcp: Array.isArray(grant.tcp) ? grant.tcp : [],
+    settings: Array.isArray(grant.settings) ? grant.settings : []
+  };
 }
 function transportDatabase(entry) {
   const transport = entry;

@@ -686,6 +686,8 @@ def _write_bindings(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("sockets") is not None:
         if v["sockets"] is not None:
             s.set_cap(9, caps.export_cap(v["sockets"]))
+    if v.get("network") is not None:
+        _network_grant_codec.write(s.init_struct(10, 1, 3), v["network"], caps)
 
 
 def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
@@ -696,6 +698,7 @@ def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
         "databases": [_named_database_codec.read(item, caps) for item in s.get_struct_list(4, 0, 2)],
         "queues": [_named_queue_codec.read(item, caps) for item in s.get_struct_list(7, 0, 3)],
         "kv": [_named_kv_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
+        "network": _network_grant_codec.read(s.get_struct(10, 1, 3), caps),
     }
     events = caps.import_cap(s.get_cap_index(3))
     if not (events is None):
@@ -712,8 +715,59 @@ def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_bindings_codec = _Codec(0, 10, _write_bindings, _read_bindings)
-"""Wire codec for ``Bindings`` (0 data words, 10 pointers)."""
+_bindings_codec = _Codec(0, 11, _write_bindings, _read_bindings)
+"""Wire codec for ``Bindings`` (0 data words, 11 pointers)."""
+
+
+def _write_network_grant(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["outbound"])
+    s.set_text_list(0, v["domains"])
+    s.set_text_list(1, v["tcp"])
+    items = s.init_struct_list(2, len(v["settings"]), 1, 3)
+    for item, elem in zip(items, v["settings"], strict=True):
+        _setting_network_grant_codec.write(item, elem, caps)
+
+
+def _read_network_grant(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "outbound": s.get_bool(0),
+        "domains": s.get_text_list(0),
+        "tcp": s.get_text_list(1),
+        "settings": [_setting_network_grant_codec.read(item, caps) for item in s.get_struct_list(2, 1, 3)],
+    }
+
+
+_network_grant_codec = _Codec(1, 3, _write_network_grant, _read_network_grant)
+"""Wire codec for ``NetworkGrant`` (1 data words, 3 pointers)."""
+
+
+def _write_setting_network_grant(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+    s.set_u16(0, _ord(A.SETTING_NETWORK_KINDS, v["network"], "SettingNetworkKind"))
+    if v.get("destination") is not None:
+        s.set_text(1, v["destination"])
+    s.set_u16(1, _ord(A.SETTING_GRANT_STATES, v["state"], "SettingGrantState"))
+    if v.get("error") is not None:
+        s.set_text(2, v["error"])
+
+
+def _read_setting_network_grant(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "key": s.get_text(0),
+        "network": _from_ord(A.SETTING_NETWORK_KINDS, s.get_u16(0), "SettingNetworkKind"),
+        "state": _from_ord(A.SETTING_GRANT_STATES, s.get_u16(1), "SettingGrantState"),
+    }
+    destination = s.get_text(1)
+    if not (destination == ""):
+        out["destination"] = destination
+    error = s.get_text(2)
+    if not (error == ""):
+        out["error"] = error
+    return out
+
+
+_setting_network_grant_codec = _Codec(1, 3, _write_setting_network_grant, _read_setting_network_grant)
+"""Wire codec for ``SettingNetworkGrant`` (1 data words, 3 pointers)."""
 
 
 def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -8829,13 +8883,13 @@ def _write_plugin_worker_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -
     if v.get("invocation") is not None:
         _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
     if v.get("bindings") is not None:
-        _bindings_codec.write(s.init_struct(1, 0, 10), v["bindings"], caps)
+        _bindings_codec.write(s.init_struct(1, 0, 11), v["bindings"], caps)
 
 
 def _read_plugin_worker_open_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "invocation": _invocation_codec.read(s.get_struct(0, 1, 4), caps),
-        "bindings": _bindings_codec.read(s.get_struct(1, 0, 10), caps),
+        "bindings": _bindings_codec.read(s.get_struct(1, 0, 11), caps),
     }
 
 

@@ -8,7 +8,13 @@
  */
 
 import type { DatabaseBinding } from "./db-execute.js";
-import type { EventReadPage, PluginEvent, PublishOk, QueueSendOk } from "./generated.js";
+import type {
+  EventReadPage,
+  NetworkGrant,
+  PluginEvent,
+  PublishOk,
+  QueueSendOk,
+} from "./generated.js";
 
 /**
  * A message that arrived on a host-brokered socket: text as a string, binary
@@ -445,6 +451,12 @@ export interface BookclerkEnv {
   KV?: KvNamespaceBinding;
   /** `[sockets]` host-brokered WebSockets (default name). */
   SOCKETS?: SocketsBinding;
+  /**
+   * The network grant in effect: fetch hosts, TCP destinations, and each
+   * network setting's destination with its approval state (`pending` until
+   * the operator approves it). Read-only; the host enforces the grant.
+   */
+  NETWORK?: NetworkGrant;
   /** `[oauth]` loopback helper; surface reserved. */
   OAUTH?: unknown;
   /**
@@ -452,5 +464,11 @@ export interface BookclerkEnv {
    * renamed `binding = "..."` entries.
    */
   [binding: string]:
-    DatabaseBinding | EventPublisherBinding | QueueBinding | StorageBinding | JsonObject | unknown;
+    | DatabaseBinding
+    | EventPublisherBinding
+    | QueueBinding
+    | StorageBinding
+    | NetworkGrant
+    | JsonObject
+    | unknown;
 }
