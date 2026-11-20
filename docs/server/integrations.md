@@ -621,10 +621,11 @@ allowed_email_domains = ["family.example"]
 link_by_email = true
 ```
 
-Owners (without elevating) and the operator can manage the same settings
-in **Settings → Sign-in**. The page writes `[auth.oidc]` and
+The operator can manage the same settings in **Settings → Sign-in**, and an
+Owner can once they choose **Elevate to Operator**; without elevating, an
+Owner sees them read-only. The page writes `[auth.oidc]` and
 `integrations.public_origin` to `config.toml`, and keeps client secrets in
-`encrypted_secrets` instead of TOML. Administrators can't change them.
+`encrypted_secrets` instead of TOML. Administrators can't see or change them.
 
 ### Client secrets
 

@@ -1582,8 +1582,9 @@ pub async fn require_operator_auth(
 
 /// Operator token/session **or** an Owner portal session.
 ///
-/// Used for identity-broker (`[auth.oidc]`) configuration so Owners can manage
-/// SSO without elevating. Administrators cannot change IdP settings.
+/// Used for reading the sign-in settings (`[auth.oidc]`, OIDC clients, the
+/// second-factor policy), which Owners may see without elevating; changing
+/// them needs the operator. Administrators can't see them.
 /// Impersonating an Owner is treated as that Owner; impersonating anyone else
 /// is refused.
 pub async fn require_operator_or_owner_auth(

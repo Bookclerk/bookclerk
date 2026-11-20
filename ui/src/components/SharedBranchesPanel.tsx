@@ -57,7 +57,13 @@ export function SharedBranchesPanel({ onSessionExpired, canRemove }: SharedBranc
       await refresh();
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
-        onSessionExpired();
+        // Removal needs the operator, so a 401 here usually means elevation
+        // ended rather than the session. The list is open to Owners: reloading
+        // it signs out only when the session itself has expired.
+        await refresh();
+        setError(
+          "Only the operator can remove a shared branch. Choose Elevate to Operator under Account, then try again.",
+        );
         return;
       }
       setError(joinErrorMessage(err, "Could not remove that shared branch."));

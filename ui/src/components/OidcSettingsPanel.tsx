@@ -1385,41 +1385,44 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
             </ul>
           )}
         </section>
+      </fieldset>
 
-        <section className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1">
-            <h2 className="text-lg font-semibold text-ink">Bookclerk as identity provider</h2>
-            <p className="text-sm text-ink/55">
-              Players and other relying parties sign into Bookclerk. Bookclerk is the OpenID issuer.
-              Register each app as a client below.
-            </p>
-          </div>
-          <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
-            Public origin
-            <Input
-              value={publicOrigin}
-              onChange={(e) => setPublicOrigin(e.target.value)}
-              placeholder={detectedOrigin || pageOrigin()}
-              autoComplete="url"
-            />
-            <span className="text-xs font-normal text-ink/50">
-              Leave empty to use a bound loopback origin (
-              <code className="rounded bg-ink/5 px-1">{detectedOrigin || pageOrigin()}</code>
-              ). Tray and <code className="rounded bg-ink/5 px-1">cargo dev</code> use localhost.
-              Production behind TLS must pin{" "}
-              <code className="rounded bg-ink/5 px-1">https://…</code>. Saving empty clears a pinned
-              origin so loopback detection keeps working.
-            </span>
-          </label>
-          <div className="grid gap-3">
-            <CopyableValue label="Issuer" value={issuer} />
-            <CopyableValue label="Discovery" value={`${issuer}/.well-known/openid-configuration`} />
-            <CopyableValue label="Authorization" value={`${issuer}/oidc/authorize`} />
-            <CopyableValue label="Token" value={`${issuer}/oidc/token`} />
-            <CopyableValue label="Userinfo" value={`${issuer}/oidc/userinfo`} />
-          </div>
-        </section>
+      {/* Outside the disabled fieldset so the Copy buttons stay usable read-only. */}
+      <section className="flex flex-col gap-3">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-lg font-semibold text-ink">Bookclerk as identity provider</h2>
+          <p className="text-sm text-ink/55">
+            Players and other relying parties sign into Bookclerk. Bookclerk is the OpenID issuer.
+            Register each app as a client below.
+          </p>
+        </div>
+        <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+          Public origin
+          <Input
+            value={publicOrigin}
+            onChange={(e) => setPublicOrigin(e.target.value)}
+            disabled={!canChange}
+            placeholder={detectedOrigin || pageOrigin()}
+            autoComplete="url"
+          />
+          <span className="text-xs font-normal text-ink/50">
+            Leave empty to use a bound loopback origin (
+            <code className="rounded bg-ink/5 px-1">{detectedOrigin || pageOrigin()}</code>
+            ). Tray and <code className="rounded bg-ink/5 px-1">cargo dev</code> use localhost.
+            Production behind TLS must pin <code className="rounded bg-ink/5 px-1">https://…</code>.
+            Saving empty clears a pinned origin so loopback detection keeps working.
+          </span>
+        </label>
+        <div className="grid gap-3">
+          <CopyableValue label="Issuer" value={issuer} />
+          <CopyableValue label="Discovery" value={`${issuer}/.well-known/openid-configuration`} />
+          <CopyableValue label="Authorization" value={`${issuer}/oidc/authorize`} />
+          <CopyableValue label="Token" value={`${issuer}/oidc/token`} />
+          <CopyableValue label="Userinfo" value={`${issuer}/oidc/userinfo`} />
+        </div>
+      </section>
 
+      <fieldset disabled={!canChange} className="m-0 flex min-w-0 flex-col gap-8 border-0 p-0">
         <section className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
