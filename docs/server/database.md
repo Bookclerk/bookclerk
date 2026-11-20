@@ -239,7 +239,8 @@ left untouched.
 > database that belongs to the old adapter; the new adapter provisions an
 > empty one when the plugin next runs. Before you switch, list the old
 > ones with `bookclerk plugins db list` and drop any you no longer need
-> with `bookclerk plugins db drop`.
+> with `bookclerk plugins db drop <plugin> [binding]` (leave out `binding`
+> to drop every binding of that plugin).
 
 Daemon operators can instead `POST /api/database/migrate` with JSON
 `{ "from": "sqlite", "to": "postgres", "dry_run": false, "apply": true }`.
