@@ -627,9 +627,9 @@ pub fn scratch_book(
 pub struct RequestTitle<'a> {
     /// Store product id the guest downloads.
     pub product_id: &'a str,
-    /// Library row id the pipeline records the acquire on, when the title
-    /// has one.
-    pub book_uuid: Option<&'a str>,
+    /// The account holding the pipeline records the acquire under, when
+    /// known; without one it is recorded by product id and account.
+    pub holding_id: Option<&'a str>,
     /// Display alias of the store plugin (`audible`, `libro`, ...).
     pub source: &'a str,
     /// Store account that holds the title.
@@ -650,7 +650,7 @@ impl<'a> From<&'a BookRecord> for RequestTitle<'a> {
     fn from(book: &'a BookRecord) -> Self {
         Self {
             product_id: book.download_product_id(),
-            book_uuid: Some(book.uuid.as_str()),
+            holding_id: None,
             source: &book.source,
             account_id: &book.account_id,
             title: &book.title,
@@ -666,7 +666,7 @@ impl<'a> From<&'a AcquireTitle> for RequestTitle<'a> {
     fn from(title: &'a AcquireTitle) -> Self {
         Self {
             product_id: &title.product_id,
-            book_uuid: title.book_uuid.as_deref(),
+            holding_id: Some(title.holding_id.as_str()),
             source: &title.source,
             account_id: &title.account_id,
             title: &title.title,
@@ -689,7 +689,7 @@ pub fn acquire_request(
 ) -> bookclerk_acquire::AcquireRequest {
     bookclerk_acquire::AcquireRequest {
         asin: title.product_id.to_string(),
-        book_uuid: title.book_uuid.map(str::to_string),
+        holding_id: title.holding_id.map(str::to_string),
         source: title.source.to_string(),
         account_id: title.account_id.to_string(),
         title: title.title.to_string(),

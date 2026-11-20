@@ -311,11 +311,6 @@ async fn reconcile_one(
     if !title_is_named(&title, &options.asins) {
         return Ok(summary);
     }
-    // The status writes are still keyed by the title's flat row.
-    let Some(book_uuid) = title.book_uuid.clone() else {
-        summary.unchanged += 1;
-        return Ok(summary);
-    };
     let matched =
         find_existing_for_title(index, storage, library, &title, &options.download).await?;
     if (matched.is_some() && options.only_clear_missing)
@@ -328,9 +323,8 @@ async fn reconcile_one(
         TitleUpdate::Unchanged => summary.unchanged += 1,
         TitleUpdate::Acquired(key) => {
             library
-                .set_acquire_status(
-                    &book_uuid,
-                    &title.account_id,
+                .set_holding_acquire_status(
+                    &title.holding_id,
                     AcquireStatus::Acquired,
                     Some(&key),
                     None,
@@ -354,9 +348,8 @@ async fn reconcile_one(
                 return Ok(summary);
             }
             library
-                .set_acquire_status(
-                    &book_uuid,
-                    &title.account_id,
+                .set_holding_acquire_status(
+                    &title.holding_id,
                     AcquireStatus::NotAcquired,
                     None,
                     None,
@@ -761,7 +754,7 @@ pub(crate) fn request_from_title(
 ) -> AcquireRequest {
     AcquireRequest {
         asin: title.product_id.clone(),
-        book_uuid: title.book_uuid.clone(),
+        holding_id: Some(title.holding_id.clone()),
         source: title.source.clone(),
         account_id: title.account_id.clone(),
         title: title.title.clone(),

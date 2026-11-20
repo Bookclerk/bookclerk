@@ -509,9 +509,9 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             )
         }
         DbAtomicParams::SetAcquireStatus {
-            book_uuid,
-            edition_id,
             holding_id,
+            edition_id,
+            book_uuid,
             status,
             storage_key,
             error_message,
@@ -532,9 +532,9 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
                 event_id.trim().to_string()
             };
             plan_set_acquire_status(
-                book_uuid,
-                edition_id.as_deref(),
-                holding_id.as_deref(),
+                holding_id,
+                edition_id,
+                book_uuid.as_deref(),
                 status,
                 storage_key.as_deref(),
                 error_message.as_deref(),
@@ -2454,12 +2454,17 @@ fn plan_publish_domain_event(row: &PublishRow<'_>, now: &str) -> AtomicPlan {
     }
 }
 
-/// Update a book and optionally insert `book_acquired` in the same batch.
+/// Write an edition's acquire state for holding `holding_id`, mirror it
+/// onto the flat `books` row and insert its event, in one batch.
+///
+/// Every statement runs only while the holding still holds the edition:
+/// the holding was read before the write, and a revoke or rescan may have
+/// removed it since. The outcome is `notFound` when it no longer does.
 #[allow(clippy::too_many_arguments)]
 fn plan_set_acquire_status(
-    book_uuid: &str,
-    edition_id: Option<&str>,
-    holding_id: Option<&str>,
+    holding_id: &str,
+    edition_id: &str,
+    book_uuid: Option<&str>,
     status: &str,
     storage_key: Option<&str>,
     error_message: Option<&str>,
@@ -2475,36 +2480,43 @@ fn plan_set_acquire_status(
     ordering_key: &str,
     now: &str,
 ) -> AtomicPlan {
-    // The edition's row is written only for a title its account still holds.
-    let (edition, holding) = match (edition_id, holding_id) {
-        (Some(edition), Some(holding)) => (edition, holding),
-        _ => ("", ""),
+    const HOLDS: &str = "EXISTS (SELECT 1 FROM holdings WHERE id = ? \
+         AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?))";
+    let holds = || [j_str(holding_id), j_str(edition_id)];
+    let with_holds = |mut binds: Vec<DbValue>| {
+        binds.extend(holds());
+        binds
     };
     AtomicPlan {
         statements: vec![
             sql(
-                "UPDATE books SET acquire_status = ?, storage_key = ?, error_message = ?, updated_at = ? \
-                 WHERE uuid = ?",
-                vec![
+                &format!(
+                    "UPDATE books SET acquire_status = ?, storage_key = ?, error_message = ?, \
+                        updated_at = ? \
+                     WHERE uuid = ? AND {HOLDS}"
+                ),
+                with_holds(vec![
                     j_str(status),
                     j_opt_str(storage_key),
                     j_opt_str(error_message),
                     j_str(now),
-                    j_str(book_uuid),
-                ],
+                    j_str(book_uuid.unwrap_or_default()),
+                ]),
             ),
             sql(
-                "INSERT INTO domain_events (\
-                    id, event_type, schema_version, occurred_at, account_id, source, \
-                    correlation_id, causation_id, dedup_key, payload, ordering_key, \
-                    dispatch_state, created_at, wake_pending\
-                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
-                 WHERE ? != '' AND NOT EXISTS (\
-                    SELECT 1 FROM domain_events \
-                    WHERE queue_name = 'core.events' AND account_id = ? AND source = ? \
-                      AND event_type = ? AND dedup_key = ?\
-                 ) AND EXISTS (SELECT 1 FROM books WHERE uuid = ?)",
-                vec![
+                &format!(
+                    "INSERT INTO domain_events (\
+                        id, event_type, schema_version, occurred_at, account_id, source, \
+                        correlation_id, causation_id, dedup_key, payload, ordering_key, \
+                        dispatch_state, created_at, wake_pending\
+                     ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
+                     WHERE ? != '' AND NOT EXISTS (\
+                        SELECT 1 FROM domain_events \
+                        WHERE queue_name = 'core.events' AND account_id = ? AND source = ? \
+                          AND event_type = ? AND dedup_key = ?\
+                     ) AND {HOLDS}"
+                ),
+                with_holds(vec![
                     j_str(event_id),
                     j_str(event_type),
                     j_i64(schema_version.max(1)),
@@ -2522,62 +2534,51 @@ fn plan_set_acquire_status(
                     j_str(source),
                     j_str(event_type),
                     j_str(dedup_key),
-                    j_str(book_uuid),
-                ],
+                ]),
             ),
             // The edition's row: created when missing, then set unless
             // another holding that still exists acquired it (that holding's
-            // writes alone change an acquired edition). The writing holding
-            // must still hold the edition when the plan runs: it was read
-            // before, and a revoke or rescan may have removed it since.
+            // writes alone change an acquired edition).
             sql(
-                "INSERT OR IGNORE INTO edition_acquisitions (\
-                    edition_id, status, storage_key, error_message, holding_id, updated_at\
-                 ) SELECT ?, ?, ?, ?, ?, ? \
-                 WHERE ? != '' AND EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
-                   AND EXISTS (SELECT 1 FROM editions WHERE id = ?) \
-                   AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
-                     AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?))",
-                vec![
-                    j_str(edition),
+                &format!(
+                    "INSERT OR IGNORE INTO edition_acquisitions (\
+                        edition_id, status, storage_key, error_message, holding_id, updated_at\
+                     ) SELECT ?, ?, ?, ?, ?, ? \
+                     WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND {HOLDS}"
+                ),
+                with_holds(vec![
+                    j_str(edition_id),
                     j_str(status),
                     j_opt_str(storage_key),
                     j_opt_str(error_message),
-                    j_str(holding),
+                    j_str(holding_id),
                     j_str(now),
-                    j_str(edition),
-                    j_str(book_uuid),
-                    j_str(edition),
-                    j_str(holding),
-                    j_str(edition),
-                ],
+                    j_str(edition_id),
+                ]),
             ),
             sql(
-                "UPDATE edition_acquisitions SET status = ?, storage_key = ?, error_message = ?, \
-                    holding_id = ?, updated_at = ? \
-                 WHERE edition_id = ? \
-                   AND (status != 'acquired' OR holding_id = ? \
-                        OR NOT EXISTS (SELECT 1 FROM holdings WHERE id = edition_acquisitions.holding_id)) \
-                   AND EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
-                   AND EXISTS (SELECT 1 FROM holdings WHERE id = ? \
-                     AND listing_id IN (SELECT id FROM store_listings WHERE edition_id = ?))",
-                vec![
+                &format!(
+                    "UPDATE edition_acquisitions SET status = ?, storage_key = ?, \
+                        error_message = ?, holding_id = ?, updated_at = ? \
+                     WHERE edition_id = ? \
+                       AND (status != 'acquired' OR holding_id = ? \
+                            OR NOT EXISTS (SELECT 1 FROM holdings \
+                              WHERE id = edition_acquisitions.holding_id)) \
+                       AND {HOLDS}"
+                ),
+                with_holds(vec![
                     j_str(status),
                     j_opt_str(storage_key),
                     j_opt_str(error_message),
-                    j_str(holding),
+                    j_str(holding_id),
                     j_str(now),
-                    j_str(edition),
-                    j_str(holding),
-                    j_str(book_uuid),
-                    j_str(holding),
-                    j_str(edition),
-                ],
+                    j_str(edition_id),
+                    j_str(holding_id),
+                ]),
             ),
             sql(
-                "SELECT CASE WHEN EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
-                    THEN 'ok' ELSE 'notFound' END AS status",
-                vec![j_str(book_uuid)],
+                &format!("SELECT CASE WHEN {HOLDS} THEN 'ok' ELSE 'notFound' END AS status"),
+                holds().to_vec(),
             ),
         ],
         outcome_index: 4,
@@ -5065,9 +5066,9 @@ mod tests {
     fn edition_status_req(step: u32, book: &str, status: &str, key: Option<&str>) -> NamedReq {
         test_req(
             DbAtomicParams::SetAcquireStatus {
-                book_uuid: book.into(),
-                edition_id: Some("ed1".into()),
-                holding_id: Some(format!("h-{book}")),
+                holding_id: format!("h-{book}"),
+                edition_id: "ed1".into(),
+                book_uuid: Some(book.into()),
                 status: status.into(),
                 storage_key: key.map(str::to_string),
                 error_message: None,
@@ -5126,13 +5127,16 @@ mod tests {
             conn.execute(sql, []).unwrap();
         }
         let step = std::cell::Cell::new(0u32);
-        let run = |book: &str, status: &str, key: Option<&str>| {
+        let run_as = |book: &str, status: &str, key: Option<&str>, outcome: &str| {
             step.set(step.get() + 1);
             let req = edition_status_req(step.get(), book, status, key);
             assert_eq!(
                 run_plan(&conn, &plan_req(&req, now).unwrap()).status,
-                atomic_status::OK
+                outcome
             );
+        };
+        let run = |book: &str, status: &str, key: Option<&str>| {
+            run_as(book, status, key, atomic_status::OK);
         };
 
         run("b1", "acquired", Some("a.m4b"));
@@ -5166,14 +5170,24 @@ mod tests {
         run("b1", "queued", None);
         assert_eq!(edition_row(&conn), ("queued".into(), None, "h-b1".into()));
         // A write naming a holding that no longer exists (read before a
-        // revoke or rescan removed it) changes nothing.
+        // revoke or rescan removed it) changes nothing, the flat row
+        // included, and is not found.
         conn.execute("DELETE FROM holdings WHERE id = 'h-b1'", [])
             .unwrap();
-        run("b1", "acquired", Some("c.m4b"));
+        run_as("b1", "acquired", Some("c.m4b"), atomic_status::NOT_FOUND);
         assert_eq!(edition_row(&conn), ("queued".into(), None, "h-b1".into()));
+        assert_eq!(
+            conn.query_row(
+                "SELECT acquire_status FROM books WHERE uuid = 'b1'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "queued"
+        );
         conn.execute("DELETE FROM edition_acquisitions", [])
             .unwrap();
-        run("b1", "acquired", Some("c.m4b"));
+        run_as("b1", "acquired", Some("c.m4b"), atomic_status::NOT_FOUND);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM edition_acquisitions", [], |r| r
                 .get::<_, i64>(0))
@@ -5187,41 +5201,61 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn);
         let now = "2024-06-01T00:00:00Z";
-        conn.execute(
+        for sql in [
             "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
              VALUES ('audible', 'user-1', 'us', 'audible', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
             "INSERT INTO books (uuid, plugin_key, source, account_id, product_id, marketplace, title, created_at, updated_at) \
              VALUES ('b1', 'audible', 'audible', 'user-1', 'B00X', 'us', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let req = test_req(
-            DbAtomicParams::SetAcquireStatus {
-                book_uuid: "b1".into(),
-                edition_id: None,
-                holding_id: None,
-                status: "acquired".into(),
-                storage_key: Some("Author/T/book.m4b".into()),
-                error_message: None,
-                event_id: "evt-acq".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                event_account_id: "user-1".into(),
-                source: "audible".into(),
-                correlation_id: "b1".into(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:b1".into(),
-                payload: r#"{"titleId":"b1"}"#.into(),
-                ordering_key: "b1".into(),
-            },
-            "acq-1",
+            "INSERT INTO works (id, kind, title, created_at, updated_at) \
+             VALUES ('w1', 'book', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO expressions (id, work_id, kind, abridgement, created_at, updated_at) \
+             VALUES ('x1', 'w1', 'narration', 'unknown', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO editions (id, expression_id, media_kind, title, created_at, updated_at) \
+             VALUES ('ed1', 'x1', 'audio', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO store_listings (id, plugin_key, marketplace, product_id, edition_id, title, observed_at, created_at, updated_at) \
+             VALUES ('l1', 'audible', 'us', 'B00X', 'ed1', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO holdings (id, listing_id, holder, holder_kind, plugin_key, account_id, entitlement, created_at, updated_at) \
+             VALUES ('h1', 'l1', 'audible/user-1', 'account', 'audible', 'user-1', 'purchase', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+        ] {
+            conn.execute(sql, []).unwrap();
+        }
+        let acquire = |holding: &str, event_id: &str, step: &str| {
+            test_req(
+                DbAtomicParams::SetAcquireStatus {
+                    holding_id: holding.into(),
+                    edition_id: "ed1".into(),
+                    book_uuid: Some("b1".into()),
+                    status: "acquired".into(),
+                    storage_key: Some("Author/T/book.m4b".into()),
+                    error_message: None,
+                    event_id: event_id.into(),
+                    event_type: "book_acquired".into(),
+                    schema_version: 1,
+                    event_account_id: "user-1".into(),
+                    source: "audible".into(),
+                    correlation_id: holding.into(),
+                    causation_id: String::new(),
+                    dedup_key: format!("book_acquired:{holding}"),
+                    payload: format!(r#"{{"titleId":"{holding}"}}"#),
+                    ordering_key: holding.into(),
+                },
+                step,
+            )
+        };
+        let result = run_plan(
+            &conn,
+            &plan_req(&acquire("h1", "evt-acq", "acq-1"), now).unwrap(),
         );
-        let result = run_plan(&conn, &plan_req(&req, now).unwrap());
         assert_eq!(result.status, atomic_status::OK);
+        // The edition, the mirrored flat row and the event, in one batch.
+        assert_eq!(
+            edition_row(&conn),
+            (
+                "acquired".into(),
+                Some("Author/T/book.m4b".into()),
+                "h1".into()
+            )
+        );
         let status: String = conn
             .query_row(
                 "SELECT acquire_status FROM books WHERE uuid = 'b1'",
@@ -5237,30 +5271,13 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ordering, "b1");
+        assert_eq!(ordering, "h1");
 
-        let missing = test_req(
-            DbAtomicParams::SetAcquireStatus {
-                book_uuid: "missing".into(),
-                edition_id: None,
-                holding_id: None,
-                status: "acquired".into(),
-                storage_key: None,
-                error_message: None,
-                event_id: "evt-missing".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                event_account_id: "user-1".into(),
-                source: "audible".into(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:missing".into(),
-                payload: "{}".into(),
-                ordering_key: "missing".into(),
-            },
-            "acq-missing",
+        // A holding that does not hold the edition writes nothing.
+        let not_found = run_plan(
+            &conn,
+            &plan_req(&acquire("missing", "evt-missing", "acq-missing"), now).unwrap(),
         );
-        let not_found = run_plan(&conn, &plan_req(&missing, now).unwrap());
         assert_eq!(not_found.status, atomic_status::NOT_FOUND);
         let events: i64 = conn
             .query_row(
@@ -5700,9 +5717,9 @@ mod tests {
                 deliver_after: String::new(),
             },
             DbAtomicParams::SetAcquireStatus {
-                book_uuid: "book-1".into(),
-                edition_id: None,
-                holding_id: None,
+                holding_id: "holding-1".into(),
+                edition_id: "edition-1".into(),
+                book_uuid: Some("book-1".into()),
                 status: "done".into(),
                 storage_key: Some("key".into()),
                 error_message: None,

@@ -963,7 +963,7 @@ pub async fn run_acquire(
         destinations.set_filters(&filters);
         let req = AcquireRequest {
             asin: book.product_id.clone(),
-            book_uuid: book.book_uuid.clone(),
+            holding_id: Some(book.holding_id.clone()),
             source: book.source.clone(),
             account_id: book.account_id.clone(),
             title: book.title.clone(),

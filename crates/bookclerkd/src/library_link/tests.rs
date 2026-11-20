@@ -5831,8 +5831,10 @@ async fn the_grant_and_the_host_name_a_title_from_the_same_fields() {
         )
     };
     assert_eq!(naming(&granted), naming(&hosted));
-    assert_eq!(hosted.book_uuid.as_deref(), Some(holding.as_str()));
-    assert_eq!(granted.book_uuid.as_deref(), Some(row.uuid.as_str()));
+    // The owner records under its holding; the host's scratch row is
+    // written by product id and account.
+    assert_eq!(granted.holding_id.as_deref(), Some(holding.as_str()));
+    assert_eq!(hosted.holding_id, None);
 }
 
 /// A title's target set on the host is the plan's destinations its list
