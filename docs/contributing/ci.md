@@ -491,7 +491,7 @@ Every selected check lists what a clean runner needs, with a reason:
   `cargo stage-plugins --plugin <id>…` (or `--optional --examples` for the
   full installation). It runs `bookclerk-plugin-e2e`
   (`--lib --test staged_plugins --test installed_plugin_path --test
-  cold_start`; never `native_gateway`) with
+  cold_start --test workerd_isolate_egress`; never `native_gateway`) with
   `BOOKCLERK_REQUIRE_STAGED_PLUGINS=1`. The `cold_start` measurement is
   ignored, so the check only keeps it compiling.
 - **`postgres` `rpc_like`**: the postgres guest, the launcher, the jail and

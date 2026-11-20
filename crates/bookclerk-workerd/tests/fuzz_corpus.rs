@@ -1,6 +1,7 @@
 //! Replays the checked-in `granted_http`, `workerd_control`, `socket_broker`,
-//! `socket_route` and `egress_bridge` fuzz corpora in PR CI (no libFuzzer
-//! required), so an input that once broke one of them stays fixed
+//! `socket_route`, `egress_bridge` and `egress_relay_head` fuzz corpora in
+//! PR CI (no libFuzzer required), so an input that once broke one of them
+//! stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 
 use std::path::{Path, PathBuf};
@@ -606,4 +607,43 @@ fn egress_bridge_probes_cover_both_verdicts() {
         allowed > 0 && refused > 0,
         "allowed {allowed}, refused {refused}"
     );
+}
+
+/// The `egress_relay_head` oracle, shared with the fuzz target: it checks
+/// each head the egress relay parses against an independent parser.
+#[path = "../../../fuzz/oracles/egress_relay_head.rs"]
+// Test code: the shared oracle asserts with expect/unwrap.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod egress_relay_head_oracle;
+
+/// Regular files directly under `fuzz/corpus/egress_relay_head/`,
+/// canonicalized and confined to that directory.
+// Test helper: a missing corpus is a failed test, not a handled error.
+#[allow(clippy::expect_used)]
+fn egress_relay_head_corpus() -> Vec<PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/egress_relay_head")
+        .canonicalize()
+        .expect("canonicalize fuzz corpus");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("fuzz corpus")
+        .map(|entry| entry.expect("entry").path())
+        // Inline canonicalize → starts_with at each sink (CodeQL two-state barrier).
+        .filter_map(|path| path.canonicalize().ok())
+        .filter(|path| path.starts_with(&dir) && path.is_file())
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "empty egress_relay_head corpus");
+    files
+}
+
+/// Every checked-in `egress_relay_head` input still holds the oracle, so a
+/// head that once broke the egress relay's parsing stays fixed.
+#[test]
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_egress_relay_head_holds_the_oracle() {
+    for path in egress_relay_head_corpus() {
+        let data = std::fs::read(&path).expect("read");
+        egress_relay_head_oracle::check(&data);
+    }
 }
