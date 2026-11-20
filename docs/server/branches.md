@@ -664,6 +664,13 @@ A host never writes library SQL.
 
 ### Acquires
 
+A host takes acquires a person started. Acquires that wait for a store
+account's [download pace](../internals/jobs.md#download-pacing), such as
+auto-acquire, run only on nodes that share the library database, because
+the pace lives there; so do forced and PDF-only acquires. Each title a
+host uploads still counts toward its account's pace: the owner records it
+when it commits the upload.
+
 1. The host asks the owner for the job's titles (`acquire.plan`). As for
    a local acquire, a title whose edition another store account already
    acquired is left out: the library already has its files.

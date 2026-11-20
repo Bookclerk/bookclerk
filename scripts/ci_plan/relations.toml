@@ -120,6 +120,8 @@ paths = [
     "fuzz/oracles/sharing_request.rs",
     "fuzz/corpus/connections_request/**",
     "fuzz/oracles/connections_request.rs",
+    "fuzz/corpus/pace_request/**",
+    "fuzz/oracles/pace_request.rs",
 ]
 
 # The desktop window's custom-scheme oracle, shared the same way.
@@ -245,6 +247,11 @@ paths = ["fuzz/corpus/libro_catalog/**", "fuzz/oracles/libro_catalog.rs"]
 package = "bookclerk-audible-catalog"
 # The catalog oracle is shared with the replay test through `#[path]`.
 paths = ["fuzz/corpus/audible_catalog/**", "fuzz/oracles/audible_catalog.rs"]
+
+[[test_input]]
+package = "bookclerk-storefront"
+# The throttle classifier oracle is shared with the replay test through `#[path]`.
+paths = ["fuzz/corpus/throttle_reason/**", "fuzz/oracles/throttle_reason.rs"]
 
 [[test_input]]
 package = "bookclerk-plugin-source-graphicaudio"

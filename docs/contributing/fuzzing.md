@@ -62,6 +62,7 @@ boundary extends it.
 | `diagnostics_lookup_reply` | The diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue and pull request links | `bookclerk-config::parse_lookup_reply`, `parse_delete_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
+| `throttle_reason` | A store's refusal text, which the `audible` guest reads from a refused license request to tell throttling (which pauses the whole account) from a plain refusal | `bookclerk-storefront::is_throttle_reason` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
@@ -81,6 +82,7 @@ boundary extends it.
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
+| `pace_request` | A person's pace for one of their store accounts, the body of `POST /api/portal/sources/{source}/connections/{account_id}/pace` | `bookclerk-library::pacing::parse_pace_request` |
 | `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta` and each entry of its batch route) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
@@ -701,6 +703,25 @@ only that. The others check:
   or a boolean, and nothing else. Anything else is refused as `Invalid`.
   The shared oracle is `fuzz/oracles/connections_request.rs`, replayed
   from `bookclerk-library`.
+- **`pace_request`**: reads the body as an untyped JSON value. It is
+  accepted exactly when it is one object with no repeated keys and no keys
+  besides `mode`, `downloads_per_day`, `min_gap_seconds` and
+  `clear_cooldown`; `mode` is `default`, `custom` or `unlimited`;
+  `clear_cooldown` is absent, `null` or a boolean; and each number is
+  absent, `null` or a whole number in range (1 to 10000 downloads, 0 to
+  86400 seconds). Only `custom` may carry a number, and it needs at least
+  one. Anything else is refused as `Invalid`. The shared oracle is
+  `fuzz/oracles/pace_request.rs`, replayed from `bookclerk-library`.
+- **`throttle_reason`**: restates the throttle words byte by byte. Refusal
+  text is a throttle exactly when it contains `throttl`, `rate limit`,
+  `rate-limit`, `ratelimit`, `too many requests` or `429`, ignoring ASCII
+  case;
+  changing the text's case never changes the answer, adding "Too Many
+  Requests" always makes it a throttle, and adding other limit wording
+  (a device or download limit, "Too many devices registered") never
+  makes a plain refusal one. The
+  shared oracle is `fuzz/oracles/throttle_reason.rs`, replayed from
+  `bookclerk-storefront`.
 - **`window_policy`**: restates the policy from the bytes. A request is
   refused as foreign exactly when its `Origin` is not byte for byte one of
   the two app origins, or when it has no `Origin`, is a write, and its

@@ -159,6 +159,7 @@ impl JobTransport for InProcessJobTransport {
                     crate::jobs::AcquireMode {
                         force: cmd.payload.force,
                         pdf_only: cmd.payload.pdf_only,
+                        paced: cmd.payload.paced,
                     },
                     Some(&ctx),
                 )
