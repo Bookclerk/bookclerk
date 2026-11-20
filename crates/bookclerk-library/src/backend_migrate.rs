@@ -32,18 +32,18 @@ use crate::entities::{
     clerk_links, configuration_audit, configuration_changes, configuration_documents, contributors,
     copy_grants, credits, domain_events, edition_acquisitions, edition_copies, edition_files,
     edition_identifiers, editions, embeddings, encrypted_secrets, event_deliveries,
-    event_outbox_stats, expressions, holdings, ignored_titles, job_secret_handoffs, job_temp_paths,
-    jobs, library_identity, library_links, link_imports, link_requests, listening_progress,
-    listing_offers, node_credentials, node_enrollment_links, node_upload_sessions, nodes,
-    oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
-    patron_controls, patron_scope_keys, patron_scopes, pending_joins, playback_progress,
-    playback_sessions, plugin_artifacts, plugin_cron_cursors, plugin_deployments, plugin_installs,
-    plugin_instances, plugin_kv, plugin_placements, plugin_schemas, plugin_versions,
-    portal_identities, portal_sessions, remote_plugin_consents, resolution_conflicts,
-    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
-    store_listings, title_request_sources, title_requests, user_invites, user_preferences,
-    user_title_state, user_work_tags, users, webauthn_challenges, webauthn_credentials,
-    window_book_parts, window_books, work_identifiers, works,
+    event_outbox_stats, expressions, holdings, ignored_titles, intake_items, job_secret_handoffs,
+    job_temp_paths, jobs, library_identity, library_links, link_imports, link_requests,
+    listening_progress, listing_offers, node_credentials, node_enrollment_links,
+    node_upload_sessions, nodes, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
+    oidc_rp_states, operator_sessions, patron_controls, patron_scope_keys, patron_scopes,
+    pending_joins, playback_progress, playback_sessions, plugin_artifacts, plugin_cron_cursors,
+    plugin_deployments, plugin_installs, plugin_instances, plugin_kv, plugin_placements,
+    plugin_schemas, plugin_versions, portal_identities, portal_sessions, remote_plugin_consents,
+    resolution_conflicts, resolution_overrides, saved_filters, security_audit_events, series,
+    series_entries, store_listings, title_request_sources, title_requests, user_invites,
+    user_preferences, user_title_state, user_work_tags, users, webauthn_challenges,
+    webauthn_credentials, window_book_parts, window_books, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -228,6 +228,8 @@ macro_rules! copied_entities {
         $each!(plugin_versions);
         $each!(plugin_installs);
         $each!(plugin_instances);
+        // Drop folder items, so `leave` folders are not added again.
+        $each!(intake_items);
         $each!(plugin_deployments);
         $each!(plugin_placements);
         $each!(plugin_cron_cursors);
