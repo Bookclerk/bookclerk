@@ -232,6 +232,8 @@ export class Player {
   private flight: ReportFlight | null = null;
   /** The replacement of a failed session under way; `null` with none. */
   private recovery: Promise<void> | null = null;
+  /** Closes not yet answered, so a later stop can wait for them too. */
+  private readonly closing = new Set<Promise<void>>();
   /** Counts bookmarks added and removed, so a list read earlier is not shown over them. */
   private bookmarkEdits = 0;
   /** Counts loads, so an answer for an earlier one is dropped. */
@@ -334,7 +336,7 @@ export class Player {
     // Everything that decides which request is the latest happens before
     // the first await, so a slow close of the book before cannot let an
     // earlier request overtake a later one.
-    const closing = this.stop();
+    const closing = this.unload();
     const generation = (this.generation += 1);
     this.retriedAt = null;
     this.wantPlay = true;
@@ -613,7 +615,30 @@ export class Player {
     if (this.audio) this.audio.src = "";
     this.set({ status: "error", error });
     // The server may have ended it already; then the close changes nothing.
-    if (session) void this.finish(session, meter, body, false);
+    if (session) void this.end(session, meter, body, false);
+  }
+
+  /**
+   * Closes a session and keeps the close where {@link Player.stop} finds
+   * it until it is answered.
+   *
+   * @param session - The session to close.
+   * @param meter - The listened time of the stretch that ended.
+   * @param body - The close report.
+   * @param keepalive - True while the page is going away.
+   * @returns Settles when the close was answered or failed.
+   */
+  private end(
+    session: PlaybackSession,
+    meter: Meter,
+    body: PlaybackReport,
+    keepalive: boolean,
+  ): Promise<void> {
+    const closing: Promise<void> = this.finish(session, meter, body, keepalive).finally(() => {
+      this.closing.delete(closing);
+    });
+    this.closing.add(closing);
+    return closing;
   }
 
   /**
@@ -901,11 +926,25 @@ export class Player {
   }
 
   /**
-   * Ends the session with a last report and unloads the edition.
+   * Ends the session with a last report and unloads the edition. It also
+   * waits for closes sent earlier and not yet answered, so a caller that
+   * must not go on before the last report (a sign-out) can rely on it even
+   * when the listener had already pressed stop.
    *
    * @param keepalive - True while the page is going away.
    */
   async stop(keepalive = false): Promise<void> {
+    await this.unload(keepalive);
+    await Promise.all([...this.closing]);
+  }
+
+  /**
+   * Unloads the edition and closes its session, waiting for that close
+   * only: the next book does not wait on closes of books before the last.
+   *
+   * @param keepalive - True while the page is going away.
+   */
+  private async unload(keepalive = false): Promise<void> {
     const session = this.session;
     this.generation += 1;
     this.wantPlay = false;
@@ -927,6 +966,6 @@ export class Player {
     this.meter = emptyMeter();
     this.tickedAt = null;
     this.pendingSeekMs = null;
-    await this.finish(session, meter, body, keepalive);
+    await this.end(session, meter, body, keepalive);
   }
 }

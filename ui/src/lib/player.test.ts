@@ -976,6 +976,32 @@ describe("Player", () => {
     expect(w.closed[0].report).toMatchObject({ position_ms: 16_000, listened_ms: 1000 });
   });
 
+  it("waits for a close already on its way when stopped again", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    let release = () => {};
+    w.holds.sync = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    w.holds.wait = new Promise<void>(() => {});
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    void w.player.stop();
+    // What a sign-out asks for: nothing is loaded, but the close is not out yet.
+    let done = false;
+    const again = w.player.stop().then(() => {
+      done = true;
+    });
+    await settle();
+    expect(done).toBe(false);
+    expect(w.closed).toEqual([]);
+    release();
+    await again;
+    expect(w.closed.map((sent) => sent.id)).toEqual(["s1"]);
+  });
+
   it("does not send a page that is going away waiting for a report", async () => {
     const w = world();
     await w.player.play(TARGET);
