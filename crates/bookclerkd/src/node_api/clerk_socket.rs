@@ -100,7 +100,8 @@ fn clerk_topic(topic: LiveTopic) -> Option<ClerkTopic> {
         | LiveTopic::Config
         | LiveTopic::Consents
         | LiveTopic::Libraries
-        | LiveTopic::Users => None,
+        | LiveTopic::Users
+        | LiveTopic::Playback => None,
     }
 }
 

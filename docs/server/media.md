@@ -114,6 +114,7 @@ file's row in the database (`edition_files`):
 | Bitrate | The file's size over its running time, in kbps: an average that includes the cover and tags. Empty when the running time is unknown |
 | Lossless | Whether the audio track's encoding is lossless (FLAC, or ALAC in an MP4 file) |
 | Source store | The store the copy was downloaded from, such as `audible` or `libro` |
+| Copy | Which of the library's copies the file belongs to, by format and quality (`mp3` and `64k-mono`); see [Keeping several copies](output.md#keeping-several-copies) |
 
 The row answers "what copy do we hold?" without opening the file again,
 so comparing two copies of one edition, or telling another install what

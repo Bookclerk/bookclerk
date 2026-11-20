@@ -1477,3 +1477,231 @@ async fn a_card_takes_the_librarys_copy_of_its_persons_book() {
         .expect("the reader stops")
         .unwrap();
 }
+
+/// The library's member approves a branch join's authorize URL; answers
+/// the callback's query pairs.
+async fn branch_consent(
+    library: &Arc<AppState>,
+    member: i64,
+    authorize_url: &str,
+) -> std::collections::HashMap<String, String> {
+    let url = url::Url::parse(authorize_url).unwrap();
+    let mut body = serde_json::Map::new();
+    for (name, value) in url.query_pairs() {
+        body.insert(name.into_owned(), json!(value.into_owned()));
+    }
+    body.insert("approve".into(), json!(true));
+    let app = crate::node_api::branch::tests::routes(
+        library,
+        UserCaller::User { user_id: member },
+        LOOPBACK,
+    );
+    let (status, _, answer) = call(
+        &app,
+        "POST",
+        "/api/auth/branch-consent",
+        Some(Value::Object(body)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let redirect = url::Url::parse(answer["redirect"].as_str().unwrap()).unwrap();
+    redirect.query_pairs().into_owned().collect()
+}
+
+/// A clerk becomes a branch of the library it holds a card for, and back:
+/// the branch join replaces the card (ending it at the library), and a
+/// card sign-in from the branch leaves the branch (telling the library).
+#[tokio::test]
+async fn a_card_becomes_a_branch_and_a_branch_becomes_a_card() {
+    use bookclerk_library::control_plane::load_library_link;
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let library_files = tempfile::tempdir().unwrap();
+    let (library_state, library_store, origin, member) = library(&library_files).await;
+    let clerk_files = tempfile::tempdir().unwrap();
+    let (clerk_state, clerk_store) = crate::node_api::tests::test_state(&clerk_files).await;
+    crate::library_link::spawn_library_links(Arc::clone(&clerk_state));
+    let routes_as = |caller: UserCaller| {
+        clerk_routes(&clerk_state, caller).merge(
+            axum::Router::new()
+                .route(
+                    "/api/config/join/start",
+                    post(crate::library_link::join::post_join_start),
+                )
+                .route(
+                    "/api/config/join/callback",
+                    post(crate::library_link::join::post_join_callback),
+                )
+                .layer(axum::Extension(caller))
+                .with_state(Arc::clone(&clerk_state)),
+        )
+    };
+    let clerk = routes_as(UserCaller::Operator);
+    let library_id = sign_in(&clerk, &library_state, &origin, member).await;
+    let identity = library_store
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    let card_sessions = || async {
+        library_store
+            .list_portal_session_records_for_identity(identity.id)
+            .await
+            .unwrap()
+            .len()
+    };
+    assert_eq!(card_sessions().await, 1);
+
+    // Joining from a card the install does not hold, or as a shared
+    // branch, is refused.
+    let (status, _, unknown) = call(
+        &clerk,
+        "POST",
+        "/api/config/join/start",
+        Some(json!({ "from_card": "not-a-card" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
+    let (status, _, shared) = call(
+        &clerk,
+        "POST",
+        "/api/config/join/start",
+        Some(json!({ "from_card": library_id, "shared_branch": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{shared}");
+
+    // The card becomes a branch: its address, pin and name carry over.
+    let (status, _, started) = call(
+        &clerk,
+        "POST",
+        "/api/config/join/start",
+        Some(json!({ "from_card": library_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    assert_eq!(started["branch_name"], "Laptop");
+    assert_eq!(started["library"]["origin"], origin.as_str());
+    let back = branch_consent(
+        &library_state,
+        member,
+        started["authorize_url"].as_str().unwrap(),
+    )
+    .await;
+    let (status, _, joined) = call(
+        &clerk,
+        "POST",
+        "/api/config/join/callback",
+        Some(json!({ "code": back["code"], "state": back["state"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["replaced_card"]["card_removed"], true);
+    assert_eq!(joined["replaced_card"]["library_signed_out"], true);
+    assert!(list_clerk_links(&clerk_store).await.unwrap().is_empty());
+    assert_eq!(card_sessions().await, 0, "the library ended the card");
+    let link = load_library_link(&clerk_store, &library_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(link.is_active());
+
+    // Only the operator may give the branch up for a card, and only for
+    // a library this install is a branch of.
+    let owner = clerk_store
+        .create_user(UserRole::Owner, Some("Pat"), None)
+        .await
+        .unwrap()
+        .id;
+    let (status, _, refused) = call(
+        &routes_as(UserCaller::User { user_id: owner }),
+        "POST",
+        "/api/config/clerk/start",
+        Some(json!({ "from_branch": library_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    let (status, _, unknown) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/start",
+        Some(json!({ "from_branch": "not-a-branch" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
+
+    // A sign-in started for an enrollment the install has since replaced
+    // with a new join does not give the new branch up.
+    let (status, _, started) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/start",
+        Some(json!({ "from_branch": library_id, "clerk_name": "Laptop" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    super::api::rejoin_pending_branches("an-earlier-node");
+    let back = consent(
+        &library_state,
+        member,
+        started["authorize_url"].as_str().unwrap(),
+    )
+    .await;
+    let (status, _, stale) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/callback",
+        Some(json!({ "code": back["code"], "state": back["state"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+    assert_eq!(stale["error"], "enrollment_changed");
+    assert!(load_library_link(&clerk_store, &library_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_active());
+
+    // The branch becomes a card: the library hands the card over, then
+    // the branch is left and the library told.
+    let (status, _, started) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/start",
+        Some(json!({ "from_branch": library_id, "clerk_name": "Laptop" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let back = consent(
+        &library_state,
+        member,
+        started["authorize_url"].as_str().unwrap(),
+    )
+    .await;
+    let (status, _, signed_in) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/callback",
+        Some(json!({ "code": back["code"], "state": back["state"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{signed_in}");
+    assert_eq!(signed_in["left_branch"]["owner_notified"], true);
+    assert_eq!(signed_in["card"]["state"], "active");
+    let link = load_library_link(&clerk_store, &library_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(link.state, "left");
+    assert_eq!(card_sessions().await, 1);
+    let credential = bookclerk_library::control_plane::load_node_credential(
+        &library_store,
+        &link.remote_node_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        credential.revoked_at.is_some(),
+        "the library revoked the branch it was told left"
+    );
+}

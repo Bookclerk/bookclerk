@@ -299,6 +299,13 @@ pub async fn add_package_version(
                 "artifacts disagree on the version ({tree_version} vs {version})"
             )));
         }
+        if !same_declarations(&first.manifest, &tree.manifest) {
+            return Err(PluginError::message(format!(
+                "artifact `{}` declares a different plugin.toml than the first artifact; \
+                 only `command` and `args` may differ between platforms",
+                artifact.target
+            )));
+        }
     }
     let mut artifacts = Vec::with_capacity(inspected.len());
     for (artifact, tree, local) in &inspected {
@@ -394,6 +401,28 @@ pub async fn add_package_version(
         created,
         pointer,
     })
+}
+
+/// True when two artifacts of one package declare the same plugin.
+///
+/// The version records the first artifact's manifest, and the host reads
+/// that record for everything it decides before a guest runs (credential
+/// sharing, settings, capabilities, events, media), while each node runs
+/// the artifact for its own platform. Only the launch line (`command` and
+/// `args`) may differ between platforms; any other difference would let a
+/// guest run under declarations the host never read.
+///
+/// # Arguments
+///
+/// * `first` - The manifest the version records.
+/// * `other` - Another artifact's manifest.
+fn same_declarations(first: &PluginManifest, other: &PluginManifest) -> bool {
+    let launch_free = |manifest: &PluginManifest| PluginManifest {
+        command: None,
+        args: Vec::new(),
+        ..manifest.clone()
+    };
+    launch_free(first) == launch_free(other)
 }
 
 /// The version artifact this node runs.

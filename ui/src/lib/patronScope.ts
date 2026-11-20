@@ -1,6 +1,6 @@
 /**
  * Editing patron scopes: the rules that decide which part of the library a
- * Member or Host sees.
+ * Member sees.
  *
  * @module
  */

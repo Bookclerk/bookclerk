@@ -212,7 +212,10 @@ a window on `main`.
      says, and the desktop app signs in with a library card; with the
      setting on, a branch's own acquire takes the library's copy of a
      title from the same store, and keeps the better of its own download
-     and a copy from another store), then turning a clerk into a branch.
+     and a copy from another store), then turning a clerk into a branch
+     and back (implemented: a branch join from a card, or of a library this
+     install holds a card for, signs the card out; a card sign-in from a
+     branch leaves the branch once the library hands over the card).
   7. Capacity shares between a branch's own work and each link
      (implemented).
 - Steps 2 to 7 add node-socket frames. Each ships with a fuzz target, a

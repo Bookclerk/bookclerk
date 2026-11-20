@@ -1,0 +1,1 @@
+{"rules":[{"field":"storefront","value":"audible","effect":"include"},{"field":"format","value":"mp3","effect":"exclude"},{"field":"quality","value":"V2","effect":"exclude"}]}

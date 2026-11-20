@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use bookclerk_config::{
     BadBookAction, ChapterJsonMode, FileTimestampMode, LameConfig, MultiDestinationMode,
-    NamingProfile, OutputConfig, OutputFormat, PathSanitizationMode, ReplacementRule,
+    NamingProfile, OutputConfig, OutputCopy, OutputFormat, PathSanitizationMode, ReplacementRule,
 };
 
 use super::documents::{
@@ -64,6 +64,7 @@ const MAX_COVER_SIZE: u32 = 10_000;
 /// accept, in display order.
 pub const OUTPUT_SETTING_KEYS: &[&str] = &[
     "output.format",
+    "output.copies",
     "output.widevine",
     "output.xhe_aac",
     "output.widevine_cdm",
@@ -131,6 +132,12 @@ pub fn is_output_setting_key(key: &str) -> bool {
 pub struct OutputSettingsV1 {
     /// Post-acquire packaging format.
     pub format: OutputFormat,
+    /// Further copies of every acquired book beside the main output, at
+    /// most 8; empty keeps one copy. Each needs a quality that suits its
+    /// format, and none may repeat another or the main output's copy.
+    #[serde(default)]
+    #[schema(max_items = 8, example = json!([{"format": "mp3", "quality": "64k-mono"}]))]
+    pub copies: Vec<OutputCopy>,
     /// Prefer Widevine/CENC.
     #[schema(example = true)]
     pub widevine: bool,
@@ -309,6 +316,9 @@ const NAMING_SET: &[&str] = &["folder_template", "file_template", "chapter_file_
 /// Every field [`OutputSettingsV1::validate`] bounds, by `output.*` name,
 /// for [`OutputSettingsV1::from_seed_lenient`].
 const SEED_FIELDS: &[(&str, CopyField)] = &[
+    ("copies", |to, from| {
+        to.copies.clone_from(&from.copies);
+    }),
     ("widevine_cdm", |to, from| {
         to.widevine_cdm.clone_from(&from.widevine_cdm);
     }),
@@ -407,7 +417,7 @@ impl OutputSettingsV1 {
         let mut settings = seed.clone();
         let mut replaced = Vec::new();
         for (name, copy) in SEED_FIELDS {
-            if NAMING_SET.contains(name) {
+            if NAMING_SET.contains(name) || *name == "copies" {
                 continue;
             }
             // Each field is judged alone: the defaults are valid, so a
@@ -419,6 +429,18 @@ impl OutputSettingsV1 {
                 copy(&mut settings, &defaults);
                 replaced.push(*name);
             }
+        }
+        // The copy list is judged against the main output kept above:
+        // whether a copy suits it, or repeats it, depends on the format and
+        // LAME settings, so it cannot be judged beside the defaults.
+        if bookclerk_config::validate_copies(
+            OutputCopy::main(settings.format, &settings.lame).as_ref(),
+            &settings.copies,
+        )
+        .is_err()
+        {
+            settings.copies.clone_from(&defaults.copies);
+            replaced.push("copies");
         }
         // The naming templates are judged as one set, after the other
         // fields: `<call number>` may sit in the folder or in both file
@@ -455,6 +477,7 @@ impl OutputSettingsV1 {
     fn from_config_unchecked(config: &OutputConfig) -> Self {
         Self {
             format: config.format,
+            copies: config.copies.clone(),
             widevine: config.widevine,
             xhe_aac: config.xhe_aac,
             widevine_cdm: config
@@ -504,6 +527,7 @@ impl OutputSettingsV1 {
     /// follow.
     pub fn apply_to(&self, config: &mut OutputConfig, files_dir: Option<&Path>) {
         config.format = self.format;
+        config.copies = self.copies.clone();
         config.widevine = self.widevine;
         config.xhe_aac = self.xhe_aac;
         config.widevine_cdm = self.widevine_cdm.as_ref().map(|path| match files_dir {
@@ -552,6 +576,11 @@ impl OutputSettingsV1 {
     ///
     /// Returns an error naming the first field that is out of range.
     pub fn validate(&self) -> Result<()> {
+        bookclerk_config::validate_copies(
+            OutputCopy::main(self.format, &self.lame).as_ref(),
+            &self.copies,
+        )
+        .map_err(|err| invalid(&format!("copies: {err}")))?;
         if let Some(path) = &self.widevine_cdm {
             let text = path.to_string_lossy();
             check_text("widevine_cdm", &text, MAX_PATH_BYTES)?;
@@ -657,6 +686,12 @@ impl OutputSettingsV1 {
     pub fn get(&self, key: &str) -> Option<String> {
         Some(match key {
             "output.format" => enum_name(&self.format),
+            "output.copies" => self
+                .copies
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
             "output.widevine" => self.widevine.to_string(),
             "output.xhe_aac" => self.xhe_aac.to_string(),
             "output.widevine_cdm" => self
@@ -757,6 +792,17 @@ impl OutputSettingsV1 {
                         Err(_) => return Err(invalid("output.format is not a known format")),
                     },
                 };
+            }
+            "output.copies" => {
+                self.copies = v
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|copy| !copy.is_empty())
+                    .map(|copy| {
+                        OutputCopy::parse(copy)
+                            .map_err(|err| invalid(&format!("output.copies: {err}")))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
             }
             "output.widevine" => self.widevine = bool_value(key, v)?,
             "output.xhe_aac" => self.xhe_aac = bool_value(key, v)?,
@@ -1306,6 +1352,15 @@ mod tests {
         assert_eq!(body.replacement_characters.len(), 1);
         assert!(body.clone().set("output.split_mp3_max_mb", "0").is_err());
         assert!(body.clone().set("output.in_progress", "/x").is_err());
+        body.set("output.copies", " m4b:original , mp3_chapters:64k-mono")
+            .unwrap();
+        assert_eq!(
+            body.get("output.copies").as_deref(),
+            Some("m4b:original,mp3_chapters:64k-mono")
+        );
+        for bad in ["mp3:v2", "m4b:64k", "flac:original", "mp3:64k,mp3:64k"] {
+            assert!(body.clone().set("output.copies", bad).is_err(), "{bad}");
+        }
         for key in OUTPUT_SETTING_KEYS {
             let value = body.get(key).expect(key);
             let mut copy = body.clone();

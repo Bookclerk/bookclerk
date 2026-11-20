@@ -196,6 +196,31 @@ This writes `Settings.json`, `AccountsSettings.json` (account details
 only) and `LibationContext.db`, for classic tools. Credentials are never
 exported; they stay in `encrypted_secrets`.
 
+## Export the library as a spreadsheet
+
+```sh
+bookclerk export library --path ./library.csv
+bookclerk export library --path ./riley.xlsx --user riley
+```
+
+This writes one row per store account title, as CSV, JSON or XLSX (picked
+by `--csv`, `--json`, `--xlsx` or the file's extension, CSV otherwise).
+`bookclerk library export` is the same command.
+
+- Without `--user` the file lists the whole library, and the `tags` and
+  `is_finished` columns are empty (`null` in JSON), because those belong to
+  each person.
+- With `--user <login name or id>` the file lists the same titles with
+  that person's own tags and finished flags.
+- `--account` keeps one store account's titles, and ids after the flags
+  (ASIN, ISBN, product id or holding id) keep only those titles.
+
+The spreadsheet columns are `asin`, `account_id`, `title`, `authors`,
+`narrators`, `series`, `acquire_status`, `pdf_status`, `storage_key`,
+`tags` and `is_finished`. JSON has one object per title with the same
+fields plus its `holding_id`, `edition_id`, `work_id`, store and listing
+details.
+
 ## Export to Postgres
 
 ```sh

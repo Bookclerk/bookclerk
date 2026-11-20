@@ -1,5 +1,6 @@
 //! `bookclerk plugins` — discover, manage, and invoke dynamic plugin CLI.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use bookclerk_config::{Config, PluginRegistryEntry};
@@ -23,7 +24,7 @@ use bookclerk_plugin_host::{
     consent_request, consent_summary, host_target_triple,
     install_from_manifest_with_configured_aliases, is_bootstrap_only, plugin_matches_occupancy,
     require_grant, search_crates_io, CliInvokeParams, CliInvokeResult, CliSchema, DiscoveredPlugin,
-    Entrypoint, PluginFamily, PluginGrantStore, PluginSession, CRATE_NAME_PREFIX,
+    Entrypoint, PluginFamily, PluginGrant, PluginGrantStore, PluginSession, CRATE_NAME_PREFIX,
     HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 use clap::{Subcommand, ValueEnum};
@@ -203,6 +204,12 @@ pub enum PluginsCommand {
         /// Approve without interactive confirmation (required when stdin is not a TTY).
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Approve the package's request as is, dropping the network
+        /// destinations you added or denied earlier and your redirect
+        /// answer. Without it a re-approval keeps them. (An installed
+        /// version always records its package's request.)
+        #[arg(long)]
+        reset: bool,
     },
     /// Manage configured plugin registries.
     Registry {
@@ -263,10 +270,14 @@ pub enum FilterCommand {
     },
     /// Replace a destination's filter. Each rule is `FIELD=VALUE`, where
     /// FIELD is `patron` (a user id), `storefront` (a plugin alias such as
-    /// `audible`), `account` (a store account id) or `media_kind` (`book`
-    /// or `podcast`). With any `--include`, the destination takes only
-    /// books that match one; an `--exclude` always wins. Acquires that
-    /// start afterwards use the new filter.
+    /// `audible`), `account` (a store account id), `media_kind` (`book`
+    /// or `podcast`), `format` (a copy format: `m4b`, `mp3`,
+    /// `mp3_chapters` or `original`) or `quality` (a copy quality such as
+    /// `original`, `64k-mono` or `v2`). With any `--include`, the
+    /// destination takes only books that match one; an `--exclude` always
+    /// wins. `format` and `quality` rules choose which of the library's
+    /// copies (`output.copies`) the destination receives, the same way
+    /// among themselves. Acquires that start afterwards use the new filter.
     Set {
         /// Plugin alias, PluginKey, or plugin instance id of the destination.
         instance: String,
@@ -784,13 +795,13 @@ pub async fn run(
         }
         PluginsCommand::Instances { command } => run_instances(config, command, format).await,
         PluginsCommand::Config { command } => run_plugin_config(config, command, format).await,
-        PluginsCommand::Approve { id, yes } => {
+        PluginsCommand::Approve { id, yes, reset } => {
             if find_plugin(config, &id).is_err()
                 && crate::commands::plugin_installs::run_approve(config, &id, yes, format).await?
             {
                 return Ok(());
             }
-            run_approve(config, &id, yes, format)
+            run_approve(config, &id, Approval { yes, reset }, format)
         }
         PluginsCommand::Registry { command } => run_registry(config, command, format),
         PluginsCommand::Db { command } => run_plugin_db(config, command, format).await,
@@ -1663,32 +1674,116 @@ async fn diagnose_plugin(
     }
 }
 
-/// Interactively (or `--yes`) records a network/binding grant for the plugin.
-fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> anyhow::Result<()> {
+/// How `plugins approve` asks and what it keeps.
+#[derive(Debug, Clone, Copy)]
+struct Approval {
+    /// Approve without the interactive prompt.
+    yes: bool,
+    /// Store the package's request as is instead of keeping the operator's
+    /// earlier network answers.
+    reset: bool,
+}
+
+/// The grant `plugins approve` stores for `request`.
+///
+/// With a stored grant and no `--reset`, the request is re-approved on top
+/// of it so the operator's network additions and denials, redirect answer
+/// and refused own `User-Agent` hosts survive
+/// ([`bookclerk_plugin_host::reapprove_grant`]). Otherwise the request
+/// itself, as a first approval stores it.
+///
+/// # Errors
+///
+/// Returns an error when the re-approved draft fails validation.
+fn approval_grant(
+    stored: Option<&PluginGrant>,
+    request: &PluginGrant,
+    reset: bool,
+) -> anyhow::Result<PluginGrant> {
+    match stored {
+        Some(stored) if !reset => Ok(bookclerk_plugin_host::reapprove_grant(stored, request)?),
+        _ => Ok(request.clone()),
+    }
+}
+
+/// Lines naming the operator's earlier network changes a re-approval
+/// keeps, empty when there are none.
+fn kept_operator_lines(grant: &PluginGrant) -> Vec<String> {
+    let tcp = |grants: &BTreeSet<bookclerk_plugin_host::TcpGrant>| -> Vec<String> {
+        grants
+            .iter()
+            .map(|t| {
+                let ports: Vec<String> = t.ports.iter().map(ToString::to_string).collect();
+                format!("{}:{}", t.host, ports.join(","))
+            })
+            .collect()
+    };
+    let mut added: Vec<String> = grant.operator_added_domains.iter().cloned().collect();
+    added.extend(tcp(&grant.operator_added_tcp));
+    added.extend(grant.operator_added_cidrs.iter().cloned());
+    let mut denied: Vec<String> = grant.operator_denied_domains.iter().cloned().collect();
+    denied.extend(tcp(&grant.operator_denied_tcp));
+    denied.extend(grant.operator_denied_cidrs.iter().cloned());
+    let mut lines = Vec::new();
+    if !added.is_empty() {
+        lines.push(format!(
+            "Keeping destinations you added: {}",
+            added.join(", ")
+        ));
+    }
+    if !denied.is_empty() {
+        lines.push(format!(
+            "Keeping destinations you denied: {}",
+            denied.join(", ")
+        ));
+    }
+    if !lines.is_empty() {
+        lines.push("Pass --reset to approve the package's request as is.".into());
+    }
+    lines
+}
+
+/// `plugins approve` for a plugin found on disk: stores its consent grant.
+///
+/// A re-approval keeps the operator's earlier network answers unless
+/// `approval.reset` is set (see [`approval_grant`]).
+///
+/// # Errors
+///
+/// Returns an error when the plugin is unknown, approval is declined, the
+/// re-approved grant is invalid, or the grants file cannot be written.
+fn run_approve(
+    config: &Config,
+    id: &str,
+    approval: Approval,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
     use std::io::{self, IsTerminal, Write};
 
     let plugin = find_plugin(config, id)?;
-    let grant = consent_request(&plugin.manifest, plugin.plugin_key());
-    let summary = consent_summary(&grant);
+    let request = consent_request(&plugin.manifest, plugin.plugin_key());
     let files_dir = &config.paths().files_dir;
     let store = PluginGrantStore::load(files_dir)?;
+    let stored = store.get_by_plugin_key(plugin.plugin_key().canonical());
     // What this version asks for beyond the stored grant: the same diff
     // `plugins info` and the web consent dialog show.
-    let pending = store
-        .get_by_plugin_key(plugin.plugin_key().canonical())
-        .map(|stored| bookclerk_plugin_host::pending_structural(stored, &grant).summary_lines())
+    let pending = stored
+        .map(|stored| bookclerk_plugin_host::pending_structural(stored, &request).summary_lines())
         .unwrap_or_default();
+    let preview = approval_grant(stored, &request, approval.reset)?;
+    let summary = consent_summary(&preview);
+    let kept = kept_operator_lines(&preview);
 
     // With `--format json` stdout carries only the JSON document (which has
     // both lists), so the review copy goes to stderr beside the prompt.
-    for line in pending.iter().chain(&summary) {
+    for line in pending.iter().chain(&summary).chain(&kept) {
         match format {
             OutputFormat::Text => println!("{line}"),
             OutputFormat::Json => eprintln!("{line}"),
         }
     }
 
-    if !yes {
+    if !approval.yes {
         if !io::stdin().is_terminal() {
             anyhow::bail!(
                 "stdin is not a TTY; pass --yes to approve plugin `{}` non-interactively",
@@ -1710,10 +1805,19 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
 
     // Reload after the prompt: another writer may have changed the store
     // while the operator was reading, and saving the early copy would
-    // drop that change.
+    // drop that change. The grant is rebuilt on what is stored now.
     let mut store = PluginGrantStore::load(files_dir)?;
+    let grant = approval_grant(
+        store.get_by_plugin_key(plugin.plugin_key().canonical()),
+        &request,
+        approval.reset,
+    )?;
     store.upsert(grant.clone());
     store.save(files_dir)?;
+    // Describe what was stored, which may differ from the preview when the
+    // grant changed while the operator read it.
+    let summary = consent_summary(&grant);
+    let kept = kept_operator_lines(&grant);
 
     let payload = json!({
         "id": plugin.manifest.id,
@@ -1721,6 +1825,7 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
         "grant": grant,
         "summary": summary,
         "pending": pending,
+        "kept": kept,
         "grants_file": PluginGrantStore::path(files_dir),
     });
     emit(format, &payload, || {
@@ -2268,15 +2373,13 @@ fn filter_rule(
     let (field, value) = arg
         .split_once('=')
         .ok_or_else(|| anyhow::anyhow!("a filter rule is FIELD=VALUE, not `{arg}`"))?;
-    let field = match field.trim() {
-        "patron" => FilterField::Patron,
-        "storefront" => FilterField::Storefront,
-        "account" => FilterField::Account,
-        "media_kind" => FilterField::MediaKind,
-        other => anyhow::bail!(
-            "unknown filter field `{other}`; use patron, storefront, account or media_kind"
-        ),
-    };
+    let field = FilterField::parse(field.trim()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown filter field `{}`; use patron, storefront, account, media_kind, \
+             format or quality",
+            field.trim()
+        )
+    })?;
     Ok(bookclerk_config::FilterRule {
         field,
         value: value.to_string(),
@@ -2336,6 +2439,7 @@ async fn run_filter(
                 DestinationFilter { rules },
             )
             .await?;
+            warn_about_copy_rules(store, &stored.body.filter).await;
             (instance, stored.body.filter)
         }
         FilterCommand::Clear { instance } => {
@@ -2355,6 +2459,57 @@ async fn run_filter(
         &json!({ "plugin_instance_id": instance.id.to_string(), "filter": filter }),
         || print_filter(&instance.id, &filter),
     )
+}
+
+/// Warns on stderr about `format` and `quality` rules that name no copy
+/// the library makes (`output.copies` and the main output), and when the
+/// destination would receive none of them. The filter is stored either
+/// way: the copy list may change later.
+async fn warn_about_copy_rules(store: &LibraryStore, filter: &bookclerk_config::DestinationFilter) {
+    if !filter.has_copy_rules() {
+        return;
+    }
+    let Ok(output) = bookclerk_library::control_plane::load_output(store).await else {
+        return;
+    };
+    let mut config = bookclerk_config::OutputConfig::default();
+    output.body.apply_to(&mut config, None);
+    let copies = config.copies_to_make();
+    for warning in copy_rule_warnings(filter, &copies) {
+        eprintln!("warning: {warning}");
+    }
+}
+
+/// The warnings [`warn_about_copy_rules`] prints for `filter` against the
+/// library's `copies`.
+fn copy_rule_warnings(
+    filter: &bookclerk_config::DestinationFilter,
+    copies: &[bookclerk_config::OutputCopy],
+) -> Vec<String> {
+    let names = copies
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut warnings: Vec<String> = filter
+        .rules
+        .iter()
+        .filter(|rule| rule.field.is_copy_field())
+        .filter(|rule| !copies.iter().any(|copy| rule.matches_copy(copy)))
+        .map(|rule| {
+            format!(
+                "the {} rule `{}` names no copy the library makes ({names})",
+                rule.field.as_str(),
+                rule.value
+            )
+        })
+        .collect();
+    if !copies.iter().any(|copy| filter.accepts_copy(copy)) {
+        warnings.push(format!(
+            "this destination receives none of the library's copies ({names})"
+        ));
+    }
+    warnings
 }
 
 /// `plugins config` actions.
@@ -2700,6 +2855,37 @@ mod filter_tests {
     use super::{cli_actor, filter_rule, run_filter, FilterCommand, OutputFormat};
 
     #[test]
+    fn copy_rules_that_name_no_library_copy_are_warned_about() {
+        use bookclerk_config::{DestinationFilter, OutputCopy};
+        let copies = [
+            OutputCopy::parse("m4b:original").unwrap(),
+            OutputCopy::parse("mp3:64k-mono").unwrap(),
+        ];
+        let filter = |rules: &[(&str, FilterEffect)]| DestinationFilter {
+            rules: rules
+                .iter()
+                .map(|(arg, effect)| filter_rule(arg, *effect).unwrap())
+                .collect(),
+        };
+        assert!(super::copy_rule_warnings(
+            &filter(&[("format=mp3", FilterEffect::Include)]),
+            &copies
+        )
+        .is_empty());
+        let warnings =
+            super::copy_rule_warnings(&filter(&[("quality=v2", FilterEffect::Include)]), &copies);
+        assert_eq!(
+            warnings,
+            [
+                "the quality rule `v2` names no copy the library makes \
+                 (m4b:original, mp3:64k-mono)",
+                "this destination receives none of the library's copies \
+                 (m4b:original, mp3:64k-mono)",
+            ]
+        );
+    }
+
+    #[test]
     fn rules_are_read_as_field_equals_value() {
         let rule = filter_rule("media_kind=podcast", FilterEffect::Exclude).unwrap();
         assert_eq!(rule.field, FilterField::MediaKind);
@@ -2709,6 +2895,8 @@ mod filter_tests {
             ("patron=3", FilterField::Patron),
             ("storefront=audible", FilterField::Storefront),
             ("account=a=b", FilterField::Account),
+            ("format=mp3", FilterField::Format),
+            ("quality=64k-mono", FilterField::Quality),
         ] {
             assert_eq!(
                 filter_rule(arg, FilterEffect::Include).unwrap().field,
