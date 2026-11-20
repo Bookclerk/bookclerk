@@ -2960,6 +2960,56 @@ mod tests {
     };
     use bookclerk_library::LibraryStore;
 
+    /// A destination's feed row reads as its sync view: times in RFC 3339,
+    /// a listing with a sequence is in progress, every feed state maps.
+    #[test]
+    fn a_destination_feed_reads_as_its_sync_view() {
+        use super::{StorageFeedState, StorageSyncView};
+        use bookclerk_library::{DestinationFeed, FeedState};
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-20T18:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut feed = DestinationFeed::new("local");
+        feed.feed_state = FeedState::Failing;
+        feed.feed_error = Some("denied".into());
+        feed.feed_checked_at = Some(at);
+        feed.listed_at = Some(at);
+        feed.next_listing_at = Some(at + chrono::Duration::hours(6));
+        feed.listing_seq = Some(4);
+        feed.listing_error = Some("held back".into());
+        feed.objects = 12;
+        let view = StorageSyncView::from(&feed);
+        assert_eq!(view.feed_state, StorageFeedState::Failing);
+        assert_eq!(view.feed_error.as_deref(), Some("denied"));
+        assert_eq!(
+            view.feed_checked_at.as_deref(),
+            Some("2026-11-20T18:00:00Z")
+        );
+        assert_eq!(view.listed_at.as_deref(), Some("2026-11-20T18:00:00Z"));
+        assert_eq!(
+            view.next_listing_at.as_deref(),
+            Some("2026-11-21T00:00:00Z")
+        );
+        assert!(view.listing_in_progress);
+        assert_eq!(view.listing_error.as_deref(), Some("held back"));
+        assert_eq!(view.objects, 12);
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["feed_state"], "failing");
+
+        let fresh = StorageSyncView::from(&DestinationFeed::new("s3"));
+        assert_eq!(fresh.feed_state, StorageFeedState::Off);
+        assert!(!fresh.listing_in_progress);
+        assert_eq!(fresh.listed_at, None);
+        for (state, view) in [
+            (FeedState::Off, StorageFeedState::Off),
+            (FeedState::Healthy, StorageFeedState::Healthy),
+            (FeedState::Gap, StorageFeedState::Gap),
+            (FeedState::Failing, StorageFeedState::Failing),
+        ] {
+            assert_eq!(StorageFeedState::from(state), view);
+        }
+    }
+
     /// Stops `pid` without the `kill` binary, which Windows images do not ship.
     #[allow(unsafe_code)]
     fn kill_pid(pid: u32) {
