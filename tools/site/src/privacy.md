@@ -64,9 +64,11 @@ Reports are stored with [Backblaze B2](https://www.backblaze.com/company/policy/
 
 Reports are deleted automatically 6 months after they arrive, or sooner when you ask. A one-line summary of each (the version, system and type of error, without the log) stays in the dashboard's counts.
 
-Your Bookclerk keeps a list of the reports it sent, with each report's ID, on your own computer (in Settings, under Diagnostics). You can search our GitHub tracker for an ID to find the issue about it.
+Your Bookclerk keeps a list of the reports it sent on your own computer (in Settings, under Diagnostics), with each report's ID and a private access code. The code is given only to your Bookclerk, and we keep only a scrambled (hashed) form of it, so the IDs listed on our public tracker open nothing by themselves. With the code you can read a report back, see which issue it joined and whether it is fixed, and delete it, from Settings, from the command line, or on our report lookup page.
 
-You can turn reports off at any time. To have a report you sent deleted, email us its report ID, or the time it was sent and your Bookclerk version.
+Deleting a report removes the stored report itself. Its one-line summary and its links to issues stay, so it still counts toward the problem it was part of.
+
+You can turn reports off at any time. To have a report you sent deleted without its code, email us its report ID, or the time it was sent and your Bookclerk version.
 
 ## Usage check-ins from the app
 

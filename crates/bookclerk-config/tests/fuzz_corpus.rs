@@ -1,5 +1,6 @@
 //! Replays the checked-in `bookclerk-config` fuzz corpora (`cache_settings`,
-//! `destination_id`, `diagnostics_submit_reply`) through their shared
+//! `destination_id`, `diagnostics_submit_reply`, `diagnostics_lookup_reply`)
+//! through their shared
 //! oracles, so ordinary CI checks every seed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 
@@ -24,6 +25,10 @@ mod output_copies_oracle;
 /// The `diagnostics_submit_reply` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/diagnostics_submit_reply.rs"]
 mod diagnostics_submit_reply_oracle;
+
+/// The `diagnostics_lookup_reply` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/diagnostics_lookup_reply.rs"]
+mod diagnostics_lookup_reply_oracle;
 
 /// Every file in `fuzz/corpus/<target>/`, sorted.
 // Test code: an unreadable corpus directory is the test failing.
@@ -78,6 +83,19 @@ fn fuzz_corpus_diagnostics_submit_reply_holds_invariants() {
         checked += 1;
     }
     assert!(checked > 0, "no diagnostics_submit_reply seed");
+}
+
+/// Mirrors `fuzz/fuzz_targets/diagnostics_lookup_reply.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_diagnostics_lookup_reply_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("diagnostics_lookup_reply") {
+        diagnostics_lookup_reply_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no diagnostics_lookup_reply seed");
 }
 
 /// Mirrors `fuzz/fuzz_targets/destination_filter.rs` with the shared oracle.
