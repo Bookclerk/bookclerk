@@ -326,7 +326,8 @@ Rules the engine keeps:
   (`beforeSignOut` in `api.ts`) and then goes ahead. The registered work
   runs a second time within the same wait, or without a wait once it has
   run out, so a book started meanwhile is closed as the identity being
-  left.
+  left. From that close until the identity request has answered, the
+  player starts nothing (`Player.retire` and `Player.readmit`).
 - `409 session_ended` on a report, or a stream error, opens one new
   session at the place the listener is, and a report the ended session
   refused is sent once to the new one. A second stream error within a

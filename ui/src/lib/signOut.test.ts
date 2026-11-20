@@ -110,6 +110,41 @@ describe("signOut", () => {
     expect(order).toEqual(["closed 1", "closed 2", "/api/portal/logout"]);
   });
 
+  it("runs the after callback once the identity request answered or failed", async () => {
+    const order: string[] = [];
+    let fail = false;
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      order.push(`${init.method} ${url}`);
+      return new Response("{}", { status: fail ? 500 : 200 });
+    });
+    const removers = [
+      beforeSignOut(
+        async () => {
+          order.push("held");
+        },
+        () => {
+          throw new Error("broken");
+        },
+      ),
+      beforeSignOut(
+        async () => {},
+        () => order.push("released"),
+      ),
+    ];
+    registered.push(...removers);
+    await startImpersonate(7);
+    expect(order).toEqual(["held", "held", "POST /api/auth/impersonate", "released"]);
+    order.length = 0;
+    fail = true;
+    await expect(stopImpersonate()).rejects.toThrow();
+    expect(order).toEqual(["held", "held", "DELETE /api/auth/impersonate", "released"]);
+    for (const remove of removers) remove();
+    order.length = 0;
+    fail = false;
+    await startImpersonate(7);
+    expect(order).toEqual(["POST /api/auth/impersonate"]);
+  });
+
   it("finishes registered work before impersonation starts or stops", async () => {
     const order: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {

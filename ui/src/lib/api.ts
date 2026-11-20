@@ -1308,14 +1308,15 @@ export async function passkeyElevateFinish(body: {
  * @returns Resolves when impersonation is active.
  */
 export async function startImpersonate(userId: number): Promise<void> {
-  await finishBeforeIdentityChange();
-  const res = await fetch("/api/auth/impersonate", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId }),
+  await changeIdentity(async () => {
+    const res = await fetch("/api/auth/impersonate", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId }),
+    });
+    await parseJson(res);
   });
-  await parseJson(res);
 }
 
 /**
@@ -1326,14 +1327,15 @@ export async function startImpersonate(userId: number): Promise<void> {
  * @returns Resolves when impersonation ends.
  */
 export async function stopImpersonate(): Promise<void> {
-  await finishBeforeIdentityChange();
-  const res = await fetch("/api/auth/impersonate", {
-    method: "DELETE",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
+  await changeIdentity(async () => {
+    const res = await fetch("/api/auth/impersonate", {
+      method: "DELETE",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    await parseJson(res);
   });
-  await parseJson(res);
 }
 
 /**
@@ -3350,6 +3352,9 @@ export async function portalRevokeConnection(source: string, accountId: string):
 /** Work to finish while the session can still authorize it. */
 const signOutTasks = new Set<() => Promise<void>>();
 
+/** Run once the request that changes the identity has answered or failed. */
+const identityChangedTasks = new Set<() => void>();
+
 /**
  * How long a change of identity waits for the work registered with
  * {@link beforeSignOut}, in milliseconds.
@@ -3365,11 +3370,41 @@ export const BEFORE_SIGN_OUT_WAIT_MS = 3000;
  *   nothing left to finish, and awaited for up to
  *   {@link BEFORE_SIGN_OUT_WAIT_MS}. A task that fails, throws or takes
  *   longer does not stop the change.
- * @returns Removes the task.
+ * @param after - Run once the request that changes the identity has
+ *   answered or failed, to take back whatever `task` held off meanwhile
+ *   (the player starts no book in between).
+ * @returns Removes the task and `after`.
  */
-export function beforeSignOut(task: () => Promise<void>): () => void {
+export function beforeSignOut(task: () => Promise<void>, after?: () => void): () => void {
   signOutTasks.add(task);
-  return () => signOutTasks.delete(task);
+  if (after) identityChangedTasks.add(after);
+  return () => {
+    signOutTasks.delete(task);
+    if (after) identityChangedTasks.delete(after);
+  };
+}
+
+/**
+ * Changes the signed-in identity: first the work registered with
+ * {@link beforeSignOut}, then the request, then the registered `after`
+ * callbacks whether the request succeeded or not.
+ *
+ * @param change - Sends the request that changes the identity.
+ * @returns What `change` resolved with.
+ */
+async function changeIdentity<T>(change: () => Promise<T>): Promise<T> {
+  await finishBeforeIdentityChange();
+  try {
+    return await change();
+  } finally {
+    for (const after of identityChangedTasks) {
+      try {
+        after();
+      } catch {
+        // One callback that throws does not keep the others from running.
+      }
+    }
+  }
 }
 
 /**
@@ -3420,16 +3455,17 @@ async function finishBeforeIdentityChange(): Promise<void> {
  * @returns Resolves when logout completes.
  */
 export async function signOut(role?: AuthRole): Promise<void> {
-  await finishBeforeIdentityChange();
-  if (role === "administrator" || role === "member") {
-    await portalLogout();
-    return;
-  }
-  try {
-    await logout();
-  } catch {
-    await portalLogout().catch(() => undefined);
-  }
+  await changeIdentity(async () => {
+    if (role === "administrator" || role === "member") {
+      await portalLogout();
+      return;
+    }
+    try {
+      await logout();
+    } catch {
+      await portalLogout().catch(() => undefined);
+    }
+  });
 }
 
 /**

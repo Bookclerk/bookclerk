@@ -148,8 +148,12 @@ export function webPlayer(): Player {
   // The last report must outlive the page, so it goes out as a keepalive
   // request when the page is hidden for good.
   window.addEventListener("pagehide", () => void player.stop(true));
-  // Signing out revokes the session the close needs, so close first.
-  beforeSignOut(() => player.stop());
+  // Signing out revokes the session the close needs, so close first, and
+  // start nothing until the identity has changed.
+  beforeSignOut(
+    () => player.retire(),
+    () => player.readmit(),
+  );
   shared = player;
   return player;
 }

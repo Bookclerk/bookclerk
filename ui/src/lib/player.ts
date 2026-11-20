@@ -328,6 +328,8 @@ export class Player {
    * only the latest one plays.
    */
   private claims = 0;
+  /** True between {@link Player.retire} and {@link Player.readmit}: nothing plays. */
+  private retired = false;
   /** {@link PlayerDeps.now} at the last automatic new session for a stream failure. */
   private retriedAt: number | null = null;
 
@@ -394,11 +396,13 @@ export class Player {
 
   /**
    * Plays an edition from where the listener left it, closing whatever
-   * played before. Asking for the loaded edition resumes it.
+   * played before. Asking for the loaded edition resumes it. Nothing is
+   * played after {@link Player.retire} until {@link Player.readmit}.
    *
    * @param target - What to play.
    */
   async play(target: PlayTarget): Promise<void> {
+    if (this.retired) return;
     // A choice in its own right, the loaded book included: a request still
     // reading for another book no longer stands.
     this.claims += 1;
@@ -1061,6 +1065,24 @@ export class Player {
     if (keepalive) for (const hurry of this.hurries) hurry();
     await this.unload(keepalive);
     await Promise.all([...this.closing]);
+  }
+
+  /**
+   * Stops as {@link Player.stop} does and refuses every later
+   * {@link Player.play} until {@link Player.readmit}. For a change of the
+   * signed-in identity: a book started while the last close is still out
+   * would be opened as the identity being left and never closed as it.
+   *
+   * @returns Resolves when every close was answered.
+   */
+  async retire(): Promise<void> {
+    this.retired = true;
+    await this.stop();
+  }
+
+  /** Lets books play again after {@link Player.retire}. */
+  readmit(): void {
+    this.retired = false;
   }
 
   /**

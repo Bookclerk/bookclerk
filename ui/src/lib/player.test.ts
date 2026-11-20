@@ -632,6 +632,28 @@ describe("Player", () => {
     expect(w.closed).toEqual([]);
   });
 
+  it("starts nothing between retiring and being readmitted", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    let release = () => {};
+    w.holds.close = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const retired = w.player.retire();
+    // Chosen while the close for the identity being left is still out.
+    await w.player.play({ ...TARGET, editionId: "ed2" });
+    await settle();
+    expect(w.player.state.status).toBe("idle");
+    release();
+    await retired;
+    await w.player.play({ ...TARGET, editionId: "ed2" });
+    expect(w.opened).toEqual(["ed1"]);
+    w.player.readmit();
+    await w.player.play({ ...TARGET, editionId: "ed2" });
+    expect(w.opened).toEqual(["ed1", "ed2"]);
+  });
+
   it("lets the latest of several requests win over a slow close", async () => {
     const w = world();
     await w.player.play(TARGET);
