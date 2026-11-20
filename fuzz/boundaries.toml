@@ -259,6 +259,13 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.output_copies]
+crate = "bookclerk-config"
+boundary = "A library's extra copies as an operator sends them: the copies array of PUT /api/config/domains/core.output and the stored core.output document"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.destination_id]
 crate = "bookclerk-config"
 boundary = "A destination id another node sends: an acquire plan's PlanDestination.id and upload records naming the owner's storage plugin instances"
@@ -382,6 +389,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-library"
 boundary = "An Administrator's choice of expressions to move out of a wrongly merged work, from POST /api/library/works/{id}/split"
 input_from = "Administrator, Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.playback_request]
+crate = "bookclerk-library"
+boundary = "What a player sends the playback routes: the bodies that open a session, report or set progress and add or change a bookmark, the progress page cursor, and the stream path of GET /api/playback/sessions/{id}/tracks/{n}"
+input_from = "any signed-in patron"
 side = "host"
 artifacts = ["bookclerk"]
 

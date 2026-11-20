@@ -173,7 +173,7 @@ pub(crate) async fn get_user_scope(
 ///
 /// Nobody sets their own scope. Owners and Administrators always see the
 /// whole library, so a scope stored for one only applies if their role
-/// changes to Member or Host.
+/// changes to Member.
 #[utoipa::path(
     put,
     path = "/api/users/{id}/scope",

@@ -63,7 +63,7 @@ Commands:
 - [`bookclerk library set-status`](#bookclerk-library-set-status): Match storage files to library rows and update acquire status
 - [`bookclerk library get-license`](#bookclerk-library-get-license): Fetch a content license for an ASIN
 - [`bookclerk library search`](#bookclerk-library-search): Search the library's works by title, people, series or store id
-- [`bookclerk library export`](#bookclerk-library-export): Export library rows as CSV / JSON / XLSX (alias of `export library`)
+- [`bookclerk library export`](#bookclerk-library-export): Export library titles as CSV / JSON / XLSX (alias of `export library`): the whole library, or with `--user` that person's view
 - [`bookclerk library list`](#bookclerk-library-list): List books in the local library DB
 - [`bookclerk library convert`](#bookclerk-library-convert): Convert acquired m4b/m4a to mp3
 - [`bookclerk library filters`](#bookclerk-library-filters): Manage saved quick filters
@@ -232,7 +232,7 @@ Options:
 
 ### `bookclerk library export`
 
-Export library rows as CSV / JSON / XLSX (alias of `export library`)
+Export library titles as CSV / JSON / XLSX (alias of `export library`): the whole library, or with `--user` that person's view
 
 ```text
 bookclerk library export [OPTIONS] --path <PATH> [ASINS]...
@@ -249,6 +249,7 @@ Options:
 - `--json`: Write JSON
 - `--xlsx`: Write XLSX
 - `--account <ACCOUNT>`: Limit the export to this account id, stem, or nickname
+- `--user <USER>`: Fill `tags` and `is_finished` with this person's own state (login name or user id); without it they are empty
 
 ### `bookclerk library list`
 
@@ -799,7 +800,7 @@ bookclerk plugins instances filter [OPTIONS] <COMMAND>
 Commands:
 
 - [`bookclerk plugins instances filter get`](#bookclerk-plugins-instances-filter-get): Show a destination's filter
-- [`bookclerk plugins instances filter set`](#bookclerk-plugins-instances-filter-set): Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id) or `media_kind` (`book` or `podcast`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. Acquires that start afterwards use the new filter
+- [`bookclerk plugins instances filter set`](#bookclerk-plugins-instances-filter-set): Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id), `media_kind` (`book` or `podcast`), `format` (a copy format: `m4b`, `mp3`, `mp3_chapters` or `original`) or `quality` (a copy quality such as `original`, `64k-mono` or `v2`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. `format` and `quality` rules choose which of the library's copies (`output.copies`) the destination receives, the same way among themselves. Acquires that start afterwards use the new filter
 - [`bookclerk plugins instances filter clear`](#bookclerk-plugins-instances-filter-clear): Remove a destination's filter so it takes every book
 
 ##### `bookclerk plugins instances filter get`
@@ -816,7 +817,7 @@ Arguments:
 
 ##### `bookclerk plugins instances filter set`
 
-Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id) or `media_kind` (`book` or `podcast`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. Acquires that start afterwards use the new filter
+Replace a destination's filter. Each rule is `FIELD=VALUE`, where FIELD is `patron` (a user id), `storefront` (a plugin alias such as `audible`), `account` (a store account id), `media_kind` (`book` or `podcast`), `format` (a copy format: `m4b`, `mp3`, `mp3_chapters` or `original`) or `quality` (a copy quality such as `original`, `64k-mono` or `v2`). With any `--include`, the destination takes only books that match one; an `--exclude` always wins. `format` and `quality` rules choose which of the library's copies (`output.copies`) the destination receives, the same way among themselves. Acquires that start afterwards use the new filter
 
 ```text
 bookclerk plugins instances filter set [OPTIONS] <INSTANCE>
@@ -1205,7 +1206,7 @@ Commands:
 
 - [`bookclerk export native`](#bookclerk-export-native): Write a portable Bookclerk `.tar.gz` backup of the files directory
 - [`bookclerk export libation`](#bookclerk-export-libation): Export Settings.json, AccountsSettings.json, and LibationContext.db
-- [`bookclerk export library`](#bookclerk-export-library): Export library rows as CSV / JSON / XLSX
+- [`bookclerk export library`](#bookclerk-export-library): Export library titles as CSV / JSON / XLSX: the whole library, or with `--user` that person's view with their tags and finished flags
 - [`bookclerk export postgres`](#bookclerk-export-postgres): Copy library.db to PostgreSQL
 
 ### `bookclerk export native`
@@ -1240,7 +1241,7 @@ Options:
 
 ### `bookclerk export library`
 
-Export library rows as CSV / JSON / XLSX
+Export library titles as CSV / JSON / XLSX: the whole library, or with `--user` that person's view with their tags and finished flags
 
 ```text
 bookclerk export library [OPTIONS] --path <PATH> [ASINS]...
@@ -1257,6 +1258,7 @@ Options:
 - `--json`: Force JSON even when the destination extension is not `.json`
 - `--xlsx`: Force XLSX even when the destination extension is not `.xlsx`
 - `--account <ACCOUNT>`: Limit exported library rows to this account id when set
+- `--user <USER>`: Fill `tags` and `is_finished` with this person's own state (login name or user id); without it they are empty
 
 ### `bookclerk export postgres`
 

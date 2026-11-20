@@ -673,6 +673,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
+`playback_progress`, `playback_sessions`, `bookmarks`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
@@ -750,7 +751,12 @@ library holds as works, expressions and editions:
   was never probed (it is not audio, the media worker was unavailable, or
   it was stored before probes were recorded), and the other four columns
   are then empty too. See [What a stored file's row
-  says](media.md#what-a-stored-files-row-says).
+  says](media.md#what-a-stored-files-row-says). An audio file an acquire
+  writes also names the library copy it belongs to (`copy_format`, such
+  as `m4b` or `mp3`, and `copy_quality`, such as `original` or
+  `64k-mono`; see [Keeping several
+  copies](output.md#keeping-several-copies)); both are empty for
+  sidecars, the PDF and uploads.
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that
@@ -794,6 +800,13 @@ work and, when known, its edition) keep no title, authors, ASIN or ISBN of
 their own; readers take those from the work and the wish's store sources.
 A wish for a book the library does not hold creates a catalog work and
 edition with no listing or holding.
+
+The built-in player keeps its own rows, each pointing at an edition and
+removed with its user (see [Playback reference](playback.md)):
+`playback_progress` (one row per user and edition: position, reported
+runtime and finished flag), `playback_sessions` (one row per stretch of
+listening, kept as history after it closes) and `bookmarks` (places a
+user marked). `listening_progress` stays what other servers reported.
 
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at the key the

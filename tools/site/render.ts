@@ -143,6 +143,7 @@ export const NAV: NavSpec[] = [
       "server/plugins",
       "server/branches",
       "server/media",
+      "server/playback",
       "server/backups",
       "server/diagnostics",
       "server/cli-reference",
@@ -225,6 +226,7 @@ export const NAV: NavSpec[] = [
       "adr/patron-scopes",
       "adr/storage-destinations",
       "adr/owner-and-operator",
+      "adr/playback",
     ],
   },
 ];

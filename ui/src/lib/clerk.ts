@@ -21,6 +21,20 @@
 import { ApiError } from "@/lib/api";
 import { request, type LibraryInfoView } from "@/lib/join";
 
+/** `POST /api/config/clerk/callback`: the card this install now holds. */
+export interface ClerkSignedIn {
+  /** The card. */
+  card: ClerkCardView;
+  /**
+   * Set when the card replaced this server's branch link to the library:
+   * the branch was left.
+   */
+  left_branch?: {
+    /** Whether the library accepted the leave notice. */
+    owner_notified: boolean;
+  };
+}
+
 /** A library this install holds (or held) a card for, without the card. */
 export interface ClerkCardView {
   /** The library id: what the card is keyed by. */
@@ -112,14 +126,22 @@ export function inspectCardLibrary(address: string): Promise<{ library: LibraryI
  * @returns The library's sign-in page and how long the sign-in stays valid.
  */
 export function startClerkSignIn(body: {
-  address: string;
-  fingerprint: string | null;
+  /** The library's address; left out with `from_branch`. */
+  address?: string;
+  fingerprint?: string | null;
   clerk_name: string;
+  /**
+   * The library id of a library this server is a branch of: the card
+   * replaces the branch, which is left once the library hands the card
+   * over. The address and pinned certificate come from the branch.
+   */
+  from_branch?: string;
 }): Promise<ClerkStarted> {
   return request("/api/config/clerk/start", {
     method: "POST",
     body: {
       address: body.address,
+      from_branch: body.from_branch,
       fingerprint: body.fingerprint ?? undefined,
       clerk_name: body.clerk_name.trim() || undefined,
     },
@@ -133,7 +155,7 @@ export function startClerkSignIn(body: {
  * @param callback - The `code`, `state` and `error` from `/clerk/callback`.
  * @returns The card this install now holds.
  */
-export function finishClerkSignIn(callback: ClerkCallback): Promise<{ card: ClerkCardView }> {
+export function finishClerkSignIn(callback: ClerkCallback): Promise<ClerkSignedIn> {
   return request("/api/config/clerk/callback", {
     method: "POST",
     body: {

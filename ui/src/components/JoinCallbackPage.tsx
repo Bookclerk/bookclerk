@@ -9,6 +9,7 @@ import {
   isSharedBranchJoined,
   joinErrorMessage,
   parseJoinCallback,
+  replacedCardSummary,
   type JoinCallback,
 } from "@/lib/join";
 
@@ -20,6 +21,8 @@ type Phase =
       library: string;
       running: boolean;
       connections: string | null;
+      /** What became of the library card the branch replaced, if any. */
+      replacedCard: string | null;
     }
   | { kind: "shared_branch"; library: string; wrapped: boolean }
   /** `retry`: the daemon kept the sign-in, so the same code can be sent again. */
@@ -76,6 +79,7 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
           library: joined.library_name || joined.library.owner_origin,
           running: joined.running,
           connections: broughtConnectionsSummary(joined.connections),
+          replacedCard: replacedCardSummary(joined.replaced_card),
         });
       })
       .catch((err: unknown) =>
@@ -197,6 +201,7 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
       }
     >
       {phase.connections ? <p className="text-sm text-ink/75">{phase.connections}</p> : null}
+      {phase.replacedCard ? <p className="text-sm text-ink/75">{phase.replacedCard}</p> : null}
       <Button type="button" onClick={onOpenLibrary}>
         Review plugin requests
       </Button>

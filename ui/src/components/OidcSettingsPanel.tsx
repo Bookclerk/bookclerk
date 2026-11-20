@@ -587,7 +587,6 @@ function ProviderCard({
               onChange={(e) => patch({ default_role: e.target.value })}
             >
               <option value="member">Member</option>
-              <option value="host">Host</option>
               <option value="administrator">Administrator</option>
               <option value="owner">Owner</option>
             </select>
