@@ -2076,7 +2076,8 @@ impl PluginManifest {
             if crate::egress::normalize_domain_pattern(domain).is_none() {
                 return Err(Error::message(format!(
                     "plugin.toml: capabilities.network.domains entry `{domain}` is not a valid \
-                     hostname (IDNA ToASCII failed or percent-encoded host)"
+                     hostname with an optional `:port` (IDNA ToASCII failed, percent-encoded \
+                     host, a port on `*`, or a port that is not 1-65535 in plain digits)"
                 )));
             }
         }

@@ -8,8 +8,13 @@
  * - Initial (hop 0) hosts must match `domains` (IDNA ASCII; reject `%` / non-ASCII).
  *   A bare `*` entry matches every hostname but never an IP literal; it is a
  *   fetch grant only and never matches a `tcp[]` grant.
+ * - A `domains` entry may end in `:port` (`abs.example.com:13378`,
+ *   `[2606:4700::1]:9000`); it then grants that port only. An entry with no
+ *   port grants 80 and 443. The URL's effective port (its scheme default when
+ *   it names none) must be granted.
  * - Redirect hops must also match `domains` unless `allowUndeclaredPublicRedirects`
- *   is set. That flag never grants loopback, RFC1918, link-local, or metadata.
+ *   is set. That flag never grants loopback, RFC1918, link-local, or metadata,
+ *   and an undeclared hop stays on ports 80 and 443.
  * - Workerd `internet` `allow = ["public", …cidrs]` is the resolved-address
  *   layer (SSRF / DNS rebinding). This script is hostname policy.
  * - TCP `connect` requires a matching `tcp[]` host+port grant. Fetch grants
@@ -45,6 +50,9 @@ const REQUEST_BODY_HEADERS = [
 /** The `domains` entry that grants every public hostname. */
 const ANY_PUBLIC_HOST = "*";
 
+/** Ports a `domains` entry that names no port grants. */
+const FETCH_DEFAULT_PORTS = [80, 443];
+
 /** Agent sent when the injected policy names none (SDK dev harnesses). */
 const FALLBACK_USER_AGENT = "bookclerk (+https://bookclerk.app)";
 
@@ -58,6 +66,64 @@ function hostMatches(host, pattern) {
     return h.endsWith(suffix) || h === p.slice(2);
   }
   return h === p;
+}
+
+/** Canonical decimal port (digits, no leading zero, 1-65535), else null. */
+function parseCanonicalPort(text) {
+  if (!/^[1-9][0-9]{0,4}$/.test(text)) return null;
+  const port = Number(text);
+  return port <= 65535 ? port : null;
+}
+
+/**
+ * Splits a `domains` entry into `{ host, port }` (`port` null when the entry
+ * names none). `[v6]` and `[v6]:port` carry IPv6 literals; a bare IPv6
+ * literal has several colons and no port. Null when malformed.
+ */
+function splitEntryPort(entry) {
+  if (typeof entry !== "string") return null;
+  const e = entry.trim();
+  if (e.startsWith("[")) {
+    const end = e.indexOf("]");
+    if (end < 0) return null;
+    const host = e.slice(1, end);
+    const after = e.slice(end + 1);
+    if (after === "") return { host, port: null };
+    if (!after.startsWith(":")) return null;
+    const port = parseCanonicalPort(after.slice(1));
+    return port == null ? null : { host, port };
+  }
+  const colon = e.lastIndexOf(":");
+  if (colon >= 0 && !e.slice(0, colon).includes(":")) {
+    const port = parseCanonicalPort(e.slice(colon + 1));
+    return port == null ? null : { host: e.slice(0, colon), port };
+  }
+  return { host: e, port: null };
+}
+
+/** The URL's port, or its scheme default (80 for http, 443 for https). */
+function effectivePort(url) {
+  if (url.port) return Number(url.port);
+  if (url.protocol === "http:") return 80;
+  if (url.protocol === "https:") return 443;
+  return null;
+}
+
+/** `[v6]` → `v6`, so a URL hostname compares with a stored IPv6 entry. */
+function unbracketed(host) {
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+}
+
+/** True when some `domains` entry covers `host` and grants `port`. */
+function domainGrants(host, port, policy) {
+  const normalized = normalizeHostToken(host);
+  if (normalized == null || port == null) return false;
+  const bare = unbracketed(normalized);
+  return (policy.domains || []).some((d) => {
+    const entry = splitEntryPort(d);
+    if (entry == null || !hostMatches(bare, entry.host)) return false;
+    return entry.port == null ? FETCH_DEFAULT_PORTS.includes(port) : entry.port === port;
+  });
 }
 
 /** Trim, strip trailing dots, lowercase. Reject `%` and non-ASCII (fail closed). */
@@ -148,24 +214,18 @@ function hostnameAddressOk(host, policy) {
   return true;
 }
 
-function allowsInitial(host, policy) {
+function allowsInitial(host, port, policy) {
   if (policy.mode !== "outbound") return false;
   if (!hostnameAddressOk(host, policy)) return false;
-  const normalized = normalizeHostToken(host);
-  if (normalized == null) return false;
-  return (policy.domains || []).some((d) => hostMatches(normalized, d));
+  return domainGrants(host, port, policy);
 }
 
-function allowsRedirect(host, hop, policy, maxRedirects) {
+function allowsRedirect(host, port, hop, policy, maxRedirects) {
   if (policy.mode !== "outbound") return false;
   if (hop >= maxRedirects) return false;
   if (!hostnameAddressOk(host, policy)) return false;
-  if (policy.allowUndeclaredPublicRedirects) {
-    return true;
-  }
-  const normalized = normalizeHostToken(host);
-  if (normalized == null) return false;
-  return (policy.domains || []).some((d) => hostMatches(normalized, d));
+  if (domainGrants(host, port, policy)) return true;
+  return Boolean(policy.allowUndeclaredPublicRedirects) && FETCH_DEFAULT_PORTS.includes(port);
 }
 
 function allowsTcp(host, port, policy) {
@@ -363,18 +423,19 @@ export default {
 
     while (true) {
       const url = new URL(current.url);
+      const port = effectivePort(url);
       if (hop === 0) {
-        if (!allowsInitial(url.hostname, policy)) {
+        if (!allowsInitial(url.hostname, port, policy)) {
           return new Response(
-            `host \`${url.hostname}\` not in capabilities.network.domains`,
+            `host \`${url.host}\` not in capabilities.network.domains`,
             { status: 403 },
           );
         }
-      } else if (!allowsRedirect(url.hostname, hop, policy, maxRedirects)) {
+      } else if (!allowsRedirect(url.hostname, port, hop, policy, maxRedirects)) {
         return new Response(
           hop >= maxRedirects
             ? "too many redirects"
-            : `redirect host \`${url.hostname}\` is not permitted`,
+            : `redirect host \`${url.host}\` is not permitted`,
           { status: hop >= maxRedirects ? 508 : 403 },
         );
       }

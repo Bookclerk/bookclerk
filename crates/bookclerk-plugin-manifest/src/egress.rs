@@ -529,18 +529,74 @@ impl EgressPolicy {
         }
     }
 
+    /// Whether a direct (non-redirect) fetch to `host:port` is permitted.
+    ///
+    /// [`Self::allows_initial`] plus the port rule: an entry that names a
+    /// port grants that port only, and one that names none grants
+    /// [`FETCH_DEFAULT_PORTS`].
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - Request hostname or IP literal.
+    /// * `port` - The request's effective port (the scheme default when the
+    ///   URL names none).
+    ///
+    /// # Returns
+    ///
+    /// `true` when outbound mode allows the fetch.
+    #[must_use]
+    pub fn allows_fetch(&self, host: &str, port: u16) -> bool {
+        self.allows_initial(host) && self.matching_domain_grants_port(host, port)
+    }
+
+    /// Whether a redirect hop to `host:port` is permitted.
+    ///
+    /// [`Self::allows_redirect`] plus the port rule: a hop to a declared host
+    /// needs a port that entry grants; an undeclared public hop
+    /// ([`Self::allow_undeclared_public_redirects`]) is limited to
+    /// [`FETCH_DEFAULT_PORTS`].
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - Hop hostname or IP literal.
+    /// * `port` - The hop's effective port.
+    /// * `hop_index` - 0-based redirect hop.
+    ///
+    /// # Returns
+    ///
+    /// `true` when outbound mode allows the hop.
+    #[must_use]
+    pub fn allows_redirect_to(&self, host: &str, port: u16, hop_index: u32) -> bool {
+        if !self.allows_redirect(host, hop_index) {
+            return false;
+        }
+        self.matching_domain_grants_port(host, port)
+            || (self.allow_undeclared_public_redirects && FETCH_DEFAULT_PORTS.contains(&port))
+    }
+
+    /// Whether some `domains` entry that covers `host` grants `port`.
+    fn matching_domain_grants_port(&self, host: &str, port: u16) -> bool {
+        let host = match classify_host(host) {
+            HostKind::Invalid => return false,
+            HostKind::Ip(ip) => ip.to_string(),
+            HostKind::Name(name) => name,
+        };
+        self.domains
+            .iter()
+            .any(|d| host_matches_normalized(&host, d) && entry_grants_port(d, port))
+    }
+
     /// Host-side check for a `CONNECT` that arrives from a workerd isolate.
     ///
     /// A workerd guest's outbound traffic leaves its jail through the host's
     /// `CONNECT` proxy, one tunnel per `fetch()` request or `connect()`
     /// socket. The jail labels nothing the host can trust, so the host can't
     /// tell which call opened a tunnel. It therefore admits the union of what
-    /// either call may reach: a TCP grant for `host:port`, a fetch host
-    /// ([`Self::allows_initial`]), or a host a redirect could reach
-    /// ([`Self::allows_redirect`] at hop 0, which covers
-    /// [`Self::allow_undeclared_public_redirects`]). Fetch grants name hosts,
-    /// not ports, so a fetch host is admitted on any port. The resolved
-    /// addresses still have to pass [`Self::allows_ip`] before the host dials.
+    /// either call may reach on that port: a TCP grant for `host:port`, a
+    /// fetch entry that grants `host:port` ([`Self::allows_fetch`]), or a
+    /// redirect hop to it ([`Self::allows_redirect_to`] at hop 0). The
+    /// resolved addresses still have to pass [`Self::allows_ip`] before the
+    /// host dials.
     ///
     /// The isolate's own egress worker enforces the narrower per-call rules
     /// (the fetch allowlist, each redirect hop, the subrequest budget). This
@@ -557,8 +613,8 @@ impl EgressPolicy {
     #[must_use]
     pub fn allows_isolate_tunnel(&self, host: &str, port: u16) -> bool {
         self.allows_tcp(host, port)
-            || self.allows_initial(host)
-            || (self.max_redirects > 0 && self.allows_redirect(host, 0))
+            || self.allows_fetch(host, port)
+            || (self.max_redirects > 0 && self.allows_redirect_to(host, port, 0))
     }
 
     /// Serializes this policy to the JSON value injected as workerd
@@ -714,11 +770,15 @@ pub fn normalize_hostname(host: &str) -> Option<String> {
 }
 
 /// Normalizes an allowlist pattern (`*.example.com`, exact host, or
-/// [`ANY_PUBLIC_HOST`]) via IDNA.
+/// [`ANY_PUBLIC_HOST`]) via IDNA, keeping an optional port.
 ///
 /// The `*.` prefix is preserved; only the suffix is ToASCII-normalized. A bare
-/// `*` stays [`ANY_PUBLIC_HOST`]. Percent-encoded patterns and empty patterns
-/// return `None`.
+/// `*` stays [`ANY_PUBLIC_HOST`] and never takes a port. An entry may end in
+/// `:port` (`api.example.com:8443`, `[2001:db8::1]:8080`): it then grants
+/// that port only, while an entry without one grants the web ports 80 and
+/// 443 (see [`FETCH_DEFAULT_PORTS`]). The port must be canonical decimal
+/// (no sign, no leading zero, 1-65535). Percent-encoded patterns and empty
+/// patterns return `None`.
 ///
 /// # Arguments
 ///
@@ -731,18 +791,109 @@ pub fn normalize_hostname(host: &str) -> Option<String> {
 /// `None` on failure.
 #[must_use]
 pub fn normalize_domain_pattern(pattern: &str) -> Option<String> {
-    let pattern = pattern.trim().trim_end_matches('.');
+    let pattern = pattern.trim();
     if pattern.is_empty() || pattern.contains('%') {
         return None;
     }
-    if pattern == ANY_PUBLIC_HOST {
-        return Some(ANY_PUBLIC_HOST.to_string());
+    let (host, port) = split_domain_entry(pattern)?;
+    let normalized = normalize_host_pattern(host)?;
+    if normalized == ANY_PUBLIC_HOST && port.is_some() {
+        return None;
     }
-    if let Some(rest) = pattern.strip_prefix("*.") {
-        let ascii = normalize_hostname(rest)?;
-        Some(format!("*.{ascii}"))
+    Some(match port {
+        Some(port) if normalized.contains(':') => format!("[{normalized}]:{port}"),
+        Some(port) => format!("{normalized}:{port}"),
+        None => normalized,
+    })
+}
+
+/// Normalizes the host half of an allowlist entry, which carries no port:
+/// [`ANY_PUBLIC_HOST`], a `*.` wildcard, an IPv6 literal (without brackets)
+/// or an IDNA-normalized hostname, with any trailing dot removed.
+///
+/// # Returns
+///
+/// The normalized host pattern, or `None` when it is empty or invalid.
+fn normalize_host_pattern(host: &str) -> Option<String> {
+    let host = host.trim().trim_end_matches('.');
+    if host.is_empty() || host.contains('%') {
+        return None;
+    }
+    if host == ANY_PUBLIC_HOST {
+        Some(ANY_PUBLIC_HOST.to_string())
+    } else if let Some(rest) = host.strip_prefix("*.") {
+        normalize_hostname(rest).map(|ascii| format!("*.{ascii}"))
+    } else if let Ok(v6) = host.parse::<std::net::Ipv6Addr>() {
+        Some(v6.to_string())
     } else {
-        normalize_hostname(pattern)
+        normalize_hostname(host)
+    }
+}
+
+/// Ports a fetch allowlist entry without an explicit port grants: plain HTTP
+/// and HTTPS.
+pub const FETCH_DEFAULT_PORTS: [u16; 2] = [80, 443];
+
+/// Splits a `domains` allowlist entry into its host pattern and optional
+/// port.
+///
+/// `[v6]` and `[v6]:port` carry IPv6 literals; otherwise a final `:digits`
+/// is the port when the rest holds no other colon (a bare IPv6 literal has
+/// several and no port). An entry with no port grants
+/// [`FETCH_DEFAULT_PORTS`].
+///
+/// # Arguments
+///
+/// * `entry` - A `domains` entry, normalized or as written.
+///
+/// # Returns
+///
+/// The host pattern (IPv6 without brackets) and the port, or `None` when a
+/// port is present but not canonical decimal in 1-65535, or a bracket is
+/// unterminated.
+///
+/// # Examples
+///
+/// ```
+/// use bookclerk_plugin_manifest::split_domain_entry;
+///
+/// assert_eq!(split_domain_entry("abs.example.com:13378"), Some(("abs.example.com", Some(13378))));
+/// assert_eq!(split_domain_entry("[2606:4700::1]:9000"), Some(("2606:4700::1", Some(9000))));
+/// assert_eq!(split_domain_entry("api.example.com"), Some(("api.example.com", None)));
+/// assert_eq!(split_domain_entry("api.example.com:0443"), None);
+/// ```
+#[must_use]
+pub fn split_domain_entry(entry: &str) -> Option<(&str, Option<u16>)> {
+    if let Some(rest) = entry.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        return match after {
+            "" => Some((host, None)),
+            _ => Some((host, Some(parse_canonical_port(after.strip_prefix(':')?)?))),
+        };
+    }
+    match entry.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => {
+            Some((host, Some(parse_canonical_port(port)?)))
+        }
+        _ => Some((entry, None)),
+    }
+}
+
+/// Parses a canonical decimal port: digits only, no leading zero, not 0.
+fn parse_canonical_port(text: &str) -> Option<u16> {
+    if text.is_empty() || text.starts_with('0') || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Whether a normalized allowlist entry grants `port`: its explicit port, or
+/// [`FETCH_DEFAULT_PORTS`] when it names none.
+fn entry_grants_port(entry: &str, port: u16) -> bool {
+    match split_domain_entry(entry) {
+        Some((_, Some(granted))) => granted == port,
+        Some((_, None)) => FETCH_DEFAULT_PORTS.contains(&port),
+        None => false,
     }
 }
 
@@ -758,7 +909,7 @@ pub fn normalize_domain_pattern(pattern: &str) -> Option<String> {
 /// The normalized pattern, or `None` when it is invalid or `*`.
 #[must_use]
 pub fn normalize_tcp_host(host: &str) -> Option<String> {
-    normalize_domain_pattern(host).filter(|pattern| pattern != ANY_PUBLIC_HOST)
+    normalize_host_pattern(unbracketed(host)).filter(|pattern| pattern != ANY_PUBLIC_HOST)
 }
 
 /// Normalizes a host that may keep a guest's own `User-Agent`: a
@@ -949,7 +1100,12 @@ fn classify_host(host: &str) -> HostKind {
 /// and pattern strings.
 fn host_matches_normalized(host: &str, pattern: &str) -> bool {
     // `host` and policy `domains` are already IDNA-normalized by callers
-    // (`allows_initial` / `try_from_network`). Do not re-run IDNA here.
+    // (`allows_initial` / `try_from_network`). Do not re-run IDNA here. A
+    // fetch entry's port is judged separately ([`entry_grants_port`]).
+    let pattern = match split_domain_entry(pattern) {
+        Some((host_part, _)) => host_part,
+        None => return false,
+    };
     if pattern == ANY_PUBLIC_HOST {
         // Hostnames only: an IP literal needs its own entry.
         return host.parse::<std::net::IpAddr>().is_err();
@@ -1100,7 +1256,11 @@ mod tests {
     fn isolate_tunnels_admit_the_union_of_fetch_tcp_and_redirect_rules() {
         let policy = EgressPolicy {
             mode: NetworkMode::Outbound,
-            domains: vec!["api.example.com".into(), "*.cdn.example.com".into()],
+            domains: vec![
+                "api.example.com".into(),
+                "*.cdn.example.com".into(),
+                "abs.example.com:13378".into(),
+            ],
             tcp: vec![TcpGrant {
                 host: "db.example.com".into(),
                 ports: vec![5432],
@@ -1108,10 +1268,14 @@ mod tests {
             max_redirects: 5,
             ..EgressPolicy::deny()
         };
-        // A fetch host is admitted on any port: fetch grants carry no port.
+        // A fetch entry without a port is admitted on 80 and 443 only.
         assert!(policy.allows_isolate_tunnel("api.example.com", 443));
-        assert!(policy.allows_isolate_tunnel("api.example.com", 8443));
         assert!(policy.allows_isolate_tunnel("img.cdn.example.com", 80));
+        assert!(!policy.allows_isolate_tunnel("api.example.com", 8443));
+        assert!(!policy.allows_isolate_tunnel("api.example.com", 22));
+        // A fetch entry with a port is admitted on that port only.
+        assert!(policy.allows_isolate_tunnel("abs.example.com", 13378));
+        assert!(!policy.allows_isolate_tunnel("abs.example.com", 443));
         // A TCP grant is admitted only on its ports.
         assert!(policy.allows_isolate_tunnel("db.example.com", 5432));
         assert!(!policy.allows_isolate_tunnel("db.example.com", 5433));
@@ -1146,6 +1310,8 @@ mod tests {
         };
         assert!(policy.allows_isolate_tunnel("anything.example.net", 443));
         assert!(policy.allows_isolate_tunnel("1.1.1.1", 443));
+        // Undeclared hops stay on the web ports.
+        assert!(!policy.allows_isolate_tunnel("anything.example.net", 8080));
         for host in ["localhost", "10.0.0.1", "192.168.1.1", "[fd00::1]"] {
             assert!(!policy.allows_isolate_tunnel(host, 443), "{host}");
         }
@@ -1476,6 +1642,70 @@ mod tests {
         );
         assert!(https_url_on_hosts("https://127.0.0.1/x.jpg", &["*"]).is_none());
         assert!(https_url_on_hosts("https://localhost/x.jpg", &["*"]).is_none());
+    }
+
+    #[test]
+    fn domain_entries_may_name_one_canonical_port() {
+        for (raw, want) in [
+            ("api.example.com:8443", Some("api.example.com:8443")),
+            ("API.Example.COM.:8443", Some("api.example.com:8443")),
+            ("*.cdn.example.com:8080", Some("*.cdn.example.com:8080")),
+            ("[2001:DB8::1]:8443", Some("[2001:db8::1]:8443")),
+            ("[2001:db8::1]", Some("2001:db8::1")),
+            ("2001:db8::1", Some("2001:db8::1")),
+            ("10.0.0.5:13378", Some("10.0.0.5:13378")),
+            ("api.example.com:65535", Some("api.example.com:65535")),
+        ] {
+            assert_eq!(normalize_domain_pattern(raw).as_deref(), want, "{raw}");
+        }
+        for raw in [
+            "*:443",
+            "api.example.com:",
+            "api.example.com:0",
+            "api.example.com:08443",
+            "api.example.com:+443",
+            "api.example.com:65536",
+            "api.example.com:443:443",
+            "[2001:db8::1",
+            "[2001:db8::1]8443",
+            ":443",
+        ] {
+            assert!(normalize_domain_pattern(raw).is_none(), "{raw}");
+        }
+        // A TCP host never carries a port: its ports are listed beside it.
+        assert!(normalize_tcp_host("db.example.com:5432").is_none());
+        assert_eq!(
+            normalize_tcp_host("[::1]").as_deref(),
+            Some("::1"),
+            "a bracketed TCP address is the address"
+        );
+    }
+
+    #[test]
+    fn fetch_ports_follow_the_entry() {
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec![
+                "api.example.com".into(),
+                "api.example.com:8443".into(),
+                "[2606:4700::1111]:9000".into(),
+            ],
+            max_redirects: 2,
+            ..EgressPolicy::deny()
+        };
+        assert!(policy.allows_fetch("api.example.com", 80));
+        assert!(policy.allows_fetch("api.example.com", 443));
+        assert!(policy.allows_fetch("API.example.com.", 8443));
+        assert!(!policy.allows_fetch("api.example.com", 8080));
+        assert!(policy.allows_fetch("[2606:4700::1111]", 9000));
+        assert!(!policy.allows_fetch("[2606:4700::1111]", 443));
+        assert!(policy.allows_redirect_to("api.example.com", 8443, 0));
+        assert!(!policy.allows_redirect_to("api.example.com", 8080, 0));
+        assert!(!policy.allows_redirect_to("api.example.com", 443, 2));
+        // The host match itself ignores the port, so `allows_initial` (used by
+        // callers that judge the port separately) still sees the host.
+        assert!(policy.allows_initial("api.example.com"));
+        assert!(host_matches("api.example.com", "api.example.com:8443"));
     }
 
     #[test]

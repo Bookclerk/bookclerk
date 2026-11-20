@@ -9,14 +9,17 @@
 //! `xsuffix`; `*` never matches an IP literal and never grants TCP;
 //! percent-encoded hosts never match; hostname normalization is idempotent;
 //! the policy survives a JSON round trip; the guest's own `User-Agent` is kept
-//! only on hosts an approved non-`*` own-agent pattern matches; the isolate
-//! tunnel rule is exactly the union of the fetch, redirect and TCP rules.
+//! only on hosts an approved non-`*` own-agent pattern matches; a fetch or
+//! redirect reaches exactly the ports its `domains` entry grants (its own
+//! `:port`, else 80 and 443), judged by an independent entry parser; the
+//! isolate tunnel rule is exactly the union of the fetch, redirect and TCP
+//! rules on each port.
 
 #![no_main]
 
 use bookclerk_plugin_manifest::{
-    host_matches, normalize_domain_pattern, normalize_hostname, normalize_tcp_host, EgressPolicy,
-    NetworkMode, ANY_PUBLIC_HOST,
+    host_matches, normalize_domain_pattern, normalize_hostname, normalize_tcp_host,
+    split_domain_entry, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -64,6 +67,41 @@ fuzz_target!(|data: &[u8]| {
     check_policy(&policy);
 });
 
+/// The port an entry names, parsed without the crate's splitter: `Some(None)`
+/// when it names none, `None` when its port is malformed. A port follows the
+/// last `:` when the entry is `[…]:port` or holds exactly one colon.
+fn oracle_entry_port(entry: &str) -> Option<Option<u16>> {
+    let text = if entry.starts_with('[') {
+        match entry.find("]:") {
+            Some(at) => &entry[at + 2..],
+            None if entry.ends_with(']') => return Some(None),
+            None => return None,
+        }
+    } else if entry.matches(':').count() == 1 {
+        entry.rsplit(':').next().unwrap_or("")
+    } else {
+        return Some(None);
+    };
+    let digits_ok = !text.is_empty()
+        && !text.starts_with('0')
+        && text.len() <= 5
+        && text.bytes().all(|b| b.is_ascii_digit());
+    if !digits_ok {
+        return None;
+    }
+    let port: u32 = text.parse().ok()?;
+    Some(Some(u16::try_from(port).ok()?))
+}
+
+/// Whether `entry` grants `port`: its own port, else 80 and 443.
+fn oracle_entry_grants(entry: &str, port: u16) -> bool {
+    match oracle_entry_port(entry) {
+        Some(Some(granted)) => granted == port,
+        Some(None) => port == 80 || port == 443,
+        None => false,
+    }
+}
+
 /// Runs every oracle on one decoded policy.
 fn check_policy(policy: &EgressPolicy) {
     let json = serde_json::to_string(policy).expect("policy serializes");
@@ -72,7 +110,11 @@ fn check_policy(policy: &EgressPolicy) {
     let _ = policy.to_policy_json();
 
     let mut hosts: Vec<String> = Vec::new();
-    hosts.extend(policy.domains.iter().cloned());
+    hosts.extend(policy.domains.iter().map(|d| {
+        split_domain_entry(d)
+            .map_or(d.as_str(), |(host, _)| host)
+            .to_string()
+    }));
     hosts.extend(policy.tcp.iter().map(|g| g.host.clone()));
     for host in hosts.clone() {
         let bare = host.strip_prefix("*.").unwrap_or(&host).to_string();
@@ -97,12 +139,42 @@ fn check_policy(policy: &EgressPolicy) {
         if policy.mode == NetworkMode::Deny {
             assert!(!initial && !redirect && !tcp, "deny mode allowed {host}");
         }
-        // The isolate tunnel rule is exactly the union of what the isolate's
-        // fetch and connect could reach, on any port: never wider.
-        for port in [1_u16, 80, 443, 65535] {
-            let expected = policy.allows_tcp(host, port)
-                || initial
-                || (policy.max_redirects > 0 && redirect);
+        let mut ports = vec![1_u16, 80, 443, 8443, 65535];
+        ports.extend(policy.domains.iter().filter_map(|d| oracle_entry_port(d).flatten()));
+        for port in ports {
+            // A fetch or redirect reaches a port only when some entry grants
+            // it (independent parser of the entry's port), and an entry that
+            // plainly covers the host and grants the port is honoured.
+            // `host_matches` is the plain IDNA comparison: on an entry already
+            // in normalized form it never covers more than the policy's own
+            // matching, so it only constrains.
+            let some_grants = policy.domains.iter().any(|d| oracle_entry_grants(d, port));
+            let plainly_granted = policy.domains.iter().any(|d| {
+                normalize_domain_pattern(d).as_deref() == Some(d.as_str())
+                    && host_matches(host, d)
+                    && oracle_entry_grants(d, port)
+            });
+            let fetch = policy.allows_fetch(host, port);
+            assert!(!fetch || (initial && some_grants), "fetch widened {host}:{port}");
+            assert!(
+                fetch || !(initial && plainly_granted),
+                "fetch refused a granted {host}:{port}"
+            );
+            let hop = policy.allows_redirect_to(host, port, 0);
+            let undeclared_web =
+                policy.allow_undeclared_public_redirects && (port == 80 || port == 443);
+            assert!(
+                !hop || (redirect && (some_grants || undeclared_web)),
+                "redirect widened {host}:{port}"
+            );
+            assert!(
+                hop || !(redirect && (plainly_granted || undeclared_web)),
+                "redirect refused a granted {host}:{port}"
+            );
+            // The isolate tunnel rule is exactly the union of what the
+            // isolate's fetch and connect could reach on that port.
+            let expected =
+                policy.allows_tcp(host, port) || fetch || (policy.max_redirects > 0 && hop);
             assert_eq!(
                 policy.allows_isolate_tunnel(host, port),
                 expected,

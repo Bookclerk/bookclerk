@@ -39,8 +39,7 @@ use tokio::process::Command;
 use bookclerk_config::{resolve_postgres_url, Config, DatabasePluginKind};
 use bookclerk_plugin_abi::{PluginCapabilities, PortalAuthMode};
 use bookclerk_plugin_manifest::{
-    is_public_internet, is_restricted_hostname, normalize_domain_pattern, EgressPolicy,
-    NetworkMode, TcpGrant,
+    is_public_internet, is_restricted_hostname, EgressPolicy, NetworkMode, TcpGrant,
 };
 
 use crate::manifest::{PluginManifest, PluginRuntimeKind, WorkerdLimits};
@@ -1087,7 +1086,7 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
         .tcp
         .iter()
         .filter_map(|t| {
-            let host = bookclerk_plugin_manifest::normalize_domain_pattern(&t.host)?;
+            let host = bookclerk_plugin_manifest::normalize_tcp_host(&t.host)?;
             let mut ports = t.ports.clone();
             ports.sort_unstable();
             ports.dedup();
@@ -1579,7 +1578,9 @@ pub fn pending_structural(existing: &PluginGrant, requested: &PluginGrant) -> Pe
 /// suffix itself and every subdomain, as the egress policy matches), or
 /// [`bookclerk_plugin_manifest::ANY_PUBLIC_HOST`] (every hostname, never an
 /// IP literal). Restricted names such as `localhost` still need a CIDR at
-/// run time under either pattern, so coverage does not change that.
+/// run time under either pattern, so coverage does not change that. Either
+/// side may end in `:port`: the approved entry must also grant every port the
+/// requested one does (an entry without a port grants 80 and 443).
 ///
 /// # Arguments
 ///
@@ -1590,7 +1591,26 @@ pub fn pending_structural(existing: &PluginGrant, requested: &PluginGrant) -> Pe
 ///
 /// `true` when `requested` is equal to or narrower than `approved`.
 fn domain_pattern_covers(approved: &str, requested: &str) -> bool {
-    use bookclerk_plugin_manifest::ANY_PUBLIC_HOST;
+    use bookclerk_plugin_manifest::{split_domain_entry, ANY_PUBLIC_HOST, FETCH_DEFAULT_PORTS};
+    if approved == requested {
+        return true;
+    }
+    let (Some((approved, approved_port)), Some((requested, requested_port))) =
+        (split_domain_entry(approved), split_domain_entry(requested))
+    else {
+        return false;
+    };
+    // An entry without a port grants the web ports; one with a port grants
+    // that port only. The approved entry must grant every port requested.
+    let ports_covered = match (approved_port, requested_port) {
+        (None, None) => true,
+        (None, Some(port)) => FETCH_DEFAULT_PORTS.contains(&port),
+        (Some(_), None) => false,
+        (Some(granted), Some(port)) => granted == port,
+    };
+    if !ports_covered {
+        return false;
+    }
     if approved == requested {
         return true;
     }
@@ -2959,7 +2979,7 @@ fn tcp_target_from_http_url(raw: &str, default_port: u16) -> Option<(String, u16
 
 /// Inserts `host:port` into the effective TCP grant set (merging ports).
 fn add_tcp_grant(grant: &mut PluginGrant, host: &str, port: u16) {
-    let Some(host) = normalize_domain_pattern(host) else {
+    let Some(host) = bookclerk_plugin_manifest::normalize_tcp_host(host) else {
         return;
     };
     let mut ports = grant
@@ -5142,6 +5162,33 @@ reason = "  App API contract.  "
         assert_eq!(pending.tcp.len(), 1);
         assert!(domain_pattern_covers("*.store.example", "store.example"));
         assert!(!domain_pattern_covers("*.store.example", "other.example"));
+        // Ports: a bare entry grants 80 and 443; an entry with a port grants
+        // that port only, so a new port is a widening that needs consent.
+        assert!(domain_pattern_covers("store.example", "store.example:443"));
+        assert!(!domain_pattern_covers(
+            "store.example",
+            "store.example:8443"
+        ));
+        assert!(!domain_pattern_covers(
+            "store.example:8443",
+            "store.example"
+        ));
+        assert!(domain_pattern_covers(
+            "*.store.example",
+            "a.store.example:80"
+        ));
+        assert!(!domain_pattern_covers(
+            bookclerk_plugin_manifest::ANY_PUBLIC_HOST,
+            "a.example:8080"
+        ));
+        assert!(domain_pattern_covers(
+            "[2606:4700::1]:9000",
+            "[2606:4700::1]:9000"
+        ));
+        assert!(!domain_pattern_covers(
+            "[2606:4700::1]:9000",
+            "[2606:4700::1]:9001"
+        ));
         assert!(!domain_pattern_covers(
             "api.store.example",
             "*.store.example"

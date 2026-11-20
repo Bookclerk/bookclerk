@@ -345,13 +345,14 @@ fn not_open(socket: &str) -> PluginError {
 
 /// True when the grant covers the socket's target.
 ///
-/// A WebSocket starts as an HTTP request, so a `fetch` domain grant covers
-/// it; a TCP grant for the host and port covers it too, since that grant
+/// A WebSocket starts as an HTTP request, so a `fetch` domain grant that
+/// grants the target's port covers it (an entry with no port grants 80 and
+/// 443, as for `fetch`); a TCP grant for the host and port covers it too, since that grant
 /// already lets the plugin open the same connection and speak the protocol
 /// itself. Either way the addresses are checked afterwards.
 #[must_use]
 pub fn target_granted(policy: &EgressPolicy, target: &SocketTarget) -> bool {
-    policy.allows_initial(&target.host) || policy.allows_tcp(&target.host, target.port)
+    policy.allows_fetch(&target.host, target.port) || policy.allows_tcp(&target.host, target.port)
 }
 
 /// Addresses for `target` that the policy allows, after the host check.

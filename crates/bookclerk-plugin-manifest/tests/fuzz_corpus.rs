@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 use bookclerk_plugin_manifest::{
     consent_domains_for, format_manifest, host_matches, normalize_domain_pattern,
-    normalize_hostname, normalize_tcp_host, parse, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
+    normalize_hostname, normalize_tcp_host, parse, split_domain_entry, EgressPolicy, NetworkMode,
+    ANY_PUBLIC_HOST,
 };
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
@@ -213,8 +214,106 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
             }
         }
         check_user_agent(&policy);
+        check_ports(&policy);
     }
     assert!(parsed > 0, "no egress_policy seed parsed");
+}
+
+/// The port an entry names, parsed without the crate's splitter (mirrors the
+/// target): `Some(None)` when it names none, `None` when malformed.
+fn oracle_entry_port(entry: &str) -> Option<Option<u16>> {
+    let text = if entry.starts_with('[') {
+        match entry.find("]:") {
+            Some(at) => &entry[at + 2..],
+            None if entry.ends_with(']') => return Some(None),
+            None => return None,
+        }
+    } else if entry.matches(':').count() == 1 {
+        entry.rsplit(':').next().unwrap_or("")
+    } else {
+        return Some(None);
+    };
+    let digits_ok = !text.is_empty()
+        && !text.starts_with('0')
+        && text.len() <= 5
+        && text.bytes().all(|b| b.is_ascii_digit());
+    if !digits_ok {
+        return None;
+    }
+    let port: u32 = text.parse().ok()?;
+    Some(Some(u16::try_from(port).ok()?))
+}
+
+/// Whether `entry` grants `port`: its own port, else 80 and 443.
+fn oracle_entry_grants(entry: &str, port: u16) -> bool {
+    match oracle_entry_port(entry) {
+        Some(Some(granted)) => granted == port,
+        Some(None) => port == 80 || port == 443,
+        None => false,
+    }
+}
+
+/// Fetch and redirect reach exactly the ports their entry grants, and the
+/// isolate tunnel rule is their union with TCP on each port (mirrors the
+/// target).
+fn check_ports(policy: &EgressPolicy) {
+    let mut hosts: Vec<String> = Vec::new();
+    for entry in &policy.domains {
+        let host = split_domain_entry(entry).map_or(entry.as_str(), |(host, _)| host);
+        let bare = host.strip_prefix("*.").unwrap_or(host);
+        hosts.push(host.to_string());
+        hosts.push(bare.to_string());
+        hosts.push(format!("a.{bare}"));
+        if bare.contains(':') {
+            hosts.push(format!("[{bare}]"));
+        }
+    }
+    let mut ports = vec![1_u16, 80, 443, 8443, 65535];
+    ports.extend(
+        policy
+            .domains
+            .iter()
+            .filter_map(|d| oracle_entry_port(d).flatten()),
+    );
+    for host in &hosts {
+        let initial = policy.allows_initial(host);
+        let redirect = policy.allows_redirect(host, 0);
+        for &port in &ports {
+            let some_grants = policy.domains.iter().any(|d| oracle_entry_grants(d, port));
+            let plainly_granted = policy.domains.iter().any(|d| {
+                normalize_domain_pattern(d).as_deref() == Some(d.as_str())
+                    && host_matches(host, d)
+                    && oracle_entry_grants(d, port)
+            });
+            let fetch = policy.allows_fetch(host, port);
+            assert!(
+                !fetch || (initial && some_grants),
+                "fetch widened {host}:{port}"
+            );
+            assert!(
+                fetch || !(initial && plainly_granted),
+                "fetch refused a granted {host}:{port}"
+            );
+            let hop = policy.allows_redirect_to(host, port, 0);
+            let undeclared_web =
+                policy.allow_undeclared_public_redirects && (port == 80 || port == 443);
+            assert!(
+                !hop || (redirect && (some_grants || undeclared_web)),
+                "redirect widened {host}:{port}"
+            );
+            assert!(
+                hop || !(redirect && (plainly_granted || undeclared_web)),
+                "redirect refused a granted {host}:{port}"
+            );
+            let expected =
+                policy.allows_tcp(host, port) || fetch || (policy.max_redirects > 0 && hop);
+            assert_eq!(
+                policy.allows_isolate_tunnel(host, port),
+                expected,
+                "isolate tunnel rule is not the union for {host}:{port}"
+            );
+        }
+    }
 }
 /// Plain lowercase ASCII form of `raw` (trimmed, trailing dots dropped), or
 /// `None` when it holds anything an IDNA step could reinterpret.
