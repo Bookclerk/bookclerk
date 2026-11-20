@@ -87,7 +87,7 @@ A branch's node appears among the nodes (`bookclerk nodes list`,
 `kind = branch`), owned by the user who signed in, or the invite's user.
 **Trust follows that user's role**:
 
-- A Member's or Host's branch receives only jobs whose store accounts
+- A Member's branch receives only jobs whose store accounts
   belong to that user.
 - An Administrator's or Owner's branch may receive any job, but takes
   only that user's own work unless the branch's operator turns on

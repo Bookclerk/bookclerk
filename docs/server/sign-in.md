@@ -15,8 +15,7 @@ to Bookclerk's Rust HTTP API; TypeScript never hosts the API.
 | **Operator** | The operator token, until an Owner exists; then a sign-in link or Owner elevation | Everything on the server, except connect stores |
 | **Owner** | Invite link, password, passkey, SSO or integration login | Administrator powers, plus elevation to operator and **Settings → Nodes** for the nodes they own |
 | **Administrator** | Invite link, password, passkey, SSO or integration login | Member powers, plus acquire and scan for every store account, jobs, adding users and **Settings → Nodes** for the nodes they own |
-| **Host** | Invite link, password, passkey, SSO or integration return visit | Member powers, plus **Status** and **Settings → Nodes** for the nodes they own |
-| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, scan and acquire for the store accounts linked to them (through the API), and their own **Settings → Account** |
+| **Member** | Invite link, password, passkey, SSO or integration return visit | Discover, Wishlist, browsing the shared library, **Accounts**, scan and acquire for the store accounts linked to them (through the API), and their own **Settings → Account**; a Member who owns a node (a branch they linked) also gets **Status** and **Settings → Nodes** for the nodes they own |
 
 ### The operator
 
@@ -387,9 +386,12 @@ A branch in Settings → Library has **Use a library card instead**. See
 | Library cards (clerk side) | `GET /api/config/clerk`, `POST /api/config/clerk/inspect`, `/start`, `/callback`, `/sign-out` (operator or Owner) |
 
 `GET /api/auth/me` returns
-`{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user?, second_factor? }`:
+`{ authenticated, role, default_view, can_acquire, elevated, administers_nodes, impersonating?, portal?, user?, second_factor? }`:
 
 - `role` is `operator`, `owner`, `administrator` or `member`.
+- `administers_nodes` is true for the operator, an Owner or Administrator,
+  and a Member who owns a node. The web app shows Status, and the nodes in
+  Settings, only when it is true.
 - `user` is the first-party user, when there is one.
 - `default_view` comes from the caller's preferences.
 - Portal users also get
@@ -538,7 +540,7 @@ reset passwords.
 Who can grant which role:
 
 - An Administrator adds Members only.
-- An Owner adds Members, Hosts and Administrators.
+- An Owner adds Members and Administrators.
 - The operator, or an elevated Owner, can grant any role.
 
 Each row shows presence:

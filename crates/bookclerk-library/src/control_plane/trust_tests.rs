@@ -199,10 +199,6 @@ async fn host_trust_follows_its_owners_role(owner_db: LibraryStore, host_db: Lib
         .expect("still trusted at handoff");
     finish(&host_db, &kept).await;
 
-    // A Host-role owner is no more trusted than a Member.
-    owner_db.set_user_role(riley, UserRole::Host).await.unwrap();
-    assert!(claim(&host_db, HOST, Claimant::Remote).await.is_none());
-
     owner_db
         .set_user_role(riley, UserRole::Administrator)
         .await
@@ -588,7 +584,7 @@ async fn scan_planner_splits_and_scopes(owner_db: LibraryStore, host_db: Library
     user(&owner_db, UserRole::Owner, "Olive").await;
     let admin = user(&owner_db, UserRole::Administrator, "Ada").await;
     let riley = user(&owner_db, UserRole::Member, "Riley").await;
-    let sam = user(&owner_db, UserRole::Host, "Sam").await;
+    let sam = user(&owner_db, UserRole::Member, "Sam").await;
 
     // With nothing to scan, a privileged scan stays one unsplit job.
     let empty = plan_scan(&host_db, ScanRequester::Operator, None, None)

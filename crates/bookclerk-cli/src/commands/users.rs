@@ -1,6 +1,6 @@
 //! `bookclerk users`: the library's people. Today it reads and sets patron
-//! scopes, which part of the library a Member or Host sees, and member
-//! controls, what a Member may do.
+//! scopes, which part of the library a Member sees, and member controls,
+//! what a Member may do.
 //!
 //! Reads and writes the library database directly, like `nodes`. The web
 //! app's Settings → Users, `GET`/`PUT /api/users/{id}/scope` and

@@ -381,6 +381,14 @@ jobs:
           toolchain: ${{ steps.pins.outputs.rust }}
           components: rustfmt, clippy
 
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        if: needs.plan.outputs.check_needs_cargo == 'true'
+        shell: bash
+        run: python3 scripts/tool_versions.py prune-rust
+
       - name: Install Node.js
         if: needs.plan.outputs.check_needs_node == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -579,6 +587,13 @@ jobs:
           toolchain: ${{ steps.pins.outputs.rust }}
           components: rustfmt, clippy, llvm-tools-preview
 
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python3 scripts/tool_versions.py prune-rust
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
@@ -752,6 +767,13 @@ jobs:
           # installs them on the first cargo call, racing parallel calls.
           components: rustfmt, clippy
 
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python3 scripts/tool_versions.py prune-rust
+
       - name: Install capnproto
         run: |
           sudo apt-get update
@@ -830,6 +852,13 @@ jobs:
           # The components rust-toolchain.toml lists; otherwise rustup
           # installs them on the first cargo call, racing parallel calls.
           components: rustfmt, clippy
+
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python3 scripts/tool_versions.py prune-rust
 
       - name: Install Node.js
         if: needs.plan.outputs.release_mode == 'full'
@@ -956,6 +985,13 @@ jobs:
           toolchain: ${{ steps.pins.outputs.rust }}
           components: rustfmt, clippy
 
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python scripts/tool_versions.py prune-rust
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -975,7 +1011,11 @@ jobs:
       group: ${{ github.event_name == 'pull_request' && (fromJSON(needs.plan.outputs.lanes || '{}')[format('native-gateway-{0}', strategy.job-index)].group || 'ci-pr-lane-0') || format('ci-{0}-{1}-native-gateway-{2}', github.run_id, github.run_attempt, strategy.job-index) }}
       queue: max
     needs: plan
-    timeout-minutes: 45
+    # A build-only main push compiles the Windows smoke and cluster tests
+    # from scratch when its cache misses (about 45 minutes), then saves the
+    # cache, so it gets more time than the merge queue's runs
+    # (docs/contributing/ci.md#build-only-main-pushes).
+    timeout-minutes: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 75 || 45 }}
     if: needs.plan.outputs.job_native_gateway == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
@@ -1019,6 +1059,13 @@ jobs:
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
           components: rustfmt, clippy
+
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python scripts/tool_versions.py prune-rust
 
       # Build-only main push: the dependency cache key covers Cargo.lock, the
       # manifests, the toolchain and the CI env, not this repository's
@@ -1142,6 +1189,13 @@ jobs:
           toolchain: ${{ steps.pins.outputs.rust }}
           components: rustfmt, clippy
 
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python scripts/tool_versions.py prune-rust
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -1203,6 +1257,13 @@ jobs:
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
           components: rustfmt, clippy
+
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python scripts/tool_versions.py prune-rust
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -1276,6 +1337,13 @@ jobs:
         with:
           toolchain: ${{ steps.pins.outputs.rust }}
           components: rustfmt, clippy
+
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python scripts/tool_versions.py prune-rust
 
       # Build-only main push: as in `native-gateway`, skip the build when
       # this key is already saved (docs/contributing/ci.md#build-only-main-pushes).
@@ -1392,6 +1460,13 @@ jobs:
           # installs them on the first cargo call, racing parallel calls.
           components: rustfmt, clippy
 
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python3 scripts/tool_versions.py prune-rust
+
       - name: Install capnproto
         run: |
           sudo apt-get update
@@ -1452,6 +1527,13 @@ jobs:
           # The components rust-toolchain.toml lists; otherwise rustup
           # installs them on the first cargo call, racing parallel calls.
           components: rustfmt, clippy
+
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python scripts/tool_versions.py prune-rust
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
