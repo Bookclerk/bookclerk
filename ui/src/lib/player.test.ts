@@ -649,6 +649,23 @@ describe("Player", () => {
     expect(w.synced.at(-1)).toMatchObject({ id: "s2", report: { listened_ms: 1000 } });
   });
 
+  it("keeps a report still in flight for one book out of the next book's close", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    w.holds.sync = new Promise<void>(() => {});
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    expect(w.synced).toHaveLength(1);
+    await w.player.play({ ...TARGET, editionId: "ed2" });
+    w.audio.ready(600);
+    w.clock.now += 1000;
+    w.audio.at(1);
+    await w.player.stop();
+    expect(w.closed.at(-1)).toMatchObject({ id: "s2", report: { listened_ms: 1000 } });
+  });
+
   it("counts loads and unloads for callers that read before they play", async () => {
     const w = world();
     const before = w.player.loads;

@@ -179,8 +179,11 @@ export class Player {
   private syncedAt = 0;
   /** True while a report is in flight. */
   private syncing = false;
-  /** Listened milliseconds the report in flight carries; 0 with none. */
-  private sending = 0;
+  /**
+   * The session the report in flight is for and the listened milliseconds it
+   * carries; `null` with none in flight.
+   */
+  private sending: { session: PlaybackSession; listenedMs: number } | null = null;
   /** True when a report was asked for while another was in flight. */
   private reportAgain = false;
   /** Counts loads, so an answer for an earlier one is dropped. */
@@ -493,13 +496,16 @@ export class Player {
   /**
    * The report for the current position.
    *
+   * @param session - The session the report is for.
    * @returns The body of a sync or close request.
    */
-  private reportBody(): PlaybackReport {
+  private reportBody(session: PlaybackSession): PlaybackReport {
+    // What a report in flight for this session already carries is not sent
+    // twice; one in flight for an earlier session carried none of this time.
+    const inFlight = this.sending?.session === session ? this.sending.listenedMs : 0;
     const body: PlaybackReport = {
       position_ms: Math.max(0, Math.round(this.state.positionMs)),
-      // What a report in flight already carries is not sent twice.
-      listened_ms: Math.round(Math.max(0, this.listened - this.sending)),
+      listened_ms: Math.round(Math.max(0, this.listened - inFlight)),
     };
     if (this.state.durationMs) body.duration_ms = Math.round(this.state.durationMs);
     return body;
@@ -519,9 +525,9 @@ export class Player {
     }
     this.syncing = true;
     this.syncedAt = this.deps.now();
-    const body = this.reportBody();
+    const body = this.reportBody(session);
     const sent = this.listened;
-    this.sending = sent;
+    this.sending = { session, listenedMs: sent };
     try {
       const synced = await this.deps.sync(session.session_id, body);
       // An answer for a session since replaced says nothing about this one.
@@ -536,7 +542,7 @@ export class Player {
       // Anything else is retried by the next report.
     } finally {
       this.syncing = false;
-      this.sending = 0;
+      this.sending = null;
     }
     if (this.reportAgain) {
       this.reportAgain = false;
@@ -691,7 +697,7 @@ export class Player {
       return;
     }
     this.tick();
-    const body = this.reportBody();
+    const body = this.reportBody(session);
     this.audio?.pause();
     if (this.audio) this.audio.src = "";
     this.set(idle(this.state.speed));
