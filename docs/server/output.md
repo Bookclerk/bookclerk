@@ -117,7 +117,8 @@ deletes the original.
 With `watch` on, the plugin asks the operating system to tell it whenever a
 file in the folder is added, changed, renamed or removed, and keeps a list
 of those changes. Bookclerk reads the list instead of walking the whole
-folder, so changes made by other programs show up within seconds.
+folder, so changes made by other programs show up within minutes (see
+[Noticing changes made outside Bookclerk](#noticing-changes-made-outside-bookclerk)).
 
 ```sh
 bookclerk plugins config set local watch true
@@ -474,6 +475,48 @@ When some destinations already have a title and others don't,
 [output]
 multi_destination = "sync_missing"
 ```
+
+## Noticing changes made outside Bookclerk
+
+Other programs change destinations too: a file manager renames a folder,
+a sync client removes a book, a person copies files into the bucket.
+Every few minutes each host checks the destinations it has deployed (one
+host per destination at a time), and Bookclerk keeps the last state it
+saw of every file there.
+
+Each destination is followed in one of two ways:
+
+- **A change feed**, when the destination has one turned on: the
+  [folder watch](#watching-the-folder) on a local disk, or the
+  [bucket's notification queue](#following-changes-in-the-bucket) on
+  Amazon S3. Bookclerk reads what changed since its last check, so
+  changes show up within about five minutes.
+- **A listing**, which every destination has: Bookclerk lists every file
+  and compares the list with the last one. It runs every 6 hours, or once
+  a day while the destination's feed is healthy. When the feed fails or
+  says it may have missed changes, a listing runs at once and the feed
+  takes over again after it. A long listing continues where it stopped
+  on the next check, even after a restart.
+
+When a file a stored copy needs is gone, the copy turns **pending**, and
+the background retry writes it again (see
+[Several destinations](#several-destinations)). When the edition's audio
+was moved to another key on the same destination that Bookclerk already
+recorded, the copy follows the file instead.
+
+> [!NOTE]
+> A listing that misses at least a fifth of the files Bookclerk knew of
+> (and more than 10) more likely failed partway, with a wrong prefix, a
+> missing permission or an unmounted disk, than saw the files really go.
+> Bookclerk keeps those files as they were and does not rewrite them, and
+> **Settings → Plugins** shows **Listing held back** on the destination.
+> Fix the cause, and the next listing applies what it finds.
+
+**Settings → Plugins** shows each destination's state beside its name:
+**Feed healthy**, **Feed gap**, **Feed failing**, **Listed** or **Not
+listed yet**. Hover over it for the number of files, the last and next
+listing, and any error. The same fields are the instance's
+`storage_sync` in the web API.
 
 ## Naming
 

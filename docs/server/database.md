@@ -809,6 +809,17 @@ library holds as works, expressions and editions:
   wrote when it commits. Acquire runs read it to visit an acquired
   edition a destination still lacks (see [Several
   destinations](output.md#several-destinations)).
+- `destination_objects`: the last state Bookclerk saw of each file at
+  each destination (size, change signature, modification time), with the
+  destination's change sequence when it last changed. A removed file
+  stays as a tombstone for 30 days so readers can page what changed. It
+  is not copied by a database migration; the next listing rebuilds it
+  (see [Noticing changes made outside
+  Bookclerk](output.md#noticing-changes-made-outside-bookclerk)).
+- `destination_feeds`: each destination's change sequence, change feed
+  state (`off`, `healthy`, `gap`, `failing`) and cursor, its listing in
+  progress and schedule, and the number of files it held. Not copied by
+  a database migration either.
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that

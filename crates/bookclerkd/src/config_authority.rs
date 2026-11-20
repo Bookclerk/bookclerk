@@ -965,6 +965,91 @@ pub(crate) struct PluginInstanceView {
     /// Scheduler placement; absent when the instance is hand-managed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementView>,
+    /// How outside changes at this destination are followed; absent until
+    /// a storage instance's first sync pass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_sync: Option<StorageSyncView>,
+}
+
+/// The state of a destination's change feed, as the API reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StorageFeedState {
+    /// No change feed; scheduled listings alone notice outside changes.
+    Off,
+    /// The feed answered and missed nothing; listings run once a day.
+    Healthy,
+    /// The feed may have missed changes; a listing runs at once.
+    Gap,
+    /// Reading the feed failed; listings cover it until it answers again.
+    Failing,
+}
+
+impl From<bookclerk_library::FeedState> for StorageFeedState {
+    fn from(state: bookclerk_library::FeedState) -> Self {
+        use bookclerk_library::FeedState;
+        match state {
+            FeedState::Off => Self::Off,
+            FeedState::Healthy => Self::Healthy,
+            FeedState::Gap => Self::Gap,
+            FeedState::Failing => Self::Failing,
+        }
+    }
+}
+
+/// How a destination notices changes made outside Bookclerk: its change
+/// feed's state and its listings (storage destinations ADR, decision 5).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub(crate) struct StorageSyncView {
+    /// The change feed's state: `off` (no feed; listings alone), `healthy`,
+    /// `gap` (the feed may have missed changes; a listing runs at once) or
+    /// `failing` (reading the feed failed; listings cover it).
+    pub feed_state: StorageFeedState,
+    /// The last feed failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "the notification queue refused the request: access denied")]
+    pub feed_error: Option<String>,
+    /// RFC 3339 time the feed was last read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2026-11-20T21:00:00Z")]
+    pub feed_checked_at: Option<String>,
+    /// RFC 3339 time the last listing finished.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2026-11-20T18:00:00Z")]
+    pub listed_at: Option<String>,
+    /// RFC 3339 time the next scheduled listing is due.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2026-11-21T00:00:00Z")]
+    pub next_listing_at: Option<String>,
+    /// True while a listing is in progress (it continues on the next
+    /// pass).
+    #[schema(example = false)]
+    pub listing_in_progress: bool,
+    /// Why the last listing failed or its removals were held back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "the listing missed 412 of 1832 known files; removals were not applied")]
+    pub listing_error: Option<String>,
+    /// Files the destination held after the last listing or feed page.
+    #[schema(example = 1832)]
+    pub objects: u64,
+}
+
+impl From<&bookclerk_library::DestinationFeed> for StorageSyncView {
+    fn from(feed: &bookclerk_library::DestinationFeed) -> Self {
+        let time = |at: Option<chrono::DateTime<chrono::Utc>>| {
+            at.map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        };
+        Self {
+            feed_state: feed.feed_state.into(),
+            feed_error: feed.feed_error.clone(),
+            feed_checked_at: time(feed.feed_checked_at),
+            listed_at: time(feed.listed_at),
+            next_listing_at: time(feed.next_listing_at),
+            listing_in_progress: feed.listing_seq.is_some(),
+            listing_error: feed.listing_error.clone(),
+            objects: feed.objects,
+        }
+    }
 }
 
 /// Every plugin instance joined with its pinned schema, document, and
@@ -994,6 +1079,12 @@ pub(crate) async fn list_plugin_instance_views(
         .await?
         .into_iter()
         .map(|schema| (schema.plugin_key.clone(), schema))
+        .collect();
+    let mut feeds: std::collections::HashMap<String, StorageSyncView> = library
+        .destination_feeds()
+        .await?
+        .iter()
+        .map(|feed| (feed.destination.clone(), StorageSyncView::from(feed)))
         .collect();
     let mut defaults: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut views = Vec::new();
@@ -1053,6 +1144,7 @@ pub(crate) async fn list_plugin_instance_views(
             config,
             deployments,
             placement: placements.remove(instance.id.as_str()),
+            storage_sync: feeds.remove(instance.id.as_str()),
         });
     }
     Ok(views)

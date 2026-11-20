@@ -1659,6 +1659,56 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_edition_copies_due ON edition_copies(state, next_attempt_at)",
     ),
+    // The last known state of every object at each destination
+    // (docs/adr/storage-destinations.md, decision 5), kept by the
+    // destination sync pass from the destination's change feed and its
+    // scheduled listing. `changed_seq` is the destination's change sequence
+    // when the row last changed, so readers page what changed since a
+    // sequence; `listed_seq` the sequence of the last listing or feed page
+    // that saw the object. A removed object stays as a tombstone
+    // (`removed` = 1) for 30 days.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS destination_objects (
+        destination TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        size INTEGER NOT NULL DEFAULT 0,
+        signature TEXT,
+        modified_at_ms INTEGER,
+        listed_seq INTEGER NOT NULL DEFAULT 0,
+        changed_seq INTEGER NOT NULL DEFAULT 0,
+        removed INTEGER NOT NULL DEFAULT 0 CHECK (removed IN (0, 1)),
+        changed_at TEXT NOT NULL,
+        PRIMARY KEY (destination, object_key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_destination_objects_changed ON destination_objects(destination, changed_seq, object_key)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_destination_objects_listed ON destination_objects(destination, removed, listed_seq)",
+    ),
+    // How each destination's outside changes are followed: the change
+    // sequence, the feed's state and cursor, the listing in progress (its
+    // sequence and next page) and the schedule of the next one.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS destination_feeds (
+        destination TEXT PRIMARY KEY NOT NULL,
+        seq INTEGER NOT NULL DEFAULT 0,
+        feed_state TEXT NOT NULL CHECK (feed_state IN ('off', 'healthy', 'gap', 'failing')),
+        feed_cursor TEXT,
+        feed_error TEXT,
+        feed_checked_at TEXT,
+        listing_seq INTEGER,
+        listing_cursor TEXT,
+        listing_started_at TEXT,
+        listed_at TEXT,
+        next_listing_at TEXT,
+        listing_error TEXT,
+        objects INTEGER NOT NULL DEFAULT 0,
+        checked_seq INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+    )",
+    ),
     // The library's page index (docs/adr/library-data-model.md, decision 8
     // and Consequences): one row per held top-level work, so list views
     // page one table instead of joining works, editions, listings and
@@ -2147,6 +2197,11 @@ mod tests {
             "edition_copies",
             "state",
             crate::CopyState::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "destination_feeds",
+            "feed_state",
+            crate::FeedState::ALL.iter().map(|k| k.as_str()),
         );
         assert_check(
             "edition_acquisitions",

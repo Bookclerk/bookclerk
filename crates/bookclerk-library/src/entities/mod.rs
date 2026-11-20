@@ -28,6 +28,8 @@ pub mod configuration_documents;
 pub mod contributors;
 pub mod copy_grants;
 pub mod credits;
+pub mod destination_feeds;
+pub mod destination_objects;
 pub mod discover_candidates;
 pub mod discover_feeds;
 pub mod discover_fetches;
