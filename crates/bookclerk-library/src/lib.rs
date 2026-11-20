@@ -226,7 +226,7 @@ pub use store::{
     CatalogEnrichmentFields, ChangedObject, CopyState, DestinationFeed, DiscoverSubject,
     EditionAcquisition, EditionAsin, EditionCopy, EditionEnrichment, EditionFile, EnrichCandidate,
     EnrichCandidatePage, FeedState, FileOwner, FileProbe, FileRole, HeldIdentifiers,
-    HoldingSelection, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
+    HoldingSelection, LibraryStore, LostCopies, NewBook, NewListeningProgress, NewTitleRequest,
     NewTitleRequestSource, NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle,
     SeedScope, SeenObject, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed,
     StoredQueueRank, TitleHolding, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE,

@@ -1647,7 +1647,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS edition_copies (
         edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
         destination TEXT NOT NULL,
-        state TEXT NOT NULL CHECK (state IN ('stored', 'pending', 'failed')),
+        state TEXT NOT NULL CHECK (state IN ('stored', 'pending', 'failed', 'missing')),
         storage_key TEXT,
         attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt_at TEXT,

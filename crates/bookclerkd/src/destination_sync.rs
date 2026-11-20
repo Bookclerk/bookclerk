@@ -12,8 +12,9 @@
 //! the destination's change sequence, and the feed's state in
 //! `destination_feeds` (see `bookclerk_library::DestinationFeed`). After a
 //! pass, the copy check reads what changed: a stored copy whose primary
-//! audio file is gone turns pending, so the copy retry loop writes it
-//! again.
+//! audio file is gone is marked missing (and its edition no longer
+//! acquired once no destination holds it), or turns pending so the copy
+//! retry loop writes it again, as `output.missing_files` says.
 //!
 //! One node at a time syncs a destination: each pass takes the
 //! destination's library lease first.
@@ -21,6 +22,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bookclerk_config::MissingFileAction;
 use bookclerk_library::control_plane::{
     acquire_lease, load_or_create_node_identity, release_lease, renew_lease, LibraryLease,
 };
@@ -86,8 +88,12 @@ pub struct SyncReport {
     pub changes: u64,
     /// Removals a listing held back by the removal guard.
     pub held_back: u64,
-    /// Stored copies that turned pending because their file is gone.
+    /// Stored copies whose file is gone: turned pending or marked
+    /// missing, as `output.missing_files` says.
     pub lost_copies: u64,
+    /// Editions that turned not acquired because no destination holds
+    /// them any more.
+    pub not_acquired: u64,
 }
 
 /// The lease a destination's sync pass holds.
@@ -118,6 +124,7 @@ pub async fn sync_deployed_destinations(state: &AppState) {
             return;
         }
     };
+    let missing_files = state.config.read().await.output.missing_files;
     let destinations = state.destinations.read().await.destinations();
     let library = state.library_snapshot().await;
     for destination in destinations {
@@ -130,11 +137,13 @@ pub async fn sync_deployed_destinations(state: &AppState) {
                 continue;
             }
         };
-        match sync_destination(&library, &id, destination.backend.as_ref(), Some(&lease)).await {
+        let backend = destination.backend.as_ref();
+        match sync_destination(&library, &id, backend, missing_files, Some(&lease)).await {
             Ok(report) if report.changes + report.lost_copies + report.held_back > 0 => info!(
                 destination = %id,
                 changes = report.changes,
                 lost_copies = report.lost_copies,
+                not_acquired = report.not_acquired,
                 held_back = report.held_back,
                 "destination sync noticed outside changes"
             ),
@@ -175,6 +184,7 @@ pub async fn sync_destination(
     library: &LibraryStore,
     destination: &str,
     backend: &dyn StorageBackend,
+    missing_files: MissingFileAction,
     lease: Option<&LibraryLease>,
 ) -> anyhow::Result<SyncReport> {
     let mut report = SyncReport::default();
@@ -193,7 +203,7 @@ pub async fn sync_destination(
     if feed.listing_due(Utc::now()) {
         run_listing(library, backend, &mut feed, lease, &mut report).await?;
     }
-    check_copies(library, &mut feed, &mut report).await?;
+    check_copies(library, &mut feed, missing_files, &mut report).await?;
     Ok(report)
 }
 
@@ -421,11 +431,13 @@ async fn finish_listing(
     Ok(())
 }
 
-/// Reads what changed since the copy check last ran, and sends every
-/// stored copy whose primary audio file is gone back to pending.
+/// Reads what changed since the copy check last ran, and hands every
+/// stored copy whose primary audio file is gone to
+/// [`LibraryStore::lose_copies`] with `missing_files`.
 async fn check_copies(
     library: &LibraryStore,
     feed: &mut DestinationFeed,
+    missing_files: MissingFileAction,
     report: &mut SyncReport,
 ) -> anyhow::Result<()> {
     let now: DateTime<Utc> = Utc::now();
@@ -443,7 +455,11 @@ async fn check_copies(
             .filter(|change| change.removed)
             .map(|change| change.key.clone())
             .collect();
-        report.lost_copies += library.lose_copies(&feed.destination, &gone, now).await?;
+        let lost = library
+            .lose_copies(&feed.destination, &gone, missing_files, now)
+            .await?;
+        report.lost_copies += lost.restoring + lost.missing;
+        report.not_acquired += lost.not_acquired;
         if u64::try_from(page.len()).unwrap_or(u64::MAX) < CHECK_PAGE {
             break;
         }

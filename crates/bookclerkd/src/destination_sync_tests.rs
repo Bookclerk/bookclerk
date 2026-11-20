@@ -88,7 +88,7 @@ async fn a_listing_notices_a_deleted_file_and_its_copy_is_written_again() {
     }
     let edition = stored_edition(&store, "local", "A/Test.m4b").await;
 
-    let first = sync_destination(&store, "local", &local, None)
+    let first = sync_destination(&store, "local", &local, MissingFileAction::Restore, None)
         .await
         .unwrap();
     assert!(first.listing_finished);
@@ -100,14 +100,14 @@ async fn a_listing_notices_a_deleted_file_and_its_copy_is_written_again() {
     assert!(feed.next_listing_at.unwrap() > Utc::now() + chrono::Duration::hours(5));
     assert_eq!(feed.checked_seq, feed.seq);
 
-    let quiet = sync_destination(&store, "local", &local, None)
+    let quiet = sync_destination(&store, "local", &local, MissingFileAction::Restore, None)
         .await
         .unwrap();
     assert_eq!(quiet, SyncReport::default(), "nothing due");
 
     local.delete("A/Test.m4b").await.unwrap();
     make_listing_due(&store, "local").await;
-    let after = sync_destination(&store, "local", &local, None)
+    let after = sync_destination(&store, "local", &local, MissingFileAction::Restore, None)
         .await
         .unwrap();
     assert!(after.listing_finished);
@@ -116,6 +116,48 @@ async fn a_listing_notices_a_deleted_file_and_its_copy_is_written_again() {
     assert_eq!(
         copy_state(&store, &edition, "local").await,
         CopyState::Pending
+    );
+}
+
+/// With the default `mark_missing`, a deleted file marks its copy missing,
+/// and the edition, held nowhere else, is no longer acquired.
+#[tokio::test]
+async fn a_deleted_file_marks_its_copy_missing_by_default() {
+    let store = test_store().await;
+    let dir = tempfile::tempdir().unwrap();
+    let local = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+    put(&local, "A/Test.m4b").await;
+    let edition = stored_edition(&store, "local", "A/Test.m4b").await;
+    store
+        .set_acquire_status(
+            "B00TEST",
+            "user-1",
+            bookclerk_library::AcquireStatus::Acquired,
+            Some("A/Test.m4b"),
+            None,
+        )
+        .await
+        .unwrap();
+    let missing = MissingFileAction::default();
+    sync_destination(&store, "local", &local, missing, None)
+        .await
+        .unwrap();
+
+    local.delete("A/Test.m4b").await.unwrap();
+    make_listing_due(&store, "local").await;
+    let after = sync_destination(&store, "local", &local, missing, None)
+        .await
+        .unwrap();
+    assert_eq!(after.lost_copies, 1, "{after:?}");
+    assert_eq!(after.not_acquired, 1);
+    assert_eq!(
+        copy_state(&store, &edition, "local").await,
+        CopyState::Missing
+    );
+    let acquisition = store.edition_acquisition(&edition).await.unwrap().unwrap();
+    assert_eq!(
+        acquisition.status,
+        bookclerk_library::AcquireStatus::NotAcquired
     );
 }
 
@@ -130,7 +172,7 @@ async fn a_listing_that_misses_most_files_is_held_back() {
         put(&local, &format!("A/{i:02}.m4b")).await;
     }
     let edition = stored_edition(&store, "local", "A/00.m4b").await;
-    sync_destination(&store, "local", &local, None)
+    sync_destination(&store, "local", &local, MissingFileAction::Restore, None)
         .await
         .unwrap();
 
@@ -138,9 +180,15 @@ async fn a_listing_that_misses_most_files_is_held_back() {
     let empty = tempfile::tempdir().unwrap();
     let unmounted = LocalFsBackend::new(empty.path().to_path_buf()).unwrap();
     make_listing_due(&store, "local").await;
-    let report = sync_destination(&store, "local", &unmounted, None)
-        .await
-        .unwrap();
+    let report = sync_destination(
+        &store,
+        "local",
+        &unmounted,
+        MissingFileAction::Restore,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(report.held_back >= 20, "{report:?}");
     assert_eq!(report.lost_copies, 0);
     assert_eq!(
@@ -155,7 +203,7 @@ async fn a_listing_that_misses_most_files_is_held_back() {
 
     // Back again: nothing changed, and the error clears.
     make_listing_due(&store, "local").await;
-    let back = sync_destination(&store, "local", &local, None)
+    let back = sync_destination(&store, "local", &local, MissingFileAction::Restore, None)
         .await
         .unwrap();
     assert_eq!(back.held_back, 0);
@@ -334,7 +382,7 @@ async fn a_healthy_feed_reports_changes_and_a_gap_or_failure_lists_at_once() {
     let edition = stored_edition(&store, "s3", "A/Test.m4b").await;
 
     // First pass: the feed starts and the first listing runs.
-    let first = sync_destination(&store, "s3", &backend, None)
+    let first = sync_destination(&store, "s3", &backend, MissingFileAction::Restore, None)
         .await
         .unwrap();
     assert!(first.listing_finished);
@@ -346,7 +394,7 @@ async fn a_healthy_feed_reports_changes_and_a_gap_or_failure_lists_at_once() {
     // Second pass: the feed reports the removal and a new file, no listing.
     backend.inner.delete("A/Test.m4b").await.unwrap();
     put(&backend.inner, "B/New.m4b").await;
-    let second = sync_destination(&store, "s3", &backend, None)
+    let second = sync_destination(&store, "s3", &backend, MissingFileAction::Restore, None)
         .await
         .unwrap();
     assert!(!second.listing_finished);
@@ -361,7 +409,7 @@ async fn a_healthy_feed_reports_changes_and_a_gap_or_failure_lists_at_once() {
     );
 
     // Third pass: a gap lists at once and then counts as healthy again.
-    let third = sync_destination(&store, "s3", &backend, None)
+    let third = sync_destination(&store, "s3", &backend, MissingFileAction::Restore, None)
         .await
         .unwrap();
     assert!(third.listing_finished, "{third:?}");
@@ -369,7 +417,7 @@ async fn a_healthy_feed_reports_changes_and_a_gap_or_failure_lists_at_once() {
     assert_eq!(feed.feed_state, FeedState::Healthy);
 
     // Fourth pass: a failing feed lists at once and says why.
-    let fourth = sync_destination(&store, "s3", &backend, None)
+    let fourth = sync_destination(&store, "s3", &backend, MissingFileAction::Restore, None)
         .await
         .unwrap();
     assert!(fourth.listing_finished);

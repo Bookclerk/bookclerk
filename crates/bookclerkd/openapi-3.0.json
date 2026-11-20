@@ -42962,6 +42962,15 @@
           }
         }
       },
+      "MissingFileAction": {
+        "type": "string",
+        "description": "What happens to a stored copy whose file disappears from its destination\noutside Bookclerk (noticed by the destination's change feed or listing).",
+        "enum": [
+          "mark_missing",
+          "restore"
+        ],
+        "example": "mark_missing"
+      },
       "MultiDestinationMode": {
         "type": "string",
         "description": "Behavior when some output destinations already have a title and others do not.",
@@ -44970,6 +44979,14 @@
               }
             ],
             "description": "Policy when only some enabled destinations have a title."
+          },
+          "missing_files": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MissingFileAction"
+              }
+            ],
+            "description": "What happens to a stored copy whose file disappears from its\ndestination outside Bookclerk. Absent in documents written before\nthe setting existed, which read as the default."
           },
           "bad_book_action": {
             "allOf": [

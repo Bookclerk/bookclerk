@@ -498,11 +498,24 @@ Each destination is followed in one of two ways:
   takes over again after it. A long listing continues where it stopped
   on the next check, even after a restart.
 
-When a file a stored copy needs is gone, the copy turns **pending**, and
-the background retry writes it again (see
-[Several destinations](#several-destinations)). When the edition's audio
-was moved to another key on the same destination that Bookclerk already
-recorded, the copy follows the file instead.
+When the edition's audio was moved to another key on the same
+destination that Bookclerk already recorded, the copy follows the file.
+When a file a stored copy needs is gone, `output.missing_files` decides
+what happens:
+
+| Value | What happens |
+| --- | --- |
+| `mark_missing` (default) | The copy is marked **missing** and nothing writes it again on its own. While another destination still holds the book, it stays downloaded there. Once no destination holds it, the book shows as not downloaded, so a member can ask for it again |
+| `restore` | The copy turns **pending**, and the background retry writes it again (see [Several destinations](#several-destinations)) |
+
+```sh
+bookclerk config set output.missing_files restore
+```
+
+Change it in **Settings → Output** too. A missing copy on a destination
+while the book is still downloaded elsewhere is written again by a forced
+acquire of the title (`bookclerk library acquire --force`), like a failed
+copy.
 
 > [!NOTE]
 > A listing that misses at least a fifth of the files Bookclerk knew of

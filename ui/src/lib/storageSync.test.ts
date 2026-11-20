@@ -19,7 +19,12 @@ function view(over: Partial<StorageSyncView> = {}): StorageSyncView {
   };
 }
 
-/** Echoes the time, so the tests need no locale. */
+/**
+ * Echoes the time, so the tests need no locale.
+ *
+ * @param at - An RFC 3339 time.
+ * @returns The same text.
+ */
 const raw = (at: string) => at;
 
 describe("summarizeStorageSync", () => {

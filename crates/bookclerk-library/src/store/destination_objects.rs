@@ -30,7 +30,9 @@ use sea_orm::{
 use super::LibraryStore;
 use crate::entities::{destination_feeds, destination_objects, edition_copies, edition_files};
 use crate::error::{LibraryError, Result};
-use crate::{CopyState, FileRole};
+use bookclerk_config::MissingFileAction;
+
+use crate::{AcquireStatus, CopyState, FileRole};
 
 /// Days a removed object's tombstone is kept for readers that page changes.
 pub const OBJECT_TOMBSTONE_DAYS: i64 = 30;
@@ -205,6 +207,20 @@ pub struct ChangedObject {
     pub removed: bool,
     /// Size in bytes when last seen.
     pub size: u64,
+}
+
+/// What [`LibraryStore::lose_copies`] did with the stored copies whose file
+/// is gone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LostCopies {
+    /// Copies that turned pending for the copy retry to write again
+    /// (`output.missing_files = restore`).
+    pub restoring: u64,
+    /// Copies marked missing (`output.missing_files = mark_missing`).
+    pub missing: u64,
+    /// Editions that turned not acquired because no destination holds a
+    /// stored copy of them any more.
+    pub not_acquired: u64,
 }
 
 /// `at` in the stored form: RFC 3339 in UTC to the second.
@@ -607,15 +623,17 @@ impl LibraryStore {
     /// Records that the files at `keys` are gone from `destination`.
     ///
     /// Every stored copy whose primary audio key is one of them is looked
-    /// at: when another audio file of its edition is recorded at the
+    /// at. When another audio file of its edition is recorded at the
     /// destination (`edition_files`) and the destination still holds it
-    /// (the file was moved or renamed), the copy now names that key;
-    /// otherwise the copy turns pending, due at `now`, so the next copy
-    /// retry writes it again.
+    /// (the file was moved or renamed), the copy now names that key.
+    /// Otherwise `action` decides:
     ///
-    /// # Returns
-    ///
-    /// How many copies turned pending.
+    /// - [`MissingFileAction::Restore`]: the copy turns pending, due at
+    ///   `now`, so the next copy retry writes it again.
+    /// - [`MissingFileAction::MarkMissing`]: the copy turns missing and is
+    ///   left alone. When no destination holds a stored copy of the edition
+    ///   any more, the edition is no longer acquired (its title's acquire
+    ///   status turns not acquired), so a member can ask for it again.
     ///
     /// # Errors
     ///
@@ -624,9 +642,10 @@ impl LibraryStore {
         &self,
         destination: &str,
         keys: &[String],
+        action: MissingFileAction,
         now: DateTime<Utc>,
-    ) -> Result<u64> {
-        let mut lost = 0;
+    ) -> Result<LostCopies> {
+        let mut lost = LostCopies::default();
         for chunk in keys.chunks(self.object_keys_per_statement(2)) {
             let copies = edition_copies::Entity::find()
                 .filter(edition_copies::Column::Destination.eq(destination))
@@ -636,28 +655,79 @@ impl LibraryStore {
                 .await
                 .map_err(LibraryError::Orm)?;
             for copy in copies {
+                let edition = copy.edition_id.clone();
                 let moved_to = self
                     .present_audio_file(destination, &copy.edition_id, copy.storage_key.as_deref())
                     .await?;
                 let mut row: edition_copies::ActiveModel = copy.into();
                 row.updated_at = Set(stored_time(now));
-                match moved_to {
-                    Some(key) => row.storage_key = Set(Some(key)),
-                    None => {
+                row.last_error = Set(Some("the file is no longer at the destination".to_owned()));
+                match (moved_to, action) {
+                    (Some(key), _) => {
+                        row.storage_key = Set(Some(key));
+                        row.last_error = Set(None);
+                    }
+                    (None, MissingFileAction::Restore) => {
                         row.state = Set(CopyState::Pending.as_str().to_owned());
                         row.next_attempt_at = Set(Some(stored_time(now)));
-                        row.last_error =
-                            Set(Some("the file is no longer at the destination".to_owned()));
-                        lost += 1;
+                        lost.restoring += 1;
+                    }
+                    (None, MissingFileAction::MarkMissing) => {
+                        row.state = Set(CopyState::Missing.as_str().to_owned());
+                        row.next_attempt_at = Set(None);
+                        lost.missing += 1;
                     }
                 }
+                let marked_missing = row.state.as_ref() == CopyState::Missing.as_str();
                 edition_copies::Entity::update(row)
                     .exec(self.db())
                     .await
                     .map_err(LibraryError::Orm)?;
+                if marked_missing && self.release_unstored_edition(&edition).await? {
+                    lost.not_acquired += 1;
+                }
             }
         }
         Ok(lost)
+    }
+
+    /// Marks `edition_id` not acquired when no destination holds a stored
+    /// copy of it any more: the title whose acquire recorded it (its
+    /// `edition_acquisitions.holding_id`) turns not acquired.
+    ///
+    /// # Returns
+    ///
+    /// True when the edition was acquired and now is not.
+    async fn release_unstored_edition(&self, edition_id: &str) -> Result<bool> {
+        let edition = edition_id.to_owned();
+        let copies = self
+            .copies_of_editions(std::slice::from_ref(&edition))
+            .await?;
+        if copies.iter().any(|copy| copy.state == CopyState::Stored) {
+            return Ok(false);
+        }
+        let Some(acquisition) = self.edition_acquisition(edition_id).await? else {
+            return Ok(false);
+        };
+        if acquisition.status != AcquireStatus::Acquired {
+            return Ok(false);
+        }
+        let Some(title) = self
+            .acquire_title_of_holding(&acquisition.holding_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let title_id = title.book_uuid.as_deref().unwrap_or(&title.product_id);
+        self.set_acquire_status(
+            title_id,
+            &title.account_id,
+            AcquireStatus::NotAcquired,
+            None,
+            None,
+        )
+        .await?;
+        Ok(true)
     }
 
     /// Another audio file of `edition_id` recorded at `destination` (not

@@ -98,7 +98,7 @@ pub use operator_auth::{
     ResolveOperatorTokenEnv,
 };
 pub use output::{
-    normalize_storage_prefix, BadBookAction, DestinationId, DestinationNaming,
+    normalize_storage_prefix, BadBookAction, DestinationId, DestinationNaming, MissingFileAction,
     MultiDestinationMode, OutputConfig,
 };
 pub use output_copy::{

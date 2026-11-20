@@ -165,8 +165,9 @@ fn store_second(at: DateTime<Utc>) -> DateTime<Utc> {
     parse_time(&stored_time(at)).unwrap()
 }
 
-/// A stored copy whose file is gone turns pending and due; copies on other
-/// destinations, other keys and copies not stored are left alone.
+/// With `restore`, a stored copy whose file is gone turns pending and due;
+/// copies on other destinations, other keys and copies not stored are left
+/// alone.
 #[tokio::test]
 async fn a_missing_file_sends_its_copy_back_to_pending() {
     for profile in Profile::ALL {
@@ -198,9 +199,15 @@ async fn a_missing_file_sends_its_copy_back_to_pending() {
         let now = Utc::now();
         assert_eq!(
             store
-                .lose_copies("d", &["A/One.m4b".into(), "A/Gone.m4b".into()], now)
+                .lose_copies(
+                    "d",
+                    &["A/One.m4b".into(), "A/Gone.m4b".into()],
+                    MissingFileAction::Restore,
+                    now
+                )
                 .await
-                .unwrap(),
+                .unwrap()
+                .restoring,
             1,
             "{profile:?}"
         );
@@ -234,10 +241,10 @@ async fn a_missing_file_sends_its_copy_back_to_pending() {
             .unwrap();
         assert_eq!(
             store
-                .lose_copies("d", &["A/Two.m4b".into()], now)
+                .lose_copies("d", &["A/Two.m4b".into()], MissingFileAction::Restore, now)
                 .await
                 .unwrap(),
-            0
+            LostCopies::default()
         );
         let moved = store
             .copies_of_editions(std::slice::from_ref(two))
@@ -248,10 +255,111 @@ async fn a_missing_file_sends_its_copy_back_to_pending() {
         // Already pending: nothing more to do.
         assert_eq!(
             store
-                .lose_copies("d", &["A/One.m4b".into()], now)
+                .lose_copies("d", &["A/One.m4b".into()], MissingFileAction::Restore, now)
                 .await
                 .unwrap(),
-            0
+            LostCopies::default()
         );
+    }
+}
+
+/// With `mark_missing`, a copy whose file is gone turns missing and is not
+/// retried; its edition stays acquired while another destination holds it,
+/// and turns not acquired once none does.
+#[tokio::test]
+async fn a_missing_file_marks_its_copy_missing_and_the_last_one_unacquires() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store().clone();
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_book(&crate::NewBook::minimal(
+                "B00ONE0001",
+                "user-1",
+                "us",
+                "Title",
+            ))
+            .await
+            .unwrap();
+        let edition = store
+            .acquire_titles_named(None, "B00ONE0001")
+            .await
+            .unwrap()
+            .remove(0)
+            .edition_id;
+        store
+            .set_acquire_status(
+                "B00ONE0001",
+                "user-1",
+                crate::AcquireStatus::Acquired,
+                Some("A/One.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .set_copy_stored(&edition, "d", "A/One.m4b")
+            .await
+            .unwrap();
+        store
+            .set_copy_stored(&edition, "e", "A/One.m4b")
+            .await
+            .unwrap();
+        let now = Utc::now();
+        let status = || async {
+            store
+                .edition_acquisition(&edition)
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+        };
+
+        let first = store
+            .lose_copies(
+                "d",
+                &["A/One.m4b".into()],
+                MissingFileAction::MarkMissing,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            LostCopies {
+                missing: 1,
+                ..LostCopies::default()
+            },
+            "{profile:?}"
+        );
+        let copies = store
+            .copies_of_editions(std::slice::from_ref(&edition))
+            .await
+            .unwrap();
+        let on_d = copies.iter().find(|c| c.destination == "d").unwrap();
+        assert_eq!(on_d.state, CopyState::Missing);
+        assert!(!on_d.wants_attempt(now));
+        assert_eq!(status().await, crate::AcquireStatus::Acquired, "e holds it");
+
+        let last = store
+            .lose_copies(
+                "e",
+                &["A/One.m4b".into()],
+                MissingFileAction::MarkMissing,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(last.missing, 1);
+        assert_eq!(last.not_acquired, 1);
+        assert_eq!(status().await, crate::AcquireStatus::NotAcquired);
+        assert!(store
+            .due_copy_editions(now, &["d".into(), "e".into()], 10)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

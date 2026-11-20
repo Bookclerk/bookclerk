@@ -7981,7 +7981,7 @@ pub(crate) mod work_split;
 pub(crate) mod write_batches;
 pub use acquire_title::{AcquireTitle, AcquireTitlePage};
 pub use destination_objects::{
-    ChangedObject, DestinationFeed, FeedState, SeenObject, OBJECT_TOMBSTONE_DAYS,
+    ChangedObject, DestinationFeed, FeedState, LostCopies, SeenObject, OBJECT_TOMBSTONE_DAYS,
 };
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
