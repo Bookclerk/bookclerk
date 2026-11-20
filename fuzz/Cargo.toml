@@ -12,6 +12,9 @@ cargo-fuzz = true
 # workflow's path filter must list it (scripts/tests/test_ci_contract.py).
 [dependencies]
 libfuzzer-sys = "0.4"
+# egress_bridge runs the workerd egress gate (egress.js) in an embedded
+# JavaScript engine, against the Rust EgressPolicy.
+rquickjs = "0.14"
 httparse = "1"
 serde_json = "1"
 # Determinism checks in the libro_catalog oracle serialize the records;
@@ -115,13 +118,6 @@ bench = false
 [[bin]]
 name = "plugin_manifest"
 path = "fuzz_targets/plugin_manifest.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "https_url_policy"
-path = "fuzz_targets/https_url_policy.rs"
 test = false
 doc = false
 bench = false
@@ -493,6 +489,13 @@ bench = false
 [[bin]]
 name = "s3_event"
 path = "fuzz_targets/s3_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "egress_bridge"
+path = "fuzz_targets/egress_bridge.rs"
 test = false
 doc = false
 bench = false

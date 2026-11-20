@@ -10,7 +10,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::{ErrorResponse, IntoResponse, Response};
 use axum::routing::get;
 use axum::Json;
 use axum::Router;
@@ -1268,7 +1268,7 @@ fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
 /// # Returns
 ///
 /// The group's routes, without auth layers (see [`route_groups`]).
-// Host enrollment links: any signed-in user acts for themselves; the
+// Branch enrollment links: any signed-in user acts for themselves; the
 // library lets the operator or an Owner act for others.
 #[inline(never)]
 fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
@@ -1347,8 +1347,8 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Any user reads the switch; the handler lets only the operator or
         // an active Owner change it.
         .routes(routes!(
-            crate::node_api::get_host_enrollment,
-            crate::node_api::put_host_enrollment
+            crate::node_api::get_branch_enrollment,
+            crate::node_api::put_branch_enrollment
         ))
 }
 
@@ -4007,6 +4007,13 @@ async fn get_settings(
         Err(err) => tracing::warn!(error = %err, "core.cache unavailable for settings"),
     }
     let mut effective = settings.clone();
+    // `effective` is what this host runs: `output.*` comes from the applied
+    // `cfg.output` (reported with `output.revision` below), not from the
+    // stored document, which can be a revision ahead until the next wakeup.
+    insert_output_settings(
+        &mut effective,
+        &bookclerk_library::control_plane::OutputSettingsV1::from_seed_lenient(&cfg.output).0,
+    );
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
     effective.insert("node.id".into(), node_id.clone());
@@ -5167,11 +5174,11 @@ async fn discover_status_for_caller(
     state: &AppState,
     headers: &HeaderMap,
     queue: bool,
-) -> Result<(bookclerk_library::DiscoverSubject, DiscoverStatusResponse), (StatusCode, String)> {
+) -> Result<(bookclerk_library::DiscoverSubject, DiscoverStatusResponse), ErrorResponse> {
     let library = state.library_snapshot().await;
     let (subject_key, _) = auth::prefs_subject_for_caller(state, headers)
         .await
-        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+        .map_err(prefs_refusal)?;
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     // A feed that does not decode (another release wrote it) counts as
@@ -5220,7 +5227,7 @@ async fn discover_status_for_caller(
 async fn discover_refresh(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
+) -> Result<Json<DiscoverStatusResponse>, ErrorResponse> {
     let (subject, _) = discover_status_for_caller(&state, &headers, false).await?;
     // A fetch already waiting absorbs the request, so a duplicate counts as
     // queued; a full queue or a failed admission is reported.
@@ -5238,7 +5245,8 @@ async fn discover_refresh(
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
                 "job queue is full".to_string(),
-            ))
+            )
+                .into())
         }
     }
     let (_, status) = discover_status_for_caller(&state, &headers, false).await?;
@@ -5262,7 +5270,7 @@ async fn discover_refresh(
 async fn discover_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
+) -> Result<Json<DiscoverStatusResponse>, ErrorResponse> {
     let (_, status) = discover_status_for_caller(&state, &headers, true).await?;
     Ok(Json(status))
 }
@@ -5821,7 +5829,7 @@ struct CatalogSearchQuery {
 async fn discover_recommendations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<bookclerk_discover::DiscoverFeed>, (StatusCode, String)> {
+) -> Result<Json<bookclerk_discover::DiscoverFeed>, ErrorResponse> {
     let library = state.library_snapshot().await;
 
     // Nothing to recommend from: answer at once, queue nothing.
@@ -5842,7 +5850,7 @@ async fn discover_recommendations(
 
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+        .map_err(prefs_refusal)?;
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     let disabled_shelves = library
@@ -6949,11 +6957,11 @@ where
 async fn get_preferences(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<PreferencesResponse>, (StatusCode, String)> {
+) -> Result<Json<PreferencesResponse>, ErrorResponse> {
     const PREFERENCES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+        .map_err(prefs_refusal)?;
     let library = state.library_snapshot().await;
     let prefs = timeout(
         PREFERENCES_TIMEOUT,
@@ -6963,7 +6971,7 @@ async fn get_preferences(
     .map_err(|_| {
         (
             StatusCode::GATEWAY_TIMEOUT,
-            "preferences lookup timed out".into(),
+            "preferences lookup timed out".to_string(),
         )
     })?
     .map_err(internal_err)?;
@@ -6989,11 +6997,11 @@ async fn patch_preferences(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<PatchPreferencesBody>,
-) -> Result<Json<PreferencesResponse>, (StatusCode, String)> {
+) -> Result<Json<PreferencesResponse>, ErrorResponse> {
     const PREFERENCES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+        .map_err(prefs_refusal)?;
     let library = state.library_snapshot().await;
     let current = timeout(
         PREFERENCES_TIMEOUT,
@@ -7003,7 +7011,7 @@ async fn patch_preferences(
     .map_err(|_| {
         (
             StatusCode::GATEWAY_TIMEOUT,
-            "preferences lookup timed out".into(),
+            "preferences lookup timed out".to_string(),
         )
     })?
     .map_err(internal_err)?;
@@ -7061,7 +7069,7 @@ async fn patch_preferences(
     .map_err(|_| {
         (
             StatusCode::GATEWAY_TIMEOUT,
-            "preferences update timed out".into(),
+            "preferences update timed out".to_string(),
         )
     })?
     .map_err(internal_err)?;
@@ -7116,6 +7124,25 @@ fn normalize_disabled_shelves(raw: Vec<String>) -> Vec<String> {
         }
     }
     out
+}
+
+/// The answer for a caller whose preferences subject could not be
+/// resolved: the status's reason as plain text, or the session-check 503.
+///
+/// # Arguments
+///
+/// * `refusal` - Why [`auth::prefs_subject_for_caller`] refused.
+///
+/// # Returns
+///
+/// The response to send.
+fn prefs_refusal(refusal: auth::CallerRefusal) -> Response {
+    refusal.answer(|status| {
+        (
+            status,
+            status.canonical_reason().unwrap_or("error").to_string(),
+        )
+    })
 }
 
 /// Maps an internal error into HTTP 500 plus the display string.
@@ -9060,6 +9087,81 @@ tcp = {tcp}
         }
         let unchanged = load_cache_settings(&store).await.unwrap().expect("stored");
         assert_eq!(unchanged.revision, stored.revision);
+    }
+
+    /// After another host commits a newer `core.output`, `settings` shows
+    /// the stored document while `effective` keeps the values this host has
+    /// applied, next to the revision they came from.
+    #[tokio::test]
+    async fn effective_output_values_are_the_applied_revision() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use axum::extract::State;
+        use bookclerk_config::NamingProfile;
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, overlay_core_documents, replace_output, ConfigActor,
+            OutputReplace,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let session =
+            bootstrap_control_plane(&store, dir.path(), &dir.path().join("cache"), None, &cfg)
+                .await
+                .unwrap();
+        overlay_core_documents(&mut cfg, &session);
+        let applied = session.output.body.naming_profile;
+        let other = match applied {
+            NamingProfile::Audiobookshelf => NamingProfile::Classic,
+            NamingProfile::Classic => NamingProfile::Audiobookshelf,
+        };
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+
+        // Another host commits the next revision; this one has not reconciled.
+        let mut body = session.output.body.clone();
+        body.naming_profile = other;
+        let OutputReplace::Applied(stored) = replace_output(
+            &store,
+            &ConfigActor::Operator {
+                id: "operator".into(),
+            },
+            session.output.revision,
+            &body,
+            "other-host-output",
+        )
+        .await
+        .unwrap() else {
+            panic!("output replace did not apply");
+        };
+
+        let spelled = |profile: NamingProfile| profile.as_str().to_string();
+        let got = super::get_settings(State(state)).await.unwrap().0;
+        assert_eq!(got.output_revision, Some(stored.revision));
+        assert_eq!(
+            got.settings.get("output.naming_profile"),
+            Some(&spelled(other))
+        );
+        assert_eq!(
+            got.effective.get("output.naming_profile"),
+            Some(&spelled(applied))
+        );
+        assert_eq!(
+            got.effective.get("output.revision"),
+            Some(&session.output.revision.to_string())
+        );
     }
 
     #[tokio::test]

@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":["*","metadata.google.internal"],"maxRedirects":2,"tcp":[{"host":"localhost","ports":[6379]}],"addressCidrs":["::1/128","fd00::/8","169.254.169.254/32"]}

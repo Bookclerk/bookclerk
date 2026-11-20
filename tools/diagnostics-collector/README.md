@@ -13,7 +13,7 @@ fallback).
 
 | Method | Path | Who | Auth |
 |--------|------|-----|------|
-| `POST` | `/submit` | Bookclerk clients | none (validated + secret heuristics) |
+| `POST` | `/submit` | Bookclerk clients | none (body capped at 256 KiB while it streams, then validated + secret heuristics) |
 | `GET` | `/lookup` | anyone | none (the form page; no script) |
 | `POST` | `/lookup`, `/lookup/delete` | a report's sender | the report's access code in the body (see [Access codes](../../docs/server/diagnostics.md#access-codes)) |
 | `POST` | `/checkin` | Bookclerk clients that share usage | none (strict body, daily cap; see [Share usage](../../docs/server/diagnostics.md#share-usage)) |

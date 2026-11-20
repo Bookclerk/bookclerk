@@ -58,6 +58,7 @@
     "test:entrypoints-codec": "node scripts/test-entrypoints-codec.mjs",
     "test:invoke": "node scripts/test-invoke.mjs",
     "test:egress-user-agent": "node scripts/test-egress-user-agent.mjs",
+    "test:egress-bridge": "node scripts/test-egress-bridge.mjs",
     "test:testkit": "node scripts/test-testkit.mjs",
     "build:embed": "node scripts/build-embed.mjs"
   },

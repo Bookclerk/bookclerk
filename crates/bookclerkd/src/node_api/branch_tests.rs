@@ -10,7 +10,7 @@ use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::routing::{get, post};
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    list_nodes, load_node, set_host_enrollment_enabled, ConfigActor, NodeKind,
+    list_nodes, load_node, set_branch_enrollment_enabled, ConfigActor, NodeKind,
 };
 use bookclerk_library::{UserRole, UserStatus};
 use bookclerk_node_proto::{pkce_challenge, BRANCH_CLIENT_ID, BRANCH_SCOPE};
@@ -399,7 +399,7 @@ async fn codes_are_refused_unless_every_check_passes() {
     // A code issued before enrollment was turned off.
     let code = approve(&app, &v).await;
     let operator = ConfigActor::Operator { id: "test".into() };
-    set_host_enrollment_enabled(&store, &operator, false)
+    set_branch_enrollment_enabled(&store, &operator, false)
         .await
         .unwrap();
     refused(
@@ -417,7 +417,7 @@ async fn codes_are_refused_unless_every_check_passes() {
     let (status, _, answer) = call(&app, "POST", "/api/auth/branch-consent", Some(body)).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
     assert_eq!(answer["error"], "enrollment_disabled");
-    set_host_enrollment_enabled(&store, &operator, true)
+    set_branch_enrollment_enabled(&store, &operator, true)
         .await
         .unwrap();
 
