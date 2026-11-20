@@ -281,27 +281,61 @@ fn identify(packet: &[u8]) -> Step<Codec> {
 /// The granule position of the last page of stream `serial` that ends a
 /// packet, found in the file's last [`MAX_PAGE_BYTES`] bytes.
 ///
-/// A capture pattern counts as a page only when the bytes after it form a
-/// whole page whose checksum matches, and the search resumes after a page
-/// it accepts, so `OggS` inside a page body (a comment extension, say) is
-/// never read as a header.
+/// The window may start inside a page, and a page body (a comment
+/// extension, say) may hold bytes that look like whole pages, checksum
+/// included. So the window is anchored at the first capture pattern from
+/// which checksummed pages follow one another to the end of the file (or
+/// to a last page the file cuts short), and only that chain is read.
 fn last_granule(src: &Source<'_>, serial: u32) -> Step<Option<u64>> {
     let start = src.size.saturating_sub(MAX_PAGE_BYTES);
     let tail = src.up_to(start, MAX_PAGE_BYTES, NAME)?;
-    let mut best = None;
     let mut from = 0usize;
     while let Some(found) = memchr::memmem::find(&tail[from..], b"OggS") {
         let at = from + found;
-        let Some((granule, page_serial, len)) = checked_page(&tail[at..]) else {
-            from = at + 1;
-            continue;
+        if let Some(best) = chain_to_end(&tail[at..], serial) {
+            return Ok(best);
+        }
+        from = at + 1;
+    }
+    Ok(None)
+}
+
+/// When `bytes` are checksummed pages back to back to their end (the last
+/// one possibly cut short), the granule of the last of them that belongs
+/// to `serial` and ends a packet (`Some(None)` when none does). `None` when
+/// they are not such a chain.
+fn chain_to_end(bytes: &[u8], serial: u32) -> Option<Option<u64>> {
+    let mut best = None;
+    let mut at = 0usize;
+    while at < bytes.len() {
+        let rest = &bytes[at..];
+        let Some((granule, page_serial, len)) = checked_page(rest) else {
+            return cut_page(rest).then_some(best);
         };
-        from = at + len;
         if page_serial == serial && granule != NO_GRANULE {
             best = Some(granule);
         }
+        at += len;
     }
-    Ok(best)
+    Some(best)
+}
+
+/// Whether `bytes` are the start of a page that the end of the file cuts
+/// short: a capture pattern (or the part of one that fits), then a header
+/// whose stated length runs past the end.
+fn cut_page(bytes: &[u8]) -> bool {
+    let Some(header) = bytes.get(..27) else {
+        return bytes.starts_with(b"OggS") || b"OggS".starts_with(bytes);
+    };
+    let Some((_, _, _, segments)) = page_fields(header) else {
+        return false;
+    };
+    let table_end = 27 + usize::from(segments);
+    let Some(table) = bytes.get(27..table_end) else {
+        return true;
+    };
+    let body: usize = table.iter().map(|len| usize::from(*len)).sum();
+    table_end + body > bytes.len()
 }
 
 /// The granule position, serial and length of the page at the start of
@@ -579,6 +613,46 @@ mod tests {
         assert_eq!(opus_packet_samples(&[0x63, 0x03]), Some(3 * 480));
         assert_eq!(opus_packet_samples(&[0x83]), None);
         assert_eq!(opus_packet_samples(&[]), None);
+    }
+
+    #[test]
+    fn a_window_that_starts_inside_a_page_skips_pages_in_its_body() {
+        // Stream 9 ends early; stream 10's next page is so long that the
+        // search window starts inside it, and its body holds a whole,
+        // checksummed page of stream 9 with a false granule.
+        let mut head = b"OpusHead".to_vec();
+        head.extend([1, 2]);
+        head.extend(312u16.to_le_bytes());
+        head.extend([0u8; 7]);
+        let mut tags = b"OpusTags".to_vec();
+        tags.extend(crate::fixtures::vorbis_comments(&["TITLE=Early"]));
+        let mut file = ogg_page(BEGINNING_OF_STREAM, 0, 9, &[&head]);
+        file.extend(ogg_page(BEGINNING_OF_STREAM, 0, 10, &[b"other"]));
+        file.extend(ogg_page(0, 0, 9, &[&tags]));
+        file.extend(ogg_page(END_OF_STREAM, 312 + 480_000, 9, &[&[0xF8]]));
+        let mut body = vec![b'a'; 3_000];
+        body.extend(ogg_page(0, 12_345, 9, &[b"x"]));
+        body.resize(63_000, b'b');
+        let enclosing_at = file.len();
+        file.extend(ogg_page(0, 1, 10, &[&body]));
+        for granule in 2..10 {
+            file.extend(ogg_page(0, granule, 10, &[&[0u8; 500]]));
+        }
+        let window = file.len() - usize::try_from(MAX_PAGE_BYTES).expect("fits");
+        assert!(enclosing_at < window && window < enclosing_at + 3_000);
+        let record = drive(&file).expect("read");
+        // Stream 9's real last page lies before the window: no duration,
+        // rather than the false one.
+        assert_eq!(record.duration, None);
+        // A last page cut short still ends the chain.
+        let mut cut = tagged_ogg_opus();
+        cut.extend(&ogg_page(0, 11, 10, &[&[0u8; 500]])[..100]);
+        assert_eq!(
+            drive(&cut).expect("read").duration.map(|d| d.ms),
+            Some(10_000)
+        );
+        assert!(cut_page(b"Og"));
+        assert!(!cut_page(b"xx"));
     }
 
     #[test]
