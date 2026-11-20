@@ -16,6 +16,7 @@ others go deeper.
 - [Where your books go](guide/where-books-go.md): folders, cloud storage and file names
 - [Discover and wishlist](guide/discover.md): suggestions, catalog search and the wishlist
 - [The web app](guide/web-app.md): the screens, roles and ways to sign in
+- [Listen in the web app](guide/listening.md): the player, bookmarks, the sleep timer and media keys
 - [Sharing with your household](guide/sharing.md): invites, what is shared, and Audiobookshelf
 - [Join a library as a branch](guide/branches.md): let a second computer help
 - [Coming from Libation](guide/from-libation.md): bring over an existing library
@@ -111,3 +112,4 @@ Build and agent conventions for this repository live in
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks
 - [What needs the operator](adr/owner-and-operator.md): the rule for which actions need elevation, and the switches an Owner sets on each Administrator
 - [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins
+- [Notifications](adr/notifications.md): the host routes events into send jobs, notifier plugins send them, and account mail carries reset and recovery

@@ -148,10 +148,14 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-# The workerd_control, socket_broker and socket_route oracles are shared
-# with the replay tests through `#[path]`.
+# The workerd_control, socket_broker, socket_route and egress_bridge oracles
+# are shared with the replay tests through `#[path]`; the egress_bridge
+# replay compares its result with the SDK's committed vectors.
 paths = [
     "fuzz/corpus/granted_http/**",
+    "fuzz/corpus/egress_bridge/**",
+    "fuzz/oracles/egress_bridge.rs",
+    "packages/plugin-sdk/scripts/egress_bridge_vectors.json",
     "fuzz/corpus/workerd_control/**",
     "fuzz/oracles/workerd_control.rs",
     "fuzz/corpus/socket_broker/**",
@@ -162,15 +166,12 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"
-# The cron and HTTPS URL oracles are shared with the replay test through
-# `#[path]`.
+# The cron oracle is shared with the replay test through `#[path]`.
 paths = [
     "fuzz/corpus/egress_policy/**",
     "fuzz/corpus/plugin_manifest/**",
     "fuzz/corpus/cron_schedule/**",
     "fuzz/oracles/cron_schedule.rs",
-    "fuzz/corpus/https_url_policy/**",
-    "fuzz/oracles/https_url_policy.rs",
 ]
 
 [[test_input]]

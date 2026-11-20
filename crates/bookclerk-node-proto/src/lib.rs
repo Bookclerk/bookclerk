@@ -97,6 +97,7 @@ mod frames;
 mod join;
 mod keys;
 mod lookup;
+mod origin;
 mod requests;
 mod sealed;
 mod shared_branch;
@@ -165,6 +166,7 @@ pub use lookup::{
     LookupFormat, LookupIdentifier, LookupScheme, LookupWork, MAX_LOOKUP_EDITIONS,
     MAX_LOOKUP_IDENTIFIERS, MAX_LOOKUP_WORKS, MAX_WORK_REF_BYTES,
 };
+pub use origin::{BranchOrigin, MAX_BRANCH_ORIGIN_BYTES};
 pub use requests::{
     claimed_problem, finish_problem, is_request_job, BranchRequest, RequestOutcome, ITEM_REQUEST,
     MAX_CLAIMED_REQUESTS, MAX_REQUEST_JOB_BYTES,

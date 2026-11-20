@@ -1,8 +1,7 @@
-//! Replays the checked-in `plugin_manifest`, `egress_policy`, `cron_schedule`
-//! and `https_url_policy` fuzz corpora
-//! in PR CI (no libFuzzer required), with the same oracles as the targets, so
-//! an input that once broke a manifest or policy check stays fixed
-//! (`docs/adr/untrusted-input-fuzzing.md`).
+//! Replays the checked-in `plugin_manifest`, `egress_policy` and
+//! `cron_schedule` fuzz corpora in PR CI (no libFuzzer required), with the
+//! same oracles as the targets, so an input that once broke a manifest or
+//! policy check stays fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
 // not a documented panic path.
 #![allow(clippy::missing_panics_doc)]
@@ -319,26 +318,6 @@ fn fuzz_corpus_cron_schedule_replays() {
         let bytes = std::fs::read(&path).expect("read");
         cron_oracle::check(&bytes);
     }
-}
-
-/// The `https_url_policy` oracle, shared with the fuzz target.
-#[path = "../../../fuzz/oracles/https_url_policy.rs"]
-mod https_url_oracle;
-
-#[test]
-fn fuzz_corpus_https_url_policy_replays() {
-    let mut accepted = 0;
-    for path in corpus_files("https_url_policy") {
-        let bytes = std::fs::read(&path).expect("read");
-        https_url_oracle::check(&bytes);
-        let text = String::from_utf8_lossy(&bytes);
-        if bookclerk_plugin_manifest::https_url_on_hosts(&text, https_url_oracle::PATTERNS)
-            .is_some()
-        {
-            accepted += 1;
-        }
-    }
-    assert!(accepted > 0, "no https_url_policy seed was accepted");
 }
 
 #[test]

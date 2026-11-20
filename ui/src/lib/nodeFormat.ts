@@ -2,6 +2,8 @@
  * Formatting shared by the node views (Settings → Nodes and Status).
  */
 
+import type { BranchRelationship } from "./api";
+
 /**
  * Millicores as cores: `1536` → `1.5`.
  *
@@ -47,4 +49,21 @@ export function age(iso: string): string {
  */
 export function ownerName(owner: { user_id: number; display_name: string | null }): string {
   return owner.display_name?.trim() || `user ${owner.user_id}`;
+}
+
+/**
+ * The name people see for a node's relationship to the library.
+ *
+ * @param relationship - The node's relationship, as the server reports it.
+ * @returns `Shared branch`, `Remote branch` or `Local branch`.
+ */
+export function relationshipLabel(relationship: BranchRelationship): string {
+  switch (relationship) {
+    case "shared_branch":
+      return "Shared branch";
+    case "remote_branch":
+      return "Remote branch";
+    case "local_branch":
+      return "Local branch";
+  }
 }

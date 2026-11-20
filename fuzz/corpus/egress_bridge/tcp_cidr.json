@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":[],"maxRedirects":0,"tcp":[{"host":"localhost","ports":[5432]},{"host":"*.db.internal","ports":[5432,6432]}],"addressCidrs":["127.0.0.0/8","::1/128","10.0.0.0/8"]}

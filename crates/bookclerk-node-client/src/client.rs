@@ -2137,6 +2137,7 @@ async fn heartbeat_loop(
             cpu_used_millicores: sample.cpu_used_millicores,
             memory_available_bytes: sample.memory_available_bytes,
             files_dir_free_bytes: sample.files_dir_free_bytes,
+            public_origin: sample.public_origin,
         };
         let delay = match conn.request(beat).await {
             Ok(answer) => {

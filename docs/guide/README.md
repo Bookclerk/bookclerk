@@ -16,6 +16,8 @@ your stores.
 - [Discover and wishlist](discover.md): suggestions, catalog search and
   the wishlist.
 - [The web app](web-app.md): the screens, roles and ways to sign in.
+- [Listen in the web app](listening.md): the player, bookmarks, the sleep
+  timer and media keys.
 - [Sharing with your household](sharing.md): invites, what is shared, and
   Audiobookshelf.
 - [Join a library as a branch](branches.md): let a second computer help.

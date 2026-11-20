@@ -237,7 +237,10 @@ When one install joins another, the relationship has a name too:
 You can only join a core branch. A local branch and a remote branch work
 the same way and follow the same rules; the only difference is whether the
 branch that joins can be reached itself. A branch that gets an address
-later becomes a remote branch without joining again.
+later becomes a remote branch without joining again: each branch tells
+its library its address every few seconds, and **Status** and
+**Settings → Nodes** label it **Remote branch** or **Local branch** from
+that (see [Remote and local branches](../server/branches.md#remote-and-local-branches)).
 
 A **clerk** is not a branch: it only shows a person their books (see
 [Sign in with a library card](#sign-in-with-a-library-card)).

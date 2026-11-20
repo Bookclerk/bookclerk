@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":["api.example.com","*.cdn.example.com","xn--bcher-kva.example"],"maxRedirects":5,"subrequests":50,"allowUndeclaredPublicRedirects":true}

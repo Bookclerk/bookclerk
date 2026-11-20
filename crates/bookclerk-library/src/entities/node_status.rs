@@ -51,6 +51,10 @@ pub struct Model {
     pub cache_budget_bytes: Option<i64>,
     /// Unix milliseconds the node's last cache sweep finished.
     pub cache_swept_ms: Option<i64>,
+    /// The public origin a branch reported (`integrations.public_origin`,
+    /// normalized); empty for a branch that reports none and for a shared
+    /// node.
+    pub public_origin: Option<String>,
 }
 
 /// Declared SeaORM relations (none).

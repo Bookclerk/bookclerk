@@ -27,9 +27,9 @@ use webauthn_rs::prelude::{
 
 use crate::api::AppState;
 use crate::auth::{
-    issue_elevation, issue_portal_session, require_recent_portal_reauth,
-    resolve_portal_caller_identity, timed_portal_identity_from_headers, ClientIp, Elevated,
-    OkResponse, PortalSessionIssued,
+    issue_elevation, issue_portal_session, require_portal_identity, require_recent_portal_reauth,
+    resolve_portal_caller_identity, CallerRefusal, ClientIp, Elevated, OkResponse,
+    PortalSessionIssued,
 };
 
 /// Passkey HTTP routes. They carry no auth layer: each handler resolves the
@@ -279,24 +279,27 @@ fn normalize_passkey_name(name: Option<&str>) -> String {
     }
 }
 
-/// Resolves the signed-in local user from the portal session, or 401.
+/// Resolves the signed-in local user from the portal session.
+///
+/// # Errors
+///
+/// 401 when nobody is signed in, 500 when the user cannot be read, and
+/// the session-check 503 when the session could not be checked.
 async fn require_user(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<bookclerk_library::UserRecord, StatusCode> {
+) -> Result<bookclerk_library::UserRecord, CallerRefusal> {
     let library = state.library_snapshot().await;
-    let identity = timed_portal_identity_from_headers(&library, headers)
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let identity = require_portal_identity(&library, headers).await?;
     let (_, _, user, _) = resolve_portal_caller_identity(&library, &identity).await;
     let Some(me) = user else {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(StatusCode::UNAUTHORIZED.into());
     };
-    library
+    Ok(library
         .get_user(me.id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)
+        .ok_or(StatusCode::UNAUTHORIZED)?)
 }
 
 /// Lists this user's stored passkeys as `{ id, credential_id }` rows.
@@ -308,12 +311,13 @@ async fn require_user(
         (status = 200, description = "The caller's passkeys.", body = PasskeysResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 500, description = "The passkeys could not be read."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn list_passkeys(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<PasskeysResponse>, StatusCode> {
+) -> Result<Json<PasskeysResponse>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let rows = library
@@ -353,13 +357,14 @@ struct ReauthBody {
         (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
         (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 500, description = "The library could not be read, or the challenge could not be stored."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn register_begin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<ReauthBody>,
-) -> Result<Json<PasskeyCreationOptions>, StatusCode> {
+) -> Result<Json<PasskeyCreationOptions>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let existing_count = library
@@ -415,7 +420,7 @@ async fn register_begin(
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    creation_options(&challenge_id, &ccr)
+    Ok(creation_options(&challenge_id, &ccr)?)
 }
 
 /// Schema for the `credential` member of [`CeremonyFinish`]: the browser's
@@ -484,13 +489,14 @@ struct CeremonyFinish {
         (status = 400, description = "The challenge is unknown or expired, the attestation is invalid, or the daemon's origin is not a valid WebAuthn relying party."),
         (status = 409, description = "The passkey is already registered."),
         (status = 500, description = "The library could not be read or written."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn register_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<CeremonyFinish>,
-) -> Result<Json<OkResponse>, StatusCode> {
+) -> Result<Json<OkResponse>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
@@ -499,10 +505,10 @@ async fn register_finish(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     };
     if uid != user.id {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     let reg_state: PasskeyRegistration =
         serde_json::from_str(&state_json).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -547,6 +553,7 @@ async fn register_finish(
         (status = 429, description = "Too many wrong `current_password` attempts for this account; try again after the lockout."),
         (status = 404, description = "No such passkey for this user."),
         (status = 500, description = "The library could not be read or written."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn delete_passkey(
@@ -554,7 +561,7 @@ async fn delete_passkey(
     headers: HeaderMap,
     Path(id): Path<i64>,
     Json(body): Json<ReauthBody>,
-) -> Result<Json<OkResponse>, StatusCode> {
+) -> Result<Json<OkResponse>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     require_recent_portal_reauth(&state, &headers, user.id, body.current_password.as_deref())
         .await?;
@@ -564,7 +571,7 @@ async fn delete_passkey(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !ok {
-        return Err(StatusCode::NOT_FOUND);
+        return Err(StatusCode::NOT_FOUND.into());
     }
     let _ = library
         .delete_elevated_operator_sessions_for_user(user.id)
@@ -761,15 +768,16 @@ async fn login_finish(
         (status = 403, description = "The caller is not an Owner."),
         (status = 404, description = "The caller has no passkeys."),
         (status = 500, description = "The library could not be read, or the challenge could not be stored."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn elevate_begin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<PasskeyRequestOptions>, StatusCode> {
+) -> Result<Json<PasskeyRequestOptions>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     if user.role != UserRole::Owner {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     let library = state.library_snapshot().await;
     let rows = library
@@ -777,7 +785,7 @@ async fn elevate_begin(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if rows.is_empty() {
-        return Err(StatusCode::NOT_FOUND);
+        return Err(StatusCode::NOT_FOUND.into());
     }
     let passkeys: Vec<Passkey> = rows
         .iter()
@@ -800,7 +808,7 @@ async fn elevate_begin(
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    request_options(&challenge_id, &rcr)
+    Ok(request_options(&challenge_id, &rcr)?)
 }
 
 /// Completes Owner elevation only when the assertion is user-verified.
@@ -815,16 +823,17 @@ async fn elevate_begin(
         (status = 401, description = "The caller is not signed in, the assertion does not verify or was not user-verified, or the credential is not the caller's."),
         (status = 403, description = "The caller is not an Owner, or the challenge was issued to another user."),
         (status = 500, description = "The library could not be read or written."),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
 async fn elevate_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<CeremonyFinish>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     if user.role != UserRole::Owner {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
@@ -833,10 +842,10 @@ async fn elevate_finish(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     };
     if uid != user.id {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(StatusCode::FORBIDDEN.into());
     }
     let auth_state: PasskeyAuthentication =
         serde_json::from_str(&state_json).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -846,7 +855,7 @@ async fn elevate_finish(
         .finish_passkey_authentication(&cred, &auth_state)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
     if !result.user_verified() {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(StatusCode::UNAUTHORIZED.into());
     }
     let cred_id = cred_id_b64(result.cred_id());
     let Some((row_id, owner, json)) = library
@@ -854,21 +863,21 @@ async fn elevate_finish(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     else {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(StatusCode::UNAUTHORIZED.into());
     };
     if owner != uid {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(StatusCode::UNAUTHORIZED.into());
     }
     let mut passkey: Passkey = serde_json::from_str(&json).map_err(|_| StatusCode::UNAUTHORIZED)?;
     if passkey.update_credential(&result).is_none() {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(StatusCode::UNAUTHORIZED.into());
     }
     let updated = serde_json::to_string(&passkey).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     library
         .update_webauthn_credential(row_id, &updated)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    issue_elevation(&state, &library, user.id, &headers).await
+    Ok(issue_elevation(&state, &library, user.id, &headers).await?)
 }
 
 /// Starts a user-verified passkey step-up for `user_id` (its own challenge
