@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tomllib
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -282,6 +282,9 @@ class Command:
     argv: list[str]
     cwd: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    # A failing test command that lets the rest of the check run first: the
+    # check still fails, after every command has reported (``run_check``).
+    keep_going: bool = False
 
 
 @dataclass
@@ -1375,6 +1378,11 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             cmds.append(Command("bench targets build", ["cargo", "bench", *_pkg_args(params["benches"]), "--benches", "--no-run"]))
         if params.get("examples") and first:
             cmds.append(Command("example targets build", ["cargo", "build", *_pkg_args(params["examples"]), "--examples"]))
+        if os_suite:
+            # The report-only suite wants every failure in one run, so a
+            # failing test command lets the custom harnesses and feature runs
+            # after it still run; the check fails at the end.
+            cmds = [replace(c, keep_going=True) for c in cmds]
         return cmds
     if check == "e2e":
         env = {
@@ -1772,6 +1780,7 @@ def run_check(
         print(f"::notice::{check}: the saved dependency cache is current; nothing to build")
     if prereqs_only:
         commands = [(key, cmd) for key, cmd in commands if key]
+    failed: list[str] = []
     for key, cmd in commands:
         env_note = " ".join(f"{k}={v}" for k, v in sorted(cmd.env.items()) if k != "PATH")
         line = f"{cmd.label}: {' '.join(cmd.argv)}" + (f"  [{env_note}]" if env_note else "")
@@ -1785,11 +1794,20 @@ def run_check(
         print(f"::group::{line}", flush=True)
         try:
             _run_one(cmd, ctx)
+        except ExecError as err:
+            # Prerequisites (keyed) always stop the check.
+            if key or not cmd.keep_going:
+                raise
+            print(f"::error::{err}", flush=True)
+            failed.append(str(err))
+            continue
         finally:
             print("::endgroup::", flush=True)
         if marker is not None:
             markers.mkdir(parents=True, exist_ok=True)
             marker.write_text(line + "\n", encoding="utf-8")
+    if failed:
+        raise ExecError(f"{check}: {len(failed)} command(s) failed: " + "; ".join(failed))
 
 
 # ---------------------------------------------------------------------------

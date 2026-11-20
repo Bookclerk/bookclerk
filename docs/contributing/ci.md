@@ -100,7 +100,10 @@ they leave out (#1228, #1229). The `test-os` job runs the whole
   nextest profile (`.config/nextest.toml`) instead of the merge group's
   retry and fail-fast: every test runs, a failing one gets one retry, and a
   test still running after ten minutes is stopped and named, so a hang
-  fails one test instead of holding the job until its timeout. Running
+  fails one test instead of holding the job until its timeout. A failing
+  test command doesn't stop the part either: the custom harnesses and
+  feature runs after it still run, and the job fails once all of them
+  have reported. Setup and prerequisite failures still stop it. Running
   `rust_test` on Windows or macOS without it keeps the usual behavior.
 - **It only reports for now.** The job is listed in `REPORT_JOBS`
   (`scripts/ci_plan/plan.py`), has `continue-on-error`, says "report only"

@@ -1816,6 +1816,47 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len(staged), 1, calls)
         self.assertEqual(len(e2e), 2, calls)
 
+    def test_the_report_suite_runs_every_test_command_before_failing(self) -> None:
+        """Under `CI_OS_SUITE` a failing test command lets the later ones run; elsewhere it stops the check."""
+        full = build_plan(["docs/x.md"], INDEX, RELATIONS, force_full=True, guests=GUESTS)
+        art = artifact(full)
+        nextest = ["cargo", "nextest", "run"]
+
+        def run(env: dict[str, str], fail: list[str]) -> tuple[list[list[str]], str | None]:
+            calls: list[list[str]] = []
+
+            def fake_run(argv, cwd=None, env=None):
+                calls.append(list(argv))
+                return subprocess.CompletedProcess(argv, 1 if argv[: len(fail)] == fail else 0)
+
+            with tempfile.TemporaryDirectory(prefix="bc-exec-") as tmp, mock.patch.dict(os.environ, env):
+                ctx = self._exec_ctx(Path(tmp))
+                with mock.patch("ci_plan.execute.subprocess.run", side_effect=fake_run):
+                    try:
+                        run_check(art, "rust_test", ctx)
+                    except ExecError as err:
+                        return calls, str(err)
+            return calls, None
+
+        suite = {execute.OS_SUITE_ENV: "1", "CI_TEST_PART": "1/2"}
+        checks = check_argv(full, "rust_test")
+        self.assertGreater(len(checks), 1, "part 1 runs more than the main nextest command")
+        calls, err = run(suite, nextest)
+        self.assertIsNotNone(err)
+        # Every command after the failing one still ran, up to the last.
+        first = next(i for i, c in enumerate(calls) if c[:3] == nextest)
+        self.assertEqual(len(calls) - first, len(checks), calls)
+        self.assertEqual(calls[-1], checks[-1], calls)
+        self.assertRegex(err or "", r"rust_test: \d+ command\(s\) failed")
+        # Ordinary runs stop at the first failure.
+        calls, err = run({"CI_TEST_PART": "1/2"}, nextest)
+        self.assertIsNotNone(err)
+        self.assertEqual(calls[-1][:3], nextest, calls)
+        # A prerequisite failure stops the report suite too.
+        calls, err = run(suite, ["cargo", "build"])
+        self.assertIsNotNone(err)
+        self.assertFalse(any(c[:3] == nextest for c in calls), calls)
+
     def test_prereqs_only_runs_the_prerequisites(self) -> None:
         art = artifact(plan("crates/bookclerk-plugin-host/src/rpc.rs"))
         calls: list[list[str]] = []
