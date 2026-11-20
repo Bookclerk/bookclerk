@@ -2107,6 +2107,8 @@ Commands:
 - [`bookclerk diagnostics upload`](#bookclerk-diagnostics-upload): Upload the current diagnostics ring (requires share_reports + collector URL)
 - [`bookclerk diagnostics reset-id`](#bookclerk-diagnostics-reset-id): Replace this install's random usage ID (diagnostics.share_usage) with a new one
 - [`bookclerk diagnostics reports`](#bookclerk-diagnostics-reports): List the diagnostics reports this install sent, newest first
+- [`bookclerk diagnostics view`](#bookclerk-diagnostics-view): Read a sent report back from the collector, with the issues tracking it and its fix
+- [`bookclerk diagnostics delete`](#bookclerk-diagnostics-delete): Delete the collector's stored copy of a sent report
 
 ### `bookclerk diagnostics show`
 
@@ -2148,6 +2150,8 @@ List the diagnostics reports this install sent, newest first.
 
 Each report ID is what the collector stored and what the GitHub issue for it mentions: search the issues for it, or give it to a maintainer.
 
+The access code beside each ID reads the report back (`diagnostics view`), deletes the collector's copy (`diagnostics delete`), and with the ID opens the collector's public lookup page.
+
 ```text
 bookclerk diagnostics reports [OPTIONS]
 ```
@@ -2155,6 +2159,38 @@ bookclerk diagnostics reports [OPTIONS]
 Options:
 
 - `-n, --limit <LIMIT>`: Max reports to print (0 = all that are kept) (default `20`)
+
+### `bookclerk diagnostics view`
+
+Read a sent report back from the collector, with the issues tracking it and its fix.
+
+Uses the access code kept in this install's report history.
+
+```text
+bookclerk diagnostics view [OPTIONS] <REPORT_ID>
+```
+
+Arguments:
+
+- `<REPORT_ID>`: The report's ID, from `bookclerk diagnostics reports`
+
+### `bookclerk diagnostics delete`
+
+Delete the collector's stored copy of a sent report.
+
+The collector keeps the report's one-line summary and issue links, so it still counts toward the issue it joined.
+
+```text
+bookclerk diagnostics delete [OPTIONS] <REPORT_ID>
+```
+
+Arguments:
+
+- `<REPORT_ID>`: The report's ID, from `bookclerk diagnostics reports`
+
+Options:
+
+- `-y, --yes`: Delete without asking (required when stdin is not a terminal)
 
 ## `bookclerk version`
 

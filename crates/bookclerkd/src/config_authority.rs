@@ -2014,13 +2014,18 @@ pub(crate) struct NodeView {
     /// True for the node that answered the request.
     #[schema(example = true)]
     this_node: bool,
-    /// `owner` for a node sharing this library, `host` for an enrolled
-    /// host.
+    /// `shared` for a node sharing this library's database, `branch` for an
+    /// enrolled branch.
     kind: bookclerk_library::control_plane::NodeKind,
+    /// How the node relates to this library: `shared_branch` (shares its
+    /// database), `remote_branch` (a branch reporting a public address in
+    /// its heartbeat, `status.public_origin`) or `local_branch` (a branch
+    /// with none).
+    relationship: bookclerk_library::control_plane::BranchRelationship,
     /// User id of the node's owner; `null` when unassigned.
     #[schema(example = 7)]
     owner_user_id: Option<i64>,
-    /// A branch's sharing setting, as it last reported it; `null` for an
+    /// A branch's sharing setting, as it last reported it; `null` for a
     /// shared node.
     #[schema(example = true)]
     share_books: Option<bool>,
@@ -2088,6 +2093,10 @@ async fn node_view(
         status: status.cloned(),
         this_node: node.node_id == this_node,
         kind: node.kind,
+        relationship: bookclerk_library::control_plane::BranchRelationship::of(
+            node.kind,
+            status.and_then(|s| s.public_origin.as_deref()),
+        ),
         owner_user_id: node.owner_user_id,
         // A branch's two sharing settings, as it last reported them.
         share_books: node.share_books,

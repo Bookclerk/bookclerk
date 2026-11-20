@@ -230,6 +230,8 @@ export const NAV: NavSpec[] = [
       "adr/uploads-and-ingest",
       "adr/owner-and-operator",
       "adr/playback",
+      "adr/ingress-plugins",
+      "adr/notifications",
       "adr/drop-folders",
     ],
   },

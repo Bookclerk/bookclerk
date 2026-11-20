@@ -27,6 +27,7 @@ mod covers;
 mod cron_worker;
 mod cross_origin;
 mod csrf;
+mod diagnostics_lookup;
 mod discover_events;
 mod discover_jobs;
 mod event_worker;

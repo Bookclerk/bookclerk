@@ -302,22 +302,26 @@ pub(crate) async fn profile_user(
 }
 
 /// Resolves the signed-in first-party user; impersonation and operator-only sessions are refused.
+///
+/// # Errors
+///
+/// 403 for an impersonating or operator-only session or an identity with
+/// no user, 401 when nobody is signed in, and the session-check 503 when
+/// the session could not be checked.
 pub(crate) async fn require_self_user_id(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<i64, StatusCode> {
+) -> Result<i64, auth::CallerRefusal> {
     let auth = state.auth_snapshot().await;
     if let Some(op) = auth::resolve_operator_session(state, &auth, headers).await {
         if op.impersonating_user_id.is_some() {
-            return Err(StatusCode::FORBIDDEN);
+            return Err(StatusCode::FORBIDDEN.into());
         }
-        return op.elevated_from_user_id.ok_or(StatusCode::FORBIDDEN);
+        return Ok(op.elevated_from_user_id.ok_or(StatusCode::FORBIDDEN)?);
     }
     let library = state.library_snapshot().await;
-    let identity = auth::timed_portal_identity_from_headers(&library, headers)
-        .await
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    identity.user_id.ok_or(StatusCode::FORBIDDEN)
+    let identity = auth::require_portal_identity(&library, headers).await?;
+    Ok(identity.user_id.ok_or(StatusCode::FORBIDDEN)?)
 }
 
 /// Updates the caller's display name and/or email.
@@ -344,9 +348,9 @@ pub async fn patch_profile(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<PatchProfileRequest>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, auth::CallerRefusal> {
     if body.display_name.is_none() && body.email.is_none() && body.avatar_source.is_none() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
     let user_id = require_self_user_id(&state, &headers).await?;
     let library = state.library_snapshot().await;
@@ -388,7 +392,7 @@ pub async fn patch_profile(
                     "That email is already used by another account.",
                 ));
             }
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR.into()),
         };
     }
 
@@ -402,7 +406,7 @@ pub async fn patch_profile(
                     "Choose a valid picture source.",
                 ));
             }
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR.into()),
         };
         user = library
             .set_user_avatar_source(user_id, parsed.as_deref())
@@ -493,7 +497,7 @@ async fn active_libraries(library: &bookclerk_library::LibraryStore) -> Result<u
 pub async fn get_catalog_listing(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<CatalogListingView>, StatusCode> {
+) -> Result<Json<CatalogListingView>, auth::CallerRefusal> {
     let user_id = require_self_user_id(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let opted_out = bookclerk_library::control_plane::catalog_listing_opted_out(&library, user_id)
@@ -521,7 +525,7 @@ pub async fn put_catalog_listing(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<CatalogListing>,
-) -> Result<Json<CatalogListingView>, StatusCode> {
+) -> Result<Json<CatalogListingView>, auth::CallerRefusal> {
     let user_id = require_self_user_id(&state, &headers).await?;
     let library = state.library_snapshot().await;
     bookclerk_library::control_plane::set_catalog_listing_opt_out(&library, user_id, !body.listed)
@@ -560,13 +564,13 @@ pub async fn put_avatar(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, auth::CallerRefusal> {
     let user_id = require_self_user_id(&state, &headers).await?;
     if body.len() > AVATAR_MAX_BYTES {
-        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        return Err(StatusCode::PAYLOAD_TOO_LARGE.into());
     }
     if body.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into());
     }
     let files = files_dir(&state)
         .await
@@ -586,11 +590,11 @@ pub async fn put_avatar(
     // Single-component leaf: reject separators / `..` before join (CodeQL
     // DotDotCheck + lexical deny). `user_id` is i64 so this is belt-and-braces.
     if leaf.contains("..") || leaf.contains('/') || leaf.contains('\\') {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR.into());
     }
     let dest = dir.join(&leaf);
     if !dest.starts_with(&dir) {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR.into());
     }
     // Same-dir temp + atomic replace so a leftover leaf symlink is overwritten
     // as a directory entry instead of followed (see `write_avatar_atomic`).
@@ -637,7 +641,7 @@ pub async fn put_avatar(
 pub async fn delete_avatar(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, auth::CallerRefusal> {
     let user_id = require_self_user_id(&state, &headers).await?;
     let files = files_dir(&state)
         .await

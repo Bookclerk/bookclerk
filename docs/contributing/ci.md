@@ -1254,9 +1254,13 @@ declaration or the handler that is wrong: a status the handler answers
 on purpose is declared (with a realistic example when the body is JSON),
 and a handler that answers something its route should not is corrected.
 The access layer's refusals (`401`, `403`, the second-factor enrollment
-`403`), the CSRF `403`, the `504` timeout and the JSON extractor's
-rejections are stated by the document builder
-(`crates/bookclerkd/src/openapi.rs`), not by each route.
+`403`, the `session_check_unavailable` `503`), the CSRF `403`, the `504`
+timeout and the JSON extractor's rejections are stated by the document
+builder (`crates/bookclerkd/src/openapi.rs`), not by each route. Where a
+route also answers a `503` of its own, the builder states both bodies and
+says only the session-check refusal carries `Retry-After`. A public route
+whose handler checks the session itself declares a bare `503` that names
+`session_check_unavailable`, and the builder adds the body and the header.
 
 To see the report locally, start it empty (each test process appends a
 file of its own, so an old run's hits would otherwise stay in it), run

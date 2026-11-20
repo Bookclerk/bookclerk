@@ -425,7 +425,7 @@ fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str
                 let generic_forbidden = access != Access::OperatorOrPortal || !method.is_safe();
                 add_enrollment_refusal(op, generic_forbidden);
             }
-            if access.gates_enrollment() {
+            if access.gates_enrollment() || states_session_check(op) {
                 add_session_check_refusal(op);
             }
             if access == Access::OperatorOrPortal {
@@ -1084,68 +1084,122 @@ fn add_middleware_refusals(doc: &mut OpenApi) {
     }
 }
 
-/// What a route behind a session-resolving layer answers when the library
-/// could not say in time whether a session cookie is still valid.
-const SESSION_CHECK_SENTENCE: &str = "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.";
+/// What a route answers when the library could not say in time whether a
+/// session cookie or library card is still valid, as the 503's whole
+/// description.
+const SESSION_CHECK_SENTENCE: &str = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.";
 
-/// States the 503 a route behind a session-resolving access layer may
-/// answer before its handler runs: when the portal session lookup times out
-/// or fails, the layer ([`crate::auth::session_check_unavailable`]) answers
-/// `session_check_unavailable` with `Retry-After` instead of treating the
-/// caller as signed out. A route that already states a 503 keeps its own
-/// body and gains the sentence.
+/// The same refusal, added to a route's own 503: only this answer carries
+/// the access layer's `Retry-After`.
+const SESSION_CHECK_ALSO: &str = "When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.";
+
+/// The session-check refusal as a layer or handler answers it.
+const SESSION_CHECK_REFUSAL: MiddlewareRefusal = MiddlewareRefusal {
+    slug: crate::auth::SESSION_CHECK_UNAVAILABLE,
+    summary: "The sign-in could not be checked in time",
+    sentence: SESSION_CHECK_ALSO,
+    message: crate::auth::SESSION_CHECK_UNAVAILABLE_MESSAGE,
+};
+
+/// True when the operation's own 503 names `session_check_unavailable`: a
+/// handler that checks the session itself and answers the refusal.
 ///
 /// # Arguments
 ///
-/// * `op` - One operation of such a group.
+/// * `op` - The operation as its `#[utoipa::path]` declares it.
+///
+/// # Returns
+///
+/// Whether [`add_session_check_refusal`] should complete the 503.
+fn states_session_check(op: &Operation) -> bool {
+    use utoipa::openapi::RefOr;
+    matches!(
+        op.responses.responses.get("503"),
+        Some(RefOr::T(response)) if response.description.contains(crate::auth::SESSION_CHECK_UNAVAILABLE)
+    )
+}
+
+/// States the 503 [`crate::auth::session_check_unavailable`] answers when
+/// the portal session lookup times out or fails: `session_check_unavailable`
+/// in the standard error body, with `Retry-After`, instead of treating the
+/// caller as signed out.
+///
+/// [`add_group`] calls this for every route behind a session-resolving
+/// access layer, and for any route whose own 503 names
+/// `session_check_unavailable` (a handler that checks the session itself).
+/// A route without a 503 gets the refusal alone. A route with a 503 of its
+/// own keeps it: the description gains [`SESSION_CHECK_ALSO`], the JSON
+/// body states `ErrorJson` beside its own schema (`anyOf`) with the
+/// refusal as a named example, and `Retry-After` is said to come with the
+/// refusal only, unless the route states its own.
+///
+/// # Arguments
+///
+/// * `op` - The operation, before [`fill_untyped_content`] types its bare
+///   error responses.
 fn add_session_check_refusal(op: &mut Operation) {
+    use axum::http::StatusCode;
     use utoipa::openapi::header::HeaderBuilder;
     use utoipa::openapi::schema::{KnownFormat, ObjectBuilder, SchemaFormat, Type};
-    use utoipa::openapi::{ContentBuilder, Ref, RefOr, ResponseBuilder};
-    match op.responses.responses.get_mut("503") {
-        Some(RefOr::T(response)) => {
-            if !response.description.contains(SESSION_CHECK_SENTENCE) {
-                response.description = format!(
-                    "{} {SESSION_CHECK_SENTENCE}",
-                    response.description.trim_end()
-                );
-            }
-        }
-        Some(RefOr::Ref(_)) => {}
+    use utoipa::openapi::{RefOr, ResponseBuilder};
+    let retry_after = |description: &str| {
+        HeaderBuilder::new()
+            .schema(Some(
+                ObjectBuilder::new()
+                    .schema_type(Type::Integer)
+                    .format(Some(SchemaFormat::KnownFormat(KnownFormat::Int64)))
+                    .minimum(Some(0)),
+            ))
+            .description(Some(description))
+            .build()
+    };
+    let response = match op.responses.responses.get_mut("503") {
+        Some(RefOr::T(response)) => response,
+        Some(RefOr::Ref(_)) => return,
         None => {
-            let example = serde_json::json!({
-                "error": crate::auth::SESSION_CHECK_UNAVAILABLE,
-                "message": crate::auth::SESSION_CHECK_UNAVAILABLE_MESSAGE,
-                "status": 503,
-            });
             op.responses.responses.insert(
                 "503".to_string(),
                 ResponseBuilder::new()
                     .description(SESSION_CHECK_SENTENCE)
                     .header(
                         "Retry-After",
-                        HeaderBuilder::new()
-                            .schema(Some(
-                                ObjectBuilder::new()
-                                    .schema_type(Type::Integer)
-                                    .format(Some(SchemaFormat::KnownFormat(KnownFormat::Int64)))
-                                    .minimum(Some(0)),
-                            ))
-                            .description(Some("Seconds to wait before asking again."))
-                            .build(),
-                    )
-                    .content(
-                        "application/json",
-                        ContentBuilder::new()
-                            .schema(Some(Ref::from_schema_name("ErrorJson")))
-                            .example(Some(example))
-                            .build(),
+                        retry_after("Seconds to wait before asking again."),
                     )
                     .build()
                     .into(),
             );
+            match op.responses.responses.get_mut("503") {
+                Some(RefOr::T(response)) => response,
+                _ => return,
+            }
         }
+    };
+    // A route that names the refusal in its own words but declares no
+    // body (a handler checking the session itself) is the refusal alone.
+    let alone = !response
+        .content
+        .keys()
+        .any(|media| media.starts_with("application/json"))
+        && response
+            .description
+            .contains(crate::auth::SESSION_CHECK_UNAVAILABLE);
+    if !response.headers.contains_key("Retry-After") {
+        response.headers.insert(
+            "Retry-After".to_string(),
+            retry_after(if alone {
+                "Seconds to wait before asking again."
+            } else {
+                "Seconds to wait before asking again; sent only with `session_check_unavailable`."
+            })
+            .into(),
+        );
     }
+    add_refusal_body(
+        response,
+        StatusCode::SERVICE_UNAVAILABLE,
+        None,
+        &SESSION_CHECK_REFUSAL,
+    );
 }
 
 /// The error slug of the refusal [`crate::totp::enrollment_blocks`] produces.
@@ -1237,10 +1291,63 @@ const CLIENT_TRANSPORT_REFUSALS: [MiddlewareRefusal; 2] = [
 /// * `refusal` - The refusal to state.
 fn add_forbidden_refusal(op: &mut Operation, generic_forbidden: bool, refusal: &MiddlewareRefusal) {
     use axum::http::StatusCode;
+    use utoipa::openapi::{RefOr, ResponseBuilder};
+    let response = match op.responses.responses.get_mut("403") {
+        Some(RefOr::T(response)) => response,
+        Some(RefOr::Ref(_)) => return,
+        None => {
+            op.responses.responses.insert(
+                "403".to_string(),
+                ResponseBuilder::new()
+                    .description(refusal.sentence)
+                    .build()
+                    .into(),
+            );
+            match op.responses.responses.get_mut("403") {
+                Some(RefOr::T(response)) => response,
+                _ => return,
+            }
+        }
+    };
+    let generic = generic_forbidden.then(|| {
+        (
+            "forbidden",
+            "The caller may not do this",
+            serde_json::to_value(crate::http_error::ErrorJson::for_status(
+                StatusCode::FORBIDDEN,
+            ))
+            .unwrap_or_default(),
+        )
+    });
+    add_refusal_body(response, StatusCode::FORBIDDEN, generic, refusal);
+}
+
+/// Adds a layer's `refusal` to one error response: its sentence to the
+/// description (unless the description already names its slug), and its
+/// body as a named example of the JSON content; a response that already
+/// shows the refusal's body is left as it is. A response without JSON
+/// content gets the standard error body (with `generic` as an example
+/// beside the refusal, when given); one whose JSON body has a schema of its
+/// own states `ErrorJson` as the other shape (`anyOf`, since a body with
+/// only `error` fits both), and its single `example` becomes a named one
+/// under its slug (or `route`).
+///
+/// # Arguments
+///
+/// * `response` - The response for `status`.
+/// * `status` - The refusal's status, written into its example body.
+/// * `generic` - The layer's plain refusal for this status (example name,
+///   summary and body), when it can answer one.
+/// * `refusal` - The refusal to state.
+fn add_refusal_body(
+    response: &mut utoipa::openapi::Response,
+    status: axum::http::StatusCode,
+    generic: Option<(&str, &str, serde_json::Value)>,
+    refusal: &MiddlewareRefusal,
+) {
     use utoipa::openapi::example::ExampleBuilder;
     use utoipa::openapi::schema::{AnyOfBuilder, Schema};
-    use utoipa::openapi::{Content, ContentBuilder, Ref, RefOr, ResponseBuilder};
-    let sentence = refusal.sentence;
+    use utoipa::openapi::{Content, ContentBuilder, Ref, RefOr};
     let example_named = |name: &str, summary: &str, value: serde_json::Value| {
         (
             name.to_string(),
@@ -1263,22 +1370,24 @@ fn add_forbidden_refusal(op: &mut Operation, generic_forbidden: bool, refusal: &
         }
         _ => false,
     };
-    let response = match op.responses.responses.get_mut("403") {
-        Some(RefOr::T(response)) => response,
-        Some(RefOr::Ref(_)) => return,
-        None => {
-            op.responses.responses.insert(
-                "403".to_string(),
-                ResponseBuilder::new().description(sentence).build().into(),
-            );
-            match op.responses.responses.get_mut("403") {
-                Some(RefOr::T(response)) => response,
-                _ => return,
-            }
-        }
-    };
+    // A route that already shows the refusal's body states it in its own
+    // words.
+    let shown = response.content.iter().any(|(media, content)| {
+        media.starts_with("application/json")
+            && matches!(content, RefOr::T(content)
+                if content.examples.contains_key(refusal.slug)
+                    || content
+                        .example
+                        .as_ref()
+                        .and_then(|value| value.get("error"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(refusal.slug))
+    });
+    if shown {
+        return;
+    }
     if !response.description.contains(refusal.slug) {
-        response.description = format!("{} {sentence}", response.description.trim_end());
+        response.description = format!("{} {}", response.description.trim_end(), refusal.sentence);
     }
     let json = response
         .content
@@ -1289,19 +1398,12 @@ fn add_forbidden_refusal(op: &mut Operation, generic_forbidden: bool, refusal: &
         Some(RefOr::T(content)) => content,
         Some(RefOr::Ref(_)) => return,
         None => {
-            let (name, forbidden) = example_named(
-                "forbidden",
-                "The caller may not do this",
-                serde_json::to_value(crate::http_error::ErrorJson::for_status(
-                    StatusCode::FORBIDDEN,
-                ))
-                .unwrap_or_default(),
-            );
             let mut built = ContentBuilder::new()
                 .schema(Some(Ref::from_schema_name("ErrorJson")))
                 .build();
-            if generic_forbidden {
-                built.examples.insert(name, forbidden);
+            if let Some((name, summary, value)) = generic {
+                let (name, example) = example_named(name, summary, value);
+                built.examples.insert(name, example);
             }
             response
                 .content
@@ -1346,7 +1448,7 @@ fn add_forbidden_refusal(op: &mut Operation, generic_forbidden: bool, refusal: &
         refusal.slug,
         refusal.summary,
         serde_json::to_value(crate::http_error::ErrorJson::new(
-            StatusCode::FORBIDDEN,
+            status,
             refusal.slug,
             refusal.message,
         ))
@@ -2039,6 +2141,89 @@ mod tests {
         assert!(csrf("post", "/api/auth/logout"));
         assert!(!csrf("post", "/api/auth/login"));
         assert!(!csrf("get", "/api/preferences"));
+    }
+
+    /// Every 503 that states `session_check_unavailable` sends
+    /// `Retry-After` and states `ErrorJson`, beside the route's own body
+    /// when it has one, and only the refusal is promised `Retry-After`
+    /// there; public routes whose handler checks the session state it too.
+    #[test]
+    fn session_check_refusals_are_stated() {
+        let doc = document_value();
+        let mut stated = 0;
+        for (path, item) in doc["paths"].as_object().into_iter().flatten() {
+            for (method, op) in item.as_object().into_iter().flatten() {
+                let response = &op["responses"]["503"];
+                let json = &response["content"]["application/json"];
+                if json["examples"]["session_check_unavailable"].is_null() {
+                    continue;
+                }
+                stated += 1;
+                let where_ = format!("{method} {path}");
+                assert_eq!(
+                    json["examples"]["session_check_unavailable"]["value"]["error"],
+                    "session_check_unavailable",
+                    "{where_}"
+                );
+                assert!(
+                    response["headers"]["Retry-After"].is_object(),
+                    "{where_}: the refusal sends Retry-After"
+                );
+                // The refusal's body is `ErrorJson`, alone or beside the
+                // route's own.
+                let schema = &json["schema"];
+                let error_json = serde_json::json!({"$ref": "#/components/schemas/ErrorJson"});
+                let api_error =
+                    serde_json::json!({"$ref": format!("#/components/schemas/{API_ERROR}")});
+                let states_it = *schema == error_json
+                    || *schema == api_error
+                    || schema["anyOf"]
+                        .as_array()
+                        .is_some_and(|items| items.contains(&error_json));
+                assert!(states_it, "{where_}: {schema}");
+                // Only the refusal is promised Retry-After when the route
+                // answers 503s of its own.
+                let own = json["examples"]
+                    .as_object()
+                    .is_some_and(|examples| examples.len() > 1);
+                let description = response["description"].as_str().unwrap_or_default();
+                if own {
+                    assert!(
+                        !description.contains("The response carries `Retry-After`"),
+                        "{where_}: {description}"
+                    );
+                }
+            }
+        }
+        assert!(stated > 100, "only {stated} routes state the refusal");
+        // A route whose own 503 has another body states both.
+        let join = &doc["paths"]["/api/config/join/connections"]["post"]["responses"]["503"];
+        assert_eq!(
+            join["content"]["application/json"]["schema"]["anyOf"],
+            serde_json::json!([
+                {"$ref": "#/components/schemas/ErrorDetail"},
+                {"$ref": "#/components/schemas/ErrorJson"}
+            ])
+        );
+        assert!(join["headers"]["Retry-After"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("sent only with `session_check_unavailable`")));
+        // A public route whose handler checks the session itself.
+        for (method, path) in [
+            ("post", "/api/auth/elevate"),
+            ("get", "/api/auth/passkeys"),
+            ("get", "/api/auth/totp"),
+            ("get", "/api/users"),
+            ("get", "/api/auth/oidc/identities"),
+            ("put", "/api/auth/password"),
+        ] {
+            let response = &doc["paths"][path][method]["responses"]["503"];
+            assert_eq!(
+                response["content"]["application/json"]["schema"]["$ref"],
+                "#/components/schemas/ErrorJson",
+                "{method} {path}"
+            );
+        }
     }
 
     /// Every route behind a session-resolving access layer, the legacy
