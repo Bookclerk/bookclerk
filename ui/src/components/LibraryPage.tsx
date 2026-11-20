@@ -349,10 +349,10 @@ export function LibraryPage({
     [status, works],
   );
 
-  // The operator token is no library user, so it has nothing to play as.
-  // The desktop window cannot stream by `Range` over its custom scheme; it
-  // gets its own player, so the web one stays out of it.
-  const canListen = role != null && role !== "operator" && !isDesktopWindow();
+  // The operator token is no library user, so it has nothing to play as,
+  // except in the desktop window: there the host plays as the person at
+  // this computer, through the window's own player.
+  const canListen = isDesktopWindow() || (role != null && role !== "operator");
 
   async function onScan() {
     setBusyKey("scan");
