@@ -153,13 +153,15 @@ function session(id: string, positionMs: number, tracks = 1): PlaybackSession {
 /**
  * A player over fakes, with what it sent.
  *
- * `failures` and `holds` are read when a request is made, not when the
- * test sets them: a failure is thrown before the request is recorded or
- * held (`close` is recorded first), `failures.syncOnce` fails one report
- * and clears itself, `failures.syncLate` fails a report after it was
- * recorded and held, and a hold delays the answer of every request made
- * while it is set, after the request is recorded. `holds.wait` stands in
- * for the timer a close waits on; without it the timer has always run out.
+ * A hold is read when a request is made, not when the test sets it, and
+ * delays the answer of every request made while it is set, after the
+ * request is recorded. A failure is read and thrown when a request is
+ * made, before the request is recorded or held, with two exceptions that
+ * are read once the hold lets go: `failures.close` (the close is recorded
+ * and held first) and `failures.syncLate` (the report is recorded and held
+ * first). `failures.syncOnce` fails one report and clears itself.
+ * `holds.wait` stands in for the timer a close waits on; without it the
+ * timer has always run out.
  *
  * @param options - `tracks` and `lengths` (milliseconds per track) shape
  *   the edition; `startMs` is where the server says to start.
