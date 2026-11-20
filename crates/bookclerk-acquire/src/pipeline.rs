@@ -2406,33 +2406,18 @@ enum CopyCover {
 /// request's output options, going by what a library says of its copy.
 ///
 /// Output that keeps the files as delivered stores anything. Every other
-/// output decodes or repackages the audio in the media worker, which
-/// reads lossy MP4 and MP3 audio only. The encoding itself is checked on
-/// the downloaded file ([`output_can_decode`]).
+/// output decodes or repackages the audio in the media worker, which must
+/// open that kind of file ([`bookclerk_media::capabilities`]). The encoding
+/// itself is checked on the downloaded file ([`output_can_decode`]).
 fn output_can_use(req: &AcquireRequest, probe: &FileProbe) -> bool {
-    keeps_delivered(req)
-        || (!probe.lossless && matches!(probe.content_type.as_str(), "audio/mp4" | "audio/mpeg"))
+    keeps_delivered(req) || bookclerk_media::capabilities::reads_content_type(&probe.content_type)
 }
 
 /// True when the request's output can be made from audio encoded as
 /// `codec`: any audio when the files are kept as delivered, and otherwise
-/// only what the media worker decodes (AAC and MP3).
+/// only what the media worker decodes ([`bookclerk_media::capabilities`]).
 fn output_can_decode(req: &AcquireRequest, codec: Option<bookclerk_tags::AudioCodec>) -> bool {
-    use bookclerk_tags::AudioCodec;
-    if keeps_delivered(req) {
-        return true;
-    }
-    match codec {
-        Some(AudioCodec::Aac | AudioCodec::Mp3) => true,
-        Some(
-            AudioCodec::Alac
-            | AudioCodec::Flac
-            | AudioCodec::Opus
-            | AudioCodec::Eac3
-            | AudioCodec::Ac4,
-        )
-        | None => false,
-    }
+    keeps_delivered(req) || codec.is_some_and(bookclerk_media::capabilities::decodes)
 }
 
 /// Records the offered copy as taken, before anything of it is stored: a
@@ -5809,9 +5794,22 @@ mod tests {
         assert_eq!(taken.load(Ordering::SeqCst), 0);
         assert!(work_dir.join("own.mp3").exists());
 
-        // A lossless copy is not downloaded when the output repackages
-        // the audio: the media worker could not decode it.
+        // A lossless copy is used by an output that repackages the audio
+        // too: the media worker decodes FLAC.
         let (mut req, fetched, _) = compare((Some(700), true), tagged_flac(), "Twin.flac");
+        req.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
+        let offer = offered_copy(&store, &req).await.unwrap();
+        let own_fetch = own(&work_dir);
+        assert!(matches!(
+            replace_with_better_copy(&store, &req, &work_dir, &offer, own_fetch).await,
+            Compared::Library(_)
+        ));
+        assert_eq!(fetched.load(Ordering::SeqCst), 1);
+        remove_library_copy(&work_dir.join(LIBRARY_COPY_DIR)).await;
+
+        // A copy in a kind of file the worker does not open is not
+        // downloaded when the output repackages the audio.
+        let (mut req, fetched, _) = compare((Some(700), false), tagged_mp3(), "Twin.ogg");
         req.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
         let offer = offered_copy(&store, &req).await.unwrap();
         let own_fetch = own(&work_dir);

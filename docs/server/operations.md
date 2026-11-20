@@ -18,8 +18,10 @@ At start, the daemon:
 1. reads the bootstrap settings from `config.toml` (or `BOOKCLERK_CONFIG`);
 2. opens the library database;
 3. enrolls a stable host id (`node-identity.json`);
-4. loads `[events]` and `[output]` from the database. The other sections
-   still come from TOML.
+4. loads the settings the database owns: `core.events`, `core.output`,
+   `core.cache` and every plugin's settings. `[library]`, `[jobs]`,
+   `[media]`, `[plugins]`, `[daemon]` and the other tables still come
+   from TOML.
 
 It then runs two schedules:
 
@@ -62,7 +64,7 @@ OS.
 | `GET`/`PATCH /api/settings` | Operator | Daemon, library, plugin and confinement settings. `events.*` and `output.*` are compare-and-swap against the database (one authority per request) |
 | `GET`/`PUT /api/config/domains/core.events` | Operator | The authoritative `[events]` document and revision |
 | `GET`/`PUT /api/config/domains/core.output` | Operator | The authoritative shared `[output]` document and revision (`{expected_revision, document}`) |
-| `GET`/`PUT /api/auth/mfa-policy` | Owner or operator | `require_second_factor`: password sign-in needs TOTP or a passkey |
+| `GET`/`PUT /api/auth/mfa-policy` | Owner or operator reads; operator changes | `require_second_factor`: password sign-in needs TOTP or a passkey |
 | `GET /api/status` (also `/status`) | Yes | Status snapshot |
 | `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan. Any user may call `/api/library/scan`; a Member scans only the store accounts linked to them. The `/scan` alias stays with Administrators |
 | `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member acquires only from the store accounts linked to them. `editions` queues editions from a work's detail. The `/acquire` alias stays with Administrators |
@@ -309,10 +311,10 @@ middleware.
 | --- | --- |
 | `daemon.listen` | Rebinds the listeners, after the auth swap. Free ports are bound first, and a failed rebind rolls back to the last good bind |
 | `daemon.auth.*`, operator token | Rebuilds `OperatorAuthState`. Database sessions stay; the old token works for about 60 seconds after a rotation or reload |
-| `sources.*`, `integrations.*`, `output.*` | Rebuilds the registries; integration watchers stop and start again |
+| `sources.*`, `integrations.*` | Rebuilds the registries; integration watchers stop and start again |
 | `database.plugin` | Reopens the library and destinations |
 | `[media]` | Swaps the media worker pool |
-| `[events]` | Compare-and-swap in the database. A reload overlays the committed revision and never copies TOML back over it. Each committed write wakes every node through its `node.<node_id>` queue, with a 60-second backstop for a missed wakeup |
+| `[events]`, `[output]` | Compare-and-swap in the database (`core.events`, `core.output`). A reload overlays the committed revision and never copies TOML back over it. Each committed write wakes every node through its `node.<node_id>` queue, with a 60-second backstop for a missed wakeup |
 
 ## Branch nodes
 

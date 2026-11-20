@@ -1165,6 +1165,9 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
 fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(reload_config))
+        // Removing a shared branch deletes its rows: the operator (or an
+        // elevated Owner) only.
+        .routes(routes!(crate::config_authority::delete_shared_node))
         .routes(routes!(
             crate::config_authority::get_events_domain,
             crate::config_authority::put_events_domain
@@ -1223,6 +1226,10 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::library_link::join::post_join_leave))
         .routes(routes!(get_settings, patch_settings))
         .routes(routes!(get_diagnostics_reports))
+        .routes(routes!(
+            crate::diagnostics_lookup::get_diagnostics_report,
+            crate::diagnostics_lookup::delete_diagnostics_report
+        ))
         .routes(routes!(get_plugin_consent, post_plugin_consent))
         .routes(routes!(get_plugin_logo))
         .routes(routes!(migrate_database))
@@ -1246,7 +1253,6 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
 fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::config_authority::get_nodes))
-        .routes(routes!(crate::config_authority::delete_shared_node))
         // Settings → Shared branches: every shared node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
@@ -3883,6 +3889,15 @@ pub(crate) struct DiagnosticsReportView {
     /// When the collector accepted it, Unix milliseconds.
     #[schema(example = 1_763_520_000_000_u64)]
     sent_at_unix_ms: u64,
+    /// The code that reads the report back or deletes it, in groups of
+    /// four, or null when the collector issued none. With the ID it also
+    /// opens the collector's public lookup page.
+    #[schema(example = "K7QM-3XRD-PW9T-H2CF")]
+    access_code: Option<String>,
+    /// When this install deleted the collector's stored copy, Unix
+    /// milliseconds, or null while it is stored.
+    #[schema(example = json!(null))]
+    deleted_at_unix_ms: Option<u64>,
 }
 
 /// Body of `GET /api/diagnostics/reports`.
@@ -3928,6 +3943,8 @@ async fn get_diagnostics_reports(
                 trigger: r.trigger,
                 version: r.version,
                 sent_at_unix_ms: r.sent_at_unix_ms,
+                access_code: r.access_code.map(|c| c.display()),
+                deleted_at_unix_ms: r.deleted_at_unix_ms,
             })
             .collect(),
     })
@@ -3990,6 +4007,13 @@ async fn get_settings(
         Err(err) => tracing::warn!(error = %err, "core.cache unavailable for settings"),
     }
     let mut effective = settings.clone();
+    // `effective` is what this host runs: `output.*` comes from the applied
+    // `cfg.output` (reported with `output.revision` below), not from the
+    // stored document, which can be a revision ahead until the next wakeup.
+    insert_output_settings(
+        &mut effective,
+        &bookclerk_library::control_plane::OutputSettingsV1::from_seed_lenient(&cfg.output).0,
+    );
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
     effective.insert("node.id".into(), node_id.clone());
@@ -8929,6 +8953,9 @@ tcp = {tcp}
                     trigger: "crash".into(),
                     version: "1".into(),
                     sent_at_unix_ms: n,
+                    access_code: bookclerk_config::AccessCode::parse("K7QM3XRDPW9TH2CF")
+                        .filter(|_| n == 2),
+                    deleted_at_unix_ms: None,
                 },
             )
             .unwrap();
@@ -8946,6 +8973,11 @@ tcp = {tcp}
                 "0e9ced79-df3c-4dae-872b-2e5772b00001"
             ]
         );
+        assert_eq!(
+            listed.0.reports[0].access_code.as_deref(),
+            Some("K7QM-3XRD-PW9T-H2CF")
+        );
+        assert_eq!(listed.0.reports[1].access_code, None);
     }
 
     #[tokio::test]
@@ -9035,6 +9067,81 @@ tcp = {tcp}
         }
         let unchanged = load_cache_settings(&store).await.unwrap().expect("stored");
         assert_eq!(unchanged.revision, stored.revision);
+    }
+
+    /// After another host commits a newer `core.output`, `settings` shows
+    /// the stored document while `effective` keeps the values this host has
+    /// applied, next to the revision they came from.
+    #[tokio::test]
+    async fn effective_output_values_are_the_applied_revision() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use axum::extract::State;
+        use bookclerk_config::NamingProfile;
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, overlay_core_documents, replace_output, ConfigActor,
+            OutputReplace,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let session =
+            bootstrap_control_plane(&store, dir.path(), &dir.path().join("cache"), None, &cfg)
+                .await
+                .unwrap();
+        overlay_core_documents(&mut cfg, &session);
+        let applied = session.output.body.naming_profile;
+        let other = match applied {
+            NamingProfile::Audiobookshelf => NamingProfile::Classic,
+            NamingProfile::Classic => NamingProfile::Audiobookshelf,
+        };
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+
+        // Another host commits the next revision; this one has not reconciled.
+        let mut body = session.output.body.clone();
+        body.naming_profile = other;
+        let OutputReplace::Applied(stored) = replace_output(
+            &store,
+            &ConfigActor::Operator {
+                id: "operator".into(),
+            },
+            session.output.revision,
+            &body,
+            "other-host-output",
+        )
+        .await
+        .unwrap() else {
+            panic!("output replace did not apply");
+        };
+
+        let spelled = |profile: NamingProfile| profile.as_str().to_string();
+        let got = super::get_settings(State(state)).await.unwrap().0;
+        assert_eq!(got.output_revision, Some(stored.revision));
+        assert_eq!(
+            got.settings.get("output.naming_profile"),
+            Some(&spelled(other))
+        );
+        assert_eq!(
+            got.effective.get("output.naming_profile"),
+            Some(&spelled(applied))
+        );
+        assert_eq!(
+            got.effective.get("output.revision"),
+            Some(&session.output.revision.to_string())
+        );
     }
 
     #[tokio::test]

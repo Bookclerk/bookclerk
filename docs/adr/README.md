@@ -48,10 +48,15 @@ a later change supersedes one, its **Status** says so.
 - [Storage destinations](storage-destinations.md): every storage plugin
   instance is a destination with its own template and filter,
   opportunistic change feeds and host-held webhooks.
+- [What needs the operator](owner-and-operator.md): the rule for which
+  actions need elevation, and the switches an Owner sets on each
+  Administrator.
 
 - [Playback](playback.md): playback is a host feature with one core
   (progress, sessions, one rights check, one stream route) that the web
   player, the desktop window and app-compatible clients share.
+- [Ingress plugins](ingress-plugins.md): one action gives an install a
+  stable public address, through relay or dynamic DNS plugins.
 
 ## Adding a record
 
