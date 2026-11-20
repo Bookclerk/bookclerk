@@ -2616,6 +2616,7 @@ dependencies = [
  "bookclerk-cover",
  "bookclerk-discover",
  "bookclerk-enrich",
+ "bookclerk-intake",
  "bookclerk-integrations",
  "bookclerk-library",
  "bookclerk-media",

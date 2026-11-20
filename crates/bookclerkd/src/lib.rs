@@ -32,6 +32,7 @@ mod discover_jobs;
 mod event_worker;
 mod heartbeat;
 mod http_error;
+mod intake;
 mod job_handler;
 mod job_worker;
 mod jobs;
@@ -573,6 +574,7 @@ async fn assemble_host(
     maintenance::spawn_maintenance(state.clone());
     cron_worker::spawn_cron_worker(state.clone());
     requirements_sweep::spawn_requirements_sweep(state.clone());
+    intake::spawn_intake_runner(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 

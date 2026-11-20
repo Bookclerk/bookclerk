@@ -48,6 +48,9 @@ a later change supersedes one, its **Status** says so.
 - [Storage destinations](storage-destinations.md): every storage plugin
   instance is a destination with its own template and filter,
   opportunistic change feeds and host-held webhooks.
+- [Drop folders](drop-folders.md): a storage instance can be a watched
+  drop folder instead of a destination, settled by the host and added by
+  the ingest job.
 
 ## Adding a record
 

@@ -213,6 +213,8 @@ impl DuplicateScan {
 /// # Panics
 ///
 /// Panics when an invariant fails.
+// Oracle code: a disagreement is the finding, reported by panicking.
+#[allow(clippy::expect_used, clippy::panic)]
 pub fn check(data: &[u8]) {
     if data.len() > MAX_INPUT_BYTES {
         return;

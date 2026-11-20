@@ -31,6 +31,7 @@ others go deeper.
 - [Database](server/database.md): SQLite, PostgreSQL or Cloudflare D1, and encrypted secrets
 - [Stores reference](server/stores.md): store plugins, formats and settings
 - [Output and destinations reference](server/output.md): local and S3 destinations, naming and packaging
+- [Drop folders](server/drop-folders.md): a watched folder whose books Bookclerk adds to the library
 - [Web app and sign-in reference](server/sign-in.md): roles, sign-in methods, routes and screens
 - [Integrations and sign-in](server/integrations.md): Audiobookshelf, invites and identity providers
 - [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
@@ -107,3 +108,4 @@ Build and agent conventions for this repository live in
 - [Metadata claims and file sync](adr/metadata-claims-and-file-sync.md): every value is a claim with its source, one resolver, evidence-based works, and two-way sync with tags and sidecar files
 - [Patron scopes and linked sign-in](adr/patron-scopes.md): which part of the library a Member sees, and how a linked server's permissions follow one authority
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks
+- [Drop folders](adr/drop-folders.md): a storage instance can be a watched drop folder instead of a destination, settled by the host and added by the ingest job

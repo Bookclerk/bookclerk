@@ -138,6 +138,7 @@ export const NAV: NavSpec[] = [
       "server/database",
       "server/stores",
       "server/output",
+      "server/drop-folders",
       "server/sign-in",
       "server/integrations",
       "server/plugins",
@@ -224,6 +225,7 @@ export const NAV: NavSpec[] = [
       "adr/metadata-claims-and-file-sync",
       "adr/patron-scopes",
       "adr/storage-destinations",
+      "adr/drop-folders",
     ],
   },
 ];
