@@ -179,6 +179,8 @@ export class Player {
   private syncedAt = 0;
   /** True while a report is in flight. */
   private syncing = false;
+  /** True when a report was asked for while another was in flight. */
+  private reportAgain = false;
   /** Counts loads, so an answer for an earlier one is dropped. */
   private generation = 0;
   /** {@link PlayerDeps.now} at the last automatic new session for a stream failure. */
@@ -242,10 +244,16 @@ export class Player {
       this.resume();
       return;
     }
-    await this.stop();
+    // Everything that decides which request is the latest happens before
+    // the first await, so a slow close of the book before cannot let an
+    // earlier request overtake a later one.
+    const closing = this.stop();
     const generation = (this.generation += 1);
     this.retriedAt = null;
+    this.wantPlay = true;
     this.set({ ...idle(this.state.speed), status: "loading", target });
+    await closing;
+    if (generation !== this.generation) return;
     try {
       const session = await this.deps.open(target.editionId);
       if (generation !== this.generation) {
@@ -300,8 +308,13 @@ export class Player {
     this.listened = 0;
     this.syncedAt = this.deps.now();
     const total = paths.length > 1 ? durations.reduce((sum, ms) => sum + ms, 0) : null;
-    this.set({ positionMs, durationMs: total ?? session.duration_ms });
-    this.wantPlay = true;
+    // A listener who pressed pause while the session opened gets a book
+    // that is loaded and waiting, not one that starts anyway.
+    this.set({
+      positionMs,
+      durationMs: total ?? session.duration_ms,
+      status: !this.wantPlay && this.state.status === "loading" ? "paused" : this.state.status,
+    });
     this.load(locate(durations, positionMs).index, positionMs);
   }
 
@@ -441,7 +454,8 @@ export class Player {
     if (!target) return;
     const generation = this.generation;
     const positionMs = this.state.positionMs;
-    const playing = this.wantPlay || this.state.status === "playing";
+    // Decided before the await, so a pause pressed meanwhile still holds.
+    this.wantPlay = this.wantPlay || this.state.status === "playing";
     try {
       const session = await this.deps.open(target.editionId);
       if (generation !== this.generation) {
@@ -449,7 +463,6 @@ export class Player {
         return;
       }
       await this.adopt(session, positionMs, generation);
-      this.wantPlay = playing;
     } catch (err) {
       if (generation === this.generation) {
         this.session = null;
@@ -472,10 +485,18 @@ export class Player {
     return body;
   }
 
-  /** Sends a report; a session the server ended is replaced. */
+  /**
+   * Sends a report; a session the server ended is replaced. A report asked
+   * for while one is in flight (a pause, the end of the book) follows it
+   * with the position as it then is.
+   */
   private async report(): Promise<void> {
     const session = this.session;
-    if (!session || this.syncing) return;
+    if (!session) return;
+    if (this.syncing) {
+      this.reportAgain = true;
+      return;
+    }
     this.syncing = true;
     this.syncedAt = this.deps.now();
     const body = this.reportBody();
@@ -492,30 +513,45 @@ export class Player {
     } finally {
       this.syncing = false;
     }
+    if (this.reportAgain) {
+      this.reportAgain = false;
+      if (this.session === session) await this.report();
+    }
   }
 
   /** Resumes the loaded edition. */
   resume(): void {
     if (!this.session) {
-      if (this.state.target) void this.play(this.state.target);
+      // Still opening: play once it has. Otherwise open it again.
+      if (this.state.status === "loading") this.wantPlay = true;
+      else if (this.state.target) void this.play(this.state.target);
       return;
     }
     const duration = this.state.durationMs;
     if (duration && this.state.positionMs >= duration) this.seek(0);
     this.wantPlay = true;
-    this.set({ error: null });
-    if (this.pendingSeekMs === null) this.start();
+    if (this.pendingSeekMs === null) {
+      this.set({ error: null });
+      this.start();
+    } else {
+      // The file is not ready yet: it plays when its metadata arrives.
+      this.set({ error: null, status: "loading" });
+    }
   }
 
-  /** Pauses playback. */
+  /**
+   * Pauses playback. A book still loading stays loaded and does not start.
+   */
   pause(): void {
     this.wantPlay = false;
     this.audio?.pause();
+    if (this.session && this.state.status === "loading") this.set({ status: "paused" });
   }
 
-  /** Plays when paused, pauses when playing. */
+  /** Plays when paused, pauses when playing or about to play. */
   toggle(): void {
-    if (this.state.status === "playing" || this.state.status === "loading") this.pause();
+    const starting = this.state.status === "loading" && this.wantPlay;
+    if (this.state.status === "playing" || starting) this.pause();
     else this.resume();
   }
 
@@ -624,22 +660,25 @@ export class Player {
     this.generation += 1;
     this.wantPlay = false;
     this.session = null;
-    if (session) {
-      this.tick();
-      const body = this.reportBody();
-      this.audio?.pause();
-      if (this.audio) this.audio.src = "";
-      this.set(idle(this.state.speed));
-      try {
-        await this.deps.close(session.session_id, body, keepalive);
-      } catch {
-        // The last periodic report stands.
-      }
-    } else if (this.state.status !== "idle") {
-      this.set(idle(this.state.speed));
+    this.reportAgain = false;
+    if (!session) {
+      if (this.state.status !== "idle") this.set(idle(this.state.speed));
+      return;
     }
+    this.tick();
+    const body = this.reportBody();
+    this.audio?.pause();
+    if (this.audio) this.audio.src = "";
+    this.set(idle(this.state.speed));
+    // Cleared before the close is awaited: by the time it answers, another
+    // book may be loading, and its state is not this call's to reset.
     this.listened = 0;
     this.tickedAt = null;
     this.pendingSeekMs = null;
+    try {
+      await this.deps.close(session.session_id, body, keepalive);
+    } catch {
+      // The last periodic report stands.
+    }
   }
 }

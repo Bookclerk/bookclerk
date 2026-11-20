@@ -105,6 +105,8 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
   const finished: string[] = [];
   const saved: number[] = [];
   const failures: { open?: unknown; sync?: unknown; close?: unknown; manifest?: unknown } = {};
+  // Requests wait on these before they answer.
+  const holds: { open?: Promise<void>; sync?: Promise<void>; close?: Promise<void> } = {};
   const bookmarks: Bookmark[] = [
     {
       id: "b1",
@@ -133,15 +135,19 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
     open: async (editionId) => {
       if (failures.open) throw failures.open;
       opened.push(editionId);
-      return session(`s${opened.length}`, options.startMs ?? 0, options.tracks ?? 1);
+      const id = `s${opened.length}`;
+      await holds.open;
+      return session(id, options.startMs ?? 0, options.tracks ?? 1);
     },
     sync: async (id, report) => {
       if (failures.sync) throw failures.sync;
       synced.push({ id, report });
+      await holds.sync;
       return { progress: progress(report.position_ms), finished_now: flags.finishedNow };
     },
     close: async (id, report, keepalive) => {
       closed.push({ id, report, keepalive });
+      await holds.close;
       if (failures.close) throw failures.close;
       return { progress: progress(report.position_ms), finished_now: false };
     },
@@ -163,7 +169,7 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
     saveSpeed: (speed) => saved.push(speed),
   };
   const player = new Player(deps);
-  return { player, audio, clock, opened, synced, closed, finished, saved, failures, flags };
+  return { player, audio, clock, opened, synced, closed, finished, saved, failures, flags, holds };
 }
 
 // Lets resolved promises run.
@@ -471,12 +477,111 @@ describe("Player", () => {
 
   it("drops a session that answers after the listener moved on", async () => {
     const w = world();
+    let release = () => {};
+    w.holds.open = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const first = w.player.play(TARGET);
+    await settle();
+    expect(w.opened).toEqual(["ed1"]);
     const second = w.player.play({ ...TARGET, editionId: "ed2" });
+    release();
     await Promise.all([first, second]);
     await settle();
     expect(w.player.state.target?.editionId).toBe("ed2");
     expect(w.closed.map((close) => close.id)).toEqual(["s1"]);
+  });
+
+  it("opens nothing for a request another replaced at once", async () => {
+    const w = world();
+    const first = w.player.play(TARGET);
+    const second = w.player.play({ ...TARGET, editionId: "ed2" });
+    await Promise.all([first, second]);
+    expect(w.opened).toEqual(["ed2"]);
+    expect(w.closed).toEqual([]);
+  });
+
+  it("lets the latest of several requests win over a slow close", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    let release = () => {};
+    w.holds.close = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const second = w.player.play({ ...TARGET, editionId: "ed2" });
+    const third = w.player.play({ ...TARGET, editionId: "ed3" });
+    await settle();
+    expect(w.player.state.target?.editionId).toBe("ed3");
+    expect(w.audio.src).toBe("/api/playback/sessions/s2/tracks/0");
+    w.player.seek(30_000);
+    release();
+    await Promise.all([second, third]);
+    await settle();
+    expect(w.opened).toEqual(["ed1", "ed3"]);
+    expect(w.player.state.target?.editionId).toBe("ed3");
+    // The seek made while the first book's close was pending is kept.
+    w.audio.ready(600);
+    expect(w.audio.currentTime).toBe(30);
+    expect(w.player.state.status).toBe("playing");
+  });
+
+  it("stays loaded and paused when paused before the file is ready", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.player.toggle();
+    expect(w.player.state.status).toBe("paused");
+    w.audio.ready(600);
+    expect(w.audio.paused).toBe(true);
+    expect(w.player.state.status).toBe("paused");
+    w.player.toggle();
+    expect(w.audio.paused).toBe(false);
+    expect(w.player.state.status).toBe("playing");
+  });
+
+  it("plays when resumed before the file is ready", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.player.toggle();
+    w.player.toggle();
+    expect(w.player.state.status).toBe("loading");
+    w.audio.ready(600);
+    expect(w.player.state.status).toBe("playing");
+  });
+
+  it("does not start a book paused while its session opened", async () => {
+    const w = world();
+    const playing = w.player.play(TARGET);
+    w.player.toggle();
+    await playing;
+    expect(w.player.state.status).toBe("paused");
+    w.audio.ready(600);
+    expect(w.audio.paused).toBe(true);
+    w.player.toggle();
+    expect(w.player.state.status).toBe("playing");
+  });
+
+  it("follows a report in flight with the place the listener paused at", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    let release = () => {};
+    w.holds.sync = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    expect(w.synced).toHaveLength(1);
+    w.clock.now += 1000;
+    w.audio.at(16);
+    w.player.pause();
+    await settle();
+    expect(w.synced).toHaveLength(1);
+    release();
+    await settle();
+    expect(w.synced).toHaveLength(2);
+    expect(w.synced[1].report.position_ms).toBe(16_000);
   });
 
   it("marks the book finished and unloads it", async () => {
