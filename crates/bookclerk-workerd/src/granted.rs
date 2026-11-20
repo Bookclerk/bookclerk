@@ -2,7 +2,8 @@
 //! streams (`Source` / `Destination` / `ProgressSink`), the job's
 //! `Cancellation` long poll (`/cancel`), named database sessions
 //! (`/db/execute`, `/db/execute-streamed`), and the `EVENTS` outbox binding
-//! (`/events/publish`, `/events/read`), and the `SOCKETS` broker binding
+//! (`/events/publish`, `/events/read`), the `NOTIFY` binding
+//! (`/notify/raise`), and the `SOCKETS` broker binding
 //! (`/sockets/*`, parsed in [`crate::granted_sockets`]).
 //!
 //! HTTP accept/read/write runs on the multi-thread runtime (`tokio::spawn`) so
@@ -28,9 +29,10 @@ use bookclerk_plugin_abi::{
     encode_execute_stream_error, encoded_db_capabilities_reply_bytes,
     encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher, EventReadPage,
     EventReadRequest, ExecuteStreamLimits, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk,
-    KvListOptions, KvNamespace, KvPutOk, KvPutOptions, ObjectMetadata, PluginEvent, ProgressSink,
-    PublishOk, QueueProducer, QueueSendMessage, QueueSendOk, Sockets, Source, WriteOptions,
-    MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    KvListOptions, KvNamespace, KvPutOk, KvPutOptions, NotificationRaiser, NotifyRaiseParams,
+    NotifyRaised, ObjectMetadata, PluginEvent, ProgressSink, PublishOk, QueueProducer,
+    QueueSendMessage, QueueSendOk, Sockets, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES,
+    MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -49,6 +51,10 @@ use crate::granted_http::{
 /// Largest `/events/publish` request body: a base64 payload at
 /// [`MAX_EVENT_PAYLOAD_BYTES`] plus the envelope fields.
 pub const MAX_EVENT_PUBLISH_BODY_BYTES: u32 = MAX_EVENT_PAYLOAD_BYTES * 2 + 8 * 1024;
+
+/// Largest `/notify/raise` request body: a raise of up to
+/// `maxNotificationFields` fields at their caps, plus the envelope.
+pub const MAX_NOTIFY_RAISE_BODY_BYTES: u32 = 64 * 1024;
 
 /// Largest `/events/read` request body: a cursor plus up to `maxListPage`
 /// event types.
@@ -114,6 +120,9 @@ pub struct GrantedSlot {
     pub kv: Option<Rc<dyn KvNamespace>>,
     /// Host socket broker, when this grant is the `SOCKETS` binding.
     pub sockets: Option<Rc<dyn Sockets>>,
+    /// Host notification router entry, when this grant is the `NOTIFY`
+    /// binding.
+    pub notify: Option<Rc<dyn NotificationRaiser>>,
 }
 
 impl GrantedSlot {
@@ -138,6 +147,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: Some(sockets),
+            notify: None,
         }
     }
 
@@ -162,6 +172,7 @@ impl GrantedSlot {
             queue: None,
             kv: Some(kv),
             sockets: None,
+            notify: None,
         }
     }
 
@@ -186,6 +197,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            notify: None,
         }
     }
 
@@ -209,6 +221,32 @@ impl GrantedSlot {
             queue: Some(producer),
             kv: None,
             sockets: None,
+            notify: None,
+        }
+    }
+
+    /// A grant that only raises notifications over `/notify/raise` (no
+    /// streams, no database, no events).
+    #[must_use]
+    pub fn notify_only(notify: Rc<dyn NotificationRaiser>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
+            sockets: None,
+            notify: Some(notify),
         }
     }
 
@@ -232,6 +270,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            notify: None,
         }
     }
 
@@ -257,6 +296,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            notify: None,
         }
     }
 }
@@ -338,6 +378,15 @@ enum GrantedCmd {
         invocation: String,
         event: PluginEvent,
         resp: oneshot::Sender<Result<PublishOk, PluginError>>,
+    },
+    /// `env.NOTIFY.raise` through the grant.
+    Notify {
+        /// Grant the isolate presented.
+        invocation: String,
+        /// The raise, parsed but not yet checked.
+        params: NotifyRaiseParams,
+        /// Where the raised id or the typed error goes.
+        resp: oneshot::Sender<Result<NotifyRaised, PluginError>>,
     },
     /// `env.EVENTS.read` through the grant.
     ReadEvents {
@@ -487,6 +536,13 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                     resp,
                 } => {
                     let _ = resp.send(dispatch_publish(&table, invocation, event).await);
+                }
+                GrantedCmd::Notify {
+                    invocation,
+                    params,
+                    resp,
+                } => {
+                    let _ = resp.send(dispatch_notify(&table, invocation, params).await);
                 }
                 GrantedCmd::ReadEvents {
                     invocation,
@@ -672,6 +728,32 @@ async fn dispatch_publish(
         )));
     }
     events.publish(event).await
+}
+
+/// `NOTIFY.raise` through the grant: the slot must carry the `NOTIFY`
+/// binding, and the raise must pass
+/// [`bookclerk_plugin_abi::notifications::check_raise_params`] before the
+/// host's router sees it.
+async fn dispatch_notify(
+    table: &GrantedTable,
+    invocation: String,
+    params: NotifyRaiseParams,
+) -> Result<NotifyRaised, PluginError> {
+    let notify = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| PluginError::forbidden("unknown or revoked grant"))?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err(PluginError::forbidden("grant expired"));
+        }
+        slot.notify
+            .clone()
+            .ok_or_else(|| PluginError::forbidden("notify not granted"))?
+    };
+    bookclerk_plugin_abi::notifications::check_raise_params(&params)?;
+    notify.raise(params).await
 }
 
 /// `EVENTS.read` through the grant: the slot must carry an `EVENTS`
@@ -1509,6 +1591,57 @@ where
         return Ok(());
     }
 
+    if method == "POST" && path_only == "/notify/raise" {
+        if declared_content_length_over_cap(&headers, MAX_NOTIFY_RAISE_BODY_BYTES) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let rest =
+            match read_content(&mut reader, &headers, prefix, MAX_NOTIFY_RAISE_BODY_BYTES).await {
+                Ok(body) => body,
+                Err(err) => {
+                    let Some((status, reason)) = body_error_response(&err) else {
+                        return Err(err);
+                    };
+                    write_status(&mut writer, status, &reason).await?;
+                    return Ok(());
+                }
+            };
+        let params: NotifyRaiseParams = match serde_json::from_slice(&rest) {
+            Ok(params) => params,
+            Err(err) => {
+                write_plugin_error(
+                    &mut writer,
+                    &PluginError::invalid_params(format!("malformed raise: {err}")),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::Notify {
+            invocation,
+            params,
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted notify dropped")? {
+            Ok(ok) => {
+                let payload = serde_json::to_vec(&ok)?;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(&payload).await?;
+                writer.flush().await?;
+            }
+            Err(err) => write_plugin_error(&mut writer, &err).await?,
+        }
+        return Ok(());
+    }
+
     if method == "POST" && path_only == "/events/read" {
         if declared_content_length_over_cap(&headers, MAX_EVENT_READ_BODY_BYTES) {
             write_status(&mut writer, 413, "payload too large").await?;
@@ -1961,6 +2094,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
             },
         );
         let err = match take_slot_source(&table, "g1") {
@@ -2010,6 +2144,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
             },
         );
         table.borrow_mut().remove("g-live");
@@ -2046,6 +2181,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
             },
         );
         let req = ExecuteRequest {
@@ -2117,6 +2253,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
             },
         );
         let req = ExecuteRequest {
@@ -2211,6 +2348,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
             },
         );
         let request = |sql: &str| ExecuteRequest {
@@ -2270,6 +2408,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
             },
         );
         table
@@ -2651,6 +2790,66 @@ mod tests {
         }
     }
 
+    /// Host raiser that counts raises.
+    struct CountingRaiser(std::cell::Cell<usize>);
+
+    #[async_trait::async_trait(?Send)]
+    impl NotificationRaiser for CountingRaiser {
+        async fn raise(&self, params: NotifyRaiseParams) -> Result<NotifyRaised, PluginError> {
+            self.0.set(self.0.get() + 1);
+            Ok(NotifyRaised {
+                notification_id: format!("n:{}", params.notification_type),
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn raise_requires_a_live_notify_grant_and_a_valid_raise() {
+        use bookclerk_plugin_abi::PluginErrorCode;
+        let raiser = Rc::new(CountingRaiser(std::cell::Cell::new(0)));
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-notify".into(),
+            GrantedSlot::notify_only(raiser.clone(), Instant::now() + Duration::from_secs(60)),
+        );
+        table.borrow_mut().insert(
+            "g-expired".into(),
+            GrantedSlot::notify_only(raiser.clone(), Instant::now()),
+        );
+        table.borrow_mut().insert(
+            "g-events".into(),
+            GrantedSlot::events_only(
+                Rc::new(CountingPublisher {
+                    published: std::cell::Cell::new(0),
+                }),
+                Instant::now() + Duration::from_secs(60),
+            ),
+        );
+        let raise = |notification_type: &str| NotifyRaiseParams {
+            notification_type: notification_type.into(),
+            ..NotifyRaiseParams::default()
+        };
+        let ok = dispatch_notify(&table, "g-notify".into(), raise("sync_failed"))
+            .await
+            .expect("granted raise");
+        assert_eq!(ok.notification_id, "n:sync_failed");
+        let bad = dispatch_notify(&table, "g-notify".into(), raise("other:sync_failed"))
+            .await
+            .expect_err("a qualified type");
+        assert_eq!(bad.code, PluginErrorCode::InvalidParams);
+        for (grant, code) in [
+            ("g-expired", PluginErrorCode::Forbidden),
+            ("g-events", PluginErrorCode::Forbidden),
+            ("g-missing", PluginErrorCode::Forbidden),
+        ] {
+            let err = dispatch_notify(&table, grant.into(), raise("sync_failed"))
+                .await
+                .expect_err(grant);
+            assert_eq!(err.code, code, "{grant}");
+        }
+        assert_eq!(raiser.0.get(), 1);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn publish_requires_a_live_events_grant_and_bounded_payload() {
         use bookclerk_plugin_abi::PluginErrorCode;
@@ -2685,6 +2884,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
             },
         );
 
@@ -2887,6 +3087,7 @@ mod tests {
             queue: None,
             kv: None,
             sockets: None,
+            notify: None,
         }
     }
 
@@ -3178,6 +3379,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
             },
         );
         (table, session)

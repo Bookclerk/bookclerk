@@ -33,7 +33,7 @@ export type Manifest = {
   /**
    * Named entrypoints the guest exports (`storefront`, `storage`,
    * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`,
-   * `metadataFiles`). Triggers for the
+   * `metadataFiles`, `notifier`). Triggers for the
    * default entrypoint live under `[triggers]` / `[[events.consumers]]`.
    */
   entrypoints?: string[];
@@ -56,6 +56,16 @@ export type Manifest = {
   metadata_files?: {
     /** One row per dialect; never empty. */
     dialects?: MetadataFileDialectToml[];
+  };
+  /**
+   * `[notifier]` — what a `notifier` plugin carries. Required for that
+   * entrypoint, forbidden for others.
+   */
+  notifier?: NotifierToml;
+  /** `[notifications]` — notification types raised through `env.NOTIFY`. */
+  notifications?: {
+    /** One row per type (`[[notifications.types]]`). */
+    types?: NotificationTypeToml[];
   };
   /** Workerd isolate settings (required when `runtime = "workerd"`). */
   workerd?: {
@@ -820,6 +830,244 @@ function validateMetadataFiles(m: Manifest): void {
   });
 }
 
+/** `[notifier]` as written in `plugin.toml`. */
+export type NotifierToml = {
+  /** Destination kinds: `channel`, `personal`; never empty. */
+  destinations?: string[];
+  /** Whether an instance may carry account mail (needs an `email` field). */
+  account_mail?: boolean;
+  /** Body formats rendered: `text` (required), `markdown`, `html`. */
+  formats?: string[];
+  /** Fields of a personal destination's address. */
+  address_fields?: NotifierAddressFieldToml[];
+};
+
+/** One `[[notifier.address_fields]]` row. */
+export type NotifierAddressFieldToml = {
+  /** Key in the address document (`[a-z][a-z0-9_]{0,63}`). */
+  key?: string;
+  /** Label shown on the patron's form. */
+  label?: string;
+  /** Whether a destination must carry it. */
+  required?: boolean;
+  /** Whether the value is a secret, shown masked and never logged. */
+  secret?: boolean;
+};
+
+/** One `[[notifications.types]]` row. */
+export type NotificationTypeToml = {
+  /** Type id (`[a-z][a-z0-9_]{0,63}`), routed as `<plugin id>:<id>`. */
+  id?: string;
+  /** `operational` or `patron`; `account` is reserved to Bookclerk. */
+  audience?: string;
+  /** Default severity: `info`, `warning` or `critical`. */
+  severity?: string;
+  /** Title shown in the routing matrix and on each notification. */
+  title?: string;
+};
+
+/** Most `[[notifier.address_fields]]` rows (the host's address key cap). */
+const MAX_NOTIFIER_ADDRESS_FIELDS = 16;
+
+/** Most `[[notifications.types]]` rows per plugin. */
+const MAX_NOTIFICATION_TYPES = 64;
+
+/** Longest notification type title, in UTF-8 bytes. */
+const MAX_NOTIFICATION_TITLE_BYTES = 256;
+
+/** Keys `[notifier]` may carry (the host's fields). */
+const NOTIFIER_KEYS: ReadonlySet<string> = new Set([
+  "destinations",
+  "account_mail",
+  "formats",
+  "address_fields",
+]);
+
+/** Keys a `[[notifier.address_fields]]` row may carry. */
+const ADDRESS_FIELD_KEYS: ReadonlySet<string> = new Set(["key", "label", "required", "secret"]);
+
+/** Keys a `[[notifications.types]]` row may carry. */
+const NOTIFICATION_TYPE_KEYS: ReadonlySet<string> = new Set([
+  "id",
+  "audience",
+  "severity",
+  "title",
+]);
+
+/**
+ * Checks `[notifier]` against the entrypoints, with the host's rules and
+ * messages (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When a `notifier` plugin has no table or another plugin has
+ *   one, or the table has no, unknown or repeated destinations, formats
+ *   without `text`, address fields that do not match `personal`, a bad,
+ *   repeated or unlabelled field, no required field, or `account_mail`
+ *   without a required, non-secret `email` field.
+ */
+function validateNotifier(m: Manifest): void {
+  const exported = ((m.entrypoints ?? []) as readonly string[]).includes("notifier");
+  const table = m.notifier;
+  if (table == null) {
+    if (exported) {
+      throw new Error(
+        "plugin.toml: `[notifier]` is required for a plugin with the `notifier` entrypoint",
+      );
+    }
+    return;
+  }
+  if (!exported) {
+    throw new Error("plugin.toml: `[notifier]` needs the `notifier` entrypoint");
+  }
+  for (const key of Object.keys(table)) {
+    if (!NOTIFIER_KEYS.has(key)) {
+      throw new Error(`plugin.toml: \`[notifier]\` has unknown key \`${key}\``);
+    }
+  }
+  if (table.account_mail !== undefined && typeof table.account_mail !== "boolean") {
+    throw new Error("plugin.toml: `[notifier].account_mail` must be a boolean");
+  }
+  const destinations = table.destinations ?? [];
+  for (const kind of destinations) {
+    if (kind !== "channel" && kind !== "personal") {
+      throw new Error(`plugin.toml: \`[notifier].destinations\` names unknown kind \`${kind}\``);
+    }
+  }
+  if (destinations.length === 0) {
+    throw new Error("plugin.toml: `[notifier].destinations` is empty");
+  }
+  if (new Set(destinations).size !== destinations.length) {
+    throw new Error("plugin.toml: `[notifier].destinations` names a kind twice");
+  }
+  const formats = table.formats ?? ["text"];
+  for (const format of formats) {
+    if (format !== "text" && format !== "markdown" && format !== "html") {
+      throw new Error(`plugin.toml: \`[notifier].formats\` names unknown format \`${format}\``);
+    }
+  }
+  if (new Set(formats).size !== formats.length) {
+    throw new Error("plugin.toml: `[notifier].formats` names a format twice");
+  }
+  if (!formats.includes("text")) {
+    throw new Error("plugin.toml: `[notifier].formats` must include `text`");
+  }
+  const fields = table.address_fields ?? [];
+  const personal = destinations.includes("personal");
+  if (personal && fields.length === 0) {
+    throw new Error(
+      "plugin.toml: `[notifier]` sends to `personal` destinations but declares no `[[notifier.address_fields]]`",
+    );
+  }
+  if (!personal && fields.length > 0) {
+    throw new Error(
+      "plugin.toml: `[[notifier.address_fields]]` needs `personal` in `[notifier].destinations`",
+    );
+  }
+  if (fields.length > MAX_NOTIFIER_ADDRESS_FIELDS) {
+    throw new Error(
+      `plugin.toml: \`[[notifier.address_fields]]\` declares more than ${MAX_NOTIFIER_ADDRESS_FIELDS} fields`,
+    );
+  }
+  const keys = new Set<string>();
+  fields.forEach((field, i) => {
+    const row = `plugin.toml: notifier.address_fields[${i}]`;
+    for (const key of Object.keys(field)) {
+      if (!ADDRESS_FIELD_KEYS.has(key)) {
+        throw new Error(`${row} has unknown key \`${key}\``);
+      }
+    }
+    for (const flag of ["required", "secret"] as const) {
+      if (field[flag] !== undefined && typeof field[flag] !== "boolean") {
+        throw new Error(`${row}.${flag} must be a boolean`);
+      }
+    }
+    const key = String(field.key ?? "");
+    if (!DIALECT_ID.test(key)) {
+      throw new Error(`${row}.key \`${key}\` is not an identifier ([a-z][a-z0-9_]{0,63})`);
+    }
+    if (keys.has(key)) {
+      throw new Error(`plugin.toml: notifier address field \`${key}\` is declared twice`);
+    }
+    keys.add(key);
+    if (!String(field.label ?? "").trim()) {
+      throw new Error(`${row}.label is required`);
+    }
+  });
+  if (personal && !fields.some((field) => field.required === true)) {
+    throw new Error("plugin.toml: `[[notifier.address_fields]]` needs at least one required field");
+  }
+  if (
+    table.account_mail === true &&
+    !fields.some((f) => f.key === "email" && f.required === true && f.secret !== true)
+  ) {
+    throw new Error(
+      "plugin.toml: `[notifier].account_mail` needs a required, non-secret `email` address field",
+    );
+  }
+}
+
+/**
+ * Checks `[[notifications.types]]`, with the host's rules and messages
+ * (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} For too many rows, unknown keys, a bad or repeated id, an
+ *   unknown or `account` audience, an unknown severity, or a blank, multi-line
+ *   or over-long title.
+ */
+function validateNotificationTypes(m: Manifest): void {
+  const table = m.notifications;
+  if (table == null) return;
+  for (const key of Object.keys(table)) {
+    if (key !== "types") {
+      throw new Error(`plugin.toml: \`[notifications]\` has unknown key \`${key}\``);
+    }
+  }
+  const types = table.types ?? [];
+  if (types.length > MAX_NOTIFICATION_TYPES) {
+    throw new Error(
+      `plugin.toml: \`[[notifications.types]]\` declares more than ${MAX_NOTIFICATION_TYPES} types`,
+    );
+  }
+  const ids = new Set<string>();
+  types.forEach((row_type, i) => {
+    const row = `plugin.toml: notifications.types[${i}]`;
+    for (const key of Object.keys(row_type)) {
+      if (!NOTIFICATION_TYPE_KEYS.has(key)) {
+        throw new Error(`${row} has unknown key \`${key}\``);
+      }
+    }
+    const id = String(row_type.id ?? "");
+    if (!DIALECT_ID.test(id)) {
+      throw new Error(`${row}.id \`${id}\` is not an identifier ([a-z][a-z0-9_]{0,63})`);
+    }
+    if (ids.has(id)) {
+      throw new Error(`plugin.toml: notification type \`${id}\` is declared twice`);
+    }
+    ids.add(id);
+    const audience = String(row_type.audience ?? "");
+    if (audience === "account") {
+      throw new Error(`${row}.audience \`account\` is reserved to Bookclerk`);
+    }
+    if (audience !== "operational" && audience !== "patron") {
+      throw new Error(`${row}.audience must be \`operational\` or \`patron\``);
+    }
+    const severity = row_type.severity ?? "info";
+    if (severity !== "info" && severity !== "warning" && severity !== "critical") {
+      throw new Error(`${row}.severity must be \`info\`, \`warning\` or \`critical\``);
+    }
+    const title = typeof row_type.title === "string" ? row_type.title : "";
+    // eslint-disable-next-line no-control-regex
+    const control = /[\u0000-\u001f\u007f-\u009f]/.test(title);
+    const bytes = new TextEncoder().encode(title).length;
+    if (!title.trim() || bytes > MAX_NOTIFICATION_TITLE_BYTES || control) {
+      throw new Error(
+        `${row}.title must be one line of 1 to ${MAX_NOTIFICATION_TITLE_BYTES} bytes`,
+      );
+    }
+  });
+}
+
 /** Entrypoint wire names accepted in `entrypoints`. */
 export const ENTRYPOINT_NAMES = [
   "storefront",
@@ -831,6 +1079,7 @@ export const ENTRYPOINT_NAMES = [
   "metadata",
   "covers",
   "metadataFiles",
+  "notifier",
 ] as const;
 
 const LOGO_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"] as const;
@@ -981,6 +1230,8 @@ export function validateManifest(m: Manifest): void {
   }
   validateMedia(m);
   validateMetadataFiles(m);
+  validateNotifier(m);
+  validateNotificationTypes(m);
   validateSurface(m);
   validateSettings(m);
   validateOwnUserAgent(m);
@@ -1289,6 +1540,7 @@ function validateSurface(m: Manifest): void {
   if (m.work_fs) named.push(["work_fs", m.work_fs.binding || "WORK_FS", 0]);
   if (m.oauth) named.push(["oauth", m.oauth.binding || "OAUTH", 0]);
   if (m.sockets) named.push(["sockets", m.sockets.binding || "SOCKETS", 0]);
+  if ((m.notifications?.types ?? []).length > 0) named.push(["notifications", "NOTIFY", 0]);
   for (const [index, kv] of (m.kv_namespaces ?? []).entries()) {
     named.push(["kv_namespaces", kv.binding || "KV", index]);
   }

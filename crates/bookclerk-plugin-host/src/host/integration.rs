@@ -233,6 +233,13 @@ impl ExternalIntegration {
                 .await?;
             health_result(ok)?;
         }
+        if self.session.has_entrypoint(crate::Entrypoint::Notifier) {
+            let ok = self
+                .session
+                .notifier(|notifier| async move { notifier.health().await })
+                .await?;
+            health_result(ok)?;
+        }
         Ok(())
     }
 
@@ -559,6 +566,13 @@ impl Integration for ExternalIntegration {
                     .await?,
             );
         }
+        if self.session.has_entrypoint(crate::Entrypoint::Notifier) {
+            reports.push(
+                self.session
+                    .notifier(|notifier| async move { notifier.health().await })
+                    .await?,
+            );
+        }
         let (ok, detail) = combine_health(reports);
         Ok(IntegrationHealth {
             id: self.id().to_string(),
@@ -617,7 +631,7 @@ impl Integration for ExternalIntegration {
 
     async fn diagnose(&self) -> bookclerk_integrations::Result<Vec<String>> {
         // Only a remote library answers `diagnose`; a plugin with just
-        // metadata, covers or metadata files falls through to health.
+        // metadata, covers, metadata files or a notifier falls through to health.
         if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)

@@ -972,6 +972,173 @@ def _validate_metadata_files(m: dict[str, Any]) -> None:
             raise ValueError(f"{row}.credit_roles needs `credits` in `fields`")
 
 
+_NOTIFIER_KEYS = frozenset(("destinations", "account_mail", "formats", "address_fields"))
+"""Keys ``[notifier]`` may carry (the host's fields)."""
+
+_ADDRESS_FIELD_KEYS = frozenset(("key", "label", "required", "secret"))
+"""Keys a ``[[notifier.address_fields]]`` row may carry."""
+
+_NOTIFICATION_TYPE_KEYS = frozenset(("id", "audience", "severity", "title"))
+"""Keys a ``[[notifications.types]]`` row may carry."""
+
+_MAX_NOTIFIER_ADDRESS_FIELDS = 16
+"""Most ``[[notifier.address_fields]]`` rows (the host's address key cap)."""
+
+_MAX_NOTIFICATION_TYPES = 64
+"""Most ``[[notifications.types]]`` rows per plugin."""
+
+_MAX_NOTIFICATION_TITLE_BYTES = 256
+"""Longest notification type title, in UTF-8 bytes."""
+
+
+def _validate_notifier(m: dict[str, Any]) -> None:
+    """Check ``[notifier]`` against the entrypoints with the host's rules and messages.
+
+    Args:
+        m: Manifest dictionary.
+
+    Raises:
+        ValueError: If a ``notifier`` plugin has no table or another plugin has
+            one, or the table has no, unknown or repeated destinations, formats
+            without ``text``, address fields that do not match ``personal``, a
+            bad, repeated or unlabelled field, no required field, or
+            ``account_mail`` without a required, non-secret ``email`` field.
+    """
+    exported = "notifier" in (m.get("entrypoints") or [])
+    table = m.get("notifier")
+    if table is None:
+        if exported:
+            raise ValueError(
+                "plugin.toml: `[notifier]` is required for a plugin with the `notifier` entrypoint"
+            )
+        return
+    if not exported:
+        raise ValueError("plugin.toml: `[notifier]` needs the `notifier` entrypoint")
+    for key in table:
+        if key not in _NOTIFIER_KEYS:
+            raise ValueError(f"plugin.toml: `[notifier]` has unknown key `{key}`")
+    if "account_mail" in table and not isinstance(table["account_mail"], bool):
+        raise ValueError("plugin.toml: `[notifier].account_mail` must be a boolean")
+    destinations = list(table.get("destinations") or [])
+    for kind in destinations:
+        if kind not in ("channel", "personal"):
+            raise ValueError(f"plugin.toml: `[notifier].destinations` names unknown kind `{kind}`")
+    if not destinations:
+        raise ValueError("plugin.toml: `[notifier].destinations` is empty")
+    if len(set(destinations)) != len(destinations):
+        raise ValueError("plugin.toml: `[notifier].destinations` names a kind twice")
+    formats = list(table.get("formats") or ["text"]) if "formats" in table else ["text"]
+    for fmt in formats:
+        if fmt not in ("text", "markdown", "html"):
+            raise ValueError(f"plugin.toml: `[notifier].formats` names unknown format `{fmt}`")
+    if len(set(formats)) != len(formats):
+        raise ValueError("plugin.toml: `[notifier].formats` names a format twice")
+    if "text" not in formats:
+        raise ValueError("plugin.toml: `[notifier].formats` must include `text`")
+    fields = list(table.get("address_fields") or [])
+    personal = "personal" in destinations
+    if personal and not fields:
+        raise ValueError(
+            "plugin.toml: `[notifier]` sends to `personal` destinations but declares no "
+            "`[[notifier.address_fields]]`"
+        )
+    if not personal and fields:
+        raise ValueError(
+            "plugin.toml: `[[notifier.address_fields]]` needs `personal` in "
+            "`[notifier].destinations`"
+        )
+    if len(fields) > _MAX_NOTIFIER_ADDRESS_FIELDS:
+        raise ValueError(
+            "plugin.toml: `[[notifier.address_fields]]` declares more than "
+            f"{_MAX_NOTIFIER_ADDRESS_FIELDS} fields"
+        )
+    keys: set[str] = set()
+    for i, field in enumerate(fields):
+        row = f"plugin.toml: notifier.address_fields[{i}]"
+        for key in field:
+            if key not in _ADDRESS_FIELD_KEYS:
+                raise ValueError(f"{row} has unknown key `{key}`")
+        for flag in ("required", "secret"):
+            if flag in field and not isinstance(field[flag], bool):
+                raise ValueError(f"{row}.{flag} must be a boolean")
+        key = str(field.get("key", ""))
+        if not _DIALECT_ID_RE.match(key):
+            raise ValueError(f"{row}.key `{key}` is not an identifier ([a-z][a-z0-9_]{{0,63}})")
+        if key in keys:
+            raise ValueError(f"plugin.toml: notifier address field `{key}` is declared twice")
+        keys.add(key)
+        if not str(field.get("label", "")).strip():
+            raise ValueError(f"{row}.label is required")
+    if personal and not any(field.get("required") is True for field in fields):
+        raise ValueError(
+            "plugin.toml: `[[notifier.address_fields]]` needs at least one required field"
+        )
+    if table.get("account_mail") is True and not any(
+        f.get("key") == "email" and f.get("required") is True and f.get("secret") is not True
+        for f in fields
+    ):
+        raise ValueError(
+            "plugin.toml: `[notifier].account_mail` needs a required, non-secret `email` "
+            "address field"
+        )
+
+
+def _validate_notification_types(m: dict[str, Any]) -> None:
+    """Check ``[[notifications.types]]`` with the host's rules and messages.
+
+    Args:
+        m: Manifest dictionary.
+
+    Raises:
+        ValueError: For too many rows, unknown keys, a bad or repeated id, an
+            unknown or ``account`` audience, an unknown severity, or a blank,
+            multi-line or over-long title.
+    """
+    table = m.get("notifications")
+    if table is None:
+        return
+    for key in table:
+        if key != "types":
+            raise ValueError(f"plugin.toml: `[notifications]` has unknown key `{key}`")
+    types = list(table.get("types") or [])
+    if len(types) > _MAX_NOTIFICATION_TYPES:
+        raise ValueError(
+            "plugin.toml: `[[notifications.types]]` declares more than "
+            f"{_MAX_NOTIFICATION_TYPES} types"
+        )
+    ids: set[str] = set()
+    for i, row_type in enumerate(types):
+        row = f"plugin.toml: notifications.types[{i}]"
+        for key in row_type:
+            if key not in _NOTIFICATION_TYPE_KEYS:
+                raise ValueError(f"{row} has unknown key `{key}`")
+        type_id = str(row_type.get("id", ""))
+        if not _DIALECT_ID_RE.match(type_id):
+            raise ValueError(f"{row}.id `{type_id}` is not an identifier ([a-z][a-z0-9_]{{0,63}})")
+        if type_id in ids:
+            raise ValueError(f"plugin.toml: notification type `{type_id}` is declared twice")
+        ids.add(type_id)
+        audience = str(row_type.get("audience", ""))
+        if audience == "account":
+            raise ValueError(f"{row}.audience `account` is reserved to Bookclerk")
+        if audience not in ("operational", "patron"):
+            raise ValueError(f"{row}.audience must be `operational` or `patron`")
+        severity = row_type.get("severity", "info")
+        if severity not in ("info", "warning", "critical"):
+            raise ValueError(f"{row}.severity must be `info`, `warning` or `critical`")
+        title = row_type.get("title")
+        title = title if isinstance(title, str) else ""
+        control = any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in title)
+        if (
+            not title.strip()
+            or len(title.encode("utf-8")) > _MAX_NOTIFICATION_TITLE_BYTES
+            or control
+        ):
+            raise ValueError(
+                f"{row}.title must be one line of 1 to {_MAX_NOTIFICATION_TITLE_BYTES} bytes"
+            )
+
+
 def validate_manifest(m: dict[str, Any]) -> None:
     """Validate a parsed ``plugin.toml`` mapping.
 
@@ -995,6 +1162,8 @@ def validate_manifest(m: dict[str, Any]) -> None:
         validate_logo(str(m["logo"]))
     _validate_media(m)
     _validate_metadata_files(m)
+    _validate_notifier(m)
+    _validate_notification_types(m)
     _validate_surface(m)
     runtime = m.get("runtime") or "native"
     net = (m.get("capabilities") or {}).get("network") or {}
@@ -1044,6 +1213,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "metadata",
     "covers",
     "metadataFiles",
+    "notifier",
 )
 """Entrypoint wire names accepted in ``entrypoints``."""
 
@@ -1153,6 +1323,8 @@ def _validate_surface(m: dict[str, Any]) -> None:
     sockets = m.get("sockets")
     if isinstance(sockets, dict):
         named.append(("sockets", str(sockets.get("binding") or "SOCKETS"), 0))
+    if (m.get("notifications") or {}).get("types") or []:
+        named.append(("notifications", "NOTIFY", 0))
     for index, kv in enumerate(m.get("kv_namespaces") or []):
         named.append(("kv_namespaces", str(kv.get("binding") or "KV"), index))
     for index, producer in enumerate((m.get("events") or {}).get("producers") or []):
@@ -1270,6 +1442,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "metadata": "Metadata",
     "covers": "Covers",
     "metadataFiles": "MetadataFiles",
+    "notifier": "Notifier",
 }
 """Exported class name the launcher binds for each ``entrypoints`` wire name."""
 
@@ -1298,7 +1471,8 @@ def check_main_module_source(
         raise ValueError(
             f"{main_name}: `BookclerkPlugin` was removed in api_version 3; extend `{base}` "
             "(default export with event()/job() triggers) and export named entrypoint classes "
-            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers, MetadataFiles)"
+            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers, "
+            "MetadataFiles, Notifier)"
         )
     if language == "python":
         if "bookclerk_plugin_sdk" not in src and base not in src:

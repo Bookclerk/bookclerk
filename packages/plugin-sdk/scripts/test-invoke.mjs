@@ -40,6 +40,7 @@ const {
   CoverEntrypoint,
   MAX_BATCH_KEYS,
   MetadataFilesEntrypoint,
+  NotifierEntrypoint,
   PluginError,
   StorageEntrypoint,
   StorefrontEntrypoint,
@@ -422,6 +423,40 @@ class MetadataFiles extends MetadataFilesEntrypoint {
   }
 }
 
+class Notifier extends NotifierEntrypoint {
+  async send(params) {
+    const { message, destination } = params;
+    if (message.title === "slow down") {
+      throw new PluginError("rate_limited", "busy", { retryAfterMs: 5000 });
+    }
+    if (message.title === "raise") {
+      // `env.NOTIFY` round-trips through the adapter's notify grant.
+      calls.raised = await this.env.NOTIFY.raise({
+        notificationType: "sync_failed",
+        fields: { account: "acct", pages: 3 },
+        linkPath: "/books/42",
+      });
+      calls.raiseRefused = await this.env.NOTIFY.raise({
+        notificationType: "undeclared",
+      }).catch((err) => err.code);
+      calls.raiseEmpty = await this.env.NOTIFY.raise({ notificationType: "" }).catch(
+        (err) => err.code,
+      );
+    }
+    if (message.title === "silent") return undefined;
+    return { providerId: `${destination.kind}:${destination.destinationId}:${message.text}` };
+  }
+  async validateDestination(params) {
+    const address = JSON.parse(params.addressJson);
+    if (address.email === "bad") return { label: "no address" };
+    if (!address.email) throw new PluginError("invalid_params", "email is required");
+    return {
+      addressJson: JSON.stringify({ email: address.email.toLowerCase() }),
+      label: "a***@example.com",
+    };
+  }
+}
+
 // --- Granted database errors across the adapter → author RPC boundary -----
 
 // The canonical `limit_exceeded` the fake channel answers with `413`.
@@ -572,6 +607,17 @@ const granted = {
       body: init.body,
     });
     if (u.pathname === "/progress") return new Response(null, { status: 200 });
+    if (u.pathname === "/notify/raise") {
+      const body = JSON.parse(init.body);
+      (this.raises ??= []).push({ auth: init.headers?.Authorization, body });
+      if (body.notificationType === "undeclared") {
+        return Response.json(
+          { error: { code: "invalid_params", message: "type not declared" } },
+          { status: 400 },
+        );
+      }
+      return Response.json({ notificationId: "ntf-1" });
+    }
     if (u.pathname === "/put") {
       const bytes = new Uint8Array(await new Response(init.body).arrayBuffer());
       this.puts = [...(this.puts ?? []), { key: u.searchParams.get("key"), bytes }];
@@ -703,6 +749,7 @@ const env = {
   PLUGIN_METADATA: new Metadata({}, {}),
   PLUGIN_COVERS: new Covers({}, {}),
   PLUGIN_METADATA_FILES: new MetadataFiles({}, {}),
+  PLUGIN_NOTIFIER: new Notifier({}, {}),
   GRANTED: granted,
   BRIDGE_TOKEN: "t",
 };
@@ -1849,6 +1896,88 @@ const jobParams = (commandType) => ({
     W.MetadataProviderChaptersResultsCodec,
   );
   assert.equal(missing.value.found, false);
+}
+
+// --- Notifier -------------------------------------------------------------
+
+{
+  const health = decodeReply(
+    await invoke("Notifier", "health", W.NotifierHealthParamsCodec, {}),
+    W.NotifierHealthResultsCodec,
+  );
+  assert.deepEqual(health, { kind: "ok", value: { ok: true, detail: "" } });
+
+  const message = (title) => ({
+    notificationId: "ntf-9",
+    notificationType: "job_failed",
+    severity: "warning",
+    title,
+    text: "body",
+    fields: [{ name: "job", value: "scan" }],
+    alertAction: "none",
+    sensitive: false,
+  });
+  const destination = { kind: "channel", destinationId: "dst-1", addressJson: "" };
+  const send = async (title, ctx = contextJson) =>
+    decodeReply(
+      await invoke(
+        "Notifier",
+        "send",
+        W.NotifierSendParamsCodec,
+        { params: { message: message(title), destination } },
+        { ctx },
+      ),
+      W.NotifierSendResultsCodec,
+    );
+  const sent = await send("hello");
+  assert.deepEqual(sent, { kind: "ok", value: { providerId: "channel:dst-1:body" } });
+  const silent = await send("silent");
+  assert.equal(silent.kind, "ok", "no provider id is still delivered");
+  assert.equal(silent.value.providerId ?? "", "");
+  const limited = await send("slow down");
+  assert.equal(limited.kind, "err");
+  assert.equal(limited.value.code, "rate_limited");
+
+  // The notify grant token becomes `env.NOTIFY`; the author never sees it.
+  // (The shared context's `NOTIFY` queue producer is dropped: a manifest
+  // with notification types cannot also name a binding `NOTIFY`.)
+  const { queues: _queues, ...withoutQueues } = JSON.parse(contextJson);
+  const notifyCtx = JSON.stringify({ ...withoutQueues, notifyToken: "ntok" });
+  const raised = await send("raise", notifyCtx);
+  assert.equal(raised.kind, "ok");
+  assert.deepEqual(calls.raised, { notificationId: "ntf-1" });
+  assert.equal(calls.raiseRefused, "invalid_params", "host refusals reach the author typed");
+  assert.equal(calls.raiseEmpty, "invalid_params", "a raise without a type never leaves");
+  assert.equal(granted.raises.length, 2);
+  assert.ok(granted.raises.every((r) => r.auth === "Bearer ntok"));
+  assert.deepEqual(granted.raises[0].body, {
+    notificationType: "sync_failed",
+    fields: [
+      { name: "account", value: "acct" },
+      { name: "pages", value: "3" },
+    ],
+    linkPath: "/books/42",
+    alertAction: "none",
+  });
+
+  const validate = async (addressJson) =>
+    decodeReply(
+      await invoke("Notifier", "validateDestination", W.NotifierValidateDestinationParamsCodec, {
+        params: { addressJson },
+      }),
+      W.NotifierValidateDestinationResultsCodec,
+    );
+  const ok = await validate('{"email":"Ada@Example.com"}');
+  assert.deepEqual(ok, {
+    kind: "ok",
+    value: { addressJson: '{"email":"ada@example.com"}', label: "a***@example.com" },
+  });
+  const refused = await validate("{}");
+  assert.equal(refused.kind, "err");
+  assert.equal(refused.value.code, "invalid_params");
+  const noAddress = await validate('{"email":"bad"}');
+  assert.equal(noAddress.kind, "err", "an answer without addressJson is the plugin's bug");
+  assert.equal(noAddress.value.code, "internal");
 }
 
 // --- MetadataFiles --------------------------------------------------------

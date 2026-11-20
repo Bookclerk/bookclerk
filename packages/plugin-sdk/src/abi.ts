@@ -102,6 +102,30 @@ export const MAX_METADATA_FILE_LIST_ENTRIES = 256 as const;
 /** Most chapters in a `MetadataFileRecord`. */
 export const MAX_METADATA_FILE_CHAPTERS = 2000 as const;
 
+/**
+ * Longest `NotificationMessage.title` and `NotificationField` name, in UTF-8
+ * bytes.
+ */
+export const MAX_NOTIFICATION_TITLE_BYTES = 256 as const;
+
+/** Longest `NotificationMessage.text` or `markdown`, in UTF-8 bytes. */
+export const MAX_NOTIFICATION_TEXT_BYTES = 16384 as const;
+
+/** Longest `NotificationMessage.html`, in UTF-8 bytes. */
+export const MAX_NOTIFICATION_HTML_BYTES = 65536 as const;
+
+/** Most `NotificationField`s on one message or raise. */
+export const MAX_NOTIFICATION_FIELDS = 25 as const;
+
+/**
+ * Longest `NotificationField.value`, link, group key or alert key, in UTF-8
+ * bytes.
+ */
+export const MAX_NOTIFICATION_FIELD_BYTES = 1024 as const;
+
+/** Longest destination address document (`addressJson`), in UTF-8 bytes. */
+export const MAX_NOTIFIER_ADDRESS_BYTES = 4096 as const;
+
 /** Most entries in `MetadataFileRenderParams.audioFiles`. */
 export const MAX_METADATA_AUDIO_FILES = 4096 as const;
 
@@ -203,7 +227,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];
@@ -360,6 +384,48 @@ export const METADATA_FIELDS = ["title", "subtitle", "description", "publisher",
 
 /** Union of `METADATA_FIELDS` wire names. */
 export type MetadataField = (typeof METADATA_FIELDS)[number];
+
+/**
+ * How urgent a notification is. Routing rules carry a minimum severity.
+ *
+ * Ordinal-ordered `NotificationSeverity` wire names (index = Cap'n Proto ordinal).
+ */
+export const NOTIFICATION_SEVERITYS = ["info", "warning", "critical"] as const;
+
+/** Union of `NOTIFICATION_SEVERITYS` wire names. */
+export type NotificationSeverity = (typeof NOTIFICATION_SEVERITYS)[number];
+
+/**
+ * Who a notification type is for. The account audience is reserved to the
+ * host; a plugin may declare only operational and patron types.
+ *
+ * Ordinal-ordered `NotificationAudience` wire names (index = Cap'n Proto ordinal).
+ */
+export const NOTIFICATION_AUDIENCES = ["operational", "patron", "account"] as const;
+
+/** Union of `NOTIFICATION_AUDIENCES` wire names. */
+export type NotificationAudience = (typeof NOTIFICATION_AUDIENCES)[number];
+
+/**
+ * Lifecycle step of an alert, for services such as PagerDuty that open and
+ * close incidents.
+ *
+ * Ordinal-ordered `NotificationAlertAction` wire names (index = Cap'n Proto ordinal).
+ */
+export const NOTIFICATION_ALERT_ACTIONS = ["none", "trigger", "resolve"] as const;
+
+/** Union of `NOTIFICATION_ALERT_ACTIONS` wire names. */
+export type NotificationAlertAction = (typeof NOTIFICATION_ALERT_ACTIONS)[number];
+
+/**
+ * Kind of destination a `Notifier` sends to.
+ *
+ * Ordinal-ordered `NotifyDestinationKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const NOTIFY_DESTINATION_KINDS = ["channel", "personal"] as const;
+
+/** Union of `NOTIFY_DESTINATION_KINDS` wire names. */
+export type NotifyDestinationKind = (typeof NOTIFY_DESTINATION_KINDS)[number];
 
 /**
  * Universal database cell/parameter domain. Engine-native arrays, enums,

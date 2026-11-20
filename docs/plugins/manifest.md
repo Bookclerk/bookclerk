@@ -269,6 +269,67 @@ The host refuses a parsed record that states anything outside its row.
 See [Metadata file dialects](abi.md#metadata-file-dialects) for the
 methods and limits.
 
+### `[notifier]` (notifiers)
+
+A plugin with the `notifier` entrypoint says what it sends to. The table
+is required for that entrypoint, and every other plugin must leave it out.
+
+```toml
+entrypoints = ["notifier"]
+
+[notifier]
+destinations = ["channel", "personal"]
+account_mail = true
+formats = ["text", "html"]
+
+[[notifier.address_fields]]
+key = "email"
+label = "Email address"
+required = true
+```
+
+- `destinations`: `channel` (one shared target the operator sets up in
+  the instance's settings, such as a Slack webhook) and `personal` (each
+  patron's own address). At least one, no repeats.
+- `account_mail`: whether the plugin can carry account mail (invites,
+  password resets, recovery notices). It needs a required, non-secret
+  `email` address field. Defaults to false.
+- `formats`: the bodies the service shows, from `text`, `markdown` and
+  `html`. Must include `text`. Defaults to `["text"]`.
+- `[[notifier.address_fields]]`: the fields of a personal address, at most
+  16, required exactly when `destinations` names `personal`. `key` is
+  `[a-z][a-z0-9_]{0,63}` and unique; `label` is shown to the patron;
+  `required` and `secret` default to false. At least one field is
+  required. A `secret` value (a personal token) is sealed at rest and never
+  shown again.
+
+See [Notifiers](abi.md#notifiers) for the methods and limits.
+
+### `[[notifications.types]]` (notifications a plugin raises)
+
+Any plugin may declare the notification types it raises through
+`env.NOTIFY`. Declaring one grants the `NOTIFY` binding, so no other
+binding may be named `NOTIFY`.
+
+```toml
+[[notifications.types]]
+id = "sync_failed"
+audience = "operational"
+severity = "warning"
+title = "Library sync failed"
+```
+
+- `id`: `[a-z][a-z0-9_]{0,63}`, unique within the plugin. The host names
+  the type `<plugin id>:<id>` in routing rules.
+- `audience`: `operational` (routed by the administrators to library
+  channels) or `patron` (sent to the one patron a raise names, by that
+  patron's preferences). `account` is reserved to Bookclerk.
+- `severity`: `info`, `warning` or `critical`.
+- `title`: one line of 1 to 256 bytes, shown in notification settings.
+
+At most 64 types. See [Raising notifications](abi.md#raising-notifications)
+for the binding.
+
 ### `command` (native)
 
 `command` may be absolute, or relative to the manifest folder. An absolute

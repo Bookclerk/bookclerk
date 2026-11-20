@@ -119,9 +119,9 @@ Request headers:
 | --- | --- |
 | `Authorization` | `Bearer <BRIDGE_TOKEN>` |
 | `Content-Type` | `application/x-capnp` |
-| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `MetadataFiles`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
+| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `MetadataFiles`, `Notifier`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
 | `X-Bookclerk-Method` | Method name as declared in `plugin.capnp` (`login`, `event`, `job`, `openSession`, `databaseMigrations`, …) |
-| `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `env.<BINDING>` bindings; authors never see them |
+| `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `notifyToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `NOTIFY` / `env.<BINDING>` bindings; authors never see them |
 | `X-Bookclerk-Caps` | JSON array of capability descriptors for the request message's capability table (only when the `$Params` struct carries interface-typed fields) |
 | `X-Bookclerk-Target` | Isolate-side object id for calls on a capability the isolate returned earlier (`AdapterDatabaseSession.*`) |
 
@@ -194,6 +194,7 @@ reach the launcher through the granted `GET /open` / `PUT /put` routes.
 | `MetadataProvider` | `health`, `lookup`, `search`, `chapters` | `Metadata extends MetadataEntrypoint` |
 | `CoverFetcher` | `health`, `fetchCovers` — the `sink` is a `destination` grant token | `Covers extends CoverEntrypoint` |
 | `MetadataFiles` | `health`, `parse`, `render` | `MetadataFiles extends MetadataFilesEntrypoint` |
+| `Notifier` | `health`, `send`, `validateDestination` | `Notifier extends NotifierEntrypoint` |
 | `Database` | `openSession` | `DatabaseAdapter extends DatabaseAdapterEntrypoint` |
 | `AdapterDatabaseSession` | all 10 (`X-Bookclerk-Target`) | the `AdapterDatabaseSession` object `openSession` returned |
 
@@ -219,6 +220,7 @@ unknown, expired, or revoked tokens.
 | `POST /db/execute-streamed` | `allow_database` | `GuestDatabase.executeStreamed`: the same request bytes as `/db/execute`, answered as consecutive Cap'n `ExecuteStreamFrame`s with a content length. The pre-dispatch checks answer with HTTP statuses like `/db/execute` (an unknown, expired or database-less grant, a chunked request body, a request past `maxRequestBytes` as `413` with the canonical `limit_exceeded` message); once a decoded request is dispatched every outcome is a frame sequence: a SQL authorization failure, a session that does not stream (`unsupported`) or a session error is one `err` frame. A body that does not decode as an `ExecuteRequest` closes the exchange without a reply, as on `/db/execute`; the SDKs report it as a transport failure |
 | `GET /db/limits` | `allow_database` | `GuestDatabase.limits`: the session's `DbCapabilities` as a Cap'n `DbCapabilitiesReply` (`401` when the grant has no database, `500` when the reply cannot be encoded) |
 | `POST /events/publish` | `events` present | `env.EVENTS.publish` |
+| `POST /notify/raise` | `notify` present (a notify-only token minted at `open` when `[[notifications.types]]` is declared) | `env.NOTIFY.raise`: a JSON `NotifyRaiseParams` of at most 64 KiB. The launcher applies the ABI raise checks, then the host's `NotificationRaiser` checks the type against the manifest and the patron against the account scope; it answers `{"notificationId": …}` or the typed `PluginError`. The `notify_raise` fuzz target covers the body |
 | `POST /sockets/<op>` | `sockets` present (a sockets-only token minted at `open` when `[sockets]` is granted) | `env.SOCKETS`: `connect`, `send`, `close`, `attachment` and `list`, each a JSON object of that operation's fields with frames and attachments in base64. The launcher applies the ABI socket checks before calling the host's `Sockets` (a refused call answers the typed `PluginError` with its status, another operation `404`, a body past one base64 frame plus 64 KiB `413`) and answers the `SocketInfo`, `{"sockets": [...]}` or `{}`. The parser is the `socket_route` fuzz target |
 
 ## Isolate embed

@@ -962,7 +962,7 @@
       "name": "Bindings",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 10,
+      "pointerCount": 11,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -1074,6 +1074,16 @@
             "name": "Sockets"
           },
           "offset": 9
+        },
+        {
+          "name": "notify",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "NotificationRaiser"
+          },
+          "offset": 10
         }
       ]
     },
@@ -4932,7 +4942,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 14,
+      "pointerCount": 15,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -5075,6 +5085,16 @@
             "name": "MetadataFiles"
           },
           "offset": 13
+        },
+        {
+          "name": "notifier",
+          "codeOrder": 14,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Notifier"
+          },
+          "offset": 14
         }
       ]
     },
@@ -10330,6 +10350,637 @@
         }
       ]
     },
+    "NotificationField": {
+      "name": "NotificationField",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "value",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "NotificationMessage": {
+      "name": "NotificationMessage",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 10,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "notificationId",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "notificationType",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "severity",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "NotificationSeverity"
+          },
+          "offset": 0
+        },
+        {
+          "name": "title",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "text",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "markdown",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
+        },
+        {
+          "name": "html",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 5
+        },
+        {
+          "name": "link",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 6
+        },
+        {
+          "name": "fields",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "NotificationField"
+            }
+          },
+          "offset": 7
+        },
+        {
+          "name": "groupKey",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 8
+        },
+        {
+          "name": "alertAction",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "NotificationAlertAction"
+          },
+          "offset": 1
+        },
+        {
+          "name": "alertKey",
+          "codeOrder": 11,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 9
+        },
+        {
+          "name": "sensitive",
+          "codeOrder": 12,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 32
+        }
+      ]
+    },
+    "NotificationRaiser.raise$Params": {
+      "name": "NotificationRaiser.raise$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyRaiseParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotificationRaiser.raise$Results": {
+      "name": "NotificationRaiser.raise$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyRaiseReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Notifier.health$Params": {
+      "name": "Notifier.health$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "Notifier.health$Results": {
+      "name": "Notifier.health$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "HealthReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Notifier.send$Params": {
+      "name": "Notifier.send$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotifySendParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Notifier.send$Results": {
+      "name": "Notifier.send$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotifySendReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Notifier.validateDestination$Params": {
+      "name": "Notifier.validateDestination$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyValidateParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Notifier.validateDestination$Results": {
+      "name": "Notifier.validateDestination$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyValidateReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotifyDestination": {
+      "name": "NotifyDestination",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "kind",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "NotifyDestinationKind"
+          },
+          "offset": 0
+        },
+        {
+          "name": "destinationId",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "addressJson",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "NotifyRaiseParams": {
+      "name": "NotifyRaiseParams",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 6,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "notificationType",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "fields",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "NotificationField"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "patronId",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "linkPath",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "groupKey",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
+        },
+        {
+          "name": "alertAction",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "NotificationAlertAction"
+          },
+          "offset": 0
+        },
+        {
+          "name": "alertKey",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 5
+        }
+      ]
+    },
+    "NotifyRaiseReply": {
+      "name": "NotifyRaiseReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyRaised"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotifyRaised": {
+      "name": "NotifyRaised",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "notificationId",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotifySendParams": {
+      "name": "NotifySendParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "message",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotificationMessage"
+          },
+          "offset": 0
+        },
+        {
+          "name": "destination",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyDestination"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "NotifySendReply": {
+      "name": "NotifySendReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "NotifySent"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotifySent": {
+      "name": "NotifySent",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "providerId",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotifyValidateParams": {
+      "name": "NotifyValidateParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "addressJson",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotifyValidateReply": {
+      "name": "NotifyValidateReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyValidated"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotifyValidated": {
+      "name": "NotifyValidated",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "addressJson",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "label",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "ObjectChange": {
       "name": "ObjectChange",
       "file": "plugin.capnp",
@@ -15195,7 +15846,8 @@
         "oidc",
         "metadata",
         "covers",
-        "metadataFiles"
+        "metadataFiles",
+        "notifier"
       ]
     },
     "ExpressionKind": {
@@ -15278,6 +15930,41 @@
         "series",
         "chapters",
         "duration"
+      ]
+    },
+    "NotificationAlertAction": {
+      "name": "NotificationAlertAction",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "none",
+        "trigger",
+        "resolve"
+      ]
+    },
+    "NotificationAudience": {
+      "name": "NotificationAudience",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "operational",
+        "patron",
+        "account"
+      ]
+    },
+    "NotificationSeverity": {
+      "name": "NotificationSeverity",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "info",
+        "warning",
+        "critical"
+      ]
+    },
+    "NotifyDestinationKind": {
+      "name": "NotifyDestinationKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "channel",
+        "personal"
       ]
     },
     "ObjectChangeKind": {
@@ -15898,6 +16585,42 @@
         }
       ]
     },
+    "NotificationRaiser": {
+      "name": "NotificationRaiser",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "raise",
+          "ordinal": 0,
+          "params": "NotificationRaiser.raise$Params",
+          "results": "NotificationRaiser.raise$Results"
+        }
+      ]
+    },
+    "Notifier": {
+      "name": "Notifier",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "health",
+          "ordinal": 0,
+          "params": "Notifier.health$Params",
+          "results": "Notifier.health$Results"
+        },
+        {
+          "name": "send",
+          "ordinal": 1,
+          "params": "Notifier.send$Params",
+          "results": "Notifier.send$Results"
+        },
+        {
+          "name": "validateDestination",
+          "ordinal": 2,
+          "params": "Notifier.validateDestination$Params",
+          "results": "Notifier.validateDestination$Results"
+        }
+      ]
+    },
     "Oidc": {
       "name": "Oidc",
       "file": "plugin.capnp",
@@ -16293,6 +17016,36 @@
       "name": "maxMetadataFileTextBytes",
       "file": "plugin.capnp",
       "value": 1024
+    },
+    "maxNotificationFieldBytes": {
+      "name": "maxNotificationFieldBytes",
+      "file": "plugin.capnp",
+      "value": 1024
+    },
+    "maxNotificationFields": {
+      "name": "maxNotificationFields",
+      "file": "plugin.capnp",
+      "value": 25
+    },
+    "maxNotificationHtmlBytes": {
+      "name": "maxNotificationHtmlBytes",
+      "file": "plugin.capnp",
+      "value": 65536
+    },
+    "maxNotificationTextBytes": {
+      "name": "maxNotificationTextBytes",
+      "file": "plugin.capnp",
+      "value": 16384
+    },
+    "maxNotificationTitleBytes": {
+      "name": "maxNotificationTitleBytes",
+      "file": "plugin.capnp",
+      "value": 256
+    },
+    "maxNotifierAddressBytes": {
+      "name": "maxNotifierAddressBytes",
+      "file": "plugin.capnp",
+      "value": 4096
     },
     "maxPluginMigrationOps": {
       "name": "maxPluginMigrationOps",

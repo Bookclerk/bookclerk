@@ -133,6 +133,20 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.notifier_reply]
+crate = "bookclerk-plugin-abi"
+boundary = "A notifier's Notifier.send reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a validateDestination answer or a patron's form carries"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.notify_raise]
+crate = "bookclerk-plugin-abi"
+boundary = "A plugin's NOTIFY.raise: the /notify/raise JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.event_read]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds"

@@ -158,6 +158,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "notifier_reply"
+path = "fuzz_targets/notifier_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notify_raise"
+path = "fuzz_targets/notify_raise.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "event_read"
 path = "fuzz_targets/event_read.rs"
 test = false
