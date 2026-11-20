@@ -1300,34 +1300,42 @@ export async function passkeyElevateFinish(body: {
 }
 
 /**
- * Starts operator (or elevated Owner) impersonation of another user.
+ * Starts operator (or elevated Owner) impersonation of another user,
+ * after the work registered with {@link beforeSignOut}: what is playing
+ * belongs to the identity being left.
  *
  * @param userId - Target user id.
  * @returns Resolves when impersonation is active.
  */
 export async function startImpersonate(userId: number): Promise<void> {
-  const res = await fetch("/api/auth/impersonate", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId }),
+  await changeIdentity(async () => {
+    const res = await fetch("/api/auth/impersonate", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId }),
+    });
+    await parseJson(res);
   });
-  await parseJson(res);
 }
 
 /**
- * Stops the current operator impersonation session.
+ * Stops the current operator impersonation session, after the work
+ * registered with {@link beforeSignOut}: a book the impersonated person
+ * was playing is closed as them, not reported as the restored account.
  *
  * @returns Resolves when impersonation ends.
  */
 export async function stopImpersonate(): Promise<void> {
-  const res = await fetch("/api/auth/impersonate", {
-    method: "DELETE",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
+  await changeIdentity(async () => {
+    const res = await fetch("/api/auth/impersonate", {
+      method: "DELETE",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    await parseJson(res);
   });
-  await parseJson(res);
 }
 
 /**
@@ -3354,22 +3362,127 @@ export async function portalRevokeConnection(source: string, accountId: string):
   await parseJson(res);
 }
 
+/** Work to finish while the session can still authorize it. */
+const signOutTasks = new Set<() => Promise<void>>();
+
+/** Run once the request that changes the identity has answered or failed. */
+const identityChangedTasks = new Set<() => void>();
+
 /**
- * Signs out regardless of operator vs user/portal session.
+ * How long a change of identity waits for the work registered with
+ * {@link beforeSignOut}, in milliseconds.
+ */
+export const BEFORE_SIGN_OUT_WAIT_MS = 3000;
+
+/**
+ * Registers work that must finish while the signed-in identity still
+ * holds, such as the player's last position report.
+ *
+ * @param task - Run twice at the start of every sign-out and before
+ *   impersonation starts or stops, so it must do nothing when there is
+ *   nothing left to finish, and awaited for up to
+ *   {@link BEFORE_SIGN_OUT_WAIT_MS}. A task that fails, throws or takes
+ *   longer does not stop the change.
+ * @param after - Run once the request that changes the identity has
+ *   answered or failed, to take back whatever `task` held off meanwhile
+ *   (the player starts no book in between).
+ * @returns Removes the task and `after`.
+ */
+export function beforeSignOut(task: () => Promise<void>, after?: () => void): () => void {
+  signOutTasks.add(task);
+  if (after) identityChangedTasks.add(after);
+  return () => {
+    signOutTasks.delete(task);
+    if (after) identityChangedTasks.delete(after);
+  };
+}
+
+/**
+ * Changes the signed-in identity: first the work registered with
+ * {@link beforeSignOut}, then the request, then the registered `after`
+ * callbacks whether the request succeeded or not.
+ *
+ * @param change - Sends the request that changes the identity.
+ * @returns What `change` resolved with.
+ */
+async function changeIdentity<T>(change: () => Promise<T>): Promise<T> {
+  await finishBeforeIdentityChange();
+  try {
+    return await change();
+  } finally {
+    for (const after of identityChangedTasks) {
+      try {
+        after();
+      } catch {
+        // One callback that throws does not keep the others from running.
+      }
+    }
+  }
+}
+
+/**
+ * Runs the work registered with {@link beforeSignOut} and waits for it,
+ * but no longer than {@link BEFORE_SIGN_OUT_WAIT_MS}: a request that never
+ * answers must not keep someone signed in.
+ *
+ * The tasks run twice, within the one wait: the second pass ends what
+ * started while the first was out.
+ *
+ * @returns Resolves when both passes settled or the wait ran out.
+ */
+async function finishBeforeIdentityChange(): Promise<void> {
+  /**
+   * Starts every registered task.
+   *
+   * @returns Settles when all of them have.
+   */
+  const pass = (): Promise<unknown> =>
+    Promise.all(
+      // Through `then`, so a task that throws before returning is caught too.
+      [...signOutTasks].map((task) =>
+        Promise.resolve()
+          .then(task)
+          .catch(() => undefined),
+      ),
+    );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let ranOut = false;
+  const waited = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      ranOut = true;
+      resolve();
+    }, BEFORE_SIGN_OUT_WAIT_MS);
+  });
+  await Promise.race([pass(), waited]);
+  // Something may have started during the wait (a book chosen while a
+  // close was out). It is ended too, as the identity being left: a second
+  // pass, awaited for what is left of the same wait. Once the wait has run
+  // out the pass still runs, so its requests are sent before the one that
+  // changes the identity.
+  const again = pass();
+  if (!ranOut) await Promise.race([again, waited]);
+  clearTimeout(timer);
+}
+
+/**
+ * Signs out regardless of operator vs user/portal session, after the
+ * work registered with {@link beforeSignOut}.
  *
  * @param role - Current session role; portal roles use portal logout.
  * @returns Resolves when logout completes.
  */
 export async function signOut(role?: AuthRole): Promise<void> {
-  if (role === "administrator" || role === "member") {
-    await portalLogout();
-    return;
-  }
-  try {
-    await logout();
-  } catch {
-    await portalLogout().catch(() => undefined);
-  }
+  await changeIdentity(async () => {
+    if (role === "administrator" || role === "member") {
+      await portalLogout();
+      return;
+    }
+    try {
+      await logout();
+    } catch {
+      await portalLogout().catch(() => undefined);
+    }
+  });
 }
 
 /**

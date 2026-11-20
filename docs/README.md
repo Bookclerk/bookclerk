@@ -16,6 +16,7 @@ others go deeper.
 - [Where your books go](guide/where-books-go.md): folders, cloud storage and file names
 - [Discover and wishlist](guide/discover.md): suggestions, catalog search and the wishlist
 - [The web app](guide/web-app.md): the screens, roles and ways to sign in
+- [Listen in the web app](guide/listening.md): the player, bookmarks, the sleep timer and media keys
 - [Sharing with your household](guide/sharing.md): invites, what is shared, and Audiobookshelf
 - [Join a library as a branch](guide/branches.md): let a second computer help
 - [Coming from Libation](guide/from-libation.md): bring over an existing library
