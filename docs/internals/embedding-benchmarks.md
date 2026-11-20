@@ -156,7 +156,14 @@ leaves the rest of the network alone.
 | multilingual-e5-small, 4 languages | 55,952 of 250,002 | 471 to 155 | Yes | 0.320 to 0.327 |
 | arctic-embed-m-v2.0, 4 languages | 46,197 of 250,002 | 707 to 286 | Nearly | 0.455 to 0.459 |
 | arctic-embed-m-v2.0, English | 33,296 of 250,002 | 707 to 285 | Nearly | 0.455 to 0.455 |
+| multilingual-e5-small, 7 languages | 65,172 of 250,002 | 471 to 167 | Yes | |
+| arctic-embed-m-v2.0, 7 languages | 52,004 of 250,002 | 707 to 309 | Nearly | |
 | potion-multilingual-128M, one language | 37,054 to 51,743 of 500,353 | 715 to 66 to 78 | Yes | 0.294 to 0.293 |
+
+The 7-language rows add Italian, Portuguese and Japanese, so the set
+covers every language Audible sells in. Their token lists came from 12
+Gutenberg books per added language, so lists built from a larger corpus
+will keep more tokens.
 
 "Nearly" means a rare word now splits into smaller pieces, which moved
 the lowest cosine between old and new vectors to 0.96. A word outside
