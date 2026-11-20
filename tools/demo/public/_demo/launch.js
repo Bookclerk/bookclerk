@@ -14,7 +14,8 @@
 // so the visitor sees no check at all. When the page is restored from the
 // cache, or shown after STALE_MS hidden, every widget is removed and
 // rendered afresh; when it is shown sooner, only a widget that is missing,
-// collapsed or expired is. If Turnstile's script itself is gone by then,
+// collapsed or expired is. A restore fires both visibilitychange and
+// pageshow; they share one pass, so the visitor gets one new challenge. If Turnstile's script itself is gone by then,
 // the page reloads, which fetches a fresh page (it is never cached).
 (() => {
   const NARROW = "(max-width: 365px)";
@@ -24,6 +25,8 @@
   const widgets = new Map();
   /** When the page was last hidden (Date.now(), which keeps counting while asleep), or null. */
   let hiddenAt = null;
+  /** A recovery pass waiting to run (whether it renders afresh), or null. */
+  let pending = null;
 
   /** Renders one container's widget, replacing any it had. */
   const render = (el) => {
@@ -39,10 +42,15 @@
     widgets.set(el, id);
   };
 
-  /** Whether a container no longer shows a usable widget. */
+  /**
+   * Whether a container no longer shows a usable widget. The stylesheet
+   * reserves the container's height, so this measures what Turnstile put
+   * inside it (its frame's wrapper; the answer's hidden input has none).
+   */
   const unusable = (el) => {
     const id = widgets.get(el);
-    return id === undefined || el.offsetHeight === 0 || window.turnstile.isExpired(id);
+    if (id === undefined || window.turnstile.isExpired(id)) return true;
+    return !Array.from(el.children).some((child) => child.offsetHeight > 0);
   };
 
   /**
@@ -66,10 +74,28 @@
     for (const el of document.querySelectorAll(".cf-turnstile")) render(el);
   };
 
+  /**
+   * Queues one recovery pass. A restore from the back/forward cache fires
+   * visibilitychange and then pageshow in the same task, so both land in
+   * one pass, which renders afresh if either asked for it.
+   *
+   * @param stale - Whether to render every widget afresh.
+   */
+  const schedule = (stale) => {
+    if (pending !== null) {
+      pending = pending || stale;
+      return;
+    }
+    pending = stale;
+    setTimeout(() => {
+      const fresh = pending;
+      pending = null;
+      recheck(fresh);
+    }, 0);
+  };
+
   window.addEventListener("pageshow", (event) => {
-    if (!event.persisted) return;
-    hiddenAt = null;
-    recheck(true);
+    if (event.persisted) schedule(true);
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") {
@@ -78,6 +104,6 @@
     }
     const stale = hiddenAt !== null && Date.now() - hiddenAt >= STALE_MS;
     hiddenAt = null;
-    recheck(stale);
+    schedule(stale);
   });
 })();

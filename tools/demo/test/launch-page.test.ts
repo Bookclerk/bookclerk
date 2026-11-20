@@ -14,8 +14,10 @@ import { describe, it } from "vitest";
 type Container = {
   /** The container's data attributes. */
   dataset: { sitekey: string; action: string };
-  /** Rendered height in pixels; 0 once the widget's frame is gone. */
+  /** Rendered height in pixels: the stylesheet reserves it, widget or not. */
   offsetHeight: number;
+  /** What Turnstile put inside: its frame's wrapper, 0 high once the frame is gone. */
+  children: Array<{ offsetHeight: number }>;
   /** How many times the page emptied the container. */
   cleared: number;
   /** Empties the container. */
@@ -48,6 +50,11 @@ type Page = {
   show: () => void;
   /** pageshow fires; `persisted` means restored from the back/forward cache. */
   pageshow: (persisted: boolean) => void;
+  /**
+   * A back/forward cache restore: visibilitychange then persisted pageshow
+   * in one task, as the HTML spec orders them, or the reverse.
+   */
+  restore: (order?: "spec" | "reversed") => void;
 };
 
 /**
@@ -58,15 +65,30 @@ type Page = {
 function loadPage(): Page {
   const el: Container = {
     dataset: { sitekey: "1x00000000000000000000AA", action: "demo_start" },
-    offsetHeight: 0,
+    offsetHeight: 65,
+    children: [],
     cleared: 0,
     replaceChildren: () => {
       el.cleared += 1;
-      el.offsetHeight = 0;
+      el.children = [];
     },
   };
   const winListeners = new Map<string, Array<(e: { persisted: boolean }) => void>>();
   const docListeners: Array<() => void> = [];
+  let timers: Array<() => void> = [];
+  /** Runs the timers the page set, as the event loop would after the task. */
+  const flush = () => {
+    const due = timers;
+    timers = [];
+    for (const fn of due) fn();
+  };
+  const visible = () => {
+    document.visibilityState = "visible";
+    docListeners.forEach((fn) => fn());
+  };
+  const persisted = (p: boolean) => {
+    for (const fn of winListeners.get("pageshow") ?? []) fn({ persisted: p });
+  };
   const document = {
     visibilityState: "visible",
     querySelectorAll: () => [el],
@@ -76,7 +98,7 @@ function loadPage(): Page {
     render: (target: Container, opts: { sitekey: string; action: string; size: string }) => {
       const id = `w${page.renders.length}`;
       page.renders.push({ sitekey: opts.sitekey, action: opts.action, size: opts.size, id });
-      target.offsetHeight = 65;
+      target.children = [{ offsetHeight: 65 }];
       return id;
     },
     remove: (id: string) => page.removed.push(id),
@@ -108,11 +130,22 @@ function loadPage(): Page {
       docListeners.forEach((fn) => fn());
     },
     show: () => {
-      document.visibilityState = "visible";
-      docListeners.forEach((fn) => fn());
+      visible();
+      flush();
     },
-    pageshow: (persisted) => {
-      for (const fn of winListeners.get("pageshow") ?? []) fn({ persisted });
+    pageshow: (p) => {
+      persisted(p);
+      flush();
+    },
+    restore: (order = "spec") => {
+      if (order === "spec") {
+        visible();
+        persisted(true);
+      } else {
+        persisted(true);
+        visible();
+      }
+      flush();
     },
   };
   runInNewContext(readFileSync(new URL("../public/_demo/launch.js", import.meta.url), "utf8"), {
@@ -120,6 +153,8 @@ function loadPage(): Page {
     document,
     Date: { now: () => page.now },
     Map,
+    Array,
+    setTimeout: (fn: () => void) => timers.push(fn),
   });
   return page;
 }
@@ -173,7 +208,7 @@ describe("launch.js", () => {
     const page = loadPage();
     page.loadTurnstile();
     page.hide();
-    page.el.offsetHeight = 0;
+    page.el.children[0]!.offsetHeight = 0;
     page.show();
     assert.equal(page.renders.length, 2);
     page.hide();
@@ -194,13 +229,24 @@ describe("launch.js", () => {
     assert.equal(page.reloads, 1);
   });
 
-  it("does not render twice when a restore is followed by the tab being shown", () => {
+  it("renders once when a restore fires visibilitychange and pageshow, in either order", () => {
+    for (const order of ["spec", "reversed"] as const) {
+      const page = loadPage();
+      page.loadTurnstile();
+      page.hide();
+      page.now += 10 * 60_000;
+      page.restore(order);
+      assert.equal(page.renders.length, 2, order);
+      assert.deepEqual(page.removed, ["w0"], order);
+    }
+  });
+
+  it("keeps a healthy widget in its reserved space after a short absence", () => {
     const page = loadPage();
     page.loadTurnstile();
     page.hide();
-    page.now += 10 * 60_000;
-    page.pageshow(true);
     page.show();
-    assert.equal(page.renders.length, 2);
+    assert.equal(page.renders.length, 1);
+    assert.equal(page.el.cleared, 1);
   });
 });
