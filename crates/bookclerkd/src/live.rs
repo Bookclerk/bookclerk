@@ -21,11 +21,12 @@
 //!    (token, session, or auth disabled) or a signed-in user.
 //!
 //! **Topics.** The operator gets every [`LiveTopic`]. An Owner or
-//! Administrator gets `library`, `jobs`, `deliveries`, `nodes`, `users`
-//! and `discover`; any other user gets `library`, `nodes` and `discover`
-//! (the routes behind them are scoped to the caller; `discover` says only
-//! that someone's stored shelves changed, and each page re-reads its own). `config`, `consents` and `libraries`
-//! are operator only.
+//! Administrator gets `library`, `jobs`, `deliveries`, `nodes`, `users`,
+//! `discover` and `playback`; any other user gets `library`, `nodes`,
+//! `discover` and `playback` (the routes behind them are scoped to the
+//! caller; `discover` and `playback` say only that someone's stored
+//! shelves or listening progress changed, and each page re-reads its
+//! own). `config`, `consents` and `libraries` are operator only.
 //!
 //! **Frames** (server to client, JSON text):
 //!
@@ -198,7 +199,12 @@ async fn topics_for(state: &AppState, caller: UserCaller) -> Option<BTreeSet<Liv
 
 /// The topics every signed-in user may hear about.
 fn member_topics() -> BTreeSet<LiveTopic> {
-    BTreeSet::from([LiveTopic::Library, LiveTopic::Nodes, LiveTopic::Discover])
+    BTreeSet::from([
+        LiveTopic::Library,
+        LiveTopic::Nodes,
+        LiveTopic::Discover,
+        LiveTopic::Playback,
+    ])
 }
 
 /// A refusal before the upgrade.

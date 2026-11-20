@@ -7,6 +7,7 @@
 //!
 //! See `docs/adr/control-plane.md`.
 
+mod account_links;
 mod artifacts;
 pub(crate) mod batch;
 mod branch_catalog;
@@ -17,6 +18,7 @@ mod carried_accounts;
 mod catalog_lookup;
 mod clerk_links;
 mod library_links;
+pub(crate) use catalog_lookup::read_paged;
 pub(crate) use library_links::from_object;
 mod connections_request;
 mod copies;
@@ -66,6 +68,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use account_links::{
+    account_slot, link_signed_in_account, revoke_account_link, LinkRevoked, SignInLink,
+};
 pub use artifacts::{load_artifact_blob, put_artifact_blob, MAX_ARTIFACT_BLOB_BYTES};
 pub use branch_catalog::{
     accept_catalog_batch, begin_catalog, branch_provenance, branch_title_counts,
@@ -114,8 +119,9 @@ pub use connections_request::{
     AddConnectionsRequest, DisconnectBody, DisconnectRequest, MAX_ADD_CONNECTIONS,
 };
 pub use copies::{
-    authorize_copy, open_copy, plan_copy, CopyDownload, CopyHolder, CopyListing, CopyPlan,
-    CopyPlanFile, CopyPlanned, OpenedCopy, COPY_TOKEN_TTL_SECS,
+    authorize_copy, authorize_playback, open_copy, plan_copy, plan_playback, CopyDownload,
+    CopyHolder, CopyListing, CopyPlan, CopyPlanFile, CopyPlanned, OpenedCopy, PlaybackPlan,
+    PlaybackTrack, COPY_TOKEN_TTL_SECS,
 };
 pub use cron_fires::{
     claim_cron_fire, ensure_cron_cursor, load_cron_cursor, CronCursor, CronFireClaim,
@@ -965,6 +971,8 @@ fn invalid_events(detail: &str) -> LibraryError {
     LibraryError::Invalid(format!("invalid configuration: {detail}"))
 }
 
+#[cfg(test)]
+mod account_links_tests;
 #[cfg(test)]
 mod carried_accounts_tests;
 #[cfg(test)]

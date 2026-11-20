@@ -203,6 +203,16 @@ export interface BranchJoined {
   running: boolean;
   /** The store connections that came with the join, when the person brought them. */
   connections?: BroughtConnectionsView | null;
+  /**
+   * Set when this server held a library card for the library: the branch
+   * replaced it.
+   */
+  replaced_card?: {
+    /** Whether the card was dropped here; false leaves it under Library cards. */
+    card_removed: boolean;
+    /** Whether the library ended the card's session too. */
+    library_signed_out: boolean;
+  } | null;
 }
 
 /** Counts of the titles one branch shared with this library. */
@@ -378,16 +388,23 @@ export function inspectLibrary(address: string): Promise<{ library: LibraryInfoV
  * @returns The authorize URL and what it is for.
  */
 export function startJoin(body: {
-  address: string;
+  /** The library's address; left out with `from_card`. */
+  address?: string;
   fingerprint?: string | null;
   branch_name?: string;
   /** Offer to join as a shared branch (this install must be empty). */
   shared_branch?: boolean;
+  /**
+   * The library id of a library this install holds a card for: the branch
+   * replaces the card, and the address and pinned certificate come from it.
+   */
+  from_card?: string;
 }): Promise<JoinStart> {
   return request("/api/config/join/start", {
     method: "POST",
     body: {
       address: body.address,
+      from_card: body.from_card,
       fingerprint: body.fingerprint ?? undefined,
       branch_name: body.branch_name?.trim() || undefined,
       shared_branch: body.shared_branch ? true : undefined,
@@ -1372,4 +1389,22 @@ export function sharedBranchNodes(nodes: ConfigNodeView[]): ConfigNodeView[] {
     .sort(
       (a, b) => Number(b.this_node) - Number(a.this_node) || a.node_id.localeCompare(b.node_id),
     );
+}
+
+/**
+ * What to tell the person about the library card a branch join replaced.
+ *
+ * @param replaced - The join answer's `replaced_card`, if any.
+ * @returns A sentence, or `null` when no card was replaced.
+ */
+export function replacedCardSummary(replaced: BranchJoined["replaced_card"]): string | null {
+  if (!replaced) {
+    return null;
+  }
+  if (!replaced.card_removed) {
+    return "Your library card for this library could not be removed here; sign it out under Library cards.";
+  }
+  return replaced.library_signed_out
+    ? "Your library card for this library was signed out: its books now come through the branch."
+    : "Your library card for this library was dropped here, but the library could not be told; end its session from your session list there.";
 }

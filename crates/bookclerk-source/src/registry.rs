@@ -548,6 +548,7 @@ mod tests {
     async fn sources_declare_no_isbn_detail_lookup_by_default() {
         let source = stub("plain", "plain", None, &[]);
         assert!(!source.answers_catalog_detail_by_isbn());
+        assert!(!source.answers_catalog_detail_by_product_id());
         assert!(source
             .catalog_detail_by_isbn("9780000000001")
             .await

@@ -418,18 +418,54 @@ pub async fn get_file(
             return unavailable();
         }
     };
-    let size = match destination.backend.head(&file.key).await {
+    serve_file(
+        destination.backend.as_ref(),
+        &file.key,
+        parts.headers.get(header::RANGE),
+        HeaderValue::from_static("application/octet-stream"),
+    )
+    .await
+}
+
+/// Streams the file at `key` on `destination`, whole or the one byte
+/// range a `Range` header asks for: the answer of a copy download and of
+/// a play session's track.
+///
+/// The file is streamed from the destination and never staged here. The
+/// caller has already decided the request may read it.
+///
+/// # Arguments
+///
+/// * `destination` - The destination that holds the file.
+/// * `key` - The file's storage key there.
+/// * `range` - The request's `Range` header, when it sent one
+///   (`bookclerk_node_proto::parse_copy_range`: one range is honoured,
+///   anything else reads the whole file).
+/// * `content_type` - The media type to state.
+///
+/// # Returns
+///
+/// 200 or 206 with the bytes, `Accept-Ranges: bytes` and
+/// `Cache-Control: no-store`; 416 `range_not_satisfiable` with the size
+/// in `Content-Range`; or 503 `unavailable` when the destination does not
+/// hold the file or cannot be read.
+pub(crate) async fn serve_file(
+    destination: &dyn StorageBackend,
+    key: &str,
+    range: Option<&HeaderValue>,
+    content_type: HeaderValue,
+) -> Response {
+    let unavailable = || refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    let size = match destination.head(key).await {
         Ok(Some(probe)) => probe.size,
         // The row says the file is there; the destination disagrees.
         Ok(None) => return unavailable(),
         Err(err) => {
-            tracing::warn!(copy_id, error = %err, "could not size a copy's file");
+            tracing::warn!(error = %err, "could not size a stored file");
             return unavailable();
         }
     };
-    let range = parts
-        .headers
-        .get(header::RANGE)
+    let range = range
         .and_then(|value| value.to_str().ok())
         .map_or(CopyRange::Whole, |value| parse_copy_range(value, size));
     let (status, read, length, content_range) = match range {
@@ -454,10 +490,10 @@ pub async fn get_file(
     let body = if length == 0 {
         Body::empty()
     } else {
-        match destination.backend.get_stream(&file.key, read).await {
+        match destination.get_stream(key, read).await {
             Ok((_, reader)) => body_of(reader),
             Err(err) => {
-                tracing::warn!(copy_id, error = %err, "could not read a copy's file");
+                tracing::warn!(error = %err, "could not read a stored file");
                 return unavailable();
             }
         }
@@ -465,10 +501,7 @@ pub async fn get_file(
     let mut response = Response::new(body);
     *response.status_mut() = status;
     let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
-    );
+    headers.insert(header::CONTENT_TYPE, content_type);
     headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));

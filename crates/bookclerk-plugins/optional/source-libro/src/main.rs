@@ -44,12 +44,14 @@ impl PluginWorker for LibroRoot {
                 icon_url: Some("https://www.google.com/s2/favicons?domain=libro.fm&sz=128".into()),
             }),
             // Libro.fm's catalog details answer any audiobook ISBN, so catalog
-            // search uses it to fill lean rows from every store, and a price
-            // lookup by ISBN answers exactly that edition.
+            // search uses it to fill lean rows from every store (its own
+            // product ids are ISBNs too), and a price lookup by ISBN answers
+            // exactly that edition.
             catalog: CatalogCapabilities {
                 detail_by_isbn: true,
                 price_by_isbn: true,
                 price_by_asin: false,
+                detail_by_product_id: true,
             },
             ..PluginDescribe::default()
         })
@@ -60,10 +62,11 @@ impl PluginWorker for LibroRoot {
         _invocation: Invocation,
         mut bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        let config = bindings.config.json_value().unwrap_or(Value::Null);
         let scan_state =
             DatabaseBinding::take_named_from_bindings(&mut bindings, SCAN_STATE_BINDING);
         Ok(Entrypoints {
-            storefront: Some(Box::new(LibroContentSource { scan_state })),
+            storefront: Some(Box::new(LibroContentSource { config, scan_state })),
             ..Entrypoints::default()
         })
     }
@@ -77,9 +80,19 @@ impl PluginWorker for LibroRoot {
 }
 
 struct LibroContentSource {
+    /// The instance settings document from the `CONFIG` binding; its origin
+    /// override reaches sign-in, scans and every catalog entrypoint.
+    config: Value,
     /// The `SCAN_STATE` database, once the operator approved it: scan delta
     /// state.
     scan_state: Option<DatabaseBinding>,
+}
+
+impl LibroContentSource {
+    /// Catalog client for this instance's configured origin.
+    fn catalog(&self) -> bookclerk_plugin_source_libro::LibroSource {
+        bookclerk_plugin_source_libro::LibroSource::from_config(&self.config)
+    }
 }
 
 fn internal(err: impl std::fmt::Display) -> PluginError {
@@ -104,14 +117,14 @@ impl ContentSourceRole for LibroContentSource {
     }
 
     async fn login(&self, params: LoginParams) -> Result<LoginResult, PluginError> {
-        let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
+        let base = bookclerk_plugin_source_libro::resolve_base_url(&self.config);
         bookclerk_plugin_source_libro::guest_login_rpc(&base, params)
             .await
             .map_err(internal)
     }
 
     async fn scan(&self, params: ScanParams) -> Result<ScanPage, PluginError> {
-        let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
+        let base = bookclerk_plugin_source_libro::resolve_base_url(&self.config);
         bookclerk_plugin_source_libro::guest_scan_page(&base, &params, self.scan_state.as_ref())
             .await
     }
@@ -129,7 +142,7 @@ impl ContentSourceRole for LibroContentSource {
         &self,
         params: SearchCatalogParams,
     ) -> Result<Vec<CatalogHit>, PluginError> {
-        let source = bookclerk_plugin_source_libro::LibroSource::new();
+        let source = self.catalog();
         source
             .search_catalog(&CatalogSearchOpts::from(params))
             .await
@@ -147,7 +160,7 @@ impl ContentSourceRole for LibroContentSource {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or(params.product_id.trim());
-        let source = bookclerk_plugin_source_libro::LibroSource::new();
+        let source = self.catalog();
         source
             .catalog_detail(key)
             .await
@@ -160,7 +173,7 @@ impl ContentSourceRole for LibroContentSource {
         params: ExpandCandidatesParams,
     ) -> Result<Vec<CatalogHit>, PluginError> {
         let (seed, limit) = expand_seed_from_params(params);
-        let source = bookclerk_plugin_source_libro::LibroSource::new();
+        let source = self.catalog();
         source
             .expand_candidates(&seed, limit)
             .await
@@ -172,7 +185,7 @@ impl ContentSourceRole for LibroContentSource {
         &self,
         params: PurchaseHintParams,
     ) -> Result<Option<PurchaseHint>, PluginError> {
-        let source = bookclerk_plugin_source_libro::LibroSource::new();
+        let source = self.catalog();
         source
             .purchase_hint(&PurchaseHintOpts::from(params))
             .await
@@ -186,7 +199,7 @@ impl ContentSourceRole for LibroContentSource {
         &self,
         params: PurchaseHintParams,
     ) -> Result<PurchaseHintResult, PluginError> {
-        let source = bookclerk_plugin_source_libro::LibroSource::new();
+        let source = self.catalog();
         source
             .purchase_answer(&PurchaseHintOpts::from(params))
             .await

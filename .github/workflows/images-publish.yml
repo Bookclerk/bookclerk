@@ -27,6 +27,10 @@
 #
 # Only the push jobs get `packages: write`; only the attest job gets
 # `id-token: write` and `attestations: write`.
+#
+# The desktop app's packages ride along (desktop-packages.yml): built
+# nightly when main has moved, by hand, and for a published release, which
+# they are attached to. Only its publish job can write to the release.
 name: Publish images
 
 on:
@@ -77,6 +81,8 @@ jobs:
       push: ${{ steps.plan.outputs.push }}
       build: ${{ steps.plan.outputs.build }}
       retag: ${{ steps.plan.outputs.retag }}
+      desktop: ${{ steps.plan.outputs.desktop }}
+      release_tag: ${{ steps.plan.outputs.release_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,7 +152,19 @@ jobs:
               build+=("$image")
             fi
           done
+          # Desktop packages: for a release, and nightly or by hand when main
+          # has moved since the last publish (an image is still to build).
+          desktop=false
+          release_tag=""
+          case "$EVENT" in
+            release) desktop=true; release_tag="$RELEASE_TAG" ;;
+            schedule|workflow_dispatch)
+              if [[ ${#build[@]} -gt 0 ]]; then desktop=true; fi
+              ;;
+          esac
           {
+            echo "desktop=$desktop"
+            echo "release_tag=$release_tag"
             echo "registry=$registry"
             echo "sha_tag=$sha_tag"
             echo "tags=$tags"
@@ -154,7 +172,7 @@ jobs:
             echo "build=$(printf '%s\n' "${build[@]}" | jq -R 'select(length > 0)' | jq -cs .)"
             echo "retag=$(printf '%s\n' "${retag[@]}" | jq -R 'select(length > 0)' | jq -cs .)"
           } >> "$GITHUB_OUTPUT"
-          echo "build: ${build[*]:-none}; retag: ${retag[*]:-none}; tags: $tags; push: $push"
+          echo "build: ${build[*]:-none}; retag: ${retag[*]:-none}; tags: $tags; push: $push; desktop: $desktop"
 
   # A pull request's run: the same builds and checks with a read-only token.
   dry-run:
@@ -352,3 +370,17 @@ jobs:
           subject-name: ${{ needs.plan.outputs.registry }}/${{ matrix.image }}
           subject-digest: ${{ steps.digest.outputs.digest }}
           push-to-registry: true
+
+  desktop:
+    name: desktop packages
+    needs: plan
+    if: needs.plan.outputs.desktop == 'true'
+    # The called workflow narrows these per job: only its publish job, run
+    # for a release, writes to the release or attests.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/desktop-packages.yml
+    with:
+      release-tag: ${{ needs.plan.outputs.release_tag }}

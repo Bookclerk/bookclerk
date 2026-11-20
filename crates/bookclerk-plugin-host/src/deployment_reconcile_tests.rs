@@ -2458,3 +2458,107 @@ async fn exercise_intent_operations(
         "{feed:?}"
     );
 }
+
+/// A tar.gz artifact whose `plugin.toml` is the fixture manifest with
+/// `extra` prepended (top-level keys) and `command` set, and its digest.
+fn variant_archive(dir: &Path, name: &str, extra: &str, command: &str) -> (PathBuf, String) {
+    let staging = dir.join(format!("{name}-stage"));
+    std::fs::create_dir_all(&staging).unwrap();
+    let manifest = format!(
+        "{extra}{}",
+        fixture_manifest("fxdep", "outbound", false)
+            .replace("command = \"./echo\"", &format!("command = \"{command}\""))
+    );
+    std::fs::write(staging.join("plugin.toml"), manifest).unwrap();
+    std::fs::write(staging.join("echo"), b"#!/bin/sh\necho ok\n").unwrap();
+    let archive = dir.join(format!("{name}.tar.gz"));
+    let status = std::process::Command::new("tar")
+        .arg("-czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&staging)
+        .args(["plugin.toml", "echo"])
+        .status()
+        .expect("tar");
+    assert!(status.success(), "tar czf failed");
+    let digest = bookclerk_plugin_catalog::sha256_file(&archive).expect("digest");
+    (archive, digest)
+}
+
+/// Publishes a two-artifact package (one per platform) from `artifacts`.
+async fn publish_two_artifacts(
+    world: &World,
+    artifacts: [(&str, (PathBuf, String)); 2],
+) -> crate::Result<crate::AddedVersion> {
+    let mut package = package_manifest("fxdep");
+    let template = package.artifacts[0].clone();
+    package.artifacts = artifacts
+        .into_iter()
+        .map(
+            |(target, (archive, digest))| bookclerk_plugin_catalog::ArtifactTarget {
+                target: target.into(),
+                url: format!("file://{}", archive.display()),
+                archive_sha256: digest,
+                ..template.clone()
+            },
+        )
+        .collect();
+    crate::add_package_version(
+        &world.store,
+        &ConfigActor::Operator { id: "cli".into() },
+        &world.files,
+        &world.node_id,
+        crate::VersionRequest {
+            plugin_key: world.key.clone(),
+            package,
+            archive: None,
+            target: None,
+            coordinate: String::new(),
+            offline: true,
+            publisher_verified: false,
+            grant: None,
+            activate: crate::Activate::Never,
+        },
+    )
+    .await
+}
+
+/// Artifacts of one package that declare different credential sharing are
+/// refused: the host would decide from the first while a node runs the
+/// other. Only the launch line may differ between platforms.
+#[tokio::test]
+async fn artifacts_that_disagree_on_credentials_are_refused() {
+    let _guard = TEST_LOCK.lock().await;
+    let world = open_world(false).await;
+    let dir = world.files.join("variants");
+    std::fs::create_dir_all(&dir).unwrap();
+    let shareable = variant_archive(&dir, "shareable", "credentials = \"shareable\"\n", "./echo");
+    let keeper = variant_archive(
+        &dir,
+        "keeper",
+        "credentials = \"single_keeper\"\n",
+        "./echo",
+    );
+    let err = publish_two_artifacts(
+        &world,
+        [("linux-x64-gnu", shareable), ("macos-arm64", keeper)],
+    )
+    .await
+    .expect_err("disagreeing artifacts are refused");
+    assert!(
+        err.to_string().contains("different plugin.toml"),
+        "unexpected error: {err}"
+    );
+    assert!(load_active_version(&world.store, &world.key)
+        .await
+        .unwrap()
+        .is_none());
+
+    // A different launch line alone is fine.
+    let linux = variant_archive(&dir, "linux", "credentials = \"shareable\"\n", "./echo");
+    let mac = variant_archive(&dir, "mac", "credentials = \"shareable\"\n", "echo");
+    let added = publish_two_artifacts(&world, [("linux-x64-gnu", linux), ("macos-arm64", mac)])
+        .await
+        .expect("artifacts differing only in command are accepted");
+    assert_eq!(added.version.artifacts.len(), 2);
+}

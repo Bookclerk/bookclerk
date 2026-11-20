@@ -15,7 +15,7 @@ export type AppView = "discover" | "library" | "accounts" | "wishlist" | "status
 /**
  * Session role returned by the daemon auth APIs.
  */
-export type AuthRole = "operator" | "owner" | "administrator" | "host" | "member";
+export type AuthRole = "operator" | "owner" | "administrator" | "member";
 
 /**
  * Linked portal identity attached to a user session.
@@ -82,6 +82,11 @@ export interface AuthSession {
   default_view: AppView;
   can_acquire: boolean;
   elevated?: boolean;
+  /**
+   * Whether the session reaches node administration and the Status page:
+   * the operator, an Owner or Administrator, or a Member who owns a node.
+   */
+  administers_nodes?: boolean;
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
@@ -537,13 +542,7 @@ function normalizeView(raw: string | undefined): AppView {
 }
 
 function normalizeRole(raw: string | undefined): AuthRole | undefined {
-  if (
-    raw === "operator" ||
-    raw === "owner" ||
-    raw === "administrator" ||
-    raw === "host" ||
-    raw === "member"
-  ) {
+  if (raw === "operator" || raw === "owner" || raw === "administrator" || raw === "member") {
     return raw;
   }
   // Legacy portal sessions map to member.
@@ -667,6 +666,11 @@ function toAuthSession(body: {
   default_view?: string;
   can_acquire?: boolean;
   elevated?: boolean;
+  /**
+   * Whether the session reaches node administration and the Status page:
+   * the operator, an Owner or Administrator, or a Member who owns a node.
+   */
+  administers_nodes?: boolean;
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
@@ -679,6 +683,7 @@ function toAuthSession(body: {
     default_view: normalizeView(body.default_view),
     can_acquire: Boolean(body.can_acquire),
     elevated: Boolean(body.elevated),
+    administers_nodes: body.administers_nodes,
     impersonating: body.impersonating,
     portal: body.portal,
     user: body.user,
@@ -763,6 +768,7 @@ export async function authMe(): Promise<AuthSession> {
     default_view?: string;
     can_acquire?: boolean;
     elevated?: boolean;
+    administers_nodes?: boolean;
     impersonating?: AuthMeImpersonating;
     portal?: PortalInfo;
     user?: AuthMeUser;
@@ -3276,7 +3282,7 @@ export async function portalRevokeConnection(source: string, accountId: string):
  * @returns Resolves when logout completes.
  */
 export async function signOut(role?: AuthRole): Promise<void> {
-  if (role === "administrator" || role === "host" || role === "member") {
+  if (role === "administrator" || role === "member") {
     await portalLogout();
     return;
   }
@@ -4318,7 +4324,29 @@ export type TitleMetaQuery = {
   narrators?: string | null;
   length_minutes?: number | null;
   region?: string;
+  /**
+   * Store editions that listed the title. The server fills a sparse record
+   * from the stores that answer their own product ids before asking ISBN
+   * stores.
+   */
+  store_editions?: StoreEdition[] | null;
 };
+
+/** Most store editions the server accepts on one title-meta query. */
+const TITLE_META_MAX_STORE_EDITIONS = 16;
+
+/**
+ * The store editions a title-meta query sends: the first
+ * {@link TITLE_META_MAX_STORE_EDITIONS} with a source and product id.
+ *
+ * @param body - The title-meta query.
+ * @returns The editions to send, possibly empty.
+ */
+function titleMetaEditions(body: TitleMetaQuery): StoreEdition[] {
+  return (body.store_editions ?? [])
+    .filter((edition) => edition.source.trim() !== "" && edition.product_id.trim() !== "")
+    .slice(0, TITLE_META_MAX_STORE_EDITIONS);
+}
 
 function titleMetaClientKey(body: TitleMetaQuery): string {
   return [
@@ -4327,10 +4355,14 @@ function titleMetaClientKey(body: TitleMetaQuery): string {
     body.asin ?? "",
     body.isbn ?? "",
     body.region ?? "us",
+    titleMetaEditions(body)
+      .map((edition) => `${edition.source}:${edition.product_id}`)
+      .join(","),
   ].join("|");
 }
 
 function serializeTitleMetaQuery(body: TitleMetaQuery) {
+  const storeEditions = titleMetaEditions(body);
   return {
     title: body.title,
     authors: body.authors ?? undefined,
@@ -4339,6 +4371,7 @@ function serializeTitleMetaQuery(body: TitleMetaQuery) {
     narrators: body.narrators ?? undefined,
     length_minutes: body.length_minutes ?? undefined,
     region: body.region ?? "us",
+    store_editions: storeEditions.length > 0 ? storeEditions : undefined,
   };
 }
 
