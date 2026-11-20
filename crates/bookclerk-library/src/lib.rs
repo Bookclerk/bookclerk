@@ -37,6 +37,7 @@ pub mod migrations;
 mod models;
 mod named_atomic;
 pub mod operator_token;
+pub mod pacing;
 pub mod password;
 pub mod proxy_txn;
 mod schema_state;
@@ -190,6 +191,7 @@ pub use store::{
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
+    pacing::{AccountPaceState, DownloadId, DownloadStarter},
     playback::{
         reaches_end, Bookmark, NewPlaybackSession, PlaybackChange, PlaybackEdition, PlaybackEvent,
         PlaybackMs, PlaybackProgress, PlaybackProgressEdit, PlaybackSession, PlaybackSync,

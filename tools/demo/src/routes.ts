@@ -260,6 +260,9 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/portal/sources/{id}/login", "signin"],
   ["POST", "/api/portal/sources/{id}/oauth/start", "deny"],
   ["POST", "/api/portal/sources/{source}/connections/{account_id}/revoke", "allow"],
+  // A connection's download pace only changes how fast automatic acquires
+  // run, and the demo refuses acquire work anyway.
+  ["POST", "/api/portal/sources/{source}/connections/{account_id}/pace", "allow"],
   ["POST", "/api/portal/login/integration", "deny"],
   ["POST", "/api/portal/logout", "deny"],
   ["POST", "/api/portal/redeem", "deny"],

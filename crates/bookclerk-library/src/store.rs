@@ -8075,6 +8075,7 @@ pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
 pub(crate) mod overrides;
+pub(crate) mod pacing;
 pub(crate) mod playback;
 pub(crate) mod playback_request;
 pub(crate) mod plugin_databases;

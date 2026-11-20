@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, it } from "vitest";
-import { runInNewContext } from "node:vm";
 import { URL } from "node:url";
 import {
   aboutHowLong,
@@ -94,25 +93,10 @@ describe("launchPage", () => {
       assert.match(tag, /\ssrc="(\/_demo\/|https:\/\/challenges\.cloudflare\.com\/)/);
   });
 
-  it("renders Turnstile from launch.js, compact on the narrowest screens", () => {
+  it("loads launch.js before Turnstile's script, which calls it back to render", () => {
+    // test/launch-page.test.ts covers what launch.js renders.
     const srcs = [...launchPage(LAUNCH).matchAll(/<script src="([^"]+)"/g)].map((m) => m[1]);
     assert.deepEqual(srcs, ["/_demo/launch.js", TURNSTILE_SCRIPT.replaceAll("&", "&#38;")]);
-    const js = file("../public/_demo/launch.js").toString("utf8");
-    for (const narrow of [true, false]) {
-      const rendered: Array<Record<string, unknown>> = [];
-      const el = { dataset: { sitekey: "key", action: "demo_start" } };
-      const window: Record<string, unknown> = {
-        matchMedia: (query: string) => ({ matches: narrow && query === "(max-width: 365px)" }),
-        turnstile: {
-          render: (_el: unknown, opts: Record<string, unknown>) => rendered.push({ ...opts }),
-        },
-      };
-      runInNewContext(js, { window, document: { querySelectorAll: () => [el] } });
-      (window.bookclerkDemoTurnstile as () => void)();
-      assert.deepEqual(JSON.parse(JSON.stringify(rendered)), [
-        { sitekey: "key", action: "demo_start", size: narrow ? "compact" : "normal" },
-      ]);
-    }
   });
 
   it("leaves the estimate out until one is known, and the form out when not set up", () => {

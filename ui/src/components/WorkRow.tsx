@@ -1,8 +1,9 @@
 import { CoverThumb } from "@/components/CoverThumb";
-import { Download } from "lucide-react";
+import { Download, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { editionCoverUrl, type AcquireStatus, type MediaKind, type WorkSummary } from "@/lib/api";
+import { rowOffersPlay } from "@/lib/playTarget";
 import { cn } from "@/lib/utils";
 
 const statusStyles: Record<AcquireStatus, string> = {
@@ -20,20 +21,24 @@ const mediaLabels: Record<MediaKind, string> = {
 };
 
 /**
- * One library row: a work's cover, title, people and acquire affordance.
+ * One library row: a work's cover, title, people, and its play or acquire
+ * button.
  *
- * @param props - Work, handlers, busy flag, and acquire visibility.
+ * @param props - Work, handlers, busy flag, and acquire visibility. With
+ *   `onPlay`, a work whose audio is acquired shows a play button.
  */
 export function WorkRow({
   work,
   onAcquire,
   onOpen,
+  onPlay,
   busy,
   showAcquire = true,
 }: {
   work: WorkSummary;
   onAcquire: (work: WorkSummary) => void;
   onOpen?: (work: WorkSummary) => void;
+  onPlay?: (work: WorkSummary) => void;
   busy: boolean;
   showAcquire?: boolean;
 }) {
@@ -98,6 +103,18 @@ export function WorkRow({
         ) : null}
       </div>
       <div className="flex shrink-0 items-center">
+        {onPlay && rowOffersPlay(work) ? (
+          <Button
+            variant="secondary"
+            className="px-2.5 py-1.5"
+            onClick={() => onPlay(work)}
+            title="Play"
+            aria-label={`Play ${work.title}`}
+          >
+            <Play className="h-4 w-4" />
+            <span className="hidden sm:inline">Play</span>
+          </Button>
+        ) : null}
         {showAcquire && work.acquire_status !== "acquired" ? (
           <Button
             variant="secondary"
