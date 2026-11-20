@@ -139,6 +139,10 @@ pub enum LibraryCommand {
         /// ingest job.
         #[arg(long)]
         no_wait: bool,
+        /// Continue an earlier upload of the same paths that did not
+        /// finish, from the bytes the daemon already holds.
+        #[arg(long, value_name = "UPLOAD_ID")]
+        resume: Option<String>,
     },
     /// Match storage files to library rows and update acquire status.
     ///
@@ -276,8 +280,13 @@ pub(crate) enum FilterCommand {
 /// Dispatches a `library` subcommand against the opened library store.
 pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()> {
     // An upload goes to the running daemon over HTTP; it opens no host here.
-    if let LibraryCommand::Upload { paths, no_wait } = command {
-        return crate::commands::upload::run(config, paths, !no_wait).await;
+    if let LibraryCommand::Upload {
+        paths,
+        no_wait,
+        resume,
+    } = command
+    {
+        return crate::commands::upload::run(config, paths, !no_wait, resume).await;
     }
     let host = open_host(config).await?;
     // Database-authoritative domains (`core.events`, `core.output`) are

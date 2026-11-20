@@ -92,8 +92,14 @@ bookclerk library upload "~/Audiobooks/The Hobbit" dune.zip
 ```
 
 The command needs a running `bookclerkd`. It prints each file's outcome
-when the job ends; `--no-wait` returns once the upload is committed. See
-the [CLI reference](cli-reference.md).
+when the job ends; `--no-wait` returns once the upload is committed.
+
+A dropped connection doesn't start a file over: the command retries with
+growing waits and sends from the bytes the daemon already holds. If it
+gives up, it prints the upload's id; run the same command with
+`--resume <id>` to continue from where each file stands. Staged bytes
+survive a daemon restart and wait 24 hours. See the
+[CLI reference](cli-reference.md).
 
 ## HTTP routes
 

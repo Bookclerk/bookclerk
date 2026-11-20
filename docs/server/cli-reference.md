@@ -188,6 +188,7 @@ Arguments:
 Options:
 
 - `--no-wait`: Commit the upload and print its job id without waiting for the ingest job
+- `--resume <UPLOAD_ID>`: Continue an earlier upload of the same paths that did not finish, from the bytes the daemon already holds
 
 ### `bookclerk library set-status`
 
