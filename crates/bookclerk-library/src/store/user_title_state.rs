@@ -135,6 +135,48 @@ impl LibraryStore {
         Ok(out)
     }
 
+    /// One user's stored state for each of `work_ids`, read in chunks
+    /// that fit the database's limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - The user (`users.id`).
+    /// * `work_ids` - Works whose state to read; duplicates are read once.
+    ///
+    /// # Returns
+    ///
+    /// The stored rows, one per work the user has state for, ordered by
+    /// work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn user_title_states_of_works(
+        &self,
+        user_id: i64,
+        work_ids: &[String],
+    ) -> Result<Vec<UserTitleState>> {
+        let ids: Vec<String> = work_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        // `(user_id, work_id)` is the key, so each work names at most one row.
+        Ok(
+            super::library_model::find_chunked::<user_title_state::Entity, _>(self, &ids, |part| {
+                user_title_state::Entity::find()
+                    .filter(user_title_state::Column::UserId.eq(user_id))
+                    .filter(user_title_state::Column::WorkId.is_in(part.iter().cloned()))
+                    .order_by_asc(user_title_state::Column::WorkId)
+            })
+            .await?
+            .into_iter()
+            .map(map_state)
+            .collect(),
+        )
+    }
+
     /// The users linked to a storefront account: the users of the portal
     /// identities whose account links name it.
     ///
@@ -673,6 +715,74 @@ mod tests {
         assert_eq!(states[0].user_id, ana.id);
         assert_eq!(states[0].work_id, work);
         assert!(states[0].is_finished);
+    }
+
+    /// One person's state for chosen works reads under every profile, the
+    /// one-row Minimum included, and leaves out other people's rows and
+    /// works they never touched.
+    #[tokio::test]
+    async fn one_persons_state_for_chosen_works_reads_under_every_profile() {
+        for profile in Profile::ALL {
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let name = profile.name();
+            let ana = store
+                .create_user(UserRole::Owner, Some("Ana"), None)
+                .await
+                .unwrap();
+            let ben = store
+                .create_user(UserRole::Member, Some("Ben"), None)
+                .await
+                .unwrap();
+            let titles = [
+                "The Left Hand of Darkness",
+                "The Dispossessed",
+                "The Lathe of Heaven",
+            ];
+            let mut works = Vec::new();
+            for title in titles {
+                works.push(work(store, title).await);
+            }
+            for (user, finished) in [(ana.id, true), (ben.id, false)] {
+                for work in &works[..2] {
+                    store
+                        .set_user_title_state(
+                            user,
+                            work,
+                            &UserBookFields {
+                                is_finished: Some(finished),
+                                tags: Some(format!("tag-{user}")),
+                                ..UserBookFields::default()
+                            },
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+            let mut asked = works.clone();
+            asked.push(works[0].clone());
+            let states = store
+                .user_title_states_of_works(ana.id, &asked)
+                .await
+                .unwrap();
+            assert_eq!(states.len(), 2, "{name}");
+            assert!(
+                states
+                    .iter()
+                    .all(|state| state.user_id == ana.id && state.is_finished),
+                "{name}"
+            );
+            let mut read: Vec<&str> = states.iter().map(|s| s.work_id.as_str()).collect();
+            read.sort_unstable();
+            let mut expected: Vec<&str> = works[..2].iter().map(String::as_str).collect();
+            expected.sort_unstable();
+            assert_eq!(read, expected, "{name}");
+            assert!(store
+                .user_title_states_of_works(ana.id, &[])
+                .await
+                .unwrap()
+                .is_empty());
+        }
     }
 
     /// A store account belongs to one identity (`account_links` is

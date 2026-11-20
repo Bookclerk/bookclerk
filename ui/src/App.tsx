@@ -34,6 +34,7 @@ import {
   viewFromPath,
 } from "@/lib/routes";
 import { showStatusNav } from "@/lib/nav";
+import { setPricesVisible } from "@/lib/pricesVisible";
 import type { SettingsTab } from "@/components/SettingsPage";
 
 const AccountsPage = lazy(() =>
@@ -117,8 +118,6 @@ function formatAuthRole(role?: AuthRole | string): string {
       return "Owner";
     case "administrator":
       return "Administrator";
-    case "host":
-      return "Host";
     case "member":
       return "Member";
     case "operator":
@@ -135,6 +134,10 @@ export default function App() {
   const [auth, setAuth] = useState<AuthState>("loading");
   const [session, setSession] = useState<AuthSession | null>(null);
   const { setPreference: setThemePreference } = useTheme();
+  // Store links the app builds itself follow the patron's member controls.
+  useEffect(() => {
+    setPricesVisible(session?.see_prices ?? true);
+  }, [session]);
   // Join a library pages own their URL until they hand over to the app.
   const [join, setJoin] = useState(() => {
     restoreApproveReturn();
@@ -395,7 +398,13 @@ export default function App() {
 
   const canAcquire = session.can_acquire;
   const role = session.role;
-  const nav = { view, onNavigate: navigate, defaultView: session.default_view, role };
+  const nav = {
+    view,
+    onNavigate: navigate,
+    defaultView: session.default_view,
+    role,
+    administersNodes: session.administers_nodes,
+  };
 
   let page = <LibraryPage onLogout={onLogout} canAcquire={canAcquire} nav={nav} role={role} />;
 
@@ -418,7 +427,7 @@ export default function App() {
     );
   } else if (view === "discover") {
     page = <DiscoverPage onLogout={onLogout} nav={nav} role={role} />;
-  } else if (view === "status" && showStatusNav(role)) {
+  } else if (view === "status" && showStatusNav(role, session.administers_nodes)) {
     page = <StatusPage onLogout={onLogout} nav={nav} role={role} />;
   }
 

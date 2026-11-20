@@ -6,7 +6,7 @@
 //! have it. With no include rules every book passes; with any, a book must
 //! match at least one. An exclude rule always wins over an include.
 //!
-//! Owners and Administrators are never scoped. A Member or Host follows the
+//! Owners and Administrators are never scoped. A Member follows the
 //! library's default scope (the `core.patron_scope` library document) until
 //! an Administrator gives them their own (a `patron_scopes` row). Out of the
 //! box the default has no rules, so it restricts nothing.
@@ -438,12 +438,12 @@ pub struct AssignedScope {
     pub own: bool,
 }
 
-/// Whether a role is ever scoped: Members and Hosts are patrons, while
+/// Whether a role is ever scoped: Members are patrons, while
 /// Owners and Administrators always see the whole library.
 #[must_use]
 pub fn role_is_scoped(role: UserRole) -> bool {
     match role {
-        UserRole::Member | UserRole::Host => true,
+        UserRole::Member => true,
         UserRole::Owner | UserRole::Administrator => false,
     }
 }
@@ -1110,7 +1110,6 @@ mod tests {
     #[test]
     fn only_patrons_are_scoped() {
         assert!(role_is_scoped(UserRole::Member));
-        assert!(role_is_scoped(UserRole::Host));
         assert!(!role_is_scoped(UserRole::Administrator));
         assert!(!role_is_scoped(UserRole::Owner));
     }

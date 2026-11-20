@@ -21,6 +21,7 @@ mod catalog_search;
 mod embed;
 /// Discover crate error types for shelves, embeddings, and catalog search.
 mod error;
+mod hide_prices;
 mod identity;
 mod listening;
 mod metadata_enrich;
@@ -90,7 +91,9 @@ pub use shelves::{
     DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste, SERIES_CAP,
 };
 pub use title_meta::{
-    resolve_title_meta, resolve_title_meta_batch, resolve_title_reviews, TitleMeta, TitleMetaQuery,
-    TitleReview, TitleReviewsPage, TitleReviewsQuery,
+    check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_batch,
+    resolve_title_reviews, FillLookup, FillStoreLookups, TitleMeta, TitleMetaQuery,
+    TitleMetaQueryProblem, TitleReview, TitleReviewsPage, TitleReviewsQuery,
+    TITLE_META_MAX_STORE_EDITIONS,
 };
 pub use wish_pool::{pool_wish_editions, PooledEdition, MAX_WISH_EDITIONS};

@@ -265,14 +265,14 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(plugin_key, account_id)",
     ),
-    // The operator's per-member rule "may connect store accounts here". No
-    // row means allowed (the default); `may_connect = 0` refuses a connect
-    // on this instance and any account that arrives for the member from
-    // another library (`control_plane::carried_accounts`).
+    // One Member's overrides of the library's default member controls
+    // (`control_plane::member_controls`): JSON with only the controls that
+    // differ from the default. No row means the Member follows the
+    // default for every control.
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS member_account_rules (
+        r"CREATE TABLE IF NOT EXISTS patron_controls (
         user_id INTEGER PRIMARY KEY,
-        may_connect INTEGER NOT NULL,
+        controls_json TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )",
@@ -1583,6 +1583,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // `probed_at`) and the storefront the copy came from (`source_store`)
     // decide whether a later copy of the same edition replaces it, and tell
     // a branch what the library's copy is before it asks for it.
+    // `copy_format` and `copy_quality` name the library copy
+    // (`output.copies`) an acquire wrote an audio file for (`m4b` /
+    // `original`, `mp3` / `64k-mono`); both are null for files that belong
+    // to no one copy (sidecars, the PDF) and for uploads.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_files (
         destination TEXT NOT NULL,
@@ -1596,6 +1600,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         source_store TEXT,
         probed_at TEXT,
         sha256 TEXT,
+        copy_format TEXT CHECK (copy_format IN ('m4b', 'mp3', 'mp3_chapters', 'original')),
+        copy_quality TEXT,
         writer TEXT NOT NULL,
         written_at TEXT NOT NULL,
         PRIMARY KEY (destination, storage_key)
@@ -1948,6 +1954,74 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
+    // How far one person has listened to one edition (the built-in
+    // player, `docs/adr/playback.md`): a position on the edition's
+    // timeline, the runtime the last player reported, and whether they
+    // reached its end. Keyed by person and edition, so two recordings of
+    // one book keep separate positions; "finished" for the book as a whole
+    // is `user_title_state.is_finished`, set in the same batch.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS playback_progress (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        position_ms INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER,
+        is_finished INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, edition_id)
+    )",
+    ),
+    // Continue listening reads one person's rows, most recent first.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_playback_progress_recent ON playback_progress(user_id, updated_at)",
+    ),
+    // One stretch of listening on one player. The row is also the leave to
+    // stream the edition's files from `destination` on `serving_node_id`:
+    // every stream request checks the person's right to the edition again
+    // and that the files are still the ones `files_digest` was made from.
+    // Closed sessions stay as listening history.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS playback_sessions (
+        id TEXT PRIMARY KEY NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        serving_node_id TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        files_digest TEXT NOT NULL,
+        client_kind TEXT NOT NULL CHECK (client_kind IN ('web', 'desktop', 'app')),
+        client_name TEXT NOT NULL DEFAULT '',
+        start_position_ms INTEGER NOT NULL DEFAULT 0,
+        position_ms INTEGER NOT NULL DEFAULT 0,
+        listened_ms INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        closed_at TEXT
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_playback_sessions_user ON playback_sessions(user_id, started_at)",
+    ),
+    // Places a person marked in an edition, listed in timeline order.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS bookmarks (
+        id TEXT PRIMARY KEY NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        position_ms INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_bookmarks_place ON bookmarks(user_id, edition_id, position_ms)",
+    ),
+    // The `playback` live topic: someone's progress or bookmarks changed.
+    MigrationOp::Data(
+        r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES ('playback', 0)",
+    ),
 ];
 
 #[cfg(test)]
@@ -2049,6 +2123,11 @@ mod tests {
             "library_work_rows",
             "acquire_status",
             crate::AcquireStatus::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "playback_sessions",
+            "client_kind",
+            crate::PlayerKind::ALL.iter().map(|k| k.as_str()),
         );
     }
 }

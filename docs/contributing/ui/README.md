@@ -192,9 +192,9 @@ plugins and `ui/dist` through `bookclerk_sandbox::packaged_runtime_dirs`.
 Every candidate is a fixed path relative to the executable, never one from
 the environment or the working directory.
 
-The [Desktop packages](../ci.md#other-workflows) workflow builds all
-three on pull requests that change the packaging, weekly and on demand, and
-uploads them as workflow artifacts. Nothing is signed or published yet.
+The [Desktop packages](../packaging.md#desktop-packages) workflow builds
+all three nightly when `main` has moved, on demand, and for a published
+release, which they are attached to. Nothing is signed yet.
 
 ### Advisories the desktop window brings in
 

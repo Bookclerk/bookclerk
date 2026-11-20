@@ -42,6 +42,8 @@ bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
 bookclerk-storage = { path = "../crates/bookclerk-storage" }
 # window_policy drives the desktop window's custom-scheme policy.
 bookclerk-window-policy = { path = "../crates/bookclerk-window-policy" }
+# title_meta_fill checks title-meta queries and the store lookups they plan.
+bookclerk-discover = { path = "../crates/bookclerk-discover" }
 http = "1"
 # The storage_reply oracle reads per-key outcomes straight from the message.
 capnp = "0.27"
@@ -132,6 +134,13 @@ bench = false
 [[bin]]
 name = "scan_page"
 path = "fuzz_targets/scan_page.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "output_copies"
+path = "fuzz_targets/output_copies.rs"
 test = false
 doc = false
 bench = false
@@ -347,6 +356,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "member_controls_request"
+path = "fuzz_targets/member_controls_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "patron_scope_request"
 path = "fuzz_targets/patron_scope_request.rs"
 test = false
@@ -356,6 +372,13 @@ bench = false
 [[bin]]
 name = "work_split_request"
 path = "fuzz_targets/work_split_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "playback_request"
+path = "fuzz_targets/playback_request.rs"
 test = false
 doc = false
 bench = false
@@ -454,6 +477,13 @@ bench = false
 [[bin]]
 name = "s3_event"
 path = "fuzz_targets/s3_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "title_meta_fill"
+path = "fuzz_targets/title_meta_fill.rs"
 test = false
 doc = false
 bench = false

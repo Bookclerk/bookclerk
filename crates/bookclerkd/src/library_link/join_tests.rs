@@ -1347,3 +1347,67 @@ async fn a_keeping_branch_pushes_its_newer_sign_ins_up_the_link() {
         );
     }
 }
+
+/// A card or branch is replaced only at the library it was made for, with
+/// the certificate pinned then; each refusal names the held thing.
+#[tokio::test]
+async fn a_replacement_is_refused_at_another_library_or_certificate() {
+    use super::{refuse_other_library, Replacing};
+
+    async fn error_of(response: axum::response::Response) -> (StatusCode, Value) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).expect("json"))
+    }
+
+    let library = bookclerk_node_client::InspectedLibrary {
+        info: serde_json::from_value(json!({
+            "library_id": "lib-1",
+            "library_name": "library.example",
+            "origin": "https://library.example",
+            "transport": "tls",
+            "enrollment": true,
+            "software_version": "1.0.0",
+        }))
+        .expect("info"),
+        origin: "https://library.example".into(),
+        spki_pin: Some("pin-now".into()),
+    };
+    for replacing in [Replacing::Card, Replacing::Branch] {
+        assert!(refuse_other_library(&library, "lib-1", Some("pin-now"), replacing).is_none());
+
+        let (status, body) = error_of(
+            refuse_other_library(&library, "lib-2", Some("pin-now"), replacing)
+                .expect("another library"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "origin_mismatch");
+        let other = body["detail"].as_str().expect("detail").to_string();
+
+        let (status, body) = error_of(
+            refuse_other_library(&library, "lib-1", Some("pin-then"), replacing)
+                .expect("changed certificate"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "fingerprint_unconfirmed");
+        let changed = body["detail"].as_str().expect("detail").to_string();
+
+        let (status, body) = error_of(
+            refuse_other_library(&library, "lib-1", None, replacing).expect("newly pinned"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "fingerprint_unconfirmed");
+
+        let held = match replacing {
+            Replacing::Card => "card",
+            Replacing::Branch => "branch",
+        };
+        assert!(other.contains(held), "{other}");
+        assert!(changed.contains("certificate"), "{changed}");
+    }
+}
