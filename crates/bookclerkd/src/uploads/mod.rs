@@ -850,27 +850,26 @@ pub(crate) async fn list_upload_review(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<ReviewQuery>,
-) -> Result<Json<ReviewPage>, UploadError> {
-    crate::auth::library_administrator(&state, &headers)
-        .await
-        .map_err(|status| {
+) -> Result<Json<ReviewPage>, Response> {
+    if let Err(refusal) = crate::auth::library_administrator(&state, &headers).await {
+        return Err(refusal.answer(|status| {
             if status == StatusCode::UNAUTHORIZED {
                 refused(status, "sign in first")
             } else {
                 refused(status, "only an Administrator can review uploads")
             }
-        })?;
+        }));
+    }
     let after = match query.cursor.as_deref() {
         None => None,
-        Some(raw) => Some(
-            parse_review_cursor(raw)
-                .ok_or_else(|| refused(StatusCode::BAD_REQUEST, "invalid page cursor"))?,
-        ),
+        Some(raw) => Some(parse_review_cursor(raw).ok_or_else(|| {
+            refused(StatusCode::BAD_REQUEST, "invalid page cursor").into_response()
+        })?),
     };
     let library = state.library_snapshot().await;
     let items = review_items(&library, after.as_ref().map(|(id, no)| (id, *no)))
         .await
-        .map_err(|err| failed("review items", &err))?;
+        .map_err(|err| failed("review items", &err).into_response())?;
     let next_cursor = items
         .last()
         .map(|item| format!("{}:{}", item.batch_id, item.member_no));

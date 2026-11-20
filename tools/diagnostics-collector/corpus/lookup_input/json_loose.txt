@@ -1,0 +1,2 @@
+application/json; charset=utf-8
+{"access_code":"k7qm3xrdpw9th2cf","report_id":" 3F2A9C4E-7B1D-4E8A-9C0F-1A2B3C4D5E6F "}

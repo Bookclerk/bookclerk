@@ -12,7 +12,7 @@ Bookclerk keeps settings in three places:
   or `BOOKCLERK_CONFIG`). The annotated template is
   [`config/config.example.toml`](../../config/config.example.toml).
 - **The library database**, for settings every host shares:
-  `core.events`, `core.output`, `core.cache`, host enrollment, and every
+  `core.events`, `core.output`, `core.cache`, branch enrollment, and every
   plugin's settings.
 - **Bootstrap files** the process needs before it can open the database;
   see [Bootstrap files](#bootstrap-files).
@@ -188,8 +188,8 @@ node, and a pass every 60 seconds catches a missed one.
 - Retention and the in-flight cap apply on the next dispatcher tick. The
   number of local delivery tasks is fixed at process start.
 
-The shared `[output]` table follows the same model; see
-[Output (shared)](#output-shared). `[library]`, `[jobs]`, media, plugins
+`core.output`, which the `[output]` table seeds, is stored and applied
+the same way; see [Output (shared)](#output-shared). `[library]`, `[jobs]`, media, plugins
 and diagnostics are still TOML and environment settings.
 
 ### Retention and concurrency
@@ -242,20 +242,20 @@ design is in
 
 ### Let hosts join
 
-Host enrollment is a library-wide document, `core.host_enrollment`, and
+Branch enrollment is a library-wide document, `core.branch_enrollment`, and
 it is on by default. In the web app it is **Settings → Branches → Let new
 branches join**.
 
 - The operator turns it off with the CLI:
 
   ```sh
-  bookclerk config get host_enrollment.enabled
-  bookclerk config set host_enrollment.enabled false
+  bookclerk config get branch_enrollment.enabled
+  bookclerk config set branch_enrollment.enabled false
   ```
 
 - An Owner (or the operator) can use
-  `PUT /api/config/host-enrollment` with `{"enabled": false}`.
-- Any signed-in user can read it with `GET /api/config/host-enrollment`.
+  `PUT /api/config/branch-enrollment` with `{"enabled": false}`.
+- Any signed-in user can read it with `GET /api/config/branch-enrollment`.
 
 While it is on, a branch can join with a sign-in (**Join a library**).
 
@@ -549,11 +549,14 @@ bookclerk config set output.replacement_characters '[{"find":":","replace":"-"}]
   `output_revision`. Send that back as `expected_output_revision`; a stale
   value returns 409 and writes nothing. The web app always sends it.
 - `output.revision` under `effective` is the revision this host has
-  applied, which can lag until the host's next wakeup.
+  applied, which can lag until the host's next wakeup. The `output.*`
+  values under `effective` are that applied revision's values, so they
+  can differ from `settings` until then.
 - A request mixing `output.*` with `events.*` or file-backed keys is
   rejected before anything is written.
 
-The web app edits this document in **Settings → Output**.
+The web app edits this document in **Settings → Output**. The fields
+lock while a save is in flight, then show the saved revision.
 
 ### What stays per host
 

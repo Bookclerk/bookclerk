@@ -48,9 +48,10 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{JobResourceClass, LibraryStore};
 use bookclerk_node_proto::{
-    open_secret_update, seal_instance_secrets, seal_secrets, Body, ClaimFilter, Frame, HeldFence,
-    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, ScanToken, SecretEntry, SecretRef,
-    SecretValue, WorkJob, ITEM_JOB, MAX_FRAME_BYTES, MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS,
+    open_secret_update, seal_instance_secrets, seal_secrets, Body, BranchOrigin, ClaimFilter,
+    Frame, HeldFence, RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, ScanToken,
+    SecretEntry, SecretRef, SecretValue, WorkJob, ITEM_JOB, MAX_FRAME_BYTES,
+    MAX_SCAN_SYNC_TOKEN_BYTES, MAX_SCAN_TOKENS,
 };
 use rand::RngCore as _;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -142,6 +143,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             cpu_used_millicores,
             memory_available_bytes,
             files_dir_free_bytes,
+            public_origin,
         } => {
             let heartbeat = NodeHeartbeat {
                 incarnation: host.incarnation.clone(),
@@ -155,8 +157,14 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 cpu_used_millicores: cpu_used_millicores.map(|v| v.max(0)),
                 memory_available_bytes: memory_available_bytes.map(|v| v.max(0)),
                 files_dir_free_bytes: files_dir_free_bytes.map(|v| v.max(0)),
-                // A Host keeps no image cache of its own.
+                // A branch keeps no image cache of its own.
                 cache: None,
+                // An address that is not a plain http(s) origin is not kept:
+                // the branch counts as local until it reports a good one.
+                public_origin: public_origin
+                    .as_deref()
+                    .and_then(BranchOrigin::parse)
+                    .map(BranchOrigin::into_string),
             };
             record_node_heartbeat(library, &host.node_id, &heartbeat)
                 .await

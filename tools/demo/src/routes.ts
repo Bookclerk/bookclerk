@@ -112,8 +112,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/config/library-consents/revoke", "deny"],
   ["POST", "/api/config/libraries/{library_id}/jobs", "deny"],
   ["POST", "/api/config/libraries/{library_id}/scan", "deny"],
-  ["GET", "/api/config/host-enrollment", "allow"],
-  ["PUT", "/api/config/host-enrollment", "deny"],
+  ["GET", "/api/config/branch-enrollment", "allow"],
+  ["PUT", "/api/config/branch-enrollment", "deny"],
   ["GET", "/api/config/join", "allow"],
   ["POST", "/api/config/join/callback", "deny"],
   ["POST", "/api/config/join/connections", "deny"],
@@ -155,6 +155,10 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PATCH", "/api/settings", "deny"],
   // The visitor's own copy's sent diagnostics reports: read-only.
   ["GET", "/api/diagnostics/reports", "allow"],
+  // Reading a report back or deleting it calls the real collector with the
+  // copy's access code: refused.
+  ["GET", "/api/diagnostics/reports/{id}", "deny"],
+  ["DELETE", "/api/diagnostics/reports/{id}", "deny"],
 
   // Plugins: the image's own storefronts only; no installs or changes.
   ["GET", "/api/config/plugin-instances", "allow"],

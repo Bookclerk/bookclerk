@@ -416,10 +416,15 @@ When the library does not answer in time to check a portal session (a
 busy or still-starting server), `/api/auth/me` and the signed-in API routes
 answer `503` with `Retry-After` and the slug `session_check_unavailable`,
 not `401`. The request is still refused, but the web app waits and asks
-again instead of showing the sign-in screen. A few handlers that check the
-session again themselves, such as elevation and the session list, still
-answer `401` in that case
-([#726](https://github.com/Bookclerk/bookclerk/issues/726)).
+again instead of showing the sign-in screen. The routes that check the
+session themselves (elevation, passwords, users, sessions, passkeys, the
+authenticator app, the profile and linked sign-in identities) answer the
+same way.
+
+> [!NOTE]
+> A request that carries the operator token still goes ahead when it also
+> carries a portal cookie that cannot be checked: deleting a user and
+> setting a user's password do not wait on the portal session.
 
 ## Client routes
 

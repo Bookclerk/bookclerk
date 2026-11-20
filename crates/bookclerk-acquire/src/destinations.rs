@@ -113,6 +113,67 @@ impl AcquireDestinations {
         })
     }
 
+    /// Splits the destinations into the ones that answer a listing now and
+    /// the ones that do not.
+    ///
+    /// An acquire run lists every destination before it starts. One that
+    /// is offline is left out of the run rather than failing it: the
+    /// titles go to the destinations that answer, and the missing copies
+    /// are written by a later run once it is back. The primary stays the
+    /// primary when it answers; otherwise the first destination that does
+    /// becomes it.
+    ///
+    /// # Returns
+    ///
+    /// The destinations that answered, and each one that did not with its
+    /// listing error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcquireError::NoDestinationReachable`] when none answers.
+    pub async fn reachable(&self) -> Result<(AcquireDestinations, Vec<(DestinationId, String)>)> {
+        let probes = futures::future::join_all(
+            self.items
+                .iter()
+                .map(|dest| async move { (dest, dest.backend.list_page("", None, 1).await) }),
+        )
+        .await;
+        let mut items = Vec::new();
+        let mut unreachable = Vec::new();
+        for (dest, probe) in probes {
+            match probe {
+                Ok(_) => items.push(AcquireDestination {
+                    id: dest.id.clone(),
+                    backend: dest.backend.clone_box(),
+                    options: dest.options.clone(),
+                    filter: dest.filter.clone(),
+                }),
+                Err(err) => unreachable.push((dest.id.clone(), err.to_string())),
+            }
+        }
+        let primary = if items.iter().any(|dest| dest.id == self.primary) {
+            self.primary.clone()
+        } else {
+            items.first().map(|dest| dest.id.clone()).ok_or_else(|| {
+                AcquireError::NoDestinationReachable {
+                    errors: unreachable
+                        .iter()
+                        .map(|(id, err)| format!("{id}: {err}"))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                }
+            })?
+        };
+        Ok((
+            AcquireDestinations {
+                items,
+                primary,
+                multi_destination: self.multi_destination,
+            },
+            unreachable,
+        ))
+    }
+
     /// The copies of each book this acquire makes and the destinations
     /// that receive each, in order: the main output's copy first, then
     /// `output.copies` (see [`bookclerk_source::DownloadOptions::copies_to_make`],
@@ -310,6 +371,40 @@ mod tests {
         let err = all.for_book(&podcast()).err().unwrap();
         assert!(matches!(err, AcquireError::NoDestinationAccepts));
         assert_eq!(err.to_string(), "no destination accepts this book");
+    }
+
+    #[tokio::test]
+    async fn a_destination_that_cannot_be_listed_is_left_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let all = AcquireDestinations {
+            items: vec![
+                destination(tmp.path(), "local", DestinationFilter::default()),
+                destination(tmp.path(), "second", DestinationFilter::default()),
+            ],
+            primary: DestinationId::new("local").unwrap(),
+            multi_destination: MultiDestinationMode::SyncMissing,
+        };
+        let (reachable, unreachable) = all.reachable().await.unwrap();
+        assert_eq!(reachable.len(), 2);
+        assert!(unreachable.is_empty());
+
+        // The primary's root is a file now, so listing it fails.
+        std::fs::remove_dir_all(tmp.path().join("local")).unwrap();
+        std::fs::write(tmp.path().join("local"), b"not a folder").unwrap();
+        let (reachable, unreachable) = all.reachable().await.unwrap();
+        let ids: Vec<&str> = reachable.items.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["second"]);
+        assert_eq!(reachable.primary.as_str(), "second");
+        assert_eq!(unreachable.len(), 1);
+        assert_eq!(unreachable[0].0.as_str(), "local");
+
+        std::fs::remove_dir_all(tmp.path().join("second")).unwrap();
+        std::fs::write(tmp.path().join("second"), b"not a folder").unwrap();
+        let err = all.reachable().await.err().expect("nothing answers");
+        assert!(
+            matches!(err, AcquireError::NoDestinationReachable { .. }),
+            "{err}"
+        );
     }
 
     #[test]
