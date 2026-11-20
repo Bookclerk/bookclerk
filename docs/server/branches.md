@@ -274,11 +274,15 @@ accounts and which of them would travel.
   can turn it off for one Administrator too; Owners are never limited. A member it is off for adds nothing from a join,
   and the connect routes answer `403`. A sign-in that finishes after the
   control was turned off is not linked, and an account it newly stored
-  (or found revoked) is revoked again and its secrets deleted. A join
-  already adding accounts when the control is turned off (or the member
-  is disabled) stops: each account is added in its own batch that checks
-  the member's controls again, and the ones not yet added count as not
-  kept.
+  (or found revoked) is revoked again and its secrets deleted. That
+  cleanup, an allowed sign-in's link and a revoke of the same store
+  account each take the account's write lock (`bookclerk_slots`) first,
+  so an allowed sign-in of the same account either links before the
+  cleanup (which then keeps it) or finds its credentials gone and asks the
+  member to sign in again. A join already adding accounts when the control
+  is turned off (or the member is disabled) stops: each account is added
+  in its own batch that checks the member's controls again, and the ones
+  not yet added count as not kept.
 
 ### Adding connections later, and disconnecting everywhere
 
