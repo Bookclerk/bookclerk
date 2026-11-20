@@ -52,8 +52,12 @@ third-party binary.
 2. **Notification types and audiences.** The host keeps a registry of
    notification types, each with an audience:
    - *account* (invite, password reset, verify email, password changed,
-     new sign-in, recovery started): cannot be turned off, and goes only
-     through the email instance the administrators mark for account mail;
+     new sign-in, recovery started): cannot be turned off and is reserved
+     to the host. Anything carrying a link goes only through the email
+     instance the administrators mark for account mail. The security
+     notices (password changed, new sign-in, recovery started) also go,
+     without any link, to the inbox and the patron's other verified
+     personal destinations, telling them to check their email or sign in;
    - *operational*: administrators route each type to library channels
      (a Slack channel, a Discord webhook, a PagerDuty service, email to
      administrators) with a minimum severity, and alerts may carry a
@@ -79,7 +83,9 @@ third-party binary.
    never log them.
 4. **Plugins raise their own types.** Any plugin may declare
    `[[notifications.types]]` (id, audience, severity, title) and raise
-   them through an `env.NOTIFY.raise` binding. They appear in the routing
+   them through an `env.NOTIFY.raise` binding. A plugin may declare only
+   operational and patron types; the account audience is the host's. They
+   appear in the routing
    matrix beside the host's types, any notifier can carry them, and the
    raising plugin never learns where they went. A raise is handed to the
    router, which turns it into jobs. A patron-audience raise must name a
@@ -113,17 +119,23 @@ third-party binary.
    message and `integrations.public_origin` is set. Administrator resets
    keep working and can also email the link.
 8. **Recovering a lost second factor.** A patron who forgot their
-   password has often lost their authenticator too. Recovery is a ladder:
+   password has often lost their authenticator too. Recovery starts only
+   from a password-reset link (decision 7), so it needs control of a
+   verified email address, and that address is the channel that can
+   cancel it. Recovery is a ladder:
    a passkey sign-in (passkeys usually sync); new single-use recovery
    codes, 10 issued when a second factor is enrolled, stored with Argon2id
    and regenerable; administrator approval of a recovery request, under
    the same rules as provisioning; and, when no administrator approves or
    for the only Owner, delayed self-recovery that completes after 3 days
    (Members and Hosts) or 7 days (Administrators and Owners), adjustable
-   or switchable off by Owners. A recovery notice goes to every verified
-   destination and the inbox when it starts and daily after, each with a
-   single-use link that cancels it without signing in, and any successful
-   sign-in cancels it. Other Owners hear of recoveries of administrator
+   or switchable off by Owners. A recovery notice goes by account mail to
+   the verified address when it starts and daily after, each with a
+   single-use link that cancels it without signing in; the link-free
+   security notice also reaches the inbox and the patron's other verified
+   destinations, and any successful sign-in cancels it. An account
+   without a verified email address cannot start delayed recovery: it
+   recovers through an administrator or the operator. Other Owners hear of recoveries of administrator
    accounts. The operator can recover a user from the host's command
    line. Every step is throttled, answers the same whether or not the
    account exists, and leaves an audit row without tokens.
