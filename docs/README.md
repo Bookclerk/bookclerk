@@ -36,6 +36,7 @@ others go deeper.
 - [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
 - [Libraries and branches](server/branches.md): join a library, shared branches and consent
 - [Media worker](server/media.md): the confined process that handles audio files
+- [Playback reference](server/playback.md): what the daemon stores and serves for players
 - [Backups, updates, import and export](server/backups.md): native backups, schema backups, updating, Libation and PostgreSQL export
 - [Diagnostics](server/diagnostics.md): opt-in error reports
 - [CLI reference](server/cli-reference.md): every built-in `bookclerk` command and option (generated)
@@ -106,5 +107,6 @@ Build and agent conventions for this repository live in
 - [Library catalog network](adr/library-catalog-network.md): a branch of several libraries, what each library owns, and how libraries list and lend books
 - [Metadata claims and file sync](adr/metadata-claims-and-file-sync.md): every value is a claim with its source, one resolver, evidence-based works, and two-way sync with tags and sidecar files
 - [Patron scopes and linked sign-in](adr/patron-scopes.md): which part of the library a Member sees, and how a linked server's permissions follow one authority
+- [Playback](adr/playback.md): playback is a host feature with one core that the web player, the desktop window and app-compatible clients share
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks
 - [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins
