@@ -48749,6 +48749,13 @@
             "type": "string",
             "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups.",
             "example": "us"
+          },
+          "store_editions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoreEdition"
+            },
+            "description": "Store editions that listed this title (the search hit's or card's\n`store_editions`), at most 16. A sparse record is filled from each of\nthese stores that declared `detailByProductId`, by the product id it\ngave the title, before the stores that declared `detailByIsbn` are\nasked by ISBN."
           }
         }
       },

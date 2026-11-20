@@ -576,6 +576,10 @@ export function TitleDetailModal({
     initial.work_id,
   ]);
 
+  // The stores that listed the title, so title-meta can ask them for their
+  // own product pages (a stable key for the effect below).
+  const metaEditionsKey = JSON.stringify(initial.store_editions ?? []);
+
   // Public Audnexus / catalog blurb, runtime, publisher, ratings (all detail surfaces).
   useEffect(() => {
     const hasBlurb = descriptionLooksComplete(initial.description);
@@ -606,6 +610,7 @@ export function TitleDetailModal({
           isbn: initial.isbn,
           narrators: initial.narrators,
           length_minutes: initial.length_minutes,
+          store_editions: JSON.parse(metaEditionsKey) as StoreEdition[],
         });
         if (cancelled || !meta) return;
         setDetail((d) => mergePublicMeta(d, meta));
@@ -628,6 +633,7 @@ export function TitleDetailModal({
     initial.publisher,
     initial.categories,
     initial.rating_overall,
+    metaEditionsKey,
   ]);
 
   // Paginated Audible reviews: seed MostHelpful, then continue MostRecent

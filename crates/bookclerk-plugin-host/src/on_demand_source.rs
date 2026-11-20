@@ -76,6 +76,8 @@ struct Identity {
     config_options: &'static [SourceConfigOption],
     /// Whether catalog detail answers ISBN lookups.
     answers_catalog_detail_by_isbn: bool,
+    /// Whether catalog detail answers the store's own product ids.
+    answers_catalog_detail_by_product_id: bool,
     /// Whether purchase hints price by exact ISBN.
     answers_price_by_isbn: bool,
     /// Whether purchase hints price by exact ASIN.
@@ -96,6 +98,7 @@ impl Identity {
             sort_key: guest.sort_key(),
             config_options: guest.config_options(),
             answers_catalog_detail_by_isbn: guest.answers_catalog_detail_by_isbn(),
+            answers_catalog_detail_by_product_id: guest.answers_catalog_detail_by_product_id(),
             answers_price_by_isbn: guest.answers_price_by_isbn(),
             answers_price_by_asin: guest.answers_price_by_asin(),
         }
@@ -345,6 +348,10 @@ impl ContentSource for OnDemandSource {
 
     fn answers_catalog_detail_by_isbn(&self) -> bool {
         self.identity.answers_catalog_detail_by_isbn
+    }
+
+    fn answers_catalog_detail_by_product_id(&self) -> bool {
+        self.identity.answers_catalog_detail_by_product_id
     }
 
     fn answers_price_by_isbn(&self) -> bool {
