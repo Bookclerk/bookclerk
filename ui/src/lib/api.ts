@@ -3388,11 +3388,25 @@ async function finishBeforeIdentityChange(): Promise<void> {
     ),
   );
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let ranOut = false;
   const waited = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, BEFORE_SIGN_OUT_WAIT_MS);
+    timer = setTimeout(() => {
+      ranOut = true;
+      resolve();
+    }, BEFORE_SIGN_OUT_WAIT_MS);
   });
   await Promise.race([tasks, waited]);
   clearTimeout(timer);
+  if (!ranOut) return;
+  // Something may have started during a wait that long (a book chosen
+  // while a slow close was out). It is ended too, as the identity being
+  // left, without another wait: its requests are sent before the one that
+  // changes the identity.
+  for (const task of signOutTasks) {
+    void Promise.resolve()
+      .then(task)
+      .catch(() => undefined);
+  }
 }
 
 /**

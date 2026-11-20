@@ -71,10 +71,10 @@ of its tracks.
   runtime, or its last 30 seconds for a recording over a minute.
 - **A session stops streaming** when it is closed, when it has not
   reported for 24 hours, when the caller may no longer see the edition,
-  or when the edition's files change. Turning a member's Download control
-  off does not end a session: it does not cover listening. Stream requests then get
-  `409` with `session_ended`, as does a report to a closed session; the
-  player opens a new session.
+  or when the edition's files change. Stream requests to a session that
+  stopped get `409` with `session_ended`, as does a report to a closed
+  session; the player opens a new session. Turning a member's Download
+  control off does not end a session: it does not cover listening.
 - **A session streams from the server that opened it.** Another server
   on the same library answers `421`.
 - **Limits:** a position or runtime is at most sixty days, a session

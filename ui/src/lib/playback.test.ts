@@ -91,6 +91,6 @@ describe("playback routes", () => {
     expect(isApiError(err) && [err.status, err.code]).toEqual([502, undefined]);
     stubFetch(500, { error: 7 });
     const other = await fetchPlaybackManifest("ed1").catch((e: unknown) => e);
-    expect(isApiError(other) && other.code).toBeUndefined();
+    expect(isApiError(other) && [other.status, other.code]).toEqual([500, undefined]);
   });
 });

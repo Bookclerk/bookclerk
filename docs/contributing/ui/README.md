@@ -323,7 +323,9 @@ Rules the engine keeps:
 - Stopping, signing out, starting or stopping impersonation, and leaving
   the page close the session. The close on page hide is a `keepalive`
   request. A change of identity waits up to three seconds for the close
-  (`beforeSignOut` in `api.ts`) and then goes ahead.
+  (`beforeSignOut` in `api.ts`) and then goes ahead. When the wait runs
+  out, the registered work runs once more without a wait, so a book
+  started meanwhile is closed as the identity being left.
 - `409 session_ended` on a report, or a stream error, opens one new
   session at the place the listener is, and a report the ended session
   refused is sent once to the new one. A second stream error within a
@@ -341,7 +343,14 @@ Rules the engine keeps:
   once the same way. `stop()` also waits for closes sent earlier, so the
   wait before a change of identity covers them.
 - Playing again a book played to its end opens a new session, because
-  only opening one marks a finished edition as in progress again.
+  only opening one marks a finished edition as in progress again. That
+  holds after a seek back from the end too: the new session goes on from
+  the place sought.
+- The next book waits for the close of the one before it, but no longer
+  than five seconds (`SWITCH_WAIT_MS`).
+- A request to play that reads first (`playWork`) asks `Player.claim()`
+  whether it is still the listener's latest choice. Choosing, playing and
+  stopping a book replace a choice; a session that fails does not.
 - An edition in several files has every file's length read from its
   stream before a position is placed, because the server does not store
   per-file lengths yet.

@@ -40,31 +40,99 @@ export interface AudioLike {
 
 /** The routes and browser facilities the engine uses. */
 export interface PlayerDeps {
-  /** Makes the audio element. */
+  /**
+   * Makes the audio element. Called once, on first play.
+   *
+   * @returns The element the engine plays through.
+   */
   audio(): AudioLike;
-  /** `GET .../playback`. */
+  /**
+   * `GET .../playback`.
+   *
+   * @param editionId - The edition to read.
+   * @returns Its manifest, with the listener's bookmarks.
+   */
   manifest(editionId: string): Promise<PlaybackManifest>;
-  /** `POST /api/playback/sessions`. */
+  /**
+   * `POST /api/playback/sessions`.
+   *
+   * @param editionId - The edition to play.
+   * @returns The opened session, with its tracks and starting position.
+   */
   open(editionId: string): Promise<PlaybackSession>;
-  /** `POST .../sync`. */
+  /**
+   * `POST .../sync`.
+   *
+   * @param sessionId - The session reported on.
+   * @param report - The position, and the time listened since the last
+   *   accepted report.
+   * @returns The stored progress. Rejects with `409` once the session ended.
+   */
   sync(sessionId: string, report: PlaybackReport): Promise<PlaybackSynced>;
-  /** `POST .../close`. */
+  /**
+   * `POST .../close`.
+   *
+   * @param sessionId - The session to close.
+   * @param report - The last position and listened time.
+   * @param keepalive - True for a request that must outlive the page.
+   * @returns The stored progress.
+   */
   close(sessionId: string, report: PlaybackReport, keepalive: boolean): Promise<PlaybackSynced>;
-  /** `POST .../bookmarks`. */
+  /**
+   * `POST .../bookmarks`.
+   *
+   * @param editionId - The edition marked.
+   * @param positionMs - The place, in milliseconds on its timeline.
+   * @param title - The listener's note; may be empty.
+   * @returns The stored bookmark.
+   */
   addBookmark(editionId: string, positionMs: number, title: string): Promise<Bookmark>;
-  /** `DELETE /api/playback/bookmarks/{id}`. */
+  /**
+   * `DELETE /api/playback/bookmarks/{id}`.
+   *
+   * @param id - The bookmark to remove.
+   * @returns Resolves once it is removed.
+   */
   deleteBookmark(id: string): Promise<void>;
-  /** `PUT /api/playback/progress/{id}`. */
+  /**
+   * `PUT /api/playback/progress/{id}`.
+   *
+   * @param editionId - The edition whose progress changes.
+   * @param edit - `is_finished` marks the edition finished or not.
+   * @returns The stored progress.
+   */
   setProgress(editionId: string, edit: { is_finished: boolean }): Promise<PlaybackSynced>;
-  /** A track's length in milliseconds, read from its stream. */
+  /**
+   * Reads a track's length from its stream.
+   *
+   * @param path - The track's same-origin stream path.
+   * @returns Its length in milliseconds. Rejects when it cannot be read.
+   */
   probe(path: string): Promise<number>;
-  /** Monotonic milliseconds. */
+  /**
+   * The clock listened time and timers are measured on.
+   *
+   * @returns Monotonic milliseconds.
+   */
   now(): number;
-  /** Resolves after `ms` milliseconds. */
+  /**
+   * A timer.
+   *
+   * @param ms - How long to wait, in milliseconds.
+   * @returns Resolves after that long.
+   */
   wait(ms: number): Promise<void>;
-  /** Reads the stored speed; `null` when none. */
+  /**
+   * Reads the stored speed.
+   *
+   * @returns The stored text; `null` when none.
+   */
   loadSpeed(): string | null;
-  /** Stores the speed. */
+  /**
+   * Stores the speed for the next visit.
+   *
+   * @param speed - The playback rate.
+   */
   saveSpeed(speed: number): void;
 }
 
@@ -115,6 +183,12 @@ const RETRY_AFTER_MS = 60_000;
  * before it goes out assuming the server took them.
  */
 export const CLOSE_WAIT_MS = 2000;
+
+/**
+ * How long the next book waits for the close of the one before it, in
+ * milliseconds, before it opens anyway.
+ */
+export const SWITCH_WAIT_MS = 5000;
 
 /** Milliseconds one skip button moves. */
 export const SKIP_MS = 30_000;
@@ -230,6 +304,12 @@ export class Player {
    * never holds back the reports of the session that replaced it.
    */
   private flight: ReportFlight | null = null;
+  /**
+   * True once the open session played its last track to the end. Kept
+   * apart from the position, which a seek back changes: the session still
+   * finished the book, so playing on takes a new one.
+   */
+  private ended = false;
   /** The replacement of a failed session under way; `null` with none. */
   private recovery: Promise<void> | null = null;
   /** Closes not yet answered, so a later stop can wait for them too. */
@@ -243,7 +323,10 @@ export class Player {
   private bookmarkEdits = 0;
   /** Counts loads, so an answer for an earlier one is dropped. */
   private generation = 0;
-  /** Counts {@link Player.claim} calls, so only the latest choice plays. */
+  /**
+   * Counts the listener's choices ({@link Player.claim}, play and stop), so
+   * only the latest one plays.
+   */
   private claims = 0;
   /** {@link PlayerDeps.now} at the last automatic new session for a stream failure. */
   private retriedAt: number | null = null;
@@ -260,15 +343,14 @@ export class Player {
    * Marks the start of a request to play that has something to read
    * first. The caller asks the returned check once it has read, and drops
    * its request when the listener has since chosen, started or stopped
-   * another book.
+   * a book. A session that fails meanwhile is not a choice and leaves the
+   * request standing.
    *
-   * @returns True while this is the latest choice and nothing was loaded
-   *   or unloaded since.
+   * @returns True while this is the listener's latest choice.
    */
   claim(): () => boolean {
     const claim = (this.claims += 1);
-    const generation = this.generation;
-    return () => claim === this.claims && generation === this.generation;
+    return () => claim === this.claims;
   }
 
   /**
@@ -346,7 +428,9 @@ export class Player {
     this.retriedAt = null;
     this.wantPlay = true;
     this.set({ ...idle(this.state.speed), status: "loading", target });
-    await closing;
+    // The close goes first so the server sees the books in order, but one
+    // that does not answer must not keep the next book from starting.
+    await Promise.race([closing, this.deps.wait(SWITCH_WAIT_MS)]);
     if (generation !== this.generation) return;
     try {
       const session = await this.deps.open(target.editionId);
@@ -438,6 +522,7 @@ export class Player {
     }
     const positionMs = startMs ?? this.state.positionMs;
     this.session = session;
+    this.ended = false;
     this.durations = durations;
     this.syncedAt = this.deps.now();
     const total = paths.length > 1 ? durations.reduce((sum, ms) => sum + ms, 0) : null;
@@ -571,6 +656,7 @@ export class Player {
       return;
     }
     this.wantPlay = false;
+    this.ended = true;
     this.set({ status: "paused", positionMs: this.state.durationMs ?? this.position() });
     await this.report();
   }
@@ -612,6 +698,7 @@ export class Player {
     this.generation += 1;
     this.recovery = null;
     this.session = null;
+    this.ended = false;
     this.wantPlay = false;
     this.tickedAt = null;
     this.pendingSeekMs = null;
@@ -784,18 +871,16 @@ export class Player {
     if (synced) {
       // An answer for a session since replaced says nothing about this one.
       if (this.session === session && synced.finished_now) this.set({ finished: true });
-    } else if (
-      // A new session that refuses its first report is left to the next
-      // periodic one, so two failures cannot open sessions in a loop.
-      isApiError(failure) &&
-      failure.status === 409 &&
-      this.session === session &&
-      !replaced
-    ) {
-      await this.reopen();
+    } else if (isApiError(failure) && failure.status === 409 && !replaced) {
+      // A new session that refuses its first report (`replaced`) is left to
+      // the next periodic one, so two failures cannot open sessions in a
+      // loop. A failed stream may have replaced the session already; then
+      // there is nothing to open.
+      if (this.session === session) await this.reopen();
       // The server never took this report, and a paused book sends no
-      // other: the new session gets the place and the time once.
-      resend = this.session !== null && this.session !== session;
+      // other: the session now open for the same stretch of listening gets
+      // the place and the time once.
+      resend = this.session !== null && this.session !== session && this.meter === meter;
     }
     // Any other failure is retried by the next report.
     if (resend) await this.report(true);
@@ -811,11 +896,13 @@ export class Player {
       return;
     }
     const duration = this.state.durationMs;
-    if (duration && this.state.positionMs >= duration && this.state.target) {
+    const atEnd = Boolean(duration) && this.state.positionMs >= (duration ?? 0);
+    if ((atEnd || this.ended) && this.state.target) {
       // Played to the end: listening again is a new session. Opening one is
       // what tells the server the book is in progress again; reports on the
-      // session that finished it leave it finished.
-      void this.begin(this.state.target);
+      // session that finished it leave it finished. From the end the book
+      // starts over; after a seek back it goes on from there.
+      void this.begin(this.state.target, atEnd ? null : this.state.positionMs);
       return;
     }
     this.wantPlay = true;
@@ -934,12 +1021,31 @@ export class Player {
     this.set({ bookmarks: this.state.bookmarks.filter((bookmark) => bookmark.id !== id) });
   }
 
-  /** Marks the loaded edition finished and unloads it. */
+  /**
+   * Marks the loaded edition finished and unloads it. When the mark cannot
+   * be stored, the book comes back as the one chosen, with the failure in
+   * {@link PlayerState.error}, so whatever shows the player can say so and
+   * offer the action again.
+   *
+   * @throws What the route threw, after the state shows it.
+   */
   async markFinished(): Promise<void> {
     const target = this.state.target;
     if (!target) return;
     await this.stop();
-    await this.deps.setProgress(target.editionId, { is_finished: true });
+    try {
+      await this.deps.setProgress(target.editionId, { is_finished: true });
+    } catch (err) {
+      // Unless the listener started something else meanwhile.
+      if (this.state.target === null) {
+        this.set({
+          status: "error",
+          target,
+          error: "The book could not be marked finished. Try again.",
+        });
+      }
+      throw err;
+    }
   }
 
   /**
@@ -966,8 +1072,10 @@ export class Player {
   private async unload(keepalive = false): Promise<void> {
     const session = this.session;
     this.generation += 1;
+    this.claims += 1;
     this.wantPlay = false;
     this.session = null;
+    this.ended = false;
     this.recovery = null;
     this.resumeMs = null;
     if (!session) {

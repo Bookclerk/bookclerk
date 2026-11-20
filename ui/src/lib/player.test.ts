@@ -4,6 +4,7 @@ import type { Bookmark, PlaybackProgress, PlaybackReport, PlaybackSession } from
 import {
   Player,
   SKIP_MS,
+  SWITCH_WAIT_MS,
   SYNC_EVERY_MS,
   playbackErrorText,
   type AudioLike,
@@ -161,7 +162,9 @@ function session(id: string, positionMs: number, tracks = 1): PlaybackSession {
  * and held first) and `failures.syncLate` (the report is recorded and held
  * first). `failures.syncOnce` fails one report and clears itself.
  * `holds.wait` stands in for the timer a close waits on; without it the
- * timer has always run out.
+ * timer has always run out. `holds.switchWait` stands in for the timer the
+ * next book waits on for the close of the one before; without it that
+ * timer never runs out.
  *
  * @param options - `tracks` and `lengths` (milliseconds per track) shape
  *   the edition; `startMs` is where the server says to start.
@@ -183,6 +186,7 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
     close?: unknown;
     manifest?: unknown;
     probe?: unknown;
+    setProgress?: unknown;
   } = {};
   // Requests wait on these before they answer.
   const holds: {
@@ -191,6 +195,7 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
     close?: Promise<void>;
     manifest?: Promise<void>;
     wait?: Promise<void>;
+    switchWait?: Promise<void>;
   } = {};
   const bookmarks: Bookmark[] = [
     {
@@ -258,6 +263,7 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
     },
     deleteBookmark: async () => undefined,
     setProgress: async (editionId) => {
+      if (failures.setProgress) throw failures.setProgress;
       finished.push(editionId);
       return { progress: progress(0, true), finished_now: true };
     },
@@ -266,7 +272,10 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
       return (options.lengths ?? [])[Number(path.split("/").pop())] ?? 0;
     },
     now: () => clock.now,
-    wait: () => holds.wait ?? Promise.resolve(),
+    wait: (ms) =>
+      ms === SWITCH_WAIT_MS
+        ? (holds.switchWait ?? new Promise<void>(() => {}))
+        : (holds.wait ?? Promise.resolve()),
     loadSpeed: () => "1.5",
     saveSpeed: (speed) => saved.push(speed),
   };
@@ -1170,6 +1179,96 @@ describe("Player", () => {
     await w.player.play(TARGET);
     expect(w.opened).toEqual(["ed1"]);
     expect(other()).toBe(false);
+  });
+
+  it("lets a choice still being read stand when the loaded book's session fails", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    const choice = w.player.claim();
+    w.audio.emit("error");
+    await settle();
+    w.audio.emit("error");
+    await settle();
+    expect(w.player.state.status).toBe("error");
+    expect(choice()).toBe(true);
+  });
+
+  it("sends a report the ended session refused to a session a failed stream already opened", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    let release = () => {};
+    w.holds.sync = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    expect(w.synced.map((sent) => sent.id)).toEqual(["s1"]);
+    w.audio.emit("error");
+    await settle();
+    expect(w.opened).toEqual(["ed1", "ed1"]);
+    w.holds.sync = undefined;
+    w.failures.syncLate = new ApiError(409, "session_ended", { code: "session_ended" });
+    release();
+    await settle();
+    w.failures.syncLate = undefined;
+    await settle();
+    expect(w.opened).toEqual(["ed1", "ed1"]);
+    expect(w.synced.at(-1)).toMatchObject({ id: "s2", report: { position_ms: 15_000 } });
+  });
+
+  it("starts the next book when the close of the one before never answers", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    w.holds.close = new Promise<void>(() => {});
+    w.holds.switchWait = Promise.resolve();
+    await w.player.play({ ...TARGET, editionId: "ed2" });
+    expect(w.closed.map((sent) => sent.id)).toEqual(["s1"]);
+    expect(w.opened).toEqual(["ed1", "ed2"]);
+    expect(w.audio.src).toBe("/api/playback/sessions/s2/tracks/0");
+  });
+
+  it("opens a new session to go on from a place sought back to after the end", async () => {
+    const w = world();
+    w.flags.finishedNow = true;
+    await w.player.play(TARGET);
+    w.audio.ready(100);
+    w.audio.at(100);
+    w.audio.paused = true;
+    w.audio.emit("ended");
+    await settle();
+    w.player.seek(40_000);
+    w.player.resume();
+    await settle();
+    expect(w.closed.map((sent) => sent.id)).toEqual(["s1"]);
+    expect(w.opened).toEqual(["ed1", "ed1"]);
+    w.audio.ready(100);
+    expect(w.audio.currentTime).toBe(40);
+    // An ordinary pause and seek in the new session keeps it.
+    w.player.pause();
+    w.player.seek(20_000);
+    w.player.resume();
+    await settle();
+    expect(w.opened).toEqual(["ed1", "ed1"]);
+  });
+
+  it("keeps the book and says so when it cannot be marked finished", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    w.failures.setProgress = new ApiError(503, "storage", { code: "storage" });
+    await expect(w.player.markFinished()).rejects.toBeInstanceOf(ApiError);
+    expect(w.player.state.status).toBe("error");
+    expect(w.player.state.target).toEqual(TARGET);
+    expect(w.player.state.error).toContain("could not be marked finished");
+    // The action is still there to press again.
+    w.failures.setProgress = undefined;
+    await w.player.markFinished();
+    expect(w.finished).toEqual(["ed1"]);
+    expect(w.player.state.status).toBe("idle");
   });
 
   it("marks the book finished and unloads it", async () => {

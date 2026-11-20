@@ -202,7 +202,11 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
                       type="button"
                       className="flex min-w-0 flex-1 items-baseline gap-3 rounded-md px-1 py-1 text-left hover:bg-ink/5"
                       onClick={() => player.seek(bookmark.position_ms)}
-                      aria-label={`Go to ${formatClock(bookmark.position_ms)}`}
+                      aria-label={
+                        bookmark.title
+                          ? `Go to ${formatClock(bookmark.position_ms)}, ${bookmark.title}`
+                          : `Go to ${formatClock(bookmark.position_ms)}`
+                      }
                     >
                       <span className="shrink-0 text-sm font-semibold tabular-nums text-teal">
                         {formatClock(bookmark.position_ms)}

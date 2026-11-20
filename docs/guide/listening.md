@@ -47,9 +47,9 @@ Bookmarks are yours alone. Other people in the library do not see them.
 
 ## Finishing a book
 
-Bookclerk marks a book finished when you reach its last 30 seconds (or the
-last 1%, for a long book). To finish one early, open the now-playing view
-and press **Mark finished**. A finished book leaves the Continue
+Bookclerk marks a book finished when you reach its last 1%, or its last 30
+seconds when the recording is longer than a minute. To finish one early,
+open the now-playing view and press **Mark finished**. A finished book leaves the Continue
 listening shelf and counts as finished everywhere else in Bookclerk, such
 as the **My progress** filter.
 
@@ -72,7 +72,9 @@ and move along the timeline.
 
 Your place is kept on the server, for you alone. The player reports it
 every 15 seconds while playing, when you pause, and when you close the
-page, so another device is at most a few seconds behind.
+page, so another device is usually no more than 15 seconds behind. It can
+be further behind when a report did not reach the server, for example
+while the connection was down.
 
 ## If a book does not play
 
