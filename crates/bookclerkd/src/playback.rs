@@ -148,16 +148,39 @@ fn write_failed(route: &str, err: &LibraryError) -> PlaybackError {
 
 /// The signed-in library user, or the 403 a session without one gets.
 ///
+/// In the desktop window ([`AppState::in_window`]) every request is the
+/// operator, which is no library user, yet it is the person at this
+/// computer: their listening state is kept as the library's earliest
+/// active Owner. A daemon with a listener never does this, so the operator
+/// token there still has nothing to play as.
+///
 /// # Errors
 ///
-/// A 403 for the operator token or a session linked to no library user.
+/// A 403 for the operator token or a session linked to no library user
+/// (and, in the window, a library with no active Owner); a 500 when the
+/// window's Owner cannot be read.
 async fn listener(state: &AppState, headers: &HeaderMap) -> Result<i64, PlaybackError> {
-    caller_user_id(state, headers).await.ok_or_else(|| {
+    let no_user = || {
         refuse(
             StatusCode::FORBIDDEN,
             "this session has no library user to keep listening state for",
         )
-    })
+    };
+    if let Some(user_id) = caller_user_id(state, headers).await {
+        return Ok(user_id);
+    }
+    if state.in_window.get().is_none() {
+        return Err(no_user());
+    }
+    let library = state.library_snapshot().await;
+    match crate::auth::caller_subject(state, &library, headers).await {
+        crate::auth::CallerSubject::Operator => library
+            .first_active_owner_id()
+            .await
+            .map_err(|err| read_failed("playback listener", &err))?
+            .ok_or_else(no_user),
+        _ => Err(no_user()),
+    }
 }
 
 /// The edition `id` when it exists and the caller's patron scope shows

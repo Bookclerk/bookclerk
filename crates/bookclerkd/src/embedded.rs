@@ -62,7 +62,11 @@ pub use bookclerk_window_policy::{
 use tower_service::Service as _;
 
 use crate::api::AppState;
+
+pub(crate) mod track;
 use crate::{init_logging, start_host, HostMode, HostParts};
+pub use bookclerk_media::{PcmHeader, PcmStream};
+pub use track::TrackError;
 
 /// Largest response body the window receives. Larger answers (none of the
 /// web app's routes produce one) become `502 Bad Gateway`.
@@ -143,6 +147,8 @@ impl EmbeddedHost {
     /// The embedded host.
     pub(crate) fn from_host(host: HostParts) -> Self {
         let HostParts { state, app, .. } = host;
+        // Only ever set here, before any request is served.
+        let _ = state.in_window.set(());
         Self {
             state,
             app,
@@ -219,6 +225,24 @@ impl EmbeddedHost {
     /// * `send` - Takes each frame's JSON text; false stops the feed.
     pub async fn live(&self, send: impl FnMut(String) -> bool + Send) {
         crate::live::operator_feed(Arc::clone(&self.state), send).await;
+    }
+
+    /// Opens a play session's track for the window's own player, decoded
+    /// to PCM by a confined media worker from `start_ms` (see
+    /// [`track`]). The bytes are read through the session's stream route,
+    /// so its checks apply to every block.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The track's stream path, as the session listed it.
+    /// * `start_ms` - Where to start, in milliseconds into the track.
+    ///
+    /// # Errors
+    ///
+    /// A [`TrackError`] when the path is not a session's track, the route
+    /// refuses it, or the worker cannot decode it.
+    pub async fn open_track(&self, path: &str, start_ms: u64) -> Result<PcmStream, TrackError> {
+        track::open_track(self.app.clone(), Arc::clone(&self.state), path, start_ms).await
     }
 
     /// Stops the integration watchers before the process exits, as

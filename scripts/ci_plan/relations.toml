@@ -394,6 +394,8 @@ build = [
     "bookclerk-plugin-destination-local",
     "bookclerk-jail",
     "bookclerk-workerd",
+    # The desktop window's player test decodes through the PCM worker.
+    "bookclerk-media-worker",
 ]
 ensure_workerd = true
 

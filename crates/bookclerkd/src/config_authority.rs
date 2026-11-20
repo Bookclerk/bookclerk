@@ -2844,6 +2844,7 @@ pub(crate) fn control_plane_test_state(
         tray_handoff: Mutex::new(None),
         deployment_runtime: OnceLock::new(),
         node_api_tls_bound: std::sync::OnceLock::new(),
+        in_window: std::sync::OnceLock::new(),
         library_swaps: tokio::sync::watch::Sender::new(0),
         covers: Arc::new(crate::covers::CoverService::detached()),
     }

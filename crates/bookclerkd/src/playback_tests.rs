@@ -19,6 +19,8 @@ const KEY: &str = "Ann Author/First/First.m4b";
 
 /// A daemon with one output destination and two members.
 struct World {
+    /// The daemon's state.
+    state: Arc<crate::api::AppState>,
     /// The daemon's router.
     app: axum::Router,
     /// Its library.
@@ -63,6 +65,7 @@ async fn world() -> World {
         .unwrap();
     World {
         app: crate::api::router(Arc::clone(&state), None),
+        state,
         riley: crate::auth::tests::portal_cookie_for(&store, "test", "riley-ext").await,
         sam: crate::auth::tests::portal_cookie_for(&store, "test", "sam-ext").await,
         riley_id: ids[0],
@@ -421,6 +424,151 @@ async fn a_member_plays_an_edition_from_open_to_close() {
 
     // Playing a finished edition again starts over.
     assert_eq!(open(&world, riley, &id).await["position_ms"], 0);
+}
+
+/// In the desktop window every request is the operator, and the person
+/// at the computer listens as the library's earliest active Owner; a
+/// daemon with a listener never does that.
+#[tokio::test]
+async fn the_window_listens_as_the_libraries_owner() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let world = world().await;
+    let bytes = audio();
+    let id = edition(
+        &world,
+        "B0PLAY0009",
+        "First",
+        "Ann Author",
+        Some((KEY, &bytes)),
+    )
+    .await;
+    let body = json!({"edition_id": id, "player_name": "Desktop"});
+
+    // No Owner yet, and not the window: refused either way.
+    let answer = post(&world, "/api/playback/sessions", None, body.clone()).await;
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+    world.state.in_window.set(()).unwrap();
+    let answer = post(&world, "/api/playback/sessions", None, body.clone()).await;
+    assert_eq!(
+        answer.status,
+        StatusCode::FORBIDDEN,
+        "no Owner to listen as"
+    );
+
+    world
+        .store
+        .set_user_role(world.riley_id, bookclerk_library::UserRole::Owner)
+        .await
+        .unwrap();
+    let answer = post(&world, "/api/playback/sessions", None, body).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.json());
+    let session = answer.json();
+    let path = session["tracks"][0]["path"].as_str().unwrap().to_owned();
+    let ranged = send(&world, Method::GET, &path, None, None, Some("bytes=0-9")).await;
+    assert_eq!(ranged.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(ranged.bytes, bytes[..10]);
+    // The progress the window keeps is the Owner's own.
+    let mine = get(&world, "/api/playback/progress", Some(&world.riley)).await;
+    let sid = session["session_id"].as_str().unwrap();
+    let close = post(
+        &world,
+        &format!("/api/playback/sessions/{sid}/close"),
+        None,
+        json!({"position_ms": 60_000, "listened_ms": 1_000}),
+    )
+    .await;
+    assert_eq!(close.status, StatusCode::OK, "{}", close.json());
+    let after = get(&world, "/api/playback/progress", Some(&world.riley)).await;
+    assert_ne!(mine.json(), after.json());
+    assert_eq!(after.json()["items"][0]["position_ms"], 60_000);
+}
+
+/// One second of a 16-bit mono WAV at 8 kHz.
+fn wav() -> Vec<u8> {
+    let frames = 8_000u32;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + frames * 2).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    for value in [16u32, 0x0001_0001, 8_000, 16_000, 0x0010_0002] {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(frames * 2).to_le_bytes());
+    for frame in 0..frames {
+        out.extend_from_slice(&i16::try_from(frame % 100).unwrap().to_le_bytes());
+    }
+    out
+}
+
+/// The window's player reads a session's track through the stream route
+/// by range and gets it back decoded by the media worker; a path that is
+/// not a session's track is refused before anything is read.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_window_player_decodes_a_track_through_the_stream_route() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let world = world().await;
+    let bytes = wav();
+    let id = edition(
+        &world,
+        "B0PLAY0010",
+        "First",
+        "Ann Author",
+        Some((KEY, &bytes)),
+    )
+    .await;
+    world.state.in_window.set(()).unwrap();
+    world
+        .store
+        .set_user_role(world.riley_id, bookclerk_library::UserRole::Owner)
+        .await
+        .unwrap();
+    let not_a_track = crate::embedded::track::open_track(
+        world.app.clone(),
+        Arc::clone(&world.state),
+        "/api/library/works",
+        0,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(not_a_track, crate::embedded::TrackError::NotATrack);
+    if !bookclerk_media::pool().is_isolated() {
+        assert!(
+            std::env::var_os("BOOKCLERK_REQUIRE_TEST_GUESTS").is_none(),
+            "the media worker is not built"
+        );
+        eprintln!("skipping: no media worker beside the test binary");
+        return;
+    }
+    let answer = post(
+        &world,
+        "/api/playback/sessions",
+        None,
+        json!({"edition_id": id, "player_name": "Desktop"}),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.json());
+    let path = answer.json()["tracks"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut stream =
+        crate::embedded::track::open_track(world.app.clone(), Arc::clone(&world.state), &path, 500)
+            .await
+            .unwrap();
+    let header = stream.header();
+    assert_eq!((header.sample_rate, header.channels), (8_000, 1));
+    assert_eq!(header.duration_ms, Some(1_000));
+    let mut samples = Vec::new();
+    while let Some(chunk) = stream.next_chunk().await {
+        samples.extend(chunk.unwrap());
+    }
+    let expected = usize::try_from((1_000 - header.start_ms) * 8).unwrap();
+    assert!(
+        samples.len().abs_diff(expected) <= 1_152,
+        "{} vs {expected}",
+        samples.len()
+    );
 }
 
 /// Who and what the routes refuse: the operator (no library user), an

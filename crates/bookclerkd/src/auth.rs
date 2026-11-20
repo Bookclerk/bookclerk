@@ -5312,6 +5312,7 @@ pub(crate) mod tests {
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });
@@ -6573,6 +6574,7 @@ pub(crate) mod tests {
                 tray_handoff: Mutex::new(None),
                 deployment_runtime: std::sync::OnceLock::new(),
                 node_api_tls_bound: std::sync::OnceLock::new(),
+                in_window: std::sync::OnceLock::new(),
                 library_swaps: tokio::sync::watch::Sender::new(0),
                 covers: Arc::new(crate::covers::CoverService::detached()),
             });

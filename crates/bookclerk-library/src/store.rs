@@ -1917,6 +1917,28 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)
     }
 
+    /// The earliest-created active Owner's user id: the person the desktop
+    /// window acts as for their own listening state, since the window's
+    /// caller is the operator, which is no library user.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the library has no active Owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the library cannot be read.
+    pub async fn first_active_owner_id(&self) -> Result<Option<i64>> {
+        Ok(users::Entity::find()
+            .filter(users::Column::Role.eq(UserRole::Owner.as_str()))
+            .filter(users::Column::Status.eq(UserStatus::Active.as_str()))
+            .order_by_asc(users::Column::Id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|user| user.id))
+    }
+
     /// Backfill `portal_identities.user_id` and remap prefs `portal:{id}` → `user:{id}`.
     ///
     /// Safe to call repeatedly after migrations. Does not link CLI-created store
