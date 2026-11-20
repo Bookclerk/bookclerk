@@ -59,7 +59,9 @@ By default the daemon listens on loopback only (`127.0.0.1:8787` and
    Session cookies are then `Secure`, and sign-in links use that address.
 3. List the proxy in `daemon.trusted_proxies`. Otherwise Bookclerk ignores
    forwarded headers, and sign-in throttling sees only the proxy's
-   address.
+   address. Behind several proxies, list them all: throttling uses the
+   rightmost forwarded address that isn't a listed proxy, so a client
+   can't pick its own key by sending a forged `X-Forwarded-For`.
 
 Details: [Operations → Reverse proxy](operations.md#reverse-proxy--tls).
 
