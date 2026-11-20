@@ -61,17 +61,11 @@ pub struct LibationExportSummary {
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExportSummary> {
     let mut summary = LibationExportSummary::default();
-    if !opts.dry_run {
-        if opts.dest.exists() {
-            if !opts.force {
-                return Err(MigrateError::Source(format!(
-                    "destination {} already exists (pass --force)",
-                    opts.dest.display()
-                )));
-            }
-        } else {
-            std::fs::create_dir_all(&opts.dest)?;
-        }
+    if !opts.dry_run && opts.dest.exists() && !opts.force {
+        return Err(MigrateError::Source(format!(
+            "destination {} already exists (pass --force)",
+            opts.dest.display()
+        )));
     }
 
     let config_path = opts.files_dir.join("config.toml");
@@ -93,6 +87,21 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
             .push("library.db missing — accounts/books empty".into());
         None
     };
+
+    // The person is checked before anything is written, so a mistyped
+    // `--user` leaves the destination as it was.
+    let user = match (opts.user.as_deref(), dest.as_ref()) {
+        (Some(name), Some(dest)) => Some(user_named(&dest.store, name).await?),
+        (Some(_), None) => {
+            return Err(MigrateError::Source(
+                "--user needs a library.db to read the person from".into(),
+            ));
+        }
+        (None, _) => None,
+    };
+    if !opts.dry_run && !opts.dest.exists() {
+        std::fs::create_dir_all(&opts.dest)?;
+    }
 
     // Packaging settings are the `core.output` document once a host has
     // enrolled; `[output]` in config.toml is only the first-run seed.
@@ -119,19 +128,9 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
         summary.storefronts = usize::try_from(dest.store.count_identities().await?).unwrap_or(0);
     }
 
-    let books = if let Some(dest) = dest.as_ref() {
-        let user = match opts.user.as_deref() {
-            Some(name) => Some(user_named(&dest.store, name).await?),
-            None => None,
-        };
-        export_books(&dest.store, user).await?
-    } else {
-        if opts.user.is_some() {
-            return Err(MigrateError::Source(
-                "--user needs a library.db to read the person from".into(),
-            ));
-        }
-        Vec::new()
+    let books = match dest.as_ref() {
+        Some(dest) => export_books(&dest.store, user).await?,
+        None => Vec::new(),
     };
     summary.books = books.len();
     if !opts.dry_run {
@@ -337,10 +336,12 @@ fn write_libation_context_db(path: &Path, books: &[ExportBook]) -> Result<()> {
         }
 
         if let Some(series_name) = book.series.as_deref().filter(|s| !s.is_empty()) {
-            let series_key = book
-                .series_product_id
-                .clone()
-                .unwrap_or_else(|| format!("name:{series_name}"));
+            // A series id is the store's own, so two stores' series that
+            // share an id stay apart.
+            let series_key = match book.series_product_id.as_deref() {
+                Some(id) => format!("id:{}\u{1f}{}\u{1f}{id}", book.plugin_key, book.marketplace),
+                None => format!("name:{series_name}"),
+            };
             let sid = if let Some(id) = series_ids.get(&series_key) {
                 *id
             } else {
@@ -678,9 +679,11 @@ mod tests {
             assert_eq!(contributors, 2);
         }
 
+        let parent = tempdir().unwrap();
+        let out = parent.path().join("out");
         let err = export_libation(LibationExportOptions {
             files_dir: src.path().to_path_buf(),
-            dest: tempdir().unwrap().path().join("out"),
+            dest: out.clone(),
             force: true,
             dry_run: false,
             user: Some("nobody".into()),
@@ -689,5 +692,36 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("nobody"), "{err}");
+        assert!(
+            !out.exists(),
+            "an unknown person must leave the destination unwritten"
+        );
+
+        // Two stores may use the same series id for different series; the
+        // same store's titles of one series still share a row.
+        let store = crate::store::DestStore::open(src.path(), false)
+            .await
+            .unwrap();
+        let mine = export_books(&store.store, None).await.unwrap().remove(0);
+        let mut first = mine.title.clone();
+        first.series_product_id = Some("42".into());
+        let mut sibling = first.clone();
+        sibling.product_id = "B0LIBATION2".into();
+        let mut other_store = first.clone();
+        other_store.plugin_key = "libro".into();
+        other_store.product_id = "9780000000002".into();
+        other_store.series = Some("Another".into());
+        let books: Vec<ExportBook> = [first, sibling, other_store]
+            .into_iter()
+            .map(|title| ExportBook { title, state: None })
+            .collect();
+        let dest = tempdir().unwrap();
+        let db = dest.path().join("LibationContext.db");
+        write_libation_context_db(&db, &books).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        let series: i64 = conn
+            .query_row(r#"SELECT COUNT(*) FROM "Series""#, [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(series, 2);
     }
 }
