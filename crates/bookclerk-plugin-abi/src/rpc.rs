@@ -5776,6 +5776,7 @@ mod tests {
                 detail_by_isbn: true,
                 price_by_isbn: true,
                 price_by_asin: false,
+                detail_by_product_id: true,
             },
             ..PluginDescribe::default()
         };
@@ -5794,6 +5795,7 @@ mod tests {
         assert!(back.catalog.detail_by_isbn);
         assert!(back.catalog.price_by_isbn);
         assert!(!back.catalog.price_by_asin);
+        assert!(back.catalog.detail_by_product_id);
         assert_eq!(back, declared);
 
         // A guest that never sets the struct declares nothing.
@@ -5806,6 +5808,7 @@ mod tests {
         )
         .expect("decode bare describe");
         assert!(!back.catalog.detail_by_isbn);
+        assert!(!back.catalog.detail_by_product_id);
     }
 
     struct MemDest {

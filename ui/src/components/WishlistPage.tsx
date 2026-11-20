@@ -72,6 +72,7 @@ export function WishlistPage({
           isbn: t.isbn,
           narrators: t.narrators,
           length_minutes: t.length_minutes,
+          store_editions: t.store_editions,
         })),
       );
       const next = [...titles];

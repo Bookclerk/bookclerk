@@ -1165,6 +1165,9 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
 fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(reload_config))
+        // Removing a shared branch deletes its rows: the operator (or an
+        // elevated Owner) only.
+        .routes(routes!(crate::config_authority::delete_shared_node))
         .routes(routes!(
             crate::config_authority::get_events_domain,
             crate::config_authority::put_events_domain
@@ -1246,7 +1249,6 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
 fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::config_authority::get_nodes))
-        .routes(routes!(crate::config_authority::delete_shared_node))
         // Settings → Shared branches: every shared node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
@@ -6180,20 +6182,14 @@ async fn discover_title_meta_batch(
     Ok(Json(TitleMetaBatchResponse { results }))
 }
 
-/// Rejects a title-metadata query that has no title, ASIN, or ISBN.
+/// Rejects a title-metadata query that has no title, ASIN, or ISBN, or that
+/// names more than [`bookclerk_discover::TITLE_META_MAX_STORE_EDITIONS`]
+/// store editions.
 fn validate_title_meta_query(
     body: &bookclerk_discover::TitleMetaQuery,
 ) -> Result<(), (StatusCode, String)> {
-    if body.title.trim().is_empty()
-        && body.asin.as_deref().unwrap_or("").trim().is_empty()
-        && body.isbn.as_deref().unwrap_or("").trim().is_empty()
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "title, asin, or isbn is required".into(),
-        ));
-    }
-    Ok(())
+    bookclerk_discover::check_title_meta_query(body)
+        .map_err(|problem| (StatusCode::BAD_REQUEST, problem.to_string()))
 }
 
 /// Storefronts the caller is associated with (portal links, or all operator accounts).

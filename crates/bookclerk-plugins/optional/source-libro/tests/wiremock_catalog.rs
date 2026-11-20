@@ -108,6 +108,8 @@ async fn mount_search(server: &MockServer, q: &str, body: serde_json::Value) {
         .await;
 }
 
+/// The search is built from the instance settings document, so its
+/// `base_url` override reaches the mock as it does for scans and fetches.
 #[tokio::test]
 async fn search_uses_the_app_api_with_an_honest_user_agent() {
     let server = MockServer::start().await;
@@ -120,7 +122,7 @@ async fn search_uses_the_app_api_with_an_honest_user_agent() {
         ]),
     )
     .await;
-    let source = LibroSource::with_base_url(server.uri());
+    let source = LibroSource::from_config(&serde_json::json!({ "base_url": server.uri() }));
     let hits = source
         .search_catalog(&CatalogSearchOpts {
             query: "dune".into(),
