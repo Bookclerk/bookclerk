@@ -862,7 +862,7 @@ enum ProcessStart {
     /// Linux `/proc/<pid>/stat` field 22, in clock ticks since boot.
     #[cfg(target_os = "linux")]
     LinuxTicks(u64),
-    /// macOS `proc_bsdinfo` start timeval.
+    /// macOS `kinfo_proc` start timeval (`kp_proc.p_starttime`).
     #[cfg(target_os = "macos")]
     MacMicros { sec: u64, usec: u64 },
 }
@@ -1035,72 +1035,94 @@ fn read_process_start(pid: u32) -> Option<ProcessStart> {
     linux_start_ticks(&text).map(ProcessStart::LinuxTicks)
 }
 
+/// Size in bytes of macOS `struct kinfo_proc` on 64-bit targets (x86_64 and
+/// arm64), the record `sysctl(KERN_PROC_PID)` writes for one process.
 #[cfg(target_os = "macos")]
-#[repr(C)]
-struct ProcBsdInfo {
-    pbi_flags: u32,
-    pbi_status: u32,
-    pbi_xstatus: u32,
-    pbi_pid: u32,
-    pbi_ppid: u32,
-    pbi_uid: u32,
-    pbi_gid: u32,
-    pbi_ruid: u32,
-    pbi_rgid: u32,
-    pbi_svuid: u32,
-    pbi_svgid: u32,
-    rfu_1: u32,
-    pbi_comm: [u8; 16],
-    pbi_name: [u8; 32],
-    pbi_nfiles: u32,
-    pbi_pgid: u32,
-    pbi_pjobc: u32,
-    e_tdev: u32,
-    e_tpgid: u32,
-    pbi_nice: i32,
-    pbi_start_tvsec: u64,
-    pbi_start_tvusec: u64,
+const KINFO_PROC_SIZE: usize = 648;
+
+/// Byte offset of `kp_proc.p_un.__p_starttime.tv_sec` (`i64` seconds) in
+/// `struct kinfo_proc`; the start time shares a union with two pointers at
+/// the front of `struct extern_proc`.
+#[cfg(target_os = "macos")]
+const KINFO_START_SEC_OFFSET: usize = 0;
+
+/// Byte offset of `kp_proc.p_un.__p_starttime.tv_usec` (`i32` microseconds).
+#[cfg(target_os = "macos")]
+const KINFO_START_USEC_OFFSET: usize = 8;
+
+/// Byte offset of `kp_proc.p_pid` (`i32`), after the start-time union, the
+/// `p_vmspace` and `p_sigacts` pointers, `p_flag` and the padded `p_stat`.
+#[cfg(target_os = "macos")]
+const KINFO_PID_OFFSET: usize = 40;
+
+/// Buffer for one `struct kinfo_proc`, aligned like the kernel's record.
+#[cfg(target_os = "macos")]
+#[repr(C, align(8))]
+struct KinfoProcBuf([u8; KINFO_PROC_SIZE]);
+
+/// `N` native-endian bytes of `buf` starting at `offset`.
+#[cfg(target_os = "macos")]
+fn kinfo_bytes<const N: usize>(buf: &[u8], offset: usize) -> Option<[u8; N]> {
+    buf.get(offset..offset.checked_add(N)?)?.try_into().ok()
 }
 
+/// Start time and pid from one `struct kinfo_proc` record.
+///
+/// # Arguments
+///
+/// * `buf` - the bytes `sysctl(KERN_PROC_PID)` wrote.
+///
+/// # Returns
+///
+/// `(pid, start)`, or `None` when the record is short or its start time is
+/// negative.
 #[cfg(target_os = "macos")]
-const PROC_PIDTBSDINFO: i32 = 3;
-
-#[cfg(target_os = "macos")]
-#[link(name = "proc")]
-extern "C" {
-    fn proc_pidinfo(
-        pid: i32,
-        flavor: i32,
-        arg: u64,
-        buffer: *mut ProcBsdInfo,
-        buffersize: i32,
-    ) -> i32;
+fn parse_kinfo_proc(buf: &[u8]) -> Option<(i32, ProcessStart)> {
+    if buf.len() != KINFO_PROC_SIZE {
+        return None;
+    }
+    let sec = i64::from_ne_bytes(kinfo_bytes(buf, KINFO_START_SEC_OFFSET)?);
+    let usec = i32::from_ne_bytes(kinfo_bytes(buf, KINFO_START_USEC_OFFSET)?);
+    let pid = i32::from_ne_bytes(kinfo_bytes(buf, KINFO_PID_OFFSET)?);
+    Some((
+        pid,
+        ProcessStart::MacMicros {
+            sec: u64::try_from(sec).ok()?,
+            usec: u64::try_from(usec).ok()?,
+        },
+    ))
 }
 
+/// Read `pid`'s start time with `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID)`.
+///
+/// Unlike `proc_pidinfo(PROC_PIDTBSDINFO)`, which fails for a zombie, the
+/// sysctl also searches exited processes that have not been reaped. The
+/// leader of a plugin's process group is often exactly that when cleanup
+/// runs ([`exited_without_reaping`]), and [`ProcessIdentity::kill_if_same`]
+/// must still recognise it to signal the rest of the group.
 #[cfg(target_os = "macos")]
 fn read_process_start(pid: u32) -> Option<ProcessStart> {
-    const _: () = assert!(std::mem::offset_of!(ProcBsdInfo, pbi_start_tvsec) == 120);
-    let mut info = std::mem::MaybeUninit::<ProcBsdInfo>::zeroed();
-    let wrote = unsafe {
-        proc_pidinfo(
-            pid as i32,
-            PROC_PIDTBSDINFO,
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    let mut buf = KinfoProcBuf([0; KINFO_PROC_SIZE]);
+    let mut len: libc::size_t = KINFO_PROC_SIZE;
+    let mib_len = libc::c_uint::try_from(mib.len()).ok()?;
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib_len,
+            buf.0.as_mut_ptr().cast::<libc::c_void>(),
+            &mut len,
+            std::ptr::null_mut(),
             0,
-            info.as_mut_ptr(),
-            std::mem::size_of::<ProcBsdInfo>() as i32,
         )
     };
-    if wrote < std::mem::size_of::<ProcBsdInfo>() as i32 {
+    // No such process: the call succeeds and writes nothing.
+    if rc != 0 {
         return None;
     }
-    let info = unsafe { info.assume_init() };
-    if info.pbi_pid != pid {
-        return None;
-    }
-    Some(ProcessStart::MacMicros {
-        sec: info.pbi_start_tvsec,
-        usec: info.pbi_start_tvusec,
-    })
+    let (record_pid, start) = parse_kinfo_proc(buf.0.get(..len)?)?;
+    (record_pid == pid).then_some(start)
 }
 
 /// Host journal of package SIDs and paths.
@@ -3641,6 +3663,54 @@ mod tests {
         } else {
             std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
         }
+    }
+
+    /// A `kinfo_proc` record with `pid` and start time `sec`.`usec` at the
+    /// offsets the kernel writes them.
+    #[cfg(target_os = "macos")]
+    fn kinfo_record(pid: i32, sec: i64, usec: i32) -> Vec<u8> {
+        let mut buf = vec![0u8; KINFO_PROC_SIZE];
+        buf[KINFO_START_SEC_OFFSET..KINFO_START_SEC_OFFSET + 8].copy_from_slice(&sec.to_ne_bytes());
+        buf[KINFO_START_USEC_OFFSET..KINFO_START_USEC_OFFSET + 4]
+            .copy_from_slice(&usec.to_ne_bytes());
+        buf[KINFO_PID_OFFSET..KINFO_PID_OFFSET + 4].copy_from_slice(&pid.to_ne_bytes());
+        buf
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn kinfo_proc_parse_reads_pid_and_start_and_rejects_bad_records() {
+        assert_eq!(
+            parse_kinfo_proc(&kinfo_record(4321, 1_700_000_000, 123_456)),
+            Some((
+                4321,
+                ProcessStart::MacMicros {
+                    sec: 1_700_000_000,
+                    usec: 123_456
+                }
+            ))
+        );
+        // No such process: sysctl writes nothing.
+        assert_eq!(parse_kinfo_proc(&[]), None);
+        let record = kinfo_record(1, 1, 1);
+        assert_eq!(parse_kinfo_proc(&record[..KINFO_PROC_SIZE - 1]), None);
+        assert_eq!(parse_kinfo_proc(&kinfo_record(1, -1, 0)), None);
+        assert_eq!(parse_kinfo_proc(&kinfo_record(1, 0, -1)), None);
+    }
+
+    /// The live record for this test process carries its own pid and a start
+    /// time in the past.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn kinfo_proc_reads_this_process() {
+        let ProcessStart::MacMicros { sec, usec } =
+            read_process_start(std::process::id()).expect("own start time");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs();
+        assert!(sec > 0 && sec <= now, "start {sec} not before now {now}");
+        assert!(usec < 1_000_000);
     }
 
     #[cfg(unix)]
