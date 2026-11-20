@@ -152,17 +152,19 @@ its new screenshots are approved. The `Visual baselines` workflow
 1. When CI finishes, the workflow reads the run's recorded set. If it
    differs from the approved set CI compared with, it pushes the set to
    `pending/pr-<number>` and posts one comment on the pull request. The
-   comment has an approval checkbox and shows the approved and proposed
-   image of every changed screenshot. When the table is too long for one
-   comment (GitHub caps a comment at 65,536 characters), it continues in
-   more comments right after it; nothing is left out. The workflow then
+   comment opens with how many screenshots are changed, new and removed,
+   and the approval checkbox. Below that, each category is a collapsed
+   section: changed screenshots show the approved and proposed image, new
+   ones only the proposed image and removed ones only the approved image.
+   Every screenshot is listed; only a set too large for one GitHub comment
+   (65,536 characters) shows the last rows by name alone. The workflow then
    requests a review from the `visual-reviewers` team, so its members are
    notified.
 2. An approver ticks the checkbox. Ticking needs write access, so a visual
    reviewer without it replies `@bookclerk approve-visuals` instead, the
    same form as the other bot commands.
-3. The workflow checks the approver and that the comment's set is still
-   the pull request's pending one. It then tags the set `approved/<commit>` and commits
+3. The workflow checks the approver and that the pull request is open. It
+   then tags the set `approved/<commit>` and commits
    the new lock to the pull request's branch through the API, so GitHub
    signs the commit. For a fork, the comment gives the author the lock line
    to commit.
@@ -170,10 +172,11 @@ its new screenshots are approved. The `Visual baselines` workflow
 
 A tick from anyone else is undone with the reason. The approval is of the
 images the comment shows, not of a commit, so a push after the comment
-doesn't void it; the run after the lock lands checks the new head against
-the approved set. A CI run that records the same images again leaves the
-pending set and the comment alone. Only a run that records different images
-replaces them, and a tick on the replaced comment is refused.
+doesn't void it. Later runs compare with the approved set, so screenshots
+that haven't changed since stay approved. Ones that changed need approval
+again, in a new comment; the approved comment stays as the record. Until a
+comment is approved, a run that records different images updates it in
+place, and a run that records the same images leaves it alone.
 
 Because the pull request carries its own lock, the merge queue checks each
 pull request against its own approved images. Two pull requests that both

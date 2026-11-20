@@ -202,17 +202,17 @@ MARKER = re.compile(
     re.ASCII,
 )
 
-#: The first line of each continuation comment, when the table does not fit
-#: in one: its place in the series and the set it shows. It never matches
-#: ``MARKER``, so a continuation is never mistaken for the review comment.
-PART_MARKER = re.compile(
-    r"<!-- bookclerk-visual-baselines v1 part=([1-9][0-9]{0,3}) set=([0-9a-f]{40}) -->",
-    re.ASCII,
-)
-
-#: Most characters one comment body holds; GitHub refuses bodies over
-#: 65,536, and the rest is headroom for the outcome notes ``approve`` appends.
+#: Most characters a comment body holds; GitHub refuses bodies over 65,536,
+#: and the rest is headroom for the outcome notes ``approve`` appends.
 MAX_COMMENT_CHARS = 60_000
+
+#: The categories of a change, in the order the comment shows them: the
+#: section title and the image columns each row has.
+CATEGORIES = (
+    ("changed", "Changed", ("Approved", "Proposed")),
+    ("added", "New", ("Proposed",)),
+    ("removed", "Removed", ("Approved",)),
+)
 
 #: Largest event or API document read, in bytes.
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
@@ -258,19 +258,22 @@ def diff_sets(
     return changes
 
 
-def render_comments(
+def render_comment(
     head: str,
     set_commit: str,
     approved_commit: str | None,
     changes: list[tuple[str, str]],
     raw_base: str,
     bot_login: str,
-) -> list[str]:
-    """Renders the bot's review comment for a proposed set, split to fit.
+) -> str:
+    """Renders the bot's review comment for a proposed set.
 
-    Every change gets a row; nothing is left out. Rows that would push the
-    review comment past ``MAX_COMMENT_CHARS`` go into continuation comments,
-    each opened by ``PART_MARKER``.
+    One comment holds every change: a summary line with the count in each
+    category, the approval checkbox, then one collapsed section per
+    category. Changed screenshots show the approved and proposed image, new
+    ones only the proposed and removed ones only the approved. Only a set
+    too large for one GitHub comment loses images: the rows that no longer
+    fit list the screenshot's name alone.
 
     # Arguments
     * ``head``: the pull request head the set was recorded from.
@@ -283,60 +286,73 @@ def render_comments(
     * ``bot_login``: the automation App's login, for the reply command.
 
     # Returns
-    The review comment (the marker, a summary, the unticked checkbox and the
-    first rows of the table of approved and proposed images), then any
-    continuation comments in order.
+    The comment body, opened by ``MARKER``.
     """
-    rows = []
-    for path, change in changes:
-        old = (
-            "new"
-            if change == "added" or approved_commit is None
-            else f"![approved]({raw_base}/{approved_commit}/{path})"
-        )
-        new = (
-            "removed"
-            if change == "removed"
-            else f"![proposed]({raw_base}/{set_commit}/{path})"
-        )
-        rows.append(f"| `{path[:-4]}` | {old} | {new} |")
-    table = ["| Screenshot | Approved | Proposed |", "| --- | --- | --- |"]
-
-    def fill(lead: list[str], start: int, reserve: int) -> tuple[list[str], int]:
-        # Always takes at least one row, so every body makes progress.
-        lines = lead + table
-        size = reserve + sum(len(line) + 1 for line in lines)
-        end = start
-        while end < len(rows) and (
-            end == start or size + len(rows[end]) + 1 <= MAX_COMMENT_CHARS
-        ):
-            size += len(rows[end]) + 1
-            lines.append(rows[end])
-            end += 1
-        return lines, end
-
-    lead = [
+    by_kind = {kind: [p for p, c in changes if c == kind] for kind, _, _ in CATEGORIES}
+    counts = ", ".join(
+        f"{len(by_kind[kind])} {title.lower()}"
+        for kind, title, _ in CATEGORIES
+        if by_kind[kind]
+    )
+    head_lines = [
         f"<!-- bookclerk-visual-baselines v1 head={head} set={set_commit} -->",
         "### Visual changes",
         "",
-        f"{len(changes)} screenshot(s) differ from the approved baselines at `{head[:12]}`.",
+        (
+            f"{len(changes)} screenshot(s) differ from the approved baselines at "
+            f"`{head[:12]}`: {counts}."
+        ),
         "",
         checkbox(head, False),
         "",
         f"Without write access, a visual reviewer approves by replying `{approve_command(bot_login)}`.",
         "",
     ]
-    # The reserve leaves room for the sentence pointing at the continuations.
-    first, end = fill(lead, 0, 80)
-    bodies = [first]
-    while end < len(rows):
-        marker = f"<!-- bookclerk-visual-baselines v1 part={len(bodies)} set={set_commit} -->"
-        lines, end = fill([marker, "### Visual changes, continued", ""], end, 0)
-        bodies.append(lines)
-    if len(bodies) > 1:
-        note = f"The table continues in the next {len(bodies) - 1} comment(s)."
-        bodies[0][len(lead) : len(lead)] = [note, ""]
-    return ["\n".join(lines) + "\n" for lines in bodies]
+    images = {
+        "Approved": f"{raw_base}/{approved_commit}" if approved_commit else None,
+        "Proposed": f"{raw_base}/{set_commit}",
+    }
+    sections: list[tuple[list[str], list[str], list[str]]] = []
+    for kind, title, columns in CATEGORIES:
+        paths = by_kind[kind]
+        if not paths:
+            continue
+        top = [
+            f"<details><summary>{title} ({len(paths)})</summary>",
+            "",
+            "| Screenshot | " + " | ".join(columns) + " |",
+            "| --- |" + " --- |" * len(columns),
+        ]
+        rows = []
+        for path in paths:
+            cells = [
+                f"![{column.lower()}]({images[column]}/{path})"
+                if images[column]
+                else "none"
+                for column in columns
+            ]
+            rows.append(f"| `{path[:-4]}` | " + " | ".join(cells) + " |")
+        sections.append(
+            (top, rows, [f"| `{path[:-4]}` |" + " |" * len(columns) for path in paths])
+        )
+    tail = ["</details>", ""]
+    size = sum(len(line) + 1 for line in head_lines)
+    size += sum(
+        sum(len(line) + 1 for line in top + tail) + sum(len(r) + 1 for r in bare)
+        for top, _, bare in sections
+    )
+    lines = list(head_lines)
+    for top, rows, bare in sections:
+        lines += top
+        for row, plain in zip(rows, bare, strict=True):
+            # Swap a bare row for its imaged one while the whole body fits.
+            if size - len(plain) + len(row) <= MAX_COMMENT_CHARS:
+                size += len(row) - len(plain)
+                lines.append(row)
+            else:
+                lines.append(plain)
+        lines += tail
+    return "\n".join(lines)
 
 
 def parse_role(raw: bytes) -> str:

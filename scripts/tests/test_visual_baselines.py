@@ -486,7 +486,7 @@ class DiffAndRenderTests(unittest.TestCase):
         self.assertEqual(vb.diff_sets(new, old)[-1], ("phone/c--dark.png", "removed"))
 
     def test_rendered_comment_round_trips_through_a_tick(self) -> None:
-        bodies = vb.render_comments(
+        body = vb.render_comment(
             "a" * 40,
             "b" * 40,
             "c" * 40,
@@ -494,8 +494,6 @@ class DiffAndRenderTests(unittest.TestCase):
             "https://r",
             BOT,
         )
-        self.assertEqual(len(bodies), 1)
-        body = bodies[0]
         self.assertEqual(body.count("![proposed]"), 50)
         self.assertIn("`@bookclerk approve-visuals`", body)
         event = {
@@ -514,28 +512,56 @@ class DiffAndRenderTests(unittest.TestCase):
         )
 
 
-class SplitCommentTests(unittest.TestCase):
-    """``render_comments`` keeps every row and splits only to fit GitHub."""
+class CategoryCommentTests(unittest.TestCase):
+    """``render_comment`` groups changes by kind in one comment."""
 
-    def test_a_long_table_continues_in_more_comments(self) -> None:
-        changes = [(f"desktop/story-{i:04}--light.png", "changed") for i in range(900)]
-        bodies = vb.render_comments(
-            "a" * 40, "b" * 40, "c" * 40, changes, "https://r" * 5, BOT
+    def test_each_category_is_collapsed_with_only_its_columns(self) -> None:
+        changes = [
+            ("desktop/a--light.png", "changed"),
+            ("desktop/b--light.png", "added"),
+            ("desktop/c--light.png", "added"),
+            ("phone/d--dark.png", "removed"),
+        ]
+        body = vb.render_comment(
+            "a" * 40, "b" * 40, "c" * 40, changes, "https://r", BOT
         )
-        self.assertGreater(len(bodies), 2)
-        self.assertTrue(all(len(b) <= vb.MAX_COMMENT_CHARS for b in bodies))
-        rows = "".join(bodies)
+        self.assertIn("4 screenshot(s) differ", body)
+        self.assertIn("1 changed, 2 new, 1 removed", body)
+        self.assertEqual(body.count("<details>"), 3)
+        self.assertLess(body.index("Changed (1)"), body.index("New (2)"))
+        self.assertLess(body.index("New (2)"), body.index("Removed (1)"))
+        self.assertIn(
+            "| `desktop/a--light` | ![approved](https://r/"
+            + "c" * 40
+            + "/desktop/a--light.png)"
+            " | ![proposed](https://r/" + "b" * 40 + "/desktop/a--light.png) |",
+            body,
+        )
+        self.assertIn("| Screenshot | Proposed |", body)
+        self.assertIn(
+            "| `desktop/b--light` | ![proposed](https://r/"
+            + "b" * 40
+            + "/desktop/b--light.png) |",
+            body,
+        )
+        self.assertIn(
+            "| `phone/d--dark` | ![approved](https://r/"
+            + "c" * 40
+            + "/phone/d--dark.png) |",
+            body,
+        )
+        self.assertNotIn("| new |", body)
+        self.assertLess(body.index("- [ ]"), body.index("<details>"))
+
+    def test_a_set_too_large_for_one_comment_keeps_every_name(self) -> None:
+        changes = [(f"desktop/story-{i:04}--light.png", "added") for i in range(900)]
+        body = vb.render_comment(
+            "a" * 40, "b" * 40, None, changes, "https://r" * 5, BOT
+        )
+        self.assertLessEqual(len(body), vb.MAX_COMMENT_CHARS)
         for path, _ in changes:
-            self.assertEqual(rows.count(f"`{path[:-4]}`"), 1)
-        self.assertTrue(vb.MARKER.match(bodies[0]))
-        self.assertEqual(bodies[0].count(vb.checkbox("a" * 40, False)), 1)
-        self.assertIn(f"next {len(bodies) - 1} comment(s)", bodies[0])
-        for index, body in enumerate(bodies[1:], start=1):
-            self.assertIsNone(vb.MARKER.match(body))
-            part = vb.PART_MARKER.match(body)
-            self.assertIsNotNone(part)
-            self.assertEqual(part.groups(), (str(index), "b" * 40))
-            self.assertNotIn("- [ ]", body)
+            self.assertEqual(body.count(f"`{path[:-4]}`"), 1)
+        self.assertGreater(body.count("![proposed]"), 100)
 
 
 class FakeGitHub:
@@ -574,14 +600,14 @@ class BotTests(unittest.TestCase):
         self.env["GITHUB_EVENT_PATH"] = str(path)
 
     def approval_event(self, sender: str = "maint") -> str:
-        body = vb.render_comments(
+        body = vb.render_comment(
             "a" * 40,
             "b" * 40,
             None,
             [("desktop/x--light.png", "added")],
             "https://r",
             BOT,
-        )[0]
+        )
         self.event(
             {
                 "action": "edited",
@@ -770,10 +796,10 @@ class BotTests(unittest.TestCase):
             ),
         )
         self.assertNotIn("refused", out)
-        self.assertIn("| new |", write.sent[0][2]["body"])
+        self.assertIn("New (1)", write.sent[0][2]["body"])
 
     def propose_with(
-        self, lock: bytes, extra: dict, comments: list
+        self, lock: bytes, extra: dict, comments: list, sets: dict | None = None
     ) -> tuple[str, FakeGitHub, list]:
         """Runs ``propose`` for #990 at head ``d...`` with one recorded image."""
         sha = "d" * 40
@@ -837,7 +863,7 @@ class BotTests(unittest.TestCase):
                 lambda r, f, ref, m, t: pushed.append(ref) or "e" * 40,
             ),
             unittest.mock.patch.object(
-                self.bot, "fetch_set", lambda r, c, t: dict(image)
+                self.bot, "fetch_set", lambda r, c, t: dict((sets or {}).get(c, image))
             ),
         ):
             out = self.bot.propose(self.env, FakeGitHub(answers), write)
@@ -895,39 +921,55 @@ class BotTests(unittest.TestCase):
         pending = "e" * 40
         body = f"<!-- bookclerk-visual-baselines v1 head={'c' * 40} set={pending} -->\n- [ ] x"
         out, write, pushed = self.propose_with(
-            b"none\n",
-            {
-                (
-                    "GET",
-                    "repos/Bookclerk/bookclerk-visual-baselines/git/ref/heads/pending/pr-990",
-                ): (200, {"object": {"sha": pending}})
-            },
-            [{"id": 7, "user": {"login": BOT}, "body": body}],
+            b"none\n", {}, [{"id": 7, "user": {"login": BOT}, "body": body}]
         )
         self.assertIn("still pending", out)
         self.assertEqual((write.sent, pushed), ([], []))
 
-    def test_propose_deletes_continuations_a_shorter_table_leaves(self) -> None:
-        old = f"<!-- bookclerk-visual-baselines v1 head={'c' * 40} set={'9' * 40} -->"
-        part = f"<!-- bookclerk-visual-baselines v1 part=1 set={'9' * 40} -->"
+    def test_propose_updates_the_open_comment_for_new_images(self) -> None:
+        pending = "9" * 40
+        body = f"<!-- bookclerk-visual-baselines v1 head={'c' * 40} set={pending} -->\n- [ ] x"
         out, write, pushed = self.propose_with(
             b"none\n",
             {},
             [
-                {"id": 7, "user": {"login": BOT}, "body": old},
-                {"id": 8, "user": {"login": BOT}, "body": part},
-                {"id": 9, "user": {"login": "someone"}, "body": part},
+                {"id": 7, "user": {"login": BOT}, "body": body},
+                {"id": 9, "user": {"login": "someone"}, "body": body},
             ],
+            {pending: {"desktop/x--light.png": b"older"}},
         )
-        self.assertIn("in 1 comment(s)", out)
+        self.assertIn("proposed", out)
         self.assertEqual(pushed, ["refs/heads/pending/pr-990"])
         self.assertEqual(
-            [(m, p) for m, p, _ in write.sent][:2],
-            [
-                ("PATCH", "repos/Bookclerk/bookclerk/issues/comments/7"),
-                ("DELETE", "repos/Bookclerk/bookclerk/issues/comments/8"),
-            ],
+            write.sent[0][:2], ("PATCH", "repos/Bookclerk/bookclerk/issues/comments/7")
         )
+
+    def test_changes_after_an_approval_go_in_a_new_comment(self) -> None:
+        approved = "a" * 40
+        tag = (
+            "GET",
+            f"repos/Bookclerk/bookclerk-visual-baselines/git/ref/tags/approved/{approved}",
+        )
+        body = f"<!-- bookclerk-visual-baselines v1 head={'c' * 40} set={approved} -->\n> Approved"
+        out, write, pushed = self.propose_with(
+            approved.encode() + b"\n",
+            {tag: (200, {"object": {"sha": approved}})},
+            [{"id": 7, "user": {"login": BOT}, "body": body}],
+            {
+                approved: {
+                    "desktop/x--light.png": b"approved",
+                    "phone/y--dark.png": b"kept",
+                }
+            },
+        )
+        self.assertIn("proposed", out)
+        self.assertEqual(pushed, ["refs/heads/pending/pr-990"])
+        method, path, sent = write.sent[0]
+        self.assertEqual(
+            (method, path), ("POST", "repos/Bookclerk/bookclerk/issues/990/comments")
+        )
+        # Only what changed since the approval needs approving again.
+        self.assertIn("1 changed, 1 removed", sent["body"])
 
     def test_propose_skips_an_incomplete_set(self) -> None:
         self.env["ARTIFACT_DIR"] = str(self.root)
@@ -958,14 +1000,14 @@ class BotTests(unittest.TestCase):
         self.assertNotIn("- [x]", write.sent[-1][2]["body"])
 
     def test_a_visual_reviewer_without_write_approves_by_reply(self) -> None:
-        body = vb.render_comments(
+        body = vb.render_comment(
             "a" * 40,
             "b" * 40,
             None,
             [("desktop/x--light.png", "added")],
             "https://r",
             BOT,
-        )[0]
+        )
         self.event(
             {
                 "action": "created",
@@ -1017,7 +1059,7 @@ class BotTests(unittest.TestCase):
         )
         baselines = FakeGitHub(
             {
-                ("GET", f"{base}/git/ref/heads/pending/pr-990"): (
+                ("GET", f"{base}/git/ref/tags/approved/" + "b" * 40): (
                     200,
                     {"object": {"sha": "b" * 40}},
                 ),
@@ -1085,7 +1127,7 @@ class BotTests(unittest.TestCase):
         )
         baselines = FakeGitHub(
             {
-                ("GET", f"{base}/git/ref/heads/pending/pr-990"): (
+                ("GET", f"{base}/git/ref/tags/approved/" + "b" * 40): (
                     200,
                     {"object": {"sha": "b" * 40}},
                 ),
@@ -1101,7 +1143,7 @@ class BotTests(unittest.TestCase):
         out = self.bot.approve(self.env, send, write, baselines)
         self.assertIn("Approved by maint", out)
         self.assertEqual(
-            baselines.sent[1][2],
+            baselines.sent[0][2],
             {"ref": "refs/tags/approved/" + "b" * 40, "sha": "b" * 40},
         )
         put = write.sent[0][2]
@@ -1139,7 +1181,7 @@ class BotTests(unittest.TestCase):
         )
         baselines = FakeGitHub(
             {
-                ("GET", f"{base}/git/ref/heads/pending/pr-990"): (
+                ("GET", f"{base}/git/ref/tags/approved/" + pending): (
                     200,
                     {"object": {"sha": pending}},
                 ),
@@ -1159,9 +1201,9 @@ class BotTests(unittest.TestCase):
         self.assertIn("Approved by maint", out)
         self.assertEqual(write.sent[0][0], "PUT")
 
-    def test_approve_refuses_a_replaced_set(self) -> None:
+    def test_approve_refuses_a_set_missing_from_the_baselines(self) -> None:
         out, write = self.approve_with("a" * 40, "c" * 40)
-        self.assertIn("newer recording replaced this set", out)
+        self.assertIn("no longer in the baselines repository", out)
         self.assertNotIn("PUT", [m for m, _, _ in write.sent])
         self.assertNotIn("- [x]", write.sent[-1][2]["body"])
 
