@@ -157,11 +157,11 @@ impl IntakeAttribution {
 pub struct IntakeSettings {
     /// Seconds an item's files must stay unchanged before it is ingested,
     /// 5 to 86,400 (default 60).
-    #[schema(minimum = 5, maximum = 86400)]
+    #[schema(minimum = 5, maximum = 86400, example = 60)]
     pub settle_seconds: u32,
     /// Seconds between two full listings of the folder, 30 to 86,400
     /// (default 300). A change feed starts a listing sooner.
-    #[schema(minimum = 30, maximum = 86400)]
+    #[schema(minimum = 30, maximum = 86400, example = 300)]
     pub scan_interval_seconds: u32,
     /// What happens to an item once it is ingested (default `move`).
     pub after_ingest: AfterIngest,
@@ -170,18 +170,18 @@ pub struct IntakeSettings {
     /// The user id that holds every book in `owner` mode; required there
     /// and refused in `subfolder` mode.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(minimum = 1)]
+    #[schema(minimum = 1, example = 2)]
     pub patron: Option<i64>,
     /// Extra file name patterns to ignore, at most 64, each 1 to 128 bytes
     /// with no `/`: `*` matches any run of characters and `?` one
     /// character, compared without ASCII case. The built-in list always
     /// applies too ([`BUILTIN_IGNORE_PATTERNS`]).
-    #[schema(max_items = 64)]
+    #[schema(max_items = 64, example = json!(["*.nzb"]))]
     pub ignore: Vec<String>,
     /// With `after_ingest = move`, delete `_imported` day folders older than
     /// this many days, 1 to 3,650; absent keeps them.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(minimum = 1, maximum = 3650)]
+    #[schema(minimum = 1, maximum = 3650, example = 30)]
     pub prune_imported_days: Option<u16>,
 }
 
