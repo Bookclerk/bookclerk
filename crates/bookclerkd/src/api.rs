@@ -1226,6 +1226,10 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::library_link::join::post_join_leave))
         .routes(routes!(get_settings, patch_settings))
         .routes(routes!(get_diagnostics_reports))
+        .routes(routes!(
+            crate::diagnostics_lookup::get_diagnostics_report,
+            crate::diagnostics_lookup::delete_diagnostics_report
+        ))
         .routes(routes!(get_plugin_consent, post_plugin_consent))
         .routes(routes!(get_plugin_logo))
         .routes(routes!(migrate_database))
@@ -3885,6 +3889,15 @@ pub(crate) struct DiagnosticsReportView {
     /// When the collector accepted it, Unix milliseconds.
     #[schema(example = 1_763_520_000_000_u64)]
     sent_at_unix_ms: u64,
+    /// The code that reads the report back or deletes it, in groups of
+    /// four, or null when the collector issued none. With the ID it also
+    /// opens the collector's public lookup page.
+    #[schema(example = "K7QM-3XRD-PW9T-H2CF")]
+    access_code: Option<String>,
+    /// When this install deleted the collector's stored copy, Unix
+    /// milliseconds, or null while it is stored.
+    #[schema(example = json!(null))]
+    deleted_at_unix_ms: Option<u64>,
 }
 
 /// Body of `GET /api/diagnostics/reports`.
@@ -3930,6 +3943,8 @@ async fn get_diagnostics_reports(
                 trigger: r.trigger,
                 version: r.version,
                 sent_at_unix_ms: r.sent_at_unix_ms,
+                access_code: r.access_code.map(|c| c.display()),
+                deleted_at_unix_ms: r.deleted_at_unix_ms,
             })
             .collect(),
     })
@@ -8931,6 +8946,9 @@ tcp = {tcp}
                     trigger: "crash".into(),
                     version: "1".into(),
                     sent_at_unix_ms: n,
+                    access_code: bookclerk_config::AccessCode::parse("K7QM3XRDPW9TH2CF")
+                        .filter(|_| n == 2),
+                    deleted_at_unix_ms: None,
                 },
             )
             .unwrap();
@@ -8948,6 +8966,11 @@ tcp = {tcp}
                 "0e9ced79-df3c-4dae-872b-2e5772b00001"
             ]
         );
+        assert_eq!(
+            listed.0.reports[0].access_code.as_deref(),
+            Some("K7QM-3XRD-PW9T-H2CF")
+        );
+        assert_eq!(listed.0.reports[1].access_code, None);
     }
 
     #[tokio::test]
