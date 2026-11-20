@@ -148,14 +148,30 @@ fn rebuild_index(
         .write(true)
         .open(&preparing_lock)?;
     pause_before_lock();
-    fs4::FileExt::lock(&build_lock)?;
     let builds = index_root.join("builds");
-    fs::create_dir_all(&builds)?;
     let lock_path = build_lock_path(&builds, &build_id);
-    fs::rename(&preparing_lock, &lock_path)?;
+    let placed = fs4::FileExt::lock(&build_lock)
+        .and_then(|()| fs::create_dir_all(&builds))
+        .and_then(|()| fs::rename(&preparing_lock, &lock_path));
+    if let Err(err) = placed {
+        drop(build_lock);
+        let _ = fs::remove_file(&preparing_lock);
+        return Err(err.into());
+    }
     let build_dir = builds.join(&build_id);
+    // Held until the build ends, for a sweeper from an older release that
+    // shares this root and only knows the in-directory lock.
+    let mut legacy_lock = None;
     let published = (|| {
         fs::create_dir(&build_dir)?;
+        let inner = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(build_dir.join("active.lock"))?;
+        fs4::FileExt::lock(&inner)?;
+        legacy_lock = Some(inner);
         let generation = claim_generation(&generation_path(final_path))?;
         wait_for_test_gate();
         let runs = spill_runs(root, storage_prefix, list_prefix, &build_dir)?;
@@ -167,6 +183,7 @@ fn rebuild_index(
         ensure_published(&index_root, &build_dir, final_path, &building, generation)
     })();
     // Scratch first, while the lock still marks the build live; then the lock.
+    drop(legacy_lock);
     let _ = fs::remove_dir_all(&build_dir);
     let _ = fs4::FileExt::unlock(&build_lock);
     drop(build_lock);

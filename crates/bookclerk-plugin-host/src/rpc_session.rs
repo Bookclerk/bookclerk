@@ -5223,9 +5223,11 @@ mode = "deny"
         let flag = Arc::new(AtomicBool::new(false));
         let mut gateway = long_running_child();
         let pid = gateway.id().expect("pid");
-        tokio::spawn(async move {
+        let killer = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(30)).await;
-            kill_pid_externally(pid);
+            tokio::task::spawn_blocking(move || kill_pid_externally(pid))
+                .await
+                .expect("external kill");
         });
         let mut guest = None;
         let err = tokio::time::timeout(
@@ -5237,9 +5239,12 @@ mode = "deny"
                 std::future::pending::<Result<()>>(),
             ),
         )
-        .await
-        .expect("sibling exit did not unblock the stalled call")
-        .expect_err("sibling");
+        .await;
+        // A failed kill surfaces as itself, not as a stalled call.
+        killer.await.expect("external kill task");
+        let err = err
+            .expect("sibling exit did not unblock the stalled call")
+            .expect_err("sibling");
         assert!(
             err.to_string().contains("exited"),
             "stalled dispatch must stop when a sibling exits: {err}"

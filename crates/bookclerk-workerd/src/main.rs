@@ -290,7 +290,7 @@ fn spawn_workerd_process(cmd: &mut tokio::process::Command, spawn_bin: &Path) ->
     drop(child.stdin.take());
     // On an error return `kill_on_drop` stops the unbound child.
     #[cfg(windows)]
-    bind_to_launcher_lifetime(&child)?;
+    bind_to_launcher_lifetime(&mut child)?;
     Ok(child)
 }
 
@@ -317,14 +317,20 @@ static WORKERD_JOBS: std::sync::Mutex<Vec<bookclerk_sandbox::SessionJob>> =
 /// Returns an error when the Job cannot be created or the child cannot be
 /// assigned to it; the caller then drops (and so kills) the child.
 #[cfg(windows)]
-fn bind_to_launcher_lifetime(child: &Child) -> Result<()> {
-    let process = child
-        .raw_handle()
-        .context("workerd exited before it could be bound to the launcher")?;
+fn bind_to_launcher_lifetime(child: &mut Child) -> Result<()> {
+    // A workerd that already exited has nothing to bind; the caller reports
+    // its exit status and stderr instead of a Job error.
+    let Some(process) = child.raw_handle() else {
+        return Ok(());
+    };
     let job = bookclerk_sandbox::SessionJob::create(&bookclerk_sandbox::ResourceLimits::default())
         .context("create the kill-on-close Job for workerd")?;
-    job.assign(process)
-        .context("assign workerd to its kill-on-close Job")?;
+    if let Err(err) = job.assign(process) {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return Ok(());
+        }
+        return Err(err).context("assign workerd to its kill-on-close Job");
+    }
     WORKERD_JOBS
         .lock()
         .map_err(|_| anyhow::anyhow!("workerd Job registry lock poisoned"))?

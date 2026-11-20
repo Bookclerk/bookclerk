@@ -199,16 +199,15 @@ fn open_unix_fd(fd: i32) -> Result<InheritedDuplex> {
 #[cfg(windows)]
 fn open_windows_handle(value: u64) -> Result<InheritedDuplex> {
     use std::os::windows::io::RawHandle;
+    let raw = usize::try_from(value)
+        .with_context(|| format!("inherited handle {value} does not fit this platform"))?
+        as RawHandle;
     // Same rule as Unix `FD_CLOEXEC`: the host marked the handle inheritable
     // only so this process could receive it. Left inheritable, `workerd.exe`
     // would get a copy of the guest link and keep it open after we exit.
-    stop_inheriting(value as usize as RawHandle)
+    stop_inheriting(raw)
         .with_context(|| format!("clear HANDLE_FLAG_INHERIT on inherited handle {value}"))?;
-    let pipe = unsafe {
-        tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(
-            value as usize as RawHandle,
-        )?
-    };
+    let pipe = unsafe { tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(raw)? };
     Ok(InheritedDuplex::Pipe(pipe))
 }
 

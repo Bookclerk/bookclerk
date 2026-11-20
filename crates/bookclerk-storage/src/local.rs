@@ -1880,7 +1880,6 @@ mod tests {
         assert!(src.metadata().unwrap().len() > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES);
     }
 
-    /// A local backend in a fresh directory.
     /// Marks `file` sparse so extending it allocates no disk space, as a
     /// length change does on Unix file systems.
     #[cfg(windows)]
@@ -1913,6 +1912,7 @@ mod tests {
         );
     }
 
+    /// A local backend in a fresh directory.
     fn intent_backend() -> (tempfile::TempDir, LocalFsBackend) {
         let dir = tempdir().unwrap();
         let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
