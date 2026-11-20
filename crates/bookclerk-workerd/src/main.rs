@@ -36,6 +36,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use bookclerk_plugin_manifest::PluginManifest;
+use bookclerk_workerd::bridge_addr::BridgeAddr;
 use bookclerk_workerd::config::{self, ListenSpec};
 use bookclerk_workerd::control;
 use bookclerk_workerd::egress::EgressProxy;
@@ -165,7 +166,8 @@ async fn run_socket_broker(manifest: &PluginManifest) -> Result<()> {
         domains = ?egress.allowed_initial_hosts(),
         "starting socket broker"
     );
-    bookclerk_workerd::socket_broker::serve_stdio(egress.policy().clone())
+    let tunnels = bookclerk_workerd::egress_relay::host_link_from_env().await?;
+    bookclerk_workerd::socket_broker::serve_stdio(egress.policy().clone(), tunnels)
         .await
         .map_err(|err| anyhow::anyhow!("socket broker: {err}"))
 }
@@ -320,6 +322,15 @@ async fn run_isolate(
         (format!("127.0.0.1:{port}"), Some(listener))
     };
 
+    // The isolate's only way out: the relay hands each tunnel to the host's
+    // check. Without a host link (network denied) there is no relay and the
+    // egress worker is `blocked`.
+    let relay = start_egress_relay(&state_dir).await?;
+    let egress = &match relay.as_ref() {
+        Some(relay) => egress.clone().with_relay(relay.addr.clone()),
+        None => egress.clone(),
+    };
+
     // Python isolates try their snapshot starts in order; every other
     // isolate starts once, plainly.
     let snapshot_plan = if manifest.declares_python() {
@@ -327,7 +338,7 @@ async fn run_isolate(
     } else {
         python_snapshot::SnapshotPlan::default()
     };
-    let (mut child, rpc_port) = snapshot_plan
+    let (mut child, rpc_addr) = snapshot_plan
         .start_in_order(|start| {
             let (granted_addr, bridge_token, state_dir) = (
                 granted_addr.as_str(),
@@ -335,7 +346,7 @@ async fn run_isolate(
                 state_dir.as_path(),
             );
             async move {
-                let (listen, rpc_listener) = bridge_rpc_socket()?;
+                let (listen, known, rpc_listener) = bridge_rpc_socket(state_dir)?;
                 let generated = config::materialize(
                     root,
                     manifest,
@@ -352,6 +363,7 @@ async fn run_isolate(
                     &mut cmd,
                     &spawn_bin,
                     &generated.listen,
+                    known,
                     rpc_listener,
                     bridge_token,
                 )
@@ -361,7 +373,7 @@ async fn run_isolate(
         .await?;
 
     let result = mediate_bridge(
-        rpc_port,
+        rpc_addr,
         bridge_token.clone(),
         #[cfg(unix)]
         granted_unix,
@@ -380,6 +392,79 @@ async fn run_isolate(
     let _ = child.kill().await;
     let _ = child.wait().await;
     result
+}
+
+/// The running egress relay for one isolate session.
+struct EgressRelay {
+    /// Workerd `external` address the relay listens on.
+    addr: String,
+    /// The accept loop; aborted when the session ends.
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for EgressRelay {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Starts the egress relay when the host delivered a proxy link
+/// ([`bookclerk_workerd::egress_relay::host_link_from_env`]).
+///
+/// # Arguments
+///
+/// * `state_dir` - The session's state directory (Unix socket home).
+///
+/// # Returns
+///
+/// `None` when no link was delivered (the plugin's network is denied).
+///
+/// # Errors
+///
+/// When the link spec is malformed, the challenge can't be written, or the
+/// relay listener can't be bound.
+async fn start_egress_relay(state_dir: &Path) -> Result<Option<EgressRelay>> {
+    let Some(mux) = bookclerk_workerd::egress_relay::host_link_from_env().await? else {
+        return Ok(None);
+    };
+    let tls = bookclerk_workerd::socket_broker::default_tls()?;
+
+    #[cfg(unix)]
+    let (addr, task) = {
+        let (addr, listener) = bookclerk_workerd::unix_bind::bind_egress(state_dir)
+            .with_context(|| format!("bind egress relay under {}", state_dir.display()))?;
+        listener.set_nonblocking(true)?;
+        let listener = tokio::net::UnixListener::from_std(listener)?;
+        let task = tokio::spawn(async move {
+            let accept = || {
+                let listener = &listener;
+                async move { listener.accept().await.map(|(stream, _)| stream) }
+            };
+            if let Err(err) = bookclerk_workerd::egress_relay::serve(accept, mux, tls).await {
+                warn!(error = %err, "egress relay stopped");
+            }
+        });
+        (addr, task)
+    };
+    #[cfg(not(unix))]
+    let (addr, task) = {
+        let _ = state_dir;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .context("bind egress relay loopback")?;
+        let addr = format!("127.0.0.1:{}", listener.local_addr()?.port());
+        let task = tokio::spawn(async move {
+            let accept = || {
+                let listener = &listener;
+                async move { listener.accept().await.map(|(stream, _)| stream) }
+            };
+            if let Err(err) = bookclerk_workerd::egress_relay::serve(accept, mux, tls).await {
+                warn!(error = %err, "egress relay stopped");
+            }
+        });
+        (addr, task)
+    };
+    Ok(Some(EgressRelay { addr, task }))
 }
 
 /// Host-owned native-behind-workerd: workerd control plane plus inherited guest links.
@@ -458,7 +543,7 @@ async fn run_native_behind_workerd(
     let state_dir = config::host_state_dir()?;
     let bridge_token = generate_bridge_token();
 
-    let (listen, rpc_listener) = bridge_rpc_socket()?;
+    let (listen, known, rpc_listener) = bridge_rpc_socket(&state_dir)?;
 
     #[cfg(unix)]
     let (granted_addr, granted_unix) = {
@@ -486,9 +571,9 @@ async fn run_native_behind_workerd(
     )?;
 
     let (mut cmd, spawn_bin) = workerd_serve_command(&workerd_bin, &generated, root)?;
-    let (mut child, rpc_port) =
-        spawn_and_find_bridge(&mut cmd, &spawn_bin, &generated.listen, rpc_listener).await?;
-    wait_for_bridge(rpc_port, &bridge_token)
+    let (mut child, rpc_addr) =
+        spawn_and_find_bridge(&mut cmd, &spawn_bin, &generated.listen, known, rpc_listener).await?;
+    wait_for_bridge(&rpc_addr, &bridge_token)
         .await
         .context("workerd bridge /health did not become ready")?;
 
@@ -516,7 +601,7 @@ async fn run_native_behind_workerd(
     };
 
     let result = mediate_native(
-        rpc_port,
+        rpc_addr,
         bridge_token.clone(),
         #[cfg(unix)]
         granted_unix,
@@ -538,7 +623,7 @@ async fn run_native_behind_workerd(
 
 /// Cap'n Proto stdio with the native guest's vat as the typed data plane.
 async fn mediate_native<R, W>(
-    port: u16,
+    addr: BridgeAddr,
     token: String,
     #[cfg(unix)] granted_unix: Option<std::os::unix::net::UnixListener>,
     #[cfg(not(unix))] granted_tcp: Option<std::net::TcpListener>,
@@ -561,7 +646,7 @@ where
 
     let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
     let http = BridgeHttp {
-        port,
+        addr,
         token: token.clone(),
     };
     let local = tokio::task::LocalSet::new();
@@ -598,7 +683,7 @@ where
 
 /// Serves Bookclerk capnp on stdio and granted HTTP on the reverse channel.
 async fn mediate_bridge(
-    port: u16,
+    addr: BridgeAddr,
     token: String,
     #[cfg(unix)] granted_unix: Option<std::os::unix::net::UnixListener>,
     #[cfg(not(unix))] granted_tcp: Option<std::net::TcpListener>,
@@ -615,7 +700,7 @@ async fn mediate_bridge(
 
     let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
     let http = BridgeHttp {
-        port,
+        addr,
         token: token.clone(),
     };
     let local = tokio::task::LocalSet::new();
@@ -646,40 +731,46 @@ async fn mediate_bridge(
         .await
 }
 
-#[cfg(unix)]
-/// Clears `FD_CLOEXEC` so workerd inherits the bound RPC listener via `--socket-fd`.
-fn clear_cloexec(listener: &std::net::TcpListener) -> Result<()> {
-    use std::os::fd::AsRawFd;
-    bookclerk_workerd::unix_bind::clear_cloexec(listener.as_raw_fd()).map_err(anyhow::Error::from)
-}
-
 /// How long workerd gets to start listening and answer the bridge `/health`.
 const BRIDGE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The bridge RPC listener the launcher binds for workerd to inherit.
+#[cfg(unix)]
+type RpcListener = std::os::unix::net::UnixListener;
+
+/// Windows binds nothing here; workerd binds and reports its own port.
+#[cfg(not(unix))]
+type RpcListener = std::convert::Infallible;
+
 /// Plans the bridge RPC socket for one workerd spawn.
 ///
-/// On Unix the launcher binds `127.0.0.1:0` and hands the listener to workerd
-/// with `--socket-fd`: Linux Landlock `OutboundListen` allows `bind(port=0)`
-/// but not rebinding a concrete ephemeral port.
+/// On Unix the launcher binds a Unix socket (abstract on Linux, a pathname in
+/// the session directory elsewhere) and hands the listener to workerd with
+/// `--socket-fd`. Neither process opens an IP socket, so the jail denies them
+/// all.
+///
+/// # Arguments
+///
+/// * `state_dir` - The session's state directory.
 ///
 /// # Returns
 ///
-/// The listen mode for the generated config and, on Unix, the bound listener
-/// workerd inherits.
+/// The listen mode for the generated config, the address the launcher
+/// connects to, and the listener workerd inherits.
 ///
 /// # Errors
 ///
-/// When the loopback bind fails or its descriptor cannot be made inheritable.
+/// When the bind fails or its descriptor cannot be made inheritable.
 #[cfg(unix)]
-fn bridge_rpc_socket() -> Result<(ListenSpec, Option<std::net::TcpListener>)> {
-    let rpc_listener =
-        std::net::TcpListener::bind("127.0.0.1:0").context("bind bridge RPC ephemeral loopback")?;
-    let rpc_port = rpc_listener.local_addr()?.port();
-    clear_cloexec(&rpc_listener).context("clear CLOEXEC on bridge RPC socket")?;
-    Ok((
-        ListenSpec::InheritedTcp { port: rpc_port },
-        Some(rpc_listener),
-    ))
+fn bridge_rpc_socket(
+    state_dir: &Path,
+) -> Result<(ListenSpec, Option<BridgeAddr>, Option<RpcListener>)> {
+    use std::os::fd::AsRawFd;
+    let (addr, listener) = bookclerk_workerd::unix_bind::bind_rpc(state_dir)
+        .with_context(|| format!("bind bridge RPC socket under {}", state_dir.display()))?;
+    bookclerk_workerd::unix_bind::clear_cloexec(listener.as_raw_fd())
+        .context("clear CLOEXEC on bridge RPC socket")?;
+    Ok((ListenSpec::Inherited, Some(addr), Some(listener)))
 }
 
 /// Plans the bridge RPC socket for one workerd spawn.
@@ -691,32 +782,40 @@ fn bridge_rpc_socket() -> Result<(ListenSpec, Option<std::net::TcpListener>)> {
 /// took the port in between (issue #781). The AppContainer's
 /// `privateNetworkClientServer` capability covers the in-jail loopback bind.
 ///
+/// # Arguments
+///
+/// * `state_dir` - Unused; the signature matches the Unix variant.
+///
 /// # Returns
 ///
-/// [`ListenSpec::ReportedTcp`] and no listener.
+/// [`ListenSpec::ReportedTcp`], no known address and no listener.
 ///
 /// # Errors
 ///
 /// Never; the signature matches the Unix variant.
 #[cfg(not(unix))]
-fn bridge_rpc_socket() -> Result<(ListenSpec, Option<std::net::TcpListener>)> {
-    Ok((ListenSpec::ReportedTcp, None))
+fn bridge_rpc_socket(
+    state_dir: &Path,
+) -> Result<(ListenSpec, Option<BridgeAddr>, Option<RpcListener>)> {
+    let _ = state_dir;
+    Ok((ListenSpec::ReportedTcp, None, None))
 }
 
-/// Spawns workerd and learns which port its bridge RPC socket listens on.
+/// Spawns workerd and learns where its bridge RPC socket listens.
 ///
 /// # Arguments
 ///
 /// * `cmd` - `workerd serve` command from [`workerd_serve_command`].
 /// * `spawn_bin` - Executable path, for error messages.
 /// * `listen` - Listen mode the config was generated with.
+/// * `known` - The bridge address when the launcher bound it (Unix).
 /// * `rpc_listener` - Listener workerd inherits with `--socket-fd` (Unix);
 ///   closed here once the child holds it.
 ///
 /// # Returns
 ///
 /// The running child, with its output forwarded to tracing, and the bridge
-/// RPC port.
+/// RPC address.
 ///
 /// # Errors
 ///
@@ -727,8 +826,9 @@ async fn spawn_and_find_bridge(
     cmd: &mut tokio::process::Command,
     spawn_bin: &Path,
     listen: &ListenSpec,
-    rpc_listener: Option<std::net::TcpListener>,
-) -> Result<(Child, u16)> {
+    known: Option<BridgeAddr>,
+    rpc_listener: Option<RpcListener>,
+) -> Result<(Child, BridgeAddr)> {
     #[cfg(unix)]
     if let Some(ref listener) = rpc_listener {
         use std::os::fd::AsRawFd;
@@ -749,15 +849,19 @@ async fn spawn_and_find_bridge(
     drop(rpc_listener);
 
     control::forward_lines(child.stderr.take());
+    if let Some(addr) = known {
+        control::forward_lines(child.stdout.take());
+        return Ok((child, addr));
+    }
     let port = control::bridge_port(listen, child.stdout.take(), BRIDGE_READY_TIMEOUT).await?;
-    Ok((child, port))
+    Ok((child, BridgeAddr::Tcp(port)))
 }
 
 /// Spawns workerd and waits until its bridge answers `/health`.
 ///
 /// # Returns
 ///
-/// The running child and the bridge RPC port.
+/// The running child and the bridge RPC address.
 ///
 /// # Errors
 ///
@@ -767,11 +871,13 @@ async fn start_isolate(
     cmd: &mut tokio::process::Command,
     spawn_bin: &Path,
     listen: &ListenSpec,
-    rpc_listener: Option<std::net::TcpListener>,
+    known: Option<BridgeAddr>,
+    rpc_listener: Option<RpcListener>,
     bridge_token: &str,
-) -> Result<(Child, u16)> {
-    let (mut child, rpc_port) = spawn_and_find_bridge(cmd, spawn_bin, listen, rpc_listener).await?;
-    if let Err(err) = wait_for_bridge(rpc_port, bridge_token)
+) -> Result<(Child, BridgeAddr)> {
+    let (mut child, rpc_addr) =
+        spawn_and_find_bridge(cmd, spawn_bin, listen, known, rpc_listener).await?;
+    if let Err(err) = wait_for_bridge(&rpc_addr, bridge_token)
         .await
         .context("workerd bridge /health did not become ready")
     {
@@ -779,18 +885,18 @@ async fn start_isolate(
         let _ = child.wait().await;
         return Err(err);
     }
-    Ok((child, rpc_port))
+    Ok((child, rpc_addr))
 }
 
 /// Polls bridge `/health` for up to [`BRIDGE_READY_TIMEOUT`] before mediating RPC.
-async fn wait_for_bridge(port: u16, token: &str) -> Result<()> {
+async fn wait_for_bridge(addr: &BridgeAddr, token: &str) -> Result<()> {
     let deadline = tokio::time::Instant::now() + BRIDGE_READY_TIMEOUT;
     loop {
-        match bookclerk_workerd::bridge_http::check_health(port, token).await {
+        match bookclerk_workerd::bridge_http::check_health(addr, token).await {
             Ok(_) => return Ok(()),
             Err(_) => {
                 if tokio::time::Instant::now() > deadline {
-                    bail!("timeout waiting for bridge /health on 127.0.0.1:{port}");
+                    bail!("timeout waiting for bridge /health on {addr}");
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

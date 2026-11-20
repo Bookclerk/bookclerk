@@ -16,11 +16,13 @@
     clippy::unwrap_used
 )]
 
+pub mod bridge_addr;
 pub mod bridge_http;
 pub mod bridge_stdio;
 pub mod config;
 pub mod control;
 pub mod egress;
+pub mod egress_relay;
 pub mod ensure;
 pub mod grant;
 pub mod granted;

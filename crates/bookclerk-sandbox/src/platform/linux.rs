@@ -728,7 +728,7 @@ fn read_cgroup_procs(dir: &Path) -> Result<Vec<u32>, String> {
 fn combine_network_status(net: NetPolicy, from_landlock: LayerStatus) -> LayerStatus {
     match net {
         NetPolicy::Full => LayerStatus::NotRequested,
-        NetPolicy::Deny => LayerStatus::Enforced,
+        NetPolicy::Deny | NetPolicy::LocalIpc => LayerStatus::Enforced,
         NetPolicy::Outbound | NetPolicy::OutboundListen => from_landlock,
     }
 }
@@ -800,7 +800,7 @@ fn apply_landlock(
     };
 
     let network = match (policy.net_policy(), &filesystem) {
-        (NetPolicy::Full | NetPolicy::Deny, _) => LayerStatus::NotRequested,
+        (NetPolicy::Full | NetPolicy::Deny | NetPolicy::LocalIpc, _) => LayerStatus::NotRequested,
         (NetPolicy::Outbound | NetPolicy::OutboundListen, LayerStatus::Enforced) => {
             LayerStatus::Enforced
         }
@@ -875,7 +875,9 @@ fn apply_seccomp(policy: &Policy) -> Result<LayerStatus, SandboxError> {
     // `NetPolicy::Deny` means no IP sockets of any kind. Filtering `socket` by
     // address family also covers UDP and raw, which Landlock's TCP-only network
     // rules cannot reach.
-    if policy.net_policy() == NetPolicy::Deny {
+    // `LocalIpc` is the same on Linux: a workerd jail talks only over Unix
+    // sockets.
+    if matches!(policy.net_policy(), NetPolicy::Deny | NetPolicy::LocalIpc) {
         let mut socket_rules = Vec::new();
         for family in [libc::AF_INET, libc::AF_INET6, libc::AF_PACKET] {
             let condition =

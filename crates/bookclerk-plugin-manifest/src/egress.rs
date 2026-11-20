@@ -63,6 +63,8 @@ pub const PYODIDE_EGRESS_HOSTS: &[&str] =
 ///   never imply TCP.
 /// - [`Self::allows_ip`] — public Internet by default; extra CIDRs are
 ///   explicit. Redirect-to-undeclared-public never implies private ranges.
+/// - [`Self::allows_isolate_tunnel`] — the host's backstop for a workerd
+///   guest's tunnels: the union of the TCP, fetch and redirect rules.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EgressPolicy {
@@ -525,6 +527,38 @@ impl EgressPolicy {
                     .any(|d| host_matches_normalized(&host, d))
             }
         }
+    }
+
+    /// Host-side check for a `CONNECT` that arrives from a workerd isolate.
+    ///
+    /// A workerd guest's outbound traffic leaves its jail through the host's
+    /// `CONNECT` proxy, one tunnel per `fetch()` request or `connect()`
+    /// socket. The jail labels nothing the host can trust, so the host can't
+    /// tell which call opened a tunnel. It therefore admits the union of what
+    /// either call may reach: a TCP grant for `host:port`, a fetch host
+    /// ([`Self::allows_initial`]), or a host a redirect could reach
+    /// ([`Self::allows_redirect`] at hop 0, which covers
+    /// [`Self::allow_undeclared_public_redirects`]). Fetch grants name hosts,
+    /// not ports, so a fetch host is admitted on any port. The resolved
+    /// addresses still have to pass [`Self::allows_ip`] before the host dials.
+    ///
+    /// The isolate's own egress worker enforces the narrower per-call rules
+    /// (the fetch allowlist, each redirect hop, the subrequest budget). This
+    /// check is the backstop that holds when the isolate does not.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - Tunnel target host from the `CONNECT` line.
+    /// * `port` - Tunnel target port from the `CONNECT` line.
+    ///
+    /// # Returns
+    ///
+    /// `true` when outbound mode admits `host:port` for a workerd guest.
+    #[must_use]
+    pub fn allows_isolate_tunnel(&self, host: &str, port: u16) -> bool {
+        self.allows_tcp(host, port)
+            || self.allows_initial(host)
+            || (self.max_redirects > 0 && self.allows_redirect(host, 0))
     }
 
     /// Serializes this policy to the JSON value injected as workerd
@@ -1060,6 +1094,68 @@ mod tests {
         ] {
             assert!(https_url_on_hosts(url, &[pattern]).is_none(), "{url}");
         }
+    }
+
+    #[test]
+    fn isolate_tunnels_admit_the_union_of_fetch_tcp_and_redirect_rules() {
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["api.example.com".into(), "*.cdn.example.com".into()],
+            tcp: vec![TcpGrant {
+                host: "db.example.com".into(),
+                ports: vec![5432],
+            }],
+            max_redirects: 5,
+            ..EgressPolicy::deny()
+        };
+        // A fetch host is admitted on any port: fetch grants carry no port.
+        assert!(policy.allows_isolate_tunnel("api.example.com", 443));
+        assert!(policy.allows_isolate_tunnel("api.example.com", 8443));
+        assert!(policy.allows_isolate_tunnel("img.cdn.example.com", 80));
+        // A TCP grant is admitted only on its ports.
+        assert!(policy.allows_isolate_tunnel("db.example.com", 5432));
+        assert!(!policy.allows_isolate_tunnel("db.example.com", 5433));
+        // Nothing else, and never a restricted name or address.
+        assert!(!policy.allows_isolate_tunnel("other.example.com", 443));
+        for host in [
+            "localhost",
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "[::1]",
+        ] {
+            assert!(!policy.allows_isolate_tunnel(host, 443), "{host}");
+        }
+        // Deny admits nothing.
+        let denied = EgressPolicy {
+            mode: NetworkMode::Deny,
+            ..policy.clone()
+        };
+        assert!(!denied.allows_isolate_tunnel("api.example.com", 443));
+        assert!(!denied.allows_isolate_tunnel("db.example.com", 5432));
+    }
+
+    #[test]
+    fn undeclared_public_redirects_admit_any_public_tunnel_but_no_private_one() {
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["api.example.com".into()],
+            max_redirects: 5,
+            allow_undeclared_public_redirects: true,
+            ..EgressPolicy::deny()
+        };
+        assert!(policy.allows_isolate_tunnel("anything.example.net", 443));
+        assert!(policy.allows_isolate_tunnel("1.1.1.1", 443));
+        for host in ["localhost", "10.0.0.1", "192.168.1.1", "[fd00::1]"] {
+            assert!(!policy.allows_isolate_tunnel(host, 443), "{host}");
+        }
+        // With no redirect budget the redirect rule admits nothing extra.
+        let no_hops = EgressPolicy {
+            max_redirects: 0,
+            ..policy
+        };
+        assert!(!no_hops.allows_isolate_tunnel("anything.example.net", 443));
+        assert!(no_hops.allows_isolate_tunnel("api.example.com", 443));
     }
 
     #[test]

@@ -114,6 +114,9 @@ where
         forward_lines(stdout);
         return Ok(port);
     }
+    if matches!(listen, ListenSpec::Inherited) {
+        anyhow::bail!("an inherited bridge is a Unix socket and has no port");
+    }
     let stdout = stdout.context("workerd stdout is not piped")?;
     let mut reader = BufReader::new(stdout);
     let port = tokio::time::timeout(timeout, read_listen_port(&mut reader))
@@ -255,7 +258,7 @@ mod tests {
     #[tokio::test]
     async fn fixed_ports_need_no_report() {
         let port = bridge_port(
-            &ListenSpec::InheritedTcp { port: 9 },
+            &ListenSpec::TcpLoopback(9),
             Some(stream("not a control line\n")),
             TEST_TIMEOUT,
         )

@@ -99,7 +99,9 @@ pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> 
 
     let network = match policy.net_policy() {
         NetPolicy::Full => LayerStatus::NotRequested,
-        NetPolicy::Deny | NetPolicy::Outbound | NetPolicy::OutboundListen => LayerStatus::Enforced,
+        NetPolicy::Deny | NetPolicy::LocalIpc | NetPolicy::Outbound | NetPolicy::OutboundListen => {
+            LayerStatus::Enforced
+        }
     };
 
     Ok(Report {
@@ -170,7 +172,8 @@ fn build_profile(policy: &Policy) -> String {
     }
 
     match policy.net_policy() {
-        NetPolicy::Deny => {}
+        // `LocalIpc` is `Deny` here: only the Unix socket paths below.
+        NetPolicy::Deny | NetPolicy::LocalIpc => {}
         NetPolicy::Outbound => out.push_str("(allow network-outbound)\n"),
         // Seatbelt filters by address where Landlock filters by port, so the
         // listener is pinned to loopback here rather than to the ephemeral

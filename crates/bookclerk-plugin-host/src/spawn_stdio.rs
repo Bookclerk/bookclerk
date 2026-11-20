@@ -459,7 +459,33 @@ async fn spawn_single(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
+    // A workerd launcher's jail has no IP reach (`NetPolicy::LocalIpc`): its
+    // isolate's fetches and its broker's sockets leave as tunnels over this
+    // link, and the host checks each one against the grant and dials it.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let egress = if plan.fronted_by_workerd() {
+        WorkerdEgress::prepare(&mut cmd, &jail.start, grant, &cancel)?
+    } else {
+        None
+    };
+
     let mut child = with_fd_spawn_lock(|| cmd.spawn())?;
+    let (proxy, egress_handoff) = match egress {
+        Some(egress) => {
+            let (proxy, handoff) = egress.started();
+            (Some(proxy), handoff)
+        }
+        None => (None, None),
+    };
+    #[cfg(windows)]
+    if let Some(handoff) = egress_handoff {
+        if let Err(err) = handoff.write(&mut child).await {
+            let _ = child.kill().await;
+            return Err(err);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = egress_handoff;
     let identities = sibling_identities(Some(&child), None);
     if let Some(stderr) = child.stderr.take() {
         forward_guest_stderr(id.to_string(), "guest", stderr, Arc::clone(&stderr_tail));
@@ -481,10 +507,236 @@ async fn spawn_single(
         gateway_pid: None,
         guest_pid: pid,
         session_job: None,
-        cancel: Arc::new(AtomicBool::new(false)),
-        proxy: None,
+        cancel,
+        proxy,
         identities,
     })
+}
+
+/// The host side of a workerd launcher's egress link, before the spawn.
+///
+/// [`Self::prepare`] serves the host's CONNECT proxy on one end under the
+/// isolate tunnel rule ([`bookclerk_workerd::socket_proxy::LinkPolicy::isolate`])
+/// and names the other end in the launcher's environment. The session
+/// challenge travels in that environment too; the launcher writes it first
+/// and removes it, so workerd never inherits it.
+struct WorkerdEgress {
+    /// The running host proxy. Dropping it cancels its tasks.
+    proxy: bookclerk_workerd::socket_proxy::ProxyServer,
+    /// The launcher's end, held until the launcher has its copy.
+    #[cfg(unix)]
+    launcher_end: DuplexLink,
+    /// The launcher's read half (host → launcher).
+    #[cfg(windows)]
+    launcher_read: DuplexHalf,
+    /// The launcher's write half (launcher → host).
+    #[cfg(windows)]
+    launcher_write: DuplexHalf,
+    /// Whether `bookclerk-jail` fronts the launcher and takes a handoff line.
+    #[cfg(windows)]
+    confined: bool,
+}
+
+/// The Windows handoff line that gives a jailed launcher its egress pipes.
+#[cfg(windows)]
+struct WorkerdEgressHandoff {
+    /// The launcher's read half (host → launcher).
+    read: DuplexHalf,
+    /// The launcher's write half (launcher → host).
+    write: DuplexHalf,
+    /// Whether a handoff line is written; an unjailed launcher inherited
+    /// the halves at spawn instead.
+    confined: bool,
+}
+
+#[cfg(windows)]
+impl WorkerdEgressHandoff {
+    /// Duplicates the halves into the jail and writes the handoff line.
+    ///
+    /// The line leaves stdin and stdout alone, so the launcher's stdio stays
+    /// the host RPC link, like the sibling gateway's handoff.
+    ///
+    /// # Errors
+    ///
+    /// `DuplicateHandle` or the stdin write failed.
+    async fn write(self, child: &mut Child) -> Result<()> {
+        if !self.confined {
+            return Ok(());
+        }
+        // Built before any await: a raw process handle held across `.await`
+        // makes the future `!Send`.
+        let handoff = {
+            let target = process_handle(child)?;
+            let read = bookclerk_sandbox::duplicate_handle_into(self.read.as_raw_handle(), target)
+                .map_err(|err| {
+                    PluginError::message(format!("DuplicateHandle workerd egress read: {err}"))
+                })?;
+            let write =
+                bookclerk_sandbox::duplicate_handle_into(self.write.as_raw_handle(), target)
+                    .map_err(|err| {
+                        PluginError::message(format!("DuplicateHandle workerd egress write: {err}"))
+                    })?;
+            JailHandoff {
+                v: JailHandoff::VERSION,
+                stdin: None,
+                stdout: None,
+                extra: vec![
+                    JailHandoffExtra::inherited(bookclerk_sandbox::WORKERD_EGRESS_ENV, read),
+                    JailHandoffExtra::inherited(bookclerk_sandbox::WORKERD_EGRESS_WRITE_ENV, write),
+                ],
+            }
+        };
+        write_handoff_line(child, &handoff).await
+    }
+}
+
+/// Unix stand-in: the link is inherited at spawn, so nothing is written.
+#[cfg(not(windows))]
+struct WorkerdEgressHandoff;
+
+impl WorkerdEgress {
+    /// Creates the link, starts the host proxy and prepares `cmd`.
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` - The launcher's command, before spawn.
+    /// * `start` - How the launcher starts; on Windows a jailed launcher
+    ///   takes its pipes in a handoff line, an unjailed one inherits them.
+    /// * `grant` - The effective grant; its egress policy is the tunnel rule.
+    /// * `cancel` - The session fence; a revoke stops the proxy.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the grant denies the network: the launcher then gets no
+    /// link and its isolate's egress is `blocked`.
+    ///
+    /// # Errors
+    ///
+    /// The link or proxy could not be created.
+    fn prepare(
+        cmd: &mut Command,
+        start: &Start,
+        grant: &PluginGrant,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<Option<Self>> {
+        let policy = grant.egress_policy();
+        if policy.mode == bookclerk_plugin_manifest::NetworkMode::Deny {
+            return Ok(None);
+        }
+        let challenge = new_session_challenge();
+        cmd.env(
+            bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
+            hex::encode(challenge),
+        );
+        let rule = bookclerk_workerd::socket_proxy::LinkPolicy::isolate(policy);
+        #[cfg(unix)]
+        {
+            let (host_end, launcher_end) = DuplexLink::pair().map_err(|err| {
+                PluginError::message(format!("could not create the workerd egress link: {err}"))
+            })?;
+            let _ = start;
+            let proxy =
+                serve_host_socket_proxy(host_end, rule, Arc::clone(cancel), challenge, None)?;
+            let fd = launcher_end.as_raw_fd();
+            // SAFETY: the closure only calls async-signal-safe dup2/close.
+            unsafe {
+                cmd.pre_exec(move || {
+                    bookclerk_sandbox::inherit_fd_at(fd, bookclerk_sandbox::WORKERD_EGRESS_FD)?;
+                    if fd != bookclerk_sandbox::WORKERD_EGRESS_FD {
+                        libc::close(fd);
+                    }
+                    Ok(())
+                });
+            }
+            cmd.env(
+                bookclerk_sandbox::WORKERD_EGRESS_ENV,
+                format!("fd:{}", bookclerk_sandbox::WORKERD_EGRESS_FD),
+            );
+            Ok(Some(Self {
+                proxy,
+                launcher_end,
+            }))
+        }
+        #[cfg(windows)]
+        {
+            let pipes = StdioEnds::pair_overlapped().map_err(|err| {
+                PluginError::message(format!("could not create the workerd egress pipes: {err}"))
+            })?;
+            let StdioEnds {
+                host_stdin,
+                host_stdout,
+                guest_stdin,
+                guest_stdout,
+            } = pipes;
+            let proxy = serve_host_socket_proxy(
+                host_stdout,
+                host_stdin,
+                rule,
+                Arc::clone(cancel),
+                challenge,
+                None,
+            )?;
+            let confined = matches!(start, Start::Confined { .. });
+            if confined {
+                cmd.env(JAIL_HANDOFF_ENV, "1");
+            } else {
+                // Isolation is off: no jail takes a handoff line, so the
+                // launcher inherits the halves (the host drops its copies
+                // right after the spawn).
+                for half in [&guest_stdin, &guest_stdout] {
+                    half.set_inheritable(true).map_err(|err| {
+                        PluginError::message(format!("workerd egress inherit: {err}"))
+                    })?;
+                }
+                cmd.env(
+                    bookclerk_sandbox::WORKERD_EGRESS_ENV,
+                    format!("handle:{}", guest_stdin.handle_value()),
+                );
+                cmd.env(
+                    bookclerk_sandbox::WORKERD_EGRESS_WRITE_ENV,
+                    format!("handle:{}", guest_stdout.handle_value()),
+                );
+            }
+            Ok(Some(Self {
+                proxy,
+                launcher_read: guest_stdin,
+                launcher_write: guest_stdout,
+                confined,
+            }))
+        }
+    }
+
+    /// Splits off the proxy once the launcher is spawned.
+    ///
+    /// # Returns
+    ///
+    /// The proxy (kept for the session) and, on Windows, the handoff line
+    /// still to be written.
+    fn started(
+        self,
+    ) -> (
+        bookclerk_workerd::socket_proxy::ProxyServer,
+        Option<WorkerdEgressHandoff>,
+    ) {
+        #[cfg(unix)]
+        {
+            // The child holds its copy now; the parent's end must close so
+            // the host sees EOF when the launcher exits.
+            drop(self.launcher_end);
+            (self.proxy, Some(WorkerdEgressHandoff))
+        }
+        #[cfg(windows)]
+        {
+            (
+                self.proxy,
+                Some(WorkerdEgressHandoff {
+                    read: self.launcher_read,
+                    write: self.launcher_write,
+                    confined: self.confined,
+                }),
+            )
+        }
+    }
 }
 
 /// Host-spawned gateway + native guest joined by inherited duplex links.
@@ -2234,7 +2486,7 @@ fn inherit_unix_gateway(cmd: &mut Command, rpc: &DuplexLink) {
 #[cfg(unix)]
 fn serve_host_socket_proxy(
     link: DuplexLink,
-    policy: bookclerk_plugin_manifest::EgressPolicy,
+    policy: impl Into<bookclerk_workerd::socket_proxy::LinkPolicy>,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
     channel_tag: Option<&str>,
@@ -2263,7 +2515,7 @@ fn serve_host_socket_proxy(
 fn serve_host_socket_proxy(
     read: DuplexHalf,
     write: DuplexHalf,
-    policy: bookclerk_plugin_manifest::EgressPolicy,
+    policy: impl Into<bookclerk_workerd::socket_proxy::LinkPolicy>,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
     channel_tag: Option<&str>,
@@ -2930,6 +3182,8 @@ fn guest_env_forbidden_key(key: &str) -> bool {
         || upper == GATEWAY_GUEST_RPC_WRITE_ENV
         || upper == GATEWAY_PROXY_ENV
         || upper == bookclerk_sandbox::GATEWAY_PROXY_WRITE_ENV
+        || upper == bookclerk_sandbox::WORKERD_EGRESS_ENV
+        || upper == bookclerk_sandbox::WORKERD_EGRESS_WRITE_ENV
         || upper == WORKERD_STATE_DIR_ENV
         || upper == "BOOKCLERK_NATIVE_BACKEND"
         || upper == "BOOKCLERK_NESTED_NATIVE_JAIL"

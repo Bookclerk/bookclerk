@@ -110,6 +110,133 @@ pub fn bind_granted(state_dir: &Path) -> io::Result<(String, UnixListener)> {
     }
 }
 
+/// Pathname leaf for the bridge RPC socket on non-Linux Unix.
+pub const RPC_SOCK_FILE: &str = "rpc.sock";
+
+/// Pathname leaf for the egress relay socket on non-Linux Unix.
+pub const EGRESS_SOCK_FILE: &str = "egress.sock";
+
+/// Binds the bridge RPC listener workerd inherits with `--socket-fd`.
+///
+/// Linux binds an abstract name; other Unix binds [`RPC_SOCK_FILE`] under
+/// `state_dir`.
+///
+/// # Arguments
+///
+/// * `state_dir` - The session's state directory.
+///
+/// # Returns
+///
+/// The address the launcher connects to and the listener to hand workerd.
+///
+/// # Errors
+///
+/// Returns an I/O error when the listener cannot be bound.
+pub fn bind_rpc(state_dir: &Path) -> io::Result<(crate::bridge_addr::BridgeAddr, UnixListener)> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = state_dir;
+        let name = random_abstract_name("r");
+        let listener = bind_abstract(name.as_bytes())?;
+        Ok((crate::bridge_addr::BridgeAddr::Abstract(name), listener))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let path = state_dir.join(RPC_SOCK_FILE);
+        let listener = bind_pathname(&path)?;
+        Ok((crate::bridge_addr::BridgeAddr::Path(path), listener))
+    }
+}
+
+/// Binds the egress relay listener workerd's `hostegress` service dials.
+///
+/// Linux returns a `unix-abstract:` address; other Unix binds
+/// [`EGRESS_SOCK_FILE`] under `state_dir` and returns `unix:egress.sock`
+/// (workerd's cwd is that directory).
+///
+/// # Arguments
+///
+/// * `state_dir` - The session's state directory.
+///
+/// # Returns
+///
+/// The workerd `external` address and the listener the relay accepts on.
+///
+/// # Errors
+///
+/// Returns an I/O error when the listener cannot be bound.
+pub fn bind_egress(state_dir: &Path) -> io::Result<(String, UnixListener)> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = state_dir;
+        let name = random_abstract_name("e");
+        let listener = bind_abstract(name.as_bytes())?;
+        Ok((format!("unix-abstract:{name}"), listener))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let path = state_dir.join(EGRESS_SOCK_FILE);
+        let listener = bind_pathname(&path)?;
+        Ok((format!("unix:{EGRESS_SOCK_FILE}"), listener))
+    }
+}
+
+/// Connects to a pathname Unix socket, falling back like [`bind_pathname`]
+/// when the absolute path exceeds `sun_path`.
+///
+/// # Errors
+///
+/// Returns an I/O error when the connection is refused or the path has no
+/// parent or file name.
+pub async fn connect_pathname(path: &Path) -> io::Result<tokio::net::UnixStream> {
+    if path.as_os_str().len() < sun_path_capacity() {
+        return tokio::net::UnixStream::connect(path).await;
+    }
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unix socket path has no parent directory",
+        )
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unix socket path has no file name",
+        )
+    })?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let dir = std::fs::File::open(parent)?;
+        let proc_path = format!(
+            "/proc/self/fd/{}/{}",
+            dir.as_raw_fd(),
+            Path::new(name).display()
+        );
+        tokio::net::UnixStream::connect(&proc_path).await
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // A local Unix connect completes at once, so holding the cwd lock
+        // across it does not stall other binds for long.
+        let std = {
+            let _guard = CHDIR_BIND
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cwd = std::env::current_dir()?;
+            std::env::set_current_dir(parent)?;
+            let result = std::os::unix::net::UnixStream::connect(name);
+            let restore = std::env::set_current_dir(&cwd);
+            match (result, restore) {
+                (Ok(stream), Ok(())) => stream,
+                (Ok(_), Err(err)) | (Err(err), _) => return Err(err),
+            }
+        };
+        std.set_nonblocking(true)?;
+        tokio::net::UnixStream::from_std(std)
+    }
+}
+
 /// Binds a Linux abstract-namespace Unix listener (`sun_path[0] == NUL`).
 ///
 /// # Errors
