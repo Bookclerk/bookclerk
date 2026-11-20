@@ -50,6 +50,25 @@ export interface Env {
   LIVE?: DurableObjectNamespace;
   /** Static dashboard assets under /static/. */
   ASSETS?: Fetcher;
+  /**
+   * Rate limit on `/lookup` attempts, keyed by report ID (lookup.ts). Unset,
+   * attempts are not limited; the 80-bit code still makes guessing useless.
+   */
+  LOOKUP_LIMIT?: RateLimiter;
+}
+
+/**
+ * The slice of Cloudflare's Rate Limiting binding `/lookup` uses. A
+ * `ratelimits` binding satisfies it; tests pass a counter.
+ */
+export interface RateLimiter {
+  /**
+   * Counts one attempt against a key.
+   *
+   * @param options - The key, here a report ID.
+   * @returns Whether the attempt is within the limit.
+   */
+  limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
 /**

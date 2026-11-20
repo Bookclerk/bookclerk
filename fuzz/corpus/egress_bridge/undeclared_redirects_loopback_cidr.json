@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":["api.example.com","localhost","127.0.0.1"],"maxRedirects":3,"allowUndeclaredPublicRedirects":true,"addressCidrs":["127.0.0.0/8"]}
