@@ -397,7 +397,9 @@ where
             Some(Some(bookclerk_plugin_sdk::resume::ContentRange::Bytes { first, .. })) => {
                 first == offset
             }
-            Some(_) => false,
+            Some(Some(bookclerk_plugin_sdk::resume::ContentRange::Unsatisfied { .. }) | None) => {
+                false
+            }
             // Without the header only a request from byte 0 is safe.
             None => offset == 0,
         };

@@ -722,7 +722,8 @@ only that. The others check:
   integer; and the step equals the one the oracle works out from the
   rules: a `206` is appended only when its range starts at a non-zero
   offset, its length agrees with a known one and its `Content-Length`
-  with its span; a `200` replaces the partial; a `416` finishes it only at
+  with its span, and the step names the range's end so the body is held
+  to it; a `200` replaces the partial; a `416` finishes it only at
   `bytes */<offset>`; `408`, `429` and `5xx` retry; any other status fails.
   Seeds named after a step (`append-*`, `replace-*`, `complete-*`,
   `startover-*`, `retry-*`, `fail-*`) must take it. The shared oracle is

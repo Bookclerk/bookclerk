@@ -1529,10 +1529,14 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
             std::thread::sleep(Duration::from_millis(500) * failures);
         }
         let before = partial.offset;
-        let mut request = ureq::get(url).header(
-            "User-Agent",
-            concat!("bookclerk/", env!("CARGO_PKG_VERSION"), " (plugin-install)"),
-        );
+        let mut request = ureq::get(url)
+            .header(
+                "User-Agent",
+                concat!("bookclerk/", env!("CARGO_PKG_VERSION"), " (plugin-install)"),
+            )
+            // Offsets and lengths must count the bytes the server holds, so the
+            // body must not be content-encoded (ureq would decode it).
+            .header("Accept-Encoding", "identity");
         if partial.offset > 0 {
             request = request.header("Range", format!("bytes={}-", partial.offset));
             if let Some(validator) = &validator {
@@ -1567,7 +1571,7 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
                 content_length,
             },
         );
-        let total = match step {
+        let (total, end) = match step {
             Step::Complete => {
                 file.sync_all()?;
                 return Ok(());
@@ -1592,7 +1596,7 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
                 failures += 1;
                 continue;
             }
-            Step::Replace { total } => {
+            Step::Replace { total, end } => {
                 file.set_len(0)?;
                 partial.offset = 0;
                 validator = Validator::from_headers(
@@ -1600,9 +1604,9 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
                     header("last-modified").as_deref(),
                 )
                 .map(|v| v.as_str().to_owned());
-                total
+                (total, end)
             }
-            Step::Append { total } => total,
+            Step::Append { total, end } => (total, end),
         };
         if total.is_some_and(|total| total > MAX_DOWNLOAD_BYTES) {
             return Err(CatalogError::message("download exceeds size limit"));
@@ -1612,6 +1616,7 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
         file.seek(std::io::SeekFrom::Start(partial.offset))?;
         let mut reader = response.body_mut().as_reader();
         let mut buf = vec![0u8; 64 * 1024];
+        let mut overran = false;
         let ended = loop {
             match reader.read(&mut buf) {
                 Ok(0) => break true,
@@ -1622,6 +1627,11 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
                     {
                         return Err(CatalogError::message("download exceeds size limit"));
                     }
+                    if end.is_some_and(|end| next > end) {
+                        // The body runs past the range it claims.
+                        overran = true;
+                        break false;
+                    }
                     file.write_all(&buf[..n])?;
                     partial.offset = next;
                 }
@@ -1631,7 +1641,25 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
                 }
             }
         };
-        let complete = ended && partial.total.is_none_or(|total| partial.offset == total);
+        if overran {
+            last_error = "the answer ran past the range it stated".into();
+            partial = Partial {
+                offset: 0,
+                total: None,
+            };
+            validator = None;
+            file.set_len(0)?;
+            failures += 1;
+            continue;
+        }
+        let complete = ended
+            && match (partial.total, end) {
+                (Some(total), _) => partial.offset == total,
+                // A 200 without a length ends at the end of the file; a
+                // range of unknown length needs the next request to tell.
+                (None, None) => true,
+                (None, Some(_)) => false,
+            };
         if complete {
             file.sync_all()?;
             return Ok(());

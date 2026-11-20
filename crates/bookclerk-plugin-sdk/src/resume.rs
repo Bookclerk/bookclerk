@@ -150,6 +150,12 @@ pub enum Step {
     Append {
         /// The file's length, when the server stated it.
         total: Option<u64>,
+        /// Offset just past the body's last byte, for a `206` (its
+        /// range's last byte plus one): a body that runs past it does not
+        /// match its own range, and one that stops there leaves the rest
+        /// of the file to ask for. `None` for a `200`, whose body runs to
+        /// the end of the file.
+        end: Option<u64>,
     },
     /// The body is the whole file from byte 0 (`200`, or a `206` from 0
     /// asked without a range): drop what the partial holds and write the
@@ -157,6 +163,12 @@ pub enum Step {
     Replace {
         /// The file's length, when the server stated it.
         total: Option<u64>,
+        /// Offset just past the body's last byte, for a `206` (its
+        /// range's last byte plus one): a body that runs past it does not
+        /// match its own range, and one that stops there leaves the rest
+        /// of the file to ask for. `None` for a `200`, whose body runs to
+        /// the end of the file.
+        end: Option<u64>,
     },
     /// The partial already holds the whole file (`416` stating a length
     /// equal to the offset): nothing more to read.
@@ -196,6 +208,7 @@ pub fn next_step(partial: Partial, head: ResponseHead<'_>) -> Step {
     match head.status {
         200 => Step::Replace {
             total: head.content_length,
+            end: None,
         },
         206 => {
             let Some(ContentRange::Bytes { first, last, total }) =
@@ -217,11 +230,18 @@ pub fn next_step(partial: Partial, head: ResponseHead<'_>) -> Step {
             if first != partial.offset {
                 return Step::StartOver;
             }
+            let Some(end) = last.checked_add(1) else {
+                return Step::StartOver;
+            };
             let total = total.or(partial.total);
+            if total.is_some_and(|total| end > total) {
+                return Step::StartOver;
+            }
+            let end = Some(end);
             if partial.offset == 0 {
-                Step::Replace { total }
+                Step::Replace { total, end }
             } else {
-                Step::Append { total }
+                Step::Append { total, end }
             }
         }
         416 => match head.content_range.and_then(parse_content_range) {
@@ -232,7 +252,9 @@ pub fn next_step(partial: Partial, head: ResponseHead<'_>) -> Step {
             {
                 Step::Complete
             }
-            _ => Step::StartOver,
+            Some(ContentRange::Unsatisfied { .. } | ContentRange::Bytes { .. }) | None => {
+                Step::StartOver
+            }
         },
         408 | 429 | 500..=599 => Step::Retry,
         _ => Step::Fail,
@@ -360,7 +382,10 @@ mod tests {
         };
         assert_eq!(
             next_step(partial, head(206, Some("bytes 100-999/1000"), Some(900))),
-            Step::Append { total: Some(1000) }
+            Step::Append {
+                total: Some(1000),
+                end: Some(1000)
+            }
         );
         // Another start, a changed length, or a length that disagrees
         // with the range never appends.
@@ -387,7 +412,10 @@ mod tests {
         };
         assert_eq!(
             next_step(partial, head(200, None, Some(5))),
-            Step::Replace { total: Some(5) }
+            Step::Replace {
+                total: Some(5),
+                end: None
+            }
         );
         let fresh = Partial {
             offset: 0,
@@ -395,7 +423,10 @@ mod tests {
         };
         assert_eq!(
             next_step(fresh, head(206, Some("bytes 0-4/5"), None)),
-            Step::Replace { total: Some(5) }
+            Step::Replace {
+                total: Some(5),
+                end: Some(5)
+            }
         );
     }
 

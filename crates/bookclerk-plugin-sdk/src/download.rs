@@ -269,6 +269,7 @@ impl Download {
             },
             validator: None,
             status: None,
+            resumes: 0,
         };
         let held = file.metadata().await?.len();
         match read_meta(&meta_path).await {
@@ -291,19 +292,22 @@ impl Download {
             }
         }
         let mut writer = BufWriter::with_capacity(WRITE_BUFFER_BYTES, file);
-        let mut resumes = 0u32;
         let mut failures = 0u32;
         let mut wait = self.backoff;
+        let mut retry_after: Option<Duration> = None;
         let mut last_reason = String::new();
         for attempt in 0..self.max_attempts {
             if attempt > 0 && failures > 0 {
-                tokio::time::sleep(wait).await;
+                // A server's Retry-After sets this one wait (never below
+                // the backoff); the backoff keeps growing either way.
+                let pause = retry_after
+                    .take()
+                    .map_or(wait, |delay| delay.max(wait))
+                    .min(MAX_BACKOFF);
+                tokio::time::sleep(pause).await;
                 wait = (wait * 2).min(MAX_BACKOFF);
             }
             let before = state.partial.offset;
-            if before > 0 {
-                resumes += 1;
-            }
             state.status = None;
             let outcome = self
                 .attempt(&mut request, &mut writer, &mut state, &meta_path)
@@ -335,7 +339,7 @@ impl Download {
                     return Ok(Downloaded {
                         path: dest.to_path_buf(),
                         bytes,
-                        resumes,
+                        resumes: state.resumes,
                     });
                 }
                 Ok(Attempt::Again { delay }) => {
@@ -344,9 +348,7 @@ impl Download {
                         wait = self.backoff;
                     } else {
                         failures += 1;
-                        if let Some(delay) = delay {
-                            wait = delay.min(MAX_BACKOFF);
-                        }
+                        retry_after = delay;
                     }
                     if failures > self.retries {
                         break;
@@ -428,7 +430,9 @@ impl Download {
     where
         F: FnMut() -> RequestBuilder,
     {
-        let mut builder = request();
+        // Byte offsets and lengths must count the bytes the server holds,
+        // so the body must not be content-encoded.
+        let mut builder = request().header(header::ACCEPT_ENCODING, "identity");
         let offset = state.partial.offset;
         if offset > 0 {
             builder = builder.header(header::RANGE, format!("bytes={offset}-"));
@@ -458,7 +462,12 @@ impl Download {
         );
         state.status = Some(response.status());
         match step {
-            Step::Complete => Ok(Attempt::Done),
+            Step::Complete => {
+                if offset > 0 {
+                    state.resumes += 1;
+                }
+                Ok(Attempt::Done)
+            }
             Step::Fail => Err(Fatal::Status(response.status())),
             Step::Retry => Ok(Attempt::Again {
                 delay: retry_after(&response),
@@ -475,7 +484,7 @@ impl Download {
                 let _ = tokio::fs::remove_file(meta_path).await;
                 Ok(Attempt::Again { delay: None })
             }
-            Step::Replace { total } | Step::Append { total } => {
+            Step::Replace { total, end } | Step::Append { total, end } => {
                 self.length_allowed(total).map_err(Fatal::Length)?;
                 if matches!(step, Step::Replace { .. }) {
                     writer.flush().await?;
@@ -505,21 +514,31 @@ impl Download {
                         }
                     }
                 } else {
+                    state.resumes += 1;
                     writer.seek(std::io::SeekFrom::Start(offset)).await?;
                 }
                 state.partial.total = total;
-                self.stream_body(response, writer, state).await
+                self.stream_body(response, writer, state, end, meta_path)
+                    .await
             }
         }
     }
 
     /// Appends the response body at the partial's end until it ends,
     /// stalls or fails.
+    ///
+    /// `end` is the offset just past the range a `206` claims (`None` for
+    /// a `200`): a body running past it does not match its own range and
+    /// starts the download over, and one ending there with the file's
+    /// length unknown asks for the next range rather than counting as the
+    /// whole file.
     async fn stream_body(
         &self,
         mut response: Response,
         writer: &mut BufWriter<tokio::fs::File>,
         state: &mut State,
+        end: Option<u64>,
+        meta_path: &Path,
     ) -> Result<Attempt, Fatal> {
         loop {
             let chunk = match tokio::time::timeout(self.idle_timeout, response.chunk()).await {
@@ -549,18 +568,36 @@ impl Download {
                     return Err(Fatal::Length(DownloadError::TooLarge { limit }));
                 }
             }
+            if end.is_some_and(|end| next > end) {
+                state.partial = Partial {
+                    offset: 0,
+                    total: None,
+                };
+                state.validator = None;
+                writer.flush().await?;
+                writer.get_mut().set_len(0).await?;
+                writer.get_mut().rewind().await?;
+                let _ = tokio::fs::remove_file(meta_path).await;
+                return Ok(Attempt::Again { delay: None });
+            }
             writer.write_all(&chunk).await?;
             state.partial.offset = next;
         }
         writer.flush().await?;
-        match state.partial.total {
+        let offset = state.partial.offset;
+        match (state.partial.total, end) {
             // A body that ended early on a server stating the length is a
             // drop the client did not see as one: ask for the rest.
-            Some(total) if state.partial.offset < total => Ok(Attempt::Transport(format!(
-                "the answer ended at {} of {total} bytes",
-                state.partial.offset
+            (Some(total), _) if offset < total => Ok(Attempt::Transport(format!(
+                "the answer ended at {offset} of {total} bytes"
             ))),
-            _ => Ok(Attempt::Done),
+            (Some(_), _) | (None, None) => Ok(Attempt::Done),
+            (None, Some(end)) if offset < end => Ok(Attempt::Transport(format!(
+                "the answer ended at {offset} of its range ending at {end}"
+            ))),
+            // The range is complete but the file's length is unknown: the
+            // next request finds out (a `416` at this offset finishes it).
+            (None, Some(_)) => Ok(Attempt::Again { delay: None }),
         }
     }
 }
@@ -574,6 +611,8 @@ struct State {
     validator: Option<String>,
     /// The last status answered, for a final transient refusal.
     status: Option<StatusCode>,
+    /// Answers that continued the partial from a non-zero offset.
+    resumes: u32,
 }
 
 impl State {
@@ -910,6 +949,74 @@ mod tests {
             .await
             .expect("download");
         assert_eq!(done.resumes, 1);
+        assert_eq!(std::fs::read(&dest).expect("read"), body);
+    }
+
+    #[tokio::test]
+    async fn a_range_of_unknown_length_is_not_taken_for_the_whole_file() {
+        let body = body();
+        let (url, seen) = serve(vec![
+            answer(
+                "HTTP/1.1 206 Partial Content\nContent-Length: 50\nContent-Range: bytes 50-99/*\nConnection: close\n",
+                &body[50..100],
+            ),
+            answer(
+                "HTTP/1.1 206 Partial Content\nContent-Length: 100\nContent-Range: bytes 100-199/*\nConnection: close\n",
+                &body[100..],
+            ),
+            answer(
+                "HTTP/1.1 416 Range Not Satisfiable\nContent-Range: bytes */200\nContent-Length: 0\nConnection: close\n",
+                b"",
+            ),
+        ])
+        .await;
+        let dir = tempfile::tempdir().expect("dir");
+        let dest = dir.path().join("book.m4b");
+        // A partial an earlier call left, whose server never stated a length.
+        std::fs::write(sibling(&dest, ".part"), &body[..50]).expect("part");
+        std::fs::write(
+            sibling(&dest, ".part.meta"),
+            br#"{"validator":"\"u\"","total":null}"#,
+        )
+        .expect("meta");
+        let http = Client::new();
+        let done = quick()
+            .to_file(&dest, || http.get(&url))
+            .await
+            .expect("download");
+        assert_eq!(done.bytes, 200);
+        assert_eq!(done.resumes, 3);
+        assert_eq!(std::fs::read(&dest).expect("read"), body);
+        let seen = seen.lock().expect("log").clone();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(seen[0].starts_with("range: bytes=50-"), "{seen:?}");
+        assert!(seen[2].starts_with("range: bytes=200-"), "{seen:?}");
+    }
+
+    #[tokio::test]
+    async fn a_body_longer_than_its_range_starts_over() {
+        let body = body();
+        let (url, _) =
+            serve(vec![
+            answer(
+                "HTTP/1.1 200 OK\nContent-Length: 200\nConnection: close\n",
+                &body[..50],
+            ),
+            // No Content-Length: the body runs to the close, past its range.
+            answer(
+                "HTTP/1.1 206 Partial Content\nContent-Range: bytes 50-99/200\nConnection: close\n",
+                &[0xEE; 150],
+            ),
+            answer("HTTP/1.1 200 OK\nContent-Length: 200\nConnection: close\n", &body),
+        ])
+            .await;
+        let dir = tempfile::tempdir().expect("dir");
+        let dest = dir.path().join("book.m4b");
+        let http = Client::new();
+        quick()
+            .to_file(&dest, || http.get(&url))
+            .await
+            .expect("download");
         assert_eq!(std::fs::read(&dest).expect("read"), body);
     }
 

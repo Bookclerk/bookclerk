@@ -197,11 +197,20 @@ impl LimitedJob<'_> {
                 content_length: response.content_length(),
             },
         );
-        let append = match step {
-            Step::Append { .. } => true,
-            Step::Replace { .. } => false,
-            Step::Complete => {
+        let (append, total, end) = match step {
+            Step::Append { total, end } => (true, total, end),
+            Step::Replace { total, end } => (false, total, end),
+            Step::Complete if self.ext_overrides.is_empty() => {
                 return self.finish(self.dest.to_path_buf()).await;
+            }
+            Step::Complete => {
+                // The final extension comes from the Content-Type, which a
+                // 416 does not carry: fetch the file again to learn it.
+                let _ = tokio::fs::remove_file(self.part).await;
+                let _ = tokio::fs::remove_file(self.marker).await;
+                return Err(Interrupted::Retry(
+                    "the partial is complete but its type is unknown; restarting".into(),
+                ));
             }
             Step::StartOver => {
                 let _ = tokio::fs::remove_file(self.part).await;
@@ -270,12 +279,22 @@ impl LimitedJob<'_> {
                     )));
                 }
             };
+            let n = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+            if end.is_some_and(|end| written.saturating_add(n) > end) {
+                // The body runs past the range it stated.
+                drop(file);
+                let _ = tokio::fs::remove_file(self.part).await;
+                let _ = tokio::fs::remove_file(self.marker).await;
+                return Err(Interrupted::Retry(
+                    "the answer ran past the range it stated".into(),
+                ));
+            }
             file.write_all(&chunk).await?;
-            let n = chunk.len() as u64;
-            written += n;
-            window_bytes += n;
+            written = written.saturating_add(n);
+            window_bytes = window_bytes.saturating_add(n);
             let elapsed = window_start.elapsed();
-            let expected = Duration::from_secs_f64(window_bytes as f64 / limit_bps as f64);
+            let nanos = u128::from(window_bytes) * 1_000_000_000 / u128::from(limit_bps.max(1));
+            let expected = Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX));
             if expected > elapsed {
                 tokio::time::sleep(expected - elapsed).await;
             }
@@ -288,7 +307,7 @@ impl LimitedJob<'_> {
         file.sync_all().await?;
         drop(file);
 
-        if let Some(size) = self.expected_size {
+        if let Some(size) = self.expected_size.or(total) {
             if written > size {
                 let _ = tokio::fs::remove_file(self.part).await;
                 let _ = tokio::fs::remove_file(self.marker).await;
@@ -302,6 +321,12 @@ impl LimitedJob<'_> {
                     "transfer ended at {written} of {size} bytes"
                 )));
             }
+        } else if end.is_some() {
+            // A range of a file whose length nobody stated: the next
+            // attempt asks from here and a 416 there finishes it.
+            return Err(Interrupted::Retry(format!(
+                "range done at {written} bytes; the file's length is unknown"
+            )));
         }
         self.finish(final_dest).await
     }

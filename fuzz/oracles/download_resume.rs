@@ -18,8 +18,9 @@
 //! - `parse_content_range` gives the same answer as the oracle's parser;
 //! - `next_step` gives the step the rules in `bookclerk_plugin_sdk::resume`
 //!   state, so bytes are appended only where a `206` provably starts at
-//!   the offset with an agreeing length, and a `416` finishes only at a
-//!   stated length equal to a non-empty offset.
+//!   the offset with an agreeing length (and its body is held to the
+//!   range's end), and a `416` finishes only at a stated length equal to
+//!   a non-empty offset.
 
 use bookclerk_plugin_sdk::resume::{
     next_step, parse_content_range, ContentRange, Partial, ResponseHead, Step,
@@ -91,7 +92,10 @@ fn expected_step(
     length: Option<u64>,
 ) -> Step {
     match status {
-        200 => Step::Replace { total: length },
+        200 => Step::Replace {
+            total: length,
+            end: None,
+        },
         206 => match range {
             Some(ContentRange::Bytes { first, last, total }) => {
                 let span = u128::from(last) - u128::from(first) + 1;
@@ -100,15 +104,18 @@ fn expected_step(
                     (Some(a), Some(b)) => a == b,
                     _ => true,
                 };
-                if !length_ok || !total_ok || first != partial.offset {
+                let end = u128::from(last) + 1;
+                let known = total.or(partial.total);
+                let end_ok =
+                    end <= u128::from(u64::MAX) && known.is_none_or(|t| end <= u128::from(t));
+                if !length_ok || !total_ok || !end_ok || first != partial.offset {
                     Step::StartOver
-                } else if partial.offset == 0 {
-                    Step::Replace {
-                        total: total.or(partial.total),
-                    }
                 } else {
-                    Step::Append {
-                        total: total.or(partial.total),
+                    let end = u64::try_from(end).ok();
+                    if partial.offset == 0 {
+                        Step::Replace { total: known, end }
+                    } else {
+                        Step::Append { total: known, end }
                     }
                 }
             }
@@ -170,9 +177,10 @@ pub fn check(data: &[u8]) -> Option<Step> {
         expected_step(partial, status, range, length),
         "{partial:?} {status} {range:?} {length:?}"
     );
-    if let Step::Append { .. } = step {
+    if let Step::Append { end, .. } = step {
         assert!(
-            matches!(range, Some(ContentRange::Bytes { first, .. }) if first == partial.offset && first > 0)
+            matches!(range, Some(ContentRange::Bytes { first, last, .. })
+                if first == partial.offset && first > 0 && end == last.checked_add(1))
         );
     }
     Some(step)
