@@ -1906,7 +1906,7 @@ async fn the_window_keeps_a_book_only_a_branch_holds_with_its_work() {
     )
     .await
     .unwrap();
-    record_window_page(&reader, "lib", &stamp, &[work("work-7", reachable)])
+    record_window_page(&reader, "lib", &stamp, &[work("work-7", reachable.clone())])
         .await
         .unwrap();
     finish_window_read(&reader, "lib", &stamp).await.unwrap();
@@ -1915,4 +1915,30 @@ async fn the_window_keeps_a_book_only_a_branch_holds_with_its_work() {
         view[0].editions[0].edition.availability,
         Availability::Owned
     );
+
+    // So it does when both reports sit on one page, under two works: the
+    // later branch report keeps the held one's formats and copy.
+    let stamp = window_read_stamp();
+    let mut owned = listed;
+    owned.availability = Availability::Owned;
+    owned.formats = vec![LookupFormat::Audio];
+    let held = WindowEdition {
+        edition: owned,
+        yours: true,
+        copy: None,
+    };
+    record_window_page(
+        &reader,
+        "lib",
+        &stamp,
+        &[work("work-7", held), work("work-8", reachable)],
+    )
+    .await
+    .unwrap();
+    finish_window_read(&reader, "lib", &stamp).await.unwrap();
+    let view = window_view(&reader).await.unwrap();
+    let kept = &view[0].editions[0];
+    assert_eq!(kept.edition.availability, Availability::Owned);
+    assert_eq!(kept.edition.formats, vec![LookupFormat::Audio]);
+    assert!(kept.yours);
 }

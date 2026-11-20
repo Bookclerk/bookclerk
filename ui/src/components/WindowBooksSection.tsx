@@ -109,7 +109,7 @@ function WindowRow({ entry }: { entry: WindowEntryView }) {
           <span>{ask ? `· On a branch of ${ask.host}` : `· In ${libraries.join(", ")}`}</span>
           {series ? <span>· {series}</span> : null}
         </p>
-        {ask ? <RequestButton ask={ask} /> : null}
+        {ask ? <RequestButton key={`${ask.libraryId}/${ask.workId}`} ask={ask} /> : null}
       </div>
     </div>
   );

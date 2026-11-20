@@ -528,25 +528,32 @@ async fn branch_books_page(
     after: Option<&str>,
     page: u64,
 ) -> Result<(Vec<WindowWork>, Option<WindowCursor>)> {
-    let limit = WINDOW_BOOKS_READ.min(page.max(1));
+    let mut limit = WINDOW_BOOKS_READ.min(page.max(1));
     let mut select = store_listings::Entity::find()
         .select_only()
         .column(store_listings::Column::EditionId)
         .distinct()
         .filter(store_listings::Column::PluginKey.starts_with(BRANCH_LISTING_PREFIX))
-        .order_by_asc(store_listings::Column::EditionId)
-        .limit(limit);
+        .order_by_asc(store_listings::Column::EditionId);
     if let Some(after) = after {
         select = select.filter(store_listings::Column::EditionId.gt(after));
     }
-    let edition_ids: Vec<String> = select
-        .into_model::<EditionIdRow>()
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|row| row.edition_id)
-        .collect();
+    // As with the holdings phase, a read refused for its bytes is asked
+    // again with half as many rows.
+    let edition_ids: Vec<String> = loop {
+        match select
+            .clone()
+            .limit(limit)
+            .into_model::<EditionIdRow>()
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)
+        {
+            Ok(rows) => break rows.into_iter().map(|row| row.edition_id).collect(),
+            Err(err) if limit > 1 && is_result_bytes_limit(&err) => limit /= 2,
+            Err(err) => return Err(err),
+        }
+    };
     let full = u64::try_from(edition_ids.len()).unwrap_or(u64::MAX) >= limit;
     let trusted: BTreeSet<String> = trusted_branches(store).await?.into_iter().collect();
     let since = Utc::now() - BRANCH_LISTING_TTL;
@@ -601,9 +608,11 @@ async fn branch_books_page(
                 };
                 if !builder.push(work, identifiers.get(work), edition) {
                     stopped = true;
-                    // The page's first edition always fits; one that ran out
-                    // of room partway (more store listings than one page
-                    // holds) ends here, so paging still moves past it.
+                    // An edition cut short after earlier ones starts the
+                    // next page again, where it has the whole budget; only
+                    // the page's first edition running out of room partway
+                    // (more store listings than one page holds) ends here,
+                    // so paging still moves past it.
                     if last.is_none() && n > 0 {
                         last = Some(edition_id);
                     }
@@ -871,7 +880,7 @@ pub async fn record_window_page(
     seen_at: &str,
     works: &[WindowWork],
 ) -> Result<usize> {
-    let earlier = earlier_in_read(store, parent_library_id, seen_at, works).await?;
+    let mut earlier = earlier_in_read(store, parent_library_id, seen_at, works).await?;
     let width = super::artifacts::chunk_bytes(store.db_capabilities());
     let mut groups = Vec::new();
     let mut stored = 0;
@@ -931,6 +940,18 @@ pub async fn record_window_page(
                 }
                 None => edition,
             };
+            // A later occurrence of the same edition on this very page
+            // (under another work) merges with this one as with an
+            // earlier page's.
+            earlier.insert(
+                key,
+                Earlier {
+                    formats: edition.formats.clone(),
+                    yours,
+                    copy: copy.clone(),
+                    availability: edition.availability,
+                },
+            );
             let json = serde_json::to_string(&StoredBook {
                 identifiers: work.identifiers.clone(),
                 edition: edition.clone(),
