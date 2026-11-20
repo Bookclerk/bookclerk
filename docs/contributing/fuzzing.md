@@ -58,7 +58,8 @@ boundary extends it.
 | `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
-| `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
+| `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` and `access_code` join the install's report history | `bookclerk-config::parse_submit_reply` |
+| `diagnostics_lookup_reply` | The diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue and pull request links | `bookclerk-config::parse_lookup_reply`, `parse_delete_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
@@ -212,9 +213,23 @@ only that. The others check:
   refused. Otherwise it is accepted exactly when, read independently as a
   JSON value, it is an object whose `report_id` is a string that is a
   lowercase hyphenated version-4 UUID, checked group by group, and the
-  parser returns that string unchanged. The shared oracle is
+  parser returns that string unchanged. The access code comes back exactly
+  when `access_code` is a string of 16 characters, each a digit or an
+  uppercase letter other than I, L, O and U, and is otherwise dropped
+  without refusing the reply. The shared oracle is
   `fuzz/oracles/diagnostics_submit_reply.rs`, replayed from
   `bookclerk-config`.
+- **`diagnostics_lookup_reply`**: each input goes through both the lookup
+  and the delete reader for one fixed report ID. An answer longer than
+  1 MiB is refused. Otherwise, read independently as a JSON value, it is
+  accepted exactly when it is an object for that report with every field
+  of its type (only `deleted_at_unix_ms`, `report`, `fix` and the fix's
+  fields may be absent or null), issue and pull request links start
+  `https://`, levels are the five upper-case names and states `open` or
+  `closed`. The accepted answer, serialized, equals the expected one
+  rebuilt from the value; another report's ID is `OtherReport`. The
+  shared oracle is `fuzz/oracles/diagnostics_lookup_reply.rs`, replayed
+  from `bookclerk-config`.
 - **`cover_wire`**: the first byte picks the request or the reply decoder.
   An accepted frame re-encodes to exactly its own bytes, and an accepted
   reply carries only JPEG-signed images and a nonzero size. The shared
@@ -1092,6 +1107,25 @@ The tests and corpora live in `tools/diagnostics-collector/`.
     of JSON naming an object with exactly the five fields, a lowercase
     version-4 UUID checked by position, and version, platform and kind
     tokens checked character by character.
+- **Report lookup body** (`parseLookupInput` in `report-access.ts`). It
+  is the body anyone can post to `/lookup` and `/lookup/delete`, as JSON
+  or a form, and names the report a code is checked against and whether a
+  form confirmed a deletion.
+  - Test and corpus: `report-access.fuzz.test.ts`, `corpus/lookup_input/`
+    (each seed's first line is the `Content-Type`).
+  - Oracle: a request exactly when the body is at most 1,024 characters
+    and is either a JSON object with exactly the string fields `report_id`
+    and `access_code`, or a form (decoded by the test's own reader) with
+    those two once each and at most `confirm=yes` besides; the ID, trimmed
+    and lowercased, is a version-4 UUID checked by position, and the code,
+    normalized by regular expressions, is 16 Crockford base32 characters.
+- **B2 version listing** (`decodeVersionPage` in `dashboard/storage.ts`).
+  It reads B2's `b2_list_file_versions` answer for one object, and its
+  result is every file version a deletion removes.
+  - Test and corpus: `report-access.fuzz.test.ts`, `corpus/b2_versions/`.
+  - Oracle: exactly the string `fileId`s of the entries whose `fileName`
+    is the object's key, in order, and more to read exactly when
+    `nextFileName` is that key and `nextFileId` a string.
 - **Hosted demo run event** (`parseDemoRunEvent` in `demo-runs.ts`). It is
   the value the demo Worker passes to the collector's `DemoRuns`
   entrypoint over its service binding (no public route), and decides what

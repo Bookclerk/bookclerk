@@ -110,4 +110,5 @@ Build and agent conventions for this repository live in
 - [Playback](adr/playback.md): playback is a host feature with one core that the web player, the desktop window and app-compatible clients share
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks
 - [What needs the operator](adr/owner-and-operator.md): the rule for which actions need elevation, and the switches an Owner sets on each Administrator
+- [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins
 - [Notifications](adr/notifications.md): the host routes events into send jobs, notifier plugins send them, and account mail carries reset and recovery

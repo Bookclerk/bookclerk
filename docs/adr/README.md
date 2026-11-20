@@ -54,6 +54,8 @@ a later change supersedes one, its **Status** says so.
 - [Playback](playback.md): playback is a host feature with one core
   (progress, sessions, one rights check, one stream route) that the web
   player, the desktop window and app-compatible clients share.
+- [Ingress plugins](ingress-plugins.md): one action gives an install a
+  stable public address, through relay or dynamic DNS plugins.
 - [Notifications](notifications.md): the host routes events into send
   jobs by administrator rules and patron preferences, notifier plugins
   send them, and account mail carries reset and recovery.

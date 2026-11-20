@@ -227,6 +227,7 @@ export const NAV: NavSpec[] = [
       "adr/storage-destinations",
       "adr/owner-and-operator",
       "adr/playback",
+      "adr/ingress-plugins",
       "adr/notifications",
     ],
   },

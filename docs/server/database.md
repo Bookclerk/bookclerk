@@ -202,6 +202,46 @@ After editing the config (or running `bookclerk plugins deploy <id>`):
    bookclerk config database migrate --from sqlite --to postgres --apply
    ```
 
+The copy moves the whole library, not only the catalog. The destination
+opens as the same library, at the same configuration revisions:
+
+- the library identity, every configuration document (`core.output`,
+  `core.events`, `core.cache`, the patron scope default, sign-in policy
+  and plugin settings) with its revision, audit and change rows;
+- plugin versions, stored plugin archives, instances, default instances,
+  deployments and placements;
+- nodes and their credentials, enrollment links, links to other libraries
+  and the books they share;
+- each person's playback progress, listening sessions and bookmarks;
+- queued jobs and events, and the receipts that make retried operations
+  safe.
+
+Nothing is seeded again from `config.toml`. If a host already opened the
+new backend (a reload after editing `[database].plugin` does), the
+identity, node row and configuration documents it wrote there are
+replaced by the source's. Any other row in the destination makes the copy
+refuse unless you pass `--force`.
+
+The copy leaves behind only
+what Bookclerk rebuilds or rewrites on its own: Discover shelves and
+caches, the library page index, in-progress storage scans, maintenance
+leases, node heartbeats, live subscriber registrations and observed
+deployment state.
+
+The copy writes every row in one transaction, so the destination must
+accept one. The first-party SQLite and PostgreSQL adapters do; the D1
+adapter does not, so D1 cannot be a migration destination yet. A
+destination that refuses is checked before anything is written and is
+left untouched.
+
+> [!NOTE]
+> Plugin database bindings are not copied. Each one is a separate
+> database that belongs to the old adapter; the new adapter provisions an
+> empty one when the plugin next runs. Before you switch, list the old
+> ones with `bookclerk plugins db list` and drop any you no longer need
+> with `bookclerk plugins db drop <plugin> [binding]` (leave out `binding`
+> to drop every binding of that plugin).
+
 Daemon operators can instead `POST /api/database/migrate` with JSON
 `{ "from": "sqlite", "to": "postgres", "dry_run": false, "apply": true }`.
 When `apply` is true, the daemon writes `[database].plugin` and **reopens

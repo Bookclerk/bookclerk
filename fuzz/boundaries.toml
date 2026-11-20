@@ -289,7 +289,14 @@ artifacts = ["bookclerk"]
 
 [targets.diagnostics_submit_reply]
 crate = "bookclerk-config"
-boundary = "the diagnostics collector's reply to an uploaded report, whose report_id joins the install's report history"
+boundary = "the diagnostics collector's reply to an uploaded report, whose report_id and access code join the install's report history"
+input_from = "diagnostics collector"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.diagnostics_lookup_reply]
+crate = "bookclerk-config"
+boundary = "the diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue links"
 input_from = "diagnostics collector"
 side = "host"
 artifacts = ["bookclerk"]

@@ -11219,6 +11219,318 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
+    "/api/diagnostics/reports/{id}": {
+      "get": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Reads a sent report back from the collector with its access code: the\nstored report (redacted, as sent), the GitHub issues tracking it and the\nfix, if one is recorded.",
+        "operationId": "get_diagnostics_report",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The report's ID, from `GET /api/diagnostics/reports`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The report as the collector holds it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsReportLookup"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The ID is not a version-4 UUID (`invalid_report_id`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "The request could not be understood.",
+                  "status": 400
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This install has not sent that report (`report_unknown`), has no code for it (`no_access_code`), or the collector no longer has it (`report_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many lookups of this report lately; try again in a minute (`rate_limited`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The collector could not be reached or answered badly (`collector_error`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "bad_gateway",
+                  "message": "An upstream service failed.",
+                  "status": 502
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No collector is configured, or it offers no lookups (`lookup_unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      },
+      "delete": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Deletes the collector's stored copy of a sent report. The collector keeps\nits one-line index entry and issue links, so the report still counts;\nthe install's history notes the deletion.",
+        "operationId": "delete_diagnostics_report",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The report's ID, from `GET /api/diagnostics/reports`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stored copy is gone (deleting again answers the same).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsReportDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The ID is not a version-4 UUID (`invalid_report_id`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "The request could not be understood.",
+                  "status": 400
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This install has not sent that report (`report_unknown`), has no code for it (`no_access_code`), or the collector no longer has it (`report_not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts for this report lately; try again in a minute (`rate_limited`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The collector could not be reached, answered badly or could not delete the copy (`collector_error`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "bad_gateway",
+                  "message": "An upstream service failed.",
+                  "status": 502
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No collector is configured, or it offers no lookups (`lookup_unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
     "/api/plugins/{id}/consent": {
       "get": {
         "tags": [
@@ -37631,6 +37943,140 @@
           }
         }
       },
+      "DiagnosticsReportDeleted": {
+        "type": "object",
+        "description": "Body of `DELETE /api/diagnostics/reports/{id}`.",
+        "required": [
+          "report_id",
+          "deleted_at_unix_ms"
+        ],
+        "properties": {
+          "report_id": {
+            "type": "string",
+            "description": "The report's ID.",
+            "example": "3f2a9c4e-7b1d-4e8a-9c0f-1a2b3c4d5e6f"
+          },
+          "deleted_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When its stored copy was deleted, Unix milliseconds.",
+            "example": 1763600000000,
+            "minimum": 0
+          }
+        }
+      },
+      "DiagnosticsReportLookup": {
+        "type": "object",
+        "description": "Body of `GET /api/diagnostics/reports/{id}`: the report as the collector\nholds it, and what became of it.",
+        "required": [
+          "report_id",
+          "received_at_unix_ms",
+          "issues"
+        ],
+        "properties": {
+          "report_id": {
+            "type": "string",
+            "description": "The report's ID.",
+            "example": "3f2a9c4e-7b1d-4e8a-9c0f-1a2b3c4d5e6f"
+          },
+          "received_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the collector received it, Unix milliseconds.",
+            "example": 1763520000000,
+            "minimum": 0
+          },
+          "deleted_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When its stored copy was deleted, Unix milliseconds, or null.",
+            "example": null,
+            "minimum": 0,
+            "nullable": true
+          },
+          "report": {
+            "description": "The stored report, or null once deleted.",
+            "type": "object",
+            "required": [
+              "version",
+              "trigger",
+              "os",
+              "arch",
+              "distro",
+              "events"
+            ],
+            "properties": {
+              "version": {
+                "type": "string",
+                "description": "The Bookclerk version that sent it.",
+                "example": "0.9.0"
+              },
+              "trigger": {
+                "type": "string",
+                "description": "Why it was sent.",
+                "example": "error_burst"
+              },
+              "os": {
+                "type": "string",
+                "description": "The sender's operating system.",
+                "example": "linux"
+              },
+              "arch": {
+                "type": "string",
+                "description": "The sender's CPU architecture.",
+                "example": "x86_64"
+              },
+              "distro": {
+                "type": "string",
+                "description": "The sender's Linux distribution, or empty.",
+                "example": "debian"
+              },
+              "events": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ReportEventView"
+                },
+                "description": "Its events, oldest first."
+              }
+            },
+            "nullable": true
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportIssueView"
+            },
+            "description": "Issues tracking it, the tracking issue first."
+          },
+          "fix": {
+            "description": "The tracking issue's fix, or null.",
+            "type": "object",
+            "properties": {
+              "pr_number": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The pull request that fixed it, when known.",
+                "example": 1210,
+                "minimum": 0,
+                "nullable": true
+              },
+              "pr_url": {
+                "type": "string",
+                "description": "That pull request's page (`https://`), when known.",
+                "example": "https://github.com/bookclerk/bookclerk/pull/1210",
+                "nullable": true
+              },
+              "fixed_in": {
+                "type": "string",
+                "description": "The first release with the fix, when one has shipped.",
+                "example": "0.9.1",
+                "nullable": true
+              }
+            },
+            "nullable": true
+          }
+        }
+      },
       "DiagnosticsReportView": {
         "type": "object",
         "description": "One diagnostics report this install sent.",
@@ -37662,6 +38108,20 @@
             "description": "When the collector accepted it, Unix milliseconds.",
             "example": 1763520000000,
             "minimum": 0
+          },
+          "access_code": {
+            "type": "string",
+            "description": "The code that reads the report back or deletes it, in groups of\nfour, or null when the collector issued none. With the ID it also\nopens the collector's public lookup page.",
+            "example": "K7QM-3XRD-PW9T-H2CF",
+            "nullable": true
+          },
+          "deleted_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When this install deleted the collector's stored copy, Unix\nmilliseconds, or null while it is stored.",
+            "example": null,
+            "minimum": 0,
+            "nullable": true
           }
         }
       },
@@ -47593,6 +48053,153 @@
         },
         "additionalProperties": false
       },
+      "ReportEventField": {
+        "type": "object",
+        "description": "One field recorded with an event.",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The field's name.",
+            "example": "attempt"
+          },
+          "value": {
+            "type": "string",
+            "description": "Its value, redacted before the report was sent.",
+            "example": "2"
+          }
+        }
+      },
+      "ReportEventLevel": {
+        "type": "string",
+        "description": "Severity of one event in a report.",
+        "enum": [
+          "ERROR",
+          "WARN",
+          "INFO",
+          "DEBUG",
+          "TRACE"
+        ]
+      },
+      "ReportEventView": {
+        "type": "object",
+        "description": "One logged event in a stored report.",
+        "required": [
+          "ts_unix_ms",
+          "level",
+          "target",
+          "message",
+          "fields"
+        ],
+        "properties": {
+          "ts_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it happened, Unix milliseconds, or `0` when the report had none.",
+            "example": 1763519999000,
+            "minimum": 0
+          },
+          "level": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReportEventLevel"
+              }
+            ],
+            "description": "Its severity."
+          },
+          "target": {
+            "type": "string",
+            "description": "Where it was logged (the tracing target).",
+            "example": "bookclerk_library::scan"
+          },
+          "message": {
+            "type": "string",
+            "description": "The message, redacted before the report was sent.",
+            "example": "scan failed"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportEventField"
+            },
+            "description": "Fields recorded with it."
+          }
+        }
+      },
+      "ReportFixView": {
+        "type": "object",
+        "description": "The fix recorded for the report's tracking issue.",
+        "properties": {
+          "pr_number": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The pull request that fixed it, when known.",
+            "example": 1210,
+            "minimum": 0,
+            "nullable": true
+          },
+          "pr_url": {
+            "type": "string",
+            "description": "That pull request's page (`https://`), when known.",
+            "example": "https://github.com/bookclerk/bookclerk/pull/1210",
+            "nullable": true
+          },
+          "fixed_in": {
+            "type": "string",
+            "description": "The first release with the fix, when one has shipped.",
+            "example": "0.9.1",
+            "nullable": true
+          }
+        }
+      },
+      "ReportIssueState": {
+        "type": "string",
+        "description": "Whether an issue is open.",
+        "enum": [
+          "open",
+          "closed"
+        ]
+      },
+      "ReportIssueView": {
+        "type": "object",
+        "description": "A GitHub issue tracking the report.",
+        "required": [
+          "number",
+          "title",
+          "state",
+          "url"
+        ],
+        "properties": {
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The issue number.",
+            "example": 1204,
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "Its title.",
+            "example": "Scan fails with timeout"
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReportIssueState"
+              }
+            ],
+            "description": "Whether it is open."
+          },
+          "url": {
+            "type": "string",
+            "description": "Its page (always `https://`).",
+            "example": "https://github.com/bookclerk/bookclerk/issues/1204"
+          }
+        }
+      },
       "RequestStatus": {
         "type": "string",
         "description": "Wishlist row status (`open` while wishlisted; `cancelled` after un-wishlist).",
@@ -48832,6 +49439,52 @@
             "type": "string",
             "description": "Storefront-native product id (ASIN, ISBN, UUID, …).",
             "example": "9780441478125"
+          }
+        }
+      },
+      "StoredReportView": {
+        "type": "object",
+        "description": "The stored report as the collector keeps it.",
+        "required": [
+          "version",
+          "trigger",
+          "os",
+          "arch",
+          "distro",
+          "events"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "The Bookclerk version that sent it.",
+            "example": "0.9.0"
+          },
+          "trigger": {
+            "type": "string",
+            "description": "Why it was sent.",
+            "example": "error_burst"
+          },
+          "os": {
+            "type": "string",
+            "description": "The sender's operating system.",
+            "example": "linux"
+          },
+          "arch": {
+            "type": "string",
+            "description": "The sender's CPU architecture.",
+            "example": "x86_64"
+          },
+          "distro": {
+            "type": "string",
+            "description": "The sender's Linux distribution, or empty.",
+            "example": "debian"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportEventView"
+            },
+            "description": "Its events, oldest first."
           }
         }
       },

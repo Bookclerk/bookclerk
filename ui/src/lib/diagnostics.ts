@@ -34,3 +34,14 @@ export function formatReportTime(unixMs: number): string {
   if (Number.isNaN(date.getTime())) return "unknown time";
   return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
+
+/**
+ * Whether a link from a report lookup may be shown as a link.
+ *
+ * @param url - The link the collector sent.
+ * @returns True only for an `https://` URL (the daemon already refuses
+ *   anything else; this keeps a stray `javascript:` out of an `href`).
+ */
+export function isHttpsLink(url: string | null | undefined): url is string {
+  return typeof url === "string" && url.startsWith("https://");
+}
