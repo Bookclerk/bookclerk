@@ -15,8 +15,8 @@
 //! the output stream and the system media controls, so this crate builds
 //! and tests everywhere.
 //!
-//! Style: `docs/contributing/code-documentation.md`. Design: the
-//! [Playback ADR](../../docs/adr/playback.md).
+//! Style: `docs/contributing/code-documentation.md`. Design: the playback
+//! ADR, `docs/adr/playback.md`.
 
 mod player;
 mod renderer;
