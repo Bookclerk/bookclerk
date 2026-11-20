@@ -89,6 +89,11 @@ pub const MAX_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
 /// reachable here) would otherwise hold the request forever.
 pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Path prefixes whose writes may change who the window is: the sign-in,
+/// sign-out, elevation and impersonation routes, and the portal's own
+/// sign-in and sign-out. Such requests run one at a time.
+const AUTH_TRANSITION_PREFIXES: [&str; 2] = ["/api/auth/", "/api/portal/"];
+
 /// The route that creates the library's first Owner; in the window, its
 /// success signs the window in as that Owner.
 const BOOTSTRAP_PATH: &str = "/api/auth/bootstrap";
@@ -117,7 +122,7 @@ pub struct EmbeddedHost {
     /// The patron's session cookies, which the page never sees.
     jar: Mutex<session::WindowJar>,
     /// Held across a whole request that may change who the window is
-    /// (writes under `/api/auth/`), so a sign-in that finishes late cannot
+    /// (writes under [`AUTH_TRANSITION_PREFIXES`]), so a sign-in that finishes late cannot
     /// undo a sign-out sent after it.
     auth_transitions: tokio::sync::Mutex<()>,
     /// This branch's node id, which keys the window's sealed session, or
@@ -293,7 +298,9 @@ impl EmbeddedHost {
     /// oversized body, `504` on timeout.
     pub async fn handle(&self, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
         let changes_who = !matches!(*request.method(), Method::GET | Method::HEAD)
-            && request.uri().path().starts_with("/api/auth/");
+            && AUTH_TRANSITION_PREFIXES
+                .iter()
+                .any(|prefix| request.uri().path().starts_with(prefix));
         let _transition = if changes_who {
             Some(self.auth_transitions.lock().await)
         } else {

@@ -307,6 +307,23 @@ async fn the_desktop_window_opens_as_its_kept_patron_and_elevates_like_the_web()
         "{current_session}"
     );
 
+    // The portal's own sign-out forgets the window's session too.
+    let out = reopened
+        .handle(window_json("POST", "/api/portal/logout", "{}"))
+        .await;
+    assert!(out.status().is_success(), "{}", out.status());
+    assert_eq!(kept().await, None);
+    let signed_in = reopened
+        .handle(window_json(
+            "POST",
+            "/api/auth/password",
+            r#"{"login":"dana","password":"correct horse battery staple"}"#,
+        ))
+        .await;
+    assert_eq!(signed_in.status(), StatusCode::OK);
+    assert_ne!(kept().await, Some(current));
+    let current = kept().await.expect("the new sign-in is kept");
+
     // A revoked session sends the next launch to the sign-in screen.
     crate::embedded::session::end(&library, &current).await;
     let revoked = host.relaunched();
