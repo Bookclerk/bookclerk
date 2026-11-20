@@ -210,6 +210,13 @@ input_from = "media worker"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.media_decode]
+crate = "bookclerk-media"
+boundary = "Audio the media worker demuxes and decodes before encoding or repackaging it (store downloads, library copies, files on storage)"
+input_from = "store"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.tags_read]
 crate = "bookclerk-tags"
 boundary = "Embedded tags of media files on storage (MP4 ilst and chapter tracks, ID3v2/ID3v1, FLAC metadata), read in the tag worker"

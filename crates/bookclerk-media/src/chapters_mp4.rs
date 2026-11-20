@@ -79,6 +79,13 @@ pub fn write_audiobook_chapters(path: &Path, chapters: &[(String, u64)]) -> Resu
     let (sample_payload, sample_sizes, sample_deltas) =
         build_chapter_samples(chapters, duration_ms)?;
     let sample_offset = append_chapter_media(path, &sample_payload)?;
+    // The title samples now follow `moov`, so it is no longer the last box:
+    // writing it back must pad or move what follows, never truncate the file
+    // at its end and drop the samples just appended.
+    let at = bookclerk_mp4::MoovLocation {
+        is_last: false,
+        ..at
+    };
 
     let audio_track_id = first_audio_track_id(&moov_buf)?.unwrap_or(1);
     let chapter_track_id = next_track_id(&moov_buf);
@@ -939,6 +946,79 @@ mod tests {
         let (flags2, ts2, _, _) = chapter_track_info(&fixed);
         assert_eq!(flags2, 0x2);
         assert_eq!(ts2, 1000);
+    }
+
+    /// Rewrites the faststart M4B at `path` as `ftyp`, `mdat`, `moov`, the
+    /// layout older packaging and many stores produce.
+    fn move_moov_last(path: &Path) {
+        let mut file = File::open(path).unwrap();
+        let boxes = bookclerk_mp4::top_level_boxes(&mut file).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let range = |kind: &[u8; 4]| {
+            let b = boxes.iter().find(|b| b.kind.0 == *kind).unwrap();
+            usize::try_from(b.start).unwrap()..usize::try_from(b.start + b.size).unwrap()
+        };
+        let (ftyp, moov, mdat) = (range(b"ftyp"), range(b"moov"), range(b"mdat"));
+        assert!(moov.start < mdat.start, "packaging writes faststart");
+        let mut moov_buf = bytes[moov.clone()].to_vec();
+        let moov_len = i64::try_from(moov_buf.len()).unwrap();
+        bookclerk_mp4::shift_chunk_offsets(&mut moov_buf, 0, -moov_len).unwrap();
+        let mut out = bytes[ftyp].to_vec();
+        out.extend_from_slice(&bytes[mdat]);
+        out.extend_from_slice(&moov_buf);
+        std::fs::write(path, out).unwrap();
+        let (at, _) = bookclerk_mp4::read_moov(path).unwrap();
+        assert!(at.is_last);
+    }
+
+    #[test]
+    fn chapters_on_a_packaged_book_fit_its_reserved_moov() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = dir.path().join("book.m4b");
+        package_m4b_from_pcm(&vec![0i16; 16_000 * 2], 16_000, 1, &book, &[]).unwrap();
+        let (before, _) = bookclerk_mp4::read_moov(&book).unwrap();
+        assert!(!before.is_last, "packaging writes faststart");
+        let chapters = [("Opening".to_string(), 0), ("Chapter 1".to_string(), 500)];
+        write_audiobook_chapters(&book, &chapters).unwrap();
+        // The edit lands in the slack, so the file is not rebuilt and
+        // renamed (which a confined worker on Windows may not do).
+        let (after, _) = bookclerk_mp4::read_moov(&book).unwrap();
+        assert_eq!((after.start, after.len), (before.start, before.len));
+        let record = bookclerk_tags::read_all(&std::fs::read(&book).unwrap()).unwrap();
+        assert_eq!(record.chapters.len(), 2);
+    }
+
+    #[test]
+    fn chapter_titles_survive_when_moov_is_the_last_box() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = dir.path().join("book.m4b");
+        package_m4b_from_pcm(&vec![0i16; 16_000 * 2], 16_000, 1, &book, &[]).unwrap();
+        move_moov_last(&book);
+        let chapters = [("Opening".to_string(), 0), ("Chapter 1".to_string(), 500)];
+        write_audiobook_chapters(&book, &chapters).unwrap();
+        // The tag reader prefers the chapter track and ignores one whose
+        // samples point into `moov`, so check the title samples directly.
+        let bytes = std::fs::read(&book).unwrap();
+        let (at, moov) = bookclerk_mp4::read_moov(&book).unwrap();
+        let moov_range =
+            usize::try_from(at.start).unwrap()..usize::try_from(at.start + at.len).unwrap();
+        for (title, _) in &chapters {
+            // `chpl` inside `moov` holds the titles too; the track's copy is
+            // the one after it.
+            let found = bytes
+                .windows(title.len())
+                .enumerate()
+                .any(|(pos, w)| w == title.as_bytes() && pos >= moov_range.end);
+            assert!(found, "{title} sample is missing after moov");
+        }
+        assert!(!moov.is_empty());
+        let record = bookclerk_tags::read_all(&bytes).unwrap();
+        let read: Vec<_> = record.chapters.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(read, ["Opening", "Chapter 1"]);
+        // Running it again leaves one set of titles, still readable.
+        write_audiobook_chapters(&book, &chapters).unwrap();
+        let again = bookclerk_tags::read_all(&std::fs::read(&book).unwrap()).unwrap();
+        assert_eq!(again.chapters.len(), 2);
     }
 
     #[test]
