@@ -45,11 +45,11 @@ Override the static dist folder with `BOOKCLERK_UI_DIST`.
 The product GUI is the authenticated React UI on `bookclerkd`. Native
 wrappers are optional.
 
-| Path | Status |
-| --- | --- |
-| Web UI (`bookclerkd` + `ui/`) | Supported |
-| In-process tray (`bookclerkd` through the `bookclerk-tray` library → the system browser) | Supported on Linux (`ksni`), Windows and macOS (`tray-icon` without GTK features); skipped on headless hosts |
-| Desktop window (`bookclerk-desktop`, Tauri 2) | Early: runs the web app in its own window with no listener (below). Unsigned packages for Linux, Windows and macOS ([Packages](#packages)); no tray or uploads |
+| Path                                                                                     | Status                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web UI (`bookclerkd` + `ui/`)                                                            | Supported                                                                                                                                                      |
+| In-process tray (`bookclerkd` through the `bookclerk-tray` library → the system browser) | Supported on Linux (`ksni`), Windows and macOS (`tray-icon` without GTK features); skipped on headless hosts                                                   |
+| Desktop window (`bookclerk-desktop`, Tauri 2)                                            | Early: runs the web app in its own window with no listener (below). Unsigned packages for Linux, Windows and macOS ([Packages](#packages)); no tray or uploads |
 
 ### The desktop window
 
@@ -149,11 +149,11 @@ development files. Without it the binary only says how to build it. CI's
 it runs on. They are **unsigned**, so the system warns before the first
 start:
 
-| Platform | Packages | Before the first start |
-| --- | --- | --- |
-| Linux | `.deb`, AppImage | The `.deb` depends on WebKitGTK 4.1, which the package manager installs; the AppImage needs FUSE 2 (`libfuse2`) |
-| Windows | NSIS installer (`.exe`), per user | SmartScreen asks to confirm an unknown publisher |
-| macOS | `.app` and `.dmg` | Gatekeeper blocks an unsigned app: try to open it once, then choose **Open Anyway** under System Settings → Privacy & Security |
+| Platform | Packages                          | Before the first start                                                                                                         |
+| -------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Linux    | `.deb`, AppImage                  | The `.deb` depends on WebKitGTK 4.1, which the package manager installs; the AppImage needs FUSE 2 (`libfuse2`)                |
+| Windows  | NSIS installer (`.exe`), per user | SmartScreen asks to confirm an unknown publisher                                                                               |
+| macOS    | `.app` and `.dmg`                 | Gatekeeper blocks an unsigned app: try to open it once, then choose **Open Anyway** under System Settings → Privacy & Security |
 
 To build them:
 
@@ -229,9 +229,9 @@ On a graphical session, `bookclerkd` can start an optional **in-process
 tray** (the library crate `bookclerk-tray`) that opens the UI in the
 system browser. There is no separate tray binary.
 
-| OS | Backend |
-| --- | --- |
-| Linux | StatusNotifierItem (`ksni`, no GTK or WebKit) |
+| OS              | Backend                                                 |
+| --------------- | ------------------------------------------------------- |
+| Linux           | StatusNotifierItem (`ksni`, no GTK or WebKit)           |
 | Windows / macOS | `tray-icon` with default features **disabled** (no GTK) |
 
 - Turn it off with `[daemon] tray = false`, `BOOKCLERK_NO_TRAY=1` or
@@ -298,14 +298,14 @@ the Linux GTK3 graph. Only the desktop window brings gtk-rs into the root
 The web player is split so that everything with behavior is plain
 TypeScript under `ui/src/lib`, tested without a browser:
 
-| Module | Role |
-| --- | --- |
-| `playback.ts` | The daemon's playback routes ([Playback reference](../../server/playback.md)) |
-| `player.ts` | The engine: one audio element, one play session, position reports, the sleep timer |
-| `playerTimeline.ts` | One timeline over an edition's files, clock text, speeds |
-| `playTarget.ts` | Which edition of a work plays; the Continue listening shelf |
-| `mediaSession.ts` | The browser's Media Session: lock screen, OS media panel, media keys |
-| `webPlayer.ts` | The page's one engine, wired to `fetch`, `Audio` and `localStorage`, and its React hook |
+| Module              | Role                                                                                    |
+| ------------------- | --------------------------------------------------------------------------------------- |
+| `playback.ts`       | The daemon's playback routes ([Playback reference](../../server/playback.md))           |
+| `player.ts`         | The engine: one audio element, one play session, position reports, the sleep timer      |
+| `playerTimeline.ts` | One timeline over an edition's files, clock text, speeds                                |
+| `playTarget.ts`     | Which edition of a work plays; the Continue listening shelf                             |
+| `mediaSession.ts`   | The browser's Media Session: lock screen, OS media panel, media keys                    |
+| `webPlayer.ts`      | The page's one engine, wired to `fetch`, `Audio` and `localStorage`, and its React hook |
 
 `Player` takes its routes, clock and audio element as `PlayerDeps`, so
 `player.test.ts` drives it with a fake element. The components
@@ -318,11 +318,19 @@ Rules the engine keeps:
   from the same origin with the session cookie. No token goes in a URL,
   and the app's content security policy needs no exception.
 - A report goes out every 15 seconds while playing, on pause and at the
-  end of the book. Stopping, signing out or leaving the page closes the
-  session; the close on page hide is a `keepalive` request.
+  end of the book. Reports for one session go out one at a time, and
+  never wait on a report for an earlier session.
+- Stopping, signing out, starting or stopping impersonation, and leaving
+  the page close the session. The close on page hide is a `keepalive`
+  request. A change of identity waits up to three seconds for the close
+  (`beforeSignOut` in `api.ts`) and then goes ahead.
 - `409 session_ended` on a report, or a stream error, opens one new
-  session at the same position. A second stream error within a minute is
-  shown to the listener instead.
+  session at the place the listener is, and a report the ended session
+  refused is sent once to the new one. A second stream error within a
+  minute closes the session and is shown to the listener instead; play
+  then opens a new session.
+- Playing again a book played to its end opens a new session, because
+  only opening one marks a finished edition as in progress again.
 - An edition in several files has every file's length read from its
   stream before a position is placed, because the server does not store
   per-file lengths yet.

@@ -155,7 +155,7 @@ export function usePlayerState(): PlayerState {
  */
 export async function playWork(workId: string, known?: WorkDetail | null): Promise<string | null> {
   const player = webPlayer();
-  const loads = player.loads;
+  const latest = player.claim();
   const [work, recent] = await Promise.all([
     known ?? fetchWork(workId),
     // Only a preference between editions: a failed read means the first.
@@ -165,9 +165,9 @@ export async function playWork(workId: string, known?: WorkDetail | null): Promi
   ]);
   const edition = playableEdition(work, recent);
   if (!edition) return `No audio of “${work.title}” is on this server yet.`;
-  // The listener started or stopped another book while this one was
-  // being read: that later choice stands.
-  if (player.loads !== loads) return null;
+  // The listener chose, started or stopped another book while this one
+  // was being read: that later choice stands.
+  if (!latest()) return null;
   void player.play(targetFor(work, edition));
   return null;
 }

@@ -11,17 +11,36 @@ import {
   type PlayerDeps,
 } from "./player";
 
-// An audio element the tests move by hand.
+/**
+ * An audio element the tests move by hand. Nothing happens on its own:
+ * assigning `src` loads nothing, and metadata, time and errors arrive only
+ * when a test calls {@link FakeAudio.ready}, {@link FakeAudio.at} or
+ * {@link FakeAudio.emit}. `play()` and `pause()` send their events before
+ * they return, where a browser sends them a moment later, so a test of an
+ * order between those events and something else arranges it by hand.
+ */
 class FakeAudio implements AudioLike {
+  /** The address last assigned; assigning it does not pause or load. */
   src = "";
+  /** Seconds into the loaded file. */
   currentTime = 0;
+  /** The loaded file's seconds; `NaN` until {@link FakeAudio.ready}. */
   duration = Number.NaN;
+  /** True unless `play()` started it. */
   paused = true;
+  /** The speed last assigned. */
   playbackRate = 1;
-  // What `play()` rejects with; `null` to start.
+  /** What `play()` rejects with; `null` to start. */
   refuse: unknown = null;
+  /** The listeners added, by event name. */
   private readonly listeners = new Map<string, (() => void)[]>();
 
+  /**
+   * Starts, sending `play` before returning, or rejects with
+   * {@link FakeAudio.refuse}.
+   *
+   * @returns Settles at once.
+   */
   play(): Promise<void> {
     if (this.refuse) return Promise.reject(this.refuse);
     this.paused = false;
@@ -29,33 +48,54 @@ class FakeAudio implements AudioLike {
     return Promise.resolve();
   }
 
+  /** Pauses, sending `pause` before returning; nothing when already paused. */
   pause(): void {
     if (this.paused) return;
     this.paused = true;
     this.emit("pause");
   }
 
+  /**
+   * Adds a listener.
+   *
+   * @param type - The event name.
+   * @param listener - Called on each {@link FakeAudio.emit} of it.
+   */
   addEventListener(type: string, listener: () => void): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
   }
 
+  /**
+   * Sends an event to its listeners, in the order they were added.
+   *
+   * @param type - The event name, such as `ended` or `error`.
+   */
   emit(type: string): void {
     for (const listener of this.listeners.get(type) ?? []) listener();
   }
 
-  // The loaded file's metadata arrives.
+  /**
+   * The loaded file's metadata arrives.
+   *
+   * @param seconds - The file's length.
+   */
   ready(seconds: number): void {
     this.duration = seconds;
     this.emit("loadedmetadata");
   }
 
-  // Playback reaches `seconds`.
+  /**
+   * Playback reaches a place in the loaded file.
+   *
+   * @param seconds - The place.
+   */
   at(seconds: number): void {
     this.currentTime = seconds;
     this.emit("timeupdate");
   }
 }
 
+/** The book every test plays unless it names another edition. */
 const TARGET: PlayTarget = {
   editionId: "ed1",
   workId: "w1",
@@ -64,6 +104,13 @@ const TARGET: PlayTarget = {
   coverPath: "/api/covers/abc",
 };
 
+/**
+ * A progress row as the server answers a report with.
+ *
+ * @param positionMs - The stored position.
+ * @param finished - True for a finished edition.
+ * @returns The row.
+ */
 function progress(positionMs: number, finished = false): PlaybackProgress {
   return {
     edition_id: "ed1",
@@ -77,6 +124,14 @@ function progress(positionMs: number, finished = false): PlaybackProgress {
   };
 }
 
+/**
+ * A session as the server opens one.
+ *
+ * @param id - The session id, which its track addresses carry.
+ * @param positionMs - Where the server says to start.
+ * @param tracks - How many files the edition has.
+ * @returns The session.
+ */
 function session(id: string, positionMs: number, tracks = 1): PlaybackSession {
   return {
     session_id: id,
@@ -95,7 +150,19 @@ function session(id: string, positionMs: number, tracks = 1): PlaybackSession {
   };
 }
 
-// A player over fakes, with what it sent.
+/**
+ * A player over fakes, with what it sent.
+ *
+ * `failures` and `holds` are read when a request is made, not when the
+ * test sets them: a failure is thrown before the request is recorded or
+ * held (`close` is recorded first), `failures.syncOnce` fails one report
+ * and clears itself, and a hold delays the answer of every request made
+ * while it is set, after the request is recorded.
+ *
+ * @param options - `tracks` and `lengths` (milliseconds per track) shape
+ *   the edition; `startMs` is where the server says to start.
+ * @returns The player, its fakes and the requests it made.
+ */
 function world(options: { tracks?: number; startMs?: number; lengths?: number[] } = {}) {
   const audio = new FakeAudio();
   const clock = { now: 0 };
@@ -104,9 +171,21 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
   const closed: { id: string; report: PlaybackReport; keepalive: boolean }[] = [];
   const finished: string[] = [];
   const saved: number[] = [];
-  const failures: { open?: unknown; sync?: unknown; close?: unknown; manifest?: unknown } = {};
+  const failures: {
+    open?: unknown;
+    sync?: unknown;
+    syncOnce?: unknown;
+    close?: unknown;
+    manifest?: unknown;
+    probe?: unknown;
+  } = {};
   // Requests wait on these before they answer.
-  const holds: { open?: Promise<void>; sync?: Promise<void>; close?: Promise<void> } = {};
+  const holds: {
+    open?: Promise<void>;
+    sync?: Promise<void>;
+    close?: Promise<void>;
+    manifest?: Promise<void>;
+  } = {};
   const bookmarks: Bookmark[] = [
     {
       id: "b1",
@@ -121,6 +200,9 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
     audio: () => audio,
     manifest: async (editionId) => {
       if (failures.manifest) throw failures.manifest;
+      // What the server held when it was asked, however late the answer.
+      const snapshot = [...bookmarks];
+      await holds.manifest;
       return {
         edition_id: editionId,
         work_id: "w1",
@@ -129,7 +211,7 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
         duration_ms: null,
         tracks: [],
         progress: null,
-        bookmarks,
+        bookmarks: snapshot,
       };
     },
     open: async (editionId) => {
@@ -140,6 +222,11 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
       return session(id, options.startMs ?? 0, options.tracks ?? 1);
     },
     sync: async (id, report) => {
+      if (failures.syncOnce) {
+        const failure = failures.syncOnce;
+        failures.syncOnce = undefined;
+        throw failure;
+      }
       if (failures.sync) throw failures.sync;
       synced.push({ id, report });
       await holds.sync;
@@ -151,19 +238,26 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
       if (failures.close) throw failures.close;
       return { progress: progress(report.position_ms), finished_now: false };
     },
-    addBookmark: async (editionId, positionMs, title) => ({
-      id: `b${positionMs}`,
-      edition_id: editionId,
-      position_ms: positionMs,
-      title,
-      created_at: "2026-11-19T10:00:00Z",
-    }),
+    addBookmark: async (editionId, positionMs, title) => {
+      const bookmark: Bookmark = {
+        id: `b${positionMs}`,
+        edition_id: editionId,
+        position_ms: positionMs,
+        title,
+        created_at: "2026-11-19T10:00:00Z",
+      };
+      bookmarks.push(bookmark);
+      return bookmark;
+    },
     deleteBookmark: async () => undefined,
     setProgress: async (editionId) => {
       finished.push(editionId);
       return { progress: progress(0, true), finished_now: true };
     },
-    probe: async (path) => (options.lengths ?? [])[Number(path.split("/").pop())] ?? 0,
+    probe: async (path) => {
+      if (failures.probe) throw failures.probe;
+      return (options.lengths ?? [])[Number(path.split("/").pop())] ?? 0;
+    },
     now: () => clock.now,
     loadSpeed: () => "1.5",
     saveSpeed: (speed) => saved.push(speed),
@@ -172,7 +266,11 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
   return { player, audio, clock, opened, synced, closed, finished, saved, failures, flags, holds };
 }
 
-// Lets resolved promises run.
+/**
+ * Lets resolved promises run.
+ *
+ * @returns Settles on the next timer turn, after every pending microtask.
+ */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("Player", () => {
@@ -682,14 +780,158 @@ describe("Player", () => {
     expect(w.closed.at(-1)).toMatchObject({ id: "s2", report: { listened_ms: 1000 } });
   });
 
-  it("counts loads and unloads for callers that read before they play", async () => {
+  it("does not hold a book's reports behind one still out for the book before", async () => {
     const w = world();
-    const before = w.player.loads;
     await w.player.play(TARGET);
-    const loaded = w.player.loads;
-    expect(loaded).not.toBe(before);
+    w.audio.ready(600);
+    w.holds.sync = new Promise<void>(() => {});
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    expect(w.synced.map((sent) => sent.id)).toEqual(["s1"]);
+    w.holds.sync = undefined;
+    await w.player.play({ ...TARGET, editionId: "ed2" });
+    w.audio.ready(600);
+    w.clock.now += SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    expect(w.synced.map((sent) => sent.id)).toEqual(["s1", "s2"]);
+  });
+
+  it("sends a pause the ended session refused to the session that replaces it", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    w.clock.now = 5000;
+    w.audio.at(5);
+    w.failures.syncOnce = new ApiError(409, "session_ended", { code: "session_ended" });
+    w.player.pause();
+    await settle();
+    expect(w.opened).toEqual(["ed1", "ed1"]);
+    expect(w.player.state.status).toBe("paused");
+    expect(w.synced).toEqual([
+      { id: "s2", report: expect.objectContaining({ position_ms: 5000, listened_ms: 2000 }) },
+    ]);
+  });
+
+  it("opens one replacement when the report and the stream both fail", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    let release = () => {};
+    w.holds.open = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    w.failures.syncOnce = new ApiError(409, "session_ended", { code: "session_ended" });
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    w.audio.emit("error");
+    await settle();
+    release();
+    await settle();
+    expect(w.opened).toEqual(["ed1", "ed1"]);
+    expect(w.audio.src).toBe("/api/playback/sessions/s2/tracks/0");
+    expect(w.closed).toEqual([]);
+  });
+
+  it("keeps a seek made while a replacement session opens", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    let release = () => {};
+    w.holds.open = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    w.failures.syncOnce = new ApiError(409, "session_ended", { code: "session_ended" });
+    w.clock.now = SYNC_EVERY_MS;
+    w.audio.at(15);
+    await settle();
+    w.player.seek(120_000);
+    release();
+    await settle();
+    w.audio.ready(600);
+    expect(w.audio.currentTime).toBe(120);
+    expect(w.player.state.positionMs).toBe(120_000);
+  });
+
+  it("gives up a stream that fails twice, and play opens a new session", async () => {
+    const w = world();
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    w.audio.at(15);
+    w.audio.emit("error");
+    await settle();
+    expect(w.opened).toEqual(["ed1", "ed1"]);
+    // The replacement fails before its metadata arrives.
+    w.audio.emit("error");
+    await settle();
+    expect(w.player.state.status).toBe("error");
+    expect(w.player.state.target).toEqual(TARGET);
+    expect(w.audio.src).toBe("");
+    expect(w.closed.map((sent) => sent.id)).toEqual(["s2"]);
+    w.player.toggle();
+    await settle();
+    expect(w.opened).toEqual(["ed1", "ed1", "ed1"]);
+    expect(w.audio.src).toBe("/api/playback/sessions/s3/tracks/0");
+  });
+
+  it("pauses and resumes while a seek into another track loads", async () => {
+    const w = world({ tracks: 2, lengths: [60_000, 60_000] });
+    await w.player.play(TARGET);
+    w.audio.ready(60);
+    expect(w.player.state.status).toBe("playing");
+    w.player.seek(90_000);
+    // A browser pauses the element for the new source without an event.
+    w.audio.paused = true;
+    expect(w.player.state.status).toBe("loading");
+    w.player.toggle();
+    expect(w.player.state.status).toBe("paused");
+    w.audio.ready(60);
+    expect(w.audio.paused).toBe(true);
+    w.player.toggle();
+    expect(w.audio.paused).toBe(false);
+    expect(w.player.state.status).toBe("playing");
+    expect(w.audio.currentTime).toBe(30);
+  });
+
+  it("keeps a bookmark added before the list of bookmarks arrives", async () => {
+    const w = world();
+    let release = () => {};
+    w.holds.manifest = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await w.player.play(TARGET);
+    w.audio.ready(600);
+    w.audio.at(9);
+    await w.player.addBookmark("the door");
+    w.holds.manifest = undefined;
+    release();
+    await settle();
+    expect(w.player.state.bookmarks.map((bookmark) => bookmark.id)).toEqual(["b1", "b9000"]);
+  });
+
+  it("closes a session whose tracks cannot be read", async () => {
+    const w = world({ tracks: 2, lengths: [60_000, 60_000] });
+    w.failures.probe = new Error("unreachable");
+    await w.player.play(TARGET);
+    expect(w.player.state.status).toBe("error");
+    expect(w.closed.map((sent) => sent.id)).toEqual(["s1"]);
+  });
+
+  it("tells a caller that reads before it plays whether its choice still stands", async () => {
+    const w = world();
+    const first = w.player.claim();
+    expect(first()).toBe(true);
+    // A later choice replaces it, whichever read finishes first.
+    const second = w.player.claim();
+    expect(first()).toBe(false);
+    expect(second()).toBe(true);
+    await w.player.play(TARGET);
+    expect(second()).toBe(false);
+    const third = w.player.claim();
     await w.player.stop();
-    expect(w.player.loads).not.toBe(loaded);
+    expect(third()).toBe(false);
   });
 
   it("marks the book finished and unloads it", async () => {

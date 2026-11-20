@@ -707,11 +707,12 @@ impl PlaybackPlan {
 /// `edition_id`, and lists its tracks: the one check behind the playback
 /// manifest, a new play session and every stream request.
 ///
-/// The edition must be one the person may take (`visible_to`, the same
-/// rule a copy grant uses) and one this library has acquired, with its
-/// primary audio recorded on at least one destination. Whether the person's
-/// patron scope shows them the work at all is the caller's check
-/// ([`crate::LibraryStore::work_in_scope`]).
+/// The edition must be a title on one of this library's store accounts
+/// (`visible_to`, which today passes every such title for every person)
+/// and one this library has acquired, with its primary audio recorded on
+/// at least one destination. Nothing here is decided per person yet:
+/// whether the person's patron scope shows them the work at all is the
+/// caller's check ([`crate::LibraryStore::work_in_scope`]).
 ///
 /// The Download member control ([`super::MemberControl::Download`]) is
 /// not read: it stops taking copies to keep, and anyone who can see a

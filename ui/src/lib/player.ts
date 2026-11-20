@@ -151,6 +151,16 @@ export function playbackErrorText(err: unknown): string {
   return "This book could not be played.";
 }
 
+/** One report on its way to the server. */
+interface ReportFlight {
+  /** The session the report is for. */
+  session: PlaybackSession;
+  /** Listened milliseconds the report carries. */
+  listenedMs: number;
+  /** True when another report was asked for meanwhile and follows this one. */
+  again: boolean;
+}
+
 /** The web player's engine. One per page. */
 export class Player {
   /** Current state. */
@@ -177,17 +187,20 @@ export class Player {
   private tickedAt: number | null = null;
   /** {@link PlayerDeps.now} at the last report. */
   private syncedAt = 0;
-  /** True while a report is in flight. */
-  private syncing = false;
   /**
-   * The session the report in flight is for and the listened milliseconds it
-   * carries; `null` with none in flight.
+   * The report in flight for the open session; `null` with none. A report
+   * still in flight for a session since replaced is not kept here, so it
+   * never holds back the reports of the session that replaced it.
    */
-  private sending: { session: PlaybackSession; listenedMs: number } | null = null;
-  /** True when a report was asked for while another was in flight. */
-  private reportAgain = false;
+  private flight: ReportFlight | null = null;
+  /** The replacement of a failed session under way; `null` with none. */
+  private recovery: Promise<void> | null = null;
+  /** Counts bookmarks added and removed, so a list read earlier is not shown over them. */
+  private bookmarkEdits = 0;
   /** Counts loads, so an answer for an earlier one is dropped. */
   private generation = 0;
+  /** Counts {@link Player.claim} calls, so only the latest choice plays. */
+  private claims = 0;
   /** {@link PlayerDeps.now} at the last automatic new session for a stream failure. */
   private retriedAt: number | null = null;
 
@@ -200,14 +213,18 @@ export class Player {
   }
 
   /**
-   * Counts every load and unload. A caller that reads something before
-   * asking to play compares this before and after, and drops its request
-   * when the listener has started or stopped a book meanwhile.
+   * Marks the start of a request to play that has something to read
+   * first. The caller asks the returned check once it has read, and drops
+   * its request when the listener has since chosen, started or stopped
+   * another book.
    *
-   * @returns The count so far.
+   * @returns True while this is the latest choice and nothing was loaded
+   *   or unloaded since.
    */
-  get loads(): number {
-    return this.generation;
+  claim(): () => boolean {
+    const claim = (this.claims += 1);
+    const generation = this.generation;
+    return () => claim === this.claims && generation === this.generation;
   }
 
   /**
@@ -283,18 +300,15 @@ export class Player {
     try {
       const session = await this.deps.open(target.editionId);
       if (generation !== this.generation) {
-        void this.deps.close(session.session_id, { position_ms: session.position_ms }, false);
+        void this.deps
+          .close(session.session_id, { position_ms: session.position_ms }, false)
+          .catch(() => undefined);
         return;
       }
       await this.adopt(session, session.position_ms, generation);
       if (generation !== this.generation) return;
       // Bookmarks are a convenience: playing does not wait on them.
-      void this.deps
-        .manifest(target.editionId)
-        .then((manifest) => {
-          if (generation === this.generation) this.set({ bookmarks: manifest.bookmarks });
-        })
-        .catch(() => undefined);
+      void this.readBookmarks(target.editionId, generation);
     } catch (err) {
       if (generation === this.generation) {
         this.session = null;
@@ -304,34 +318,73 @@ export class Player {
   }
 
   /**
+   * Reads the edition's bookmarks. A list read while the listener added
+   * or removed one may be older than that change, so it is read again.
+   *
+   * @param editionId - The loaded edition.
+   * @param generation - The load the list belongs to.
+   */
+  private async readBookmarks(editionId: string, generation: number): Promise<void> {
+    try {
+      // Two reads settle any change a listener can make in the meantime.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const edits = this.bookmarkEdits;
+        const manifest = await this.deps.manifest(editionId);
+        if (generation !== this.generation) return;
+        if (edits === this.bookmarkEdits) {
+          this.set({ bookmarks: manifest.bookmarks });
+          return;
+        }
+      }
+    } catch {
+      // The bookmarks added in this visit still show.
+    }
+  }
+
+  /**
    * Takes a session's tracks and loads the one `positionMs` falls in.
    *
+   * A session that cannot be taken (its tracks cannot be read, or the
+   * listener moved on) is closed here, since nothing else knows of it.
+   *
    * @param session - The session just opened.
-   * @param positionMs - Where to start on the timeline.
+   * @param startMs - Where to start on the timeline; `null` for where the
+   *   listener is once the tracks are known, which keeps a seek made while
+   *   a replacement session was being prepared.
    * @param generation - The load this answer belongs to.
    */
   private async adopt(
     session: PlaybackSession,
-    positionMs: number,
+    startMs: number | null,
     generation: number,
   ): Promise<void> {
+    const discard = () =>
+      void this.deps
+        .close(session.session_id, { position_ms: session.position_ms }, false)
+        .catch(() => undefined);
     const paths = session.tracks.map((track) => track.path ?? "");
-    if (paths.length === 0 || paths.some((path) => !path)) {
-      throw new Error("the session lists no tracks");
+    let durations: number[];
+    try {
+      if (paths.length === 0 || paths.some((path) => !path)) {
+        throw new Error("the session lists no tracks");
+      }
+      // One file is its own timeline. Several need every length before a
+      // position can be placed in one of them.
+      durations =
+        paths.length === 1
+          ? [Number.POSITIVE_INFINITY]
+          : await Promise.all(paths.map((path) => this.deps.probe(path)));
+    } catch (err) {
+      discard();
+      throw err;
     }
-    // One file is its own timeline. Several need every length before a
-    // position can be placed in one of them.
-    const durations =
-      paths.length === 1
-        ? [Number.POSITIVE_INFINITY]
-        : await Promise.all(paths.map((path) => this.deps.probe(path)));
     if (generation !== this.generation) {
-      void this.deps.close(session.session_id, { position_ms: positionMs }, false);
+      discard();
       return;
     }
+    const positionMs = startMs ?? this.state.positionMs;
     this.session = session;
     this.durations = durations;
-    this.listened = 0;
     this.syncedAt = this.deps.now();
     const total = paths.length > 1 ? durations.reduce((sum, ms) => sum + ms, 0) : null;
     // A listener who pressed pause while the session opened gets a book
@@ -352,6 +405,13 @@ export class Player {
    */
   private load(index: number, positionMs: number): void {
     const audio = this.element();
+    if (this.state.status === "playing") {
+      // A new source pauses the element without telling anyone. Until the
+      // track is ready the book is loading, so pause and play act on that.
+      this.tick();
+      this.tickedAt = null;
+      this.set({ status: "loading" });
+    }
     this.track = index;
     this.pendingSeekMs = positionMs;
     audio.src = this.session?.tracks[index]?.path ?? "";
@@ -466,40 +526,73 @@ export class Player {
     const now = this.deps.now();
     // A stream that fails again right after a new session is broken, not ended.
     if (this.retriedAt !== null && now - this.retriedAt < RETRY_AFTER_MS) {
-      this.wantPlay = false;
-      this.set({ status: "error", error: playbackErrorText(null) });
+      this.abandon(playbackErrorText(null));
       return;
     }
     this.retriedAt = now;
     await this.reopen();
   }
 
-  /** Replaces the session with a new one at the current position. */
-  private async reopen(): Promise<void> {
+  /**
+   * Gives up on the open session and shows why. The book stays chosen, at
+   * the place the listener reached, so pressing play opens a new session.
+   * With no session nothing reports or stops what is buffered, so the
+   * audio goes with it.
+   *
+   * @param error - Words for the listener.
+   */
+  private abandon(error: string): void {
+    const session = this.session;
+    this.tick();
+    const body = session ? this.reportBody(session) : null;
+    this.session = null;
+    this.wantPlay = false;
+    this.tickedAt = null;
+    this.pendingSeekMs = null;
+    this.listened = 0;
+    this.audio?.pause();
+    if (this.audio) this.audio.src = "";
+    this.set({ status: "error", error });
+    // The server may have ended it already; then the close changes nothing.
+    if (session && body) {
+      void this.deps.close(session.session_id, body, false).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Replaces the session with a new one at the place the listener is. A
+   * failed report and a failed stream can both ask while one replacement
+   * is under way; they share it.
+   *
+   * @returns Settles when the replacement was taken or given up.
+   */
+  private reopen(): Promise<void> {
+    if (this.recovery) return this.recovery;
+    const recovery: Promise<void> = this.replace().finally(() => {
+      if (this.recovery === recovery) this.recovery = null;
+    });
+    this.recovery = recovery;
+    return recovery;
+  }
+
+  /** Opens the replacement session {@link Player.reopen} asked for. */
+  private async replace(): Promise<void> {
     const target = this.state.target;
     if (!target) return;
     const generation = this.generation;
-    const positionMs = this.state.positionMs;
     // Decided before the await, so a pause pressed meanwhile still holds.
     this.wantPlay = this.wantPlay || this.state.status === "playing";
     try {
       const session = await this.deps.open(target.editionId);
       if (generation !== this.generation) {
-        void this.deps.close(session.session_id, { position_ms: positionMs }, false);
+        void this.deps
+          .close(session.session_id, { position_ms: session.position_ms }, false)
+          .catch(() => undefined);
         return;
       }
-      await this.adopt(session, positionMs, generation);
+      await this.adopt(session, null, generation);
     } catch (err) {
-      if (generation === this.generation) {
-        // With no session nothing reports or stops what is buffered, so
-        // the audio goes with it.
-        this.session = null;
-        this.wantPlay = false;
-        this.tickedAt = null;
-        this.audio?.pause();
-        if (this.audio) this.audio.src = "";
-        this.set({ status: "error", error: playbackErrorText(err) });
-      }
+      if (generation === this.generation) this.abandon(playbackErrorText(err));
     }
   }
 
@@ -511,8 +604,8 @@ export class Player {
    */
   private reportBody(session: PlaybackSession): PlaybackReport {
     // What a report in flight for this session already carries is not sent
-    // twice; one in flight for an earlier session carried none of this time.
-    const inFlight = this.sending?.session === session ? this.sending.listenedMs : 0;
+    // twice.
+    const inFlight = this.flight?.session === session ? this.flight.listenedMs : 0;
     const body: PlaybackReport = {
       position_ms: Math.max(0, Math.round(this.state.positionMs)),
       listened_ms: Math.round(Math.max(0, this.listened - inFlight)),
@@ -523,41 +616,47 @@ export class Player {
 
   /**
    * Sends a report; a session the server ended is replaced. A report asked
-   * for while one is in flight (a pause, the end of the book) follows it
-   * with the position as it then is.
+   * for while one is in flight for the same session (a pause, the end of
+   * the book) follows it with the position as it then is.
+   *
+   * @param replaced - True for the one report that follows a replaced
+   *   session, which is not itself followed by another replacement's.
    */
-  private async report(): Promise<void> {
+  private async report(replaced = false): Promise<void> {
     const session = this.session;
     if (!session) return;
-    if (this.syncing) {
-      this.reportAgain = true;
+    if (this.flight?.session === session) {
+      this.flight.again = true;
       return;
     }
-    this.syncing = true;
     this.syncedAt = this.deps.now();
     const body = this.reportBody(session);
-    const sent = this.listened;
-    this.sending = { session, listenedMs: sent };
+    const flight: ReportFlight = { session, listenedMs: this.listened, again: false };
+    this.flight = flight;
+    let resend = false;
     try {
       const synced = await this.deps.sync(session.session_id, body);
       // An answer for a session since replaced says nothing about this one.
       if (this.session === session) {
-        this.listened = Math.max(0, this.listened - sent);
+        this.listened = Math.max(0, this.listened - flight.listenedMs);
         if (synced.finished_now) this.set({ finished: true });
       }
     } catch (err) {
-      if (isApiError(err) && err.status === 409 && this.session === session) {
+      // A new session that refuses its first report is left to the next
+      // periodic one, so two failures cannot open sessions in a loop.
+      if (isApiError(err) && err.status === 409 && this.session === session && !replaced) {
+        if (this.flight === flight) this.flight = null;
         await this.reopen();
+        // The server never took this report, and a paused book sends no
+        // other: the new session gets the place and the time once.
+        resend = this.session !== null && this.session !== session;
       }
       // Anything else is retried by the next report.
     } finally {
-      this.syncing = false;
-      this.sending = null;
+      if (this.flight === flight) this.flight = null;
     }
-    if (this.reportAgain) {
-      this.reportAgain = false;
-      await this.report();
-    }
+    if (resend) await this.report(true);
+    else if (flight.again && this.session === session) await this.report();
   }
 
   /** Resumes the loaded edition. */
@@ -673,9 +772,11 @@ export class Player {
     const target = this.state.target;
     if (!target) return;
     const bookmark = await this.deps.addBookmark(target.editionId, this.state.positionMs, title);
+    this.bookmarkEdits += 1;
     if (this.state.target?.editionId !== target.editionId) return;
+    const others = this.state.bookmarks.filter((known) => known.id !== bookmark.id);
     this.set({
-      bookmarks: [...this.state.bookmarks, bookmark].sort((a, b) => a.position_ms - b.position_ms),
+      bookmarks: [...others, bookmark].sort((a, b) => a.position_ms - b.position_ms),
     });
   }
 
@@ -686,6 +787,7 @@ export class Player {
    */
   async removeBookmark(id: string): Promise<void> {
     await this.deps.deleteBookmark(id);
+    this.bookmarkEdits += 1;
     this.set({ bookmarks: this.state.bookmarks.filter((bookmark) => bookmark.id !== id) });
   }
 
@@ -707,7 +809,7 @@ export class Player {
     this.generation += 1;
     this.wantPlay = false;
     this.session = null;
-    this.reportAgain = false;
+    this.recovery = null;
     if (!session) {
       if (this.state.status !== "idle") this.set(idle(this.state.speed));
       return;

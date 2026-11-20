@@ -1302,12 +1302,15 @@ export async function passkeyElevateFinish(body: {
 }
 
 /**
- * Starts operator (or elevated Owner) impersonation of another user.
+ * Starts operator (or elevated Owner) impersonation of another user,
+ * after the work registered with {@link beforeSignOut}: what is playing
+ * belongs to the identity being left.
  *
  * @param userId - Target user id.
  * @returns Resolves when impersonation is active.
  */
 export async function startImpersonate(userId: number): Promise<void> {
+  await finishBeforeIdentityChange();
   const res = await fetch("/api/auth/impersonate", {
     method: "POST",
     credentials: "include",
@@ -1318,11 +1321,14 @@ export async function startImpersonate(userId: number): Promise<void> {
 }
 
 /**
- * Stops the current operator impersonation session.
+ * Stops the current operator impersonation session, after the work
+ * registered with {@link beforeSignOut}: a book the impersonated person
+ * was playing is closed as them, not reported as the restored account.
  *
  * @returns Resolves when impersonation ends.
  */
 export async function stopImpersonate(): Promise<void> {
+  await finishBeforeIdentityChange();
   const res = await fetch("/api/auth/impersonate", {
     method: "DELETE",
     credentials: "include",
@@ -3273,16 +3279,48 @@ export async function portalRevokeConnection(source: string, accountId: string):
 const signOutTasks = new Set<() => Promise<void>>();
 
 /**
- * Registers work that must finish before the session is revoked, such as
- * the player's last position report.
+ * How long a change of identity waits for the work registered with
+ * {@link beforeSignOut}, in milliseconds.
+ */
+export const BEFORE_SIGN_OUT_WAIT_MS = 3000;
+
+/**
+ * Registers work that must finish while the signed-in identity still
+ * holds, such as the player's last position report.
  *
- * @param task - Run, and awaited, at the start of every sign-out. A
- *   failure does not stop the sign-out.
+ * @param task - Run at the start of every sign-out and before
+ *   impersonation starts or stops, and awaited for up to
+ *   {@link BEFORE_SIGN_OUT_WAIT_MS}. A task that fails, throws or takes
+ *   longer does not stop the change.
  * @returns Removes the task.
  */
 export function beforeSignOut(task: () => Promise<void>): () => void {
   signOutTasks.add(task);
   return () => signOutTasks.delete(task);
+}
+
+/**
+ * Runs the work registered with {@link beforeSignOut} and waits for it,
+ * but no longer than {@link BEFORE_SIGN_OUT_WAIT_MS}: a request that never
+ * answers must not keep someone signed in.
+ *
+ * @returns Resolves when every task settled or the wait ran out.
+ */
+async function finishBeforeIdentityChange(): Promise<void> {
+  const tasks = Promise.all(
+    // Through `then`, so a task that throws before returning is caught too.
+    [...signOutTasks].map((task) =>
+      Promise.resolve()
+        .then(task)
+        .catch(() => undefined),
+    ),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waited = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, BEFORE_SIGN_OUT_WAIT_MS);
+  });
+  await Promise.race([tasks, waited]);
+  clearTimeout(timer);
 }
 
 /**
@@ -3293,7 +3331,7 @@ export function beforeSignOut(task: () => Promise<void>): () => void {
  * @returns Resolves when logout completes.
  */
 export async function signOut(role?: AuthRole): Promise<void> {
-  await Promise.all([...signOutTasks].map((task) => task().catch(() => undefined)));
+  await finishBeforeIdentityChange();
   if (role === "administrator" || role === "host" || role === "member") {
     await portalLogout();
     return;

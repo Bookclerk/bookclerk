@@ -14,11 +14,11 @@ calls and the rules behind them. The decisions are in the
 
 ## What is stored
 
-| Table | One row per | Holds |
-| --- | --- | --- |
-| `playback_progress` | Person and edition | Position, the runtime the player reported, finished flag and times |
+| Table               | One row per          | Holds                                                                                    |
+| ------------------- | -------------------- | ---------------------------------------------------------------------------------------- |
+| `playback_progress` | Person and edition   | Position, the runtime the player reported, finished flag and times                       |
 | `playback_sessions` | Stretch of listening | The edition, the player's kind and name, where it started and stopped, and time listened |
-| `bookmarks` | Marked place | Position and a note |
+| `bookmarks`         | Marked place         | Position and a note                                                                      |
 
 All three belong to one library user and are removed with the user.
 Finishing an edition also marks its work finished for that person.
@@ -34,17 +34,17 @@ The **Download**
 to playing: it stops taking copies to keep, and a patron who can see a
 book may listen to it.
 
-| Route | Purpose |
-| --- | --- |
-| `GET /api/library/editions/{id}/playback` | Whether this server can play the edition for the caller, its tracks, and the caller's progress and bookmarks |
-| `POST /api/playback/sessions` | Open a play session: tracks with stream paths, and where to start |
-| `POST /api/playback/sessions/{id}/sync` | Report the position while playing |
-| `POST /api/playback/sessions/{id}/close` | Send the last report and end the session |
-| `GET /api/playback/sessions/{id}/tracks/{index}` | One track's bytes, whole or by `Range` |
-| `GET /api/playback/progress` | The caller's progress, most recent first |
-| `PUT`, `DELETE /api/playback/progress/{edition_id}` | Set or forget the caller's progress |
-| `GET`, `POST /api/library/editions/{id}/bookmarks` | List or add the caller's bookmarks in an edition |
-| `PUT`, `DELETE /api/playback/bookmarks/{id}` | Change or remove one |
+| Route                                               | Purpose                                                                                                      |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `GET /api/library/editions/{id}/playback`           | Whether this server can play the edition for the caller, its tracks, and the caller's progress and bookmarks |
+| `POST /api/playback/sessions`                       | Open a play session: tracks with stream paths, and where to start                                            |
+| `POST /api/playback/sessions/{id}/sync`             | Report the position while playing                                                                            |
+| `POST /api/playback/sessions/{id}/close`            | Send the last report and end the session                                                                     |
+| `GET /api/playback/sessions/{id}/tracks/{index}`    | One track's bytes, whole or by `Range`                                                                       |
+| `GET /api/playback/progress`                        | The caller's progress, most recent first                                                                     |
+| `PUT`, `DELETE /api/playback/progress/{edition_id}` | Set or forget the caller's progress                                                                          |
+| `GET`, `POST /api/library/editions/{id}/bookmarks`  | List or add the caller's bookmarks in an edition                                                             |
+| `PUT`, `DELETE /api/playback/bookmarks/{id}`        | Change or remove one                                                                                         |
 
 ## How a player uses them
 
@@ -70,8 +70,9 @@ of its tracks.
 - **Finished** means the position reached the last 1 percent of the
   runtime, or its last 30 seconds for a recording over a minute.
 - **A session stops streaming** when it is closed, when it has not
-  reported for 24 hours, when the caller may no longer see or take the
-  edition, or when the edition's files change. Stream requests then get
+  reported for 24 hours, when the caller may no longer see the edition,
+  or when the edition's files change. Turning a member's Download control
+  off does not end a session: it does not cover listening. Stream requests then get
   `409` with `session_ended`, as does a report to a closed session; the
   player opens a new session.
 - **A session streams from the server that opened it.** Another server

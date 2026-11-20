@@ -84,8 +84,10 @@ page, so another device is at most a few seconds behind.
   play once more.
 - **"This book could not be played."** Your browser may not support the
   file's format. Bookclerk sends the file as it is stored and does not
-  convert it while playing. M4B and MP3 files play in every current
-  browser.
+  convert it while playing. MP3 files, and M4B files holding AAC audio
+  (which is what almost every M4B holds), play in every current browser.
+  An M4B is a wrapper, though, and one holding another kind of audio,
+  such as Apple Lossless, plays only in browsers that support that kind.
 - **There is no Play button.** The operator account is not a person in
   the library and has nothing to play as. Sign in as yourself. The
   desktop window does not have the player yet; open Bookclerk in a
