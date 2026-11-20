@@ -1080,9 +1080,14 @@ export class Player {
     await this.stop();
   }
 
-  /** Lets books play again after {@link Player.retire}. */
+  /**
+   * Lets books play again after {@link Player.retire}. A request made
+   * meanwhile and still reading ({@link Player.claim}) is dropped: it was
+   * made as the identity that has since been left.
+   */
   readmit(): void {
     this.retired = false;
+    this.claims += 1;
   }
 
   /**

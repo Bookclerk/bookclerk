@@ -649,7 +649,10 @@ describe("Player", () => {
     await retired;
     await w.player.play({ ...TARGET, editionId: "ed2" });
     expect(w.opened).toEqual(["ed1"]);
+    // A request still reading when the identity has changed is dropped.
+    const latest = w.player.claim();
     w.player.readmit();
+    expect(latest()).toBe(false);
     await w.player.play({ ...TARGET, editionId: "ed2" });
     expect(w.opened).toEqual(["ed1", "ed2"]);
   });
