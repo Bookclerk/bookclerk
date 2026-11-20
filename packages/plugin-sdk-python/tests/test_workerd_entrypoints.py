@@ -18,6 +18,7 @@ from bookclerk_plugin_sdk.workerd import (
     JobController,
     MetadataEntrypoint,
     MetadataFilesEntrypoint,
+    NotifierEntrypoint,
     PluginError,
     ScheduledController,
     StorageEntrypoint,
@@ -500,6 +501,72 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record, {"present": ["title"], "title": "Nested"})
         self.assertEqual(echo.seen["list"], [b"x"])
         self.assertIsInstance(echo.seen["bytes"], bytes)
+
+    async def test_notifier_defaults_and_dispatch(self) -> None:
+        """NotifierEntrypoint is healthy, refuses send, echoes addresses, and dispatches overrides."""
+        notifier = NotifierEntrypoint()
+        self.assertEqual(await notifier.health(), {"ok": True, "detail": ""})
+        with self.assertRaises(PluginError) as ctx:
+            await notifier.send({"message": {}, "destination": {}})
+        self.assertEqual(ctx.exception.code, "unsupported")
+        self.assertEqual(
+            await notifier.validateDestination({"addressJson": '{"chat":"1"}'}),
+            {"addressJson": '{"chat":"1"}'},
+        )
+
+        class Chat(NotifierEntrypoint):
+            async def send(self, params: dict) -> dict:
+                return {"providerId": params["destination"]["destinationId"]}
+
+        sent = await Chat().bookclerkInvoke(
+            {},
+            "send",
+            {"message": {"title": "Hi"}, "destination": {"kind": "channel", "destinationId": "d1"}},
+        )
+        self.assertEqual(sent, {"providerId": "d1"})
+
+    async def test_notify_binding_wraps_the_granted_stub(self) -> None:
+        """``env.NOTIFY`` forwards raises in wire shape and refuses a raise without a type."""
+        from bookclerk_plugin_sdk.workerd import NotifyBinding
+
+        class _NotifyStub:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            async def _raise(self, params: dict) -> dict:
+                self.calls.append(params)
+                return {"notificationId": "ntf-1"}
+
+        stub = _NotifyStub()
+        setattr(stub, "raise", stub._raise)
+        seen: list = []
+
+        class Chat(NotifierEntrypoint):
+            async def send(self, params: dict) -> None:
+                notify = self.env.NOTIFY
+                assert isinstance(notify, NotifyBinding)
+                seen.append(
+                    await notify.raise_("sync_failed", fields={"pages": 3}, link_path="/books/42")
+                )
+                try:
+                    await notify.raise_("")
+                except PluginError as err:
+                    seen.append(err.code)
+                return None
+
+        await Chat().bookclerkInvoke({"notify": stub}, "send", {"message": {}, "destination": {}})
+        self.assertEqual(seen, [{"notificationId": "ntf-1"}, "invalid_params"])
+        self.assertEqual(
+            stub.calls,
+            [
+                {
+                    "notificationType": "sync_failed",
+                    "fields": [{"name": "pages", "value": "3"}],
+                    "alertAction": "none",
+                    "linkPath": "/books/42",
+                }
+            ],
+        )
 
     async def test_execute_streamed_unsupported_by_default(self) -> None:
         """A session that advertises no streamed budget keeps the default, which is unsupported."""

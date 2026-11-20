@@ -42,6 +42,17 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
         .package_version()
         .map_err(|e| SdkError::message(e.to_string()))?;
 
+    let reached = manifest.notification_hosts_requested();
+    if !reached.is_empty() {
+        eprintln!(
+            "warning: plugin.toml asks to reach chat, push or mail services ({}) without the \
+             `notifier` entrypoint; its consent screen will say it can send messages outside \
+             Bookclerk. Declare `[[notifications.types]]` and raise them through `env.NOTIFY` \
+             instead.",
+            reached.join(", ")
+        );
+    }
+
     if let Some(logo) = manifest.logo.as_deref() {
         let kind = bookclerk_plugin_manifest::validate_logo(logo)
             .map_err(|e| SdkError::message(e.to_string()))?;
@@ -340,7 +351,7 @@ pub fn check_main_module_source(
             "{main_name}: `BookclerkPlugin` was removed in api_version 3; extend `{BASE}` \
              (default export with event()/job() triggers) and export named entrypoint classes \
              (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers, \
-             MetadataFiles)"
+             MetadataFiles, Notifier)"
         )));
     }
     match language {

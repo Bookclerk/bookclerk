@@ -45,6 +45,8 @@ boundary extends it.
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
+| `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
+| `notify_raise` | A plugin's `NOTIFY.raise`: the `/notify/raise` JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert | `bookclerk-plugin-abi::notifications::check_raise_params` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
@@ -344,6 +346,29 @@ only that. The others check:
   An accepted record round-trips through the codec and is accepted again.
   The shared oracle is `fuzz/oracles/metadata_file_record.rs`, replayed
   from `bookclerk-plugin-abi`.
+- **`notifier_reply`**: byte 0 modulo 2 picks a `NotifySendReply` message
+  (0) or an address document as text (1). A reply is delivered exactly when
+  it is the `ok` arm, keeping a provider id only when it is a non-empty line
+  within the field cap; it is retried exactly for `rate_limited`,
+  `unavailable`, `deadline_exceeded` and `cancelled`, waiting only on
+  `rate_limited` and never past an hour; and every reason is the error
+  text with control, line-separator and bidi characters blanked, cut to
+  512 bytes on a character boundary. The reply round-trips through the
+  codec. An address document is accepted exactly when it is one JSON
+  object of at most 16 distinct identifier keys with one-line string values
+  within the field cap, re-serialises to text that parses back equal, and
+  fits a fixed `email` (required) and `name` field list exactly when it has
+  a non-blank `email` and no other key. The shared oracle is
+  `fuzz/oracles/notifier_reply.rs`, replayed from `bookclerk-plugin-abi`.
+- **`notify_raise`**: byte 0 modulo 2 picks the bridge's JSON body (0) or a
+  Cap'n Proto `NotifyRaiseParams` (1). The raise is accepted exactly when
+  an independent restatement agrees: a local type id, at most 25 fields
+  with non-blank one-line names, a printable patron id, a link path that
+  starts with exactly one `/` and has no space, backslash or control
+  character, a one-line group key, and an alert key exactly when the alert
+  action is not `none`. An accepted raise round-trips through the codec and
+  is accepted again. The shared oracle is `fuzz/oracles/notify_raise.rs`,
+  replayed from `bookclerk-plugin-abi`.
 - **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
   a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
   `EventReadPage` (3). The body parser accepts exactly the JSON objects whose
