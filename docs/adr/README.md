@@ -51,6 +51,9 @@ a later change supersedes one, its **Status** says so.
 - [Storage destinations](storage-destinations.md): every storage plugin
   instance is a destination with its own template and filter,
   opportunistic change feeds and host-held webhooks.
+- [What needs the operator](owner-and-operator.md): the rule for which
+  actions need elevation, and the switches an Owner sets on each
+  Administrator.
 - [Drop folders](drop-folders.md): a storage instance can be a watched
   drop folder instead of a destination, settled by the host and added by
   the ingest job.

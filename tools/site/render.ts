@@ -228,6 +228,7 @@ export const NAV: NavSpec[] = [
       "adr/patron-scopes",
       "adr/storage-destinations",
       "adr/uploads-and-ingest",
+      "adr/owner-and-operator",
       "adr/playback",
       "adr/drop-folders",
     ],

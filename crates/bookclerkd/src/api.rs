@@ -1165,6 +1165,9 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
 fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(reload_config))
+        // Removing a shared branch deletes its rows: the operator (or an
+        // elevated Owner) only.
+        .routes(routes!(crate::config_authority::delete_shared_node))
         .routes(routes!(
             crate::config_authority::get_events_domain,
             crate::config_authority::put_events_domain
@@ -1251,7 +1254,6 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
 fn node_admin_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::config_authority::get_nodes))
-        .routes(routes!(crate::config_authority::delete_shared_node))
         // Settings → Shared branches: every shared node for the operator or an Owner.
         .routes(routes!(crate::config_authority::get_shared_branches))
         .routes(routes!(crate::config_authority::put_node_runtime))
