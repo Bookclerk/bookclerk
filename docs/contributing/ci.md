@@ -189,6 +189,10 @@ To skip that wasted build, each build-only job first looks up its own key
 - A changed lockfile or toolchain, or an evicted cache, misses the lookup
   and builds as before.
 
+A miss on Windows compiles the gateway smoke and the cluster tests from
+scratch, which takes about 45 minutes, so on a `main` push the
+`native-gateway` job's time limit is 75 minutes instead of 45.
+
 `ci-exec.py` ignores the variable outside build-only runs, so it can never
 skip a test.
 
@@ -278,6 +282,13 @@ Rust dependency caches use three shared keys. Each is saved by one job on
 
 Fewer entries keep the repository under the Actions cache limit, so jobs
 stop missing their cache.
+
+rust-cache also hashes every installed Rust toolchain into the key, and
+runner images preinstall their own (a Windows image update in November 2026
+dropped one). So every job that caches runs `tool_versions.py prune-rust`
+right after installing the pinned toolchain. It uninstalls every other
+toolchain, so a job saves and looks up the same key whichever image version
+it lands on.
 
 rust-cache hashes the manifests' dependencies but not their `[profile]`
 tables. A profile change would otherwise keep the old key: every job would
@@ -898,10 +909,10 @@ These run outside `CI Gate`:
   smoke-tests the release image (see below).
 - **Desktop packages** (`.github/workflows/desktop-packages.yml`) builds
   the desktop app's unsigned packages on Linux, Windows and macOS with
-  `cargo package-desktop` and uploads them as workflow artifacts (see
-  [Packages](ui/README.md#packages)). It selects itself by path (the
-  desktop crate, the packaging command and how the app finds its runtime),
-  skips drafts, and also runs weekly and on demand.
+  `cargo package-desktop`. The images workflow calls it nightly when `main`
+  has moved, by hand and for a release (see
+  [Desktop packages](packaging.md#desktop-packages)). A pull request runs it
+  only when it changes the packaging, and skips drafts.
 - **Dev Container image** (`.github/workflows/devcontainer-image.yml`)
   builds and checks the contributor image (see below).
 - **ABS Integration** (`.github/workflows/abs-integration.yml`) tests the

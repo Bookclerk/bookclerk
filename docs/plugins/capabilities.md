@@ -270,12 +270,32 @@ rejected. A dropped token isn't granted.
 
 ### Approving on the command line
 
-The CLI always approves the full request:
+`bookclerk plugins approve` approves what the plugin's current version
+asks for, as accepting the consent dialog unchanged does:
 
 ```sh
 bookclerk plugins approve echo          # interactive summary of network/bindings
 bookclerk plugins approve echo --yes    # non-interactive
 bookclerk plugins deploy echo
+```
+
+When the plugin already has a grant, a re-approval (for example to accept
+an upgrade) keeps your earlier answers:
+
+- destinations you denied stay denied, and the ones you added stay;
+- network stays off if you turned it off for a version that asked for it;
+- your answer on undeclared public redirects and the own `User-Agent`
+  hosts you refused stay as they were.
+
+Everything new in this version is approved, and the structural
+capabilities (entrypoints, events, jobs, bindings, flags) and budgets
+are what the version declares. The command lists the destinations it
+keeps. This applies to a host-local tree's grant; an installed version
+always records its package's request. To approve
+the package's request as is instead, pass `--reset`:
+
+```sh
+bookclerk plugins approve echo --reset
 ```
 
 ### Platform guests
@@ -394,7 +414,9 @@ On an upgrade of the **same PluginKey**:
 meanwhile. What is pending is shown the same way everywhere:
 
 - `bookclerk plugins info <id>` (`pending_structural`) and
-  `bookclerk plugins approve <id>`, which prints it before the full request;
+  `bookclerk plugins approve <id>`, which prints it before the full request
+  and then approves it, keeping your earlier denials
+  ([Approving on the command line](#approving-on-the-command-line));
 - the consent dialog in **Settings**, which lists it under **New in this
   version** with the new destinations ticked (untick one to deny it);
 - `GET /api/plugins/{id}/consent`, as `pending` (the same lines, plus the
