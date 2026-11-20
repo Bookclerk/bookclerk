@@ -680,6 +680,134 @@ mod tests {
         }
     }
 
+    /// A `users admin-controls set` with the given changes.
+    fn admin_set(
+        user: Option<&str>,
+        allow: &[&str],
+        deny: &[&str],
+        follow_default: &[&str],
+    ) -> AdminControlsCommand {
+        let owned = |names: &[&str]| names.iter().map(|n| (*n).to_string()).collect();
+        AdminControlsCommand::Set {
+            default: user.is_none(),
+            user: user.map(str::to_string),
+            allow: owned(allow),
+            deny: owned(deny),
+            follow_default: owned(follow_default),
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_controls_commands_read_and_change_defaults_and_overrides() {
+        use bookclerk_library::{LibraryStore, UserRole};
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        let admin = store
+            .create_user_with_login(UserRole::Administrator, Some("Ada"), Some("ada"), None)
+            .await
+            .unwrap();
+        store
+            .create_user_with_login(UserRole::Member, Some("Kit"), Some("kit"), None)
+            .await
+            .unwrap();
+
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            let get = AdminControlsCommand::Get {
+                user: None,
+                default: true,
+            };
+            run_admin_controls(&store, get, format).await.unwrap();
+            for user in ["ada", "kit"] {
+                let get = AdminControlsCommand::Get {
+                    user: Some(user.into()),
+                    default: false,
+                };
+                run_admin_controls(&store, get, format).await.unwrap();
+            }
+        }
+
+        // The default turns the job queue off; the Administrator follows it.
+        run_admin_controls(
+            &store,
+            admin_set(None, &[], &["run_jobs"], &[]),
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        assert!(!default_admin_controls(&store).await.unwrap().run_jobs);
+        let assigned = assigned_admin_controls(&store, &admin).await.unwrap();
+        assert!(!assigned.effective.run_jobs);
+
+        // An override allows it for this Administrator alone.
+        run_admin_controls(
+            &store,
+            admin_set(Some("ada"), &["run_jobs"], &["fix_catalog"], &[]),
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        let assigned = assigned_admin_controls(&store, &admin).await.unwrap();
+        assert!(assigned.effective.run_jobs && !assigned.effective.fix_catalog);
+
+        // `all` drops every override again; one name drops one.
+        run_admin_controls(
+            &store,
+            admin_set(Some("ada"), &[], &[], &["all"]),
+            OutputFormat::Json,
+        )
+        .await
+        .unwrap();
+        assert!(admin_control_overrides(&store, admin.id)
+            .await
+            .unwrap()
+            .is_empty());
+        run_admin_controls(
+            &store,
+            admin_set(Some("ada"), &[], &[], &["run_jobs"]),
+            OutputFormat::Json,
+        )
+        .await
+        .unwrap();
+
+        // Mistakes are refused.
+        let err = run_admin_controls(
+            &store,
+            admin_set(Some("ada"), &[], &[], &[]),
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("name a switch"), "{err}");
+        let err = run_admin_controls(
+            &store,
+            admin_set(Some("ada"), &["fly"], &[], &[]),
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown switch"), "{err}");
+        let unnamed = AdminControlsCommand::Get {
+            user: None,
+            default: false,
+        };
+        assert!(run_admin_controls(&store, unnamed, OutputFormat::Text)
+            .await
+            .is_err());
+        let unnamed = AdminControlsCommand::Set {
+            user: None,
+            default: false,
+            allow: vec!["run_jobs".into()],
+            deny: Vec::new(),
+            follow_default: Vec::new(),
+        };
+        assert!(run_admin_controls(&store, unnamed, OutputFormat::Text)
+            .await
+            .is_err());
+    }
+
     #[tokio::test]
     async fn controls_commands_read_and_change_defaults_and_overrides() {
         use bookclerk_library::{LibraryStore, UserRole};

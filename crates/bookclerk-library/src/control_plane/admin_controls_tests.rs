@@ -51,6 +51,35 @@ fn an_override_replaces_only_its_own_switch() {
     assert_eq!(overrides.apply(defaults), defaults);
 }
 
+#[test]
+fn every_switch_sets_and_clears_on_its_own() {
+    for control in AdminControl::ALL {
+        let mut controls = AdminControls::all(true);
+        controls.set(control, false);
+        for other in AdminControl::ALL {
+            assert_eq!(controls.allows(other), other != control, "{control:?}");
+        }
+        let mut overrides = AdminControlOverrides::default();
+        overrides.set(control, Some(false));
+        assert_eq!(overrides.get(control), Some(false));
+        assert!(!overrides.apply(AdminControls::all(true)).allows(control));
+        overrides.set(control, None);
+        assert!(overrides.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn overrides_for_an_unknown_user_are_refused() {
+    let kit = sqlite::memory(Profile::ALL[0]).await;
+    let store = kit.store();
+    let mut overrides = AdminControlOverrides::default();
+    overrides.set(AdminControl::RunJobs, Some(false));
+    let err = set_admin_control_overrides(store, 987_654, overrides)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LibraryError::NotFound(_)), "{err}");
+}
+
 #[tokio::test]
 async fn administrators_follow_the_default_except_where_overridden() {
     for profile in Profile::ALL {
