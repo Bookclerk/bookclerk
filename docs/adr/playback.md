@@ -158,8 +158,9 @@ core.
 
 ## Consequences
 
-- Stage A adds no user interface. The routes are in the Web API reference
-  and are exercised by tests; the web player arrives next.
+- The core itself has no user interface. The routes are in the Web API
+  reference and are exercised by tests; the web app's player is their
+  first caller.
 - An edition is playable only on a node that has one of its destinations
   deployed. A session is tied to the node that opened it; behind a load
   balancer without session affinity a stream request can reach another

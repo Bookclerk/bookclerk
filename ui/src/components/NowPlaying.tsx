@@ -1,0 +1,199 @@
+import { useEffect, useState } from "react";
+import { BookmarkPlus, Check, ChevronDown, Trash2 } from "lucide-react";
+import { CoverThumb } from "@/components/CoverThumb";
+import { Scrubber, SleepSelect, SpeedSelect, TransportButtons } from "@/components/PlayerControls";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { userFacingApiError } from "@/lib/api";
+import { formatClock, formatRemaining } from "@/lib/playerTimeline";
+import { usePlayerState, webPlayer } from "@/lib/webPlayer";
+
+/**
+ * The now-playing view: the loaded book's cover, timeline, controls and
+ * the listener's bookmarks. Closes itself when the book is unloaded.
+ *
+ * @param props - `onClose` returns to the player bar.
+ */
+export function NowPlaying({ onClose }: { onClose: () => void }) {
+  const player = webPlayer();
+  const state = usePlayerState();
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const target = state.target;
+
+  useEffect(() => {
+    if (!target) onClose();
+  }, [target, onClose]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  if (!target) return null;
+
+  /** Runs a player request, showing its failure. */
+  async function run(action: () => Promise<void>, fallback: string) {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await action();
+    } catch (err) {
+      setFailure(userFacingApiError(err, fallback));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const duration = state.durationMs;
+  const left = duration ? Math.max(0, duration - state.positionMs) : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim p-0 backdrop-blur-[2px] sm:items-center sm:p-6"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="now-playing-heading"
+        className="flex max-h-[94vh] w-full max-w-xl flex-col overflow-hidden rounded-t-xl bg-paper shadow-xl sm:rounded-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-ink/10 px-4 py-2.5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">Now playing</p>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-ink/60 transition-colors hover:bg-ink/5 hover:text-ink"
+            aria-label="Close"
+          >
+            <ChevronDown className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="flex flex-col gap-4 overflow-y-auto px-5 py-5 sm:px-8">
+          <CoverThumb
+            path={target.coverPath}
+            size={360}
+            className="mx-auto h-48 w-48 rounded-lg bg-fold shadow-md sm:h-56 sm:w-56"
+          />
+          <div className="text-center">
+            <h2
+              id="now-playing-heading"
+              className="font-display text-xl font-bold leading-tight text-ink"
+            >
+              {target.title}
+            </h2>
+            {target.authors ? <p className="mt-1 text-sm text-ink/65">{target.authors}</p> : null}
+          </div>
+
+          <div>
+            <Scrubber player={player} state={state} />
+            <div className="mt-1 flex justify-between text-xs tabular-nums text-ink/60">
+              <span>{formatClock(state.positionMs)}</span>
+              <span>{left !== null ? `${formatRemaining(left, state.speed)} left` : ""}</span>
+              <span>{duration ? formatClock(duration) : "--:--"}</span>
+            </div>
+          </div>
+
+          <div className="flex justify-center">
+            <TransportButtons player={player} state={state} large />
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <SpeedSelect player={player} state={state} />
+            <SleepSelect player={player} state={state} />
+            <Button
+              variant="secondary"
+              className="px-2.5 py-1 text-xs"
+              disabled={busy}
+              onClick={() => void run(() => player.markFinished(), "Could not mark it finished.")}
+            >
+              <Check className="h-4 w-4" />
+              Mark finished
+            </Button>
+          </div>
+
+          {state.finished ? (
+            <p className="text-center text-sm text-teal" role="status">
+              You finished this book.
+            </p>
+          ) : null}
+          {(state.error ?? failure) ? (
+            <p className="text-center text-sm font-medium text-brick" role="alert">
+              {state.error ?? failure}
+            </p>
+          ) : null}
+
+          <section aria-labelledby="bookmarks-heading" className="border-t border-ink/10 pt-4">
+            <h3 id="bookmarks-heading" className="text-sm font-semibold text-ink">
+              Bookmarks
+            </h3>
+            <form
+              className="mt-2 flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void run(async () => {
+                  await player.addBookmark(note.trim());
+                  setNote("");
+                }, "Could not add the bookmark.");
+              }}
+            >
+              <Input
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+                placeholder={`Note for ${formatClock(state.positionMs)} (optional)`}
+                maxLength={200}
+                aria-label="Bookmark note"
+              />
+              <Button type="submit" variant="secondary" className="shrink-0" disabled={busy}>
+                <BookmarkPlus className="h-4 w-4" />
+                Add
+              </Button>
+            </form>
+            {state.bookmarks.length === 0 ? (
+              <p className="mt-3 text-sm text-ink/55">
+                No bookmarks yet. Add one to come back to this place.
+              </p>
+            ) : (
+              <ul className="mt-2 divide-y divide-ink/10">
+                {state.bookmarks.map((bookmark) => (
+                  <li key={bookmark.id} className="flex items-center gap-2 py-1.5">
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-baseline gap-3 rounded-md px-1 py-1 text-left hover:bg-ink/5"
+                      onClick={() => player.seek(bookmark.position_ms)}
+                      aria-label={`Go to ${formatClock(bookmark.position_ms)}`}
+                    >
+                      <span className="shrink-0 text-sm font-semibold tabular-nums text-teal">
+                        {formatClock(bookmark.position_ms)}
+                      </span>
+                      <span className="truncate text-sm text-ink/75">{bookmark.title}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md p-1.5 text-ink/50 transition-colors hover:bg-brick/10 hover:text-brick"
+                      disabled={busy}
+                      onClick={() =>
+                        void run(
+                          () => player.removeBookmark(bookmark.id),
+                          "Could not remove the bookmark.",
+                        )
+                      }
+                      aria-label={`Remove the bookmark at ${formatClock(bookmark.position_ms)}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
