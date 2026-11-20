@@ -161,10 +161,10 @@ pub use event_publisher::{
 pub use host::{
     backup_adapter_id, database_connect_bindings, export_registered_plugin_units,
     load_external_database, migrate_database_plugin, migrate_library_schema, open_library_store,
-    open_library_store_for_plugin, restore_plugin_backup_units, DatabaseRegistry,
-    DeployedDestination, DestinationRegistry, DestinationSession, DestinationSettings,
-    ExternalDatabase, ExternalIntegration, ExternalSource, HandedPass, HandedScan,
-    RefreshedCredentialSink,
+    open_library_store_for_plugin, restore_plugin_backup_units, storage_role, DatabaseRegistry,
+    DeployedDestination, DeployedIntake, DestinationRegistry, DestinationSession,
+    DestinationSettings, ExternalDatabase, ExternalIntegration, ExternalSource, HandedPass,
+    HandedScan, RefreshedCredentialSink, StorageRole,
 };
 pub use host_control_plane::{
     allow_credential_login, enroll_node, open_host_control_plane,

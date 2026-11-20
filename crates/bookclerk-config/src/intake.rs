@@ -268,7 +268,9 @@ impl IntakeSettings {
                 ))
             }
             (IntakeAttribution::Owner, Some(id)) if id < 1 => {
-                return Err(IntakeSettingsError::new("patron must be a positive user id"))
+                return Err(IntakeSettingsError::new(
+                    "patron must be a positive user id",
+                ))
             }
             (IntakeAttribution::Subfolder, Some(_)) => {
                 return Err(IntakeSettingsError::new(
@@ -632,9 +634,7 @@ mod tests {
     fn subfolder_refuses_a_patron() {
         let settings = parse_intake_settings(br#"{"attribute_to": "subfolder"}"#).unwrap();
         assert_eq!(settings.attribute_to, IntakeAttribution::Subfolder);
-        assert!(
-            parse_intake_settings(br#"{"attribute_to": "subfolder", "patron": 2}"#).is_err()
-        );
+        assert!(parse_intake_settings(br#"{"attribute_to": "subfolder", "patron": 2}"#).is_err());
     }
 
     #[test]

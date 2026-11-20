@@ -45,6 +45,7 @@ pub mod event_subscriber_nodes;
 pub mod expressions;
 pub mod holdings;
 pub mod ignored_titles;
+pub mod intake_items;
 pub mod job_secret_handoffs;
 pub mod job_temp_paths;
 pub mod jobs;

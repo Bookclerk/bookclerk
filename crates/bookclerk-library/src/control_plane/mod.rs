@@ -28,6 +28,8 @@ mod enrollment;
 mod identity;
 mod instance_config;
 mod instances;
+mod intake;
+mod intake_items;
 mod job_routing;
 mod keeper;
 mod leases;
@@ -171,6 +173,14 @@ pub use instances::{
     delete_plugin_instance, ensure_plugin_instance, find_plugin_instance_by_key,
     list_all_plugin_instances, list_plugin_instances_for_key, load_plugin_instance, PluginInstance,
     PluginInstanceId,
+};
+pub use intake::{
+    intake_key, intake_settings, load_intake_role, set_intake, IntakeRoleV1, INTAKE_NAMESPACE,
+    INTAKE_SCHEMA_VERSION,
+};
+pub use intake_items::{
+    apply_intake_writes, finish_intake_item, intake_item_hash, load_intake_items, IntakeFinish,
+    IntakeItemRecord, IntakeWrite, MAX_INTAKE_ERROR_BYTES,
 };
 pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,

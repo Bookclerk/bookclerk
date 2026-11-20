@@ -68,6 +68,58 @@ impl SpawnedDestination {
     }
 }
 
+/// What the host does with a deployed storage instance.
+///
+/// The role comes from the instance's `core.intake` document, read when the
+/// guest starts; the library refuses to change it while the instance is
+/// deployed (`bookclerk_library::control_plane::set_intake`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageRole {
+    /// An acquire destination: acquired books are written to it.
+    Destination,
+    /// A drop folder: the host lists it and ingests what lands there, and
+    /// never writes acquired books to it.
+    Intake,
+}
+
+/// Reads the role of the storage instance `plugin_instance_id`.
+///
+/// # Errors
+///
+/// Returns an error when the instance's `core.intake` document cannot be
+/// read or is invalid; the guest is then not published, rather than
+/// published as a destination a drop folder's settings may have meant to
+/// keep acquired books out of.
+pub async fn storage_role(
+    store: &bookclerk_library::LibraryStore,
+    plugin_instance_id: &str,
+) -> PluginResult<StorageRole> {
+    let settings = bookclerk_library::control_plane::intake_settings(store, plugin_instance_id)
+        .await
+        .map_err(|err| {
+            crate::PluginError::message(format!(
+                "storage instance {plugin_instance_id}: cannot read its role: {err}"
+            ))
+        })?;
+    Ok(match settings {
+        Some(_) => StorageRole::Intake,
+        None => StorageRole::Destination,
+    })
+}
+
+/// One deployed drop folder as the intake runner sees it.
+#[derive(Clone)]
+pub struct DeployedIntake {
+    /// The drop folder's plugin instance id.
+    pub id: DestinationId,
+    /// How the folder names keys.
+    pub key_style: DestinationKeyStyle,
+    /// Storage backend over the folder's guest.
+    pub backend: Arc<dyn StorageBackend>,
+    /// Key layout from the instance document (its `prefix`).
+    pub settings: DestinationSettings,
+}
+
 /// One deployed destination as acquire sees it.
 #[derive(Clone)]
 pub struct DeployedDestination {
@@ -244,6 +296,8 @@ struct DeployedSlot {
     key_style: DestinationKeyStyle,
     /// Key layout from the instance document.
     settings: DestinationSettings,
+    /// Destination or drop folder.
+    role: StorageRole,
 }
 
 /// Long-lived external output plugins loaded at host startup.
@@ -260,12 +314,15 @@ impl DestinationRegistry {
     /// Every deployed destination, one per plugin instance: destinations
     /// that name files as paths first, then the rest, each group by id.
     ///
-    /// Several instances of one plugin are separate destinations.
+    /// Several instances of one plugin are separate destinations. Drop
+    /// folders ([`StorageRole::Intake`]) are not destinations and are left
+    /// out; see [`Self::intakes`].
     #[must_use]
     pub fn destinations(&self) -> Vec<DeployedDestination> {
         let mut out: Vec<DeployedDestination> = self
             .deployed
             .values()
+            .filter(|slot| slot.role == StorageRole::Destination)
             .map(|slot| DeployedDestination {
                 id: slot.id.clone(),
                 key_style: slot.key_style,
@@ -279,6 +336,24 @@ impl DestinationRegistry {
                 .cmp(&a.key_style.is_filesystem())
                 .then_with(|| a.id.cmp(&b.id))
         });
+        out
+    }
+
+    /// Every deployed drop folder, sorted by id.
+    #[must_use]
+    pub fn intakes(&self) -> Vec<DeployedIntake> {
+        let mut out: Vec<DeployedIntake> = self
+            .deployed
+            .values()
+            .filter(|slot| slot.role == StorageRole::Intake)
+            .map(|slot| DeployedIntake {
+                id: slot.id.clone(),
+                key_style: slot.key_style,
+                backend: Arc::clone(&slot.backend),
+                settings: slot.settings.clone(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
         out
     }
 
@@ -349,6 +424,7 @@ impl DestinationRegistry {
         backend: Arc<dyn StorageBackend>,
         key_style: DestinationKeyStyle,
         settings: DestinationSettings,
+        role: StorageRole,
     ) -> std::result::Result<(), String> {
         let id = DestinationId::new(plugin_instance_id)?;
         self.deployed.insert(
@@ -359,6 +435,7 @@ impl DestinationRegistry {
                 id,
                 key_style,
                 settings,
+                role,
             },
         );
         Ok(())
@@ -383,6 +460,7 @@ impl DestinationRegistry {
         &mut self,
         plugin_instance_id: &str,
         spawned: SpawnedDestination,
+        role: StorageRole,
     ) -> std::result::Result<Arc<PluginSession>, String> {
         self.note_deployed_instance(
             plugin_instance_id,
@@ -390,6 +468,7 @@ impl DestinationRegistry {
             spawned.backend,
             spawned.key_style,
             spawned.settings,
+            role,
         )?;
         Ok(spawned.session)
     }
@@ -412,6 +491,7 @@ impl DestinationRegistry {
         proxy: Arc<OnDemandStorage>,
         key_style: DestinationKeyStyle,
         settings: DestinationSettings,
+        role: StorageRole,
     ) -> std::result::Result<(), String> {
         let backend: Arc<dyn StorageBackend> = Arc::clone(&proxy) as Arc<dyn StorageBackend>;
         self.note_deployed_instance(
@@ -423,6 +503,7 @@ impl DestinationRegistry {
             backend,
             key_style,
             settings,
+            role,
         )
     }
 
@@ -886,19 +967,39 @@ mod registry_tests {
 
     use super::{
         key_style_of, DestinationRegistry, DestinationSettings, SessionIdentity, SlotGuest,
+        StorageRole,
     };
     use crate::discover::DiscoveredPlugin;
     use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
     use bookclerk_plugin_manifest::PluginManifest;
 
-    /// Records an on-demand slot of plugin `plugin` under `instance`,
-    /// storing into `dir`.
+    /// Records an on-demand destination slot of plugin `plugin` under
+    /// `instance`, storing into `dir`.
     fn deploy(
         registry: &mut DestinationRegistry,
         instance: &str,
         plugin: &str,
         key_style: DestinationKeyStyle,
         dir: &tempfile::TempDir,
+    ) -> std::result::Result<(), String> {
+        deploy_as(
+            registry,
+            instance,
+            plugin,
+            key_style,
+            dir,
+            StorageRole::Destination,
+        )
+    }
+
+    /// [`deploy`] with the slot's role.
+    fn deploy_as(
+        registry: &mut DestinationRegistry,
+        instance: &str,
+        plugin: &str,
+        key_style: DestinationKeyStyle,
+        dir: &tempfile::TempDir,
+        role: StorageRole,
     ) -> std::result::Result<(), String> {
         let (proxy, _first, _started) =
             crate::on_demand_storage::tests::proxy(dir, Duration::from_secs(60));
@@ -920,7 +1021,43 @@ mod registry_tests {
                 prefix: format!("{instance}/"),
                 ..DestinationSettings::default()
             },
+            role,
         )
+    }
+
+    #[tokio::test]
+    async fn a_drop_folder_is_never_a_destination() {
+        let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().unwrap()).collect();
+        let mut registry = DestinationRegistry::default();
+        deploy(
+            &mut registry,
+            "books",
+            "local",
+            DestinationKeyStyle::Filesystem,
+            &dirs[0],
+        )
+        .unwrap();
+        deploy_as(
+            &mut registry,
+            "drop",
+            "local",
+            DestinationKeyStyle::Filesystem,
+            &dirs[1],
+            StorageRole::Intake,
+        )
+        .unwrap();
+        let destinations: Vec<String> = registry
+            .destinations()
+            .into_iter()
+            .map(|dest| dest.id.to_string())
+            .collect();
+        assert_eq!(destinations, ["books"]);
+        let intakes: Vec<String> = registry
+            .intakes()
+            .into_iter()
+            .map(|intake| intake.id.to_string())
+            .collect();
+        assert_eq!(intakes, ["drop"]);
     }
 
     #[tokio::test]

@@ -1845,6 +1845,7 @@ dependencies = [
  "base64 0.23.1",
  "bookclerk-config",
  "bookclerk-db-exec",
+ "bookclerk-intake",
  "bookclerk-naming",
  "bookclerk-node-proto",
  "bookclerk-plugin-abi",
