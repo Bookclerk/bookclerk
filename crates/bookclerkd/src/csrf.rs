@@ -14,7 +14,10 @@ use crate::auth::{PORTAL_SESSION_COOKIE, SESSION_COOKIE};
 /// or same-origin `Host`, for cookie-authenticated state-changing `/api/*`
 /// requests. Exempts login / redeem / password / bootstrap paths and the
 /// Apple `form_post` OIDC callback (cross-site POST; bound by the
-/// `bookclerk_oidc_tx` cookie + `state`, not Origin).
+/// `bookclerk_oidc_tx` cookie + `state`, not Origin). Requests the desktop
+/// window routes in-process carry [`crate::embedded::WindowRequest`] and are
+/// exempt: the window refuses other origins itself before routing, and
+/// rewrites `Origin` to its loopback address.
 pub async fn require_csrf_for_cookie_api(
     State(state): State<Arc<AppState>>,
     req: Request,
@@ -28,6 +31,13 @@ pub async fn require_csrf_for_cookie_api(
         return Ok(next.run(req).await);
     }
     if is_csrf_exempt(path) {
+        return Ok(next.run(req).await);
+    }
+    if req
+        .extensions()
+        .get::<crate::embedded::WindowRequest>()
+        .is_some()
+    {
         return Ok(next.run(req).await);
     }
     if !has_session_cookie(req.headers()) {

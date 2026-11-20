@@ -48,6 +48,9 @@ a later change supersedes one, its **Status** says so.
 - [Storage destinations](storage-destinations.md): every storage plugin
   instance is a destination with its own template and filter,
   opportunistic change feeds and host-held webhooks.
+- [Desktop window identity](desktop-window-identity.md): the desktop
+  window is the person signed in to the computer's OS account, named by a
+  per-account profile, and elevates like anyone else.
 
 - [Playback](playback.md): playback is a host feature with one core
   (progress, sessions, one rights check, one stream route) that the web

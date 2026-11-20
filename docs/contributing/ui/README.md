@@ -62,11 +62,15 @@ network can reach this host's web API.
   (`bookclerk://localhost/`; `http://bookclerk.localhost/` on Windows, where
   WebView2 requires that form). Every request on the scheme goes straight to
   the host's router in-process (`bookclerkd::embedded`).
-- Whoever runs the app is the operator, the same person the tray hands an
-  operator session to. The host adds the operator token to each request
-  itself; the page never sees it. Cookies, `Authorization`, `Origin`,
-  `Referer` and forwarding headers from the page are dropped, and so is
-  `Set-Cookie` on the way back, so the page holds no credential.
+- The window is the person signed in to the computer's OS account (see the
+  [ADR](../../adr/desktop-window-identity.md)). Until the library has an
+  active Owner it acts as the operator: the host adds the operator token to
+  each request itself. After that it acts as the patron this OS account's
+  `profile.toml` names, and the host adds that patron's session cookie
+  instead. Cookies, `Authorization`, `Origin`, `Referer` and forwarding
+  headers from the page are dropped, and `Set-Cookie` never reaches the
+  page: the host keeps those cookies itself, so the page holds no
+  credential.
 - The node API (`/api/node/...`) and the live socket (`/api/live`) are
   refused. A custom scheme cannot carry a WebSocket, so the window sends the
   same frames over a Tauri channel instead: the page calls the window's one
@@ -75,7 +79,8 @@ network can reach this host's web API.
   replaces the earlier feed, so a reloaded page doesn't leave one running.
 - A request a page from anywhere else sends to the scheme (its `Origin`, or
   for a write its `Referer`, is not the app's) is refused with `403`, since
-  the host would otherwise add the operator token to it.
+  the host would otherwise add its own credential to it. Because of that
+  check, the window's cookie requests skip the web app's CSRF origin check.
 - The window only shows pages from the scheme, with one exception: joining a
   library, or signing in to one with a library card, opens the library's own
   sign-in pages in the window until the library sends it back, and that
@@ -102,14 +107,45 @@ card sign-in a server uses (see
 [Signing in with a library card](../../server/sign-in.md#signing-in-with-a-library-card)).
 The computer becomes a **clerk** of the library: it shows the library's
 books, the person's own marked, and takes none of the library's work. It
-is not a branch, so nothing the library deploys ever runs there.
-**Host a library on this computer instead** sets up a library here, as
-`bookclerkd`'s first run does.
+is not a branch, so nothing the library deploys ever runs there. A clerk
+has no patrons of its own, so the window stays the operator of its own
+install and needs no profile.
+
+**Start a library on this computer instead** sets up a library here, as
+`bookclerkd`'s first run does. Creating the Owner there signs the window in
+as that Owner and writes the profile.
+
+#### Who the window is after setup
+
+Once the library on this computer has an active Owner, the window is a
+patron, never the operator by default:
+
+- **The profile.** `profile.toml` in the OS account's configuration
+  directory (`$XDG_CONFIG_HOME/bookclerk/` on Linux,
+  `~/Library/Application Support/app.Bookclerk.bookclerk/` on macOS,
+  `%APPDATA%\Bookclerk\bookclerk\config\` on Windows) holds the patron's
+  session. It is written owner-only and read by
+  `bookclerk_config::parse_profile`, which the `desktop_profile` fuzz target
+  checks.
+- **Each launch** swaps that session for a fresh one lasting 90 days. It is
+  listed in the patron's **Settings → Account → Sessions** as
+  **Desktop app on <computer>**; revoking it there signs the window out at
+  its next launch.
+- **No profile, or an ended session**, opens the app's sign-in screen. A
+  password sign-in there writes the profile.
+- **Elevation and impersonation** work as on the web: an Owner elevates
+  with their password, and impersonates from the elevated session. Neither
+  changes the profile.
+- **Signing out** deletes the profile.
+
+Each person on a shared computer uses their own OS account. To share one
+library between them, one account's install is the branch and the others
+sign in to it with library cards.
 
 Not there yet: the tray, uploads (when
 they come, through the native file picker), opening external links in the
-system browser, passkeys (WebAuthn needs a real origin), impersonation (it
-needs a session cookie), and signed packages. Joining or signing in to a library whose node API uses
+system browser, passkeys and sign-in providers (WebAuthn needs a real
+origin, and a provider's sign-in leaves the app), and signed packages. Joining or signing in to a library whose node API uses
 a self-signed certificate does not work from the window yet: the webview does
 not trust that certificate for the sign-in pages. Links the host writes for other
 people, such as invite links, still name `integrations.public_origin` or the

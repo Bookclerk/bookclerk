@@ -57,6 +57,7 @@ boundary extends it.
 | `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
+| `desktop_profile` | The desktop app's per-OS-account `profile.toml`, which names the patron session the window opens with and which anything running as that account can edit | `bookclerk-config::parse_profile` |
 | `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` joins the install's report history | `bookclerk-config::parse_submit_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
@@ -79,7 +80,7 @@ boundary extends it.
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
-| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
+| `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the window's own credential (the operator token or its patron's session cookies) unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
 
@@ -206,6 +207,13 @@ only that. The others check:
   the key's documented range, and the parser returns that number. The
   shared oracle is `fuzz/oracles/cache_settings.rs`, replayed from
   `bookclerk-config`.
+- **`desktop_profile`**: a file is accepted exactly when it is at most 4096
+  bytes of UTF-8 TOML whose table holds `version`, `mode` and `session` and
+  nothing else, with `version` the integer 1, `mode` the string `branch`
+  and `session` a lowercase hyphenated UUID checked character by
+  character; the accepted profile carries that session text, and writing it
+  out and parsing again gives an equal profile. The shared oracle is
+  `fuzz/oracles/desktop_profile.rs`, replayed from `bookclerk-config`.
 - **`diagnostics_submit_reply`**: a reply longer than 4096 bytes is
   refused. Otherwise it is accepted exactly when, read independently as a
   JSON value, it is an object whose `report_id` is a string that is a
@@ -649,7 +657,8 @@ only that. The others check:
   headers the router sees never hold the page's cookies, credentials,
   `Referer` or forwarding headers, always hold one `Host: localhost` and
   one `Origin: http://localhost`, carry `Bearer <token>` only when a token
-  was given, and keep every other header unchanged. Navigation allows app
+  was given and the window's own `Cookie` text only when cookies were
+  given, and keep every other header unchanged. Navigation allows app
   pages always and, only while a join is open, `https` and loopback `http`
   sign-in pages, with the return to the join callback kept on its path. The
   `live` command answers only the webview labelled `main` on an app page.

@@ -226,6 +226,7 @@ export const NAV: NavSpec[] = [
       "adr/patron-scopes",
       "adr/storage-destinations",
       "adr/playback",
+      "adr/desktop-window-identity",
     ],
   },
 ];
