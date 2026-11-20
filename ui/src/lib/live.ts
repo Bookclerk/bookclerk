@@ -41,7 +41,8 @@ export type LiveTopic =
   | "consents"
   | "libraries"
   | "users"
-  | "discover";
+  | "discover"
+  | "playback";
 
 /** Connection state of a {@link LiveClient}. */
 export type LiveState = "idle" | "connecting" | "open" | "closed";

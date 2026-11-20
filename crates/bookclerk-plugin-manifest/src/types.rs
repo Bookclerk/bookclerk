@@ -815,9 +815,12 @@ impl EventsManifest {
 /// failed); becoming acquired publishes `book_acquired` instead.
 /// `wishlist_changed` is written when a wishlist entry is added or changes
 /// status, and `listening_synced` when a listening sync changed what someone
-/// has started or finished. Plugins consume these types but cannot declare
-/// them under `[[events.producers]]`.
-pub const HOST_EVENT_TYPES: [&str; 8] = [
+/// has started or finished. `playback_started` is written when someone
+/// opens a play session in the built-in player, `playback_progress` when a
+/// session closes or progress is set outright, and `playback_finished`
+/// when a listener reaches the end of an edition. Plugins consume these
+/// types but cannot declare them under `[[events.producers]]`.
+pub const HOST_EVENT_TYPES: [&str; 11] = [
     "book_acquired",
     "edition_acquire_changed",
     "edition_linked",
@@ -826,6 +829,9 @@ pub const HOST_EVENT_TYPES: [&str; 8] = [
     "holding_removed",
     "wishlist_changed",
     "listening_synced",
+    "playback_started",
+    "playback_progress",
+    "playback_finished",
 ];
 
 /// True when `event_type` is in [`HOST_EVENT_TYPES`].

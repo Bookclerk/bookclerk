@@ -22,7 +22,7 @@ use bookclerk_storage::{
 use bytes::Bytes;
 use tokio::io::AsyncRead;
 
-use bookclerk_config::DestinationId;
+use bookclerk_config::{DestinationId, OutputCopy};
 
 use crate::destinations::{AcquireDestination, AcquireDestinations};
 use crate::library_copies::StoredFrom;
@@ -50,6 +50,9 @@ pub(crate) struct RecordingBackend {
     /// later audio key (another part or chapter file) is a
     /// [`FileRole::Part`].
     primary: Arc<Mutex<Option<String>>>,
+    /// The library copy (`output.copies`) this run writes here, named on
+    /// the row of each audio file; `None` names no copy.
+    copy: Option<OutputCopy>,
 }
 
 impl RecordingBackend {
@@ -124,9 +127,17 @@ impl RecordingBackend {
     /// replaced by another's.
     async fn record(&self, key: &str) -> bookclerk_storage::Result<FileRole> {
         let role = self.role_of(key);
+        let copy = match role {
+            FileRole::Audio | FileRole::Part | FileRole::Chapter => self.copy.as_ref(),
+            FileRole::Pdf
+            | FileRole::Cover
+            | FileRole::Sidecar
+            | FileRole::Transcript
+            | FileRole::Epub => None,
+        };
         let recorded = self
             .library
-            .record_edition_file(self.destination.as_str(), key, &self.owner, role)
+            .record_edition_copy_file(self.destination.as_str(), key, &self.owner, role, copy)
             .await
             .map_err(|err| {
                 StorageError::Other(anyhow::anyhow!("could not record a title's file: {err}"))
@@ -174,6 +185,28 @@ pub(crate) fn recording_destinations(
     )
 }
 
+/// [`recording_destinations`] whose audio rows name the library copy
+/// `copy` the run writes, and whose first audio key on each destination is
+/// that copy's primary audio.
+pub(crate) fn recording_copy_destinations(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    owner: Option<&FileOwner>,
+    source: &str,
+    stored_from: &StoredFrom,
+    copy: &OutputCopy,
+) -> AcquireDestinations {
+    recording_with(
+        library,
+        destinations,
+        owner,
+        source,
+        stored_from,
+        bookclerk_media::pool(),
+        Some(copy),
+    )
+}
+
 /// [`recording_destinations`] whose written audio is probed through
 /// `media` instead of the process-wide pool.
 pub(crate) fn recording_destinations_probed_by(
@@ -183,6 +216,28 @@ pub(crate) fn recording_destinations_probed_by(
     source: &str,
     stored_from: &StoredFrom,
     media: Arc<bookclerk_media::MediaPool>,
+) -> AcquireDestinations {
+    recording_with(
+        library,
+        destinations,
+        owner,
+        source,
+        stored_from,
+        media,
+        None,
+    )
+}
+
+/// The recording wrap of [`recording_destinations_probed_by`], naming
+/// `copy` on audio rows.
+fn recording_with(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    owner: Option<&FileOwner>,
+    source: &str,
+    stored_from: &StoredFrom,
+    media: Arc<bookclerk_media::MediaPool>,
+    copy: Option<&OutputCopy>,
 ) -> AcquireDestinations {
     let items = destinations
         .items
@@ -199,6 +254,7 @@ pub(crate) fn recording_destinations_probed_by(
                     stored_from: stored_from.clone(),
                     media: Arc::clone(&media),
                     primary: Arc::default(),
+                    copy: copy.cloned(),
                 }),
                 None => item.backend.clone_box(),
             },
@@ -237,6 +293,7 @@ impl StorageBackend for RecordingBackend {
             stored_from: self.stored_from.clone(),
             media: Arc::clone(&self.media),
             primary: Arc::clone(&self.primary),
+            copy: self.copy.clone(),
         })
     }
 

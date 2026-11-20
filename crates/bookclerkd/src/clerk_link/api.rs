@@ -14,10 +14,19 @@
 //!   browser to. The redirect URI is this install's own `/clerk/callback`.
 //!   A library this install is already an active branch of is
 //!   refused (409 `already_joined`): its books are read through that link.
+//!   With `{from_branch}` instead of an address (the operator only), the
+//!   card replaces this install's branch link to that library: the
+//!   address and pin come from the link, and the callback leaves the
+//!   branch once the library has handed over the card.
 //! - `POST /api/config/clerk/callback` `{code, state, error?}`: the browser
 //!   came back. The daemon matches `state` to its pending sign-in, redeems
 //!   the code with the verifier only it holds, seals the card, and starts
-//!   reading the person's books at once.
+//!   reading the person's books at once. For a sign-in that replaces a
+//!   branch it leaves the branch first (`left_branch` in the answer).
+//!
+//! A branch join of a library this install holds a card for replaces the
+//! card ([`retire_card_for_branch`]): the card is signed out as below, and
+//! when that fails it stays listed for the person to sign out.
 //! - `POST /api/config/clerk/sign-out` `{library_id}`: ends the card at the
 //!   library (`POST /api/auth/logout` with the card) when it can be
 //!   reached, then drops the card and the books read with it, and removes
@@ -41,8 +50,8 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::hash_token;
 use bookclerk_node_client::{
-    authorize_clerk, inspect_library, redeem_clerk_code, ClerkRedeem, InspectedLibrary, JoinError,
-    OwnerEndpoint,
+    authorize_clerk, exchange_clerk_code, inspect_library, ClerkRedeem, InspectedLibrary,
+    JoinError, OwnerEndpoint,
 };
 use bookclerk_node_proto::{CLERK_AUTH_SCHEME, CLERK_CALLBACK_PATH};
 use serde::{Deserialize, Serialize};
@@ -52,7 +61,7 @@ use crate::api::AppState;
 use crate::auth::UserCaller;
 use crate::library_link::join::{
     callback_origin, default_branch_name, join_error, join_failed, library_json,
-    InspectedLibraryResponse, InspectedLibraryView,
+    refuse_other_library, InspectedLibraryResponse, InspectedLibraryView, ReplacedCard, Replacing,
 };
 use crate::node_api::branch::{no_store, require_branch_admin};
 
@@ -83,6 +92,11 @@ struct PendingClerk {
     redirect_uri: String,
     /// The name this install signs in as.
     clerk_name: String,
+    /// The node this install's branch of the library was enrolled as when
+    /// the card was asked to replace it, or `None` for a plain sign-in: the
+    /// callback leaves that branch before it records the card, and refuses
+    /// when the install joined the library again meanwhile.
+    replaces_node: Option<String>,
     /// When the sign-in started.
     started: Instant,
 }
@@ -251,9 +265,20 @@ pub async fn post_clerk_inspect(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClerkStartBody {
-    /// The library's address.
+    /// The library's address. Left out with `from_branch`.
+    #[serde(default)]
     #[schema(example = "https://books.example.com")]
     address: String,
+    /// The library id of a library this install is an active branch of:
+    /// the card replaces the branch. The library's address and pinned
+    /// certificate come from the branch link, so `address` and
+    /// `fingerprint` are left out; once the library hands over the card,
+    /// the callback leaves the branch (as Leave library does) and records
+    /// the card. Only the operator may, as only the operator leaves a
+    /// library.
+    #[serde(default)]
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
+    from_branch: Option<String>,
     /// The fingerprint the person confirmed (self-signed libraries).
     #[serde(default)]
     #[schema(example = "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o")]
@@ -291,8 +316,9 @@ pub struct ClerkStarted {
         (status = 200, description = "The library's sign-in URL to open.", body = ClerkStarted),
         (status = 400, description = "The address is not a library, is plain HTTP off this machine, or the name or this install's address cannot sign in (`invalid_address`, `transport_insecure`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid_address", "detail": "this computer's name must be 1 to 64 characters"})),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The user is not an active Owner, or the session has no user account.", body = crate::http_error::ErrorAnswer, example = json!({"error": "forbidden"})),
-        (status = 409, description = "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install already joined that library as a branch (`already_joined`), or the library's address is not the one given (`origin_mismatch`).", body = crate::library_link::join::JoinConflict, examples(
+        (status = 403, description = "The user is not an active Owner, the session has no user account, or a sign-in `from_branch` is not the operator's.", body = crate::http_error::ErrorAnswer, example = json!({"error": "forbidden"})),
+        (status = 404, description = "With `from_branch`: this install is not an active branch of that library (`not_found`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_found", "detail": "this install is not a branch of that library"})),
+        (status = 409, description = "The library's fingerprint is not confirmed, or changed since the branch joined (`fingerprint_unconfirmed`), this install already joined that library as a branch (`already_joined`), or the library's address is not the one given or no longer the library the branch joined (`origin_mismatch`).", body = crate::library_link::join::JoinConflict, examples(
             ("fingerprint_unconfirmed" = (summary = "A self-signed library's fingerprint was not confirmed.", value = json!({"error": "fingerprint_unconfirmed", "detail": "confirm the library's fingerprint first; it must match the one on its Settings → Branches page"}))),
             ("already_joined" = (summary = "This install is already a branch of that library.", value = json!({"error": "already_joined", "detail": "this install already joined that library; its books are read through that link"}))),
         )),
@@ -309,13 +335,32 @@ pub async fn post_clerk_start(
     if let Err(refused) = require_branch_admin(&state, caller).await {
         return refused;
     }
+    let branch = match body.from_branch.as_deref().map(str::trim) {
+        Some(library_id) => match branch_to_replace(&state, caller, library_id).await {
+            Ok(link) => Some(link),
+            Err(refused) => return refused,
+        },
+        None => None,
+    };
+    let address = branch
+        .as_ref()
+        .map_or(body.address.as_str(), |link| link.owner_origin.as_str());
     // Read the library again: the browser's copy of the fingerprint is
     // only what the person confirmed, never what is trusted.
-    let library = match inspect_library(&body.address).await {
+    let library = match inspect_library(address).await {
         Ok(library) => library,
         Err(err) => return join_failed(&err),
     };
-    if let Some(refused) = refuse_start(&state, &library, body.fingerprint.as_deref()).await {
+    let refused = match &branch {
+        Some(link) => refuse_other_library(
+            &library,
+            &link.parent_library_id,
+            link.spki_pin.as_deref(),
+            Replacing::Branch,
+        ),
+        None => refuse_start(&state, &library, body.fingerprint.as_deref()).await,
+    };
+    if let Some(refused) = refused {
         return refused;
     }
     let clerk_name = body
@@ -345,12 +390,14 @@ pub async fn post_clerk_start(
             verifier: authorization.verifier,
             redirect_uri: authorization.redirect_uri,
             clerk_name: authorization.clerk_name.clone(),
+            replaces_node: branch.as_ref().map(|link| link.remote_node_id.clone()),
             started: Instant::now(),
         },
     );
     tracing::info!(
         origin = %library.origin,
         library_id = %library.info.library_id,
+        replaces_branch = branch.is_some(),
         "library card sign-in started"
     );
     no_store(
@@ -387,6 +434,35 @@ async fn refuse_start(
     }
 }
 
+/// The active branch link a card sign-in `from_branch` replaces. Only the
+/// operator may: only the operator leaves a library.
+async fn branch_to_replace(
+    state: &Arc<AppState>,
+    caller: UserCaller,
+    library_id: &str,
+) -> Result<bookclerk_library::control_plane::LibraryLink, Response> {
+    match caller {
+        UserCaller::Operator => {}
+        UserCaller::User { .. } => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(crate::http_error::ErrorMessage::new("forbidden")),
+            )
+                .into_response());
+        }
+    }
+    let store = state.library_snapshot().await;
+    match load_library_link(&store, library_id).await {
+        Ok(Some(link)) if link.is_active() => Ok(link),
+        Ok(_) => Err(join_error(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "this install is not a branch of that library",
+        )),
+        Err(err) => Err(crate::config_authority::events_error(err)),
+    }
+}
+
 /// The answer for a library this install already joined as a branch.
 fn already_joined() -> Response {
     join_error(
@@ -419,6 +495,20 @@ pub struct ClerkCallbackBody {
 pub struct ClerkSignedIn {
     /// The library this install now holds a card for.
     pub card: ClerkLinkView,
+    /// Set when the card replaced this install's branch link to the
+    /// library (a sign-in started `from_branch`): the branch was left.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub left_branch: Option<LeftBranch>,
+}
+
+/// The branch a card sign-in left.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct LeftBranch {
+    /// Whether the library accepted the leave notice. False when it could
+    /// not be told: the branch then stays in its list until it is removed
+    /// there.
+    #[schema(example = true)]
+    pub owner_notified: bool,
 }
 
 /// `POST /api/config/clerk/callback`: redeems the library's code with the
@@ -430,14 +520,18 @@ pub struct ClerkSignedIn {
     path = "/api/config/clerk/callback",
     request_body = ClerkCallbackBody,
     responses(
-        (status = 200, description = "This install holds a library card for the library now.", body = ClerkSignedIn),
+        (status = 200, description = "This install holds a library card for the library now; a sign-in that replaced a branch left it first (`left_branch`).", body = ClerkSignedIn),
         (status = 400, description = "The callback carries no code (`invalid_request`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid_request", "detail": "no code"})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The library's user did not approve (`denied`), the library refused the code (`refused`), or the user is not an active Owner (`forbidden`).", body = crate::http_error::ErrorAnswer, examples(
             ("denied" = (summary = "The library's user did not approve.", value = json!({"error": "denied", "detail": "the library's user did not let this computer show their books"}))),
             ("refused" = (summary = "The library refused the code.", value = json!({"error": "refused", "detail": "the library refused the sign-in: it was already used or took too long; start again"}))),
         )),
-        (status = 409, description = "This install joined that library as a branch meanwhile (`already_joined`).", body = crate::http_error::ErrorDetail, example = json!({"error": "already_joined", "detail": "this install already joined that library; its books are read through that link"})),
+        (status = 409, description = "This install joined that library as a branch meanwhile (`already_joined`), or joined it again after a sign-in that replaces its branch started (`enrollment_changed`).", body = crate::http_error::ErrorDetail, examples(
+            ("already_joined" = (summary = "This install is already a branch of that library.", value = json!({"error": "already_joined", "detail": "this install already joined that library; its books are read through that link"}))),
+            ("enrollment_changed" = (summary = "The branch was replaced by a new join.", value = json!({"error": "enrollment_changed", "detail": "this install joined the library again after the sign-in started; start again from the library list"}))),
+        )),
+        (status = 500, description = "The sign-in stopped before it finished (`sign_in_failed`), or the branch it replaces could not be left (the library database could not be read or written).", body = crate::http_error::ErrorAnswer, example = json!({"error": "sign_in_failed", "detail": "the sign-in stopped before it finished; check the library list"})),
         (status = 410, description = "The sign-in is unknown, already used, or older than ten minutes; start again (`join_expired`).", body = crate::http_error::ErrorDetail, example = json!({"error": "join_expired", "detail": "this sign-in is unknown, already used, or took longer than 10 minutes; start again"})),
         (status = 502, description = "The library could not be reached (`unreachable`), answered with an error (`library_error`), its answer did not parse (`join_failed`), or the card could not be saved here (`join_unsaved`).", body = crate::http_error::ErrorDetail, example = json!({"error": "unreachable", "detail": "owner unreachable: Connection refused (os error 111)"})),
     ),
@@ -469,40 +563,112 @@ pub async fn post_clerk_callback(
         return join_error(StatusCode::BAD_REQUEST, "invalid_request", "no code");
     }
     let store = state.library_snapshot().await;
-    match load_library_link(&store, &sign_in.library_id).await {
-        Ok(Some(link)) if link.is_active() => return already_joined(),
-        Ok(_) => {}
+    let current = match load_library_link(&store, &sign_in.library_id).await {
+        Ok(current) => current,
         Err(err) => return crate::config_authority::events_error(err),
+    };
+    let active_node = current
+        .as_ref()
+        .filter(|link| link.is_active())
+        .map(|link| link.remote_node_id.as_str());
+    match (active_node, sign_in.replaces_node.as_deref()) {
+        (Some(_), None) => return already_joined(),
+        (Some(now), Some(then)) if now != then => return enrollment_changed(),
+        // No branch now (or it was left meanwhile), or still the one the
+        // sign-in started from.
+        _ => {}
     }
-    let redeemed = redeem_clerk_code(
-        &store,
-        &ClerkRedeem {
-            origin: &sign_in.origin,
-            spki_pin: sign_in.spki_pin.as_deref(),
-            library_id: &sign_in.library_id,
-            library_name: &sign_in.library_name,
-            code: code.trim(),
-            verifier: &sign_in.verifier,
-            redirect_uri: &sign_in.redirect_uri,
-            clerk_name: &sign_in.clerk_name,
-        },
-    )
+    let exchanged = exchange_clerk_code(&ClerkRedeem {
+        origin: &sign_in.origin,
+        spki_pin: sign_in.spki_pin.as_deref(),
+        library_id: &sign_in.library_id,
+        library_name: &sign_in.library_name,
+        code: code.trim(),
+        verifier: &sign_in.verifier,
+        redirect_uri: &sign_in.redirect_uri,
+        clerk_name: &sign_in.clerk_name,
+    })
     .await;
-    match redeemed {
-        Ok(link) => {
+    let exchanged = match exchanged {
+        Ok(exchanged) => exchanged,
+        Err(err) => return redeem_failed(&err),
+    };
+    // Leaving and recording run on their own task, so a request cut short
+    // (the client gone, or the API deadline) still finishes both once the
+    // library has handed over the card.
+    let replaces_node = sign_in.replaces_node;
+    let finished = tokio::spawn(async move {
+        let left_branch = if let Some(node_id) = replaces_node {
+            match crate::library_link::leave_link(&state, exchanged.library_id(), Some(&node_id))
+                .await
+            {
+                Ok(Some((_, owner_notified))) => Some(LeftBranch { owner_notified }),
+                // Left meanwhile: nothing more to leave. A join enrolled
+                // meanwhile is kept, and recording the card then refuses.
+                Ok(None) => None,
+                Err(err) => return Err(crate::config_authority::events_error(err)),
+            }
+        } else {
+            None
+        };
+        let store = state.library_snapshot().await;
+        match exchanged.record(&store).await {
+            Ok(link) => Ok((link, left_branch)),
+            Err(err) => Err(redeem_failed(&err)),
+        }
+    });
+    let Ok(finished) = finished.await else {
+        return join_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "sign_in_failed",
+            "the sign-in stopped before it finished; check the library list",
+        );
+    };
+    match finished {
+        Ok((link, left_branch)) => {
             super::notify_clerk_links_changed();
             crate::live::poke(bookclerk_library::control_plane::LiveTopic::Libraries);
             Json(ClerkSignedIn {
                 card: clerk_link_json(&link),
+                left_branch,
             })
             .into_response()
         }
-        Err(JoinError::Refused) => join_error(
+        Err(answer) => answer,
+    }
+}
+
+/// The answer for a branch-to-card sign-in whose branch was replaced by a
+/// new join of the library after the sign-in started: the new branch is
+/// not given up for an old request.
+fn enrollment_changed() -> Response {
+    join_error(
+        StatusCode::CONFLICT,
+        "enrollment_changed",
+        "this install joined the library again after the sign-in started; start again from the library list",
+    )
+}
+
+/// Points every pending branch-to-card sign-in at `node_id`, as if the
+/// install had joined the library again as that node since it started.
+#[cfg(test)]
+pub(super) fn rejoin_pending_branches(node_id: &str) {
+    for sign_in in pending().values_mut() {
+        if sign_in.replaces_node.is_some() {
+            sign_in.replaces_node = Some(node_id.to_string());
+        }
+    }
+}
+
+/// The answer for a card sign-in that failed at or after the library.
+fn redeem_failed(err: &JoinError) -> Response {
+    match err {
+        JoinError::Refused => join_error(
             StatusCode::FORBIDDEN,
             "refused",
             "the library refused the sign-in: it was already used or took too long; start again",
         ),
-        Err(err) => join_failed(&err),
+        err => join_failed(err),
     }
 }
 
@@ -576,6 +742,77 @@ async fn end_card_at_library(store: &bookclerk_library::LibraryStore, link: &Cle
     }
 }
 
+/// Signs `link`'s card out: ends it at the library when it can be reached,
+/// then drops the card, the books read with it, and the library from the
+/// list here whatever the library answered, and tells the readers and the
+/// web app.
+///
+/// # Returns
+///
+/// Whether the library ended the card's session too.
+///
+/// # Errors
+///
+/// The write error; the card is then still listed here.
+pub(crate) async fn retire_card(
+    store: &bookclerk_library::LibraryStore,
+    link: &ClerkLink,
+) -> bookclerk_library::Result<bool> {
+    let library_signed_out = end_card_at_library(store, link).await;
+    let signed_out = match sign_out_clerk_link(store, &link.library_id).await {
+        Ok(_) => forget_clerk_link(store, &link.library_id).await,
+        Err(err) => Err(err),
+    };
+    super::notify_clerk_links_changed();
+    crate::live::poke(bookclerk_library::control_plane::LiveTopic::Libraries);
+    signed_out.map(|_| library_signed_out)
+}
+
+/// A branch join of `library_id` replaces this install's library card for
+/// it, if it holds one: the branch reads the person's books through its
+/// link, so the card is signed out ([`retire_card`]).
+///
+/// # Returns
+///
+/// `None` when this install held no card for the library, else whether the
+/// card was dropped here and whether the library ended its session too. A
+/// failure is logged and answers `card_removed: false`: the card then stays
+/// listed, and the person signs it out.
+pub(crate) async fn retire_card_for_branch(
+    store: &bookclerk_library::LibraryStore,
+    library_id: &str,
+) -> Option<ReplacedCard> {
+    const NOT_REMOVED: ReplacedCard = ReplacedCard {
+        card_removed: false,
+        library_signed_out: false,
+    };
+    let link = match load_clerk_link(store, library_id).await {
+        Ok(Some(link)) => link,
+        Ok(None) => return None,
+        Err(err) => {
+            tracing::warn!(library_id, error = %err, "could not read the library card a branch join replaces");
+            return Some(NOT_REMOVED);
+        }
+    };
+    match retire_card(store, &link).await {
+        Ok(library_signed_out) => {
+            tracing::info!(
+                library_id,
+                library_signed_out,
+                "the branch join replaced the library card"
+            );
+            Some(ReplacedCard {
+                card_removed: true,
+                library_signed_out,
+            })
+        }
+        Err(err) => {
+            tracing::warn!(library_id, error = %err, "could not drop the library card a branch join replaces");
+            Some(NOT_REMOVED)
+        }
+    }
+}
+
 /// `POST /api/config/clerk/sign-out`: ends a library card at the library
 /// when it can be reached, then drops the card, the books read with it,
 /// and the library from the list here whatever the library answered.
@@ -607,15 +844,8 @@ pub async fn post_clerk_sign_out(
         }
         Err(err) => return crate::config_authority::events_error(err),
     };
-    let library_signed_out = end_card_at_library(&store, &link).await;
-    let signed_out = match sign_out_clerk_link(&store, &body.library_id).await {
-        Ok(_) => forget_clerk_link(&store, &body.library_id).await,
-        Err(err) => Err(err),
-    };
-    super::notify_clerk_links_changed();
-    crate::live::poke(bookclerk_library::control_plane::LiveTopic::Libraries);
-    match signed_out {
-        Ok(_) => {
+    match retire_card(&store, &link).await {
+        Ok(library_signed_out) => {
             tracing::info!(library_id = %body.library_id, library_signed_out, "signed out of the library card");
             Json(ClerkSignedOut {
                 library_id: body.library_id,

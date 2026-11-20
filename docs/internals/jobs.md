@@ -220,11 +220,11 @@ ticker claims a due fire with a compare-and-swap on the instance's
 dedup key holds one fire per schedule, so a fire that comes due while the
 previous one is still active is skipped. A failed fire retries up to 3
 attempts with the same `scheduled_time_ms`. A pinned fire can only be
-claimed by a node trusted with every job (a shared node, or a Host whose
-owner is an Owner or Administrator). When no such node runs the instance
+claimed by a node trusted with every job (a shared node, or a branch node
+whose owner is an Owner or Administrator). When no such node runs the instance
 past the requirements sweep's grace period, the sweep fails the fire as
 `unroutable`. That covers an instance deployed nowhere and one deployed only
-on Hosts owned by members. See
+on branch nodes owned by members. See
 [Scheduled triggers](../plugins/abi.md#scheduled-triggers).
 
 The two Discover kinds carry a subject key (`operator`, `user:{id}` or

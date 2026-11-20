@@ -1,0 +1,1 @@
+{"rules":[{"field":"format","value":"mp3_chapters","effect":"include"},{"field":"quality","value":"original","effect":"exclude"}]}

@@ -713,6 +713,7 @@ dependencies = [
  "bookclerk-storefront",
  "bytes",
  "chrono",
+ "futures",
  "serde",
  "serde_json",
  "thiserror",
