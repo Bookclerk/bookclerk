@@ -1785,6 +1785,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-intake"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-config",
+ "hex",
+ "sha2 0.11.1",
+]
+
+[[package]]
 name = "bookclerk-integrations"
 version = "0.1.0"
 dependencies = [

@@ -27,6 +27,7 @@ mod error;
 mod events;
 mod extras;
 mod install_id;
+mod intake;
 mod isolation;
 mod jobs;
 mod journal;
@@ -73,6 +74,13 @@ pub use extras::{
     reconciliation_wildcard_rules, resolve_replacement_characters, s3_replacement_characters,
     windows_replacement_characters, FileTimestampMode, LameConfig, PathSanitizationMode,
     ReplacementRule, RECONCILE_WILDCARD,
+};
+pub use intake::{
+    glob_matches, parse_intake_settings, AfterIngest, IntakeAttribution, IntakeSettings,
+    IntakeSettingsError, BUILTIN_IGNORE_PATTERNS, DEFAULT_SCAN_INTERVAL_SECONDS,
+    DEFAULT_SETTLE_SECONDS, FAILED_FOLDER, IMPORTED_FOLDER, MAX_IGNORE_PATTERNS,
+    MAX_IGNORE_PATTERN_BYTES, MAX_INTAKE_SETTINGS_BYTES, MAX_PRUNE_IMPORTED_DAYS,
+    MAX_SCAN_INTERVAL_SECONDS, MAX_SETTLE_SECONDS, MIN_SCAN_INTERVAL_SECONDS, MIN_SETTLE_SECONDS,
 };
 pub use install_id::{
     checkin_due, record_checkin, send_checkin, CheckIn, InstallId, CHECKIN_INTERVAL_MS,
