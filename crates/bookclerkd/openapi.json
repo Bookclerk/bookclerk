@@ -18960,15 +18960,45 @@
             }
           },
           "503": {
-            "description": "The library's job queue is full (`library_busy`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "The library's job queue is full (`library_busy`). When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again; sent only with `session_check_unavailable`."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDetail"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
                 },
-                "example": {
-                  "detail": "the library's job queue is full; try again later",
-                  "error": "library_busy"
+                "examples": {
+                  "library_busy": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "detail": "the library's job queue is full; try again later",
+                      "error": "library_busy"
+                    }
+                  },
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
                 }
               }
             }
