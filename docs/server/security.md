@@ -18,10 +18,16 @@ store sign-ins, the operator token and plugin secrets.
   wrapped at rest.
 - To wrap a key that already exists, run
   `bookclerk config master-key wrap`.
+- On a machine with an OS keychain, keep the key there instead:
+  `bookclerk config master-key move keychain`. `master.key` then only
+  names the keychain item, so a copy of the files directory doesn't carry
+  the key. The desktop window does this by default.
 
 > [!WARNING]
-> Back up `master.key` together with the database. Without the key,
-> sealed values cannot be read.
+> Back up the key together with the database: a copy of `master.key`, or
+> for a key in the keychain a recovery copy from
+> `bookclerk config master-key export`. Without the key, sealed values
+> cannot be read.
 
 Details: [Database](database.md) and
 [Configuration → Bootstrap files](configuration.md#bootstrap-files).
@@ -159,8 +165,8 @@ Install only the plugins you use, and undeploy the rest.
 
 ## Backups
 
-Keep recovery points, and a copy of `master.key`, somewhere other than the
-server. See [Backups, updates, import and export](backups.md).
+Keep recovery points, and a copy of `master.key` (or a recovery copy of a
+key in the keychain), somewhere other than the server. See [Backups, updates, import and export](backups.md).
 
 ## Next steps
 

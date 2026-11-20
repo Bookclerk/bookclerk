@@ -376,6 +376,30 @@ existing BCK1 key later, run `bookclerk config master-key wrap`, or
 reload `bookclerkd` after setting the password (SIGHUP or
 `POST /api/config/reload`).
 
+A service like this has no OS keychain to keep the key in (no login
+session, no Secret Service), so the key stays in the password-wrapped
+file. Keep the password itself off disk with an encrypted systemd
+credential, which a TPM can seal to the machine:
+
+```sh
+systemd-creds encrypt --name=bookclerk-auth-password - /etc/credstore.encrypted/bookclerk-auth-password
+```
+
+Then load it in the unit, and start `bookclerkd` through a small script
+that reads it into `BOOKCLERK_AUTH_PASSWORD`:
+
+```ini
+LoadCredentialEncrypted=bookclerk-auth-password
+ExecStart=/usr/local/bin/bookclerkd-with-credential
+```
+
+```sh
+#!/bin/sh
+BOOKCLERK_AUTH_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/bookclerk-auth-password")"
+export BOOKCLERK_AUTH_PASSWORD
+exec /usr/local/bin/bookclerkd
+```
+
 If your books live outside the files directory, set an absolute root and
 add it to `ReadWritePaths`:
 

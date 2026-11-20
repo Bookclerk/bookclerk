@@ -365,6 +365,47 @@ enum HostMode {
     Embedded,
 }
 
+/// Sets where this host writes new keys, and moves the desktop app's key
+/// into the OS keychain.
+///
+/// `[auth].key_store` wins when set. Otherwise the desktop window defaults
+/// to the OS keychain and `bookclerkd` to `master.key`. On the desktop
+/// default, a key still in `master.key` is moved into the keychain; if the
+/// keychain can't take it, the key stays in the file and the start goes on.
+fn apply_key_store(config: &Config, mode: HostMode) {
+    use bookclerk_config::KeyStoreKind;
+    use bookclerk_library::{KeyStorePreference, MasterKeyFormat};
+    let default = match mode {
+        HostMode::Listening => KeyStoreKind::File,
+        HostMode::Embedded => KeyStoreKind::Keychain,
+    };
+    let preference = KeyStorePreference::from_config(config.auth.key_store, default);
+    bookclerk_library::set_key_store_preference(preference);
+    if preference.kind != KeyStoreKind::Keychain || preference.required {
+        return;
+    }
+    let files_dir = &config.paths().files_dir;
+    match bookclerk_library::inspect_master_key(files_dir) {
+        Ok(Some(MasterKeyFormat::Raw | MasterKeyFormat::Wrapped)) => {}
+        Ok(Some(MasterKeyFormat::Keychain) | None) => return,
+        Err(err) => {
+            tracing::warn!("not moving master.key into the OS keychain: {err}");
+            return;
+        }
+    }
+    let password = config.auth_password();
+    match bookclerk_library::move_master_key(files_dir, KeyStoreKind::Keychain, password.as_deref())
+    {
+        Ok(_) => tracing::info!(
+            "moved the data-encryption key into the OS keychain; save a recovery copy with \
+             `bookclerk config master-key export --out <file>`"
+        ),
+        Err(err) => tracing::warn!(
+            "the data-encryption key stays in master.key: the OS keychain could not take it ({err})"
+        ),
+    }
+}
+
 /// What [`start_host`] hands back: the running host and its router.
 struct HostParts {
     /// Shared daemon state the background runtimes already hold.
@@ -421,6 +462,7 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
         };
     }
     bookclerk_plugin_host::retry_abandoned_acl_journals(&paths.files_dir);
+    apply_key_store(&config, mode);
 
     let opened = match pending_join {
         None => bookclerk_plugin_host::open_host_control_plane(&config).await?,

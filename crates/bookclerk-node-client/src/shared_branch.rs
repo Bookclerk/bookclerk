@@ -876,7 +876,11 @@ pub fn apply_shared_branch_bootstrap(
     let identity = encode_node_identity_file(&bootstrap.node_id, &bootstrap.library_id)
         .map_err(|err| record("node identity", &err))?;
     let password = password.map(str::trim).filter(|p| !p.is_empty());
-    let master_key = bookclerk_library::encode_master_key_file(bootstrap.dek.expose(), password)
+    // Puts the key in this install's store first (the keychain item, when
+    // that is the store), so `master.key` is either the envelope or the
+    // pointer to it. A rolled-back join restores the old `master.key`, which
+    // still names the old key; the new item is then unused.
+    let master_key = bookclerk_library::store_master_key(bootstrap.dek.expose(), password)
         .map_err(|err| record("master.key", &err))?;
     // `0700`, as for a minted key; done before any target changes.
     bookclerk_library::prepare_master_key_dir(files_dir)
@@ -916,7 +920,7 @@ pub fn apply_shared_branch_bootstrap(
         private: false,
     });
     replace_files(&files, &files_dir.join(SHARED_BRANCH_JOIN_MARKER))?;
-    if password.is_none() {
+    if password.is_none() && !master_key.starts_with(b"BCK3") {
         bookclerk_library::warn_unwrapped_master_key(&bookclerk_library::master_key_path(
             files_dir,
         ));

@@ -3,7 +3,7 @@
 use bookclerk_acquire::{storage_key_with_contexts, NamingContext};
 use bookclerk_config::{
     apply_setting_overrides, classic_key_aliases, resolve_replacement_characters, Config,
-    NamingProfile,
+    KeyStoreKind, NamingProfile,
 };
 use bookclerk_library::control_plane::{
     bootstrap_control_plane, is_cache_setting_key, is_output_setting_key, load_cache_settings,
@@ -12,12 +12,13 @@ use bookclerk_library::control_plane::{
     EventsSettingsV1, OutputReplace, OutputSettingsV1, OUTPUT_SETTING_KEYS,
 };
 use bookclerk_library::{
-    inspect_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
-    MASTER_KEY_AUTH_PASSWORD_ENV,
+    export_master_key, import_master_key, inspect_master_key, master_key_is_wrapped,
+    move_master_key, wrap_master_key, LibraryStore, MasterKeyFormat, MASTER_KEY_AUTH_PASSWORD_ENV,
 };
 use bookclerk_source::DownloadOptions;
 use chrono::Datelike;
 use clap::Subcommand;
+use std::path::PathBuf;
 
 use crate::format_out::{emit, OutputFormat};
 
@@ -44,10 +45,10 @@ pub enum ConfigCommand {
     Show,
     /// Print resolved filesystem paths.
     Paths,
-    /// Inspect or wrap `{files_dir}/master.key` (BCK1 ↔ BCK2).
+    /// Inspect, wrap, move, export or import the library's data-encryption key.
     MasterKey {
         #[command(subcommand)]
-        /// Nested master-key status/wrap action (BCK1 raw vs BCK2 sealed).
+        /// Nested master-key action (status, wrap, move, export, import).
         command: MasterKeyCommand,
     },
     /// Naming template helpers.
@@ -90,14 +91,49 @@ pub enum DatabaseCommand {
 }
 
 #[derive(Debug, Subcommand)]
-/// Nested `config master-key` actions for inspecting or wrapping `master.key`.
+/// Nested `config master-key` actions for the library's data-encryption key.
 pub enum MasterKeyCommand {
-    /// Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2).
+    /// Show where the key is kept (the file or the OS keychain) and whether it
+    /// is raw (BCK1) or wrapped (BCK2).
     Status,
-    /// Wrap a BCK1 `master.key` with a passphrase (no-op unlock if already BCK2).
+    /// Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in
+    /// `master.key` or in its OS keychain item.
     ///
     /// Password from `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — never argv.
     Wrap,
+    /// Move the key to the OS keychain or back into `master.key`, and record
+    /// the choice as `[auth].key_store` in config.toml.
+    ///
+    /// The key itself doesn't change, so every sealed secret stays readable.
+    /// Stop `bookclerkd` first.
+    Move {
+        /// Where to keep the key: `keychain` or `file`.
+        #[arg(value_parser = parse_key_store)]
+        to: KeyStoreKind,
+    },
+    /// Write a recovery copy of the key, wrapped with a password read from
+    /// stdin (never argv).
+    ///
+    /// Keep it apart from the server's files: with it and its password, the
+    /// library's sealed secrets can be read.
+    Export {
+        /// File to write (created with mode 0600; never overwritten).
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Restore the key from a recovery copy (or a copied `master.key`) on an
+    /// install that has no `master.key`. A wrapped copy's password is read
+    /// from stdin.
+    Import {
+        /// The recovery copy to read.
+        #[arg(long)]
+        from: PathBuf,
+    },
+}
+
+/// Parses `keychain` or `file` for `config master-key move`.
+fn parse_key_store(value: &str) -> Result<KeyStoreKind, String> {
+    value.parse()
 }
 
 #[derive(Debug, Subcommand)]
@@ -319,37 +355,52 @@ pub async fn run(
     }
 }
 
-/// Reports `master.key` format or wraps BCK1 with the configured passphrase (never argv).
+/// Reports, wraps, moves, exports or imports the data-encryption key. Every
+/// password comes from the environment, config or stdin, never argv.
 fn run_master_key(
     command: MasterKeyCommand,
     config: &Config,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let files_dir = &config.paths().files_dir;
+    let path_text = bookclerk_library::master_key_path(files_dir)
+        .display()
+        .to_string();
     match command {
         MasterKeyCommand::Status => {
             let format_kind = inspect_master_key(files_dir)?;
-            let (exists, kind) = match format_kind {
-                None => (false, "missing"),
-                Some(MasterKeyFormat::Raw) => (true, "BCK1"),
-                Some(MasterKeyFormat::Wrapped) => (true, "BCK2"),
+            let exists = format_kind.is_some();
+            let kind = format_kind.map_or("missing", MasterKeyFormat::header);
+            let store = format_kind.map(|f| f.store().as_str());
+            // Reading a keychain item may prompt; a failure is reported, not fatal.
+            let (wrapped, keychain_error) = match master_key_is_wrapped(files_dir) {
+                Ok(w) => (w, None),
+                Err(err) => (None, Some(err.to_string())),
             };
             let payload = serde_json::json!({
-                "path": bookclerk_library::master_key_path(files_dir).display().to_string(),
+                "path": path_text,
                 "exists": exists,
                 "format": kind,
+                "store": store,
+                "wrapped": wrapped,
+                "keychain_error": keychain_error,
                 "password_configured": config.auth_password().is_some(),
             });
             emit(format, &payload, || {
                 println!(
-                    "master.key\t{}\tformat={kind}\tpassword={}",
+                    "master.key\t{}\tformat={kind}\tstore={}\twrapped={}\tpassword={}",
                     if exists { "present" } else { "missing" },
+                    store.unwrap_or("-"),
+                    wrapped.map_or("unknown", |w| if w { "yes" } else { "no" }),
                     if config.auth_password().is_some() {
                         "set"
                     } else {
                         "unset"
                     }
                 );
+                if let Some(err) = &keychain_error {
+                    println!("keychain\t{err}");
+                }
             })
         }
         MasterKeyCommand::Wrap => {
@@ -362,22 +413,125 @@ fn run_master_key(
             wrap_master_key(files_dir, &password)?;
             let kind = inspect_master_key(files_dir)?;
             let payload = serde_json::json!({
-                "path": bookclerk_library::master_key_path(files_dir).display().to_string(),
-                "format": match kind {
-                    Some(MasterKeyFormat::Wrapped) => "BCK2",
-                    Some(MasterKeyFormat::Raw) => "BCK1",
-                    None => "missing",
-                },
-                "wrapped": matches!(kind, Some(MasterKeyFormat::Wrapped)),
+                "path": path_text,
+                "format": kind.map_or("missing", MasterKeyFormat::header),
+                "store": kind.map(|f| f.store().as_str()),
+                "wrapped": true,
+            });
+            emit(format, &payload, || {
+                println!("wrapped the data-encryption key ({path_text})");
+            })
+        }
+        MasterKeyCommand::Move { to } => {
+            let password = config.auth_password();
+            let kind = move_master_key(files_dir, to, password.as_deref())?;
+            let mut cfg = config.clone();
+            cfg.auth.key_store = Some(to);
+            let config_path = cfg.paths().config_file.clone();
+            cfg.write_toml_file(&config_path)?;
+            let payload = serde_json::json!({
+                "path": path_text,
+                "format": kind.header(),
+                "store": to.as_str(),
+                "config": config_path.display().to_string(),
+            });
+            emit(format, &payload, || {
+                println!("the data-encryption key is now in the {}", store_label(to));
+                println!("set auth.key_store={}", to.as_str());
+                println!("wrote {}", config_path.display());
+                if to == KeyStoreKind::Keychain {
+                    println!(
+                        "back it up with `bookclerk config master-key export --out <file>`: \
+                         copies of the files directory no longer include it"
+                    );
+                }
+            })
+        }
+        MasterKeyCommand::Export { out } => {
+            if out.exists() {
+                anyhow::bail!("{} already exists; choose a new file", out.display());
+            }
+            let recovery = crate::secret_input::read_secret_stdin("recovery copy password: ")?;
+            let recovery = recovery
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let recovery = zeroize::Zeroizing::new(recovery);
+            let password = config.auth_password();
+            let bytes = export_master_key(files_dir, password.as_deref(), &recovery)?;
+            write_private_new_file(&out, &bytes)?;
+            let payload = serde_json::json!({
+                "out": out.display().to_string(),
+                "format": "BCK2",
+            });
+            emit(format, &payload, || {
+                println!("wrote a recovery copy to {}", out.display());
+                println!("restore it with `bookclerk config master-key import --from <file>`");
+            })
+        }
+        MasterKeyCommand::Import { from } => {
+            let copy = zeroize::Zeroizing::new(std::fs::read(&from).map_err(|e| {
+                anyhow::anyhow!("failed to read recovery copy {}: {e}", from.display())
+            })?);
+            let recovery = if copy.starts_with(b"BCK2") {
+                let text = crate::secret_input::read_secret_stdin("recovery copy password: ")?;
+                Some(zeroize::Zeroizing::new(
+                    text.lines().next().unwrap_or_default().trim().to_string(),
+                ))
+            } else {
+                None
+            };
+            let password = config.auth_password();
+            let fingerprint = import_master_key(
+                files_dir,
+                &copy,
+                recovery.as_deref().map(String::as_str),
+                password.as_deref(),
+            )?;
+            let kind = inspect_master_key(files_dir)?;
+            let payload = serde_json::json!({
+                "path": path_text,
+                "format": kind.map_or("missing", MasterKeyFormat::header),
+                "store": kind.map(|f| f.store().as_str()),
+                "fingerprint": fingerprint,
             });
             emit(format, &payload, || {
                 println!(
-                    "wrapped {}",
-                    bookclerk_library::master_key_path(files_dir).display()
+                    "restored the data-encryption key ({}) into the {}",
+                    fingerprint,
+                    kind.map_or("file", |f| store_label(f.store()))
                 );
             })
         }
     }
+}
+
+/// How a store is named in CLI messages.
+fn store_label(store: KeyStoreKind) -> &'static str {
+    match store {
+        KeyStoreKind::File => "master.key file",
+        KeyStoreKind::Keychain => "OS keychain",
+    }
+}
+
+/// Creates `path` with mode `0600` (never replacing a file) and writes `bytes`.
+fn write_private_new_file(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let mut file = opts
+        .open(path)
+        .map_err(|e| anyhow::anyhow!("failed to create {}: {e}", path.display()))?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))
 }
 
 /// Lists naming tags/profiles or previews a storage key for a library title.

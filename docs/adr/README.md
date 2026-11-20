@@ -52,6 +52,9 @@ a later change supersedes one, its **Status** says so.
 - [Playback](playback.md): playback is a host feature with one core
   (progress, sessions, one rights check, one stream route) that the web
   player, the desktop window and app-compatible clients share.
+- [Master key store](master-key-store.md): the library key can live in
+  the OS keychain, `master.key` then only points at it, and recovery
+  copies replace copying the file.
 
 ## Adding a record
 

@@ -92,7 +92,11 @@ the database (cargo reset --yes)`, rather than reshape the library. See
    ```
 
 2. Keep a copy of `master.key`, and know your `BOOKCLERK_AUTH_PASSWORD`
-   if you set one.
+   if you set one. If the key is in the OS keychain
+   (`bookclerk config master-key status` says `store=keychain`),
+   `master.key` only names the keychain item: save a recovery copy with
+   `bookclerk config master-key export --out <file>` instead, and restore
+   it with `bookclerk config master-key import --from <file>`.
 3. Optionally, save a book list that any build can read:
 
    ```sh
@@ -100,8 +104,8 @@ the database (cargo reset --yes)`, rather than reshape the library. See
    ```
 
 > [!CAUTION]
-> Without `master.key` (and its password), sealed store sign-ins can't be
-> read back.
+> Without the key (`master.key` or a recovery copy, and its password),
+> sealed store sign-ins can't be read back.
 
 ### Update
 

@@ -94,10 +94,12 @@ pub use host_schema::{
 pub use in_process_atomic::{InProcessSqlite, InProcessSqliteAtomic};
 pub use master_key::{
     configure_master_key, configure_master_key_with, discard_minted_master_key,
-    encode_master_key_file, inspect_master_key, install_master_key, master_key_fingerprint,
-    master_key_path, prepare_master_key_dir, require_master_key, resolve_master_key_detailed,
-    uncache_master_key, warn_unwrapped_master_key, wrap_master_key, MasterKey, MasterKeyFormat,
-    MasterKeyResolution, AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
+    encode_master_key_file, export_master_key, import_master_key, inspect_master_key,
+    install_master_key, key_store_preference, master_key_fingerprint, master_key_is_wrapped,
+    master_key_path, move_master_key, prepare_master_key_dir, require_master_key,
+    resolve_master_key_detailed, set_key_store_preference, set_keychain_vault, store_master_key,
+    uncache_master_key, warn_unwrapped_master_key, wrap_master_key, KeyStorePreference, MasterKey,
+    MasterKeyFormat, MasterKeyResolution, AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
 };
 pub use migrations::{
     apply_plugin_migrations, binding_bootstrap_type_env, history_from_execute_reply,

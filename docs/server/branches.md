@@ -479,7 +479,10 @@ The joining daemon writes them as its own bootstrap:
   into the TOML.
 - `node-identity.json`, with the node id the library recorded.
 - `master.key`, wrapped with this server's own `BOOKCLERK_AUTH_PASSWORD`
-  (or `[auth].password`) when set, and unwrapped otherwise.
+  (or `[auth].password`) when set, and unwrapped otherwise. When this
+  server keeps its key in the OS keychain (`[auth].key_store`, or the
+  desktop window's default), the key goes into a new keychain item and
+  `master.key` only names it.
 
 Then `bookclerkd` restarts itself cleanly. It stops its listeners as on
 SIGTERM and re-executes the same binary with the same arguments and
