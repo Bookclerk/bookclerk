@@ -35,9 +35,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bookclerk_node_proto::{
-    LookupEdition, LookupFormat, LookupIdentifier, LookupScheme, LookupWork, WindowCopy,
-    WindowCursor, WindowEdition, WindowWork, MAX_FRAME_BYTES, MAX_LOOKUP_EDITIONS,
-    MAX_PROBE_BITRATE_KBPS, MAX_WINDOW_WORKS,
+    Availability, CatalogMetadata, LookupEdition, LookupFormat, LookupIdentifier, LookupScheme,
+    LookupWork, WindowCopy, WindowCursor, WindowEdition, WindowWork, MAX_FRAME_BYTES,
+    MAX_LOOKUP_EDITIONS, MAX_PROBE_BITRATE_KBPS, MAX_WINDOW_WORKS,
 };
 use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
@@ -46,13 +46,14 @@ use super::batch::{exec, int, text, text_opt};
 use super::catalog_lookup::{
     identifiers_of, in_chunk, is_result_bytes_limit, is_too_wide_to_read, is_trusted_branch,
     listed_titles, read_chunked, read_chunked_all, read_paged, read_paged_by, result_page,
-    run_batches, stamp, title_edition, work_for_question, works_of_editions, PAGED_FIXED_BINDS,
+    run_batches, stamp, title_edition, trusted_branches, work_for_question, works_of_editions,
+    BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL, PAGED_FIXED_BINDS,
 };
 use super::clerk_links::list_clerk_links;
 use super::library_links::list_library_links;
 use crate::entities::{
     account_links, edition_acquisitions, edition_files, holdings, nodes, portal_identities,
-    window_book_parts, window_books,
+    store_listings, window_book_parts, window_books,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
@@ -338,7 +339,7 @@ async fn window_books_page_by(
     let Some(person) = node.owner_user_id else {
         return Ok(None);
     };
-    person_books_page_by(store, person, after, page)
+    person_books_page_by(store, person, after, page, BranchBooks::Leave)
         .await
         .map(Some)
 }
@@ -348,6 +349,11 @@ async fn window_books_page_by(
 /// socket (`GET /api/clerk/v1/connect`): the same works, grouping and
 /// limits as [`window_books_page`], for the person the card belongs to
 /// rather than a branch node's owner.
+///
+/// After the books on its store accounts, a clerk's pages go on with the
+/// books only the library's branches hold ([`branch_books_page`]): each
+/// edition [`Availability::Reachable`], for the person to ask the library
+/// for with its member request route (`POST /api/branch-requests`).
 ///
 /// # Arguments
 ///
@@ -367,7 +373,237 @@ pub async fn person_books_page(
     after: &WindowCursor,
 ) -> Result<(Vec<WindowWork>, Option<WindowCursor>)> {
     let page = u64::try_from(result_page(store)).unwrap_or(1);
-    person_books_page_by(store, user_id, after, page).await
+    person_books_page_by(store, user_id, after, page, BranchBooks::Include).await
+}
+
+/// Whether a person's pages go on with the books the library's branches
+/// list ([`branch_books_page`]) after its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchBooks {
+    /// A clerk's pages: the person may ask the library for them.
+    Include,
+    /// A branch's pages: only the library's own books. A branch answers
+    /// for itself and is never told about the library's other branches.
+    Leave,
+}
+
+/// The cursor that starts the branch part of a clerk's pages. It sorts
+/// after every holding id (lower-case UUIDs), so paging still moves
+/// forward.
+const BRANCH_PHASE: &str = "zz-branch";
+
+/// Where in the branch part of a clerk's pages `after` points: `None` for
+/// a cursor in the library's own books, `Some(None)` for the start of the
+/// branch part, and `Some(Some(edition id))` for after that edition.
+fn branch_phase_after(after: &WindowCursor) -> Option<Option<&str>> {
+    let text = after.as_str();
+    if text == BRANCH_PHASE {
+        return Some(None);
+    }
+    text.strip_prefix(BRANCH_PHASE)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .filter(|edition| !edition.is_empty())
+        .map(Some)
+}
+
+/// The cursor after edition `edition_id` in the branch part of a clerk's
+/// pages; `None` when the id cannot make a cursor.
+fn branch_cursor(edition_id: &str) -> Option<WindowCursor> {
+    WindowCursor::parse(&format!("{BRANCH_PHASE}-{edition_id}"))
+}
+
+/// One `edition_id` read alone.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct EditionIdRow {
+    /// `store_listings.edition_id`.
+    edition_id: String,
+}
+
+/// One `store_listings.id` read alone.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct ListingIdRow {
+    /// `store_listings.id`.
+    id: String,
+}
+
+/// True when any branch listing is stored, current or not: whether a
+/// clerk's pages need a branch part at all.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn any_branch_listing(store: &LibraryStore) -> Result<bool> {
+    Ok(store_listings::Entity::find()
+        .select_only()
+        .column(store_listings::Column::Id)
+        .filter(store_listings::Column::PluginKey.starts_with(BRANCH_LISTING_PREFIX))
+        .limit(1)
+        .into_model::<ListingIdRow>()
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .is_some_and(|row| !row.id.is_empty()))
+}
+
+/// The editions of `edition_ids` this library holds on a store account:
+/// those with a listing (of any store) that an account holding names.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn editions_held_on_accounts(
+    store: &LibraryStore,
+    edition_ids: &[String],
+) -> Result<BTreeSet<String>> {
+    let listings = read_chunked_all(store, edition_ids, |part| {
+        store_listings::Entity::find().filter(store_listings::Column::EditionId.is_in(part))
+    })
+    .await?;
+    let edition_of: HashMap<String, String> = listings
+        .into_iter()
+        .filter(|l| !l.plugin_key.starts_with(BRANCH_LISTING_PREFIX))
+        .map(|l| (l.id, l.edition_id))
+        .collect();
+    let listing_ids: Vec<String> = edition_of.keys().cloned().collect();
+    Ok(read_chunked_all(store, &listing_ids, |part| {
+        holdings::Entity::find()
+            .filter(holdings::Column::ListingId.is_in(part))
+            .filter(holdings::Column::HolderKind.eq("account"))
+    })
+    .await?
+    .into_iter()
+    .filter_map(|h| edition_of.get(&h.listing_id).cloned())
+    .collect())
+}
+
+/// The edition a branch listing names, as a clerk's page carries it:
+/// [`Availability::Reachable`], with no formats (the library holds no
+/// copy) and the listing's own metadata. `None` when the listing does not
+/// make a well-formed edition.
+fn branch_edition(row: &store_listings::Model) -> Option<LookupEdition> {
+    let (store_id, product_id) = row.product_id.split_once(':')?;
+    let edition = LookupEdition {
+        store: store_id.trim().to_ascii_lowercase(),
+        marketplace: row.marketplace.trim().to_ascii_lowercase(),
+        product_id: product_id.to_string(),
+        availability: Availability::Reachable,
+        formats: Vec::new(),
+        metadata: CatalogMetadata {
+            title: row.title.clone(),
+            subtitle: row.subtitle.clone(),
+            authors: row.authors.clone(),
+            narrators: row.narrators.clone(),
+            series: row.series.clone(),
+            series_index: row.series_index.clone(),
+            asin: None,
+            isbn: None,
+            publisher: row.publisher.clone(),
+            length_minutes: row.length_minutes,
+            content_kind: None,
+            language: row.language.clone(),
+            published_at: row.published_at.clone(),
+        },
+    };
+    edition.problem().is_none().then_some(edition)
+}
+
+/// One page of the branch part of a clerk's pages: the editions a branch
+/// this library trusts listed within [`BRANCH_LISTING_TTL`] (the same
+/// listings Discover and search show as available through a branch, and
+/// that `POST /api/branch-requests` asks for), that no store account here
+/// holds.
+///
+/// Editions are read in edition id order after `after` (at most
+/// [`WINDOW_BOOKS_READ`] and no more than `page` per read), grouped under
+/// their work with the work's identifiers like the library's own books,
+/// each [`Availability::Reachable`] and never the person's. A page names
+/// no branch: the library picks one when the person asks. The next cursor
+/// is the last edition the page covered.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn branch_books_page(
+    store: &LibraryStore,
+    after: Option<&str>,
+    page: u64,
+) -> Result<(Vec<WindowWork>, Option<WindowCursor>)> {
+    let limit = WINDOW_BOOKS_READ.min(page.max(1));
+    let mut select = store_listings::Entity::find()
+        .select_only()
+        .column(store_listings::Column::EditionId)
+        .distinct()
+        .filter(store_listings::Column::PluginKey.starts_with(BRANCH_LISTING_PREFIX))
+        .order_by_asc(store_listings::Column::EditionId)
+        .limit(limit);
+    if let Some(after) = after {
+        select = select.filter(store_listings::Column::EditionId.gt(after));
+    }
+    let edition_ids: Vec<String> = select
+        .into_model::<EditionIdRow>()
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .into_iter()
+        .map(|row| row.edition_id)
+        .collect();
+    let full = u64::try_from(edition_ids.len()).unwrap_or(u64::MAX) >= limit;
+    let trusted: BTreeSet<String> = trusted_branches(store).await?.into_iter().collect();
+    let since = Utc::now() - BRANCH_LISTING_TTL;
+    let mut current: BTreeMap<String, Vec<store_listings::Model>> = BTreeMap::new();
+    for row in read_chunked_all(store, &edition_ids, |part| {
+        store_listings::Entity::find()
+            .filter(store_listings::Column::EditionId.is_in(part))
+            .filter(store_listings::Column::PluginKey.starts_with(BRANCH_LISTING_PREFIX))
+    })
+    .await?
+    {
+        let node = row.plugin_key.strip_prefix(BRANCH_LISTING_PREFIX);
+        let fresh = chrono::DateTime::parse_from_rfc3339(&row.observed_at)
+            .is_ok_and(|seen| seen.with_timezone(&Utc) >= since);
+        if fresh && node.is_some_and(|node| trusted.contains(node)) {
+            current.entry(row.edition_id.clone()).or_default().push(row);
+        }
+    }
+    let listed: Vec<String> = current.keys().cloned().collect();
+    let held = editions_held_on_accounts(store, &listed).await?;
+    let work_of_edition = works_of_editions(store, &listed).await?;
+    let work_ids: Vec<String> = work_of_edition
+        .values()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let identifiers = identifiers_of(store, &work_ids).await?;
+    let mut builder = PageBuilder::default();
+    let mut last: Option<&String> = None;
+    let mut stopped = false;
+    'editions: for edition_id in &edition_ids {
+        // Listed but held here (the library's own pages carry it), or with
+        // no work to ask for: nothing to request.
+        let work = work_of_edition
+            .get(edition_id)
+            .filter(|_| !held.contains(edition_id));
+        if let (Some(work), Some(rows)) = (work, current.get(edition_id)) {
+            for edition in rows.iter().filter_map(branch_edition) {
+                let edition = WindowEdition {
+                    edition,
+                    yours: false,
+                    copy: None,
+                };
+                if !builder.push(work, identifiers.get(work), edition) {
+                    stopped = true;
+                    break 'editions;
+                }
+            }
+        }
+        last = Some(edition_id);
+    }
+    let next = (stopped || full)
+        .then_some(last)
+        .flatten()
+        .and_then(|edition| branch_cursor(edition));
+    Ok((builder.works, next))
 }
 
 /// The library's account holdings after cursor `after`, at most `limit`, in
@@ -403,7 +639,13 @@ async fn person_books_page_by(
     person: i64,
     after: &WindowCursor,
     page: u64,
+    branch_books: BranchBooks,
 ) -> Result<(Vec<WindowWork>, Option<WindowCursor>)> {
+    if branch_books == BranchBooks::Include {
+        if let Some(edition) = branch_phase_after(after) {
+            return branch_books_page(store, edition, page).await;
+        }
+    }
     // The person sees every book on the library's store accounts, as the
     // library's own Library page lists them; the ones on an account of
     // their own are marked theirs.
@@ -447,9 +689,7 @@ async fn person_books_page_by(
         .collect();
     let identifiers = identifiers_of(store, &work_ids).await?;
 
-    let mut works: Vec<WindowWork> = Vec::new();
-    let mut index: HashMap<String, usize> = HashMap::new();
-    let mut used = 0usize;
+    let mut builder = PageBuilder::default();
     let mut last: Option<String> = None;
     let mut stopped = false;
     for listed in &titles {
@@ -467,68 +707,11 @@ async fn person_books_page_by(
             .get(&title.edition_id)
             .cloned()
             .unwrap_or_else(|| format!("edition-{}", title.edition_id));
-        // A work already listing the most editions a frame allows goes on
-        // under another key of this page (`<work>-x<n>`) with the same
-        // identifiers, so the window still merges them.
-        let mut key = work.clone();
-        let mut overflow = 0;
-        while let Some(&at) = index.get(&key) {
-            let editions = &works[at].editions;
-            let listed = editions
-                .iter()
-                .any(|e| same_edition(&e.edition, &edition.edition));
-            if listed || editions.len() < MAX_LOOKUP_EDITIONS {
-                break;
-            }
-            overflow += 1;
-            key = overflow_key(&work, overflow);
-        }
-        let mut size = encoded_len(&edition);
-        let at = index.get(&key).copied();
-        if at.is_none() {
-            size += encoded_len(&key)
-                + identifiers
-                    .get(&work)
-                    .map_or(0, |ids| ids.iter().map(encoded_len).sum::<usize>());
-        }
-        let new_work = at.is_none();
-        if !works.is_empty()
-            && (used + size > WINDOW_PAGE_BUDGET || (new_work && works.len() >= MAX_WINDOW_WORKS))
-        {
+        if !builder.push(&work, identifiers.get(&work), edition) {
             stopped = true;
             break;
         }
         last = Some(title.holding_id.clone());
-        used += size;
-        let at = match at {
-            Some(at) => at,
-            None => {
-                works.push(WindowWork {
-                    work: key.clone(),
-                    identifiers: identifiers.get(&work).cloned().unwrap_or_default(),
-                    editions: Vec::new(),
-                });
-                index.insert(key, works.len() - 1);
-                works.len() - 1
-            }
-        };
-        let editions = &mut works[at].editions;
-        let same = editions
-            .iter()
-            .position(|e| same_edition(&e.edition, &edition.edition));
-        match same {
-            // Two accounts hold it: the library has every format either
-            // copy has, and it is the person's when either account is.
-            Some(i) => {
-                let listed = &mut editions[i];
-                listed.yours |= edition.yours;
-                let held = &mut listed.edition.formats;
-                held.extend(edition.edition.formats);
-                held.sort_unstable();
-                held.dedup();
-            }
-            None => editions.push(edition),
-        }
     }
     if !stopped {
         // Holdings of other plugins' accounts, and titles too wide to
@@ -540,7 +723,104 @@ async fn person_books_page_by(
         .flatten()
         .and_then(|id| WindowCursor::parse(&id))
         .filter(|next| next > after);
-    Ok((works, next))
+    // The library's own books are done: a clerk's pages go on with those
+    // only its branches hold, when any branch listed anything.
+    let next = match next {
+        None if branch_books == BranchBooks::Include && any_branch_listing(store).await? => {
+            WindowCursor::parse(BRANCH_PHASE).filter(|next| next > after)
+        }
+        next => next,
+    };
+    Ok((builder.works, next))
+}
+
+/// A page of works being filled: editions grouped under their work's key,
+/// within the frame budget and [`MAX_WINDOW_WORKS`].
+#[derive(Default)]
+struct PageBuilder {
+    /// The page's works, in the order they were first named.
+    works: Vec<WindowWork>,
+    /// Each page key's place in `works`.
+    index: HashMap<String, usize>,
+    /// Encoded bytes the page carries so far.
+    used: usize,
+}
+
+impl PageBuilder {
+    /// Adds `edition` under `work` (with the work's `identifiers`).
+    ///
+    /// A work already listing the most editions a frame allows goes on
+    /// under another key of this page (`<work>-x<n>`) with the same
+    /// identifiers, so the reader still merges them. An edition the work
+    /// already lists is joined into it: the library has every format
+    /// either has, and it is the person's when either is.
+    ///
+    /// # Returns
+    ///
+    /// `false`, adding nothing, when the edition would pass the frame
+    /// budget or need a work past [`MAX_WINDOW_WORKS`]; the page is then
+    /// full. The first edition of a page always fits.
+    fn push(
+        &mut self,
+        work: &str,
+        identifiers: Option<&Vec<LookupIdentifier>>,
+        edition: WindowEdition,
+    ) -> bool {
+        let mut key = work.to_string();
+        let mut overflow = 0;
+        while let Some(&at) = self.index.get(&key) {
+            let editions = &self.works[at].editions;
+            let listed = editions
+                .iter()
+                .any(|e| same_edition(&e.edition, &edition.edition));
+            if listed || editions.len() < MAX_LOOKUP_EDITIONS {
+                break;
+            }
+            overflow += 1;
+            key = overflow_key(work, overflow);
+        }
+        let mut size = encoded_len(&edition);
+        let at = self.index.get(&key).copied();
+        if at.is_none() {
+            size += encoded_len(&key)
+                + identifiers.map_or(0, |ids| ids.iter().map(encoded_len).sum::<usize>());
+        }
+        if !self.works.is_empty()
+            && (self.used + size > WINDOW_PAGE_BUDGET
+                || (at.is_none() && self.works.len() >= MAX_WINDOW_WORKS))
+        {
+            return false;
+        }
+        self.used += size;
+        let at = match at {
+            Some(at) => at,
+            None => {
+                self.works.push(WindowWork {
+                    work: key.clone(),
+                    identifiers: identifiers.cloned().unwrap_or_default(),
+                    editions: Vec::new(),
+                });
+                self.index.insert(key, self.works.len() - 1);
+                self.works.len() - 1
+            }
+        };
+        let editions = &mut self.works[at].editions;
+        match editions
+            .iter()
+            .position(|e| same_edition(&e.edition, &edition.edition))
+        {
+            Some(i) => {
+                let listed = &mut editions[i];
+                listed.yours |= edition.yours;
+                let held = &mut listed.edition.formats;
+                held.extend(edition.edition.formats);
+                held.sort_unstable();
+                held.dedup();
+            }
+            None => editions.push(edition),
+        }
+        true
+    }
 }
 
 /// A stamp for one complete read of a library's window books: pass it to
@@ -627,6 +907,11 @@ pub async fn record_window_page(
                         .into_iter()
                         .collect();
                     yours |= before.yours;
+                    // Held on a store account on any page of the read wins
+                    // over only listed by a branch.
+                    if before.availability == Availability::Owned {
+                        richer.availability = Availability::Owned;
+                    }
                     merged = richer;
                     &merged
                 }
@@ -781,6 +1066,9 @@ struct Earlier {
     yours: bool,
     /// The library's copy as an earlier page of this read stated it.
     copy: Option<WindowCopy>,
+    /// Whether an earlier page held it on a store account there or only
+    /// a branch listed it.
+    availability: Availability,
 }
 
 /// What this same read (stamped `seen_at`) already stored for the editions
@@ -853,6 +1141,7 @@ async fn earlier_in_read(
             (
                 key,
                 Earlier {
+                    availability: book.edition.availability,
                     formats: book.edition.formats,
                     yours: book.yours,
                     copy: book.copy,
@@ -1061,6 +1350,10 @@ pub struct WindowEntryEdition {
     pub yours: bool,
     /// The copy of its audio that library holds, when it stated one.
     pub copy: Option<WindowCopy>,
+    /// That library's own key for the edition's work (its work id, or
+    /// `edition-<id>` for an edition with no work there): what to ask the
+    /// library for when only one of its branches lists the edition.
+    pub work_ref: String,
 }
 
 /// One work in the window's merged view.
@@ -1297,6 +1590,7 @@ pub async fn window_view(store: &LibraryStore) -> Result<Vec<WindowEntry>> {
                         edition: book.edition.clone(),
                         yours: book.yours,
                         copy: book.copy.clone(),
+                        work_ref: row.work_ref.clone(),
                     }
                 })
                 .collect();

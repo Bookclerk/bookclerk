@@ -1324,6 +1324,7 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::clerk_link::api::post_clerk_start))
         .routes(routes!(crate::clerk_link::api::post_clerk_callback))
         .routes(routes!(crate::clerk_link::api::post_clerk_sign_out))
+        .routes(routes!(crate::clerk_link::requests::post_clerk_request))
         // Store connections across linked libraries: the branch's person
         // only (the handler checks).
         .routes(routes!(

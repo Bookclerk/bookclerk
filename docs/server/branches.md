@@ -1127,6 +1127,9 @@ branch** with a **Request from Riley's branch** button. The API is
 `POST /api/branch-requests` `{"work_id": "...", "node_id": "..."}`, where
 `work_id` and `node_id` come from one of the work's `available_through`
 entries; leave `node_id` out to ask the first branch that lists the work.
+A clerk holding a library card for A asks through the same route with the
+card, from the books only A's branches hold on its clerk pages (see
+[Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).
 
 1. **A queues the request.** It becomes a `branch_request` job on A,
    pinned to B and naming the edition B listed (store, marketplace and

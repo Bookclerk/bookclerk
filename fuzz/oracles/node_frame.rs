@@ -48,8 +48,10 @@
 //! - a `window.page` frame a window would accept (`window_page_problem`
 //!   finds nothing for the cursor it asked with) carries at most 100 works,
 //!   each once, with plain grouping keys, plain identifiers (a marketplace
-//!   exactly on an ASIN), 1 to 8 distinct owned editions with a non-blank
-//!   title and, where the library states the copy it holds, a copy with a
+//!   exactly on an ASIN), 1 to 8 distinct editions with a non-blank title,
+//!   each owned, or reachable (only a branch of the library lists it) and
+//!   then neither the person's nor with a copy, and, where the library
+//!   states the copy it holds, a copy with a
 //!   lowercase `type/subtype` content type of at most 64 bytes, a bitrate
 //!   of 1 to 20000 kbit/s when stated, a short lowercase source store when
 //!   stated and a plain version of at most 64 bytes, and a plain next cursor (1 to 64 letters, digits or `-`)
@@ -595,11 +597,12 @@ fn check_window(body: &Body) {
                     copy.version
                 );
             }
-            for edition in work.editions.iter().map(|e| &e.edition) {
-                assert_eq!(
-                    edition.availability,
-                    Availability::Owned,
-                    "a window edition that is not owned was accepted"
+            for listed in &work.editions {
+                let edition = &listed.edition;
+                assert!(
+                    edition.availability == Availability::Owned
+                        || (!listed.yours && listed.copy.is_none()),
+                    "a reachable window edition that is the person's or has a copy was accepted"
                 );
                 assert!(
                     !edition.metadata.title.trim().is_empty(),
