@@ -228,12 +228,12 @@ function NodeRow({
         {drained ? (
           <Badge className="bg-brick/10 text-brick normal-case tracking-normal">Drained</Badge>
         ) : null}
-        <Badge
-          className="bg-ink/5 text-ink/60 normal-case tracking-normal"
-          title={status?.public_origin ?? undefined}
-        >
+        <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
           {relationshipLabel(node.relationship)}
         </Badge>
+        {status?.public_origin ? (
+          <span className="font-mono text-[11px] text-ink/45">{status.public_origin}</span>
+        ) : null}
         {node.target ? (
           <span className="font-mono text-[11px] text-ink/45">{node.target}</span>
         ) : null}
