@@ -1,6 +1,6 @@
 # ADR: Public addresses come from ingress plugins
 
-- **Status:** Proposed (decisions made with the maintainer on 2026-11-20)
+- **Status:** Accepted (decisions made with the maintainer on 2026-11-20)
 - **Date:** 2026-11-20
 - **Related:** [Control plane](control-plane.md),
   [Library catalog network](library-catalog-network.md),
