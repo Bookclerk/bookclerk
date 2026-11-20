@@ -86,14 +86,20 @@ contract must be **identical** across runtimes.
    - **Brokered HTTP** uses the same domain grants as isolate fetch. **Raw
      TCP, UDP, and listen are distinct capabilities.** Jail default-deny
      remains. Native outbound is not permanently coarse-unrestricted.
-   - The OS jail for every workerd guest is `NetPolicy::OutboundListen` so
-     `bookclerk-workerd` can `bind(127.0.0.1:0)` for the host↔isolate RPC
-     bridge, **including when the stored grant is `network_mode = "deny"`**.
-     Linux Landlock can restrict `bind` but cannot restrict outbound
-     `connect`, so that OS layer is **not** the grant denial boundary. Grant
-     denial is isolate-enforced: `BOOKCLERK_WORKERD_GRANT_NETWORK_MODE` sets
-     plugin `globalOutbound` to `blocked` (deny) or the egress proxy
-     (outbound). The generated workerd config exposes a single listen socket
+   - The OS jail for every workerd guest is `NetPolicy::LocalIpc`, whatever
+     the grant says: the host↔isolate RPC bridge is a Unix socket and the
+     isolate's egress leaves through the launcher's relay as tunnels the
+     unsandboxed host checks and dials, so neither `bookclerk-workerd` nor
+     `workerd` needs an IP socket (Linux seccomp refuses `AF_INET`,
+     `AF_INET6` and `AF_PACKET`; macOS denies all network but Unix sockets;
+     Windows keeps only in-container loopback for the bridge). The grant is
+     enforced twice: by the egress worker inside the isolate, and by the
+     host's tunnel check outside the jail, which holds even if the isolate
+     is escaped. A denied grant gets no host link and a `blocked`
+     `globalOutbound`. Until per-port fetch grants exist, the host admits a
+     fetch host on any port. This replaces the earlier
+     `NetPolicy::OutboundListen` jail, which left outbound `connect` open at
+     the OS layer. The generated workerd config exposes a single listen socket
      (`rpc` → bridge); compatibility flags (the Python workers pair) do not
      add sockets.
 7. **Consent UX:** CLI and web UI prompt before enable; grants persisted;
@@ -172,9 +178,8 @@ socketpairs. Windows links are two unidirectional pipes
 `BOOKCLERK_GATEWAY_GUEST_RPC_WRITE` write half, guest proxy write half
 `BOOKCLERK_SOCKET_PROXY_WRITE`) so a concurrent read cannot lock the write.
 The guest has no
-ambient `AF_INET` and no named endpoint. The gateway jail stays
-`OutboundListen` so `bookclerk-workerd` can bind the host↔isolate RPC
-bridge. Gateway `TMPDIR` is a host-owned `session-<nonce>/` directory;
+ambient `AF_INET` and no named endpoint. The gateway jail is
+`LocalIpc`: its host↔isolate RPC bridge is a Unix socket. Gateway `TMPDIR` is a host-owned `session-<nonce>/` directory;
 guest `TMPDIR` is its own scratch.
 
 ### Why nesting was removed

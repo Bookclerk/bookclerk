@@ -2577,6 +2577,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "httparse",
  "libc",
  "rand 0.8.7",
  "serde",

@@ -26,6 +26,7 @@ boundary extends it.
 | `granted_http` | The granted reverse channel | `bookclerk-workerd::granted_http` |
 | `workerd_control` | Lines on workerd's stdout, shared with plugin isolates, that report the bridge RPC port on Windows (`--control-fd`) | `bookclerk-workerd::control` |
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
+| `egress_relay_head` | Request heads workerd sends the launcher's egress relay (plugin code) and response heads from the servers a plugin reached | `bookclerk-workerd::egress_relay` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
 | `https_url_policy` | URLs from untrusted output checked against a host allowlist (no caller since covers moved to the cover service) | `bookclerk-plugin-manifest::https_url_on_hosts` |
@@ -105,6 +106,14 @@ only that. The others check:
   an `httparse` reference decoder. The route body reader (framing dispatch,
   byte cap, end of stream) is split-invariant and yields what the declared
   framing promises.
+- **`egress_relay_head`**: byte 0 picks a request head (even) or a
+  response head (odd). Every head the relay accepts is one `httparse` reads
+  the same way (method, target, status). A rewritten request is in origin
+  form with exactly one `host` naming the tunnel target, one `connection:
+  close` or `upgrade`, none of the stripped proxy and hop-by-hop headers,
+  and every other header intact. A final response head carries exactly one
+  `connection: close`. The shared oracle is
+  `fuzz/oracles/egress_relay_head.rs`, replayed from `bookclerk-workerd`.
 - **`workerd_control`**: a port the parser accepts agrees with an
   independent `serde_json::Value` reading, every listen object that reading
   accepts is accepted once re-encoded canonically, and no structured log
@@ -118,7 +127,9 @@ only that. The others check:
   percent-encoded hosts never match, and the JSON round-trips. The
   guest's own `User-Agent` is kept only on hosts an own-agent pattern
   matches, never through a `*` entry however it is spelled, and every
-  other request gets the host's agent.
+  other request gets the host's agent. The isolate tunnel rule
+  (`allows_isolate_tunnel`) is exactly the union of the fetch, redirect and
+  TCP rules, on any port.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
   yields a deny policy.
 - **`cron_schedule`**: an accepted schedule round-trips through its

@@ -140,9 +140,11 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-# The workerd_control, socket_broker and socket_route oracles are shared
-# with the replay tests through `#[path]`.
+# The workerd_control, socket_broker, socket_route and egress_relay_head
+# oracles are shared with the replay tests through `#[path]`.
 paths = [
+    "fuzz/corpus/egress_relay_head/**",
+    "fuzz/oracles/egress_relay_head.rs",
     "fuzz/corpus/granted_http/**",
     "fuzz/corpus/workerd_control/**",
     "fuzz/oracles/workerd_control.rs",

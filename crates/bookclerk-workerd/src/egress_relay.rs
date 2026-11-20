@@ -219,7 +219,7 @@ fn split_head(head: &[u8]) -> std::result::Result<SplitHead<'_>, HeadError> {
         .ok_or(HeadError::BadStartLine)?;
     let mut lines = body.split("\r\n");
     let start = lines.next().ok_or(HeadError::BadStartLine)?;
-    if start.contains(['\r', '\n']) {
+    if start.bytes().any(|byte| byte.is_ascii_control()) {
         return Err(HeadError::BadStartLine);
     }
     let mut headers = Vec::new();
@@ -234,9 +234,20 @@ fn split_head(head: &[u8]) -> std::result::Result<SplitHead<'_>, HeadError> {
         if name.is_empty() || !name.bytes().all(is_token_byte) {
             return Err(HeadError::BadHeader);
         }
+        // RFC 9110 field-value: visible ASCII, obs-text, SP and HTAB only.
+        // A NUL or other control byte is refused, not forwarded.
+        if !value.bytes().all(is_field_value_byte) {
+            return Err(HeadError::BadHeader);
+        }
         headers.push((name, value.trim_matches([' ', '\t'])));
     }
     Ok((start, headers))
+}
+
+/// Whether `byte` may appear in an HTTP field value (RFC 9110: `VCHAR`,
+/// `obs-text`, SP or HTAB).
+fn is_field_value_byte(byte: u8) -> bool {
+    byte == b'\t' || byte == b' ' || byte.is_ascii_graphic() || byte >= 0x80
 }
 
 /// Whether `byte` may appear in an HTTP token (RFC 9110 `tchar`).
@@ -284,15 +295,27 @@ fn parse_target(
             None => (authority, None),
         }
     };
-    if host.is_empty() {
+    // A DNS name or IPv4 literal (letters, digits, `-`, `.`, `_`), or the
+    // inside of an IPv6 literal (hex digits, `:`, `.`). Anything else, such
+    // as `%` escapes or zone ids, is refused rather than passed on.
+    let host_ok = !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._:".contains(&b));
+    if !host_ok {
         return Err(HeadError::BadTarget);
     }
     let port = match port {
-        Some(text) => text
-            .parse::<u16>()
-            .ok()
-            .filter(|p| *p != 0)
-            .ok_or(HeadError::BadTarget)?,
+        // Canonical decimal only: no sign, no leading zero, so the target
+        // names one authority however it was written.
+        Some(text)
+            if !text.is_empty()
+                && text.bytes().all(|b| b.is_ascii_digit())
+                && !text.starts_with('0') =>
+        {
+            text.parse::<u16>().map_err(|_| HeadError::BadTarget)?
+        }
+        Some(_) => return Err(HeadError::BadTarget),
         None => default_port.ok_or(HeadError::BadTarget)?,
     };
     Ok(TunnelTarget {
