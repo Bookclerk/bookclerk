@@ -28,7 +28,7 @@ use crate::column_read::only_column;
 use crate::control_plane::{load_artifact_blob, put_artifact_blob};
 use crate::entities::{
     account_credential_revisions, account_links, account_scan_state, account_shares, accounts,
-    bookclerk_receipts, books, catalog_listing_optouts, catalog_lookups, claim_tickets,
+    bookclerk_receipts, bookmarks, books, catalog_listing_optouts, catalog_lookups, claim_tickets,
     clerk_links, configuration_audit, configuration_changes, configuration_documents, contributors,
     copy_grants, credits, domain_events, edition_acquisitions, edition_files, edition_identifiers,
     editions, embeddings, encrypted_secrets, event_deliveries, event_outbox_stats, expressions,
@@ -36,13 +36,14 @@ use crate::entities::{
     library_links, link_imports, link_requests, listening_progress, listing_offers,
     node_credentials, node_enrollment_links, node_upload_sessions, nodes, oidc_auth_codes,
     oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions, patron_controls,
-    patron_scope_keys, patron_scopes, pending_joins, plugin_artifacts, plugin_cron_cursors,
-    plugin_deployments, plugin_installs, plugin_instances, plugin_kv, plugin_placements,
-    plugin_schemas, plugin_versions, portal_identities, portal_sessions, remote_plugin_consents,
-    resolution_conflicts, resolution_overrides, saved_filters, security_audit_events, series,
-    series_entries, store_listings, title_request_sources, title_requests, user_invites,
-    user_preferences, user_title_state, user_work_tags, users, webauthn_challenges,
-    webauthn_credentials, window_book_parts, window_books, work_identifiers, works,
+    patron_scope_keys, patron_scopes, pending_joins, playback_progress, playback_sessions,
+    plugin_artifacts, plugin_cron_cursors, plugin_deployments, plugin_installs, plugin_instances,
+    plugin_kv, plugin_placements, plugin_schemas, plugin_versions, portal_identities,
+    portal_sessions, remote_plugin_consents, resolution_conflicts, resolution_overrides,
+    saved_filters, security_audit_events, series, series_entries, store_listings,
+    title_request_sources, title_requests, user_invites, user_preferences, user_title_state,
+    user_work_tags, users, webauthn_challenges, webauthn_credentials, window_book_parts,
+    window_books, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -206,6 +207,9 @@ macro_rules! copied_entities {
         $each!(title_request_sources);
         $each!(user_title_state);
         $each!(user_work_tags);
+        $each!(playback_progress);
+        $each!(playback_sessions);
+        $each!(bookmarks);
         $each!(embeddings);
         $each!(user_preferences);
         $each!(patron_controls);

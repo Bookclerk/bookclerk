@@ -212,6 +212,7 @@ opens as the same library, at the same configuration revisions:
   deployments and placements;
 - nodes and their credentials, enrollment links, links to other libraries
   and the books they share;
+- each person's playback progress, listening sessions and bookmarks;
 - queued jobs and events, and the receipts that make retried operations
   safe.
 
