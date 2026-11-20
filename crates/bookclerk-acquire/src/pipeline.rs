@@ -94,6 +94,10 @@ pub struct AcquireRequest {
     /// The libraries asked for the copy they already hold of the title
     /// before it is fetched from its store. The default asks none.
     pub library_copies: LibraryCopySource,
+    /// The destination this request names files for, which translates the
+    /// host keys its naming templates build. The default keeps host keys;
+    /// [`request_for_destination`] sets it for each destination.
+    pub destination_keys: crate::keys::DestinationKeys,
 }
 
 /// Turns a cover URL a metadata provider named into an image the acquire can
@@ -509,6 +513,8 @@ async fn acquire_book_recorded(
     stored: &StoredCopies,
 ) -> Result<AcquireResult> {
     req.options = destinations.primary_destination().options.clone();
+    req.destination_keys =
+        crate::keys::DestinationKeys::of(destinations.primary_destination().backend.as_ref());
     tracing::info!(
         asin = %req.asin,
         source = %req.source,
@@ -1557,6 +1563,7 @@ fn request_for_destination(
 ) -> AcquireRequest {
     let mut dest_req = req.clone();
     dest_req.options = destination.options.clone();
+    dest_req.destination_keys = crate::keys::DestinationKeys::of(destination.backend.as_ref());
     dest_req
 }
 
@@ -1735,7 +1742,7 @@ async fn planned_chapter_storage_key(
 ) -> String {
     let templates = req.options.naming_templates();
     let (folder_ctx, file_ctx) = naming_contexts(library, req).await;
-    chapter_storage_key_with_folder(
+    let host_key = chapter_storage_key_with_folder(
         &folder_ctx,
         &file_ctx,
         Some(templates.folder.as_str()),
@@ -1745,7 +1752,8 @@ async fn planned_chapter_storage_key(
         &file.title,
         &file.ext,
         req.options.path_limits,
-    )
+    );
+    req.destination_keys.translate(host_key).await
 }
 
 /// Part-file storage key with a `-pNNN` product-id suffix so parts do not collide.
@@ -1768,7 +1776,7 @@ async fn planned_plain_part_storage_key(
     part_ctx.chapter_number = Some(u32::try_from(idx + 1).unwrap_or(1));
     part_ctx.chapter_title = Some(file.title.clone());
     let templates = req.options.naming_templates();
-    storage_key_with_contexts(
+    let host_key = storage_key_with_contexts(
         &folder_ctx,
         &part_ctx,
         Some(templates.folder.as_str()),
@@ -1776,7 +1784,8 @@ async fn planned_plain_part_storage_key(
         &file.ext,
         &req.options.replacement_characters,
         req.options.path_limits,
-    )
+    );
+    req.destination_keys.translate(host_key).await
 }
 
 /// Marks the title as downloading, then fetches and stores it from the content source.
@@ -2003,6 +2012,9 @@ async fn store_copies_from(
         let at = progress.next;
         let mut copy_req = req.clone();
         copy_req.options = target.destinations.primary_destination().options.clone();
+        copy_req.destination_keys = crate::keys::DestinationKeys::of(
+            target.destinations.primary_destination().backend.as_ref(),
+        );
         // The first copy stores and records the title's companion PDF as an
         // acquire of one copy does; a later copy's PDF goes only to the
         // destinations no earlier copy reached ([`store_extra_copy_pdf`]).
@@ -2225,8 +2237,7 @@ async fn check_copy_folders(
     let mut owners: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for (at, target) in copies.iter().enumerate() {
         for dest in &target.destinations.items {
-            let mut copy_req = req.clone();
-            copy_req.options = dest.options.clone();
+            let copy_req = request_for_destination(req, dest);
             for folder in planned_title_folders(library, &copy_req).await {
                 let owner = *owners.entry(folder.clone()).or_insert(at);
                 if owner != at {
@@ -4156,17 +4167,23 @@ async fn naming_contexts(
 }
 
 /// Planned audio storage key for `ext`, honoring folder/file templates and
-/// `save_podcasts_to_parent_folder`.
+/// `save_podcasts_to_parent_folder`: the host key the templates build,
+/// translated by the request's destination
+/// ([`AcquireRequest::destination_keys`]).
 pub async fn planned_storage_key_for(
     library: &LibraryStore,
     req: &AcquireRequest,
     ext: &str,
 ) -> String {
-    planned_storage_key_with_rules(library, req, ext, &req.options.replacement_characters).await
+    let host_key =
+        planned_storage_key_with_rules(library, req, ext, &req.options.replacement_characters)
+            .await;
+    req.destination_keys.translate(host_key).await
 }
 
-/// Like [`planned_storage_key_for`] but with an explicit replacement-rule set
-/// (used by reconcile to probe wildcard patterns across sanitization profiles).
+/// The host key [`planned_storage_key_for`] translates, built with an
+/// explicit replacement-rule set and not translated (used by reconcile to
+/// probe wildcard patterns across sanitization profiles).
 pub async fn planned_storage_key_with_rules(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -4373,7 +4390,7 @@ pub async fn planned_title_names(
         // title's own, however its template reads.
         let parents_folder = folder_ctx.asin != file_ctx.asin;
         own_folder &= !parents_folder && !folder_of(&key).is_empty() && filed_apart;
-        let stem = stem_of(&key);
+        let stem = stem_of(&variant.destination_keys.translate(key.clone()).await);
         if !names.audio_stems.contains(&stem) {
             names.audio_stems.push(stem);
         }
@@ -4409,6 +4426,8 @@ pub async fn planned_title_names(
             ext,
             variant.options.path_limits,
         );
+        let part = variant.destination_keys.translate(part).await;
+        let chapter = variant.destination_keys.translate(chapter).await;
         for pattern in [pattern_of(&part), pattern_of(&chapter)] {
             if !names.part_patterns.contains(&pattern) {
                 names.part_patterns.push(pattern);
@@ -4485,7 +4504,10 @@ async fn check_edition_paths(
             continue;
         };
         let (folder_ctx, file_ctx) = naming_contexts(library, &dest_req).await;
-        let key = planned_audio_key(&dest_req, &folder_ctx, &file_ctx);
+        let key = dest_req
+            .destination_keys
+            .translate(planned_audio_key(&dest_req, &folder_ctx, &file_ctx))
+            .await;
         if name_held_elsewhere(library, &key, owner).await? {
             return Err(AcquireError::Other(anyhow::anyhow!(
                 "another edition's files already use {key}; nothing was written"
@@ -4929,6 +4951,7 @@ mod tests {
             parent_call_number: None,
             metadata: AcquireMetadata::default(),
             library_copies: LibraryCopySource::default(),
+            destination_keys: crate::keys::DestinationKeys::default(),
         }
     }
 
@@ -8478,6 +8501,144 @@ mod tests {
         assert!(
             names.own_folder,
             "a folder named for the edition is its own"
+        );
+    }
+
+    /// Destination double that stores each `:` of a host key as `_`, like
+    /// a store whose keys cannot hold colons.
+    #[derive(Clone)]
+    struct ColonlessBackend {
+        /// Backend the double stores into.
+        inner: bookclerk_storage::LocalFsBackend,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageBackend for ColonlessBackend {
+        fn name(&self) -> &'static str {
+            "colonless"
+        }
+
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(self.clone())
+        }
+
+        async fn put(
+            &self,
+            key: &str,
+            data: bytes::Bytes,
+            meta: ObjectMeta,
+        ) -> bookclerk_storage::Result<()> {
+            self.inner.put(key, data, meta).await
+        }
+
+        async fn put_file(
+            &self,
+            key: &str,
+            path: &Path,
+            meta: ObjectMeta,
+        ) -> bookclerk_storage::Result<()> {
+            self.inner.put_file(key, path, meta).await
+        }
+
+        async fn get(&self, key: &str) -> bookclerk_storage::Result<bytes::Bytes> {
+            self.inner.get(key).await
+        }
+
+        async fn exists(&self, key: &str) -> bookclerk_storage::Result<bool> {
+            self.inner.exists(key).await
+        }
+
+        async fn list(
+            &self,
+            prefix: &str,
+        ) -> bookclerk_storage::Result<Vec<bookclerk_storage::ObjectInfo>> {
+            self.inner.list(prefix).await
+        }
+
+        async fn probe(
+            &self,
+            key: &str,
+        ) -> bookclerk_storage::Result<bookclerk_storage::ObjectProbe> {
+            self.inner.probe(key).await
+        }
+
+        async fn copy(&self, from: &str, to: &str) -> bookclerk_storage::Result<()> {
+            self.inner.copy(from, to).await
+        }
+
+        async fn delete(&self, key: &str) -> bookclerk_storage::Result<()> {
+            self.inner.delete(key).await
+        }
+
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: u32,
+        ) -> bookclerk_storage::Result<bookclerk_storage::ListPage> {
+            self.inner.list_page(prefix, cursor, limit).await
+        }
+
+        async fn get_stream(
+            &self,
+            key: &str,
+            range: Option<bookclerk_storage::ByteRange>,
+        ) -> bookclerk_storage::Result<(
+            bookclerk_storage::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            self.inner.get_stream(key, range).await
+        }
+
+        async fn put_stream(
+            &self,
+            key: &str,
+            body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            meta: ObjectMeta,
+        ) -> bookclerk_storage::Result<bookclerk_storage::PutStreamResult> {
+            self.inner.put_stream(key, body, meta).await
+        }
+
+        async fn translate_keys(
+            &self,
+            keys: &[bookclerk_storage::key_syntax::HostKey],
+        ) -> bookclerk_storage::Result<Vec<String>> {
+            Ok(keys
+                .iter()
+                .map(|key| key.as_str().replace(':', "_"))
+                .collect())
+        }
+    }
+
+    /// Planned keys and upload names are in the keys the destination
+    /// stores: the template renders a host key and the destination
+    /// translates it.
+    #[tokio::test]
+    async fn planned_names_are_the_keys_the_destination_stores() {
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut req = upload_naming_req(tmp.path(), "B00ONE", "Dune: Messiah", "<first author>");
+        let host_key = planned_storage_key_for(&store, &req, "m4b").await;
+        assert_eq!(host_key, "Ann Author/Dune: Messiah [B00ONE].m4b");
+        req.destination_keys = crate::keys::DestinationKeys::of(&ColonlessBackend {
+            inner: bookclerk_storage::LocalFsBackend::new(tmp.path().to_path_buf()).unwrap(),
+        });
+        assert_eq!(
+            planned_storage_key_for(&store, &req, "m4b").await,
+            "Ann Author/Dune_ Messiah [B00ONE].m4b"
+        );
+        let names = planned_title_names(&store, &req).await;
+        assert_eq!(
+            names.audio_stems,
+            vec!["Ann Author/Dune_ Messiah [B00ONE]".to_string()]
+        );
+        assert!(
+            names
+                .part_patterns
+                .iter()
+                .all(|pattern| pattern.starts_with("Ann Author/Dune_ Messiah")),
+            "{:?}",
+            names.part_patterns
         );
     }
 

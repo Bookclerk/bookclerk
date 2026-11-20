@@ -81,7 +81,19 @@ pub async fn split_audio_by_chapters(
             ext,
             options.path_limits,
         );
-        let out_path = output_dir.join(filename.rsplit('/').next().unwrap_or(&filename));
+        // The scratch file is named on this host's own file system, so the
+        // name follows its rules; the stored key is planned separately.
+        let name = filename.rsplit('/').next().unwrap_or(&filename);
+        let name = bookclerk_storage::key_syntax::HostKey::parse(name).map_or_else(
+            |_| format!("chapter-{chapter_no:04}.{}", ext.trim_start_matches('.')),
+            |key| {
+                bookclerk_storage::key_syntax::translate_for_filesystem(
+                    &key,
+                    bookclerk_storage::key_syntax::FilesystemRules::native(),
+                )
+            },
+        );
+        let out_path = output_dir.join(name);
         remux_trimmed_async(
             input,
             &out_path,

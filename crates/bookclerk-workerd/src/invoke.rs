@@ -147,6 +147,7 @@ const INTERFACES: &[InterfaceEntry] = &[
             "deleteMany",
             "headMany",
             "changes",
+            "translateKeys",
         ],
     },
     InterfaceEntry {

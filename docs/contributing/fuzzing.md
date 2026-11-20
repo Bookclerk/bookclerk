@@ -44,7 +44,7 @@ boundary extends it.
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
-| `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany` and `changes` pages and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
+| `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
@@ -315,13 +315,15 @@ only that. The others check:
   survives `write` then `read` unchanged and stays inside the cursor and
   list bounds. The shared oracle is `fuzz/oracles/event_read.rs`, replayed
   from `bookclerk-plugin-abi`.
-- **`storage_reply`**: byte 0 modulo 5 picks a Cap'n Proto `moveMany`
+- **`storage_reply`**: byte 0 modulo 6 picks a Cap'n Proto `moveMany`
   page (0), `deleteMany` result (1), `headMany` result (2), `changes` page
-  (3) or hinted `list` page (4). A decoded reply survives encode then
+  (3), hinted `list` page (4) or `translateKeys` result (5). A decoded reply survives encode then
   decode unchanged, and each validator accepts the reply, against a fixed
   request, exactly when an independent restatement of its rules does: one
   outcome per sent key in order, prefix pages under the prefix with a
-  cursor that advances, change pages within the page and cursor bounds. A
+  cursor that advances, change pages within the page and cursor bounds,
+  and one translated key per host key, each relative, at most 4096 bytes,
+  with no control characters and no empty, `.` or `..` segment. A
   per-key error whose code is unreadable decodes as an `unknown` failure,
   never as success. The shared oracle is `fuzz/oracles/storage_reply.rs`,
   replayed from `bookclerk-plugin-abi`.

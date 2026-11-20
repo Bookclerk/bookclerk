@@ -1517,8 +1517,8 @@ fn an_unreadable_error_code_never_decodes_as_success() {
 
 /// Seeds for `storage_reply`: replies each validator accepts and one
 /// breaking each rule. Byte 0 is `0` for a `moveMany` page, `1` for
-/// `deleteMany`, `2` for `headMany`, `3` for `changes` and `4` for a hinted
-/// `list` page. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+/// `deleteMany`, `2` for `headMany`, `3` for `changes`, `4` for a hinted
+/// `list` page and `5` for `translateKeys`. Refresh with `UPDATE_FUZZ_SEEDS=1`.
 // Test code: failed I/O or encoding is the test failing.
 #[allow(clippy::expect_used)]
 #[test]
@@ -1659,6 +1659,24 @@ fn storage_reply_seeds_are_current() {
                     modified_since_applied: true,
                 }),
             ),
+        ),
+        (
+            "translate_keys.bin",
+            seed(
+                5,
+                StorageReply::TranslateKeys(vec!["a/1.m4b".into(), "a_/2_.m4b".into()]),
+            ),
+        ),
+        (
+            "translate_keys_escape.bin",
+            seed(
+                5,
+                StorageReply::TranslateKeys(vec!["a/1.m4b".into(), "a\\..\\x".into()]),
+            ),
+        ),
+        (
+            "translate_keys_short.bin",
+            seed(5, StorageReply::TranslateKeys(vec!["a/1.m4b".into()])),
         ),
     ];
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/storage_reply");

@@ -1093,6 +1093,7 @@ pub async fn run_acquire(
             parent_call_number: None,
             metadata: metadata.clone(),
             library_copies: library_copies.clone(),
+            destination_keys: bookclerk_acquire::DestinationKeys::default(),
         };
         let mut attempts = 0u32;
         loop {
