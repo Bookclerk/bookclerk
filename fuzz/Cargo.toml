@@ -473,6 +473,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "download_resume"
+path = "fuzz_targets/download_resume.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "throttle_reason"
 path = "fuzz_targets/throttle_reason.rs"
 test = false

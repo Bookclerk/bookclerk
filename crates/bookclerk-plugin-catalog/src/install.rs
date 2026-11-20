@@ -11,7 +11,7 @@ use chrono::Utc;
 use crate::coordinate::{PackageCoordinate, RegistrySource};
 use crate::error::{CatalogError, Result};
 use crate::extract::{
-    extract_archive, require_mutable_child, require_under, safe_join, sha256_file, write_file,
+    extract_archive, require_mutable_child, require_under, safe_join, sha256_file,
 };
 use crate::identity::{PluginKey, PluginProvenance};
 use crate::kind::RuntimeIdentity;
@@ -1484,34 +1484,171 @@ fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
             "remote install requires https:// (or localhost http for fixtures)",
         ));
     }
-    let mut response = ureq::get(url)
-        .header(
+    download_resumable(url, dest)
+}
+
+/// Attempts one remote package download may make; each picks up where
+/// the last one stopped.
+const DOWNLOAD_ATTEMPTS: u32 = 16;
+
+/// Attempts in a row that may fail without receiving a byte.
+const DOWNLOAD_RETRIES: u32 = 4;
+
+/// Streams `url` to `dest`, resuming a dropped or timed-out transfer.
+///
+/// The body is written to disk as it arrives (never held in memory) and
+/// capped at [`MAX_DOWNLOAD_BYTES`]. When an attempt fails, times out
+/// ([`DOWNLOAD_TIMEOUT`] per attempt) or ends short, the next asks for
+/// only the missing bytes (`Range`, with `If-Range` when the server named
+/// a validator); the plugin SDK's sans-IO `resume::next_step` decides
+/// whether each answer continues, replaces or ends the file, so a server
+/// that ignores the range or changed the file never splices bytes. The
+/// archive's digest is still checked by the caller.
+///
+/// # Errors
+///
+/// Returns [`CatalogError`] for a refusal, a file over the limit, a
+/// length mismatch, or a transfer that keeps failing.
+fn download_resumable(url: &str, dest: &Path) -> Result<()> {
+    use bookclerk_plugin_sdk::resume::{next_step, Partial, ResponseHead, Step, Validator};
+    use std::io::Write as _;
+
+    let mut file = fs::File::create(dest)?;
+    let mut partial = Partial {
+        offset: 0,
+        total: None,
+    };
+    let mut validator: Option<String> = None;
+    let mut failures = 0u32;
+    let mut last_error = String::from("no complete answer");
+    for attempt in 0..DOWNLOAD_ATTEMPTS {
+        if failures > DOWNLOAD_RETRIES {
+            break;
+        }
+        if attempt > 0 && failures > 0 {
+            std::thread::sleep(Duration::from_millis(500) * failures);
+        }
+        let before = partial.offset;
+        let mut request = ureq::get(url).header(
             "User-Agent",
             concat!("bookclerk/", env!("CARGO_PKG_VERSION"), " (plugin-install)"),
-        )
-        .config()
-        .timeout_global(Some(DOWNLOAD_TIMEOUT))
-        .max_redirects(MAX_REDIRECTS)
-        .build()
-        .call()
-        .map_err(|e| CatalogError::message(format!("download failed: {e}")))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(CatalogError::message(format!(
-            "download HTTP {status} for {url}"
-        )));
+        );
+        if partial.offset > 0 {
+            request = request.header("Range", format!("bytes={}-", partial.offset));
+            if let Some(validator) = &validator {
+                request = request.header("If-Range", validator.as_str());
+            }
+        }
+        let response = request
+            .config()
+            .timeout_global(Some(DOWNLOAD_TIMEOUT))
+            .max_redirects(MAX_REDIRECTS)
+            .http_status_as_error(false)
+            .build()
+            .call();
+        let mut response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                last_error = format!("download failed: {err}");
+                failures += 1;
+                continue;
+            }
+        };
+        let header = |name: &str| response.headers().get(name).map(|v| v.as_bytes().to_vec());
+        let status = response.status();
+        let content_range = header("content-range");
+        let content_length = header("content-length")
+            .and_then(|raw| std::str::from_utf8(&raw).ok()?.trim().parse::<u64>().ok());
+        let step = next_step(
+            partial,
+            ResponseHead {
+                status: status.as_u16(),
+                content_range: content_range.as_deref(),
+                content_length,
+            },
+        );
+        let total = match step {
+            Step::Complete => {
+                file.sync_all()?;
+                return Ok(());
+            }
+            Step::Fail => {
+                return Err(CatalogError::message(format!(
+                    "download HTTP {status} for {url}"
+                )))
+            }
+            Step::Retry => {
+                last_error = format!("download HTTP {status} for {url}");
+                failures += 1;
+                continue;
+            }
+            Step::StartOver => {
+                partial = Partial {
+                    offset: 0,
+                    total: None,
+                };
+                validator = None;
+                file.set_len(0)?;
+                failures += 1;
+                continue;
+            }
+            Step::Replace { total } => {
+                file.set_len(0)?;
+                partial.offset = 0;
+                validator = Validator::from_headers(
+                    header("etag").as_deref(),
+                    header("last-modified").as_deref(),
+                )
+                .map(|v| v.as_str().to_owned());
+                total
+            }
+            Step::Append { total } => total,
+        };
+        if total.is_some_and(|total| total > MAX_DOWNLOAD_BYTES) {
+            return Err(CatalogError::message("download exceeds size limit"));
+        }
+        partial.total = total;
+        use std::io::Seek as _;
+        file.seek(std::io::SeekFrom::Start(partial.offset))?;
+        let mut reader = response.body_mut().as_reader();
+        let mut buf = vec![0u8; 64 * 1024];
+        let ended = loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break true,
+                Ok(n) => {
+                    let n64 = u64::try_from(n).unwrap_or(u64::MAX);
+                    let next = partial.offset.saturating_add(n64);
+                    if next > MAX_DOWNLOAD_BYTES || partial.total.is_some_and(|total| next > total)
+                    {
+                        return Err(CatalogError::message("download exceeds size limit"));
+                    }
+                    file.write_all(&buf[..n])?;
+                    partial.offset = next;
+                }
+                Err(err) => {
+                    last_error = format!("download interrupted: {err}");
+                    break false;
+                }
+            }
+        };
+        let complete = ended && partial.total.is_none_or(|total| partial.offset == total);
+        if complete {
+            file.sync_all()?;
+            return Ok(());
+        }
+        if ended {
+            last_error = format!(
+                "download ended at {} of {:?} bytes",
+                partial.offset, partial.total
+            );
+        }
+        if partial.offset > before {
+            failures = 0;
+        } else {
+            failures += 1;
+        }
     }
-    let mut buf = Vec::new();
-    response
-        .body_mut()
-        .as_reader()
-        .take(MAX_DOWNLOAD_BYTES + 1)
-        .read_to_end(&mut buf)?;
-    if buf.len() as u64 > MAX_DOWNLOAD_BYTES {
-        return Err(CatalogError::message("download exceeds size limit"));
-    }
-    write_file(dest, &buf)?;
-    Ok(())
+    Err(CatalogError::message(last_error))
 }
 
 /// Recursively copies `src` into `dest`, creating missing parent directories.
@@ -3088,5 +3225,86 @@ mod tests {
             "api_version = 3\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n\
                       entrypoints = [\"cli\"]\n[capabilities.network]\nmode = \"deny\"\n";
         assert!(validate_plugin_toml(legacy, &runtime, "none", "echo").is_err());
+    }
+
+    /// Serves one scripted answer per connection on loopback and records
+    /// each request's `Range` line.
+    fn serve(answers: Vec<Vec<u8>>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!(
+            "http://{}/plugin.tar.gz",
+            listener.local_addr().expect("addr")
+        );
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for answer in answers {
+                let Ok((mut socket, _)) = listener.accept() else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match socket.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let range = String::from_utf8_lossy(&request)
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+                    .map(str::to_owned)
+                    .unwrap_or_default();
+                log.lock().expect("log").push(range);
+                let _ = socket.write_all(&answer);
+                let _ = socket.flush();
+            }
+        });
+        (url, seen)
+    }
+
+    /// A raw HTTP answer: `head` lines (LF-separated) and `body`.
+    fn raw(head: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = head.replace('\n', "\r\n").into_bytes();
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn a_dropped_package_download_resumes() {
+        let body: Vec<u8> = (0..=255u8).cycle().take(4000).collect();
+        let (url, seen) = serve(vec![
+            raw(
+                "HTTP/1.1 200 OK\nContent-Length: 4000\nETag: \"p1\"\nConnection: close\n",
+                &body[..1500],
+            ),
+            raw(
+                "HTTP/1.1 206 Partial Content\nContent-Length: 2500\nContent-Range: bytes 1500-3999/4000\nConnection: close\n",
+                &body[1500..],
+            ),
+        ]);
+        let dir = tempfile::tempdir().expect("dir");
+        let dest = dir.path().join("plugin.tar.gz");
+        fetch_artifact(&url, &dest, false).expect("download");
+        assert_eq!(fs::read(&dest).expect("read"), body);
+        let seen = seen.lock().expect("log").clone();
+        assert_eq!(seen.len(), 2);
+        assert!(seen[0].is_empty());
+        assert_eq!(seen[1].to_ascii_lowercase(), "range: bytes=1500-");
+    }
+
+    #[test]
+    fn a_refused_package_download_fails_without_retrying() {
+        let (url, seen) = serve(vec![raw(
+            "HTTP/1.1 404 Not Found\nContent-Length: 0\nConnection: close\n",
+            b"",
+        )]);
+        let dir = tempfile::tempdir().expect("dir");
+        let dest = dir.path().join("plugin.tar.gz");
+        let err = fetch_artifact(&url, &dest, false).expect_err("404");
+        assert!(err.to_string().contains("404"), "{err}");
+        assert_eq!(seen.lock().expect("log").len(), 1);
     }
 }

@@ -184,17 +184,20 @@ pub async fn download_licensed_audio(
         )
         .await?
     } else {
-        downloader::download_to_file(
-            client,
-            url,
-            dest,
-            license.content_size,
-            false,
-            None,
-            &content_types,
-            &ext_overrides,
-            license.version_tag().as_deref(),
-        )
+        let version = license.version_tag();
+        crate::retry::resume_transfer(|_| {
+            downloader::download_to_file(
+                client,
+                url,
+                dest,
+                license.content_size,
+                false,
+                None,
+                &content_types,
+                &ext_overrides,
+                version.as_deref(),
+            )
+        })
         .await
         .map_err(|err| AudibleError::Download(err.to_string()))?
     };

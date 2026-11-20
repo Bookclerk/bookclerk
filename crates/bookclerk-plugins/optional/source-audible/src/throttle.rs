@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use audible_rs::api::client::Client;
 use audible_rs::downloader::{self, DownloadOutcome};
-use bookclerk_plugin_sdk::http::header::CONTENT_TYPE;
+use bookclerk_plugin_sdk::http::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{AudibleError, Result};
@@ -72,90 +72,249 @@ pub async fn download_to_file_limited(
         let _ = tokio::fs::remove_file(&marker).await;
     }
 
-    let request = client
-        .authed_get(url)
-        .await
-        .map_err(|e| AudibleError::Download(e.to_string()))?;
-    let response = request
-        .send()
-        .await
-        .map_err(|e| AudibleError::Download(e.to_string()))?;
-    let response = response
-        .error_for_status()
-        .map_err(|e| AudibleError::Download(e.to_string()))?;
+    let job = LimitedJob {
+        client,
+        url,
+        expected_size,
+        limit_kbps,
+        expected_content_type,
+        ext_overrides,
+        version_tag,
+        dest,
+        part: &part,
+        marker: &marker,
+    };
+    let mut wait = Duration::from_secs(1);
+    let mut attempt = 1;
+    loop {
+        match job.attempt().await {
+            Ok(done) => return Ok(done),
+            Err(Interrupted::Retry(reason)) if attempt < crate::retry::TRANSFER_ATTEMPTS => {
+                tracing::warn!(attempt, %reason, "Audible transfer interrupted; resuming");
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(30));
+                attempt += 1;
+            }
+            Err(Interrupted::Retry(reason)) => return Err(AudibleError::Download(reason)),
+            Err(Interrupted::Fatal(err)) => return Err(err),
+        }
+    }
+}
 
-    let got_content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
+/// Longest wait for the next body chunk before a throttled transfer
+/// counts as stalled (the client's own timeout covers the answer's head
+/// only).
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
 
-    if !expected_content_type.is_empty() {
-        if let Some(got) = &got_content_type {
-            if !content_type_matches(got, expected_content_type) {
-                return Err(content_type_error(response, got, expected_content_type).await);
+/// How a throttled attempt ended without the file.
+enum Interrupted {
+    /// The connection failed, stalled, ended short, or the answer did not
+    /// fit the partial: another attempt resumes (or restarts) it.
+    Retry(String),
+    /// A failure another attempt would not fix.
+    Fatal(AudibleError),
+}
+
+impl From<std::io::Error> for Interrupted {
+    fn from(err: std::io::Error) -> Self {
+        Self::Fatal(err.into())
+    }
+}
+
+/// One throttled download, with what each attempt needs.
+struct LimitedJob<'a> {
+    /// Authenticated Audible client.
+    client: &'a Client,
+    /// Content URL.
+    url: &'a str,
+    /// The file's size from the license, when known.
+    expected_size: Option<u64>,
+    /// Speed limit in KiB/s (non-zero).
+    limit_kbps: u32,
+    /// Accepted response Content-Types (empty: any).
+    expected_content_type: &'a [&'a str],
+    /// Content-Type → extension corrections for the final path.
+    ext_overrides: &'a [(&'a str, &'a str)],
+    /// License content version; a partial resumes only under the same one.
+    version_tag: Option<&'a str>,
+    /// Planned final path.
+    dest: &'a Path,
+    /// `<dest>.part`.
+    part: &'a Path,
+    /// `<dest>.part.ver`.
+    marker: &'a Path,
+}
+
+impl LimitedJob<'_> {
+    /// Bytes of the partial that may be resumed: only under a matching
+    /// version marker, and never more than the expected size.
+    async fn resumable_offset(&self) -> u64 {
+        let Some(tag) = self.version_tag else {
+            return 0;
+        };
+        let Ok(stamped) = tokio::fs::read_to_string(self.marker).await else {
+            return 0;
+        };
+        if stamped != tag {
+            return 0;
+        }
+        let held = tokio::fs::metadata(self.part)
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        match self.expected_size {
+            Some(size) if held > size => 0,
+            _ => held,
+        }
+    }
+
+    /// One request, resuming the partial with `Range` when it can.
+    async fn attempt(&self) -> std::result::Result<(DownloadOutcome, PathBuf), Interrupted> {
+        use bookclerk_plugin_sdk::resume::{next_step, Partial, ResponseHead, Step};
+
+        let offset = self.resumable_offset().await;
+        let mut request = self
+            .client
+            .authed_get(self.url)
+            .await
+            .map_err(|e| Interrupted::Fatal(AudibleError::Download(e.to_string())))?;
+        if offset > 0 {
+            request = request.header(RANGE, format!("bytes={offset}-"));
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| Interrupted::Retry(e.to_string()))?;
+        let status = response.status();
+        let step = next_step(
+            Partial {
+                offset,
+                total: self.expected_size,
+            },
+            ResponseHead {
+                status: status.as_u16(),
+                content_range: response.headers().get(CONTENT_RANGE).map(|v| v.as_bytes()),
+                content_length: response.content_length(),
+            },
+        );
+        let append = match step {
+            Step::Append { .. } => true,
+            Step::Replace { .. } => false,
+            Step::Complete => {
+                return self.finish(self.dest.to_path_buf()).await;
+            }
+            Step::StartOver => {
+                let _ = tokio::fs::remove_file(self.part).await;
+                let _ = tokio::fs::remove_file(self.marker).await;
+                return Err(Interrupted::Retry(format!(
+                    "the answer ({status}) does not continue the partial at byte {offset}"
+                )));
+            }
+            Step::Retry => return Err(Interrupted::Retry(format!("HTTP {status}"))),
+            Step::Fail => {
+                return Err(Interrupted::Fatal(AudibleError::Download(format!(
+                    "download failed with HTTP {status}"
+                ))))
+            }
+        };
+
+        let got_content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        if !self.expected_content_type.is_empty() {
+            if let Some(got) = &got_content_type {
+                if !content_type_matches(got, self.expected_content_type) {
+                    return Err(Interrupted::Fatal(
+                        content_type_error(response, got, self.expected_content_type).await,
+                    ));
+                }
             }
         }
-    }
+        let final_dest = got_content_type
+            .as_deref()
+            .and_then(|ct| extension_override(ct, self.ext_overrides))
+            .map(|ext| self.dest.with_extension(ext))
+            .unwrap_or_else(|| self.dest.to_path_buf());
 
-    let final_dest = got_content_type
-        .as_deref()
-        .and_then(|ct| extension_override(ct, ext_overrides))
-        .map(|ext| dest.with_extension(ext))
-        .unwrap_or_else(|| dest.to_path_buf());
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&part)
-        .await?;
-
-    if let Some(tag) = version_tag {
-        let _ = tokio::fs::write(&marker, tag).await;
-    }
-
-    let limit_bps = u64::from(limit_kbps) * 1024;
-    let mut downloaded = 0u64;
-    let mut window_bytes = 0u64;
-    let mut window_start = Instant::now();
-    let mut stream = response.bytes_stream();
-    use futures::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| AudibleError::Download(e.to_string()))?;
-        file.write_all(&chunk).await?;
-        let n = chunk.len() as u64;
-        downloaded += n;
-        window_bytes += n;
-        let elapsed = window_start.elapsed();
-        let expected = Duration::from_secs_f64(window_bytes as f64 / limit_bps as f64);
-        if expected > elapsed {
-            tokio::time::sleep(expected - elapsed).await;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(self.part)
+            .await?;
+        if let Some(tag) = self.version_tag {
+            let _ = tokio::fs::write(self.marker, tag).await;
         }
-        if window_bytes >= limit_bps {
-            window_start = Instant::now();
-            window_bytes = 0;
-        }
-    }
-    file.flush().await?;
-    file.sync_all().await?;
-    drop(file);
 
-    if let Some(size) = expected_size {
-        if downloaded != size {
-            if downloaded > size {
-                let _ = tokio::fs::remove_file(&part).await;
-                let _ = tokio::fs::remove_file(&marker).await;
+        let limit_bps = u64::from(self.limit_kbps) * 1024;
+        let mut written = if append { offset } else { 0 };
+        let mut window_bytes = 0u64;
+        let mut window_start = Instant::now();
+        let mut stream = response.bytes_stream();
+        use futures::StreamExt;
+        loop {
+            let chunk = match tokio::time::timeout(READ_TIMEOUT, stream.next()).await {
+                Ok(Some(Ok(chunk))) => chunk,
+                Ok(None) => break,
+                Ok(Some(Err(err))) => {
+                    file.flush().await?;
+                    return Err(Interrupted::Retry(err.to_string()));
+                }
+                Err(_) => {
+                    file.flush().await?;
+                    return Err(Interrupted::Retry(format!(
+                        "the transfer stalled at {written} bytes"
+                    )));
+                }
+            };
+            file.write_all(&chunk).await?;
+            let n = chunk.len() as u64;
+            written += n;
+            window_bytes += n;
+            let elapsed = window_start.elapsed();
+            let expected = Duration::from_secs_f64(window_bytes as f64 / limit_bps as f64);
+            if expected > elapsed {
+                tokio::time::sleep(expected - elapsed).await;
             }
-            return Err(AudibleError::Download(format!(
-                "size mismatch: wrote {downloaded} bytes, expected {size}"
-            )));
+            if window_bytes >= limit_bps {
+                window_start = Instant::now();
+                window_bytes = 0;
+            }
         }
+        file.flush().await?;
+        file.sync_all().await?;
+        drop(file);
+
+        if let Some(size) = self.expected_size {
+            if written > size {
+                let _ = tokio::fs::remove_file(self.part).await;
+                let _ = tokio::fs::remove_file(self.marker).await;
+                return Err(Interrupted::Fatal(AudibleError::Download(format!(
+                    "size mismatch: wrote {written} bytes, expected {size}"
+                ))));
+            }
+            if written < size {
+                // Ended early without an error: keep the partial and resume.
+                return Err(Interrupted::Retry(format!(
+                    "transfer ended at {written} of {size} bytes"
+                )));
+            }
+        }
+        self.finish(final_dest).await
     }
 
-    tokio::fs::rename(&part, &final_dest).await?;
-    let _ = tokio::fs::remove_file(&marker).await;
-    Ok((DownloadOutcome::Downloaded, final_dest))
+    /// Moves the finished partial onto `final_dest`.
+    async fn finish(
+        &self,
+        final_dest: PathBuf,
+    ) -> std::result::Result<(DownloadOutcome, PathBuf), Interrupted> {
+        tokio::fs::rename(self.part, &final_dest).await?;
+        let _ = tokio::fs::remove_file(self.marker).await;
+        Ok((DownloadOutcome::Downloaded, final_dest))
+    }
 }
 
 /// Sibling `.part` path used while a download is still incomplete.
