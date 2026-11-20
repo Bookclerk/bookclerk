@@ -102,6 +102,7 @@ libc = "0.2"
 
 [dev-dependencies]
 async-trait.workspace = true
+bookclerk-keystore.workspace = true
 bytes.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
 # Tagged audio fixtures for the upload manifest's probe test.

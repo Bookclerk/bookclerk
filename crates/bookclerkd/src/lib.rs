@@ -980,3 +980,129 @@ mod checkin_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod key_store_tests {
+    use super::{apply_key_store, Config, HostMode};
+    use bookclerk_config::KeyStoreKind;
+    use bookclerk_keystore::{KeystoreErrorKind, MemoryVault, OsKeychain};
+    use bookclerk_library::{inspect_master_key, KeyStorePreference, MasterKeyFormat};
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+    /// Serializes tests that swap the process-wide keychain and preference.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// An in-memory keychain for one test; the OS keychain and the file
+    /// default come back on drop.
+    struct Scope {
+        /// Held for the scope's lifetime.
+        _guard: MutexGuard<'static, ()>,
+        /// The in-memory keychain the scope installed.
+        vault: Arc<MemoryVault>,
+    }
+
+    impl Scope {
+        fn new() -> Self {
+            let guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+            let vault = Arc::new(MemoryVault::new());
+            bookclerk_library::set_keychain_vault(vault.clone());
+            Self {
+                _guard: guard,
+                vault,
+            }
+        }
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            bookclerk_library::set_keychain_vault(Arc::new(OsKeychain::new()));
+            bookclerk_library::set_key_store_preference(KeyStorePreference::from_config(
+                None,
+                KeyStoreKind::File,
+            ));
+        }
+    }
+
+    /// A config for a fresh files directory holding a raw key.
+    fn config_with_raw_key(files: &std::path::Path, key_store: Option<KeyStoreKind>) -> Config {
+        bookclerk_library::set_key_store_preference(KeyStorePreference::from_config(
+            None,
+            KeyStoreKind::File,
+        ));
+        bookclerk_library::install_master_key(files, &[4u8; 32], None).unwrap();
+        let mut config = Config::load(Some(files.to_path_buf()), None).unwrap();
+        config.auth.password = None;
+        config.auth.key_store = key_store;
+        config
+    }
+
+    #[test]
+    fn the_desktop_default_moves_a_file_key_into_the_keychain() {
+        let scope = Scope::new();
+        let files = tempfile::tempdir().unwrap();
+        let config = config_with_raw_key(files.path(), None);
+        apply_key_store(&config, HostMode::Embedded);
+        let preference = bookclerk_library::key_store_preference();
+        assert_eq!(preference.kind, KeyStoreKind::Keychain);
+        assert!(!preference.required);
+        assert_eq!(
+            inspect_master_key(files.path()).unwrap(),
+            Some(MasterKeyFormat::Keychain)
+        );
+        assert_eq!(scope.vault.len(), 1);
+        // A second start finds the pointer and leaves it alone.
+        apply_key_store(&config, HostMode::Embedded);
+        assert_eq!(scope.vault.len(), 1);
+    }
+
+    #[test]
+    fn the_desktop_keeps_the_file_when_the_keychain_refuses() {
+        let scope = Scope::new();
+        let files = tempfile::tempdir().unwrap();
+        let config = config_with_raw_key(files.path(), None);
+        scope.vault.fail_with(Some(KeystoreErrorKind::Unavailable));
+        apply_key_store(&config, HostMode::Embedded);
+        assert_eq!(
+            inspect_master_key(files.path()).unwrap(),
+            Some(MasterKeyFormat::Raw)
+        );
+    }
+
+    #[test]
+    fn the_daemon_and_a_configured_store_never_move_the_key() {
+        let scope = Scope::new();
+        let files = tempfile::tempdir().unwrap();
+        let config = config_with_raw_key(files.path(), None);
+        apply_key_store(&config, HostMode::Listening);
+        assert_eq!(
+            bookclerk_library::key_store_preference().kind,
+            KeyStoreKind::File
+        );
+
+        let configured = config_with_raw_key(files.path(), Some(KeyStoreKind::Keychain));
+        apply_key_store(&configured, HostMode::Embedded);
+        let preference = bookclerk_library::key_store_preference();
+        assert_eq!(preference.kind, KeyStoreKind::Keychain);
+        assert!(preference.required);
+        assert_eq!(
+            inspect_master_key(files.path()).unwrap(),
+            Some(MasterKeyFormat::Raw)
+        );
+        assert!(scope.vault.is_empty());
+
+        // No key yet: nothing to move.
+        let empty = tempfile::tempdir().unwrap();
+        let mut fresh = Config::load(Some(empty.path().to_path_buf()), None).unwrap();
+        fresh.auth.key_store = None;
+        apply_key_store(&fresh, HostMode::Embedded);
+        assert_eq!(inspect_master_key(empty.path()).unwrap(), None);
+
+        // An unreadable master.key is reported and left alone.
+        let broken = tempfile::tempdir().unwrap();
+        std::fs::write(broken.path().join("master.key"), b"nope").unwrap();
+        let mut odd = Config::load(Some(broken.path().to_path_buf()), None).unwrap();
+        odd.auth.key_store = None;
+        apply_key_store(&odd, HostMode::Embedded);
+        assert!(scope.vault.is_empty());
+    }
+}

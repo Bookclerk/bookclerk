@@ -349,18 +349,27 @@ pub async fn run(
             println!("log_dir\t{}", paths.log_dir.display());
             Ok(())
         }
-        ConfigCommand::MasterKey { command } => run_master_key(command, config, format),
+        ConfigCommand::MasterKey { command } => {
+            run_master_key(command, config, format, &mut |prompt| {
+                Ok(crate::secret_input::read_secret_stdin(prompt)?)
+            })
+        }
         ConfigCommand::Template { command } => run_template(command, config).await,
         ConfigCommand::Database { command } => run_database(command, config, format).await,
     }
 }
 
+/// Reads one secret line after showing a prompt (stdin in the CLI).
+type ReadSecret<'a> = dyn FnMut(&str) -> anyhow::Result<zeroize::Zeroizing<String>> + 'a;
+
 /// Reports, wraps, moves, exports or imports the data-encryption key. Every
-/// password comes from the environment, config or stdin, never argv.
+/// password comes from the environment, config or `read_secret` (stdin),
+/// never argv.
 fn run_master_key(
     command: MasterKeyCommand,
     config: &Config,
     format: OutputFormat,
+    read_secret: &mut ReadSecret<'_>,
 ) -> anyhow::Result<()> {
     let files_dir = &config.paths().files_dir;
     let path_text = bookclerk_library::master_key_path(files_dir)
@@ -451,7 +460,7 @@ fn run_master_key(
             if out.exists() {
                 anyhow::bail!("{} already exists; choose a new file", out.display());
             }
-            let recovery = crate::secret_input::read_secret_stdin("recovery copy password: ")?;
+            let recovery = read_secret("recovery copy password: ")?;
             let recovery = recovery
                 .lines()
                 .next()
@@ -476,7 +485,7 @@ fn run_master_key(
                 anyhow::anyhow!("failed to read recovery copy {}: {e}", from.display())
             })?);
             let recovery = if copy.starts_with(b"BCK2") {
-                let text = crate::secret_input::read_secret_stdin("recovery copy password: ")?;
+                let text = read_secret("recovery copy password: ")?;
                 Some(zeroize::Zeroizing::new(
                     text.lines().next().unwrap_or_default().trim().to_string(),
                 ))
@@ -1337,6 +1346,238 @@ fn helper_bin(path: &Option<std::path::PathBuf>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes tests that swap the process-wide keychain and store
+    /// preference (`cargo test` runs tests as threads of one process).
+    static KEY_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// An in-memory keychain installed for one test, with the file as the
+    /// default store; the OS keychain and default come back on drop.
+    struct KeyStoreScope {
+        /// Held for the scope's lifetime.
+        _guard: std::sync::MutexGuard<'static, ()>,
+        /// The in-memory keychain the scope installed.
+        vault: std::sync::Arc<bookclerk_keystore::MemoryVault>,
+    }
+
+    impl KeyStoreScope {
+        fn new() -> Self {
+            let guard = KEY_STORE_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let vault = std::sync::Arc::new(bookclerk_keystore::MemoryVault::new());
+            bookclerk_library::set_keychain_vault(vault.clone());
+            bookclerk_library::set_key_store_preference(
+                bookclerk_library::KeyStorePreference::from_config(None, KeyStoreKind::File),
+            );
+            Self {
+                _guard: guard,
+                vault,
+            }
+        }
+    }
+
+    impl Drop for KeyStoreScope {
+        fn drop(&mut self) {
+            bookclerk_library::set_keychain_vault(std::sync::Arc::new(
+                bookclerk_keystore::OsKeychain::new(),
+            ));
+            bookclerk_library::set_key_store_preference(
+                bookclerk_library::KeyStorePreference::from_config(None, KeyStoreKind::File),
+            );
+        }
+    }
+
+    /// A config loaded for `files_dir`, with `password` as `[auth].password`.
+    fn key_config(files_dir: &std::path::Path, password: Option<&str>) -> Config {
+        let mut config = Config::load(Some(files_dir.to_path_buf()), None).expect("config");
+        config.auth.password = password.map(str::to_string);
+        config
+    }
+
+    /// Runs one `config master-key` action, answering prompts with `answer`.
+    fn master_key(
+        command: MasterKeyCommand,
+        config: &Config,
+        format: OutputFormat,
+        answer: &str,
+    ) -> anyhow::Result<()> {
+        let answer = answer.to_string();
+        run_master_key(command, config, format, &mut |_| {
+            Ok(zeroize::Zeroizing::new(answer.clone()))
+        })
+    }
+
+    #[test]
+    fn master_key_status_reports_a_missing_then_raw_key() {
+        let _scope = KeyStoreScope::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = key_config(dir.path(), None);
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            master_key(MasterKeyCommand::Status, &config, format, "").expect("status");
+        }
+        bookclerk_library::install_master_key(dir.path(), &[7u8; 32], None).expect("install");
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            master_key(MasterKeyCommand::Status, &config, format, "").expect("status");
+        }
+        assert_eq!(
+            inspect_master_key(dir.path()).expect("inspect"),
+            Some(MasterKeyFormat::Raw)
+        );
+    }
+
+    #[test]
+    fn master_key_wrap_needs_a_password_and_wraps_the_file() {
+        let _scope = KeyStoreScope::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        bookclerk_library::install_master_key(dir.path(), &[3u8; 32], None).expect("install");
+        let config = key_config(dir.path(), Some("hunter2"));
+        if config.auth_password().as_deref() == Some("hunter2") {
+            master_key(MasterKeyCommand::Wrap, &config, OutputFormat::Text, "").expect("wrap");
+            assert_eq!(
+                inspect_master_key(dir.path()).expect("inspect"),
+                Some(MasterKeyFormat::Wrapped)
+            );
+        }
+    }
+
+    #[test]
+    fn master_key_moves_into_the_keychain_and_back_recording_the_choice() {
+        let scope = KeyStoreScope::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        bookclerk_library::install_master_key(dir.path(), &[9u8; 32], None).expect("install");
+        let config = key_config(dir.path(), None);
+
+        master_key(
+            MasterKeyCommand::Move {
+                to: KeyStoreKind::Keychain,
+            },
+            &config,
+            OutputFormat::Text,
+            "",
+        )
+        .expect("move to keychain");
+        assert_eq!(
+            inspect_master_key(dir.path()).expect("inspect"),
+            Some(MasterKeyFormat::Keychain)
+        );
+        assert_eq!(scope.vault.len(), 1);
+        let written = Config::load(Some(dir.path().to_path_buf()), None).expect("reload");
+        assert_eq!(written.auth.key_store, Some(KeyStoreKind::Keychain));
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            master_key(MasterKeyCommand::Status, &config, format, "").expect("status");
+        }
+
+        // A keychain that fails is reported by status, not fatal.
+        scope
+            .vault
+            .fail_with(Some(bookclerk_keystore::KeystoreErrorKind::AccessDenied));
+        master_key(MasterKeyCommand::Status, &config, OutputFormat::Text, "")
+            .expect("status with a locked keychain");
+        scope.vault.fail_with(None);
+
+        master_key(
+            MasterKeyCommand::Move {
+                to: KeyStoreKind::File,
+            },
+            &config,
+            OutputFormat::Json,
+            "",
+        )
+        .expect("move to file");
+        assert_eq!(
+            inspect_master_key(dir.path()).expect("inspect"),
+            Some(MasterKeyFormat::Raw)
+        );
+        assert!(scope.vault.is_empty());
+        let written = Config::load(Some(dir.path().to_path_buf()), None).expect("reload");
+        assert_eq!(written.auth.key_store, Some(KeyStoreKind::File));
+    }
+
+    #[test]
+    fn master_key_exports_a_recovery_copy_and_imports_it_elsewhere() {
+        let _scope = KeyStoreScope::new();
+        let source = tempfile::tempdir().expect("tempdir");
+        bookclerk_library::install_master_key(source.path(), &[5u8; 32], None).expect("install");
+        let config = key_config(source.path(), None);
+        let out = source.path().join("recovery.key");
+
+        master_key(
+            MasterKeyCommand::Export { out: out.clone() },
+            &config,
+            OutputFormat::Text,
+            "correct horse\n",
+        )
+        .expect("export");
+        let copy = std::fs::read(&out).expect("read copy");
+        assert!(copy.starts_with(b"BCK2"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&out).expect("meta").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let again = master_key(
+            MasterKeyCommand::Export { out: out.clone() },
+            &config,
+            OutputFormat::Json,
+            "correct horse",
+        )
+        .expect_err("an existing file is never overwritten");
+        assert!(again.to_string().contains("already exists"), "{again}");
+
+        let target = tempfile::tempdir().expect("tempdir");
+        let target_config = key_config(target.path(), None);
+        let wrong = master_key(
+            MasterKeyCommand::Import { from: out.clone() },
+            &target_config,
+            OutputFormat::Text,
+            "wrong",
+        );
+        assert!(wrong.is_err());
+        master_key(
+            MasterKeyCommand::Import { from: out.clone() },
+            &target_config,
+            OutputFormat::Json,
+            "correct horse",
+        )
+        .expect("import");
+        let restored =
+            bookclerk_library::resolve_master_key_detailed(target.path(), None).expect("load");
+        assert_eq!(restored.key.as_bytes(), &[5u8; 32]);
+        assert!(!restored.minted);
+
+        // A raw copied master.key needs no password.
+        let raw_target = tempfile::tempdir().expect("tempdir");
+        master_key(
+            MasterKeyCommand::Import {
+                from: source.path().join("master.key"),
+            },
+            &key_config(raw_target.path(), None),
+            OutputFormat::Text,
+            "",
+        )
+        .expect("import raw copy");
+        let missing = master_key(
+            MasterKeyCommand::Import {
+                from: source.path().join("absent.key"),
+            },
+            &key_config(raw_target.path(), None),
+            OutputFormat::Text,
+            "",
+        )
+        .expect_err("missing copy");
+        assert!(missing.to_string().contains("failed to read"), "{missing}");
+    }
+
+    #[test]
+    fn key_store_names_parse_and_label() {
+        assert_eq!(parse_key_store("keychain"), Ok(KeyStoreKind::Keychain));
+        assert_eq!(parse_key_store("file"), Ok(KeyStoreKind::File));
+        assert!(parse_key_store("tpm").is_err());
+        assert_eq!(store_label(KeyStoreKind::File), "master.key file");
+        assert_eq!(store_label(KeyStoreKind::Keychain), "OS keychain");
+    }
 
     #[test]
     fn bare_output_body_falls_back_to_seed_when_document_missing() {

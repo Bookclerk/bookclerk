@@ -40,9 +40,33 @@ const CONTENT_TYPE: &str = "application/octet-stream";
 /// value, content type.
 type Secret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
 
+/// The bus a call talks over.
+enum Bus {
+    /// The user's session bus.
+    Session,
+    /// One end of a socket pair that a test's fake service answers on.
+    #[cfg(test)]
+    Peer(std::os::unix::net::UnixStream),
+}
+
 /// Reads an item's bytes.
 pub(crate) fn get(item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
-    run(move |client| async move {
+    get_on(Bus::Session, item)
+}
+
+/// Creates or replaces an item.
+pub(crate) fn set(item: KeychainItemId, bytes: &[u8]) -> Result<()> {
+    set_on(Bus::Session, item, bytes)
+}
+
+/// Deletes an item; a missing item is not an error.
+pub(crate) fn delete(item: KeychainItemId) -> Result<()> {
+    delete_on(Bus::Session, item)
+}
+
+/// Reads an item's bytes over `bus`.
+fn get_on(bus: Bus, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
+    run(bus, move |client| async move {
         let path = client.find(item).await?.ok_or_else(not_found)?;
         client.unlock(std::slice::from_ref(&path)).await?;
         let proxy = client.proxy(path.as_str(), ITEM_IFACE).await?;
@@ -54,10 +78,10 @@ pub(crate) fn get(item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
     })
 }
 
-/// Creates or replaces an item.
-pub(crate) fn set(item: KeychainItemId, bytes: &[u8]) -> Result<()> {
+/// Creates or replaces an item over `bus`.
+fn set_on(bus: Bus, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
     let bytes = Zeroizing::new(bytes.to_vec());
-    run(move |client| async move {
+    run(bus, move |client| async move {
         let collection = client.default_collection().await?;
         client.unlock(std::slice::from_ref(&collection)).await?;
         let account = item.to_string();
@@ -91,9 +115,9 @@ pub(crate) fn set(item: KeychainItemId, bytes: &[u8]) -> Result<()> {
     })
 }
 
-/// Deletes an item; a missing item is not an error.
-pub(crate) fn delete(item: KeychainItemId) -> Result<()> {
-    run(move |client| async move {
+/// Deletes an item over `bus`; a missing item is not an error.
+fn delete_on(bus: Bus, item: KeychainItemId) -> Result<()> {
+    run(bus, move |client| async move {
         let Some(path) = client.find(item).await? else {
             return Ok(());
         };
@@ -113,9 +137,14 @@ struct Client {
 }
 
 impl Client {
-    /// Connects to the session bus and opens a `plain` session.
-    async fn connect() -> Result<Self> {
-        let conn = zbus::Connection::session().await.map_err(|err| {
+    /// Connects to `bus` and opens a `plain` session.
+    async fn connect(bus: Bus) -> Result<Self> {
+        let conn = match bus {
+            Bus::Session => zbus::Connection::session().await,
+            #[cfg(test)]
+            Bus::Peer(stream) => peer_connection(stream).await,
+        }
+        .map_err(|err| {
             KeystoreError::new(
                 KeystoreErrorKind::Unavailable,
                 format!("no session D-Bus: {err}"),
@@ -250,8 +279,20 @@ fn dbus_error(err: zbus::Error) -> KeystoreError {
     KeystoreError::new(kind, text)
 }
 
-/// Runs `work` against a fresh client on its own thread and runtime.
-fn run<T, F, Fut>(work: F) -> Result<T>
+/// A peer-to-peer connection over one end of a socket pair.
+#[cfg(test)]
+async fn peer_connection(stream: std::os::unix::net::UnixStream) -> zbus::Result<zbus::Connection> {
+    stream.set_nonblocking(true)?;
+    let stream = tokio::net::UnixStream::from_std(stream)?;
+    zbus::connection::Builder::unix_stream(stream)
+        .p2p()
+        .build()
+        .await
+}
+
+/// Runs `work` against a fresh client for `bus` on its own thread and
+/// runtime.
+fn run<T, F, Fut>(bus: Bus, work: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce(Client) -> Fut + Send + 'static,
@@ -266,7 +307,7 @@ where
                 .map_err(|err| {
                     KeystoreError::new(KeystoreErrorKind::Unavailable, err.to_string())
                 })?;
-            runtime.block_on(async move { work(Client::connect().await?).await })
+            runtime.block_on(async move { work(Client::connect(bus).await?).await })
         })
         .map_err(|err| KeystoreError::new(KeystoreErrorKind::Unavailable, err.to_string()))?;
     handle.join().unwrap_or_else(|_| {
@@ -276,3 +317,6 @@ where
         ))
     })
 }
+
+#[cfg(test)]
+mod tests;
