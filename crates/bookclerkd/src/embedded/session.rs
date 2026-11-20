@@ -39,7 +39,7 @@ const WINDOW_SESSION_NAME: &str = "patron_session";
 pub struct WindowSession(Zeroizing<String>);
 
 impl WindowSession {
-    /// Wraps a raw session token.
+    /// Wraps a raw session token, and registers it with log redaction.
     ///
     /// # Arguments
     ///
@@ -50,7 +50,11 @@ impl WindowSession {
     /// The session, or `None` for an empty token.
     #[must_use]
     pub fn new(raw: &str) -> Option<Self> {
-        (!raw.is_empty()).then(|| Self(Zeroizing::new(raw.to_owned())))
+        if raw.is_empty() {
+            return None;
+        }
+        bookclerk_config::register_secret(raw);
+        Some(Self(Zeroizing::new(raw.to_owned())))
     }
 
     /// The raw token, for the cookie and the session lookup only.
@@ -199,14 +203,29 @@ pub async fn mint(library: &LibraryStore, user_id: i64) -> Option<WindowSession>
 ///
 /// # Returns
 ///
-/// The patron's user id, or `None`.
-pub async fn patron(library: &LibraryStore, session: &WindowSession) -> Option<i64> {
-    let identity = library
+/// The patron's user id, or `None` when the session has ended.
+///
+/// # Errors
+///
+/// Returns the read error, so a database that is briefly unreachable is
+/// not taken for an ended session.
+pub async fn patron(
+    library: &LibraryStore,
+    session: &WindowSession,
+) -> Result<Option<i64>, LibraryError> {
+    let Some(identity) = library
         .get_portal_session_identity(&hash_token(session.expose()))
-        .await
-        .ok()??;
-    let user = library.get_user(identity.user_id?).await.ok()??;
-    (!matches!(user.status, UserStatus::Disabled)).then_some(user.id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(user_id) = identity.user_id else {
+        return Ok(None);
+    };
+    let Some(user) = library.get_user(user_id).await? else {
+        return Ok(None);
+    };
+    Ok((!matches!(user.status, UserStatus::Disabled)).then_some(user.id))
 }
 
 /// Ends a session the window no longer uses (best effort).

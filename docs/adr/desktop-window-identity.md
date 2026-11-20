@@ -54,7 +54,8 @@ in its own configuration directory.
    before routing, so the cookie CSRF check does not apply to its requests.
 6. **The kept session follows sign-in and sign-out only.** A response that
    sets the patron's session while no elevation is active (a sign-in on the
-   window's sign-in screen) seals it; signing out deletes it, and
+   window's sign-in screen) swaps it for a window session and seals that;
+   signing out deletes it, and
    the window returns to the sign-in screen. Elevating, impersonating and
    ending either never touch it.
 7. **Several people use several OS accounts.** The window has no patron

@@ -131,7 +131,7 @@ patron, never the operator by default:
   **Desktop app on <computer>**; revoking it there signs the window out at
   its next launch.
 - **No kept session, or an ended one**, opens the app's sign-in screen. A
-  password sign-in there keeps the new session.
+  password sign-in there is swapped for a window session and kept.
 - **Elevation and impersonation** work as on the web: an Owner elevates
   with their password, and impersonates from the elevated session. Neither
   changes the kept session.

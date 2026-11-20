@@ -206,12 +206,22 @@ impl EmbeddedHost {
                 return;
             }
         };
-        let Some(user_id) = session::patron(&library, &kept).await else {
-            tracing::info!("the window's session has ended; the window opens signed out");
-            if let Err(err) = session::forget(&library, node_id).await {
-                tracing::warn!(error = %err, "ended window session not forgotten");
+        let user_id = match session::patron(&library, &kept).await {
+            Ok(Some(user_id)) => user_id,
+            Ok(None) => {
+                tracing::info!("the window's session has ended; the window opens signed out");
+                if let Err(err) = session::forget(&library, node_id).await {
+                    tracing::warn!(error = %err, "ended window session not forgotten");
+                }
+                return;
             }
-            return;
+            Err(err) => {
+                // Not known to have ended: keep it for the next launch and
+                // let the router decide on each request.
+                tracing::warn!(error = %err, "window session not checked; using it as kept");
+                self.update_jar(|jar| jar.portal = Some(kept.expose().to_owned()));
+                return;
+            }
         };
         let current = match session::mint(&library, user_id).await {
             Some(fresh) => match session::remember(&library, node_id, &fresh).await {
@@ -342,7 +352,10 @@ impl EmbeddedHost {
     ///
     /// The kept session changes only when the patron's own session changes
     /// while no operator session is held: impersonation and its end always
-    /// run under an elevated session, so they never rewrite it.
+    /// run under an elevated session, so they never rewrite it. A sign-in's
+    /// session (a web session, with the web lifetime) is swapped for a
+    /// window session lasting [`session::DESKTOP_SESSION_TTL`] before it is
+    /// kept.
     async fn absorb(&self, set_cookies: &[HeaderValue]) {
         if set_cookies.is_empty() {
             return;
@@ -359,11 +372,40 @@ impl EmbeddedHost {
         if before.portal == after.portal || after.operator.is_some() {
             return;
         }
-        let signed_in = after
+        let Some(signed_in) = after
             .portal
             .as_deref()
-            .and_then(session::WindowSession::new);
-        self.remember(signed_in.as_ref()).await;
+            .and_then(session::WindowSession::new)
+        else {
+            self.remember(None).await;
+            return;
+        };
+        let kept = self.as_window_session(signed_in).await;
+        self.remember(Some(&kept)).await;
+    }
+
+    /// Swaps a sign-in's web session for a window session of the same
+    /// patron, and puts it in the jar. Falls back to the sign-in's own
+    /// session when the swap fails.
+    ///
+    /// # Arguments
+    ///
+    /// * `signed_in` - The session the sign-in set.
+    ///
+    /// # Returns
+    ///
+    /// The session the window now holds.
+    async fn as_window_session(&self, signed_in: session::WindowSession) -> session::WindowSession {
+        let library = self.state.library_snapshot().await;
+        let Ok(Some(user_id)) = session::patron(&library, &signed_in).await else {
+            return signed_in;
+        };
+        let Some(fresh) = session::mint(&library, user_id).await else {
+            return signed_in;
+        };
+        session::end(&library, &signed_in).await;
+        self.update_jar(|jar| jar.portal = Some(fresh.expose().to_owned()));
+        fresh
     }
 
     /// Seals `session` for the next launch, or forgets the kept one for

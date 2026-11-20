@@ -259,7 +259,9 @@ async fn the_desktop_window_opens_as_its_kept_patron_and_elevates_like_the_web()
     let renewed = kept().await.expect("session still kept");
     assert_ne!(renewed, first, "the session is swapped at launch");
     assert_eq!(
-        crate::embedded::session::patron(&library, &first).await,
+        crate::embedded::session::patron(&library, &first)
+            .await
+            .unwrap(),
         None
     );
     let (_, me) = who(&reopened).await;
@@ -289,6 +291,21 @@ async fn the_desktop_window_opens_as_its_kept_patron_and_elevates_like_the_web()
         String::from_utf8_lossy(signed_in.body())
     );
     let current = kept().await.expect("the sign-in is kept");
+    // The sign-in's web session was swapped for a window session.
+    let sessions = reopened
+        .handle(window_json("GET", "/api/auth/sessions", ""))
+        .await;
+    let sessions: serde_json::Value = serde_json::from_slice(sessions.body()).unwrap();
+    let current_session = sessions["sessions"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["is_current"] == true))
+        .unwrap_or_else(|| panic!("no current session in {sessions}"));
+    assert!(
+        current_session["client_label"]
+            .as_str()
+            .is_some_and(|label| label.starts_with("Desktop app on")),
+        "{current_session}"
+    );
 
     // A revoked session sends the next launch to the sign-in screen.
     crate::embedded::session::end(&library, &current).await;
