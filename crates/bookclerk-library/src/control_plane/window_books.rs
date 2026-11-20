@@ -351,9 +351,9 @@ async fn window_books_page_by(
 /// rather than a branch node's owner.
 ///
 /// After the books on its store accounts, a clerk's pages go on with the
-/// books only the library's branches hold ([`branch_books_page`]): each
-/// edition [`Availability::Reachable`], for the person to ask the library
-/// for with its member request route (`POST /api/branch-requests`).
+/// books only the library's branches hold, each edition
+/// [`Availability::Reachable`], for the person to ask the library for with
+/// its member request route (`POST /api/branch-requests`).
 ///
 /// # Arguments
 ///
