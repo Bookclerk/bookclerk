@@ -37,6 +37,7 @@ others go deeper.
 - [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
 - [Libraries and branches](server/branches.md): join a library, shared branches and consent
 - [Notifications](server/notifications.md): channels, routes, patron choices, the inbox and the delivery log
+- [Public address](server/ingress.md): reach the library from the internet through an ingress plugin, with no port forwarding
 - [Media worker](server/media.md): the confined process that handles audio files
 - [Uploads](server/uploads.md): adding books from files, folders and archives, limits and review
 - [Playback reference](server/playback.md): what the daemon stores and serves for players

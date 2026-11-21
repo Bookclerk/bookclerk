@@ -124,7 +124,83 @@ pub fn plan_pass(state: Option<&ScanState>, now: DateTime<Utc>) -> PassStart {
     }
 }
 
+/// Where the quality-upgrade check of one account stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QualityCheckState {
+    /// Holding id the next check continues after; empty to start from the
+    /// account's first holding.
+    pub cursor: String,
+    /// When the check last ran; `None` before it first ran.
+    pub checked_at: Option<DateTime<Utc>>,
+}
+
 impl LibraryStore {
+    /// Reads where an account's quality-upgrade check stands.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the account has no scan state yet (it was never
+    /// scanned, so it holds nothing to check).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn quality_check_state(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+    ) -> Result<Option<QualityCheckState>> {
+        Ok(account_scan_state::Entity::find()
+            .filter(account_scan_state::Column::PluginKey.eq(plugin_key))
+            .filter(account_scan_state::Column::AccountId.eq(account_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|row| QualityCheckState {
+                cursor: row.quality_cursor,
+                checked_at: parse_dt_opt(row.quality_checked_at.as_deref()),
+            }))
+    }
+
+    /// Records that a quality-upgrade check of an account ran at `at` and
+    /// continues after holding `cursor` next time (empty starts over).
+    ///
+    /// Writes only an existing row of an account that is not revoked; the
+    /// scan creates the row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the batch fails.
+    pub async fn save_quality_check(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        cursor: &str,
+        at: DateTime<Utc>,
+    ) -> Result<()> {
+        let at = at.to_rfc3339();
+        let operation_id = format!("quality-check-{}", uuid::Uuid::new_v4());
+        self.execute_host_batch(batch::request(
+            &operation_id,
+            vec![batch::exec(
+                "UPDATE account_scan_state SET quality_cursor = ?, quality_checked_at = ? \
+                 WHERE plugin_key = ? AND account_id = ? AND NOT EXISTS (SELECT 1 FROM \
+                 accounts WHERE plugin_key = ? AND account_id = ? AND \
+                 connection_status = 'revoked')",
+                vec![
+                    batch::text(cursor),
+                    batch::text(&at),
+                    batch::text(plugin_key),
+                    batch::text(account_id),
+                    batch::text(plugin_key),
+                    batch::text(account_id),
+                ],
+            )],
+        ))
+        .await?;
+        Ok(())
+    }
+
     /// Reads where an account's scan stands.
     ///
     /// # Errors

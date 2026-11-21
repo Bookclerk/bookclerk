@@ -133,6 +133,13 @@ enum Commands {
         /// Nested `libraries` verb (list, consents, approve, revoke).
         command: commands::libraries::LibrariesCommand,
     },
+    /// The library's public address from an ingress plugin.
+    Ingress {
+        #[command(subcommand)]
+        /// Nested `ingress` verb (status, activate, deactivate, exposure,
+        /// accept-origin).
+        command: commands::ingress::IngressCommand,
+    },
     /// Library nodes: liveness, capacity, budgets, and placement labels.
     Nodes {
         #[command(subcommand)]
@@ -415,6 +422,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Db { command } => commands::db::run(command, &config, format).await,
         Commands::Daemon { command } => commands::daemon_cmd::run(command, &config, format).await,
         Commands::Events { command } => commands::events::run(command, &config, format).await,
+        Commands::Ingress { command } => commands::ingress::run(command, &config, format).await,
         Commands::Nodes { command } => commands::nodes::run(command, &config, format).await,
         Commands::Libraries { command } => commands::libraries::run(command, &config, format).await,
         Commands::Queues { command } => commands::queues::run(command, &config, format).await,

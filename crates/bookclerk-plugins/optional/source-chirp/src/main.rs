@@ -50,6 +50,7 @@ impl PluginWorker for ChirpRoot {
                 price_by_isbn: false,
                 price_by_asin: false,
                 detail_by_product_id: false,
+                quality_offers: false,
             },
             ..PluginDescribe::default()
         })

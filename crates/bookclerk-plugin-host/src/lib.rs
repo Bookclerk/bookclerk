@@ -69,6 +69,7 @@ mod error;
 mod event_publisher;
 mod host;
 mod host_control_plane;
+mod ingress;
 mod install;
 mod install_preflight;
 mod instance_bindings;
@@ -176,6 +177,7 @@ pub use host_control_plane::{
     open_host_control_plane_with_store, refresh_present, HostControlPlane, NodeEnrollment,
     PresentDeployment,
 };
+pub use ingress::{IngressHost, INGRESS_HEALTH_INTERVAL};
 pub use install::{
     add_package_version, enroll_version, grant_covers_version, host_artifact, install_plugin_key,
     install_version, is_sha256_hex, materialize_owner_version, materialize_version,

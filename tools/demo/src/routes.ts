@@ -165,6 +165,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/config/domains/core.events", "deny"],
   ["GET", "/api/config/domains/core.output", "allow"],
   ["PUT", "/api/config/domains/core.output", "deny"],
+  ["GET", "/api/config/ingress", "allow"],
+  ["POST", "/api/config/ingress", "deny"],
   ["POST", "/api/config/reload", "deny"],
   ["POST", "/api/database/migrate", "deny"],
   ["GET", "/api/settings", "allow"],

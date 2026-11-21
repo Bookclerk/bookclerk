@@ -9289,6 +9289,236 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
+    "/api/config/ingress": {
+      "get": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`GET /api/config/ingress`: the library's public address settings.",
+        "operationId": "get_ingress",
+        "responses": {
+          "200": {
+            "description": "The ingress settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngressStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      },
+      "post": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`POST /api/config/ingress`: turns ingress on or off, sets what it exposes, or\naccepts a reported origin. The deployment reconciler then starts or\nstops the instance.",
+        "operationId": "post_ingress",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngressChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngressStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`activate` and `deactivate` were both set, or `activate` is neither an instance id nor a plugin key with an instance. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "no plugin instance for `cloudflare-relay`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Ingress can't be turned on yet: no Owner exists, or operator auth is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "no Owner account exists yet: claim the library on this machine first, so first-run setup is never public"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: activate: invalid type: integer `1`, expected a string at line 1 column 13"
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
     "/api/config/plugins": {
       "get": {
         "tags": [
@@ -56787,6 +57017,117 @@
             ],
             "description": "Pass as `cursor` for the next page; `null` on the last page, where\npaging stops.",
             "example": "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0yMVQxMDowMDowMCswMDowMCIsImlkIjoiMWIyYyJ9"
+          }
+        }
+      },
+      "IngressChange": {
+        "type": "object",
+        "description": "`POST /api/config/ingress` body: each field is one change, applied in order\n(off or on, then exposure, then accepting a reported origin).",
+        "properties": {
+          "activate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Makes this the library's active ingress: a plugin instance UUID, or a\nplugin key for that plugin's default instance.",
+            "example": "cloudflare-relay"
+          },
+          "deactivate": {
+            "type": "boolean",
+            "description": "Turns ingress off; the adopted origin is kept.",
+            "example": false
+          },
+          "exposure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IngressExposure",
+                "description": "What public traffic may reach."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accept_reported_origin": {
+            "type": "boolean",
+            "description": "Adopts the origin the active instance reported. Renaming the library\nbreaks passkeys and sign-in redirects registered under the old name.",
+            "example": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "IngressExposure": {
+        "type": "string",
+        "description": "What public traffic from the ingress may reach.",
+        "enum": [
+          "branches",
+          "library"
+        ]
+      },
+      "IngressStatus": {
+        "type": "object",
+        "description": "`GET /api/config/ingress` and the answer to `POST /api/config/ingress`: the library's\ningress settings and what they mean now.",
+        "required": [
+          "exposure",
+          "operator_override"
+        ],
+        "properties": {
+          "active_instance": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The plugin instance serving the library's public address, as its\nUUID; `null` when ingress is off.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "plugin_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The active instance's plugin, when the instance exists.",
+            "example": "cloudflare-relay"
+          },
+          "exposure": {
+            "$ref": "#/components/schemas/IngressExposure",
+            "description": "What public traffic may reach."
+          },
+          "origin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The adopted public origin, kept while ingress is off.",
+            "example": "https://relay.example.workers.dev"
+          },
+          "reported_origin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A different origin the active instance reported, waiting for the\noperator to accept it.",
+            "example": "https://library.example.net"
+          },
+          "public_origin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The origin the library serves under now: `integrations.public_origin`\nwhen set, else the ingress origin while the instance runs.",
+            "example": "https://relay.example.workers.dev"
+          },
+          "operator_override": {
+            "type": "boolean",
+            "description": "True when `integrations.public_origin` in `config.toml` overrides the\ningress origin.",
+            "example": false
+          },
+          "blocked": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why ingress can't run now (no Owner yet, or operator auth off);\n`null` when it can.",
+            "example": null
           }
         }
       },
