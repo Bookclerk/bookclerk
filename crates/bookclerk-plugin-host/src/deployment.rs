@@ -1763,6 +1763,9 @@ async fn spawn_ingress(
                 root: request.plugin_root.clone(),
                 config: opened_config,
                 secrets: opened_secrets,
+                // The ingress session is not handed `WEBHOOKS`, so the
+                // public route takes no requests for it.
+                webhooks: Arc::new(Vec::new()),
             },
         )
         .await;
