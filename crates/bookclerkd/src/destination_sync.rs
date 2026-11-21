@@ -493,7 +493,11 @@ async fn check_unlisted_copies(
         return Ok(());
     }
     let guard = (stored.saturating_mul(REMOVAL_GUARD_PERCENT) / 100).max(REMOVAL_GUARD_MIN);
-    if missed > guard {
+    // A listing that found nothing at all while copies are stored there
+    // (a wrong prefix, revoked access) is not trusted even on a destination
+    // small enough to sit under the guard's minimum.
+    let empty = library.known_object_count(&feed.destination).await? == 0;
+    if missed > guard || empty {
         report.held_back += missed;
         feed.listing_error = Some(format!(
             "the listing missed {missed} of {stored} stored copies; they were left as they were"

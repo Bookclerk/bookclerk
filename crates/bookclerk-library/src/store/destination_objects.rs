@@ -739,6 +739,7 @@ impl LibraryStore {
                 let moved_to = self
                     .present_audio_file(destination, &copy.edition_id, copy.storage_key.as_deref())
                     .await?;
+                let mut release_after = None;
                 let mut row: edition_copies::ActiveModel = copy.into();
                 row.updated_at = Set(stored_time(now));
                 row.last_error = Set(Some("the file is no longer at the destination".to_owned()));
@@ -762,12 +763,22 @@ impl LibraryStore {
                         row.state = Set(CopyState::Missing.as_str().to_owned());
                         row.next_attempt_at = Set(None);
                         lost.missing += 1;
+                        release_after = Some(edition);
                     }
                 }
                 edition_copies::Entity::update(row)
                     .exec(self.db())
                     .await
                     .map_err(LibraryError::Orm)?;
+                // Checked again once the copy is missing: another node
+                // syncing another destination may have lost the edition's
+                // other stored copy since the check above. Whichever of the
+                // two checks last sees no stored copy left and releases it.
+                if let Some(edition) = release_after {
+                    if self.release_unstored_edition(&edition, destination).await? {
+                        lost.not_acquired += 1;
+                    }
+                }
             }
         }
         Ok(lost)

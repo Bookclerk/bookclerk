@@ -519,10 +519,10 @@ copy.
 
 > [!NOTE]
 > A listing that misses more than a fifth of the files Bookclerk knew of
-> before it started (and more than 10), or more than a fifth of the
-> books it has stored there, more likely failed partway, with a wrong
-> prefix, a missing permission or an unmounted disk, than saw the files
-> really go. Bookclerk keeps those files and copies as they were, and
+> before it started (and more than 10), more than a fifth of the books it
+> has stored there, or finds nothing at all where books are stored, more
+> likely failed partway, with a wrong prefix, a missing permission or an
+> unmounted disk, than saw the files really go. Bookclerk keeps those files and copies as they were, and
 > **Settings → Plugins** shows **Listing error** on the destination, with
 > the reason in its tooltip. A listing that fails outright shows the same.
 > Fix the cause, and the next listing applies what it finds.

@@ -363,3 +363,70 @@ async fn a_missing_file_marks_its_copy_missing_and_the_last_one_unacquires() {
             .is_empty());
     }
 }
+
+#[tokio::test]
+async fn losing_the_last_two_copies_at_once_still_unacquires() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store().clone();
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_book(&crate::NewBook::minimal(
+                "B00ONE0001",
+                "user-1",
+                "us",
+                "Title",
+            ))
+            .await
+            .unwrap();
+        let edition = store
+            .acquire_titles_named(None, "B00ONE0001")
+            .await
+            .unwrap()
+            .remove(0)
+            .edition_id;
+        store
+            .set_acquire_status(
+                "B00ONE0001",
+                "user-1",
+                crate::AcquireStatus::Acquired,
+                Some("A/One.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        for destination in ["d", "e"] {
+            store
+                .set_copy_stored(&edition, destination, "A/One.m4b")
+                .await
+                .unwrap();
+        }
+        let now = Utc::now();
+        let keys = ["A/One.m4b".to_owned()];
+
+        // Two nodes syncing two destinations lose the edition's only stored
+        // copies at the same time; each may see the other's copy as stored
+        // when it first checks.
+        let (on_d, on_e) = tokio::join!(
+            store.lose_copies("d", &keys, MissingFileAction::MarkMissing, now),
+            store.lose_copies("e", &keys, MissingFileAction::MarkMissing, now),
+        );
+        let (on_d, on_e) = (on_d.unwrap(), on_e.unwrap());
+        assert_eq!(on_d.missing + on_e.missing, 2, "{profile:?}");
+        // Both may release it; turning it not acquired twice is harmless.
+        assert!(on_d.not_acquired + on_e.not_acquired >= 1, "{profile:?}");
+        assert_eq!(
+            store
+                .edition_acquisition(&edition)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::AcquireStatus::NotAcquired,
+            "{profile:?}"
+        );
+    }
+}
