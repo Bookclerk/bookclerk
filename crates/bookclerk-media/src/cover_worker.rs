@@ -319,10 +319,12 @@ fn spawn(launch: &WorkerLaunch, confinement: Confinement, threads: usize) -> Res
     // as this long-lived worker runs.
     let stdout = ThreadPipe::spawn("media-cover-replies".to_owned(), stdout)
         .map_err(|err| worker_error(format!("could not read cover worker output: {err}")))?;
+    // The guard is built here, not inside the task, so a task dropped before
+    // its first poll still marks the worker dead.
     tokio::spawn(read_replies(
         stdout,
         Arc::clone(&pending),
-        Arc::clone(&alive),
+        ClearOnDrop(Arc::clone(&alive)),
     ));
     Ok(Running {
         stdin: tokio::sync::Mutex::new(stdin),
@@ -334,14 +336,15 @@ fn spawn(launch: &WorkerLaunch, confinement: Confinement, threads: usize) -> Res
 
 /// Hands each reply to its waiter until the worker ends or misbehaves, then
 /// fails every cover still waiting.
+///
+/// `dead_when_done` marks the worker dead when this reader ends, or when
+/// its task is cancelled with its runtime, so the next request on any
+/// runtime starts a fresh worker.
 async fn read_replies(
     mut stdout: impl tokio::io::AsyncRead + Unpin,
     pending: Pending,
-    alive: Arc<AtomicBool>,
+    dead_when_done: ClearOnDrop,
 ) {
-    // Cancelled with its runtime, the worker has no reader left: mark it dead
-    // so the next read, on whichever runtime, starts a fresh one.
-    let _dead_when_done = ClearOnDrop(Arc::clone(&alive));
     let reason = loop {
         match read_reply(&mut stdout).await {
             Ok(reply) => {
@@ -356,7 +359,7 @@ async fn read_replies(
             Err(reason) => break reason,
         }
     };
-    alive.store(false, Ordering::Release);
+    drop(dead_when_done);
     tracing::warn!(reason = %reason, "cover worker stopped");
     for (_, waiter) in lock(&pending).drain() {
         let _ = waiter.send(Err(worker_error(reason.clone())));
@@ -486,7 +489,12 @@ mod tests {
             .expect("encode"),
         ]
         .concat();
-        read_replies(&stream[..], Arc::clone(&pending), Arc::clone(&alive)).await;
+        read_replies(
+            &stream[..],
+            Arc::clone(&pending),
+            ClearOnDrop(Arc::clone(&alive)),
+        )
+        .await;
         assert_eq!(rx_ok.await.expect("sent").expect("ok"), set);
         assert!(matches!(rx_err.await.expect("sent"), Err(MediaError::Cover(m)) if m == "bad"));
         assert!(matches!(

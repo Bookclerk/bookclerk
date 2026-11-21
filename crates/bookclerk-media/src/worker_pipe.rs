@@ -224,11 +224,27 @@ mod tests {
                 .unwrap();
             let stdout = child.stdout.take().unwrap();
             let mut pipe = ThreadPipe::spawn("test-pipe".into(), stdout).unwrap();
-            // Park a read on the pipe, as the reply reader does.
+            // Park a read on the pipe, as the reply reader does, and wait
+            // until it has been polled and is pending before dropping the
+            // runtime.
+            let (polled_tx, polled_rx) = tokio::sync::oneshot::channel();
             let reader = tokio::spawn(async move {
                 let mut byte = [0u8; 1];
-                let _ = pipe.read(&mut byte).await;
+                let mut polled_tx = Some(polled_tx);
+                let mut read = std::pin::pin!(pipe.read(&mut byte));
+                std::future::poll_fn(|cx| {
+                    let poll = std::future::Future::poll(read.as_mut(), cx);
+                    if let Some(tx) = polled_tx.take() {
+                        let _ = tx.send(poll.is_pending());
+                    }
+                    poll
+                })
+                .await
             });
+            assert!(
+                polled_rx.await.unwrap(),
+                "the read finished before the runtime was dropped"
+            );
             (child, reader)
         });
         let (done_tx, done_rx) = std::sync::mpsc::channel();
