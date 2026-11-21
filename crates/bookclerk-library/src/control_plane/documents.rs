@@ -178,7 +178,8 @@ impl ConfigActor {
                 key.scope_type == LIBRARY_SCOPE_TYPE
                     && key.scope_id == LIBRARY_SCOPE_ID
                     && (key.namespace == super::BRANCH_ENROLLMENT_NAMESPACE
-                        || key.namespace == super::ADMIN_CONTROLS_NAMESPACE)
+                        || key.namespace == super::ADMIN_CONTROLS_NAMESPACE
+                        || key.namespace == super::INGRESS_NAMESPACE)
             }
             Self::PatronAdministrator(_) => {
                 key.scope_type == LIBRARY_SCOPE_TYPE

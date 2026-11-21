@@ -59,7 +59,9 @@ same wizard.
 1. **Pick a transport.** Branches reach the node API over TLS, except on
    loopback. Set `integrations.public_origin` to the address branches will
    use (the same one people open the library at), and choose a
-   `[daemon.node_api]` mode: `acme`, `proxy`, `self_signed` or `loopback`.
+   `[daemon.node_api]` mode: `acme`, `proxy`, `self_signed`, `tunnel` or
+   `loopback`. With an [ingress plugin](ingress.md) (`tunnel` mode) the
+   plugin reports the address, so `public_origin` can stay unset.
    The modes, their required settings and what each refuses are in
    [Configuration → Branch nodes](configuration.md#branch-nodes).
 2. **Let new branches join.** **Settings → Branches** (operator or Owner)
@@ -505,9 +507,9 @@ The joining daemon writes them as its own bootstrap:
 - `node-identity.json`, with the node id the library recorded.
 - `master.key`, wrapped with this server's own `BOOKCLERK_AUTH_PASSWORD`
   (or `[auth].password`) when set, and unwrapped otherwise. When this
-  server keeps its key in the OS keychain (`[auth].key_store`, or the
-  desktop window's default), the key goes into a new keychain item and
-  `master.key` only names it.
+  server keeps its key in the OS keychain or `systemd-creds`
+  (`[auth].key_store`, or the desktop window's default), the key goes
+  into a new item there and `master.key` only names it.
 
 Then `bookclerkd` restarts itself cleanly. It stops its listeners as on
 SIGTERM and re-executes the same binary with the same arguments and
@@ -1238,6 +1240,28 @@ are answered "not listed".
 > still lists it: turning off **Share this branch's books** or **List my
 > members' books**, or the member opting out, stops it at the next sync
 > pass. Files A already received stay there.
+
+### Asking the library to download a book
+
+A clerk lists every book on A's store accounts, including ones A hasn't
+downloaded yet. For those, a patron can ask A to download the book so the
+clerk can then take A's copy. The API is `POST /api/download-requests`
+`{"work_id": "..."}`, where `work_id` is A's work id. A signed-in patron
+of A may call it, and so may a clerk with a library card for A (see
+[Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).
+The patron's member controls must allow **Request books** (403 otherwise).
+
+1. **A picks the edition.** A reads the work's editions in edition id
+   order and takes the first one a store account of A holds. A work A
+   already has a copy of is refused (409); one no account of A holds is
+   not found (404).
+2. **A queues the download.** It is an ordinary `acquire` job for that
+   edition, on the account that holds it, whoever's account that is. Like
+   other downloads A starts on someone's behalf, it waits for the
+   account's pace. Asking again while that download waits or runs returns
+   it (`already_queued`).
+3. **The clerk takes the copy.** Once A has the copy, the next read of
+   A's books states it, and the clerk uses it like any copy A holds.
 
 ### Acquiring all of a branch's members' books
 

@@ -222,6 +222,25 @@ class Storefront extends StorefrontEntrypoint {
     ]);
     if (params.accountId === "bad") throw new Error("store refused sign-out");
   }
+  async qualityOffers(params) {
+    calls.storefront.push(["qualityOffers", params.accountId, params.titleIds]);
+    return {
+      offers: params.titleIds.map((id) =>
+        id === "known"
+          ? {
+              found: true,
+              offer: {
+                codec: "aac",
+                aacProfile: "xhe",
+                bitrateKbps: 137,
+                sampleRateHz: 44100,
+                channels: 2,
+              },
+            }
+          : { found: false },
+      ),
+    };
+  }
   async diagnose() {
     return [
       `greeting=${this.env.CONFIG.greeting}`,
@@ -976,6 +995,23 @@ function decodeReply(reply, resultsCodec, caps) {
     W.ContentSourceRevokeAccountResultsCodec,
   );
   assert.equal(refused.kind, "err");
+}
+
+{
+  const offers = decodeReply(
+    await invoke("ContentSource", "qualityOffers", W.ContentSourceQualityOffersParamsCodec, {
+      params: { accountId: "a1", titleIds: ["known", "other"] },
+    }),
+    W.ContentSourceQualityOffersResultsCodec,
+  );
+  assert.equal(offers.kind, "ok");
+  assert.deepEqual(calls.storefront.at(-1), ["qualityOffers", "a1", ["known", "other"]]);
+  assert.equal(offers.value.offers.length, 2);
+  assert.equal(offers.value.offers[0].found, true);
+  assert.equal(offers.value.offers[0].offer.codec, "aac");
+  assert.equal(offers.value.offers[0].offer.aacProfile, "xhe");
+  assert.equal(offers.value.offers[0].offer.bitrateKbps, 137);
+  assert.equal(offers.value.offers[1].found, false);
 }
 
 {

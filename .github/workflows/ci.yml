@@ -1818,8 +1818,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # The SPA's Storybook stories, each checked with axe-core and compared
-  # with its baseline screenshot at two viewports in light and dark. Runs
+  # The SPA's Storybook stories and the website's and diagnostics
+  # collector's pages, each checked with axe-core and compared with its
+  # baseline screenshot at two viewports in light and dark. Runs
   # inside the pinned Playwright image so every run renders with the same
   # browser, fonts and libraries; the image's tag must match the
   # `@playwright/test` version in ui/package.json

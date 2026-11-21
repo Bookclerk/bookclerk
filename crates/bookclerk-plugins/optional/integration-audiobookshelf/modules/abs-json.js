@@ -12,7 +12,7 @@
  *
  * A key the file holds is a field it states, even when its value is
  * `null` or empty. `abridged: false` reads as unabridged, as Audiobookshelf
- * treats it. Rendering keeps every key it does not own, in place, and
+ * treats it, and `explicit: false` as clean. Rendering keeps every key it does not own, in place, and
  * writes the file with two-space indentation as Audiobookshelf does.
  */
 import { RecordBuilder, chapterTitle, decodeUtf8, decodeUtf8Strict, encodeFile, firstId, invalid, namesIn, partialDate, secondsToMs, } from "./text.js";
@@ -93,12 +93,13 @@ function readChapters(value) {
     return chapters;
 }
 /**
- * Reads `abridged`, a boolean or the strings `"true"` and `"false"`.
+ * Reads a flag (`abridged`, `explicit`): a boolean or the strings `"true"`
+ * and `"false"`.
  *
  * @param value - The file's value.
  * @returns The flag, or `undefined` for anything else.
  */
-function readAbridged(value) {
+function readFlag(value) {
     if (typeof value === "boolean")
         return value;
     if (value === "true")
@@ -139,7 +140,9 @@ export function parseAbsJson(bytes) {
     if (has("tags"))
         out.labels("tags", get("tags"));
     if (has("abridged"))
-        out.abridged(readAbridged(get("abridged")));
+        out.abridged(readFlag(get("abridged")));
+    if (has("explicit"))
+        out.explicit(readFlag(get("explicit")));
     if (has("isbn"))
         out.identifier("isbn", get("isbn"));
     if (has("asin"))
@@ -311,6 +314,9 @@ export function renderAbsJson(existing, record, fields) {
                 break;
             case "abridgement":
                 put(file, "abridged", record.abridgement === "unknown" ? undefined : record.abridgement === "abridged");
+                break;
+            case "explicitness":
+                put(file, "explicit", record.explicitness === "unknown" ? undefined : record.explicitness === "explicit");
                 break;
             case "identifiers":
                 put(file, "isbn", firstId(record, "isbn"));

@@ -140,6 +140,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.quality_offers]
+crate = "bookclerk-plugin-abi"
+boundary = "One ContentSource.qualityOffers reply: answers no more than the titles sent, each found stream's channels, sample rate, bitrate and AAC profile within bounds, and refreshed credentials"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.metadata_file_record]
 crate = "bookclerk-plugin-abi"
 boundary = "A metadata-file dialect's parse reply: what a sidecar says, its field list, credit roles, text and list caps, dates and chapter order, against the dialect's declared fields"
@@ -420,6 +427,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.tunnel_policy]
+crate = "bookclerk-node-proto"
+boundary = "Paths of requests a relay ingress plugin carries from the public internet on the tunnel transport, which reach the router unless refused as operator-only or outside the exposure the operator chose"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.upload_part]
 crate = "bookclerk-node-proto"
 boundary = "The Content-Range header of an upload PUT, /api/node/v1/uploads/{upload_id}/files/{n}, which decides which bytes of a declared file the body is, or that it only asks where the owner is"
@@ -508,6 +522,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-library"
 boundary = "What a player sends the playback routes: the bodies that open a session, report or set progress and add or change a bookmark, the progress page cursor, and the stream path of GET /api/playback/sessions/{id}/tracks/{n}"
 input_from = "any signed-in patron"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.chapter_request]
+crate = "bookclerk-library"
+boundary = "An Administrator's chapter list for an edition, or the claim to pin, from PUT /api/library/editions/{id}/chapters and PUT /api/library/editions/{id}/chapters/pin"
+input_from = "Administrator, Owner or operator"
 side = "host"
 artifacts = ["bookclerk"]
 

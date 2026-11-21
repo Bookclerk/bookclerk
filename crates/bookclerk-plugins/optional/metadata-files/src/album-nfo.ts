@@ -84,6 +84,7 @@ function replaces(element: XmlElement, field: MetadataField, authors: boolean): 
     case "series":
     case "chapters":
     case "duration":
+    case "explicitness":
       return false;
   }
 }

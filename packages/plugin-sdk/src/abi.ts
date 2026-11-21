@@ -40,7 +40,8 @@ export const MAX_SCAN_CURSOR_BYTES = 4096 as const;
 
 /**
  * Maximum bytes of refreshed credentials a storefront hands back
- * (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`).
+ * (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`,
+ * `QualityOffersResult.refreshedCredentials`).
  */
 export const MAX_REFRESHED_CREDENTIAL_BYTES = 65536 as const;
 
@@ -399,6 +400,16 @@ export const FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"] as c
 export type FetchedFileRole = (typeof FETCHED_FILE_ROLES)[number];
 
 /**
+ * What a storefront's chapter markers mark (`PlainFetch.chapterKind`).
+ *
+ * Ordinal-ordered `ChapterKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const CHAPTER_KINDS = ["unknown", "chapters", "tracks"] as const;
+
+/** Union of `CHAPTER_KINDS` wire names. */
+export type ChapterKind = (typeof CHAPTER_KINDS)[number];
+
+/**
  * Catalog search ordering.
  *
  * Ordinal-ordered `CatalogSort` wire names (index = Cap'n Proto ordinal).
@@ -439,13 +450,45 @@ export const ABRIDGEMENTS = ["unknown", "unabridged", "abridged"] as const;
 export type Abridgement = (typeof ABRIDGEMENTS)[number];
 
 /**
+ * Whether an edition is marked as explicit (adult) content. A patron scope
+ * can hide explicit editions; `unknown` and `clean` editions stay visible.
+ *
+ * Ordinal-ordered `Explicitness` wire names (index = Cap'n Proto ordinal).
+ */
+export const EXPLICITNESSS = ["unknown", "clean", "explicit"] as const;
+
+/** Union of `EXPLICITNESSS` wire names. */
+export type Explicitness = (typeof EXPLICITNESSS)[number];
+
+/**
+ * Audio codec of a stream a store offers (`QualityOffer.codec`). Spelled as
+ * the host's probed codecs are, so an offer compares with a held file.
+ *
+ * Ordinal-ordered `OfferedCodec` wire names (index = Cap'n Proto ordinal).
+ */
+export const OFFERED_CODECS = ["unknown", "aac", "alac", "flac", "mp3", "opus", "vorbis", "eac3", "ac4"] as const;
+
+/** Union of `OFFERED_CODECS` wire names. */
+export type OfferedCodec = (typeof OFFERED_CODECS)[number];
+
+/**
+ * AAC profile of an offered AAC stream (`QualityOffer.aacProfile`).
+ *
+ * Ordinal-ordered `OfferedAacProfile` wire names (index = Cap'n Proto ordinal).
+ */
+export const OFFERED_AAC_PROFILES = ["unknown", "lc", "he", "heV2", "xhe"] as const;
+
+/** Union of `OFFERED_AAC_PROFILES` wire names. */
+export type OfferedAacProfile = (typeof OFFERED_AAC_PROFILES)[number];
+
+/**
  * A field of a `MetadataFileRecord`. Dialects declare in the manifest which
  * fields their format carries; a parsed record lists the ones its file
  * states, and a render request lists the ones to write.
  *
  * Ordinal-ordered `MetadataField` wire names (index = Cap'n Proto ordinal).
  */
-export const METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"] as const;
+export const METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration", "explicitness"] as const;
 
 /** Union of `METADATA_FIELDS` wire names. */
 export type MetadataField = (typeof METADATA_FIELDS)[number];

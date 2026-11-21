@@ -1279,6 +1279,11 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::config_authority::put_node_labels))
         .routes(routes!(crate::config_authority::put_node_owner))
+        // The library's public address: the operator (or an elevated Owner).
+        .routes(routes!(
+            crate::ingress::get_ingress,
+            crate::ingress::post_ingress
+        ))
         .routes(routes!(
             crate::plugin_installs::get_plugins,
             crate::plugin_installs::post_plugin_install
@@ -1365,6 +1370,15 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::library_overrides::delete_listing_pin
         ))
         .routes(routes!(crate::library_overrides::list_conflicts))
+        .routes(routes!(crate::library_chapters::list_chapter_claims))
+        .routes(routes!(
+            crate::library_chapters::put_edition_chapters,
+            crate::library_chapters::delete_edition_chapters
+        ))
+        .routes(routes!(
+            crate::library_chapters::put_chapter_pin,
+            crate::library_chapters::delete_chapter_pin
+        ))
         .routes(routes!(crate::library_overrides::post_work_split))
         // Library tags: the handlers admit only the operator, an Owner or
         // an Administrator.
@@ -1461,6 +1475,7 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
         .routes(routes!(crate::library_works::get_edition_cover))
+        .routes(routes!(crate::library_chapters::get_edition_chapters))
         .routes(routes!(crate::playback::get_edition_playback))
         .routes(routes!(crate::playback::post_session))
         .routes(routes!(crate::playback::post_session_sync))
@@ -1496,6 +1511,7 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(delete_wishlist))
         .routes(routes!(list_request_queue))
         .routes(routes!(crate::branch_requests::create_branch_request))
+        .routes(routes!(crate::download_requests::create_download_request))
         .routes(routes!(auth::logout))
         .routes(routes!(auth::list_sessions))
         .routes(routes!(auth::revoke_session))
@@ -2365,6 +2381,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
                 &fresh_output,
                 db_plugin_changed,
             );
+            // The ingress origin comes from the database, not the file.
+            new_cfg.integrations.ingress_origin = config.integrations.ingress_origin.clone();
             *config = new_cfg.clone();
         }
     }
@@ -2625,6 +2643,8 @@ fn allowed_setting_key(key: &str) -> bool {
             | "daemon.auth.require_second_factor"
             | "library.auto_acquire"
             | "library.scan_interval_minutes"
+            | "library.upgrade_quality"
+            | "library.upgrade_daily_limit"
             | "diagnostics.share_reports"
             | "diagnostics.share_usage"
             | "jobs.max_pending"
@@ -2718,12 +2738,22 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             .parse::<u64>()
             .map(|n| n.to_string())
             .map_err(|_| format!("{key} must be a non-negative integer")),
-        "library.auto_acquire" | "daemon.auth.enabled" | "daemon.auth.require_second_factor" => {
-            match value.trim().to_ascii_lowercase().as_str() {
-                "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off" => Ok(value.to_string()),
-                _ => Err(format!("{key} must be a boolean value")),
+        "library.upgrade_daily_limit" => match value.trim().parse::<u32>() {
+            Ok(n) if (1..=bookclerk_config::MAX_UPGRADE_DAILY_LIMIT).contains(&n) => {
+                Ok(n.to_string())
             }
-        }
+            _ => Err(format!(
+                "library.upgrade_daily_limit must be 1..={}",
+                bookclerk_config::MAX_UPGRADE_DAILY_LIMIT
+            )),
+        },
+        "library.auto_acquire"
+        | "library.upgrade_quality"
+        | "daemon.auth.enabled"
+        | "daemon.auth.require_second_factor" => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off" => Ok(value.to_string()),
+            _ => Err(format!("{key} must be a boolean value")),
+        },
         "diagnostics.share_reports" | "diagnostics.share_usage" => {
             match value.trim().to_ascii_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" => Ok("true".into()),
@@ -2831,6 +2861,14 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings.insert(
         "library.scan_interval_minutes".into(),
         config.library.scan_interval_minutes.to_string(),
+    );
+    settings.insert(
+        "library.upgrade_quality".into(),
+        config.library.upgrade_quality.to_string(),
+    );
+    settings.insert(
+        "library.upgrade_daily_limit".into(),
+        config.library.upgrade_daily_limit.to_string(),
     );
     settings.insert(
         "diagnostics.share_reports".into(),

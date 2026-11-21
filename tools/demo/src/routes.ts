@@ -106,6 +106,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/config/branches/members-books", "deny"],
   // Asking a branch for a book acquires it there: never from the demo.
   ["POST", "/api/branch-requests", "deny"],
+  // Asking the library to download a book acquires it: never from the demo.
+  ["POST", "/api/download-requests", "deny"],
   ["POST", "/api/clerk/v1/token", "deny"],
   ["GET", "/api/clerk/v1/connect", "deny"],
   // A copy's files are a branch's or clerk's to download: never the demo's.
@@ -163,6 +165,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/config/domains/core.events", "deny"],
   ["GET", "/api/config/domains/core.output", "allow"],
   ["PUT", "/api/config/domains/core.output", "deny"],
+  ["GET", "/api/config/ingress", "allow"],
+  ["POST", "/api/config/ingress", "deny"],
   ["POST", "/api/config/reload", "deny"],
   ["POST", "/api/database/migrate", "deny"],
   ["GET", "/api/settings", "allow"],
@@ -228,6 +232,13 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/library/collections", "deny"],
   ["GET", "/api/library/works/facets/{facet}", "allow"],
   ["GET", "/api/library/editions/{id}/cover", "allow"],
+  // Chapters: an Administrator's edits stay in the visitor's own library.
+  ["GET", "/api/library/editions/{id}/chapters", "allow"],
+  ["PUT", "/api/library/editions/{id}/chapters", "allow"],
+  ["DELETE", "/api/library/editions/{id}/chapters", "allow"],
+  ["GET", "/api/library/editions/{id}/chapters/claims", "allow"],
+  ["PUT", "/api/library/editions/{id}/chapters/pin", "allow"],
+  ["DELETE", "/api/library/editions/{id}/chapters/pin", "allow"],
   ["GET", "/api/library/conflicts", "allow"],
   ["PUT", "/api/library/listings/{id}/pin", "allow"],
   ["DELETE", "/api/library/listings/{id}/pin", "allow"],

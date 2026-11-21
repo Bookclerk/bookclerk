@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `ai_run_reply`, `ai_run`, `event_read`, `socket_request`, `storage_reply` and `origin_request` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `quality_offers`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `ai_run_reply`, `ai_run`, `event_read`, `socket_request`, `storage_reply` and `origin_request` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -158,13 +158,13 @@ const SCAN_PAGE_SELECTOR: u8 = 31;
 /// See [`SCAN_PAGE_SELECTOR`].
 const CATALOG_HITS_SELECTOR: u8 = 48;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_RECORDS_SELECTOR: u8 = 97;
+const METADATA_RECORDS_SELECTOR: u8 = 102;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_CHAPTERS_SELECTOR: u8 = 100;
+const METADATA_CHAPTERS_SELECTOR: u8 = 105;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_FETCH_PARAMS_SELECTOR: u8 = 102;
+const COVER_FETCH_PARAMS_SELECTOR: u8 = 107;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_IMAGES_SELECTOR: u8 = 105;
+const COVER_IMAGES_SELECTOR: u8 = 110;
 
 /// A scan page with every structured book record and paging field filled.
 fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
@@ -958,6 +958,122 @@ fn scan_page_seeds_are_current() {
         seed.push(u8::try_from(account.len()).expect("short account"));
         seed.extend_from_slice(account.as_bytes());
         seed.extend(encode_scan_page_bytes(&page).expect("encode"));
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/quality_offers.rs"]
+mod quality_offers_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/quality_offers.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_quality_offers_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("quality_offers") {
+        quality_offers_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no quality_offers seed");
+}
+
+/// Seeds for `quality_offers`: accepted replies (an xHE-AAC offer next to a
+/// title the store could not answer, a lossless offer with refreshed
+/// credentials) and one reply breaking each rule. Refresh with
+/// `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn quality_offers_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        encode_quality_offers_bytes, OfferedAacProfile, OfferedCodec, QualityOffer,
+        QualityOffersResult, TitleQualityOffer,
+    };
+
+    let found = |offer: QualityOffer| TitleQualityOffer { found: true, offer };
+    let xhe = QualityOffer {
+        codec: OfferedCodec::Aac,
+        aac_profile: OfferedAacProfile::Xhe,
+        bitrate_kbps: Some(137),
+        sample_rate_hz: Some(44_100),
+        channels: Some(2),
+    };
+    let seeds: Vec<(&str, u8, QualityOffersResult)> = vec![
+        (
+            "xhe_and_unknown.bin",
+            2,
+            QualityOffersResult {
+                offers: vec![found(xhe.clone()), TitleQualityOffer::default()],
+                refreshed_credentials: None,
+            },
+        ),
+        (
+            "flac_refreshed.bin",
+            1,
+            QualityOffersResult {
+                offers: vec![found(QualityOffer {
+                    codec: OfferedCodec::Flac,
+                    aac_profile: OfferedAacProfile::Unknown,
+                    bitrate_kbps: Some(1_411),
+                    sample_rate_hz: Some(96_000),
+                    channels: Some(2),
+                })],
+                refreshed_credentials: Some(br#"{"authfile_b64":"e30="}"#.to_vec()),
+            },
+        ),
+        (
+            "too_many_answers.bin",
+            1,
+            QualityOffersResult {
+                offers: vec![found(xhe.clone()), found(xhe.clone())],
+                refreshed_credentials: None,
+            },
+        ),
+        (
+            "impossible_channels.bin",
+            1,
+            QualityOffersResult {
+                offers: vec![found(QualityOffer {
+                    channels: Some(33),
+                    ..xhe.clone()
+                })],
+                refreshed_credentials: None,
+            },
+        ),
+        (
+            "profile_on_mp3.bin",
+            1,
+            QualityOffersResult {
+                offers: vec![found(QualityOffer {
+                    codec: OfferedCodec::Mp3,
+                    ..xhe.clone()
+                })],
+                refreshed_credentials: None,
+            },
+        ),
+        (
+            "refreshed_not_object.bin",
+            0,
+            QualityOffersResult {
+                offers: Vec::new(),
+                refreshed_credentials: Some(b"[\"token\"]".to_vec()),
+            },
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/quality_offers");
+    for (name, sent, result) in seeds {
+        let mut seed = vec![sent];
+        seed.extend(encode_quality_offers_bytes(&result).expect("encode"));
         let path = dir.join(name);
         if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
             std::fs::write(&path, &seed).expect("write seed");

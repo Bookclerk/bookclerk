@@ -23,10 +23,12 @@ At start, the daemon:
    `[media]`, `[plugins]`, `[daemon]` and the other tables still come
    from TOML.
 
-It then runs two schedules:
+It then runs these schedules:
 
 - a library scan every `library.scan_interval_minutes`;
-- auto-acquire, when `library.auto_acquire = true`.
+- auto-acquire, when `library.auto_acquire = true`;
+- a daily check for better files, when `library.upgrade_quality = true`
+  (see [Upgrading to better files](output.md#upgrading-to-better-files)).
 
 > [!WARNING]
 > Keep `library.auto_acquire = false` until you are happy with where
@@ -401,10 +403,82 @@ existing BCK1 key later, run `bookclerk config master-key wrap`, or
 reload `bookclerkd` after setting the password (SIGHUP or
 `POST /api/config/reload`).
 
-A service like this has no OS keychain to keep the key in (no login
-session, no Secret Service), so the key stays in the password-wrapped
-file. Keep the password itself off disk with an encrypted systemd
-credential, which a TPM can seal to the machine:
+### Sealing the key with systemd-creds
+
+A service like this has no OS keychain (no login session, no Secret
+Service). On systemd 256 or later, `bookclerkd` can seal the key with
+`systemd-creds` instead, to the machine's TPM2 when it has one and to the
+host key otherwise:
+
+1. Save a recovery copy first. A sealed key only opens on this machine:
+
+   ```sh
+   sudo -u bookclerk bookclerk config master-key export --out /root/bookclerk-recovery.bck
+   ```
+
+2. Set the store in `config.toml`:
+
+   ```toml
+   [auth]
+   key_store = "systemd-creds"
+   ```
+
+3. Restart the service:
+
+   ```sh
+   sudo systemctl restart bookclerkd
+   ```
+
+On start, `bookclerkd` runs `systemd-creds --user encrypt` as its own
+user, writes the sealed key beside `master.key` as
+`master-key-<id>.cred`, reads it back, and only then replaces
+`master.key` with a pointer (`BCK4`). `bookclerk config master-key
+status` shows `store=systemd-creds`. To move it now instead, with the
+service stopped, run `bookclerk config master-key move systemd-creds`.
+
+> [!NOTE]
+> If sealing fails for any reason (an older systemd, no access to the
+> credential service), the key stays in `master.key`, wrapped with the
+> auth password when one is set, and `bookclerkd` logs a warning and
+> starts. Once the key is sealed, a credential that no longer opens (a
+> replaced TPM or motherboard, a reinstalled system) stops `bookclerkd`
+> from starting rather than making a new key. Restore it with `bookclerk
+> config master-key import --from <recovery copy>` after moving the old
+> `master.key` away.
+
+### Sealing the key yourself
+
+On an older systemd, or to keep the credential in the system credential
+store, seal the key yourself and let the unit hand it to `bookclerkd`:
+
+1. With the service stopped, pipe the key into `systemd-creds`. The
+   command writes the key exactly as stored (wrapped with the auth
+   password when one is set) and refuses to write to a terminal:
+
+   ```sh
+   sudo -u bookclerk bookclerk config master-key credential \
+     | sudo systemd-creds encrypt --name=bookclerk-master-key - /etc/credstore.encrypted/bookclerk-master-key
+   ```
+
+2. Load it in the unit:
+
+   ```ini
+   LoadCredentialEncrypted=bookclerk-master-key
+   ```
+
+3. Set `key_store = "systemd-creds"` under `[auth]` and start the service.
+
+On start, `bookclerkd` finds the same key in
+`$CREDENTIALS_DIRECTORY/bookclerk-master-key`, adopts it without sealing
+a copy of its own, and replaces `master.key` with a pointer. From then on
+the key is only in that credential: keep the unit line and the
+credential file, and keep the recovery copy.
+
+### Keeping the auth password off disk
+
+Without `systemd-creds`, the key stays in the password-wrapped file. Keep
+the password itself off disk with an encrypted systemd credential, which
+a TPM can seal to the machine:
 
 ```sh
 systemd-creds encrypt --name=bookclerk-auth-password - /etc/credstore.encrypted/bookclerk-auth-password

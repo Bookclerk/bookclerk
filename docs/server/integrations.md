@@ -330,6 +330,16 @@ Later requests are served from that cache, with a one-year `immutable`
 cache header and an `ETag`, so a browser that checks anyway gets
 `304 Not Modified`. Search results and Discover warm their first 24 covers in
 the background, so thumbnails are usually ready before the browser asks.
+Discover starts as soon as a feed is stored, before any page asks for it,
+so a first page load doesn't wait on every cover's download and re-encode
+at once.
+
+Each cover a request downloads logs a DEBUG line, `cover fetched and
+processed`, with `wait_ms` (waiting for another request's download of the
+same cover), `fetch_ms` (the download), `process_ms` (the media worker,
+including its queue) and `write_ms` (writing it to the cover cache). That way a slow cover response in a diagnostics
+report shows where its time went. A background batch logs `cover prefetch
+batch done` with its counts and times.
 
 At most two of these batches download at once, and a cover already in
 one batch isn't downloaded again by another.

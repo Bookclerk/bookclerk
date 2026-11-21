@@ -333,6 +333,7 @@ export class RecordBuilder {
     tags: [],
     abridgement: "unknown",
     expressionKind: "unspecified",
+    explicitness: "unknown",
     identifiers: [],
     credits: [],
     creditRoles: [],

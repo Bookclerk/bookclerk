@@ -36,6 +36,7 @@ others go deeper.
 - [Integrations and sign-in](server/integrations.md): Audiobookshelf, invites and identity providers
 - [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
 - [Libraries and branches](server/branches.md): join a library, shared branches and consent
+- [Public address](server/ingress.md): reach the library from the internet through an ingress plugin, with no port forwarding
 - [Media worker](server/media.md): the confined process that handles audio files
 - [Uploads](server/uploads.md): adding books from files, folders and archives, limits and review
 - [Playback reference](server/playback.md): what the daemon stores and serves for players
@@ -78,7 +79,7 @@ others go deeper.
 - [Build from source and use the CLI](contributing/build-from-source.md): build the binaries and drive Bookclerk from the command line
 - [Dev Container](contributing/devcontainer.md): a ready-made build environment
 - [Web UI development](contributing/ui/README.md): the React app, the tray, brand assets, and the UI library reference (generated)
-- [Visual and accessibility testing](contributing/ui/visual-testing.md): Storybook stories, axe-core checks and screenshot baselines in CI
+- [Visual and accessibility testing](contributing/ui/visual-testing.md): Storybook stories, website and collector pages, axe-core checks and screenshot baselines in CI
 - [Continuous integration](contributing/ci.md): the planner, the jobs and `CI Gate`
 - [Fuzzing](contributing/fuzzing.md): fuzz targets in CI and crash triage
 - [Repository automation](contributing/automation.md): dependency updates, advisories, docs publishing and Worker deploys
@@ -110,6 +111,7 @@ Build and agent conventions for this repository live in
 - [Event delivery model](adr/event-delivery-model.md): events fan out to every subscriber, jobs have one handler, subscriptions follow deployments
 - [Library catalog network](adr/library-catalog-network.md): a branch of several libraries, what each library owns, and how libraries list and lend books
 - [Metadata claims and file sync](adr/metadata-claims-and-file-sync.md): every value is a claim with its source, one resolver, evidence-based works, and two-way sync with tags and sidecar files
+- [Edition chapters](adr/edition-chapters.md): chapters belong to the edition, each source's list is a claim, and Bookclerk's aligned result wins unless an Administrator edits or pins
 - [Patron scopes and linked sign-in](adr/patron-scopes.md): which part of the library a Member sees, and how a linked server's permissions follow one authority
 - [Desktop window identity](adr/desktop-window-identity.md): the window is the person signed in to the computer, named by a per-account profile
 - [Playback](adr/playback.md): playback is a host feature with one core that the web player, the desktop window and app-compatible clients share

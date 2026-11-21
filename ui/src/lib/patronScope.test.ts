@@ -55,5 +55,7 @@ describe("scopeSummary", () => {
         ],
       }),
     ).toBe("1 show-only rule, 2 hide rules");
+    expect(scopeSummary({ rules: [], explicit: "hide" })).toBe("explicit books hidden");
+    expect(scopeSummary({ rules: [], explicit: "allow" })).toBe("Whole library");
   });
 });

@@ -45,9 +45,9 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use super::batch::{exec, int, text, text_opt};
 use super::catalog_lookup::{
     identifiers_of, in_chunk, is_result_bytes_limit, is_too_wide_to_read, is_trusted_branch,
-    listed_titles, read_chunked, read_chunked_all, read_paged, read_paged_by, result_page,
-    run_batches, stamp, title_edition, trusted_branches, work_for_question, works_of_editions,
-    BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL, PAGED_FIXED_BINDS,
+    listed_titles, read_chunked, read_chunked_all, read_chunked_all_as, read_paged, read_paged_by,
+    result_page, run_batches, stamp, title_edition, trusted_branches, work_for_question,
+    works_of_editions, BRANCH_LISTING_PREFIX, BRANCH_LISTING_TTL, PAGED_FIXED_BINDS,
 };
 use super::clerk_links::list_clerk_links;
 use super::library_links::list_library_links;
@@ -446,8 +446,30 @@ async fn any_branch_listing(store: &LibraryStore) -> Result<bool> {
         .is_some_and(|row| !row.id.is_empty()))
 }
 
+/// A listing's id, edition and plugin, read without its store metadata.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct ListingEditionRow {
+    /// `store_listings.id`.
+    id: String,
+    /// `store_listings.edition_id`.
+    edition_id: String,
+    /// `store_listings.plugin_key`: a store plugin, or a `branch:<node>`
+    /// listing.
+    plugin_key: String,
+}
+
+/// The listing a holding names, read without the rest of the holding.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct HoldingListingRow {
+    /// `holdings.listing_id`.
+    listing_id: String,
+}
+
 /// The editions of `edition_ids` this library holds on a store account:
 /// those with a listing (of any store) that an account holding names.
+///
+/// Only the ids are read, never the listings' store metadata, so wide
+/// listings cannot push a read past the plugin's byte limits.
 ///
 /// # Errors
 ///
@@ -456,8 +478,13 @@ async fn editions_held_on_accounts(
     store: &LibraryStore,
     edition_ids: &[String],
 ) -> Result<BTreeSet<String>> {
-    let listings = read_chunked_all(store, edition_ids, |part| {
-        store_listings::Entity::find().filter(store_listings::Column::EditionId.is_in(part))
+    let listings: Vec<ListingEditionRow> = read_chunked_all_as(store, edition_ids, |part| {
+        store_listings::Entity::find()
+            .select_only()
+            .column(store_listings::Column::Id)
+            .column(store_listings::Column::EditionId)
+            .column(store_listings::Column::PluginKey)
+            .filter(store_listings::Column::EditionId.is_in(part))
     })
     .await?;
     let edition_of: HashMap<String, String> = listings
@@ -466,15 +493,75 @@ async fn editions_held_on_accounts(
         .map(|l| (l.id, l.edition_id))
         .collect();
     let listing_ids: Vec<String> = edition_of.keys().cloned().collect();
-    Ok(read_chunked_all(store, &listing_ids, |part| {
+    let held: Vec<HoldingListingRow> = read_chunked_all_as(store, &listing_ids, |part| {
         holdings::Entity::find()
+            .select_only()
+            .column(holdings::Column::ListingId)
             .filter(holdings::Column::ListingId.is_in(part))
             .filter(holdings::Column::HolderKind.eq("account"))
     })
+    .await?;
+    Ok(held
+        .into_iter()
+        .filter_map(|h| edition_of.get(&h.listing_id).cloned())
+        .collect())
+}
+
+/// The branch listings of `edition_ids`: their ids are read first, then
+/// the rows in chunks no larger than one result page.
+///
+/// A chunk refused for its width is read again at half the size; a single
+/// listing still too wide to read (a value stored before a smaller
+/// `maxCellBytes`, or more metadata than `maxResultBytes`) is left out and
+/// logged, as [`titles_within_bytes`] does, so its edition is paged past
+/// instead of failing every page after it.
+///
+/// # Errors
+///
+/// Returns any read error other than a listing too wide to read.
+async fn branch_listings_within_bytes(
+    store: &LibraryStore,
+    edition_ids: &[String],
+) -> Result<Vec<store_listings::Model>> {
+    let ids: Vec<String> = read_chunked_all_as::<_, ListingIdRow, _>(store, edition_ids, |part| {
+        store_listings::Entity::find()
+            .select_only()
+            .column(store_listings::Column::Id)
+            .filter(store_listings::Column::EditionId.is_in(part))
+            .filter(store_listings::Column::PluginKey.starts_with(BRANCH_LISTING_PREFIX))
+    })
     .await?
     .into_iter()
-    .filter_map(|h| edition_of.get(&h.listing_id).cloned())
-    .collect())
+    .map(|row| row.id)
+    .collect();
+    let mut rows = Vec::with_capacity(ids.len());
+    let mut width = in_chunk(store, PAGED_FIXED_BINDS);
+    let mut rest = ids.as_slice();
+    while !rest.is_empty() {
+        let (part, tail) = rest.split_at(width.min(rest.len()));
+        match store_listings::Entity::find()
+            .filter(store_listings::Column::Id.is_in(part.to_vec()))
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)
+        {
+            Ok(read) => {
+                rows.extend(read);
+                rest = tail;
+            }
+            Err(err) if part.len() > 1 && is_too_wide_to_read(&err) => width = part.len() / 2,
+            Err(err) if is_too_wide_to_read(&err) => {
+                tracing::warn!(
+                    listing_id = %part[0],
+                    error = %err,
+                    "branch listing left out of the window: it is wider than one database reply"
+                );
+                rest = tail;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(rows)
 }
 
 /// The edition a branch listing names, as a clerk's page carries it:
@@ -559,13 +646,7 @@ async fn branch_books_page(
     let trusted: BTreeSet<String> = trusted_branches(store).await?.into_iter().collect();
     let since = Utc::now() - BRANCH_LISTING_TTL;
     let mut current: BTreeMap<String, Vec<store_listings::Model>> = BTreeMap::new();
-    for row in read_chunked_all(store, &edition_ids, |part| {
-        store_listings::Entity::find()
-            .filter(store_listings::Column::EditionId.is_in(part))
-            .filter(store_listings::Column::PluginKey.starts_with(BRANCH_LISTING_PREFIX))
-    })
-    .await?
-    {
+    for row in branch_listings_within_bytes(store, &edition_ids).await? {
         let node = row.plugin_key.strip_prefix(BRANCH_LISTING_PREFIX);
         let fresh = chrono::DateTime::parse_from_rfc3339(&row.observed_at)
             .is_ok_and(|seen| seen.with_timezone(&Utc) >= since);

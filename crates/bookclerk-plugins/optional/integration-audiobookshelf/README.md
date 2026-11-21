@@ -54,7 +54,7 @@ back, so these calls need no network or file grant.
 
 | Dialect | File | Writes | Carries |
 | --- | --- | --- | --- |
-| `abs_metadata_json` | `metadata.json` | yes | title, subtitle, description, publisher, date, language, genres, tags, abridgement, ISBN and ASIN, authors and narrators, series, chapters |
+| `abs_metadata_json` | `metadata.json` | yes | title, subtitle, description, publisher, date, language, genres, tags, abridgement, explicit flag, ISBN and ASIN, authors and narrators, series, chapters |
 | `abs_nfo` | `*.nfo` | yes | the same as `metadata.json` without chapters |
 | `desc_txt` | `desc.txt` | yes | description |
 | `reader_txt` | `reader.txt` | yes | narrators |
@@ -64,7 +64,8 @@ back, so these calls need no network or file grant.
 - **Audiobookshelf `metadata.json`.** The keys Audiobookshelf 2.x writes:
   `authors` and `narrators` are name lists, `series` entries are
   `"Name #position"`, `publishedDate` wins over `publishedYear`, `abridged`
-  is a boolean (`false` reads as unabridged), and `chapters` are
+  and `explicit` are booleans (`false` reads as unabridged and clean),
+  and `chapters` are
   `{ start, end, title }` in seconds. Values nested under a legacy
   `metadata` object win over the top level, as in Audiobookshelf. A key
   with `null` or an empty list states the field as empty.

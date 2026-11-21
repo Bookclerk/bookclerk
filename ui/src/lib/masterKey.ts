@@ -17,7 +17,7 @@ export const MIN_RECOVERY_PASSWORD_CHARS = 12;
 export const RECOVERY_COPY_FILE_NAME = "bookclerk-recovery-key.bck";
 
 /** Where the install keeps its key. */
-export type MasterKeyStore = "file" | "password_file" | "keychain";
+export type MasterKeyStore = "file" | "password_file" | "keychain" | "systemd_creds";
 
 /** What the operator recorded about a recovery copy of the key in use. */
 export type RecoveryCopyAnswer = "unrecorded" | "saved" | "skipped";

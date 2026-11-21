@@ -156,7 +156,7 @@ pub fn node_api_mounted(mode: NodeApiMode, gate: Option<&NodeApiGate>) -> bool {
         return false;
     }
     match mode {
-        NodeApiMode::Loopback | NodeApiMode::Proxy => true,
+        NodeApiMode::Loopback | NodeApiMode::Proxy | NodeApiMode::Tunnel => true,
         NodeApiMode::Acme | NodeApiMode::SelfSigned => {
             gate.is_some_and(|gate| gate.status() == NodeApiStatus::Ready)
         }
@@ -237,7 +237,7 @@ pub async fn start_with(
             ))
             .unwrap_or_default(),
         ),
-        NodeApiMode::Loopback | NodeApiMode::Proxy => None,
+        NodeApiMode::Loopback | NodeApiMode::Proxy | NodeApiMode::Tunnel => None,
     };
     let gate = NodeApiGate {
         status: receiver,
@@ -252,7 +252,7 @@ pub async fn start_with(
         }
     };
     let kind = match node_api.mode {
-        NodeApiMode::Loopback | NodeApiMode::Proxy => {
+        NodeApiMode::Loopback | NodeApiMode::Proxy | NodeApiMode::Tunnel => {
             status.send_replace(NodeApiStatus::Ready);
             return NodeApiTls { gate, local: None };
         }

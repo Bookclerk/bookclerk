@@ -39,7 +39,7 @@ Classic Libation setting names work as aliases where
 | --- | --- |
 | `[library]` | Auto-acquire, scan interval, Audible matching, storage layout fix |
 | `[database]`, `[database.sqlite]`, `[database.d1]`, `[database.postgres]` | The library database plugin (`sqlite` by default, Cloudflare D1 or PostgreSQL) |
-| `[auth]` | `[auth].password` to wrap the library key (prefer `BOOKCLERK_AUTH_PASSWORD`), `[auth].key_store` (`file` or `keychain`; see [The key in the OS keychain](database.md#the-key-in-the-os-keychain)), and `[auth.oidc]` sign-in providers |
+| `[auth]` | `[auth].password` to wrap the library key (prefer `BOOKCLERK_AUTH_PASSWORD`), `[auth].key_store` (`file`, `keychain` or `systemd-creds`; see [The key in the OS keychain](database.md#the-key-in-the-os-keychain)), and `[auth.oidc]` sign-in providers |
 | `[media]` | The codec worker pool: concurrency and confinement; see [Media worker](media.md) |
 | `[uploads]` | Upload limits on this node: file size, staging quota, free-disk floor and idle pruning; see [Upload limits](#upload-limits) |
 | `[plugins]` | How external plugins are jailed; see [Isolation modes](plugins.md#isolation-modes) |
@@ -107,6 +107,8 @@ enrollment; see [Output (shared)](#output-shared).
 [library]
 auto_acquire = false
 scan_interval_minutes = 60
+# upgrade_quality = false      # download better files once a day
+# upgrade_daily_limit = 5      # most upgrades per store account per day (1-100)
 enrich_from_audible = true
 enrich_min_confidence = 90
 # fix_storage_layout = false
@@ -304,7 +306,7 @@ daemon restart.
 trusted_proxies = ["10.0.0.2"]   # peers allowed to set X-Forwarded-*
 
 [daemon.node_api]
-mode = "loopback"                # loopback | proxy | acme | self_signed
+mode = "loopback"                # loopback | proxy | acme | self_signed | tunnel
 # acme_contact = "mailto:ops@example.com"  # required for acme
 # tls_listen = "0.0.0.0:8443"              # required for acme and self_signed
 # acme_directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -319,6 +321,7 @@ mode = "loopback"                # loopback | proxy | acme | self_signed
 | `proxy` | Plain HTTP from a trusted proxy that sends exactly one `X-Forwarded-Proto: https` | An https `public_origin` and at least one entry in `daemon.trusted_proxies` |
 | `acme` | The built-in TLS listener, with a certificate issued over TLS-ALPN-01 | `acme_contact`, `tls_listen`, and an https `public_origin` with a DNS name |
 | `self_signed` | The built-in TLS listener, with a generated P-256 certificate whose pin travels in each link | `tls_listen`, and an https `public_origin` naming that listener |
+| `tunnel` | Requests the library's active relay [ingress plugin](ingress.md) carries | An active relay ingress; its reported origin, or `public_origin`, names the library |
 
 Notes on each mode:
 
@@ -339,6 +342,11 @@ Notes on each mode:
   invite link, and the host trusts exactly that key. Until the daemon has
   written the pin, minting an invite fails rather than make an unpinned
   link.
+- **`tunnel`** has no listener or certificate of its own: the relay's
+  edge terminates TLS, and every request it carries is public `https`
+  traffic, never loopback. Requests on the relay are refused in every
+  other mode, and loopback is still allowed. See
+  [Public address](ingress.md).
 
 Everything else gets `403 {"error": "transport_insecure"}`. Plain HTTP
 from a LAN address is refused, and forwarding headers from a peer that

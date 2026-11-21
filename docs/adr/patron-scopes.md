@@ -52,7 +52,7 @@ they may do with it. Owners and Administrators are never scoped.
 | Field | Meaning |
 | --- | --- |
 | Rules | Which books are visible: a list of rules, each a field, a value, and include or exclude |
-| Explicit content | Whether editions marked explicit are visible. Editions gain an `explicit` field, filled from storefront metadata and sidecars. |
+| Explicit content | Whether editions marked explicit are visible. Store listings carry an `is_explicit` flag from storefront metadata (and sidecars, once file claims reach the library); the Library hides a work when any of its listings is marked explicit. |
 | Member controls | What the Member may do, one switch each (see [Member controls](#member-controls)) |
 
 A rule's field is one of collection, tag, genre, series, author or

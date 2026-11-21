@@ -33,12 +33,15 @@ mod destination_sync;
 mod diagnostics_lookup;
 mod discover_events;
 mod discover_jobs;
+mod download_requests;
 mod event_worker;
 mod heartbeat;
 mod http_error;
+mod ingress;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod library_chapters;
 mod library_index;
 mod library_link;
 mod library_overrides;
@@ -63,6 +66,7 @@ mod playback;
 mod player;
 mod plugin_installs;
 mod profile;
+mod quality_upgrades;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
 mod request_queue_job;
@@ -217,12 +221,8 @@ fn init_logging(config: &Config, syslog_identifier: &str, role: ProcessRole) {
     } else {
         tracing::info!("OS log facility unavailable; logging to stderr only");
     }
-    if config.diagnostics.share_reports {
-        tracing::info!(
-            url = %config.diagnostics.effective_submit_url(),
-            "diagnostics.share_reports=true — redacted reports POST to Worker /submit (B2 via Cloudflare)"
-        );
-    }
+    // `bookclerk_config::logging` already logs whether reports are shared
+    // and where they go, once, when logging starts.
     start_usage_checkins(config, &logging.diagnostics, role);
     keep_logging(logging);
 }
@@ -376,13 +376,16 @@ enum HostMode {
     Embedded,
 }
 
-/// Sets where this host writes new keys, and moves the desktop app's key
-/// into the OS keychain.
+/// Sets where this host writes new keys, and moves a key still in
+/// `master.key` into the store this host should seal it in.
 ///
 /// `[auth].key_store` wins when set. Otherwise the desktop window defaults
-/// to the OS keychain and `bookclerkd` to `master.key`. On the desktop
-/// default, a key still in `master.key` is moved into the keychain; if the
-/// keychain can't take it, the key stays in the file and the start goes on.
+/// to the OS keychain and `bookclerkd` to `master.key`. A key still in
+/// `master.key` is moved on the desktop default (into the OS keychain) and
+/// whenever `key_store = "systemd-creds"` (sealed with `systemd-creds`, or
+/// adopted from the unit's `bookclerk-master-key` credential). If the store
+/// can't take it, the key stays in the file with a warning and the start
+/// goes on.
 fn apply_key_store(config: &Config, mode: HostMode) {
     use bookclerk_config::KeyStoreKind;
     use bookclerk_library::MasterKeyFormat;
@@ -394,27 +397,30 @@ fn apply_key_store(config: &Config, mode: HostMode) {
         *slot = default;
     }
     let preference = refresh_key_store_preference(config);
-    if preference.kind != KeyStoreKind::Keychain || preference.required {
-        return;
-    }
+    let (target, label) = match preference.kind {
+        KeyStoreKind::Keychain if !preference.required => {
+            (KeyStoreKind::Keychain, "the OS keychain")
+        }
+        KeyStoreKind::SystemdCreds => (KeyStoreKind::SystemdCreds, "systemd-creds"),
+        KeyStoreKind::File | KeyStoreKind::Keychain => return,
+    };
     let files_dir = &config.paths().files_dir;
     match bookclerk_library::inspect_master_key(files_dir) {
         Ok(Some(MasterKeyFormat::Raw | MasterKeyFormat::Wrapped)) => {}
-        Ok(Some(MasterKeyFormat::Keychain) | None) => return,
+        Ok(Some(MasterKeyFormat::Keychain | MasterKeyFormat::SystemdCreds) | None) => return,
         Err(err) => {
-            tracing::warn!("not moving master.key into the OS keychain: {err}");
+            tracing::warn!("not moving master.key into {label}: {err}");
             return;
         }
     }
     let password = config.auth_password();
-    match bookclerk_library::move_master_key(files_dir, KeyStoreKind::Keychain, password.as_deref())
-    {
+    match bookclerk_library::move_master_key(files_dir, target, password.as_deref()) {
         Ok(_) => tracing::info!(
-            "moved the data-encryption key into the OS keychain; save a recovery copy with \
+            "moved the data-encryption key into {label}; save a recovery copy with \
              `bookclerk config master-key export --out <file>`"
         ),
         Err(err) => tracing::warn!(
-            "the data-encryption key stays in master.key: the OS keychain could not take it ({err})"
+            "the data-encryption key stays in master.key: {label} could not take it ({err})"
         ),
     }
 }
@@ -457,6 +463,9 @@ struct HostParts {
     listen_reload: Arc<Notify>,
     /// Set once the process is shutting down.
     process_shutdown: Arc<AtomicBool>,
+    /// The library's ingress host, in [`HostMode::Listening`] only: the
+    /// listeners hand it their router for tunnel requests.
+    ingress: Option<Arc<ingress::DaemonIngress>>,
 }
 
 /// Opens the control plane and starts every background runtime (deployment
@@ -635,6 +644,19 @@ async fn assemble_host(
         covers: Arc::new(open_cover_service(&paths.cache_dir)),
     });
 
+    // Only a listening daemon serves a public address: the ingress host is
+    // set before the first reconcile so an active ingress starts with it.
+    let ingress = (mode == HostMode::Listening).then(|| {
+        let ingress = Arc::new(ingress::DaemonIngress::new(
+            &state,
+            tokio::runtime::Handle::current(),
+        ));
+        state
+            .deployment_runtime()
+            .set_ingress_host(Arc::clone(&ingress) as Arc<dyn bookclerk_plugin_host::IngressHost>);
+        ingress
+    });
+
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());
     if let Err(err) = config_authority::reconcile_deployments(&state).await {
         tracing::warn!(error = %err, "initial plugin deployment reconcile failed");
@@ -668,6 +690,7 @@ async fn assemble_host(
         config,
         listen_reload,
         process_shutdown,
+        ingress,
     })
 }
 
@@ -689,6 +712,7 @@ async fn serve_listeners(host: HostParts) -> anyhow::Result<()> {
         config,
         listen_reload,
         process_shutdown,
+        ingress,
     } = host;
     // The node API's TLS listener (acme / self_signed). Until it serves a
     // certificate the node API stays unmounted on every listener.
@@ -701,6 +725,10 @@ async fn serve_listeners(host: HostParts) -> anyhow::Result<()> {
             .await
             .gate
     };
+    // Tunnel requests reach the same router, gate included.
+    if let Some(ingress) = &ingress {
+        ingress.set_router(app.clone().layer(axum::Extension(node_api_gate.clone())));
+    }
 
     loop {
         if process_shutdown.load(Ordering::SeqCst) {

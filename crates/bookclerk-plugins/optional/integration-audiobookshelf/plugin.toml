@@ -111,7 +111,7 @@ domains = ["*"]
 id = "abs_metadata_json"
 name = "Audiobookshelf metadata.json"
 file_names = ["metadata.json"]
-fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "identifiers", "credits", "series", "chapters"]
+fields = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "explicitness", "identifiers", "credits", "series", "chapters"]
 credit_roles = ["author", "narrator"]
 writes = true
 

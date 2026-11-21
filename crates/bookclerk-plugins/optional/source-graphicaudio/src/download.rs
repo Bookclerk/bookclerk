@@ -191,6 +191,7 @@ async fn fetch_access_app(
         m4b_path: None,
         cover_path: None,
         chapters: Vec::new(),
+        chapter_kind: bookclerk_storefront::ChapterKind::Unknown,
         pdf_url: None,
     })
 }
@@ -207,6 +208,7 @@ fn plain_from_audio_path(path: PathBuf) -> PlainFetch {
             m4b_path: Some(path),
             cover_path: None,
             chapters: Vec::new(),
+            chapter_kind: bookclerk_storefront::ChapterKind::Unknown,
             pdf_url: None,
         }
     } else {
@@ -219,6 +221,7 @@ fn plain_from_audio_path(path: PathBuf) -> PlainFetch {
             m4b_path: None,
             cover_path: None,
             chapters: Vec::new(),
+            chapter_kind: bookclerk_storefront::ChapterKind::Unknown,
             pdf_url: None,
         }
     }

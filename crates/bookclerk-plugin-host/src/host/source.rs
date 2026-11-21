@@ -87,6 +87,8 @@ pub struct ExternalSource {
     price_by_isbn: bool,
     /// Declared `CatalogCapabilities.priceByAsin` from `describe()`.
     price_by_asin: bool,
+    /// Declared `CatalogCapabilities.qualityOffers` from `describe()`.
+    quality_offers: bool,
     /// Declared `[acquire]` download pace from the manifest.
     acquire_pace: bookclerk_library::pacing::AcquirePace,
     /// Scoped data directory for this plugin only.
@@ -296,6 +298,7 @@ impl ExternalSource {
         let detail_by_product_id = describe.catalog.detail_by_product_id;
         let price_by_isbn = describe.catalog.price_by_isbn;
         let price_by_asin = describe.catalog.price_by_asin;
+        let quality_offers = describe.catalog.quality_offers;
         let acquire_pace = plugin.manifest.acquire.as_ref().map_or_else(
             bookclerk_library::pacing::AcquirePace::default,
             |declared| {
@@ -321,6 +324,7 @@ impl ExternalSource {
             detail_by_product_id,
             price_by_isbn,
             price_by_asin,
+            quality_offers,
             acquire_pace,
             plugin_data_dir,
             source_config,
@@ -776,6 +780,61 @@ impl ContentSource for ExternalSource {
 
     fn acquire_pace(&self) -> bookclerk_library::pacing::AcquirePace {
         self.acquire_pace
+    }
+
+    fn answers_quality_offers(&self) -> bool {
+        self.quality_offers
+    }
+
+    async fn quality_offers(
+        &self,
+        scope: &SourceScope,
+        account_id: &str,
+        title_ids: &[String],
+        download: &bookclerk_source::DownloadOptions,
+    ) -> bookclerk_source::Result<Vec<Option<bookclerk_library::quality::StreamQuality>>> {
+        let mut out = vec![None; title_ids.len()];
+        if !self.quality_offers || title_ids.is_empty() {
+            return Ok(out);
+        }
+        let page = usize::try_from(bookclerk_plugin_abi::MAX_LIST_PAGE).unwrap_or(usize::MAX);
+        if title_ids.len() > page {
+            return Err(bookclerk_source::SourceError::api(format!(
+                "quality offers ask about at most {page} titles at once"
+            )));
+        }
+        let credentials = self.account_credential_bytes(scope, account_id).await?;
+        let sent_credentials = credentials.clone().unwrap_or_default();
+        let params = bookclerk_plugin_sdk::QualityOffersParams {
+            account_id: account_id.to_string(),
+            credentials,
+            source_config: ExtensibleConfig::json(&self.source_config),
+            title_ids: title_ids.to_vec(),
+            fetch: download.into(),
+        };
+        let mut result = match self
+            .session
+            .storefront(move |src| async move { src.quality_offers(params).await })
+            .await
+        {
+            Ok(result) => result,
+            Err(crate::PluginError::RateLimited { retry_after, .. }) => {
+                return Err(bookclerk_source::SourceError::RateLimited(retry_after));
+            }
+            Err(err) => return Err(bookclerk_source::SourceError::api(err.to_string())),
+        };
+        bookclerk_plugin_abi::validate_quality_offers(&result, title_ids.len())
+            .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
+        if let Some(refreshed) = result.refreshed_credentials.take() {
+            if !sent_credentials.is_empty() && !refreshed.is_empty() {
+                self.keep_refreshed(Some(scope), account_id, &sent_credentials, refreshed)
+                    .await?;
+            }
+        }
+        for (slot, answer) in out.iter_mut().zip(&result.offers) {
+            *slot = bookclerk_source::abi::offered_stream(answer);
+        }
+        Ok(out)
     }
 
     async fn login(
