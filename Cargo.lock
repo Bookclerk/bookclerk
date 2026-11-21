@@ -2256,6 +2256,7 @@ dependencies = [
  "bookclerk-storage",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

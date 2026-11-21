@@ -32,7 +32,7 @@ struct StreamSpec {
     total: u64,
 }
 
-struct World {
+pub(crate) struct World {
     objects: HashMap<String, Obj>,
     uploads: HashMap<String, Upload>,
     aborts: Vec<String>,
@@ -130,7 +130,7 @@ fn etag_for(body: &[u8]) -> String {
     )
 }
 
-async fn serve(world: Arc<Mutex<World>>) -> String {
+pub(crate) async fn serve(world: Arc<Mutex<World>>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -570,7 +570,7 @@ fn slice_range(body: &[u8], header: &str) -> Vec<u8> {
     body.get(start..=end).unwrap_or(&[]).to_vec()
 }
 
-async fn open_backend(url: &str, journal: &std::path::Path) -> S3Backend {
+pub(crate) async fn open_backend(url: &str, journal: &std::path::Path) -> S3Backend {
     open_sized(url, journal, Some(4)).await
 }
 
@@ -595,7 +595,7 @@ async fn open_sized(url: &str, journal: &std::path::Path, part_size: Option<usiz
     }
 }
 
-fn new_world(hold_parts: bool) -> Arc<Mutex<World>> {
+pub(crate) fn new_world(hold_parts: bool) -> Arc<Mutex<World>> {
     Arc::new(Mutex::new(World {
         objects: HashMap::new(),
         uploads: HashMap::new(),

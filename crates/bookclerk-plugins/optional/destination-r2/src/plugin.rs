@@ -106,6 +106,24 @@ pub async fn destination_from(
     config: &ExtensibleConfig,
     secrets: &ExtensibleConfig,
 ) -> Result<ObjectStoreDestination> {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| PluginError::internal("r2 destination has no HOME"))?;
+    destination_in(config, secrets, &home).await
+}
+
+/// [`destination_from`] with its state (the multipart journal and the
+/// queue's lease ids) under `home`.
+///
+/// # Errors
+///
+/// As [`destination_from`].
+async fn destination_in(
+    config: &ExtensibleConfig,
+    secrets: &ExtensibleConfig,
+    home: &std::path::Path,
+) -> Result<ObjectStoreDestination> {
     let invalid = |what: String| PluginError::invalid_params(format!("r2 destination: {what}"));
     let config: R2Config = config.json_into().map_err(|err| invalid(err.to_string()))?;
     let secrets: R2Secrets = match secrets.json_value() {
@@ -158,10 +176,6 @@ pub async fn destination_from(
         secret_access_key,
         session_token: None,
     };
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| PluginError::internal("r2 destination has no HOME"))?;
     let backend = S3Backend::from_parts_with_journal(
         &settings,
         &config.prefix,
@@ -240,7 +254,8 @@ mod tests {
     }
 
     async fn refusal(config: ExtensibleConfig, secrets: ExtensibleConfig) -> String {
-        destination_from(&config, &secrets)
+        let home = tempfile::tempdir().expect("tempdir");
+        destination_in(&config, &secrets, home.path())
             .await
             .err()
             .expect("refused")
@@ -306,5 +321,36 @@ mod tests {
         )
         .await;
         assert!(err.contains("32-hex-digit"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn good_settings_open_with_and_without_a_queue() {
+        let home = tempfile::tempdir().expect("tempdir");
+        destination_in(&config(serde_json::json!({})), &keys(), home.path())
+            .await
+            .expect("no queue");
+        let with_queue = config(serde_json::json!({
+            "notification_queue_id": "a".repeat(32),
+            "jurisdiction": "eu",
+        }));
+        let secrets = ExtensibleConfig::json(&serde_json::json!({
+            "access_key_id": " id ",
+            "secret_access_key": "secret",
+            "queue_api_token": "token",
+        }));
+        destination_in(&with_queue, &secrets, home.path())
+            .await
+            .expect("queue");
+        assert!(home.path().join("notification-queue").is_dir());
+        let err = refusal(
+            config(serde_json::json!({"notification_queue_id": "a".repeat(32)})),
+            ExtensibleConfig::json(&serde_json::json!({
+                "access_key_id": "id",
+                "secret_access_key": "secret",
+                "queue_api_token": "bad token",
+            })),
+        )
+        .await;
+        assert!(err.contains("API token"), "{err}");
     }
 }

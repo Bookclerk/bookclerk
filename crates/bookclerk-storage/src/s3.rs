@@ -347,13 +347,30 @@ impl S3Backend {
     /// Returns an error when the queue client cannot be built or
     /// `state_dir` cannot be created.
     pub fn with_cloudflare_queue(
-        mut self,
+        self,
         account: &crate::r2_queue::CloudflareAccountId,
         queue: &crate::r2_queue::CloudflareQueueId,
         token: crate::r2_queue::CloudflareApiToken,
         state_dir: &Path,
     ) -> Result<Self> {
-        let client = crate::r2_queue::CloudflareQueue::new(account, queue, token)?;
+        self.with_cloudflare_queue_at(crate::r2_queue::API_BASE, account, queue, token, state_dir)
+    }
+
+    /// [`Self::with_cloudflare_queue`] against the Cloudflare API at
+    /// `api_base`, so tests can point it at a local server.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::with_cloudflare_queue`].
+    pub(crate) fn with_cloudflare_queue_at(
+        mut self,
+        api_base: &str,
+        account: &crate::r2_queue::CloudflareAccountId,
+        queue: &crate::r2_queue::CloudflareQueueId,
+        token: crate::r2_queue::CloudflareApiToken,
+        state_dir: &Path,
+    ) -> Result<Self> {
+        let client = crate::r2_queue::CloudflareQueue::new(api_base, account, queue, token)?;
         let scope_account = account.as_str().to_string();
         let bucket = self.bucket.clone();
         let prefix = self.prefix.clone();
@@ -2275,7 +2292,7 @@ fn meta_get(map: Option<&std::collections::HashMap<String, String>>, key: &str) 
 
 #[cfg(test)]
 #[path = "s3_protocol.rs"]
-mod s3_protocol;
+pub(crate) mod s3_protocol;
 
 #[cfg(test)]
 mod tests {

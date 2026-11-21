@@ -19,7 +19,7 @@ use crate::r2_events::parse_pull_reply;
 use crate::s3_queue::{NotificationQueue, QueueMessage, VISIBILITY_TIMEOUT_SECS};
 
 /// The Cloudflare API this client calls.
-const API_BASE: &str = "https://api.cloudflare.com/client/v4";
+pub(crate) const API_BASE: &str = "https://api.cloudflare.com/client/v4";
 
 /// Most messages one pull asks for. The shared feed works in batches of
 /// this size; Queues allows up to 100.
@@ -144,12 +144,14 @@ struct AckRequest<'a> {
 }
 
 impl CloudflareQueue {
-    /// A client for `queue` in `account`.
+    /// A client for `queue` in `account`, calling the Cloudflare API at
+    /// `api_base` ([`API_BASE`] outside tests).
     ///
     /// # Errors
     ///
     /// Returns an error when the HTTP client cannot be built.
     pub(crate) fn new(
+        api_base: &str,
         account: &CloudflareAccountId,
         queue: &CloudflareQueueId,
         token: CloudflareApiToken,
@@ -161,7 +163,7 @@ impl CloudflareQueue {
         Ok(Self {
             http,
             messages_url: format!(
-                "{API_BASE}/accounts/{}/queues/{}/messages",
+                "{api_base}/accounts/{}/queues/{}/messages",
                 account.as_str(),
                 queue.as_str()
             ),
