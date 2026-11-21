@@ -206,6 +206,11 @@ pub struct Recommendation {
     #[serde(default)]
     #[schema(example = "en")]
     pub language: Option<String>,
+    /// When `Some(true)`, a storefront marks the edition explicit (adult)
+    /// content; `None` when none said (a wishlist entry says nothing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = false)]
+    pub is_explicit: Option<bool>,
     /// Distinct people who have this title on an open wishlist.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wishers: Vec<bookclerk_library::QueueWisher>,
@@ -796,6 +801,7 @@ pub(crate) async fn rank_candidates(
             published_at: c.published_at,
             genres: c.categories,
             language: c.language,
+            is_explicit: c.is_explicit,
             seed_title: c.seed_title,
             starter_genre: c.starter_genre,
             ..Default::default()
@@ -2267,6 +2273,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
+                is_explicit: None,
                 store_rank: None,
                 work_id: None,
                 expression_id: None,
