@@ -91,7 +91,9 @@ fn headers_ok(headers: &[OriginHeader]) -> bool {
         && headers.iter().all(|h| {
             token(&h.name)
                 && !listed(&h.name, &HOP_BY_HOP)
-                && h.value.bytes().all(|b| b == b'\t' || (b' '..=b'~').contains(&b))
+                && h.value
+                    .bytes()
+                    .all(|b| b == b'\t' || (b' '..=b'~').contains(&b))
         })
 }
 
@@ -118,7 +120,10 @@ fn request_ok(request: &OriginRequest) -> Option<Option<IpAddr>> {
 fn check_request_json(json: &[u8]) {
     let decoded = decode_origin_request_frame(json);
     let Ok(request) = serde_json::from_slice::<OriginRequest>(json) else {
-        assert!(decoded.is_err(), "a head that is not an OriginRequest passed");
+        assert!(
+            decoded.is_err(),
+            "a head that is not an OriginRequest passed"
+        );
         return;
     };
     let expected = request_ok(&request);
@@ -172,7 +177,10 @@ fn check_frame(buf: &[u8]) {
         return;
     }
     if buf.len() < 4 + len {
-        assert!(matches!(split, Ok(None)), "an incomplete frame did not wait");
+        assert!(
+            matches!(split, Ok(None)),
+            "an incomplete frame did not wait"
+        );
         return;
     }
     let (head, rest) = split.expect("whole frame").expect("whole frame splits");
@@ -185,11 +193,18 @@ fn check_frame(buf: &[u8]) {
 fn check_response_json(json: &[u8]) {
     let decoded = decode_origin_response_frame(json);
     let Ok(head) = serde_json::from_slice::<OriginResponseHead>(json) else {
-        assert!(decoded.is_err(), "a head that is not a response head passed");
+        assert!(
+            decoded.is_err(),
+            "a head that is not a response head passed"
+        );
         return;
     };
     let ok = (100..=599).contains(&head.status) && headers_ok(&head.headers);
-    assert_eq!(decoded.is_ok(), ok, "response head verdict differs: {head:?}");
+    assert_eq!(
+        decoded.is_ok(),
+        ok,
+        "response head verdict differs: {head:?}"
+    );
 }
 
 /// Checks an ingress origin against the restated rules and a URL parser.
@@ -207,14 +222,19 @@ fn check_origin(text: &str) {
                     && l.len() <= 63
                     && !l.starts_with('-')
                     && !l.ends_with('-')
-                    && l.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+                    && l.bytes()
+                        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
             })
             && labels
                 .last()
                 .and_then(|top| top.bytes().next())
                 .is_some_and(|b| b.is_ascii_lowercase())
     });
-    assert_eq!(parsed.is_ok(), ok, "ingress origin verdict differs: {text:?}");
+    assert_eq!(
+        parsed.is_ok(),
+        ok,
+        "ingress origin verdict differs: {text:?}"
+    );
     let (Ok(origin), Some(host)) = (parsed, host) else {
         return;
     };
@@ -222,7 +242,11 @@ fn check_origin(text: &str) {
     match url::Url::parse(text) {
         Ok(url) => {
             assert_eq!(url.scheme(), "https");
-            assert_eq!(url.host_str(), Some(host), "the URL parser reads another host");
+            assert_eq!(
+                url.host_str(),
+                Some(host),
+                "the URL parser reads another host"
+            );
             assert_eq!(url.port(), None);
             assert!(url.username().is_empty() && url.password().is_none());
             assert_eq!(url.path(), "/");

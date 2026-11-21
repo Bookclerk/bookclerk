@@ -397,18 +397,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bookclerk-archive"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "serde",
- "tar",
- "thiserror",
- "unicode-normalization",
- "zip",
-]
-
-[[package]]
 name = "bookclerk-audible-catalog"
 version = "0.1.0"
 dependencies = [
@@ -536,7 +524,6 @@ name = "bookclerk-fuzz"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
- "bookclerk-archive",
  "bookclerk-audible-catalog",
  "bookclerk-config",
  "bookclerk-cover",
@@ -582,7 +569,6 @@ dependencies = [
  "argon2",
  "async-trait",
  "base64 0.23.1",
- "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-db-exec",
  "bookclerk-naming",
@@ -616,7 +602,6 @@ name = "bookclerk-media"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-cover",
  "bookclerk-mp4",
@@ -1469,12 +1454,6 @@ name = "data-encoding"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
-
-[[package]]
-name = "deflate64"
-version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac6b926516df9c60bfa16e107b21086399f8285a44ca9711344b9e553c5146e2"
 
 [[package]]
 name = "der"
@@ -5836,7 +5815,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23f17fbc870bfac28c6228aed7d6e6df352e26bf7015c4313727e16a7a01ce5e"
 dependencies = [
  "crc32fast",
- "deflate64",
  "flate2",
  "getrandom 0.4.3",
  "indexmap",
