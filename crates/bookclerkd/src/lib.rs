@@ -14,6 +14,7 @@
     clippy::expect_used
 )]
 
+mod admin_controls;
 mod api;
 mod auth;
 mod branch_requests;
@@ -27,6 +28,7 @@ mod covers;
 mod cron_worker;
 mod cross_origin;
 mod csrf;
+mod destination_sync;
 mod diagnostics_lookup;
 mod discover_events;
 mod discover_jobs;
@@ -84,10 +86,12 @@ use bookclerk_config::{
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
 use crate::api::{
-    bind_listen_addrs, build_operator_auth, reload_daemon_config, resolve_ui_dist,
-    revert_listen_after_bind_failure, router, start_integration_watchers, validate_daemon_listen,
-    AppState,
+    bind_listen_addrs, build_operator_auth, resolve_ui_dist, revert_listen_after_bind_failure,
+    router, start_integration_watchers, validate_daemon_listen, AppState,
 };
+// Only the Unix SIGHUP handler reloads config from a signal.
+#[cfg(unix)]
+use crate::api::reload_daemon_config;
 use crate::event_worker::start_event_runtime;
 use crate::job_worker::start_job_runtime;
 use crate::scheduler::spawn_scheduler;
@@ -552,6 +556,7 @@ async fn assemble_host(
         tray_handoff: Mutex::new(None),
         deployment_runtime: std::sync::OnceLock::new(),
         node_api_tls_bound: std::sync::OnceLock::new(),
+        in_window: std::sync::OnceLock::new(),
         library_swaps: tokio::sync::watch::Sender::new(0),
         covers: Arc::new(open_cover_service(&paths.cache_dir)),
     });

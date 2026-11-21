@@ -7,7 +7,8 @@ use std::pin::Pin;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+
+use crate::bridge_addr::{BridgeAddr, BridgeStream};
 
 use bookclerk_plugin_abi::{ObjectMetadata, PutResult, MAX_SCALAR_BYTES};
 
@@ -20,7 +21,7 @@ pub fn generate_bridge_token() -> String {
     hex::encode(bytes)
 }
 
-/// `GET /health` on the bridge at `127.0.0.1:<port>` with `token`, through
+/// `GET /health` on the bridge at `addr` with `token`, through
 /// [`BridgeHttp::health`].
 ///
 /// The launcher polls this until the isolate is up. Like every other bridge
@@ -29,15 +30,16 @@ pub fn generate_bridge_token() -> String {
 ///
 /// # Arguments
 ///
-/// * `port` - The bridge's loopback TCP port.
+/// * `addr` - Where the bridge listens (Unix socket, or loopback TCP on
+///   Windows).
 /// * `token` - The session's `BRIDGE_TOKEN`.
 ///
 /// # Errors
 ///
 /// The errors of [`BridgeHttp::health`].
-pub async fn check_health(port: u16, token: &str) -> Result<()> {
+pub async fn check_health(addr: &BridgeAddr, token: &str) -> Result<()> {
     BridgeHttp {
-        port,
+        addr: addr.clone(),
         token: token.to_owned(),
     }
     .health()
@@ -46,13 +48,14 @@ pub async fn check_health(port: u16, token: &str) -> Result<()> {
 
 /// Loopback HTTP client for the isolate bridge.
 ///
-/// It writes HTTP/1.1 straight to a `TcpStream` on `127.0.0.1`, so proxy
-/// environment variables (`ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`) never
-/// route a request, and the bearer token never leaves loopback.
+/// It writes HTTP/1.1 straight to the bridge socket (a Unix socket in the
+/// session directory, or `127.0.0.1` on Windows), so proxy environment
+/// variables (`ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`) never route a
+/// request, and the bearer token never leaves the jail.
 #[derive(Clone)]
 pub struct BridgeHttp {
-    /// Bridge TCP port.
-    pub port: u16,
+    /// Where the bridge listens.
+    pub addr: BridgeAddr,
     /// Bearer token (`BRIDGE_TOKEN`).
     pub token: String,
 }
@@ -196,8 +199,12 @@ impl BridgeHttp {
         content_length: Option<u64>,
         extra: &[(&str, &str)],
     ) -> Result<PutResult> {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).await?;
-        let mut req = format!("PUT {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nconnection: close\r\n", self.port, self.token);
+        let mut stream = self.addr.connect().await?;
+        let mut req = format!(
+            "PUT {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nconnection: close\r\n",
+            self.addr.host_header(),
+            self.token
+        );
         for (k, v) in extra {
             req.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -318,11 +325,12 @@ impl BridgeHttp {
         path: &str,
         extra: &[(&str, &str)],
         body: Option<&[u8]>,
-    ) -> Result<(u16, Vec<(String, String)>, Vec<u8>, TcpStream)> {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).await?;
+    ) -> Result<(u16, Vec<(String, String)>, Vec<u8>, BridgeStream)> {
+        let mut stream = self.addr.connect().await?;
         let mut req = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nconnection: close\r\n",
-            self.port, self.token
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nconnection: close\r\n",
+            self.addr.host_header(),
+            self.token
         );
         for (k, v) in extra {
             req.push_str(&format!("{k}: {v}\r\n"));
@@ -368,7 +376,7 @@ fn header(headers: &[(String, String)], name: &str) -> Option<String> {
 }
 
 async fn read_response_head(
-    stream: &mut TcpStream,
+    stream: &mut BridgeStream,
 ) -> Result<(u16, Vec<(String, String)>, Vec<u8>)> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 1024];
@@ -410,7 +418,7 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 }
 
 async fn read_body(
-    stream: &mut TcpStream,
+    stream: &mut BridgeStream,
     headers: &[(String, String)],
     prefix: Vec<u8>,
 ) -> Result<Vec<u8>> {
@@ -418,7 +426,7 @@ async fn read_body(
 }
 
 async fn read_body_capped(
-    stream: &mut TcpStream,
+    stream: &mut BridgeStream,
     headers: &[(String, String)],
     prefix: Vec<u8>,
     max_bytes: u32,
@@ -448,7 +456,7 @@ async fn read_body_capped(
 }
 
 fn body_reader(
-    stream: TcpStream,
+    stream: BridgeStream,
     headers: Vec<(String, String)>,
     prefix: Vec<u8>,
 ) -> Pin<Box<dyn AsyncRead + Send>> {
@@ -488,7 +496,7 @@ fn body_reader(
 }
 
 fn body_reader_owned<'a>(
-    stream: &'a mut TcpStream,
+    stream: &'a mut BridgeStream,
     headers: &[(String, String)],
     prefix: Vec<u8>,
 ) -> Pin<Box<dyn AsyncRead + Send + 'a>> {
@@ -744,7 +752,7 @@ mod tests {
     #[tokio::test]
     async fn json_oversize_is_payload_too_large() {
         let http = BridgeHttp {
-            port: 1,
+            addr: BridgeAddr::Tcp(1),
             token: "t".into(),
         };
         let huge = serde_json::json!({ "pad": "x".repeat(MAX_SCALAR_BYTES as usize + 8) });
@@ -774,7 +782,7 @@ mod tests {
             let _ = sock.write_all(resp.as_bytes()).await;
         });
         let http = BridgeHttp {
-            port,
+            addr: BridgeAddr::Tcp(port),
             token: "t".into(),
         };
         let err = http

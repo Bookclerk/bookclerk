@@ -2100,12 +2100,64 @@ code.inline {
   --_group-hdr: color-mix(in srgb, var(--ink) 6%, var(--code-card));
   --_inner-stroke: color-mix(in srgb, var(--ink) 14%, var(--code-card));
   --_key-badge: color-mix(in srgb, var(--ink) 10%, var(--code-card));
+  --chart-0: var(--teal-text);
+  --chart-1: color-mix(in srgb, var(--ink) 70%, var(--code-card));
 }
 .doc .diagram text {
   font-family: var(--font-sans);
 }
 .doc .diagram .mono {
   font-family: var(--font-mono);
+}
+/* xychart-beta charts: diagram.ts keeps these classes and drops the
+   renderer's stylesheet, so the chart's colors come from here (--chart-0
+   and --chart-1 above: the first series is teal like the diagrams' arrows,
+   the second is ink). */
+.doc .diagram .xychart-grid {
+  fill: var(--_inner-stroke);
+  stroke: none;
+}
+.doc .diagram .xychart-bar {
+  stroke-width: 1.5;
+  stroke: var(--chart-0);
+  fill: color-mix(in srgb, var(--chart-0) 30%, var(--code-card));
+}
+.doc .diagram .xychart-bar.xychart-color-1 {
+  stroke: var(--chart-1);
+  fill: color-mix(in srgb, var(--chart-1) 30%, var(--code-card));
+}
+.doc .diagram .xychart-line,
+.doc .diagram .xychart-line-shadow {
+  fill: none;
+  stroke: var(--chart-0);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.doc .diagram .xychart-line-shadow {
+  stroke-width: 5;
+  opacity: 0.12;
+}
+.doc .diagram .xychart-line.xychart-color-1,
+.doc .diagram .xychart-line-shadow.xychart-color-1 {
+  stroke: var(--chart-1);
+}
+.doc .diagram .xychart-dot {
+  fill: var(--chart-0);
+  stroke: var(--code-card);
+  stroke-width: 2;
+}
+.doc .diagram .xychart-dot.xychart-color-1 {
+  fill: var(--chart-1);
+}
+.doc .diagram .xychart-label {
+  fill: var(--_text-muted);
+}
+.doc .diagram .xychart-axis-title {
+  fill: var(--_text-sec);
+}
+.doc .diagram .xychart-title {
+  fill: var(--_text);
 }
 .doc .copy {
   position: absolute;

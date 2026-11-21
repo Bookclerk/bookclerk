@@ -708,7 +708,7 @@ collection deletes unreferenced objects.
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
-`operator_sessions`, `account_links`, `patron_controls`, `patron_scopes`,
+`operator_sessions`, `account_links`, `patron_controls`, `admin_controls`, `patron_scopes`,
 `patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
@@ -724,7 +724,12 @@ model tables below.
 Member, as JSON naming only the controls that differ from the library's
 default (the `core.member_controls` configuration document); a Member
 with no row follows the default for every control (see
-[Sharing](../guide/sharing.md#limit-what-a-patron-may-do)). `patron_scopes` holds a
+[Sharing](../guide/sharing.md#limit-what-a-patron-may-do)).
+`admin_controls` holds the Administrator switches an Owner or the
+operator set for one Administrator, the same way: JSON naming only the
+switches that differ from the library's default (the
+`core.admin_controls` configuration document), removed with the user (see
+[Sharing](../guide/sharing.md#limit-what-an-administrator-may-do)). `patron_scopes` holds a
 Member's own patron scope as JSON; a Member with no row follows the
 library's default scope (see [Sharing](../guide/sharing.md#limit-what-a-patron-sees)). `patron_scope_keys`
 holds a scope's include and exclude values as rows, keyed by a hash of
@@ -803,12 +808,24 @@ library holds as works, expressions and editions:
   sidecars, the PDF and uploads.
 - `edition_copies`: each edition's copy on each destination: `stored`
   with the edition's primary audio key there, `pending` with the last
-  error and when the next background attempt is due, or `failed` after 8
-  failed attempts in a row. An acquire records each destination's outcome
+  error and when the next background attempt is due, `failed` after 8
+  failed attempts in a row, or `missing` when its file disappeared from
+  the destination and `output.missing_files` is `mark_missing`. An acquire records each destination's outcome
   when it returns, and a branch's upload records the destinations it
   wrote when it commits. Acquire runs read it to visit an acquired
   edition a destination still lacks (see [Several
   destinations](output.md#several-destinations)).
+- `destination_objects`: the last state Bookclerk saw of each file at
+  each destination (size, change signature, modification time), with the
+  destination's change sequence when it last changed. A removed file
+  stays as a tombstone for 30 days so readers can page what changed. It
+  is not copied by a database migration; the next listing rebuilds it
+  (see [Noticing changes made outside
+  Bookclerk](output.md#noticing-changes-made-outside-bookclerk)).
+- `destination_feeds`: each destination's change sequence, change feed
+  state (`off`, `healthy`, `gap`, `failing`) and cursor, its listing in
+  progress and schedule, and the number of files it held. Not copied by
+  a database migration either.
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that

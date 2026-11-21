@@ -9,7 +9,8 @@
 //! `xsuffix`; `*` never matches an IP literal and never grants TCP;
 //! percent-encoded hosts never match; hostname normalization is idempotent;
 //! the policy survives a JSON round trip; the guest's own `User-Agent` is kept
-//! only on hosts an approved non-`*` own-agent pattern matches.
+//! only on hosts an approved non-`*` own-agent pattern matches; the isolate
+//! tunnel rule is exactly the union of the fetch, redirect and TCP rules.
 
 #![no_main]
 
@@ -95,6 +96,18 @@ fn check_policy(policy: &EgressPolicy) {
             || policy.allows_tcp(host, 443);
         if policy.mode == NetworkMode::Deny {
             assert!(!initial && !redirect && !tcp, "deny mode allowed {host}");
+        }
+        // The isolate tunnel rule is exactly the union of what the isolate's
+        // fetch and connect could reach, on any port: never wider.
+        for port in [1_u16, 80, 443, 65535] {
+            let expected = policy.allows_tcp(host, port)
+                || initial
+                || (policy.max_redirects > 0 && redirect);
+            assert_eq!(
+                policy.allows_isolate_tunnel(host, port),
+                expected,
+                "isolate tunnel rule is not the union for {host}:{port}"
+            );
         }
         if host.contains('%') {
             assert!(!initial && !tcp, "percent-encoded host allowed: {host}");

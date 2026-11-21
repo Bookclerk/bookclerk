@@ -8,8 +8,7 @@ use bookclerk_plugin_abi::{Entrypoint, PluginDescribe};
 use bookclerk_plugin_manifest::{
     apply_author_compatibility_date, manifest_needs_python, module_load_key,
     validate_author_compatibility_flags, with_python_runtime_hosts, workerd_module_is_embedded,
-    workerd_network_allow, CidrGrant, EffectiveWorkerdLimits, EgressPolicy, NetworkMode,
-    PluginManifest,
+    EffectiveWorkerdLimits, NetworkMode, PluginManifest,
 };
 
 use crate::egress::EgressProxy;
@@ -905,13 +904,10 @@ pub enum ListenSpec {
     /// isolate `console.*` output on the shared stdout cannot pose as a
     /// control message.
     ReportedTcp,
-    /// Parent already bound `127.0.0.1:0`; workerd inherits via `--socket-fd`.
-    /// Required under Linux Landlock `OutboundListen` (only `bind(port=0)` is
-    /// allowed — rebinding a concrete ephemeral port is EPERM).
-    InheritedTcp {
-        /// Ephemeral port already bound by the parent (informational for clients).
-        port: u16,
-    },
+    /// The launcher already bound the bridge listener (a Unix socket) and
+    /// workerd inherits it with `--socket-fd`. Neither process needs an IP
+    /// socket, so the jail can deny them all.
+    Inherited,
 }
 
 impl ListenSpec {
@@ -929,7 +925,7 @@ impl ListenSpec {
                 r#"(name = "rpc", address = "127.0.0.1:0", http = (capnpConnectHost = "plugin"), service = "bridge")"#
                     .to_string()
             }
-            Self::InheritedTcp { .. } => {
+            Self::Inherited => {
                 r#"(name = "rpc", http = (capnpConnectHost = "plugin"), service = "bridge")"#
                     .to_string()
             }
@@ -941,7 +937,7 @@ impl ListenSpec {
     /// # Returns
     ///
     /// `None` for [`Self::ReportedTcp`], whose port is known only once workerd
-    /// reports it.
+    /// reports it, and for [`Self::Inherited`], which is a Unix socket.
     #[must_use]
     pub fn client_base_url(&self) -> Option<String> {
         self.port().map(|port| format!("http://127.0.0.1:{port}"))
@@ -952,12 +948,13 @@ impl ListenSpec {
     /// # Returns
     ///
     /// `None` for [`Self::ReportedTcp`], whose port is known only once workerd
-    /// reports it on its control channel.
+    /// reports it on its control channel, and for [`Self::Inherited`], which
+    /// is a Unix socket.
     #[must_use]
     pub fn port(&self) -> Option<u16> {
         match self {
-            Self::TcpLoopback(port) | Self::InheritedTcp { port } => Some(*port),
-            Self::ReportedTcp => None,
+            Self::TcpLoopback(port) => Some(*port),
+            Self::ReportedTcp | Self::Inherited => None,
         }
     }
 
@@ -966,7 +963,7 @@ impl ListenSpec {
     pub fn reports_port(&self) -> bool {
         match self {
             Self::ReportedTcp => true,
-            Self::TcpLoopback(_) | Self::InheritedTcp { .. } => false,
+            Self::TcpLoopback(_) | Self::Inherited => false,
         }
     }
 
@@ -1257,7 +1254,6 @@ pub fn materialize_native_backend(
 
 const bookclerkPlugin :Workerd.Config = ({config_preamble}
   services = [
-    (name = "internet", network = (allow = [{internet_allow}], tlsOptions = (trustBrowserCas = true))),
     (name = "blocked", network = (allow = [])),
     (name = "egress", worker = .egressWorker),
     (name = "adapter", worker = .adapterWorker),
@@ -1278,7 +1274,7 @@ const egressWorker :Workerd.Worker = (
   bindings = [
     (name = "EGRESS_POLICY", json = "{policy_escaped}")
   ],
-  globalOutbound = "internet",
+  globalOutbound = "blocked",
 );
 
 const adapterWorker :Workerd.Worker = (
@@ -1310,7 +1306,6 @@ const bridgeWorker :Workerd.Worker = (
         extra_services = extra_services,
         adapter_bindings = adapter_bindings,
         bridge_bindings = bridge_bindings,
-        internet_allow = internet_allow_tokens(&policy),
         egress_flags = EGRESS_COMPAT_FLAGS,
     );
 
@@ -1640,8 +1635,7 @@ pub fn materialize(
 
 const bookclerkPlugin :Workerd.Config = ({config_preamble}
   services = [
-    (name = "internet", network = (allow = [{internet_allow}], tlsOptions = (trustBrowserCas = true))),
-    (name = "blocked", network = (allow = [])),
+{egress_service}    (name = "blocked", network = (allow = [])),
     (name = "egress", worker = .egressWorker),
     (name = "plugin", worker = .pluginWorker),
     (name = "adapter", worker = .adapterWorker),
@@ -1662,7 +1656,7 @@ const egressWorker :Workerd.Worker = (
   bindings = [
     (name = "EGRESS_POLICY", json = "{policy_escaped}")
   ],
-  globalOutbound = "internet",
+  globalOutbound = "{egress_outbound}",
 );
 
 const pluginWorker :Workerd.Worker = (
@@ -1710,7 +1704,8 @@ const bridgeWorker :Workerd.Worker = (
         adapter_bindings = adapter_bindings,
         bridge_bindings = bridge_bindings,
         plugin_outbound = plugin_outbound,
-        internet_allow = internet_allow_tokens(&policy),
+        egress_service = egress_relay_service(egress),
+        egress_outbound = egress_relay_outbound(egress),
         egress_flags = EGRESS_COMPAT_FLAGS,
     );
 
@@ -1744,18 +1739,28 @@ pub fn plugin_global_outbound(mode: NetworkMode) -> &'static str {
     }
 }
 
-/// Workerd `network.allow` inner list: `public` plus explicit CIDRs, never `private`.
-fn internet_allow_tokens(policy: &EgressPolicy) -> String {
-    let cidrs: Vec<CidrGrant> = policy
-        .address_cidrs
-        .iter()
-        .filter_map(|raw| CidrGrant::parse(raw).ok())
-        .collect();
-    workerd_network_allow(&cidrs)
-        .into_iter()
-        .map(|token| format!("\"{}\"", escape_capnp(&token)))
-        .collect::<Vec<_>>()
-        .join(", ")
+/// The `external` service line for the launcher's egress relay, or nothing.
+///
+/// Workerd never gets a `network` service that dials out: its jail has no IP
+/// sockets, and the relay hands every tunnel to the host's check. HTTP proxy
+/// style makes workerd send each `fetch()` as an absolute-form request and
+/// each `connect()` as `CONNECT host:port`.
+fn egress_relay_service(egress: &EgressProxy) -> String {
+    match egress.relay() {
+        Some(addr) => format!(
+            "    (name = \"hostegress\", external = (address = \"{}\", http = (style = proxy))),\n",
+            escape_capnp(addr)
+        ),
+        None => String::new(),
+    }
+}
+
+/// The egress worker's `globalOutbound`: the relay, or `blocked` without one.
+fn egress_relay_outbound(egress: &EgressProxy) -> &'static str {
+    match egress.relay() {
+        Some(_) => "hostegress",
+        None => "blocked",
+    }
 }
 
 /// Egress allowlist: plugin domains, plus Pyodide CDN hosts when Python + Outbound.
@@ -1928,7 +1933,7 @@ mode = "deny"
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "test-bridge-token",
             None,
@@ -1955,7 +1960,7 @@ mode = "deny"
             &flagged,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "test-bridge-token",
             None,
@@ -2009,7 +2014,7 @@ mode = "deny"
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "test-bridge-token",
             None,
@@ -2066,7 +2071,7 @@ mode = "deny"
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "test-bridge-token",
             None,
@@ -2126,7 +2131,7 @@ mode = "deny"
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "test-bridge-token",
             None,
@@ -2157,7 +2162,7 @@ mode = "deny"
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "test-bridge-token",
             None,
@@ -2200,7 +2205,7 @@ mode = "deny"
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "test-bridge-token",
             None,
@@ -2360,7 +2365,7 @@ mode = "deny"
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "token",
             None,
@@ -2416,7 +2421,7 @@ mode = "deny"
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "token",
             Some(state.path()),
@@ -2457,10 +2462,10 @@ mode = "deny"
         let embed = format!("/{modules_prefix}/{name}");
         assert_eq!(embed, "/modules/plugin.py");
         assert!(!embed.contains("home"));
-        assert!(ListenSpec::InheritedTcp { port: 9 }
+        assert!(ListenSpec::Inherited
             .workerd_socket_line()
             .contains(r#"(name = "rpc""#));
-        assert!(!ListenSpec::InheritedTcp { port: 9 }
+        assert!(!ListenSpec::Inherited
             .workerd_socket_line()
             .contains("address"));
     }
@@ -2502,13 +2507,10 @@ mode = "deny"
         assert!(reported
             .workerd_socket_line()
             .contains(r#"address = "127.0.0.1:0""#));
-        let inherited = ListenSpec::InheritedTcp { port: 9 };
+        let inherited = ListenSpec::Inherited;
         assert!(!inherited.reports_port());
-        assert_eq!(inherited.port(), Some(9));
-        assert_eq!(
-            inherited.client_base_url().as_deref(),
-            Some("http://127.0.0.1:9")
-        );
+        assert_eq!(inherited.port(), None);
+        assert_eq!(inherited.client_base_url(), None);
         assert!(!ListenSpec::TcpLoopback(9).reports_port());
 
         // Both generated configs turn on structured logging exactly when
@@ -2517,7 +2519,7 @@ mode = "deny"
         let structured = "logging = (structuredLogging = true),";
         for (listen, wants_structured) in [
             (ListenSpec::ReportedTcp, true),
-            (ListenSpec::InheritedTcp { port: 9 }, false),
+            (ListenSpec::Inherited, false),
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
             let generated = materialize_native_backend(
@@ -2573,16 +2575,9 @@ mode = "deny"
     }
 
     #[test]
-    fn internet_service_lists_public_and_explicit_cidrs_never_private() {
+    fn isolate_egress_leaves_only_through_the_launcher_relay() {
         use bookclerk_plugin_manifest::{EgressPolicy, NetworkMode, PluginManifest, WorkerdLimits};
 
-        let dir = tempfile::tempdir().expect("tempdir");
-        let _modules = create_dir_under(dir.path(), "modules");
-        write_under(
-            dir.path(),
-            Path::new("modules").join("index.js"),
-            "export default {};",
-        );
         let manifest = PluginManifest::parse(
             r#"
 api_version = 3
@@ -2596,43 +2591,62 @@ modules_dir = "modules"
 [capabilities.network]
 mode = "outbound"
 domains = ["api.example.com"]
-address_cidrs = ["10.0.60.100/32"]
 "#,
         )
         .expect("manifest");
         let mut policy = EgressPolicy::from_manifest(&manifest);
         policy.mode = NetworkMode::Outbound;
-        policy.address_cidrs = vec!["10.0.60.100/32".into()];
-        let generated = materialize(
-            dir.path(),
-            &manifest,
-            &EgressProxy::from_policy(policy),
-            WorkerdLimits::default().effective(),
-            ListenSpec::TcpLoopback(0),
-            None,
-            "token",
-            None,
-        )
-        .expect("materialize");
-        let capnp = read_under(&generated.state_dir, &generated.config_path);
+        let generate = |egress: EgressProxy| {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let _modules = create_dir_under(dir.path(), "modules");
+            write_under(
+                dir.path(),
+                std::path::Path::new("modules/index.js"),
+                "export default {};",
+            );
+            let generated = materialize(
+                dir.path(),
+                &manifest,
+                &egress,
+                WorkerdLimits::default().effective(),
+                ListenSpec::TcpLoopback(0),
+                None,
+                "token",
+                None,
+            )
+            .expect("materialize");
+            read_under(&generated.state_dir, &generated.config_path)
+        };
+
+        let relayed =
+            generate(EgressProxy::from_policy(policy.clone()).with_relay("unix-abstract:egress"));
         assert!(
-            capnp.contains(r#"allow = ["10.0.60.100/32", "public"]"#)
-                || capnp.contains(r#"allow = ["public", "10.0.60.100/32"]"#),
-            "{capnp}"
+            relayed.contains(
+                r#"(name = "hostegress", external = (address = "unix-abstract:egress", http = (style = proxy))),"#
+            ),
+            "{relayed}"
         );
-        assert!(!capnp.contains("\"private\""));
-        assert!(!capnp.contains("\"local\""));
-        // Without TLS options workerd's network service cannot open an HTTPS
-        // connection ("this client has no TLS configuration").
         assert!(
-            capnp.contains("tlsOptions = (trustBrowserCas = true)"),
-            "internet service must verify TLS against browser CAs: {capnp}"
+            relayed.contains(r#"globalOutbound = "hostegress""#),
+            "the egress worker's only way out is the relay: {relayed}"
         );
+        // workerd itself never opens an IP socket: no network service, so
+        // no DNS, no TLS and no address allowlist inside workerd (the host
+        // resolves and checks every tunnel).
+        assert!(!relayed.contains(r#"(name = "internet""#), "{relayed}");
+        assert!(!relayed.contains("\"public\""), "{relayed}");
+        assert!(!relayed.contains("trustBrowserCas"), "{relayed}");
         assert!(
-            capnp.contains(r#"compatibilityFlags = ["experimental"]"#),
-            "egress worker must opt into inbound CONNECT: {capnp}"
+            relayed.contains(r#"compatibilityFlags = ["experimental"]"#),
+            "egress worker must opt into inbound CONNECT: {relayed}"
         );
         assert_eq!(WORKERD_SERVE_EXPERIMENTAL, "--experimental");
+
+        // No relay (network denied): nothing leaves.
+        let denied = generate(EgressProxy::from_policy(policy));
+        assert!(!denied.contains("hostegress"), "{denied}");
+        assert!(!denied.contains(r#"(name = "internet""#), "{denied}");
+        assert!(denied.contains(r#"globalOutbound = "blocked""#), "{denied}");
     }
 
     fn socket_names(capnp: &str) -> Vec<String> {
@@ -2711,7 +2725,7 @@ entrypoint = "default"
                 }
             }),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             None,
             "test-bridge-token",
             None,
@@ -2781,7 +2795,7 @@ mode = "deny"
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             Some("unix:/tmp/granted.sock"),
             "test-bridge-token",
             None,
@@ -2874,7 +2888,7 @@ mode = "deny"
             &native_manifest(),
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             Some("unix:/tmp/granted.sock"),
             "token",
             None,
@@ -2909,10 +2923,13 @@ mode = "deny"
             "native-behind-workerd must not require an author plugin isolate:\n{capnp}"
         );
         assert!(!dir.path().join("modules").is_dir());
+        // The native guest reaches the network only through the host's
+        // CONNECT proxy; workerd here has no way out at all.
         assert!(
-            capnp.contains("tlsOptions = (trustBrowserCas = true)"),
-            "native guests' egress needs TLS on the internet service too:\n{capnp}"
+            !capnp.contains(r#"(name = "internet""#) && !capnp.contains("\"public\""),
+            "native-behind-workerd has no open network service:\n{capnp}"
         );
+        assert!(!capnp.contains("hostegress"), "{capnp}");
     }
 
     #[test]
@@ -2946,7 +2963,7 @@ mode = "deny"
             &native_manifest(),
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             Some("unix-abstract:bc-g-deadbeefcafebabe"),
             "test-bridge-token",
             None,
@@ -2976,7 +2993,7 @@ mode = "deny"
                         &native_manifest(),
                         &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
                         bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
-                        ListenSpec::InheritedTcp { port: 9 },
+                        ListenSpec::Inherited,
                         Some("unix:/tmp/granted.sock"),
                         "token",
                         None,
@@ -3032,7 +3049,7 @@ mode = "deny"
                                 bookclerk_plugin_manifest::EgressPolicy::deny(),
                             ),
                             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
-                            ListenSpec::InheritedTcp { port: 9 },
+                            ListenSpec::Inherited,
                             Some("unix:/tmp/granted.sock"),
                             "token",
                             None,
@@ -3066,7 +3083,7 @@ mode = "deny"
             &native_manifest(),
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             Some("unix:/tmp/granted.sock"),
             "token",
             None,
@@ -3115,7 +3132,7 @@ mode = "deny"
             &native_manifest(),
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
-            ListenSpec::InheritedTcp { port: 9 },
+            ListenSpec::Inherited,
             Some("unix:/tmp/granted.sock"),
             "token",
             Some(session.path()),

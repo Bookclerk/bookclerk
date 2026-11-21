@@ -113,6 +113,98 @@ fn policy(echo_port: u16, allow_public_redirects: bool) -> EgressPolicy {
     }
 }
 
+/// Gives a launcher command the host's egress link, as the plugin host does.
+///
+/// The launcher's jail has no IP reach in production, so its isolate's
+/// `fetch()` and `connect()` leave only as CONNECT tunnels over this link;
+/// the returned proxy is the host side and checks each tunnel against
+/// `policy` under the isolate rule. Keep it alive for the test.
+fn attach_host_egress(
+    cmd: &mut Command,
+    policy: &EgressPolicy,
+) -> bookclerk_workerd::socket_proxy::ProxyServer {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    let challenge = [7_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
+    cmd.env(
+        bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
+        hex::encode(challenge),
+    );
+    let rule = bookclerk_workerd::socket_proxy::LinkPolicy::isolate(policy.clone());
+    #[cfg(unix)]
+    {
+        use std::os::fd::{AsRawFd, OwnedFd};
+        let (host, launcher) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+        host.set_nonblocking(true).expect("nonblocking");
+        let host = tokio::net::UnixStream::from_std(host).expect("wrap");
+        let proxy = bookclerk_workerd::socket_proxy::spawn_link_with_challenge(
+            host,
+            rule,
+            Arc::new(AtomicBool::new(false)),
+            challenge,
+        )
+        .expect("host proxy");
+        let launcher = OwnedFd::from(launcher);
+        let fd = launcher.as_raw_fd();
+        let slot = bookclerk_sandbox::WORKERD_EGRESS_FD;
+        // SAFETY: dup2 only, between fork and exec.
+        #[allow(unsafe_code)]
+        unsafe {
+            cmd.pre_exec(move || bookclerk_sandbox::inherit_fd_at(fd, slot));
+        }
+        cmd.env(bookclerk_sandbox::WORKERD_EGRESS_ENV, format!("fd:{slot}"));
+        // The child gets its copy at spawn; keep ours open until then.
+        std::mem::forget(launcher);
+        proxy
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::IntoRawHandle;
+        let ends = bookclerk_sandbox::StdioEnds::pair_overlapped().expect("pipes");
+        let bookclerk_sandbox::StdioEnds {
+            host_stdin,
+            host_stdout,
+            guest_stdin,
+            guest_stdout,
+        } = ends;
+        guest_stdin.set_inheritable(true).expect("inherit read");
+        guest_stdout.set_inheritable(true).expect("inherit write");
+        cmd.env(
+            bookclerk_sandbox::WORKERD_EGRESS_ENV,
+            format!("handle:{}", guest_stdin.handle_value()),
+        );
+        cmd.env(
+            bookclerk_sandbox::WORKERD_EGRESS_WRITE_ENV,
+            format!("handle:{}", guest_stdout.handle_value()),
+        );
+        std::mem::forget(guest_stdin);
+        std::mem::forget(guest_stdout);
+        #[allow(unsafe_code)]
+        let read = unsafe {
+            tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(
+                host_stdout.into_owned_handle().into_raw_handle(),
+            )
+        }
+        .expect("read pipe");
+        #[allow(unsafe_code)]
+        let write = unsafe {
+            tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(
+                host_stdin.into_owned_handle().into_raw_handle(),
+            )
+        }
+        .expect("write pipe");
+        bookclerk_workerd::socket_proxy::spawn_halves_with_challenge(
+            read,
+            write,
+            rule,
+            Arc::new(AtomicBool::new(false)),
+            challenge,
+        )
+        .expect("host proxy")
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn workerd_connect_and_fetch_share_policy() {
     let Some(workerd) = find_workerd() else {
@@ -131,11 +223,14 @@ async fn workerd_connect_and_fetch_share_policy() {
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
     let tmp = tempfile::tempdir().expect("tmpdir");
-    let grant = serde_json::to_string(&policy(echo_port, false)).expect("policy json");
+    let grant_policy = policy(echo_port, false);
+    let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"));
+            let _egress = attach_host_egress(&mut cmd, &grant_policy);
+            let mut child = cmd
                 .env("BOOKCLERK_PLUGIN_ROOT", &fixture)
                 .env("BOOKCLERK_WORKERD_BIN", &workerd)
                 .env("TMPDIR", tmp.path())
@@ -198,11 +293,14 @@ async fn workerd_redirect_to_private_denied_even_with_public_redirect_flag() {
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
     let tmp = tempfile::tempdir().expect("tmpdir");
-    let grant = serde_json::to_string(&policy(1, true)).expect("policy json");
+    let grant_policy = policy(1, true);
+    let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"));
+            let _egress = attach_host_egress(&mut cmd, &grant_policy);
+            let mut child = cmd
                 .env("BOOKCLERK_PLUGIN_ROOT", &fixture)
                 .env("BOOKCLERK_WORKERD_BIN", &workerd)
                 .env("TMPDIR", tmp.path())
@@ -245,11 +343,14 @@ async fn workerd_manual_redirect_returns_the_3xx_unfollowed() {
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
     let tmp = tempfile::tempdir().expect("tmpdir");
-    let grant = serde_json::to_string(&policy(1, false)).expect("policy json");
+    let grant_policy = policy(1, false);
+    let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"));
+            let _egress = attach_host_egress(&mut cmd, &grant_policy);
+            let mut child = cmd
                 .env("BOOKCLERK_PLUGIN_ROOT", &fixture)
                 .env("BOOKCLERK_WORKERD_BIN", &workerd)
                 .env("TMPDIR", tmp.path())
@@ -297,7 +398,7 @@ async fn workerd_any_public_host_matches_names_but_not_addresses() {
     // `*` plus a loopback address grant: the name `localhost` passes both
     // layers, while the literal `127.0.0.1` is no hostname, so `*` does not
     // cover it, and `*` never grants a socket.
-    let grant = serde_json::to_string(&EgressPolicy {
+    let grant_policy = EgressPolicy {
         mode: NetworkMode::Outbound,
         domains: vec!["*".into()],
         max_redirects: 10,
@@ -310,12 +411,14 @@ async fn workerd_any_public_host_matches_names_but_not_addresses() {
         address_cidrs: vec!["127.0.0.1/32".into()],
         user_agent: None,
         own_user_agent_hosts: Vec::new(),
-    })
-    .expect("policy json");
+    };
+    let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"));
+            let _egress = attach_host_egress(&mut cmd, &grant_policy);
+            let mut child = cmd
                 .env("BOOKCLERK_PLUGIN_ROOT", &fixture)
                 .env("BOOKCLERK_WORKERD_BIN", &workerd)
                 .env("TMPDIR", tmp.path())
@@ -394,7 +497,7 @@ async fn workerd_fetch_carries_the_host_user_agent_except_on_approved_hosts() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
     let tmp = tempfile::tempdir().expect("tmpdir");
     let host_agent = "bookclerk/0.0.0-test (+https://bookclerk.app)";
-    let grant = serde_json::to_string(&EgressPolicy {
+    let grant_policy = EgressPolicy {
         mode: NetworkMode::Outbound,
         domains: vec!["127.0.0.1".into(), "localhost".into()],
         max_redirects: 10,
@@ -405,12 +508,14 @@ async fn workerd_fetch_carries_the_host_user_agent_except_on_approved_hosts() {
         user_agent: Some(host_agent.into()),
         // A padded or dotted `*` must not exempt every host.
         own_user_agent_hosts: vec!["127.0.0.1".into(), " * ".into(), "*.".into()],
-    })
-    .expect("policy json");
+    };
+    let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"));
+            let _egress = attach_host_egress(&mut cmd, &grant_policy);
+            let mut child = cmd
                 .env("BOOKCLERK_PLUGIN_ROOT", &fixture)
                 .env("BOOKCLERK_WORKERD_BIN", &workerd)
                 .env("TMPDIR", tmp.path())

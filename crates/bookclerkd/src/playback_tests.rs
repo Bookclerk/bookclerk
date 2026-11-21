@@ -19,6 +19,8 @@ const KEY: &str = "Ann Author/First/First.m4b";
 
 /// A daemon with one output destination and two members.
 struct World {
+    /// The daemon's state.
+    state: Arc<crate::api::AppState>,
     /// The daemon's router.
     app: axum::Router,
     /// Its library.
@@ -63,6 +65,7 @@ async fn world() -> World {
         .unwrap();
     World {
         app: crate::api::router(Arc::clone(&state), None),
+        state,
         riley: crate::auth::tests::portal_cookie_for(&store, "test", "riley-ext").await,
         sam: crate::auth::tests::portal_cookie_for(&store, "test", "sam-ext").await,
         riley_id: ids[0],
@@ -421,6 +424,202 @@ async fn a_member_plays_an_edition_from_open_to_close() {
 
     // Playing a finished edition again starts over.
     assert_eq!(open(&world, riley, &id).await["position_ms"], 0);
+}
+
+/// In the desktop window the patron the window is signed in as keeps
+/// listening as themselves while elevated to the operator or impersonating
+/// someone from the elevation; the operator token (no Owner yet) has
+/// nothing to play as, and a daemon with a listener plays as whoever the
+/// request acts as.
+#[tokio::test]
+async fn the_window_listens_as_its_own_patron() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let world = world().await;
+    let bytes = audio();
+    let id = edition(
+        &world,
+        "B0PLAY0009",
+        "First",
+        "Ann Author",
+        Some((KEY, &bytes)),
+    )
+    .await;
+    let body = json!({"edition_id": id, "player_name": "Desktop"});
+    // Riley, the Owner, elevated (later impersonating Sam from it).
+    world
+        .store
+        .set_user_role(world.riley_id, bookclerk_library::UserRole::Owner)
+        .await
+        .unwrap();
+    let raw = "window-elevation";
+    world
+        .store
+        .insert_elevated_operator_session(
+            &bookclerk_library::hash_token(raw),
+            chrono::Utc::now() + chrono::Duration::hours(1),
+            world.riley_id,
+        )
+        .await
+        .unwrap();
+    // The window's jar holds the patron's own session and the elevation's.
+    let elevated = format!("{}; {}={raw}", world.riley, crate::auth::SESSION_COOKIE);
+
+    // Outside the window an elevated session is the operator: no listener.
+    let answer = post(
+        &world,
+        "/api/playback/sessions",
+        Some(&elevated),
+        body.clone(),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+
+    world.state.in_window.set(()).unwrap();
+    let answer = post(&world, "/api/playback/sessions", None, body.clone()).await;
+    assert_eq!(
+        answer.status,
+        StatusCode::FORBIDDEN,
+        "the operator token has nobody to listen as"
+    );
+    let answer = post(&world, "/api/playback/sessions", Some(&elevated), body).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.json());
+    let session = answer.json();
+    let path = session["tracks"][0]["path"].as_str().unwrap().to_owned();
+    let ranged = send(
+        &world,
+        Method::GET,
+        &path,
+        Some(&elevated),
+        None,
+        Some("bytes=0-9"),
+    )
+    .await;
+    assert_eq!(ranged.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(ranged.bytes, bytes[..10]);
+    // Riley's own session reaches the same play session: it is Riley's.
+    let sid = session["session_id"].as_str().unwrap();
+    let close = post(
+        &world,
+        &format!("/api/playback/sessions/{sid}/close"),
+        Some(&world.riley),
+        json!({"position_ms": 60_000, "listened_ms": 1_000}),
+    )
+    .await;
+    assert_eq!(close.status, StatusCode::OK, "{}", close.json());
+    let after = get(&world, "/api/playback/progress", Some(&world.riley)).await;
+    assert_eq!(after.json()["items"][0]["position_ms"], 60_000);
+
+    // Impersonating Sam from the elevation still plays as Riley.
+    let sam_id = world
+        .store
+        .upsert_portal_identity("test", "sam-ext", Some("sam-ext"))
+        .await
+        .unwrap()
+        .user_id
+        .unwrap();
+    world
+        .store
+        .set_operator_session_impersonating(&bookclerk_library::hash_token(raw), Some(sam_id))
+        .await
+        .unwrap();
+    let body = json!({"edition_id": id, "player_name": "Desktop"});
+    let answer = post(&world, "/api/playback/sessions", Some(&elevated), body).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.json());
+    assert_eq!(answer.json()["position_ms"], 60_000, "Riley's place");
+    let sid = answer.json()["session_id"].as_str().unwrap().to_owned();
+    let close = post(
+        &world,
+        &format!("/api/playback/sessions/{sid}/close"),
+        Some(&world.riley),
+        json!({"position_ms": 90_000, "listened_ms": 1_000}),
+    )
+    .await;
+    assert_eq!(close.status, StatusCode::OK, "{}", close.json());
+    let sam = get(&world, "/api/playback/progress", Some(&world.sam)).await;
+    assert_eq!(sam.json()["items"].as_array().unwrap().len(), 0);
+}
+
+/// One second of a 16-bit mono WAV at 8 kHz.
+fn wav() -> Vec<u8> {
+    let frames = 8_000u32;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + frames * 2).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    for value in [16u32, 0x0001_0001, 8_000, 16_000, 0x0010_0002] {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(frames * 2).to_le_bytes());
+    for frame in 0..frames {
+        out.extend_from_slice(&i16::try_from(frame % 100).unwrap().to_le_bytes());
+    }
+    out
+}
+
+/// The window's player reads a session's track through the stream route
+/// by range and gets it back decoded by the media worker; a path that is
+/// not a session's track is refused before anything is read.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_window_player_decodes_a_track_through_the_stream_route() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let world = world().await;
+    let bytes = wav();
+    let id = edition(
+        &world,
+        "B0PLAY0010",
+        "First",
+        "Ann Author",
+        Some((KEY, &bytes)),
+    )
+    .await;
+    world.state.in_window.set(()).unwrap();
+    let riley = crate::embedded::OwnedCredential::Cookies(world.riley.clone());
+    let not_a_track = crate::embedded::track::open_track(
+        world.app.clone(),
+        riley.clone(),
+        "/api/library/works",
+        0,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(not_a_track, crate::embedded::TrackError::NotATrack);
+    if !bookclerk_media::pool().is_isolated() {
+        assert!(
+            std::env::var_os("BOOKCLERK_REQUIRE_TEST_GUESTS").is_none(),
+            "the media worker is not built"
+        );
+        eprintln!("skipping: no media worker beside the test binary");
+        return;
+    }
+    let answer = post(
+        &world,
+        "/api/playback/sessions",
+        Some(&world.riley),
+        json!({"edition_id": id, "player_name": "Desktop"}),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.json());
+    let path = answer.json()["tracks"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut stream = crate::embedded::track::open_track(world.app.clone(), riley, &path, 500)
+        .await
+        .unwrap();
+    let header = stream.header();
+    assert_eq!((header.sample_rate, header.channels), (8_000, 1));
+    assert_eq!(header.duration_ms, Some(1_000));
+    let mut samples = Vec::new();
+    while let Some(chunk) = stream.next_chunk().await {
+        samples.extend(chunk.unwrap());
+    }
+    let expected = usize::try_from((1_000 - header.start_ms) * 8).unwrap();
+    assert!(
+        samples.len().abs_diff(expected) <= 1_152,
+        "{} vs {expected}",
+        samples.len()
+    );
 }
 
 /// Who and what the routes refuse: the operator (no library user), an

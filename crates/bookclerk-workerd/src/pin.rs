@@ -90,6 +90,23 @@ pub fn download_url(artifact: &str) -> String {
     )
 }
 
+/// Pyodide runtime bundle file the pinned workerd loads for Python isolates.
+pub const PYODIDE_BUNDLE_FILE: &str = "pyodide_0.28.2_2025-01-16_20.capnp.bin";
+
+/// Expected SHA-256 hex digest of [`PYODIDE_BUNDLE_FILE`].
+pub const PYODIDE_BUNDLE_SHA256_HEX: &str =
+    "330d40e5bb3762cd54890d09122e173fca689ec420a98a1dd475215724e3df7d";
+
+/// Directory beside the `workerd` binary that holds [`PYODIDE_BUNDLE_FILE`];
+/// workerd reads it through `--pyodide-bundle-disk-cache-dir`.
+pub const PYODIDE_BUNDLE_DIR: &str = "pyodide-bundles";
+
+/// Download URL of the pinned Pyodide bundle.
+#[must_use]
+pub fn pyodide_bundle_url() -> String {
+    format!("https://pyodide-capnp-bin.edgeworker.net/{PYODIDE_BUNDLE_FILE}")
+}
+
 /// On-disk binary name after extracting the gzipped release asset.
 #[must_use]
 pub fn binary_name() -> &'static str {
@@ -122,6 +139,16 @@ mod pin_json_sync {
             v["version_stamp"].as_str(),
             Some(WORKERD_VERSION_STAMP),
             "WORKERD_VERSION_STAMP drift vs workerd-pin.json"
+        );
+        assert_eq!(
+            v["pyodide_bundle"]["file"].as_str(),
+            Some(PYODIDE_BUNDLE_FILE),
+            "PYODIDE_BUNDLE_FILE drift vs workerd-pin.json"
+        );
+        assert_eq!(
+            v["pyodide_bundle"]["sha256_hex"].as_str(),
+            Some(PYODIDE_BUNDLE_SHA256_HEX),
+            "PYODIDE_BUNDLE_SHA256_HEX drift vs workerd-pin.json"
         );
         let assets = v["assets"].as_object().expect("assets object");
         let platforms = [

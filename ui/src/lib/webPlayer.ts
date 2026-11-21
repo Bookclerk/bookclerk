@@ -6,7 +6,10 @@
  */
 import { useSyncExternalStore } from "react";
 import { beforeSignOut, coverSrc, fetchWork, type WorkDetail } from "@/lib/api";
+import { isDesktopWindow } from "@/lib/desktop";
+import { tauriBridge } from "@/lib/desktopLive";
 import { bindMediaSession, type MediaDescription, type MediaSessionLike } from "@/lib/mediaSession";
+import { NativeAudio, NativeBridge, NativeMediaSession, nativeProbe } from "@/lib/nativePlayer";
 import {
   addBookmark,
   closePlaybackSession,
@@ -107,13 +110,20 @@ let shared: Player | null = null;
  * The page's player. The first call makes it and binds the browser's
  * Media Session and the page's departure to it.
  *
+ * In the desktop window it drives the window's own player instead of an
+ * audio element (see {@link NativeAudio}), and shows the book in the
+ * system's media controls through the window rather than the webview.
+ *
  * @returns The player.
  */
 export function webPlayer(): Player {
   if (shared) return shared;
-  const name = playerName(navigator.userAgent);
+  const bridge = isDesktopWindow() ? tauriBridge() : null;
+  const native = bridge ? new NativeBridge(bridge) : null;
+  const name = native ? "Desktop" : playerName(navigator.userAgent);
   const player = new Player({
     audio: () => {
+      if (native) return new NativeAudio(native);
       const audio = new Audio();
       audio.preload = "auto";
       return audio;
@@ -125,7 +135,7 @@ export function webPlayer(): Player {
     addBookmark,
     deleteBookmark,
     setProgress: putPlaybackProgress,
-    probe,
+    probe: native ? (path) => nativeProbe(native, path) : probe,
     now: () => performance.now(),
     wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     loadSpeed: () => {
@@ -143,8 +153,23 @@ export function webPlayer(): Player {
       }
     },
   });
-  const session = (navigator as { mediaSession?: MediaSessionLike }).mediaSession;
-  bindMediaSession(player, session, (description) => new MediaMetadata(description), coverArtwork);
+  if (native) {
+    // The window's controls take the description itself and show no cover yet.
+    bindMediaSession(
+      player,
+      new NativeMediaSession(native),
+      (description) => description,
+      () => [],
+    );
+  } else {
+    const session = (navigator as { mediaSession?: MediaSessionLike }).mediaSession;
+    bindMediaSession(
+      player,
+      session,
+      (description) => new MediaMetadata(description),
+      coverArtwork,
+    );
+  }
   // The last report must outlive the page, so it goes out as a keepalive
   // request when the page is hidden for good.
   window.addEventListener("pagehide", () => void player.stop(true));

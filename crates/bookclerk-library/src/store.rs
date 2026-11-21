@@ -7216,6 +7216,7 @@ impl LibraryStore {
 pub(crate) mod acquire_title;
 pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
+pub(crate) mod destination_objects;
 pub(crate) mod discover;
 pub(crate) mod edition_copies;
 pub(crate) mod edition_enrichment;
@@ -7244,6 +7245,9 @@ pub(crate) mod work_search;
 pub(crate) mod work_split;
 pub(crate) mod write_batches;
 pub use acquire_title::{AcquireTitle, AcquireTitlePage};
+pub use destination_objects::{
+    ChangedObject, DestinationFeed, FeedState, LostCopies, SeenObject, OBJECT_TOMBSTONE_DAYS,
+};
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,

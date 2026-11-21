@@ -1054,6 +1054,9 @@ pub async fn run_acquire(
     };
     let mut targets =
         acquire_candidates(&library, account, title, wanted, lacking.as_ref()).await?;
+    if title.is_none() && !mode.force {
+        targets = without_missing_copies(&library, targets).await?;
+    }
     if mode.paced {
         // Audio not yet downloaded goes first, then companion PDFs of
         // acquired titles, then titles that failed before (the sort is
@@ -1777,6 +1780,43 @@ fn acquire_mode_includes(
     }
 }
 
+/// `targets` without the titles not acquired because their files went
+/// missing (`output.missing_files = mark_missing`): a run over many titles
+/// leaves those for a member or operator to ask for by name, or for a
+/// forced run. An acquired title, and one whose edition has no missing
+/// copy, is kept.
+///
+/// # Errors
+///
+/// Returns the copy read error.
+async fn without_missing_copies(
+    library: &bookclerk_library::LibraryStore,
+    targets: Vec<AcquireTitle>,
+) -> bookclerk_library::Result<Vec<AcquireTitle>> {
+    let mut editions: Vec<String> = targets
+        .iter()
+        .filter(|t| t.status != AcquireStatus::Acquired)
+        .map(|t| t.edition_id.clone())
+        .collect();
+    editions.sort();
+    editions.dedup();
+    let mut missing = std::collections::BTreeSet::new();
+    for chunk in editions.chunks(200) {
+        for copy in library.copies_of_editions(chunk).await? {
+            if copy.state == bookclerk_library::CopyState::Missing {
+                missing.insert(copy.edition_id);
+            }
+        }
+    }
+    if missing.is_empty() {
+        return Ok(targets);
+    }
+    Ok(targets
+        .into_iter()
+        .filter(|t| t.status == AcquireStatus::Acquired || !missing.contains(&t.edition_id))
+        .collect())
+}
+
 /// The titles [`run_acquire`] considers: those held on `account` (every
 /// account when `None`) that `title` names (every title when `None`) and
 /// that pass `wanted`, in title order.
@@ -2348,6 +2388,54 @@ mod tests {
             primary: bookclerk_config::DestinationId::new("local").unwrap(),
             multi_destination: bookclerk_config::MultiDestinationMode::SyncMissing,
         }
+    }
+
+    /// A run over many titles skips a not-acquired title whose copy was
+    /// marked missing; an acquired one, or one with no missing copy, stays.
+    #[tokio::test]
+    async fn a_bulk_run_skips_titles_whose_files_went_missing() {
+        let store = test_store().await;
+        let book = book_with(
+            &store,
+            AcquireStatus::NotAcquired,
+            None,
+            AcquireStatus::NotAcquired,
+            None,
+            "book",
+        )
+        .await;
+        let kept = without_missing_copies(&store, vec![book.clone()])
+            .await
+            .unwrap();
+        assert_eq!(kept.len(), 1, "no missing copy");
+
+        store
+            .set_copy_stored(&book.edition_id, "local", "A/Test.m4b")
+            .await
+            .unwrap();
+        store
+            .lose_copies(
+                "local",
+                &["A/Test.m4b".into()],
+                bookclerk_config::MissingFileAction::MarkMissing,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(without_missing_copies(&store, vec![book.clone()])
+            .await
+            .unwrap()
+            .is_empty());
+
+        let mut acquired = book.clone();
+        acquired.status = AcquireStatus::Acquired;
+        assert_eq!(
+            without_missing_copies(&store, vec![acquired])
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// Whether candidate selection visits `title` again for a copy some
