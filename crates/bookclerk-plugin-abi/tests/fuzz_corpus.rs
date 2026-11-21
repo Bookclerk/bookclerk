@@ -158,13 +158,13 @@ const SCAN_PAGE_SELECTOR: u8 = 31;
 /// See [`SCAN_PAGE_SELECTOR`].
 const CATALOG_HITS_SELECTOR: u8 = 48;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_RECORDS_SELECTOR: u8 = 97;
+const METADATA_RECORDS_SELECTOR: u8 = 102;
 /// See [`SCAN_PAGE_SELECTOR`].
-const METADATA_CHAPTERS_SELECTOR: u8 = 100;
+const METADATA_CHAPTERS_SELECTOR: u8 = 105;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_FETCH_PARAMS_SELECTOR: u8 = 102;
+const COVER_FETCH_PARAMS_SELECTOR: u8 = 107;
 /// See [`SCAN_PAGE_SELECTOR`].
-const COVER_IMAGES_SELECTOR: u8 = 105;
+const COVER_IMAGES_SELECTOR: u8 = 110;
 
 /// A scan page with every structured book record and paging field filled.
 fn structured_scan_page() -> bookclerk_plugin_abi::ScanPage {
