@@ -10,7 +10,7 @@ import type { StorageSyncView } from "@/lib/api";
 export interface StorageSyncSummary {
   /** Short badge text, such as `Feed healthy`. */
   label: string;
-  /** True when the operator should look: the feed failed or missed changes, or a listing was held back. */
+  /** True when the operator should look: the feed failed or missed changes, or the last listing failed or was held back. */
   trouble: boolean;
   /** Tooltip lines: file count, listing times and any errors. */
   details: string[];
@@ -37,7 +37,7 @@ export function summarizeStorageSync(
   ];
   if (sync.feed_error) details.push(`Feed error: ${sync.feed_error}`);
   if (sync.listing_error) details.push(sync.listing_error);
-  if (sync.listing_error) return { label: "Listing held back", trouble: true, details };
+  if (sync.listing_error) return { label: "Listing error", trouble: true, details };
   switch (sync.feed_state) {
     case "failing":
       return { label: "Feed failing", trouble: true, details };

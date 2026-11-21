@@ -19,6 +19,7 @@
 //! One node at a time syncs a destination: each pass takes the
 //! destination's library lease first.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -177,9 +178,11 @@ async fn keep_lease(library: &LibraryStore, lease: Option<&LibraryLease>) -> boo
 ///
 /// # Errors
 ///
-/// Returns a library read or write error. A storage error is recorded on
-/// the feed row instead (the feed turns failing, or the listing keeps its
-/// cursor and error for the next pass).
+/// Returns a library read or write error, including a conflict when
+/// another node saved the destination's sync state since this pass read it
+/// (it took the lease). A storage error is recorded on the feed row instead
+/// (the feed turns failing, or the listing keeps its cursor and error for
+/// the next pass).
 pub async fn sync_destination(
     library: &LibraryStore,
     destination: &str,
@@ -199,9 +202,17 @@ pub async fn sync_destination(
         feed.feed_cursor = None;
         feed.feed_error = None;
     }
-    library.save_destination_feed(&feed).await?;
+    library.save_destination_feed(&mut feed).await?;
     if feed.listing_due(Utc::now()) {
-        run_listing(library, backend, &mut feed, lease, &mut report).await?;
+        run_listing(
+            library,
+            backend,
+            &mut feed,
+            lease,
+            missing_files,
+            &mut report,
+        )
+        .await?;
     }
     check_copies(library, &mut feed, missing_files, &mut report).await?;
     Ok(report)
@@ -237,7 +248,21 @@ async fn read_feed(
         };
         report.feed_pages += 1;
         let seq = feed.next_seq();
-        report.changes += apply_feed_page(library, backend, feed, seq, &page.changes).await?;
+        match apply_feed_page(library, backend, feed, seq, &page.changes).await {
+            Ok(changed) => report.changes += changed,
+            // Probing the page's keys failed: the cursor stays where it was,
+            // so the page is read again, and a listing covers it meanwhile.
+            Err(err)
+                if err
+                    .downcast_ref::<bookclerk_storage::StorageError>()
+                    .is_some() =>
+            {
+                feed.feed_state = FeedState::Failing;
+                feed.feed_error = Some(err.to_string());
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        }
         // The cursor is saved with what the page brought, so the next read
         // starts after it (a queue feed deletes the page's messages then).
         feed.feed_cursor = Some(page.cursor);
@@ -275,10 +300,20 @@ async fn apply_feed_page(
     changes: &[bookclerk_storage::ObjectChange],
 ) -> anyhow::Result<u64> {
     let now = Utc::now();
+    // The feed lists changes oldest first and a key may repeat: only the
+    // last change of each key says where it stands now.
+    let mut last: HashMap<&str, usize> = HashMap::new();
+    for (index, change) in changes.iter().enumerate() {
+        last.insert(change.key.as_str(), index);
+    }
     let mut seen = Vec::new();
     let mut removed = Vec::new();
     let mut probe = Vec::new();
-    for change in changes {
+    for (_, change) in changes
+        .iter()
+        .enumerate()
+        .filter(|(index, change)| last.get(change.key.as_str()) == Some(index))
+    {
         match (change.kind, &change.info) {
             (ObjectChangeKind::Removed, _) => removed.push(change.key.clone()),
             (ObjectChangeKind::Upserted, Some(info)) => seen.push(SeenObject {
@@ -306,9 +341,6 @@ async fn apply_feed_page(
             }
         }
     }
-    // A key both removed and seen in one page ends as its last report; the
-    // feed lists changes oldest first, so keep only the last of each key.
-    removed.retain(|key| !seen.iter().any(|object| &object.key == key));
     let mut changed = library
         .remove_seen_objects(&feed.destination, seq, &removed, now)
         .await?;
@@ -326,6 +358,7 @@ async fn run_listing(
     backend: &dyn StorageBackend,
     feed: &mut DestinationFeed,
     lease: Option<&LibraryLease>,
+    missing_files: MissingFileAction,
     report: &mut SyncReport,
 ) -> anyhow::Result<()> {
     let seq = match feed.listing_seq {
@@ -335,6 +368,9 @@ async fn run_listing(
             feed.listing_seq = Some(seq);
             feed.listing_cursor = None;
             feed.listing_started_at = Some(Utc::now());
+            // The removal guard is judged against what was known before
+            // this listing, not what it adds.
+            feed.listing_base = Some(library.known_object_count(&feed.destination).await?);
             library.save_destination_feed(feed).await?;
             seq
         }
@@ -377,23 +413,29 @@ async fn run_listing(
                 feed.listing_cursor = Some(cursor);
                 library.save_destination_feed(feed).await?;
             }
-            None => return finish_listing(library, feed, seq, report).await,
+            None => return finish_listing(library, feed, seq, missing_files, report).await,
         }
     }
     Ok(())
 }
 
 /// Ends the listing numbered `seq`: the objects it did not see are marked
-/// removed, unless the removal guard holds them back, and the next listing
+/// removed, unless the removal guard holds them back; stored copies whose
+/// file the listing did not see are handed to
+/// [`LibraryStore::lose_copies`] under the same guard; and the next listing
 /// is scheduled.
 async fn finish_listing(
     library: &LibraryStore,
     feed: &mut DestinationFeed,
     seq: i64,
+    missing_files: MissingFileAction,
     report: &mut SyncReport,
 ) -> anyhow::Result<()> {
     let now = Utc::now();
-    let known = library.known_object_count(&feed.destination).await?;
+    let known = match feed.listing_base {
+        Some(base) => base,
+        None => library.known_object_count(&feed.destination).await?,
+    };
     let unlisted = library
         .unlisted_object_count(&feed.destination, seq)
         .await?;
@@ -412,10 +454,12 @@ async fn finish_listing(
     } else {
         report.changes += library.finish_listing(&feed.destination, seq, now).await?;
         feed.listing_error = None;
+        check_unlisted_copies(library, feed, missing_files, report).await?;
     }
     report.listing_finished = true;
     feed.listing_seq = None;
     feed.listing_cursor = None;
+    feed.listing_base = None;
     feed.listed_at = Some(now);
     if feed.feed_state == FeedState::Gap {
         feed.feed_state = FeedState::Healthy;
@@ -428,6 +472,39 @@ async fn finish_listing(
     feed.next_listing_at = Some(now + chrono::Duration::from_std(interval)?);
     feed.objects = library.known_object_count(&feed.destination).await?;
     library.save_destination_feed(feed).await?;
+    Ok(())
+}
+
+/// Hands stored copies whose file a finished listing did not see to
+/// [`LibraryStore::lose_copies`]. This covers files that were gone before
+/// the destination was first listed, which leave no tombstone for
+/// [`check_copies`] to read. The removal guard applies to them too: a
+/// listing that misses that many copies more likely looked in the wrong
+/// place, so they are left alone and `listing_error` says why.
+async fn check_unlisted_copies(
+    library: &LibraryStore,
+    feed: &mut DestinationFeed,
+    missing_files: MissingFileAction,
+    report: &mut SyncReport,
+) -> anyhow::Result<()> {
+    let (gone, stored) = library.unlisted_copy_keys(&feed.destination).await?;
+    let missed = u64::try_from(gone.len()).unwrap_or(u64::MAX);
+    if missed == 0 {
+        return Ok(());
+    }
+    let guard = (stored.saturating_mul(REMOVAL_GUARD_PERCENT) / 100).max(REMOVAL_GUARD_MIN);
+    if missed > guard {
+        report.held_back += missed;
+        feed.listing_error = Some(format!(
+            "the listing missed {missed} of {stored} stored copies; they were left as they were"
+        ));
+        return Ok(());
+    }
+    let lost = library
+        .lose_copies(&feed.destination, &gone, missing_files, Utc::now())
+        .await?;
+    report.lost_copies += lost.restoring + lost.missing;
+    report.not_acquired += lost.not_acquired;
     Ok(())
 }
 

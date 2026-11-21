@@ -1706,6 +1706,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         listing_error TEXT,
         objects INTEGER NOT NULL DEFAULT 0,
         checked_seq INTEGER NOT NULL DEFAULT 0,
+        listing_base INTEGER,
+        revision INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
     )",
     ),

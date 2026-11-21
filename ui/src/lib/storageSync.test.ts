@@ -52,14 +52,17 @@ describe("summarizeStorageSync", () => {
     expect(summarizeStorageSync(view({ feed_state: "gap" }), raw).label).toBe("Feed gap");
   });
 
-  it("puts a held-back listing first", () => {
-    const summary = summarizeStorageSync(
+  it("puts a listing error first, whatever caused it", () => {
+    const held = summarizeStorageSync(
       view({ feed_state: "off", listing_error: "kept 40 unlisted files" }),
       raw,
     );
-    expect(summary.label).toBe("Listing held back");
-    expect(summary.trouble).toBe(true);
-    expect(summary.details).toContain("kept 40 unlisted files");
+    expect(held.label).toBe("Listing error");
+    expect(held.trouble).toBe(true);
+    expect(held.details).toContain("kept 40 unlisted files");
+    const failed = summarizeStorageSync(view({ listing_error: "request timed out" }), raw);
+    expect(failed.label).toBe("Listing error");
+    expect(failed.details).toContain("request timed out");
   });
 
   it("says whether a feedless destination was listed", () => {

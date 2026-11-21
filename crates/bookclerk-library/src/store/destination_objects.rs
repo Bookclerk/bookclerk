@@ -113,6 +113,13 @@ pub struct DestinationFeed {
     pub objects: u64,
     /// The last sequence the copy check read changes up to.
     pub checked_seq: i64,
+    /// Objects known when the listing in progress started, which its
+    /// removal guard is judged against; `None` between listings.
+    pub listing_base: Option<u64>,
+    /// The row revision this value was read at (0 before the first save);
+    /// [`LibraryStore::save_destination_feed`] refuses a save from an older
+    /// one.
+    pub revision: i64,
 }
 
 impl DestinationFeed {
@@ -134,6 +141,8 @@ impl DestinationFeed {
             listing_error: None,
             objects: 0,
             checked_seq: 0,
+            listing_base: None,
+            revision: 0,
         }
     }
 
@@ -177,6 +186,8 @@ impl DestinationFeed {
             listing_error: row.listing_error,
             objects: u64::try_from(row.objects).unwrap_or(0),
             checked_seq: row.checked_seq,
+            listing_base: row.listing_base.and_then(|base| u64::try_from(base).ok()),
+            revision: row.revision,
         })
     }
 }
@@ -281,53 +292,122 @@ impl LibraryStore {
             .collect())
     }
 
-    /// Writes `feed`, replacing the destination's row.
+    /// Writes `feed`, replacing the destination's row, and moves
+    /// `feed.revision` to the revision written.
+    ///
+    /// The write is a compare-and-swap on the revision `feed` was read at:
+    /// a first save inserts the row, and a later one updates it only while
+    /// nobody else saved since. A sync pass whose lease another node took
+    /// therefore fails at its next save instead of overwriting the new
+    /// holder's progress.
     ///
     /// # Errors
     ///
-    /// Returns an error when the write fails.
-    pub async fn save_destination_feed(&self, feed: &DestinationFeed) -> Result<()> {
-        let row = destination_feeds::ActiveModel {
-            destination: Set(feed.destination.clone()),
-            seq: Set(feed.seq),
-            feed_state: Set(feed.feed_state.as_str().to_owned()),
-            feed_cursor: Set(feed.feed_cursor.clone()),
-            feed_error: Set(feed.feed_error.clone()),
-            feed_checked_at: Set(feed.feed_checked_at.map(stored_time)),
-            listing_seq: Set(feed.listing_seq),
-            listing_cursor: Set(feed.listing_cursor.clone()),
-            listing_started_at: Set(feed.listing_started_at.map(stored_time)),
-            listed_at: Set(feed.listed_at.map(stored_time)),
-            next_listing_at: Set(feed.next_listing_at.map(stored_time)),
-            listing_error: Set(feed.listing_error.clone()),
-            objects: Set(stored_int(feed.objects)),
-            checked_seq: Set(feed.checked_seq),
-            updated_at: Set(stored_time(Utc::now())),
+    /// Returns [`LibraryError::Conflict`] when the row changed since
+    /// `feed` was read, or the error of a failed write.
+    pub async fn save_destination_feed(&self, feed: &mut DestinationFeed) -> Result<()> {
+        let next = feed.revision.saturating_add(1);
+        let now = stored_time(Utc::now());
+        let written = if feed.revision == 0 {
+            let row = destination_feeds::ActiveModel {
+                destination: Set(feed.destination.clone()),
+                seq: Set(feed.seq),
+                feed_state: Set(feed.feed_state.as_str().to_owned()),
+                feed_cursor: Set(feed.feed_cursor.clone()),
+                feed_error: Set(feed.feed_error.clone()),
+                feed_checked_at: Set(feed.feed_checked_at.map(stored_time)),
+                listing_seq: Set(feed.listing_seq),
+                listing_cursor: Set(feed.listing_cursor.clone()),
+                listing_started_at: Set(feed.listing_started_at.map(stored_time)),
+                listed_at: Set(feed.listed_at.map(stored_time)),
+                next_listing_at: Set(feed.next_listing_at.map(stored_time)),
+                listing_error: Set(feed.listing_error.clone()),
+                objects: Set(stored_int(feed.objects)),
+                checked_seq: Set(feed.checked_seq),
+                listing_base: Set(feed.listing_base.map(stored_int)),
+                revision: Set(next),
+                updated_at: Set(now),
+            };
+            destination_feeds::Entity::insert(row)
+                .on_conflict(
+                    OnConflict::column(destination_feeds::Column::Destination)
+                        .do_nothing()
+                        .to_owned(),
+                )
+                .exec_without_returning(self.db())
+                .await
+                .map_err(LibraryError::Orm)?
+        } else {
+            destination_feeds::Entity::update_many()
+                .col_expr(destination_feeds::Column::Seq, Expr::value(feed.seq))
+                .col_expr(
+                    destination_feeds::Column::FeedState,
+                    Expr::value(feed.feed_state.as_str()),
+                )
+                .col_expr(
+                    destination_feeds::Column::FeedCursor,
+                    Expr::value(feed.feed_cursor.clone()),
+                )
+                .col_expr(
+                    destination_feeds::Column::FeedError,
+                    Expr::value(feed.feed_error.clone()),
+                )
+                .col_expr(
+                    destination_feeds::Column::FeedCheckedAt,
+                    Expr::value(feed.feed_checked_at.map(stored_time)),
+                )
+                .col_expr(
+                    destination_feeds::Column::ListingSeq,
+                    Expr::value(feed.listing_seq),
+                )
+                .col_expr(
+                    destination_feeds::Column::ListingCursor,
+                    Expr::value(feed.listing_cursor.clone()),
+                )
+                .col_expr(
+                    destination_feeds::Column::ListingStartedAt,
+                    Expr::value(feed.listing_started_at.map(stored_time)),
+                )
+                .col_expr(
+                    destination_feeds::Column::ListedAt,
+                    Expr::value(feed.listed_at.map(stored_time)),
+                )
+                .col_expr(
+                    destination_feeds::Column::NextListingAt,
+                    Expr::value(feed.next_listing_at.map(stored_time)),
+                )
+                .col_expr(
+                    destination_feeds::Column::ListingError,
+                    Expr::value(feed.listing_error.clone()),
+                )
+                .col_expr(
+                    destination_feeds::Column::Objects,
+                    Expr::value(stored_int(feed.objects)),
+                )
+                .col_expr(
+                    destination_feeds::Column::CheckedSeq,
+                    Expr::value(feed.checked_seq),
+                )
+                .col_expr(
+                    destination_feeds::Column::ListingBase,
+                    Expr::value(feed.listing_base.map(stored_int)),
+                )
+                .col_expr(destination_feeds::Column::Revision, Expr::value(next))
+                .col_expr(destination_feeds::Column::UpdatedAt, Expr::value(now))
+                .filter(destination_feeds::Column::Destination.eq(feed.destination.as_str()))
+                .filter(destination_feeds::Column::Revision.eq(feed.revision))
+                .exec(self.db())
+                .await
+                .map_err(LibraryError::Orm)?
+                .rows_affected
         };
-        destination_feeds::Entity::insert(row)
-            .on_conflict(
-                OnConflict::column(destination_feeds::Column::Destination)
-                    .update_columns([
-                        destination_feeds::Column::Seq,
-                        destination_feeds::Column::FeedState,
-                        destination_feeds::Column::FeedCursor,
-                        destination_feeds::Column::FeedError,
-                        destination_feeds::Column::FeedCheckedAt,
-                        destination_feeds::Column::ListingSeq,
-                        destination_feeds::Column::ListingCursor,
-                        destination_feeds::Column::ListingStartedAt,
-                        destination_feeds::Column::ListedAt,
-                        destination_feeds::Column::NextListingAt,
-                        destination_feeds::Column::ListingError,
-                        destination_feeds::Column::Objects,
-                        destination_feeds::Column::CheckedSeq,
-                        destination_feeds::Column::UpdatedAt,
-                    ])
-                    .to_owned(),
-            )
-            .exec_without_returning(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        if written == 0 {
+            return Err(LibraryError::Conflict(format!(
+                "destination {} sync state changed since it was read",
+                feed.destination
+            )));
+        }
+        feed.revision = next;
         Ok(())
     }
 
@@ -353,7 +433,7 @@ impl LibraryStore {
         now: DateTime<Utc>,
     ) -> Result<u64> {
         let mut changed_count = 0;
-        for chunk in objects.chunks(self.object_keys_per_statement(1)) {
+        for chunk in objects.chunks(self.object_keys_per_statement(2)) {
             let known: HashMap<String, destination_objects::Model> =
                 destination_objects::Entity::find()
                     .filter(destination_objects::Column::Destination.eq(destination))
@@ -448,7 +528,7 @@ impl LibraryStore {
         now: DateTime<Utc>,
     ) -> Result<u64> {
         let mut removed = 0;
-        for chunk in keys.chunks(self.object_keys_per_statement(4)) {
+        for chunk in keys.chunks(self.object_keys_per_statement(6)) {
             let result = destination_objects::Entity::update_many()
                 .col_expr(destination_objects::Column::Removed, Expr::value(1))
                 .col_expr(destination_objects::Column::ChangedSeq, Expr::value(seq))
@@ -673,37 +753,42 @@ impl LibraryStore {
                         lost.restoring += 1;
                     }
                     (None, MissingFileAction::MarkMissing) => {
+                        // The edition is released before its copy turns
+                        // missing: if either write fails, the copy is still
+                        // stored and the next pass retries both.
+                        if self.release_unstored_edition(&edition, destination).await? {
+                            lost.not_acquired += 1;
+                        }
                         row.state = Set(CopyState::Missing.as_str().to_owned());
                         row.next_attempt_at = Set(None);
                         lost.missing += 1;
                     }
                 }
-                let marked_missing = row.state.as_ref() == CopyState::Missing.as_str();
                 edition_copies::Entity::update(row)
                     .exec(self.db())
                     .await
                     .map_err(LibraryError::Orm)?;
-                if marked_missing && self.release_unstored_edition(&edition).await? {
-                    lost.not_acquired += 1;
-                }
             }
         }
         Ok(lost)
     }
 
-    /// Marks `edition_id` not acquired when no destination holds a stored
-    /// copy of it any more: the title whose acquire recorded it (its
+    /// Marks `edition_id` not acquired when no destination but `losing`
+    /// holds a stored copy of it: the title whose acquire recorded it (its
     /// `edition_acquisitions.holding_id`) turns not acquired.
     ///
     /// # Returns
     ///
     /// True when the edition was acquired and now is not.
-    async fn release_unstored_edition(&self, edition_id: &str) -> Result<bool> {
+    async fn release_unstored_edition(&self, edition_id: &str, losing: &str) -> Result<bool> {
         let edition = edition_id.to_owned();
         let copies = self
             .copies_of_editions(std::slice::from_ref(&edition))
             .await?;
-        if copies.iter().any(|copy| copy.state == CopyState::Stored) {
+        if copies
+            .iter()
+            .any(|copy| copy.state == CopyState::Stored && copy.destination != losing)
+        {
             return Ok(false);
         }
         let Some(acquisition) = self.edition_acquisition(edition_id).await? else {
@@ -728,6 +813,49 @@ impl LibraryStore {
         )
         .await?;
         Ok(true)
+    }
+
+    /// The primary audio keys of `destination`'s stored copies that have no
+    /// present object row there: files a finished listing did not see
+    /// (including ones that were gone before the destination was first
+    /// listed, which leave no tombstone), in key order.
+    ///
+    /// # Returns
+    ///
+    /// The missing keys, and how many distinct keys the destination's stored
+    /// copies name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    pub async fn unlisted_copy_keys(&self, destination: &str) -> Result<(Vec<String>, u64)> {
+        let mut keys: Vec<String> = edition_copies::Entity::find()
+            .filter(edition_copies::Column::Destination.eq(destination))
+            .filter(edition_copies::Column::State.eq(CopyState::Stored.as_str()))
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .filter_map(|copy| copy.storage_key)
+            .collect();
+        keys.sort();
+        keys.dedup();
+        let stored = u64::try_from(keys.len()).unwrap_or(u64::MAX);
+        let mut missing = Vec::new();
+        for chunk in keys.chunks(self.object_keys_per_statement(2)) {
+            let present: std::collections::HashSet<String> = destination_objects::Entity::find()
+                .filter(destination_objects::Column::Destination.eq(destination))
+                .filter(destination_objects::Column::Removed.eq(0))
+                .filter(destination_objects::Column::ObjectKey.is_in(chunk.iter().cloned()))
+                .all(self.db())
+                .await
+                .map_err(LibraryError::Orm)?
+                .into_iter()
+                .map(|row| row.object_key)
+                .collect();
+            missing.extend(chunk.iter().filter(|key| !present.contains(*key)).cloned());
+        }
+        Ok((missing, stored))
     }
 
     /// Another audio file of `edition_id` recorded at `destination` (not

@@ -43,6 +43,13 @@ pub struct Model {
     pub objects: i64,
     /// The last sequence the copy check has read changes up to.
     pub checked_seq: i64,
+    /// Objects known when the listing in progress started, which its
+    /// removal guard is judged against; `None` between listings.
+    pub listing_base: Option<i64>,
+    /// Write count of this row: each save names the revision it read and
+    /// fails when another writer saved since (a sync pass whose lease
+    /// another node took).
+    pub revision: i64,
     /// RFC 3339 time the row was last written.
     pub updated_at: String,
 }

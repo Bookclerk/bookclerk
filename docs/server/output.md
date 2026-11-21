@@ -505,7 +505,7 @@ what happens:
 
 | Value | What happens |
 | --- | --- |
-| `mark_missing` (default) | The copy is marked **missing** and nothing writes it again on its own. While another destination still holds the book, it stays downloaded there. Once no destination holds it, the book shows as not downloaded, so a member can ask for it again |
+| `mark_missing` (default) | The copy is marked **missing** and nothing writes it again on its own. While another destination still holds the book, it stays downloaded there. Once no destination holds it, the book shows as not downloaded, so a member can ask for it again. An acquire of the whole library (or with `library.auto_acquire` on) leaves it out; an acquire of that title, or a forced one, gets it again |
 | `restore` | The copy turns **pending**, and the background retry writes it again (see [Several destinations](#several-destinations)) |
 
 ```sh
@@ -518,15 +518,17 @@ acquire of the title (`bookclerk library acquire --force`), like a failed
 copy.
 
 > [!NOTE]
-> A listing that misses at least a fifth of the files Bookclerk knew of
-> (and more than 10) more likely failed partway, with a wrong prefix, a
-> missing permission or an unmounted disk, than saw the files really go.
-> Bookclerk keeps those files as they were and does not rewrite them, and
-> **Settings → Plugins** shows **Listing held back** on the destination.
+> A listing that misses more than a fifth of the files Bookclerk knew of
+> before it started (and more than 10), or more than a fifth of the
+> books it has stored there, more likely failed partway, with a wrong
+> prefix, a missing permission or an unmounted disk, than saw the files
+> really go. Bookclerk keeps those files and copies as they were, and
+> **Settings → Plugins** shows **Listing error** on the destination, with
+> the reason in its tooltip. A listing that fails outright shows the same.
 > Fix the cause, and the next listing applies what it finds.
 
 **Settings → Plugins** shows each destination's state beside its name:
-**Feed healthy**, **Feed gap**, **Feed failing**, **Listed** or **Not
+**Feed healthy**, **Feed gap**, **Feed failing**, **Listing error**, **Listed** or **Not
 listed yet**. Hover over it for the number of files, the last and next
 listing, and any error. The same fields are the instance's
 `storage_sync` in the web API.

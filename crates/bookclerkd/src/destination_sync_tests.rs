@@ -72,7 +72,7 @@ async fn copy_state(store: &LibraryStore, edition: &str, destination: &str) -> C
 async fn make_listing_due(store: &LibraryStore, destination: &str) {
     let mut feed = store.destination_feed(destination).await.unwrap().unwrap();
     feed.next_listing_at = Some(Utc::now() - chrono::Duration::seconds(1));
-    store.save_destination_feed(&feed).await.unwrap();
+    store.save_destination_feed(&mut feed).await.unwrap();
 }
 
 /// Without a change feed: the first pass lists everything, a pass before
@@ -222,6 +222,8 @@ struct ScriptedFeed {
     pages: Mutex<VecDeque<bookclerk_storage::Result<ChangeFeedPage>>>,
     /// Cursors `changes` was called with.
     cursors: Mutex<Vec<Option<String>>>,
+    /// When true, probing keys (`head_many`) fails.
+    fail_probes: bool,
 }
 
 impl ScriptedFeed {
@@ -231,6 +233,7 @@ impl ScriptedFeed {
             inner: LocalFsBackend::new(root.to_path_buf()).unwrap(),
             pages: Mutex::new(pages.into()),
             cursors: Mutex::new(Vec::new()),
+            fail_probes: false,
         }
     }
 }
@@ -257,7 +260,18 @@ impl StorageBackend for ScriptedFeed {
             inner: self.inner.clone(),
             pages: Mutex::new(VecDeque::new()),
             cursors: Mutex::new(Vec::new()),
+            fail_probes: self.fail_probes,
         })
+    }
+
+    async fn head_many(
+        &self,
+        keys: &[String],
+    ) -> bookclerk_storage::Result<Vec<Option<bookclerk_storage::ObjectProbe>>> {
+        if self.fail_probes {
+            return Err(StorageError::Other(anyhow::anyhow!("probe refused")));
+        }
+        self.inner.head_many(keys).await
     }
 
     fn capabilities(&self) -> StorageCapabilities {
@@ -428,4 +442,175 @@ async fn a_healthy_feed_reports_changes_and_a_gap_or_failure_lists_at_once() {
         .as_deref()
         .is_some_and(|error| error.contains("queue unreachable")));
     assert_eq!(feed.feed_cursor.as_deref(), Some("c3"), "cursor kept");
+}
+
+/// An upserted object's change for a feed page.
+fn upserted(key: &str) -> ObjectChange {
+    ObjectChange {
+        key: key.into(),
+        kind: ObjectChangeKind::Upserted,
+        info: Some(ObjectInfo {
+            key: key.into(),
+            size: 5,
+            signature: Some("s".into()),
+            ..ObjectInfo::default()
+        }),
+    }
+}
+
+/// A removed object's change for a feed page.
+fn removed(key: &str) -> ObjectChange {
+    ObjectChange {
+        key: key.into(),
+        kind: ObjectChangeKind::Removed,
+        info: None,
+    }
+}
+
+/// A key a page reports twice ends as its last change: upserted then
+/// removed is gone, removed then upserted is there.
+#[tokio::test]
+async fn a_key_reported_twice_in_a_page_ends_as_its_last_change() {
+    let store = test_store().await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = ScriptedFeed::new(
+        dir.path(),
+        vec![
+            Ok(page(Vec::new(), "c1", true)),
+            Ok(page(
+                vec![
+                    upserted("A/Gone.m4b"),
+                    removed("A/Gone.m4b"),
+                    removed("B/Back.m4b"),
+                    upserted("B/Back.m4b"),
+                ],
+                "c2",
+                true,
+            )),
+        ],
+    );
+    let missing = MissingFileAction::Restore;
+    sync_destination(&store, "s3", &backend, missing, None)
+        .await
+        .unwrap();
+    sync_destination(&store, "s3", &backend, missing, None)
+        .await
+        .unwrap();
+    let changes = store.changed_objects("s3", (0, None), 10).await.unwrap();
+    let state = |key: &str| {
+        changes
+            .iter()
+            .find(|change| change.key == key)
+            .map(|change| change.removed)
+    };
+    assert_eq!(state("B/Back.m4b"), Some(false), "{changes:?}");
+    // Never seen before and gone at the end: nothing to record.
+    assert_eq!(state("A/Gone.m4b"), None, "{changes:?}");
+}
+
+/// A page whose keys cannot be probed turns the feed failing, keeps its
+/// cursor so the page is read again, and lets the listing run.
+#[tokio::test]
+async fn a_page_that_cannot_be_probed_fails_the_feed_and_lists() {
+    let store = test_store().await;
+    let dir = tempfile::tempdir().unwrap();
+    let changed = ObjectChange {
+        key: "A/Test.m4b".into(),
+        kind: ObjectChangeKind::Changed,
+        info: None,
+    };
+    let mut backend = ScriptedFeed::new(
+        dir.path(),
+        vec![
+            Ok(page(Vec::new(), "c1", true)),
+            Ok(page(vec![changed], "c2", true)),
+        ],
+    );
+    let missing = MissingFileAction::Restore;
+    sync_destination(&store, "s3", &backend, missing, None)
+        .await
+        .unwrap();
+    backend.fail_probes = true;
+    let report = sync_destination(&store, "s3", &backend, missing, None)
+        .await
+        .unwrap();
+    assert!(report.listing_finished, "{report:?}");
+    let feed = store.destination_feed("s3").await.unwrap().unwrap();
+    assert_eq!(feed.feed_state, FeedState::Failing);
+    assert!(feed
+        .feed_error
+        .as_deref()
+        .is_some_and(|error| error.contains("probe refused")));
+    assert_eq!(feed.feed_cursor.as_deref(), Some("c1"), "page read again");
+}
+
+/// A stored copy whose file was gone before the destination was first
+/// listed leaves no tombstone, but the first listing still finds it.
+#[tokio::test]
+async fn the_first_listing_finds_a_copy_whose_file_was_already_gone() {
+    let store = test_store().await;
+    let dir = tempfile::tempdir().unwrap();
+    let local = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+    put(&local, "B/Other.m4b").await;
+    let edition = stored_edition(&store, "local", "A/Gone.m4b").await;
+    let report = sync_destination(&store, "local", &local, MissingFileAction::default(), None)
+        .await
+        .unwrap();
+    assert!(report.listing_finished);
+    assert_eq!(report.lost_copies, 1, "{report:?}");
+    assert_eq!(
+        copy_state(&store, &edition, "local").await,
+        CopyState::Missing
+    );
+}
+
+/// The removal guard counts what was known before the listing, so files
+/// the listing adds do not dilute the share it missed.
+#[tokio::test]
+async fn the_removal_guard_ignores_files_the_listing_adds() {
+    let store = test_store().await;
+    let dir = tempfile::tempdir().unwrap();
+    let local = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+    for i in 0..20 {
+        put(&local, &format!("A/{i:02}.m4b")).await;
+    }
+    let missing = MissingFileAction::Restore;
+    sync_destination(&store, "local", &local, missing, None)
+        .await
+        .unwrap();
+    for i in 0..15 {
+        local.delete(&format!("A/{i:02}.m4b")).await.unwrap();
+    }
+    for i in 0..100 {
+        put(&local, &format!("B/{i:03}.m4b")).await;
+    }
+    make_listing_due(&store, "local").await;
+    let report = sync_destination(&store, "local", &local, missing, None)
+        .await
+        .unwrap();
+    assert_eq!(report.held_back, 15, "{report:?}");
+}
+
+/// A pass whose feed row another node saved since it read it stops with a
+/// conflict instead of overwriting that node's progress.
+#[tokio::test]
+async fn a_stale_feed_row_is_not_saved_over_a_newer_one() {
+    let store = test_store().await;
+    let mut first = DestinationFeed::new("local");
+    store.save_destination_feed(&mut first).await.unwrap();
+    let mut stale = store.destination_feed("local").await.unwrap().unwrap();
+    let mut fresh = stale.clone();
+    fresh.listing_cursor = Some("new holder".into());
+    store.save_destination_feed(&mut fresh).await.unwrap();
+    stale.listing_cursor = Some("old holder".into());
+    let refused = store.save_destination_feed(&mut stale).await;
+    assert!(
+        matches!(refused, Err(bookclerk_library::LibraryError::Conflict(_))),
+        "{refused:?}"
+    );
+    let saved = store.destination_feed("local").await.unwrap().unwrap();
+    assert_eq!(saved.listing_cursor.as_deref(), Some("new holder"));
+    // A second first save (two nodes racing to create the row) conflicts too.
+    let mut racing = DestinationFeed::new("local");
+    assert!(store.save_destination_feed(&mut racing).await.is_err());
 }

@@ -152,9 +152,9 @@ async fn listings_and_feeds_record_what_changed() {
         feed.feed_cursor = Some("c".into());
         feed.listed_at = Some(store_second(now));
         feed.objects = 250;
-        store.save_destination_feed(&feed).await.unwrap();
+        store.save_destination_feed(&mut feed).await.unwrap();
         feed.checked_seq = 4;
-        store.save_destination_feed(&feed).await.unwrap();
+        store.save_destination_feed(&mut feed).await.unwrap();
         assert_eq!(store.destination_feed("d").await.unwrap(), Some(feed));
         assert_eq!(store.destination_feeds().await.unwrap().len(), 1);
     }
