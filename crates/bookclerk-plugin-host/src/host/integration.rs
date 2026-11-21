@@ -675,6 +675,41 @@ impl Integration for ExternalIntegration {
             .await?)
     }
 
+    fn supports_notifier(&self) -> bool {
+        self.session.has_entrypoint(crate::Entrypoint::Notifier)
+    }
+
+    async fn notify_send(
+        &self,
+        params: bookclerk_plugin_abi::NotifySendParams,
+    ) -> bookclerk_integrations::Result<
+        std::result::Result<bookclerk_plugin_abi::NotifySent, bookclerk_plugin_abi::PluginError>,
+    > {
+        // The guest's own error is the answer the send job classifies, so
+        // it travels inside a successful call.
+        Ok(self
+            .session
+            .notifier(move |notifier| async move { Ok(notifier.send(params).await) })
+            .await?)
+    }
+
+    async fn notify_validate_destination(
+        &self,
+        params: bookclerk_plugin_abi::NotifyValidateParams,
+    ) -> bookclerk_integrations::Result<
+        std::result::Result<
+            bookclerk_plugin_abi::NotifyValidated,
+            bookclerk_plugin_abi::PluginError,
+        >,
+    > {
+        Ok(self
+            .session
+            .notifier(
+                move |notifier| async move { Ok(notifier.validate_destination(params).await) },
+            )
+            .await?)
+    }
+
     async fn metadata_lookup(
         &self,
         params: MetadataLookupParams,

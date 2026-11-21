@@ -189,6 +189,8 @@ struct Identity {
     supports_metadata: bool,
     /// Whether the guest exports `covers`.
     supports_covers: bool,
+    /// Whether the guest exports `notifier`.
+    supports_notifier: bool,
     /// Whether the guest offers credential login.
     supports_credential_login: bool,
     /// Whether the guest scans a remote library.
@@ -212,6 +214,7 @@ impl Identity {
             cron_schedules: guest.cron_schedules(),
             supports_metadata: guest.supports_metadata(),
             supports_covers: guest.supports_covers(),
+            supports_notifier: guest.supports_notifier(),
             supports_credential_login: guest.supports_credential_login(),
             supports_library_scan: guest.supports_library_scan(),
             supports_listening_sync: guest.supports_listening_sync(),
@@ -568,6 +571,30 @@ impl Integration for OnDemandIntegration {
     ) -> bookclerk_integrations::Result<Vec<FetchedCover>> {
         let (guest, _busy) = self.awake().await?;
         guest.fetch_covers(params).await
+    }
+
+    fn supports_notifier(&self) -> bool {
+        self.identity.supports_notifier
+    }
+
+    async fn notify_send(
+        &self,
+        params: bookclerk_plugin_abi::NotifySendParams,
+    ) -> bookclerk_integrations::Result<
+        Result<bookclerk_plugin_abi::NotifySent, bookclerk_plugin_abi::PluginError>,
+    > {
+        let (guest, _busy) = self.awake().await?;
+        guest.notify_send(params).await
+    }
+
+    async fn notify_validate_destination(
+        &self,
+        params: bookclerk_plugin_abi::NotifyValidateParams,
+    ) -> bookclerk_integrations::Result<
+        Result<bookclerk_plugin_abi::NotifyValidated, bookclerk_plugin_abi::PluginError>,
+    > {
+        let (guest, _busy) = self.awake().await?;
+        guest.notify_validate_destination(params).await
     }
 
     async fn diagnose(&self) -> bookclerk_integrations::Result<Vec<String>> {

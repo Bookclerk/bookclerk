@@ -36,6 +36,7 @@ pub mod migrations;
 /// Public library DTOs and status enums (`BookRecord`, `AcquireStatus`, prefs) re-exported from this crate.
 mod models;
 mod named_atomic;
+pub mod notifications;
 pub mod operator_token;
 pub mod pacing;
 pub mod password;
@@ -232,6 +233,7 @@ pub use store::{
     ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, COPY_RETRY_BASE_DELAY,
     COPY_RETRY_MAX_DELAY, HOLDING_REMOVED, MAX_COPY_ATTEMPTS, MAX_QUEUE_REASONS,
 };
+pub use store::{NotifyCursor, NotifyQueueLimits, MAX_NOTIFY_PAGE};
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,
     parse_claim_redeem_nonce, CLAIM_REDEEM_NONCE_HEX_LEN,

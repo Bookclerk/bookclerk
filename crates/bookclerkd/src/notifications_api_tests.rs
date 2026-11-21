@@ -1,0 +1,485 @@
+//! Tests of the notifications routes, driven through the router.
+
+use axum::http::{header, StatusCode};
+use bookclerk_library::notifications::{DestinationKind, NewDestination, NewNotification};
+use bookclerk_library::{LibraryStore, NotifyQueueLimits};
+use bookclerk_plugin_abi::{NotificationAlertAction, NotificationAudience, NotificationSeverity};
+
+/// The operator token of these tests.
+const TOKEN: &str = "op-token-notify";
+
+/// Room for every job these tests enqueue.
+const LIMITS: NotifyQueueLimits = NotifyQueueLimits {
+    max_pending: 1_000,
+    max_attempts: 3,
+};
+
+/// Sends `method uri` with `body`, as the operator or with `cookie`.
+async fn call(
+    app: &axum::Router,
+    cookie: Option<&str>,
+    method: &str,
+    uri: &str,
+    body: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let mut request = axum::http::Request::builder().method(method).uri(uri);
+    request = match cookie {
+        Some(cookie) => request.header(header::COOKIE, cookie),
+        None => request.header(header::AUTHORIZATION, format!("Bearer {TOKEN}")),
+    };
+    let body = match body {
+        Some(body) => {
+            request = request.header(header::CONTENT_TYPE, "application/json");
+            axum::body::Body::from(body.to_string())
+        }
+        None => axum::body::Body::empty(),
+    };
+    let response = app
+        .clone()
+        .oneshot(request.body(body).expect("request"))
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+/// A channel on a notifier instance, made directly in the library (no
+/// notifier plugin is installed in the harness).
+async fn channel(library: &LibraryStore, label: &str) -> String {
+    library
+        .create_notify_destination(&NewDestination {
+            plugin_instance_id: "slack-1".into(),
+            kind: DestinationKind::Channel,
+            user_id: None,
+            label: label.into(),
+            address_json: String::new(),
+        })
+        .await
+        .expect("channel")
+        .id
+}
+
+/// The user behind the harness identity `external`.
+async fn user_of(library: &LibraryStore, external: &str) -> i64 {
+    library
+        .get_portal_identity("test", external)
+        .await
+        .expect("identity read")
+        .and_then(|identity| identity.user_id)
+        .expect("a seeded user")
+}
+
+/// A patron notification for `patron`.
+fn for_patron(patron: i64, title: &str) -> NewNotification {
+    NewNotification {
+        notification_type: "discover:new_book".into(),
+        audience: NotificationAudience::Patron,
+        severity: NotificationSeverity::Info,
+        title: title.into(),
+        text: "Out now.".into(),
+        link_path: Some("/works/1".into()),
+        fields: Vec::new(),
+        group_key: None,
+        alert_action: NotificationAlertAction::None,
+        alert_key: None,
+        source: "discover".into(),
+        patron: Some(patron),
+    }
+}
+
+#[tokio::test]
+async fn only_an_administrator_reaches_the_routing_routes() {
+    let (_state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
+    let member = crate::auth::tests::portal_cookie_for(&library, "test", "member-ext").await;
+    let admin = crate::auth::tests::portal_cookie_for(&library, "test", "administrator-ext").await;
+    for uri in [
+        "/api/notifications/catalog",
+        "/api/notifications/channels",
+        "/api/notifications/routes",
+        "/api/notifications/offers",
+        "/api/notifications/deliveries",
+    ] {
+        let (status, _) = call(&app, Some(&member), "GET", uri, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+        let (status, _) = call(&app, Some(&admin), "GET", uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+    }
+    let (status, catalog) = call(&app, None, "GET", "/api/notifications/catalog", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(catalog["types"][0]["id"], "test");
+    assert_eq!(catalog["types"][0]["audience"], "operational");
+}
+
+#[tokio::test]
+async fn an_administrator_routes_tests_and_reads_the_log() {
+    let (_state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
+    let ops = channel(&library, "Ops").await;
+
+    // No notifier is installed, so a channel cannot be made over the API.
+    let (status, json) = call(
+        &app,
+        None,
+        "POST",
+        "/api/notifications/channels",
+        Some(r#"{"plugin_instance_id":"slack-1","label":"Ops"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+
+    // Routes name known types and existing channels with a known severity.
+    let body = serde_json::json!({"routes": [{"destination_id": ops, "min_severity": "warning"}]})
+        .to_string();
+    let (status, json) = call(
+        &app,
+        None,
+        "PUT",
+        "/api/notifications/routes/nope:unknown",
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    let (status, _) = call(
+        &app,
+        None,
+        "PUT",
+        "/api/notifications/routes/test",
+        Some(&body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, routes) = call(&app, None, "GET", "/api/notifications/routes", None).await;
+    assert_eq!(routes["routes"]["test"][0]["min_severity"], "warning");
+    let bad_severity =
+        serde_json::json!({"routes": [{"destination_id": ops, "min_severity": "loud"}]})
+            .to_string();
+    let (status, _) = call(
+        &app,
+        None,
+        "PUT",
+        "/api/notifications/routes/test",
+        Some(&bad_severity),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let missing = r#"{"routes": [{"destination_id": "missing", "min_severity": "info"}]}"#;
+    let (status, _) = call(
+        &app,
+        None,
+        "PUT",
+        "/api/notifications/routes/test",
+        Some(missing),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // `test` is operational: patrons cannot be offered it.
+    let (status, _) = call(
+        &app,
+        None,
+        "PUT",
+        "/api/notifications/offers/test",
+        Some(r#"{"offers": []}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A test goes to the one channel and lands in the log.
+    for _ in 0..3 {
+        let (status, sent) = call(
+            &app,
+            None,
+            "POST",
+            &format!("/api/notifications/channels/{ops}/test"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{sent}");
+    }
+    let (status, page) = call(
+        &app,
+        None,
+        "GET",
+        &format!("/api/notifications/deliveries?destination_id={ops}&limit=2"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["deliveries"].as_array().unwrap().len(), 2);
+    assert_eq!(page["deliveries"][0]["state"], "pending");
+    let cursor = page["next_cursor"].as_str().expect("a next page");
+    let (_, rest) = call(
+        &app,
+        None,
+        "GET",
+        &format!("/api/notifications/deliveries?destination_id={ops}&limit=2&cursor={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(rest["deliveries"].as_array().unwrap().len(), 1);
+    let (status, _) = call(
+        &app,
+        None,
+        "GET",
+        "/api/notifications/deliveries?cursor=not-a-cursor",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Rename, resume and delete; a personal destination is not a channel.
+    let (status, renamed) = call(
+        &app,
+        None,
+        "PATCH",
+        &format!("/api/notifications/channels/{ops}"),
+        Some(r#"{"label":"Ops room"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(renamed["label"], "Ops room");
+    let (status, _) = call(
+        &app,
+        None,
+        "POST",
+        &format!("/api/notifications/channels/{ops}/resume"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        None,
+        "DELETE",
+        &format!("/api/notifications/channels/{ops}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, log) = call(&app, None, "GET", "/api/notifications/deliveries", None).await;
+    assert!(log["deliveries"].as_array().unwrap().is_empty());
+    let (status, _) = call(
+        &app,
+        None,
+        "DELETE",
+        &format!("/api/notifications/channels/{ops}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_patron_reads_their_inbox_and_keeps_to_their_own_destinations() {
+    let (_state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
+    let member = crate::auth::tests::portal_cookie_for(&library, "test", "member-ext").await;
+    let admin = crate::auth::tests::portal_cookie_for(&library, "test", "administrator-ext").await;
+    let member_id = user_of(&library, "member-ext").await;
+    let admin_id = user_of(&library, "administrator-ext").await;
+    for title in ["One", "Two"] {
+        library
+            .route_notification(&for_patron(member_id, title), LIMITS)
+            .await
+            .expect("routed");
+    }
+    library
+        .route_notification(&for_patron(admin_id, "Theirs"), LIMITS)
+        .await
+        .expect("routed");
+
+    let (status, inbox) = call(
+        &app,
+        Some(&member),
+        "GET",
+        "/api/me/notifications/inbox",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(inbox["unread"], 2);
+    let entries = inbox["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|e| e["title"] != "Theirs"));
+    let first = entries[0]["id"].as_str().unwrap().to_string();
+
+    // Another patron's notification is not in this inbox.
+    let (_, theirs) = call(
+        &app,
+        Some(&admin),
+        "GET",
+        "/api/me/notifications/inbox",
+        None,
+    )
+    .await;
+    let theirs_id = theirs["entries"][0]["id"].as_str().unwrap().to_string();
+    let (status, _) = call(
+        &app,
+        Some(&member),
+        "POST",
+        "/api/me/notifications/inbox/read",
+        Some(&serde_json::json!({"notification_id": theirs_id}).to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, marked) = call(
+        &app,
+        Some(&member),
+        "POST",
+        "/api/me/notifications/inbox/read",
+        Some(&serde_json::json!({"notification_id": first}).to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(marked["marked"], 1);
+    let (_, marked) = call(
+        &app,
+        Some(&member),
+        "POST",
+        "/api/me/notifications/inbox/read",
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(marked["marked"], 1);
+
+    // The operator token alone has no inbox.
+    let (status, _) = call(&app, None, "GET", "/api/me/notifications/inbox", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Someone else's destination answers like a missing one.
+    let theirs = library
+        .create_notify_destination(&NewDestination {
+            plugin_instance_id: "telegram-1".into(),
+            kind: DestinationKind::Personal,
+            user_id: Some(admin_id),
+            label: "Phone".into(),
+            address_json: r#"{"chat_id":"1"}"#.into(),
+        })
+        .await
+        .expect("destination")
+        .id;
+    let (status, _) = call(
+        &app,
+        Some(&member),
+        "DELETE",
+        &format!("/api/me/notifications/destinations/{theirs}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &app,
+        Some(&member),
+        "POST",
+        &format!("/api/me/notifications/destinations/{theirs}/resume"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, resumed) = call(
+        &app,
+        Some(&admin),
+        "POST",
+        &format!("/api/me/notifications/destinations/{theirs}/resume"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resumed["id"], theirs.as_str());
+    let (status, _) = call(
+        &app,
+        Some(&member),
+        "PUT",
+        "/api/me/notifications/choices/discover:new_book",
+        Some(&serde_json::json!({"enabled": true, "destination_ids": [theirs]}).to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &app,
+        Some(&admin),
+        "DELETE",
+        &format!("/api/me/notifications/destinations/{theirs}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // A choice and its removal; settings list no offered types yet.
+    let (status, _) = call(
+        &app,
+        Some(&member),
+        "PUT",
+        "/api/me/notifications/choices/discover:new_book",
+        Some(r#"{"enabled": false}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, settings) = call(&app, Some(&member), "GET", "/api/me/notifications", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(settings["types"].as_array().unwrap().is_empty());
+    let (status, _) = call(
+        &app,
+        Some(&member),
+        "DELETE",
+        "/api/me/notifications/choices/discover:new_book",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // No notifier is installed to take an address.
+    let (status, _) = call(
+        &app,
+        Some(&member),
+        "POST",
+        "/api/me/notifications/destinations",
+        Some(r#"{"plugin_instance_id":"telegram-1","address":{"chat_id":"1"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn a_personal_address_must_fit_the_declared_fields() {
+    use bookclerk_plugin_abi::notifications::AddressFieldRule;
+    let rules = [
+        AddressFieldRule {
+            key: "chat_id".into(),
+            required: true,
+        },
+        AddressFieldRule {
+            key: "topic".into(),
+            required: false,
+        },
+    ];
+    let address = |json: serde_json::Value| {
+        serde_json::from_value::<std::collections::BTreeMap<String, String>>(json)
+    };
+    let accepted = address(serde_json::json!({"chat_id": "1"})).expect("strings");
+    assert!(super::personal_address(&accepted, &rules).is_ok());
+    for refused in [
+        serde_json::json!({}),
+        serde_json::json!({"chat_id": "1", "other": "x"}),
+    ] {
+        let parsed = address(refused.clone()).expect("strings");
+        assert!(
+            super::personal_address(&parsed, &rules).is_err(),
+            "{refused}"
+        );
+    }
+    // Values that are not strings never reach the check: the body refuses them.
+    for refused in [
+        serde_json::json!({"chat_id": 1}),
+        serde_json::json!({"chat_id": {"nested": "x"}}),
+    ] {
+        assert!(address(refused.clone()).is_err(), "{refused}");
+    }
+}

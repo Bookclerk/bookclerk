@@ -1277,6 +1277,37 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Member to the store accounts linked to them.
         .routes(routes!(trigger_scan))
         .routes(routes!(trigger_acquire))
+        // Notifications: what is sent where, and the delivery log. The
+        // handlers admit only the operator, an Owner or an Administrator.
+        .routes(routes!(crate::notifications_api::get_catalog))
+        .routes(routes!(
+            crate::notifications_api::list_channels,
+            crate::notifications_api::post_channel
+        ))
+        .routes(routes!(
+            crate::notifications_api::patch_channel,
+            crate::notifications_api::delete_channel
+        ))
+        .routes(routes!(crate::notifications_api::post_channel_resume))
+        .routes(routes!(crate::notifications_api::post_channel_test))
+        .routes(routes!(crate::notifications_api::get_routes))
+        .routes(routes!(crate::notifications_api::put_routes))
+        .routes(routes!(crate::notifications_api::get_offers))
+        .routes(routes!(crate::notifications_api::put_offers))
+        .routes(routes!(crate::notifications_api::list_deliveries))
+        // A user's own notification settings and inbox.
+        .routes(routes!(crate::notifications_api::get_my_settings))
+        .routes(routes!(
+            crate::notifications_api::put_my_choice,
+            crate::notifications_api::delete_my_choice
+        ))
+        .routes(routes!(crate::notifications_api::post_my_destination))
+        .routes(routes!(crate::notifications_api::delete_my_destination))
+        .routes(routes!(
+            crate::notifications_api::post_my_destination_resume
+        ))
+        .routes(routes!(crate::notifications_api::get_my_inbox))
+        .routes(routes!(crate::notifications_api::post_my_inbox_read))
         // How listings resolve: the handlers admit only the operator, an
         // Owner or an Administrator.
         .routes(routes!(

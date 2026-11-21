@@ -524,3 +524,26 @@ fn fuzz_corpus_connections_request_replays() {
     assert!(accepted > 0, "no connections_request seed was accepted");
     assert!(refused > 0, "every connections_request seed was accepted");
 }
+
+/// The `notify_cursor` oracle, shared with the fuzz target: a page cursor
+/// is accepted exactly when it is short unpadded base64url of a JSON object
+/// with exactly `created_at` and `id` as strings of at most 128 bytes.
+#[path = "../../../fuzz/oracles/notify_cursor.rs"]
+mod notify_cursor_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_notify_cursor_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("notify_cursor") {
+        if notify_cursor_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no notify_cursor seed was accepted");
+    assert!(refused > 0, "every notify_cursor seed was accepted");
+}

@@ -563,3 +563,10 @@ path = "fuzz_targets/title_meta_fill.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "notify_cursor"
+path = "fuzz_targets/notify_cursor.rs"
+test = false
+doc = false
+bench = false

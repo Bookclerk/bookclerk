@@ -1624,10 +1624,9 @@ export class Notifier extends NotifierEntrypoint<Env> {
 }
 ```
 
-> [!NOTE]
-> The host does not route notifications yet: notifiers answer health
-> probes only. The router, the `notify.send` jobs, the delivery log and
-> the inbox come next, followed by the first providers.
+The host calls `send` from one `notify_send` job per delivery and
+records the answer in the delivery log; see
+[Notifications](../server/notifications.md) for retries and pausing.
 
 ### Raising notifications
 
@@ -1661,9 +1660,9 @@ undeclared type or a malformed raise, `forbidden` for a patron outside
 the scope, and `rate_limited` past the per-instance raise budget.
 Python authors call `env.NOTIFY.raise_(...)` with snake-case keywords.
 Native guests receive the binding as `Bindings.notify`.
-
-> [!NOTE]
-> The host does not hand out `NOTIFY` yet; it comes with the router.
+The binding is handed to the instance's entrypoint calls (not to
+stream copies). A plugin may raise at most 30 notifications a minute per
+running instance.
 
 ### Storage entrypoints
 

@@ -26,6 +26,8 @@ Bookclerk on your own computer first, see
   plugins; isolation modes.
 - [Libraries and branches](branches.md): join a library, branches on
   its database and consent.
+- [Notifications](notifications.md): channels, routes, patron choices,
+  the inbox and the delivery log.
 - [Media worker](media.md): the confined process that handles audio
   files.
 - [Uploads](uploads.md): adding books from files, folders and archives,

@@ -1604,6 +1604,12 @@ pub enum JobKind {
     /// [`JobPayload::node_id`] to the node whose disk holds the staged
     /// bytes, and run only by a node that holds the library database.
     IngestBatch,
+    /// Send one notification to one destination (`notify_send`): the
+    /// delivery-log row [`JobPayload::notify_delivery`] names, through its
+    /// notifier instance ([`JobPayload::plugin_instance_id`], also in
+    /// [`JobPayload::requires`]), so only a node running that instance
+    /// claims it.
+    NotifySend,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1611,7 +1617,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
@@ -1626,6 +1632,7 @@ impl JobKind {
         Self::LibraryIndexRebuild,
         Self::BranchRequest,
         Self::IngestBatch,
+        Self::NotifySend,
         Self::Invalid,
     ];
 
@@ -1647,6 +1654,7 @@ impl JobKind {
             Self::LibraryIndexRebuild => "library_index_rebuild",
             Self::BranchRequest => "branch_request",
             Self::IngestBatch => "ingest_batch",
+            Self::NotifySend => "notify_send",
             Self::Invalid => "invalid",
         }
     }
@@ -1669,6 +1677,7 @@ impl JobKind {
             "library_index_rebuild" => Some(Self::LibraryIndexRebuild),
             "branch_request" => Some(Self::BranchRequest),
             "ingest_batch" => Some(Self::IngestBatch),
+            "notify_send" => Some(Self::NotifySend),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1779,6 +1788,10 @@ impl JobKind {
                 "ingest_batch:batch={}",
                 payload.ingest_batch.as_deref().unwrap_or("-")
             ),
+            // One queued or running send per delivery-log row.
+            Self::NotifySend => {
+                notify_send_dedup_key(payload.notify_delivery.as_deref().unwrap_or("-"))
+            }
             Self::Invalid => "invalid".into(),
         }
     }
@@ -2026,6 +2039,9 @@ pub struct JobPayload {
     /// For [`JobKind::IngestBatch`]: the `ingest_batches.id` to run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingest_batch: Option<String>,
+    /// For [`JobKind::NotifySend`]: the `notify_deliveries.id` to send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_delivery: Option<String>,
 }
 
 /// What a [`JobKind::BranchRequest`] asks its branch for: a work of this
@@ -2051,6 +2067,13 @@ pub struct BranchRequestTarget {
 #[must_use]
 pub fn branch_request_dedup_key(node_id: &str, work_id: &str) -> String {
     format!("branch_request:node={node_id}:work={work_id}")
+}
+
+/// Dedup key of a [`JobKind::NotifySend`]: one active send per delivery-log
+/// row.
+#[must_use]
+pub fn notify_send_dedup_key(delivery_id: &str) -> String {
+    format!("notify_send:delivery={delivery_id}")
 }
 
 /// Dedup key of a [`JobKind::PluginScheduled`] fire: one active fire per
@@ -2091,6 +2114,7 @@ impl Default for JobPayload {
             node_id: None,
             branch_request: None,
             ingest_batch: None,
+            notify_delivery: None,
         }
     }
 }

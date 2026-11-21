@@ -1,6 +1,6 @@
 //! Retention for the tables no other duty prunes: expired credentials,
 //! spent invitation and enrollment tokens, finished uploads, abandoned
-//! storage-scan inventories, and old audit rows.
+//! storage-scan inventories, old audit rows, and old notifications.
 //!
 //! Each [`RecordPruneStep`] is one bounded delete keyed on a timestamp the
 //! table already carries, so a step needs no index beyond the table's own
@@ -80,11 +80,15 @@ pub enum RecordPruneStep {
     /// Configuration change notices older than
     /// [`CONFIGURATION_CHANGE_RETENTION_DAYS`].
     ConfigurationChanges,
+    /// Notifications older than
+    /// [`crate::notifications::NOTIFICATION_RETENTION_DAYS`], with their
+    /// inbox entries and delivery-log rows.
+    Notifications,
 }
 
 impl RecordPruneStep {
     /// Every step, in the order a maintenance pass runs them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::OidcAuthCodes,
         Self::OidcRefreshTokens,
         Self::PortalSessions,
@@ -97,6 +101,7 @@ impl RecordPruneStep {
         Self::SecurityAudit,
         Self::ConfigurationAudit,
         Self::ConfigurationChanges,
+        Self::Notifications,
     ];
 }
 
@@ -228,6 +233,7 @@ impl LibraryStore {
                     .exec(&self.db)
                     .await
             }
+            RecordPruneStep::Notifications => return self.prune_notifications(now).await,
         };
         Ok(deleted.map_err(LibraryError::Orm)?.rows_affected)
     }
@@ -273,6 +279,15 @@ mod tests {
                 "INSERT INTO nodes (node_id, library_id, created_at, incarnation, heartbeat_at, \
                  software_version, schema_state, compatible) \
                  VALUES ('n1', 'c1', '{t}', 'i', '{t}', 'v', 's', 1)"
+            ),
+            // Notifications: past the window goes, recent stays.
+            format!(
+                "INSERT INTO notifications (id, notification_type, audience, severity, title, \
+                 body_text, created_at) VALUES \
+                 ('n-old', 'test', 'operational', 'info', 't', 'b', '{}'), \
+                 ('n-recent', 'test', 'operational', 'info', 't', 'b', '{}')",
+                at(-31),
+                at(-1)
             ),
             // Codes: expired goes, live stays.
             format!(
@@ -404,7 +419,7 @@ mod tests {
             for step in RecordPruneStep::ALL {
                 removed.push(store.prune_record_step(step, now()).await.unwrap());
             }
-            assert_eq!(removed, [1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1], "{name}");
+            assert_eq!(removed, [1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1, 1], "{name}");
             let grants: Vec<String> = crate::entities::copy_grants::Entity::find()
                 .all(kit.connection())
                 .await
