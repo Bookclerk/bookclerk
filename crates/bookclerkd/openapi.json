@@ -35592,6 +35592,414 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
+    "/api/config/master-key": {
+      "get": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`GET /api/config/master-key`.",
+        "operationId": "get_master_key_status",
+        "responses": {
+          "200": {
+            "description": "Where the key lives and what was recorded about a recovery copy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MasterKeyStatus"
+                },
+                "example": {
+                  "needs_recovery_copy": true,
+                  "recorded_at": "2026-11-21T09:30:00+00:00",
+                  "recovery_copy": "skipped",
+                  "store": "keychain"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The key could not be read (`master_key_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "this install has no master.key",
+                  "error": "master_key_failed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or a signed-in Owner."
+      }
+    },
+    "/api/config/master-key/recovery-copy": {
+      "post": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`POST /api/config/master-key/recovery-copy`.",
+        "operationId": "post_recovery_copy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCopyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The recovery copy: a `BCK2` envelope wrapped with the password, for `bookclerk config master-key import`. Sent as an attachment; nothing is recorded until `PUT …/state`.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The password is shorter than 12 characters (`password_too_short`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "a recovery password needs at least 12 characters",
+                  "error": "password_too_short"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in as the operator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session is impersonating a user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `password` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The key could not be read or wrapped (`master_key_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "master key file /home/bookclerk/BookclerkFiles/master.key keeps the key in OS keychain item 6f1c…, which could not be read: the keychain is locked",
+                  "error": "master_key_failed"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
+    "/api/config/master-key/recovery-copy/state": {
+      "put": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`PUT /api/config/master-key/recovery-copy/state`.",
+        "operationId": "put_recovery_copy_state",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCopyStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The answer was recorded for the key in use.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MasterKeyStatus"
+                },
+                "example": {
+                  "needs_recovery_copy": false,
+                  "recorded_at": "2026-11-21T09:30:00+00:00",
+                  "recovery_copy": "saved",
+                  "store": "keychain"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in as the operator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session is impersonating a user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `state` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The key could not be read or the answer could not be written (`master_key_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "failed to write /home/bookclerk/BookclerkFiles/master-key-recovery.json: No space left on device (os error 28)",
+                  "error": "master_key_failed"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
     "/api/node/v1/enroll": {
       "post": {
         "tags": [
@@ -44692,6 +45100,47 @@
         },
         "additionalProperties": false
       },
+      "MasterKeyStatus": {
+        "type": "object",
+        "description": "`GET /api/config/master-key` and the `PUT` answer.",
+        "required": [
+          "store",
+          "recovery_copy",
+          "needs_recovery_copy"
+        ],
+        "properties": {
+          "store": {
+            "$ref": "#/components/schemas/MasterKeyStore",
+            "description": "Where the key lives."
+          },
+          "recovery_copy": {
+            "$ref": "#/components/schemas/RecoveryCopyAnswer",
+            "description": "What the operator recorded about a recovery copy of this key. A\nrecord for an earlier key (since restored or replaced) reads as\n`unrecorded`."
+          },
+          "recorded_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When that was recorded (RFC 3339, UTC); absent when `unrecorded`.",
+            "example": "2026-11-21T09:30:00+00:00"
+          },
+          "needs_recovery_copy": {
+            "type": "boolean",
+            "description": "Whether the web app should remind the operator to save a copy: the\nkey is in the OS keychain and no copy was recorded as saved.",
+            "example": true
+          }
+        }
+      },
+      "MasterKeyStore": {
+        "type": "string",
+        "description": "Where this install keeps its key.",
+        "enum": [
+          "file",
+          "password_file",
+          "keychain"
+        ]
+      },
       "MeResponse": {
         "type": "object",
         "description": "JSON body for `GET /me`.",
@@ -51321,6 +51770,50 @@
               "$ref": "#/components/schemas/BranchAvailability"
             },
             "description": "Branches of this library that currently list this title (they\nanswered a catalog lookup for its work). Filled when the feed is\nread, never stored with it."
+          }
+        }
+      },
+      "RecoveryCopyAnswer": {
+        "type": "string",
+        "description": "What the operator recorded about a recovery copy of the key in use.",
+        "enum": [
+          "unrecorded",
+          "saved",
+          "skipped"
+        ]
+      },
+      "RecoveryCopyChoiceBody": {
+        "type": "string",
+        "description": "What the operator did about a recovery copy.",
+        "enum": [
+          "saved",
+          "skipped"
+        ]
+      },
+      "RecoveryCopyRequest": {
+        "type": "object",
+        "description": "`POST /api/config/master-key/recovery-copy` body.",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The password the copy is wrapped with: at least 12 characters. Keep\nit apart from the copy; without it the copy can't be restored.",
+            "example": "correct horse battery staple"
+          }
+        }
+      },
+      "RecoveryCopyStateRequest": {
+        "type": "object",
+        "description": "`PUT /api/config/master-key/recovery-copy/state` body.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/RecoveryCopyChoiceBody",
+            "description": "What the operator did."
           }
         }
       },

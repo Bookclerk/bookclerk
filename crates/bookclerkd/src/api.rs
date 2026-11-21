@@ -1124,6 +1124,8 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
     groups.extend(crate::passkeys::route_groups());
     // TOTP MFA + host second-factor policy.
     groups.extend(crate::totp::route_groups());
+    // The library key's recovery copy (the desktop first run, Settings).
+    groups.extend(crate::master_key_recovery::route_groups());
     groups
 }
 
