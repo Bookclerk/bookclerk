@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use crate::cache::{Miss, RangeCache, Source, Step};
 use crate::{
-    flac, mp4, mpeg, ByteSpan, TagError, TagRecord, MAX_FETCH_BYTES, MAX_ROUNDS,
+    flac, mp4, mpeg, ogg, ByteSpan, TagError, TagRecord, MAX_FETCH_BYTES, MAX_ROUNDS,
     MAX_SPANS_PER_ROUND, MIN_FETCH_BYTES,
 };
 
@@ -212,6 +212,8 @@ fn parse(src: &Source<'_>) -> Step<TagRecord> {
         mp4::read(src)
     } else if head.starts_with(b"fLaC") {
         flac::read(src)
+    } else if head.starts_with(b"OggS") {
+        ogg::read(src)
     } else if head.starts_with(b"ID3") || mpeg::is_frame_sync(head) {
         mpeg::read(src)
     } else {

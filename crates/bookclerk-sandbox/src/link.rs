@@ -62,6 +62,21 @@ pub const SOCKET_PROXY_ENV: &str = "BOOKCLERK_SOCKET_PROXY";
 pub const SOCKET_PROXY_WRITE_ENV: &str = "BOOKCLERK_SOCKET_PROXY_WRITE";
 /// When `1`, `bookclerk-jail` reads one [`JailHandoff`] JSON line from stdin.
 pub const JAIL_HANDOFF_ENV: &str = "BOOKCLERK_JAIL_HANDOFF";
+/// Env var naming the host's CONNECT link for a workerd launcher's egress.
+///
+/// The launcher (`bookclerk-workerd`, as an isolate front door or a socket
+/// broker) is the client: every outbound connection its isolate or broker
+/// makes is a tunnel the host checks against the grant and dials. Its jail
+/// has no IP reach of its own. Unix: one duplex socket, `fd:<n>` (always
+/// [`WORKERD_EGRESS_FD`]). Windows: the launcher's overlapped read half,
+/// `handle:<n>`; the write half is [`WORKERD_EGRESS_WRITE_ENV`]. Absent when
+/// the grant denies the network.
+pub const WORKERD_EGRESS_ENV: &str = "BOOKCLERK_WORKERD_EGRESS";
+/// Windows-only env var naming the launcher's overlapped write half of the
+/// host egress link.
+///
+/// Absent on Unix, where [`WORKERD_EGRESS_ENV`] is a full-duplex socket.
+pub const WORKERD_EGRESS_WRITE_ENV: &str = "BOOKCLERK_WORKERD_EGRESS_WRITE";
 /// Host-chosen workerd session directory (`0700`, under `$TMPDIR`).
 pub const WORKERD_STATE_DIR_ENV: &str = "BOOKCLERK_WORKERD_STATE_DIR";
 
@@ -71,6 +86,9 @@ pub const GATEWAY_RPC_FD: i32 = 3;
 pub const GATEWAY_PROXY_FD: i32 = 4;
 /// Child fd the native guest uses for the proxy mux (`BOOKCLERK_SOCKET_PROXY`).
 pub const GUEST_PROXY_FD: i32 = 3;
+/// Child fd a single workerd launcher uses for the host egress link
+/// (`BOOKCLERK_WORKERD_EGRESS`).
+pub const WORKERD_EGRESS_FD: i32 = 3;
 /// Test-only extra endpoint in the native guest. Production preserve lists omit it.
 ///
 /// The slot sits above the descriptors a dynamic loader opens after the jail

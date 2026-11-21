@@ -300,15 +300,17 @@ pub async fn fetch_widevine_download(
             if let Some(parent) = dest.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            let (_outcome, path) = download_cenc_to_file(
-                &mpeg.offline_url,
-                &dest,
-                mpeg.content_size,
-                true,
-                None,
-                &["audio/mpeg", "audio/mp3"],
-                None,
-            )
+            let (_outcome, path) = crate::retry::resume_transfer(|first| {
+                download_cenc_to_file(
+                    &mpeg.offline_url,
+                    &dest,
+                    mpeg.content_size,
+                    first,
+                    None,
+                    &["audio/mpeg", "audio/mp3"],
+                    None,
+                )
+            })
             .await
             .map_err(|err| AudibleError::Download(err.to_string()))?;
             Ok(WidevineDownload {
@@ -347,15 +349,18 @@ pub async fn fetch_widevine_download(
             )
             .await?;
 
-            let (_outcome, path) = download_cenc_to_file(
-                &stream.content_url,
-                &enc_path,
-                license.content_size,
-                true,
-                None,
-                &["audio/mp4", "video/mp4"],
-                license.version_tag().as_deref(),
-            )
+            let version = license.version_tag();
+            let (_outcome, path) = crate::retry::resume_transfer(|first| {
+                download_cenc_to_file(
+                    &stream.content_url,
+                    &enc_path,
+                    license.content_size,
+                    first,
+                    None,
+                    &["audio/mp4", "video/mp4"],
+                    version.as_deref(),
+                )
+            })
             .await
             .map_err(|err| AudibleError::Download(err.to_string()))?;
 

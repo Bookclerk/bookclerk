@@ -16,7 +16,7 @@ use axum::Json;
 use axum::Router;
 use bookclerk_config::{Config, ListenAddrs};
 use bookclerk_integrations::{portal_spa_routes, IntegrationRegistry, PortalState};
-use bookclerk_library::control_plane::ScanRequester;
+use bookclerk_library::control_plane::{AdminControl, ScanRequester};
 use bookclerk_library::{
     hash_token, ClaimTicketRecord, JobRecord, JobTrigger, LibraryError, LibraryStore,
     NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus, TitleRequestRecord,
@@ -107,6 +107,11 @@ pub struct AppState {
     /// is bound at startup and outlives config reloads, so a reload that
     /// turns auth off is checked against it as well as the new config.
     pub node_api_tls_bound: OnceLock<std::net::SocketAddr>,
+    /// Set once when the host runs inside the desktop window
+    /// (`crate::embedded`), which binds no socket: every request then comes
+    /// from the person at this computer, and playback keeps their listening
+    /// state as the library's Owner (see `crate::playback`).
+    pub in_window: OnceLock<()>,
     /// Counts database swaps: bumped after [`Self::library`] is replaced so
     /// the library-link supervisor restarts its host clients on the new
     /// store.
@@ -1139,6 +1144,7 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(legacy_cancel_job))
         .routes(routes!(trigger_integration_scan))
         .routes(routes!(status))
+        .routes(routes!(crate::media_capabilities::media_capabilities))
         .routes(routes!(list_jobs))
         .routes(routes!(cancel_job))
         .routes(routes!(list_events))
@@ -1507,6 +1513,14 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(
             crate::patron_scopes::get_user_controls,
             crate::patron_scopes::put_user_controls
+        ))
+        .routes(routes!(
+            crate::admin_controls::get_default_admin_controls,
+            crate::admin_controls::patch_default_admin_controls
+        ))
+        .routes(routes!(
+            crate::admin_controls::get_user_admin_controls,
+            crate::admin_controls::patch_user_admin_controls
         ))
         .routes(routes!(auth::create_user_claim_ticket))
         .routes(routes!(auth::reset_user_password))
@@ -5484,8 +5498,15 @@ async fn list_event_deliveries(
 )]
 async fn retry_event_delivery(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.retry_dead_letter_delivery(&id).await {
         Ok(true) => {
@@ -5515,8 +5536,15 @@ async fn retry_event_delivery(
 )]
 async fn ack_event_delivery(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.acknowledge_dead_letter_delivery(&id).await {
         Ok(true) => Ok(Json(ActionResponse {
@@ -5543,8 +5571,15 @@ async fn ack_event_delivery(
 )]
 async fn cancel_event_delivery(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.request_event_delivery_cancel(&id).await {
         Ok(Some(row)) => {
@@ -5574,8 +5609,15 @@ async fn cancel_event_delivery(
 )]
 async fn resume_event_delivery(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.resume_event_delivery(&id).await {
         Ok(true) => {
@@ -5605,8 +5647,15 @@ async fn resume_event_delivery(
 )]
 async fn cancel_job(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
+    crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await?;
     let library = state.library_snapshot().await;
     match library.request_job_cancel(&id).await {
         Ok(Some(job)) => Ok(Json(ActionResponse {
@@ -5702,9 +5751,10 @@ async fn legacy_list_jobs(state: State<Arc<AppState>>) -> Result<Json<Vec<JobInf
 #[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
 async fn legacy_cancel_job(
     state: State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     id: AxumPath<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
-    cancel_job(state, id).await
+    cancel_job(state, requester, id).await
 }
 
 /// Enqueues a remote integration library scan; 404 if missing, 400 if unsupported.
@@ -5725,9 +5775,19 @@ async fn legacy_cancel_job(
 )]
 async fn trigger_integration_scan(
     State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
     AxumPath(id): AxumPath<String>,
     body: Option<Json<IntegrationScanRequest>>,
 ) -> Response {
+    if let Err(status) = crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::LibraryScan,
+    )
+    .await
+    {
+        return status.into_response();
+    }
     let force = body.and_then(|Json(b)| b.force).unwrap_or(false);
     {
         let integrations = state.integrations.read().await;
@@ -6907,7 +6967,19 @@ fn source_from_purchase_hint(
         (status = 400, description = "No listening-capable integration is enabled.", body = String, content_type = "text/plain", example = json!("no listening-capable integrations are enabled")),
     ),
 )]
-async fn sync_listening(State(state): State<Arc<AppState>>) -> Response {
+async fn sync_listening(
+    State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
+) -> Response {
+    if let Err(status) = crate::auth::require_requester_control(
+        &state,
+        requester.map(|axum::Extension(r)| r),
+        AdminControl::RunJobs,
+    )
+    .await
+    {
+        return status.into_response();
+    }
     if state
         .integrations
         .read()
@@ -8046,6 +8118,7 @@ tcp = {tcp}
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         })
@@ -8475,6 +8548,7 @@ tcp = {tcp}
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });
@@ -8578,6 +8652,7 @@ tcp = {tcp}
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });
@@ -8739,6 +8814,7 @@ tcp = {tcp}
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });

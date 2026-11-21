@@ -55,14 +55,25 @@ lives, and before allocating a new one it removes this plugin's sibling
 directories whose lock it can take, plus any older than two minutes that
 never got a lock. Links are never followed.
 
+Killing the launcher must also end its `workerd` child. On Linux and macOS
+the jail's session cgroup or process group does that. On Windows the
+launcher puts each `workerd.exe` in its own kill-on-close Job (nested in
+the jail's Job when there is one) and never closes it, so the kernel ends
+`workerd.exe` whenever the launcher process ends, including an unjailed
+launcher killed with `TerminateProcess`. The launcher also clears
+`HANDLE_FLAG_INHERIT` on its standard handles and on every inherited link
+it adopts, the Windows counterpart of `FD_CLOEXEC`, so `workerd.exe` holds
+none of the host's pipes and cannot keep them open after the launcher exits.
+
 ## The bridge socket
 
-The bridge listens on an ephemeral loopback port that only the launcher
-dials. The launcher never picks a port number for workerd to bind:
+The bridge listens on a socket that only the launcher dials:
 
-- **Unix:** the launcher binds `127.0.0.1:0` and hands the listener to
-  workerd with `--socket-fd=rpc=<fd>`. Linux Landlock `OutboundListen`
-  allows `bind(port=0)` only, so workerd could not bind a chosen port.
+- **Unix:** the launcher binds a Unix socket (an abstract name on Linux, a
+  short relative path in the session directory on macOS) and hands the
+  listener to workerd with `--socket-fd=rpc=<fd>`. Neither process needs an
+  IP socket, so the jail is `NetPolicy::LocalIpc` (see
+  [the egress relay](#the-egress-relay)).
 - **Windows:** workerd has no `--socket-fd`, so it binds `127.0.0.1:0`
   itself and reports the port with `--control-fd=1`, one JSON line on its
   stdout: `{"event":"listen","socket":"rpc","port":53117}`. Isolates write
@@ -70,6 +81,34 @@ dials. The launcher never picks a port number for workerd to bind:
   structured logging, and `bookclerk_workerd::control::listen_port` accepts
   only an object with exactly the three control keys. The `workerd_control`
   fuzz target checks that no log line reads as a control message.
+
+## The egress relay
+
+workerd never opens an IP socket. Its generated config has no `network`
+service: the egress worker's only way out is an `external` service with
+`http = (style = proxy)` that points at the launcher's egress relay, a
+Unix socket on Linux and macOS and a loopback port on Windows. workerd
+sends each `fetch()` there as an absolute-form request
+(`GET https://host/path`) and each `connect()` as `CONNECT host:port`.
+
+The relay (`bookclerk_workerd::egress_relay`) turns every request into a
+tunnel on the host link (`BOOKCLERK_WORKERD_EGRESS`, an inherited `fd:3` on
+Unix and two `handle:` pipe halves on Windows). The unsandboxed host checks
+the destination against the grant (`EgressPolicy::allows_isolate_tunnel`:
+fetch hosts on any port, TCP grants on their ports, consented redirects),
+resolves it, checks every address, and dials. For `fetch()` the relay then
+rewrites the head to origin form, sets `host` and `connection: close`,
+drops proxy and hop-by-hop headers, and adds TLS for `https` (Mozilla's
+roots, the hosts' rustls provider). TLS and HTTP stay inside the jail; the
+host only parses the `CONNECT` line, as it does for native guests.
+
+The host link carries no TCP half-close. When a plugin closes its socket's
+writer and keeps reading (`allowHalfOpen`), the relay keeps the tunnel open
+and relays the reply until the server ends it, so the server never sees the
+half-close.
+
+With the grant's network denied, the host passes no link and the egress
+worker's `globalOutbound` is `blocked`.
 
 The launcher forwards workerd's stdout and stderr to its own log line by
 line. It keeps at most 16 KiB of each line and drops the rest, so isolate

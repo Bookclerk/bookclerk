@@ -77,7 +77,8 @@ impl RecordBuilder {
             codec: match container {
                 Container::Mp3 => Some(AudioCodec::Mp3),
                 Container::Flac => Some(AudioCodec::Flac),
-                Container::Mp4 => None,
+                // Set by the parser from the stream's first header.
+                Container::Mp4 | Container::Ogg => None,
             },
             cover: None,
             region: Vec::new(),

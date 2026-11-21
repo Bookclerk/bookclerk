@@ -14,6 +14,7 @@
 //! | Mediated TCP sockets | [`connect_socket`] / [`net`] (Workers `connect()` equivalent) |
 //! | Host-held WebSockets that let the plugin sleep (`[sockets]`) | [`sockets`] / [`HostWebSocket`] |
 //! | Native HTTPS through the socket proxy | feature `http` → `http::Client` |
+//! | Resumable large downloads (store audio, archives) | feature `http` → `download::Download`; decisions in [`resume`] |
 //! | OAuth callback without guest listen | [`callback_tunnel`] |
 //! | Workerd / Wasm guests | [`workerd`] + npm `@bookclerk/plugin-sdk` |
 //! | ABI DTOs / method names | [`protocol`] (re-exports `bookclerk-plugin-abi`) |
@@ -40,6 +41,8 @@ pub mod database_adapter;
 #[cfg(feature = "db")]
 mod db;
 mod db_binding;
+#[cfg(feature = "http")]
+pub mod download;
 mod error;
 mod fetch_dir;
 #[cfg(feature = "http")]
@@ -50,6 +53,7 @@ pub mod mux;
 pub mod net;
 mod pass_fd;
 pub mod protocol;
+pub mod resume;
 mod scan_page;
 pub mod sockets;
 pub mod workerd;

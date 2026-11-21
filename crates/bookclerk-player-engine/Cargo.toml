@@ -1,0 +1,20 @@
+[package]
+name = "bookclerk-player-engine"
+description = "Native playback for the desktop window: speed change, rate conversion and one-track playback over PCM from the media worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+# The feeder and the position clock run on the host's runtime.
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

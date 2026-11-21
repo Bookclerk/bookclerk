@@ -73,13 +73,14 @@ fn store_error(route: &str, err: LibraryError) -> ApiError {
 }
 
 /// Admits the operator, an Owner or an Administrator; a Member (even one
-/// who may acquire) is refused.
+/// who may acquire) is refused. No administrator switch gates
+/// notifications: every Administrator manages them.
 ///
 /// # Errors
 ///
 /// 401 when no one is signed in, 403 for anyone else.
 async fn administrator(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
-    crate::auth::library_administrator(state, headers)
+    crate::auth::library_administrator(state, headers, None)
         .await
         .map(|_| ())
         .map_err(|refusal| {

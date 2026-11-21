@@ -49,10 +49,18 @@ mod mp3;
 pub use mp3::write_output_within_budget;
 mod mux_aac;
 mod native;
+mod opus_dec;
+mod opus_enc;
 mod package_m4b;
+/// Decoded samples for a player, from a confined worker.
+mod pcm_stream;
+pub mod pcm_wire;
+mod pcm_worker;
 mod pool;
 mod probe;
+mod resample;
 mod tag_worker;
+mod vorbis_tags;
 
 pub use archive::{check_report as check_archive_report, extract_archive};
 pub use bookclerk_cover::{CoverSet, CoverSize};
@@ -72,7 +80,11 @@ pub use error::{MediaError, Result};
 pub use job::{MediaJob, MediaJobOutput, MediaJobReply};
 pub use metadata::{bookclerk_tool_tag, fixup_audiobook, FixupRequest, BOOKCLERK_TOOL_NAME};
 pub use native::remux_trimmed;
+pub use opus_enc::{encode_to_opus_native, OpusEncodeOptions, MAX_OPUS_KBPS, MIN_OPUS_KBPS};
 pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};
+pub use pcm_stream::PcmStream;
+pub use pcm_wire::{PcmHeader, PCM_WORKER_ARG};
+pub use pcm_worker::serve_pcm;
 pub use pool::{
     init_pool, init_pool_from_config, pool, replace_pool, Confinement, MediaPool, MediaPoolConfig,
     JAIL_BIN_ENV, JAIL_BIN_NAME, WORKER_BIN_ENV, WORKER_BIN_NAME, WORKER_ENFORCEMENT_ENV,
@@ -116,6 +128,38 @@ pub async fn encode_to_mp3(
         output: output.clone(),
         lame: Box::new(lame.clone()),
         max_sample_rate,
+        max_output_bytes,
+    })
+    .await?;
+    if !output.exists() {
+        return Err(MediaError::OutputMissing(output));
+    }
+    Ok(MediaOutcome { output })
+}
+
+/// Encode audio to Ogg Opus via Symphonia + libopus.
+///
+/// Runs in a confined media worker; see the module documentation.
+///
+/// # Errors
+///
+/// Returns [`MediaError::InputMissing`] when `input` does not exist, and
+/// propagates encode and worker failures otherwise.
+pub async fn encode_to_opus(
+    input: &Path,
+    output: &Path,
+    options: OpusEncodeOptions,
+    max_output_bytes: Option<u64>,
+) -> Result<MediaOutcome> {
+    if !input.exists() {
+        return Err(MediaError::InputMissing(input.to_path_buf()));
+    }
+    let output = output.to_path_buf();
+    let pool = pool();
+    pool.run(MediaJob::EncodeOpus {
+        input: input.to_path_buf(),
+        output: output.clone(),
+        options,
         max_output_bytes,
     })
     .await?;
