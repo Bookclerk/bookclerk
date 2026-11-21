@@ -55,6 +55,7 @@ describe("route list", () => {
       ["POST", "/api/config/plugins"],
       ["POST", "/api/config/plugins/k/versions/1/approve"],
       ["PATCH", "/api/settings"],
+      ["POST", "/api/config/master-key/recovery-copy"],
       ["PUT", "/api/config/domains/core.output"],
       ["POST", "/api/config/plugin-instances"],
       ["PUT", "/api/config/plugin-instances/1/config"],

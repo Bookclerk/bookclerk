@@ -25,7 +25,7 @@ use sha2::Digest;
 use tokio::sync::Mutex;
 
 use crate::error::{Result, StorageError};
-use crate::s3_events::{parse_event_message, EventScope, ParsedEvent};
+use crate::s3_events::{parse_event_message, EventParseError, EventScope, ParsedEvent};
 use crate::ChangeFeedPage;
 
 /// Prefix of every cursor this feed hands out.
@@ -135,7 +135,7 @@ fn queue_region(host: &str) -> Option<&str> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QueueMessage {
     /// The body.
-    pub body: String,
+    pub body: Vec<u8>,
     /// The handle that deletes or releases this delivery.
     pub receipt: String,
 }
@@ -219,7 +219,7 @@ impl NotificationQueue for SqsQueue {
             .iter()
             .filter_map(|message| {
                 Some(QueueMessage {
-                    body: message.body().unwrap_or_default().to_string(),
+                    body: message.body().unwrap_or_default().as_bytes().to_vec(),
                     receipt: message.receipt_handle()?.to_string(),
                 })
             })
@@ -339,14 +339,33 @@ impl FeedState {
     }
 }
 
+/// Reads one message body into the changes it holds for one destination,
+/// skipping those outside the destination's scope.
+pub(crate) type MessageParser =
+    Box<dyn Fn(&[u8]) -> std::result::Result<Vec<ParsedEvent>, EventParseError> + Send + Sync>;
+
+/// The [`MessageParser`] for S3 notifications (direct, SNS or EventBridge)
+/// about `bucket` under `prefix`.
+pub(crate) fn s3_message_parser(bucket: &str, prefix: &str) -> MessageParser {
+    let bucket = bucket.to_string();
+    let prefix = prefix.to_string();
+    Box::new(move |body| {
+        parse_event_message(
+            body,
+            EventScope {
+                bucket: &bucket,
+                prefix: &prefix,
+            },
+        )
+    })
+}
+
 /// The change feed of one destination, drained from its notification queue.
 pub(crate) struct QueueFeed {
     /// The queue.
     queue: Box<dyn NotificationQueue>,
-    /// The destination's bucket; events for other buckets are skipped.
-    bucket: String,
-    /// The destination's normalized key prefix.
-    prefix: String,
+    /// Reads the queue's messages for this destination.
+    parse: MessageParser,
     /// Where [`FeedState`] is kept.
     state_path: PathBuf,
     /// The state, loaded at construction; the lock also serializes calls.
@@ -354,9 +373,10 @@ pub(crate) struct QueueFeed {
 }
 
 impl QueueFeed {
-    /// A feed over `queue` whose state lives in `state_dir`, in a file named
-    /// after `queue_id`, `bucket` and `prefix`, so each queue and scope
-    /// keeps its own and a cursor from another scope is foreign.
+    /// A feed over `queue` whose messages `parse` reads, with its state in
+    /// `state_dir`, in a file named after `queue_id`, `bucket` and `prefix`,
+    /// so each queue and scope keeps its own and a cursor from another
+    /// scope is foreign.
     ///
     /// A missing or unreadable state file starts a new feed: its first page
     /// reports that changes may have been missed.
@@ -366,6 +386,7 @@ impl QueueFeed {
     /// Returns an error when `state_dir` cannot be created.
     pub(crate) fn open(
         queue: Box<dyn NotificationQueue>,
+        parse: MessageParser,
         queue_id: &str,
         bucket: &str,
         prefix: &str,
@@ -385,8 +406,7 @@ impl QueueFeed {
             .unwrap_or_else(FeedState::fresh);
         Ok(Self {
             queue,
-            bucket: bucket.to_string(),
-            prefix: prefix.to_string(),
+            parse,
             state_path,
             state: Mutex::new(state),
         })
@@ -473,13 +493,7 @@ impl QueueFeed {
             taken += received;
             let mut overflow = Vec::new();
             for message in messages {
-                let parsed = parse_event_message(
-                    message.body.as_bytes(),
-                    EventScope {
-                        bucket: &self.bucket,
-                        prefix: &self.prefix,
-                    },
-                );
+                let parsed = (self.parse)(&message.body);
                 match parsed {
                     Ok(parsed) if events.len() + parsed.len() <= limit => {
                         events.extend(parsed);
@@ -740,7 +754,10 @@ mod tests {
                 state.deliveries += 1;
                 let receipt = format!("r{}", state.deliveries);
                 state.hidden.push((id, body.clone(), receipt.clone()));
-                out.push(QueueMessage { body, receipt });
+                out.push(QueueMessage {
+                    body: body.into_bytes(),
+                    receipt,
+                });
             }
             Ok(out)
         }
@@ -778,6 +795,7 @@ mod tests {
     fn feed(queue: &Arc<FakeQueue>, dir: &Path) -> QueueFeed {
         QueueFeed::open(
             Box::new(Arc::clone(queue)),
+            s3_message_parser("books", "library/"),
             "queue-a",
             "books",
             "library/",
@@ -1200,6 +1218,7 @@ mod tests {
             .cursor;
         let other = QueueFeed::open(
             Box::new(Arc::clone(&queue)),
+            s3_message_parser("books", "other/"),
             "queue-a",
             "books",
             "other/",

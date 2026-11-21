@@ -35,6 +35,7 @@
 
 pub mod api;
 pub(crate) mod copies;
+pub mod requests;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, LazyLock};

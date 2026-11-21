@@ -235,7 +235,7 @@ impl MasterKey {
     }
 
     /// Wraps already-unwrapped DEK bytes (from `BCK1` or after password unwrap).
-    fn from_bytes(bytes: [u8; DEK_LEN]) -> Self {
+    pub(crate) fn from_bytes(bytes: [u8; DEK_LEN]) -> Self {
         Self { bytes }
     }
 

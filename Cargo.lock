@@ -2290,6 +2290,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-plugin-destination-r2"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bookclerk-plugin-sdk",
+ "bookclerk-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "bookclerk-plugin-destination-s3"
 version = "0.1.0"
 dependencies = [
@@ -2641,6 +2654,7 @@ dependencies = [
  "aws-sdk-sqs",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
+ "base64 0.23.1",
  "bookclerk-config",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",

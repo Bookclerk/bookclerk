@@ -4,10 +4,12 @@ import {
   clerkCallbackRetryable,
   clerkCardSummary,
   clerkErrorMessage,
+  clerkRequestFailure,
   fetchClerkCards,
   finishClerkSignIn,
   inspectCardLibrary,
   parseClerkCallback,
+  requestFromLibrary,
   signOutClerkCard,
   startClerkSignIn,
   type ClerkCardView,
@@ -136,6 +138,14 @@ describe("card requests", () => {
     expect(done.library_signed_out).toBe(false);
   });
 
+  it("ask a library for a book its branches hold", async () => {
+    const fetchMock = stubFetch({ library_id: "lib-1" });
+    const sentBack = await requestFromLibrary("lib-1", "work-7");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/config/clerk/request");
+    expect(sent(fetchMock)).toEqual({ library_id: "lib-1", work_id: "work-7" });
+    expect(sentBack.library_id).toBe("lib-1");
+  });
+
   it("carry the daemon's refusal code", async () => {
     stubFetch({ error: "already_joined", detail: "already a branch" }, 409);
     const err = await startClerkSignIn({
@@ -146,6 +156,22 @@ describe("card requests", () => {
     expect(err).toBeInstanceOf(JoinApiError);
     expect(clerkErrorMessage(err, "x")).toMatch(/already a branch of that library/);
     expect(clerkCallbackRetryable(err)).toBe(false);
+  });
+});
+
+describe("clerkRequestFailure", () => {
+  it("says what the library answered", () => {
+    const failed = (code: string) => clerkRequestFailure(new ApiError(400, "x", { code }));
+    expect(failed("not_allowed")).toMatch(/hasn't allowed you/);
+    expect(failed("not_listed")).toMatch(/No branch/);
+    expect(failed("card_refused")).toMatch(/Sign in to it again/);
+    expect(failed("library_busy")).toMatch(/busy/);
+    expect(failed("not_found")).toMatch(/no longer holds a library card/);
+    expect(failed("unreachable")).toMatch(/couldn't be reached/);
+    expect(failed("library_error")).toBe("The library couldn't take the request.");
+    expect(clerkRequestFailure(new TypeError("Failed to fetch"))).toBe(
+      "The library couldn't take the request.",
+    );
   });
 });
 
