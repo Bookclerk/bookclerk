@@ -528,7 +528,8 @@ fn machine_rank(claim: &ChapterClaim) -> Option<u8> {
 ///
 /// In order: the claim an Administrator pinned; the newest edit made in
 /// Bookclerk; the newest outside edit; then the best machine source by
-/// [`machine_rank`], ties broken by source id. A claim whose list write is
+/// the chapters machine ranking (`docs/adr/edition-chapters.md`, decision
+/// 2), ties broken by source id. A claim whose list write is
 /// unfinished is never picked, and an empty list is picked only from a
 /// person, who cleared the chapters on purpose. The answer depends only on
 /// the claims, never on the order they are given in.
