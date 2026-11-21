@@ -261,7 +261,7 @@ pub fn check_webhook_delivered(event: &WebhookDelivered) -> Result<()> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::missing_panics_doc)]
 mod tests {
     use super::*;
 

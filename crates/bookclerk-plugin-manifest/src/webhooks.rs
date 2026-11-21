@@ -305,6 +305,7 @@ fn validate_headers(row: usize, headers: &[String]) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 mod tests {
     use super::*;
 
