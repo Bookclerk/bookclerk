@@ -47,6 +47,9 @@ pub struct ExternalIntegration {
     user_poll: crate::user_poll::PollGeneration,
     /// Deployment instance id. `None` until the reconciler binds one.
     plugin_instance_id: Option<String>,
+    /// Model tasks the manifest declares under `[ai].serves`; models of
+    /// any other task are dropped from the plugin's listing.
+    ai_serves: Vec<bookclerk_plugin_sdk::AiTask>,
 }
 
 impl ExternalIntegration {
@@ -162,6 +165,7 @@ impl ExternalIntegration {
             cron_schedules,
             user_poll: crate::user_poll::PollGeneration::default(),
             plugin_instance_id: None,
+            ai_serves: plugin.manifest.ai.serves.clone(),
         })
     }
 
@@ -237,6 +241,13 @@ impl ExternalIntegration {
             let ok = self
                 .session
                 .notifier(|notifier| async move { notifier.health().await })
+                .await?;
+            health_result(ok)?;
+        }
+        if self.session.has_entrypoint(crate::Entrypoint::Ai) {
+            let ok = self
+                .session
+                .ai(|models| async move { models.health().await })
                 .await?;
             health_result(ok)?;
         }
@@ -573,6 +584,13 @@ impl Integration for ExternalIntegration {
                     .await?,
             );
         }
+        if self.session.has_entrypoint(crate::Entrypoint::Ai) {
+            reports.push(
+                self.session
+                    .ai(|models| async move { models.health().await })
+                    .await?,
+            );
+        }
         let (ok, detail) = combine_health(reports);
         Ok(IntegrationHealth {
             id: self.id().to_string(),
@@ -631,7 +649,7 @@ impl Integration for ExternalIntegration {
 
     async fn diagnose(&self) -> bookclerk_integrations::Result<Vec<String>> {
         // Only a remote library answers `diagnose`; a plugin with just
-        // metadata, covers, metadata files or a notifier falls through to health.
+        // metadata, covers, metadata files, a notifier or models falls through to health.
         if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)
@@ -659,6 +677,45 @@ impl Integration for ExternalIntegration {
 
     fn supports_covers(&self) -> bool {
         self.session.has_entrypoint(crate::Entrypoint::Covers)
+    }
+
+    fn supports_ai(&self) -> bool {
+        self.session.has_entrypoint(crate::Entrypoint::Ai)
+    }
+
+    async fn ai_models(
+        &self,
+    ) -> std::result::Result<bookclerk_plugin_sdk::AiModelList, bookclerk_plugin_sdk::PluginError>
+    {
+        let mut list = self
+            .session
+            .ai(|models| async move { models.models().await })
+            .await
+            .map_err(abi_error)?;
+        let serves = &self.ai_serves;
+        list.models.retain(|model| {
+            let declared = serves.contains(&model.task);
+            if !declared {
+                tracing::warn!(
+                    plugin = self.session.id(),
+                    model = %model.model_id,
+                    task = model.task.wire_name(),
+                    "dropping a model whose task is not in `[ai].serves`"
+                );
+            }
+            declared
+        });
+        Ok(list)
+    }
+
+    async fn ai_run(
+        &self,
+        params: bookclerk_plugin_sdk::AiRunParams,
+    ) -> std::result::Result<bookclerk_plugin_sdk::AiRunOk, bookclerk_plugin_sdk::PluginError> {
+        self.session
+            .ai(move |models| async move { models.run(params).await })
+            .await
+            .map_err(abi_error)
     }
 
     async fn fetch_covers(
@@ -766,6 +823,29 @@ fn brand_from_abi(brand: Option<&bookclerk_plugin_sdk::Brand>) -> Option<Brand> 
         accent: Box::leak(b.accent.clone().into_boxed_str()),
         icon_url: Box::leak(b.icon_url.clone().unwrap_or_default().into_boxed_str()),
     })
+}
+
+/// Turns a session error back into the ABI error a model caller is
+/// answered with, keeping the code the guest sent.
+fn abi_error(err: crate::PluginError) -> bookclerk_plugin_sdk::PluginError {
+    use bookclerk_plugin_sdk::PluginError as AbiError;
+    match err {
+        crate::PluginError::Abi { code, message } => AbiError::from_wire(&code, message),
+        crate::PluginError::RateLimited {
+            retry_after,
+            message,
+        } => AbiError::rate_limited(message, retry_after),
+        crate::PluginError::NotFound(message) => AbiError::not_found(message),
+        err @ (crate::PluginError::Message(_)
+        | crate::PluginError::InstanceSelection(_)
+        | crate::PluginError::Conflict(_)
+        | crate::PluginError::Unavailable(_)
+        | crate::PluginError::Io(_)
+        | crate::PluginError::Json(_)
+        | crate::PluginError::Toml(_)
+        | crate::PluginError::Manifest(_)
+        | crate::PluginError::Other(_)) => AbiError::unavailable(err.to_string()),
+    }
 }
 
 #[cfg(test)]

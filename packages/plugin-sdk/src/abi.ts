@@ -127,6 +127,24 @@ export const MAX_NOTIFICATION_FIELD_BYTES = 1024 as const;
 /** Longest destination address document (`addressJson`), in UTF-8 bytes. */
 export const MAX_NOTIFIER_ADDRESS_BYTES = 4096 as const;
 
+/** Longest `AiModel.name`, in UTF-8 bytes (`@<plugin id>/<model id>`). */
+export const MAX_AI_MODEL_NAME_BYTES = 192 as const;
+
+/** Most models one `AiModels.models` reply lists. */
+export const MAX_AI_MODELS = 64 as const;
+
+/** Most texts in one `AiTextEmbeddingsInput`. */
+export const MAX_AI_EMBED_TEXTS = 64 as const;
+
+/** Longest text in an `AiTextEmbeddingsInput`, in UTF-8 bytes. */
+export const MAX_AI_EMBED_TEXT_BYTES = 16384 as const;
+
+/** Most numbers in one embedding vector. */
+export const MAX_AI_EMBED_DIMENSIONS = 4096 as const;
+
+/** Most language tags on one `AiModel`. */
+export const MAX_AI_LANGUAGES = 64 as const;
+
 /** Most entries in `MetadataFileRenderParams.audioFiles`. */
 export const MAX_METADATA_AUDIO_FILES = 4096 as const;
 
@@ -275,7 +293,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];
@@ -516,6 +534,28 @@ export const NOTIFY_DESTINATION_KINDS = ["channel", "personal"] as const;
 
 /** Union of `NOTIFY_DESTINATION_KINDS` wire names. */
 export type NotifyDestinationKind = (typeof NOTIFY_DESTINATION_KINDS)[number];
+
+/**
+ * What a model does. A model has exactly one task, and the task fixes the
+ * shape of `AiRunParams.input` and of the reply.
+ *
+ * Ordinal-ordered `AiTask` wire names (index = Cap'n Proto ordinal).
+ */
+export const AI_TASKS = ["textEmbeddings"] as const;
+
+/** Union of `AI_TASKS` wire names. */
+export type AiTask = (typeof AI_TASKS)[number];
+
+/**
+ * What a text is to an embedding model. Some models embed a search query
+ * differently from the documents it is matched against.
+ *
+ * Ordinal-ordered `AiTextRole` wire names (index = Cap'n Proto ordinal).
+ */
+export const AI_TEXT_ROLES = ["document", "query"] as const;
+
+/** Union of `AI_TEXT_ROLES` wire names. */
+export type AiTextRole = (typeof AI_TEXT_ROLES)[number];
 
 /**
  * Universal database cell/parameter domain. Engine-native arrays, enums,

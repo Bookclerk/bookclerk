@@ -190,6 +190,11 @@ const INTERFACES: &[InterfaceEntry] = &[
         methods: &["start", "health", "stop"],
     },
     InterfaceEntry {
+        id: <plugin_capnp::ai_models::Client as HasTypeId>::TYPE_ID,
+        name: "AiModels",
+        methods: &["health", "models", "run"],
+    },
+    InterfaceEntry {
         id: <plugin_capnp::event_consumer::Client as HasTypeId>::TYPE_ID,
         name: "EventConsumer",
         methods: &["event"],

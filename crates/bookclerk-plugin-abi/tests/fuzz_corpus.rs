@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `quality_offers`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `event_read`, `socket_request`, `storage_reply` and `origin_request` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `quality_offers`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `ai_run_reply`, `ai_run`, `event_read`, `socket_request`, `storage_reply` and `origin_request` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -2220,5 +2220,257 @@ fn origin_request_seeds_are_current() {
             "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
             path.display()
         );
+    }
+}
+
+#[path = "../../../fuzz/oracles/ai_run_reply.rs"]
+mod ai_run_reply_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/ai_run_reply.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_ai_run_reply_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("ai_run_reply") {
+        ai_run_reply_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no ai_run_reply seed");
+}
+
+/// Seeds for `ai_run_reply`: a reply that fits its run and ones with a
+/// missing vector, a number that is not finite, another vector length,
+/// another revision, a model name, and fallbacks that repeat or point past
+/// the input; then a listing that passes and ones breaking each listing
+/// rule. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn ai_run_reply_seeds_are_current() {
+    use bookclerk_plugin_abi::ai::{
+        encode_ai_models_reply_bytes, encode_ai_run_reply_bytes, pack_embedding_vectors,
+    };
+    use bookclerk_plugin_abi::{
+        AiModel, AiModelList, AiOutput, AiRunOk, AiTask, AiTextEmbeddingsOutput, PluginError,
+        PluginErrorCode,
+    };
+
+    let reply = |vectors: &[Vec<f32>], dimensions: u32| AiRunOk {
+        output: AiOutput {
+            text_embeddings: AiTextEmbeddingsOutput {
+                dimensions,
+                vectors: pack_embedding_vectors(vectors),
+                revision: ai_run_reply_oracle::REVISION.into(),
+                fallbacks: Vec::new(),
+            },
+        },
+        model: None,
+    };
+    let two = vec![vec![0.25_f32, -0.5, 1.0], vec![0.0, 0.125, -1.0]];
+    let good = reply(&two, 3);
+    let with = |change: &dyn Fn(&mut AiRunOk)| {
+        let mut changed = good.clone();
+        change(&mut changed);
+        changed
+    };
+    // Each case: name, texts sent, vector length listed, reply.
+    let runs: Vec<(&str, u8, u16, Result<AiRunOk, PluginError>)> = vec![
+        ("run_ok.bin", 2, 3, Ok(good.clone())),
+        ("run_missing_vector.bin", 3, 3, Ok(good.clone())),
+        ("run_no_texts.bin", 0, 3, Ok(reply(&[], 3))),
+        ("run_other_length.bin", 2, 4, Ok(good.clone())),
+        (
+            "run_nan.bin",
+            2,
+            3,
+            Ok(reply(&[vec![0.0, f32::NAN, 0.0], vec![0.0; 3]], 3)),
+        ),
+        (
+            "run_infinite.bin",
+            1,
+            2,
+            Ok(reply(&[vec![f32::INFINITY, 0.0]], 2)),
+        ),
+        (
+            "run_other_revision.bin",
+            2,
+            3,
+            Ok(with(&|r| {
+                r.output.text_embeddings.revision = "sha256:other".into();
+            })),
+        ),
+        (
+            "run_names_model.bin",
+            2,
+            3,
+            Ok(with(&|r| r.model = Some("@other/model".into()))),
+        ),
+        (
+            "run_fallbacks.bin",
+            2,
+            3,
+            Ok(with(&|r| r.output.text_embeddings.fallbacks = vec![0, 1])),
+        ),
+        (
+            "run_fallback_repeats.bin",
+            2,
+            3,
+            Ok(with(&|r| r.output.text_embeddings.fallbacks = vec![1, 1])),
+        ),
+        (
+            "run_fallback_past_input.bin",
+            2,
+            3,
+            Ok(with(&|r| r.output.text_embeddings.fallbacks = vec![2])),
+        ),
+        (
+            "run_ragged_bytes.bin",
+            2,
+            3,
+            Ok(with(&|r| r.output.text_embeddings.vectors.push(0))),
+        ),
+        (
+            "run_error.bin",
+            2,
+            3,
+            Err(PluginError::new(
+                PluginErrorCode::Unavailable,
+                "model not loaded",
+            )),
+        ),
+    ];
+    for (name, texts, listed, reply) in runs {
+        let mut seed = vec![0, texts];
+        seed.extend(listed.to_le_bytes());
+        seed.extend(encode_ai_run_reply_bytes(&reply).expect("encode"));
+        assert_notify_seed("ai_run_reply", name, &seed);
+    }
+
+    let model = AiModel {
+        model_id: "bekko-a8m".into(),
+        task: AiTask::TextEmbeddings,
+        revision: "sha256:0123abcd".into(),
+        dimensions: Some(384),
+        max_tokens: Some(512),
+        languages: vec!["en".into(), "de".into(), "pt-BR".into()],
+    };
+    let listing = |change: &dyn Fn(&mut AiModel)| {
+        let mut changed = model.clone();
+        change(&mut changed);
+        AiModelList {
+            models: vec![changed],
+        }
+    };
+    let listings: Vec<(&str, AiModelList)> = vec![
+        ("models_ok.bin", listing(&|_| {})),
+        ("models_empty.bin", AiModelList { models: Vec::new() }),
+        (
+            "models_twice.bin",
+            AiModelList {
+                models: vec![model.clone(), model.clone()],
+            },
+        ),
+        (
+            "models_bad_id.bin",
+            listing(&|m| m.model_id = "Bekko/a8m".into()),
+        ),
+        (
+            "models_revision_space.bin",
+            listing(&|m| m.revision = "rev 1".into()),
+        ),
+        ("models_no_length.bin", listing(&|m| m.dimensions = None)),
+        (
+            "models_long_vectors.bin",
+            listing(&|m| m.dimensions = Some(4_097)),
+        ),
+        ("models_no_tokens.bin", listing(&|m| m.max_tokens = Some(0))),
+        (
+            "models_language_twice.bin",
+            listing(&|m| m.languages = vec!["en".into(), "EN".into()]),
+        ),
+        (
+            "models_bad_language.bin",
+            listing(&|m| m.languages = vec!["english language".into()]),
+        ),
+    ];
+    for (name, list) in listings {
+        let mut seed = vec![1];
+        seed.extend(encode_ai_models_reply_bytes(&Ok(list)).expect("encode"));
+        assert_notify_seed("ai_run_reply", name, &seed);
+    }
+}
+
+#[path = "../../../fuzz/oracles/ai_run.rs"]
+mod ai_run_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/ai_run.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_ai_run_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("ai_run") {
+        ai_run_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no ai_run seed");
+}
+
+/// Seeds for `ai_run`: a run by model name, one by task alias, and ones
+/// breaking each rule, as JSON bodies and as Cap'n Proto messages. Refresh
+/// with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn ai_run_seeds_are_current() {
+    use bookclerk_plugin_abi::ai::encode_ai_run_params_bytes;
+    use bookclerk_plugin_abi::{
+        AiEmbedText, AiInput, AiRunParams, AiTextEmbeddingsInput, AiTextRole,
+    };
+
+    let run = |model: &str, texts: Vec<AiEmbedText>| AiRunParams {
+        model: model.into(),
+        input: AiInput {
+            text_embeddings: AiTextEmbeddingsInput { texts },
+        },
+    };
+    let text = |text: &str, role| AiEmbedText {
+        text: text.into(),
+        role,
+    };
+    let pair = || {
+        vec![
+            text("A detective in Victorian London", AiTextRole::Document),
+            text("cosy mysteries", AiTextRole::Query),
+        ]
+    };
+    let runs = [
+        ("named", run("@embedder/bekko-a8m", pair())),
+        ("alias", run("@library/text-embeddings", pair())),
+        ("unknown_alias", run("@library/transcription", pair())),
+        ("bare_name", run("bekko-a8m", pair())),
+        ("bad_plugin", run("@Embedder/bekko-a8m", pair())),
+        ("nested_model", run("@embedder/a/b", pair())),
+        ("no_texts", run("@embedder/bekko-a8m", Vec::new())),
+        (
+            "empty_text",
+            run("@embedder/bekko-a8m", vec![text("", AiTextRole::Document)]),
+        ),
+        (
+            "too_many_texts",
+            run(
+                "@embedder/bekko-a8m",
+                (0..65).map(|_| text("t", AiTextRole::Document)).collect(),
+            ),
+        ),
+    ];
+    for (name, params) in runs {
+        let mut json = vec![0];
+        json.extend(serde_json::to_vec(&params).expect("json"));
+        assert_notify_seed("ai_run", &format!("{name}.json.bin"), &json);
+        let mut capnp = vec![1];
+        capnp.extend(encode_ai_run_params_bytes(&params).expect("encode"));
+        assert_notify_seed("ai_run", &format!("{name}.capnp.bin"), &capnp);
     }
 }

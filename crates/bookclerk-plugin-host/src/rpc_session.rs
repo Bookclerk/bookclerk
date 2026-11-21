@@ -89,6 +89,9 @@ type MetadataFilesCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataFiles>
 /// Typed call against the opened `notifier` entrypoint.
 type NotifierCall = EntrypointCall<dyn bookclerk_plugin_sdk::Notifier>;
 
+/// Typed call against the opened `ai` entrypoint.
+type AiCall = EntrypointCall<dyn bookclerk_plugin_sdk::AiModels>;
+
 /// Typed call against the opened `ingress` entrypoint.
 type IngressCall = EntrypointCall<dyn bookclerk_plugin_abi::Ingress>;
 
@@ -209,6 +212,11 @@ enum Work {
     Notifier {
         /// Typed call; replies through the sender it captured.
         call: NotifierCall,
+    },
+    /// One typed `ai` method on the opened primary entrypoints.
+    Ai {
+        /// Typed call; replies through the sender it captured.
+        call: AiCall,
     },
     /// One typed `ingress` method on the opened primary entrypoints.
     Ingress {
@@ -613,6 +621,12 @@ pub struct SessionServices {
     /// the covering grant has the `sockets` token; `None` never exposes
     /// `SOCKETS`.
     pub sockets: Option<crate::SocketBroker>,
+    /// The node's model router, behind the `AI` binding.
+    ///
+    /// The session hands it out only when the manifest lists tasks under
+    /// `[ai].calls` and the covering grant has the token of at least one;
+    /// `None` never exposes `AI`.
+    pub ai: Option<Arc<bookclerk_integrations::AiRouter>>,
     /// The library as a relay ingress plugin reaches it, behind the `ORIGIN`
     /// binding.
     ///
@@ -634,6 +648,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            ai: None,
             origin: None,
         }
     }
@@ -648,6 +663,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            ai: None,
             origin: None,
         }
     }
@@ -665,6 +681,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            ai: None,
             origin: None,
         }
     }
@@ -879,6 +896,9 @@ impl PluginSession {
         // and a manifest exporting a relay `ingress`.
         let origin = granted_origin(services.origin, &manifest);
         let network = spawned.network.clone();
+        // `AI` needs the node's model router, tasks under `[ai].calls` and
+        // their `ai:<task>` grant tokens.
+        let ai = crate::ai_binding::GrantedAi::granted(services.ai, &manifest, &grant);
         let spawn_config = spawned.spawn_config.clone();
         #[cfg(windows)]
         let package_sid = spawned.package_sid.clone();
@@ -977,6 +997,7 @@ impl PluginSession {
                         sockets,
                         origin,
                         network,
+                        ai,
                     },
                     rx,
                     ready_tx,
@@ -1457,6 +1478,25 @@ impl PluginSession {
     {
         self.entrypoint_call(call, |call| Work::Notifier { call })
             .await
+    }
+
+    /// One typed `ai` method on the opened primary entrypoints.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `ai` or the
+    /// method fails.
+    pub async fn ai<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::AiModels>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.entrypoint_call(call, |call| Work::Ai { call }).await
     }
 
     /// One typed `ingress` method (`start`, `health` or `stop`) on the
@@ -2475,6 +2515,8 @@ struct PrimaryState {
     origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
     /// `NETWORK`: the grant in effect, carried by every `open`.
     network: bookclerk_plugin_abi::NetworkGrant,
+    /// `AI` runner; `None` unless `[ai].calls` is declared and granted.
+    ai: Option<Arc<crate::ai_binding::GrantedAi>>,
 }
 
 /// Host-served bindings every `open` of one session receives: the `EVENTS`
@@ -2492,6 +2534,8 @@ struct BindingHooks {
     origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
     /// `NETWORK` grant computed at spawn.
     network: bookclerk_plugin_abi::NetworkGrant,
+    /// `AI` runner.
+    ai: Option<Arc<crate::ai_binding::GrantedAi>>,
 }
 
 impl PrimaryState {
@@ -2505,7 +2549,15 @@ impl PrimaryState {
             sockets: hooks.sockets,
             origin: hooks.origin,
             network: hooks.network,
+            ai: hooks.ai,
         }
+    }
+
+    /// The `AI` binding, when model tasks are granted.
+    fn ai_binding(&self) -> Option<Arc<dyn bookclerk_plugin_abi::AiRunner>> {
+        self.ai
+            .clone()
+            .map(|ai| ai as Arc<dyn bookclerk_plugin_abi::AiRunner>)
     }
 
     /// The `SOCKETS` binding, when the broker is granted.
@@ -2615,6 +2667,7 @@ async fn primary_entrypoints<'a>(
                     queues: primary.queues_for(&invocation),
                     kv: primary.kv_bindings(),
                     sockets: primary.sockets_binding(),
+                    ai: primary.ai_binding(),
                     origin: primary
                         .origin
                         .clone()
@@ -3579,6 +3632,22 @@ fn vat_thread(
                             let _ = with_session(&session_cancel, &mut child, &mut guest, open)
                                 .await;
                         }
+                        Work::Ai { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "ai",
+                                |eps| {
+                                    eps.ai.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::AiModels>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
                         Work::Ingress { call } => {
                             let open = run_entrypoint_call(
                                 &client,
@@ -4373,10 +4442,11 @@ async fn run_stream_copy(
                 // The stream-copy job never needs a pushed socket; the
                 // broker hands sockets only to a deployment's own open.
                 sockets: None,
-                // Nor does it raise notifications.
+                // Nor does it raise notifications or run models.
                 notify: None,
                 // Only the active relay ingress reaches the library.
                 origin: None,
+                ai: None,
             },
         )
         .await
