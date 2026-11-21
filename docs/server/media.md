@@ -203,8 +203,28 @@ the track's size plus 64 MiB in all. It checks every frame against the
 wire's limits and the order the protocol allows. Seeking or closing the
 track stops the process.
 
+### Book samples
+
+A book's details can play a short sample, which never counts as
+listening (see [Book samples](../adr/book-samples.md)). The same `pcm`
+worker cuts it: a `Sample` request names the file's size, a start and a
+length (at most 10 minutes). The worker reads the ranges it needs as
+above, folds the audio to mono, and encodes MP3 at 64 kbit/s itself, so
+it sends `Encoded` frames of at most 128 KiB instead of samples. The host
+stops it after 2 minutes or 16 MiB of MP3.
+
+- **An edition's sample** is read from the destination that holds its
+  first file. It starts at the second chapter when the first is shorter
+  than 3 minutes (single-file editions only) and runs 5 minutes.
+- **A store's sample** is downloaded through the `covers` plugin first,
+  then cut from the downloaded bytes the same way.
+
+Samples are cut the first time someone asks and kept in
+`cache/samples/`. The least recently served are removed once the folder
+passes 256 MiB.
+
 Playback never decodes in-process: with `media.isolation = "off"` the
-desktop player refuses to play. The frames are fuzzed by the
+desktop player refuses to play and no sample is cut. The frames are fuzzed by the
 `media_pcm_wire` target (see [Fuzzing](../contributing/fuzzing.md)).
 
 ### What a stored file's row says

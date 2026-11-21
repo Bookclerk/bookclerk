@@ -34,7 +34,7 @@ use tokio::sync::Semaphore;
 use crate::cover_worker::{CoverRunner, CoverWorker};
 use crate::error::{MediaError, Result};
 use crate::job::{MediaJob, MediaJobOutput, MediaJobReply};
-use crate::pcm_stream::{PcmRunner, PcmStream};
+use crate::pcm_stream::{EncodedSample, PcmRunner, PcmStream};
 use crate::tag_worker::{RangeSource, TagRunner, TagWorker};
 
 /// Environment variable naming the worker binary explicitly.
@@ -401,6 +401,44 @@ impl MediaPool {
         source: S,
     ) -> Result<PcmStream> {
         self.pcm.open(size, start_ms, source).await
+    }
+
+    /// Cuts a short sample of one audio file, folded to mono and encoded
+    /// as MP3, for a book's details (`bookclerk-media-worker pcm`, opened
+    /// with `Sample`).
+    ///
+    /// Like [`Self::open_pcm`], each call starts its own worker, jailed to
+    /// no path and no network, which asks for the byte ranges it reads; it
+    /// does not take a job slot. The worker decodes only the sample's span,
+    /// and the bytes returned are its encoding, never the file's own. With
+    /// isolation off, samples are refused, never cut in this process.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The file's size in bytes.
+    /// * `start_ms` - Where the sample starts, in milliseconds into the
+    ///   file.
+    /// * `length_ms` - How long it runs; at most
+    ///   [`crate::pcm_wire::MAX_SAMPLE_MS`], and less when the file ends
+    ///   first.
+    /// * `source` - Where the file's bytes come from.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::NotIsolated`] when isolation is off or no worker was
+    /// found, [`MediaError::Native`] when the file cannot be decoded or
+    /// encoded, [`MediaError::Io`] when `source` fails, and
+    /// [`MediaError::Worker`] when the worker cannot be started, breaks the
+    /// protocol, sends more than [`crate::MAX_SAMPLE_BYTES`], or
+    /// takes longer than [`crate::SAMPLE_TIMEOUT`].
+    pub async fn cut_sample<S: RangeSource + 'static>(
+        &self,
+        size: u64,
+        start_ms: u64,
+        length_ms: u64,
+        source: S,
+    ) -> Result<EncodedSample> {
+        self.pcm.cut_sample(size, start_ms, length_ms, source).await
     }
 
     /// Run `job`, waiting for a free slot first.

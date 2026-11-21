@@ -17,12 +17,18 @@ on every store's and catalog's own CDN.
 - Every answer carries the server's `ETag`, `Last-Modified`,
   `Cache-Control`, `Expires`, `Date` and `Age`, each at most 1024 bytes of
   plain ASCII. The host decides from them how long to keep the image.
+- The request's `media` is `image` (the default) or `audio`. With `audio`
+  the plugin downloads a storefront's public audio sample for a
+  [book sample](../../../../docs/adr/book-samples.md): it asks for
+  `audio/*` and refuses an answer that is plainly not audio, the same way
+  it refuses a cover that is not an image.
 - `health` answers without a request.
 
 The grant is `domains = ["*"]`: every public hostname, but never an IP
 literal, and never a private, loopback or metadata address. Nothing the
 plugin fetches is trusted. The host checks each body's real type, decodes
-it with limits and re-encodes it before it stores or serves anything.
+it with limits and re-encodes it before it stores or serves anything; an
+audio sample is decoded and re-encoded by the jailed media worker.
 
 ## Develop
 

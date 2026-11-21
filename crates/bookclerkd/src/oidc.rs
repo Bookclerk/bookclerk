@@ -1916,6 +1916,7 @@ mod tests {
             in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
+            samples: Arc::new(crate::samples::SampleService::detached()),
         });
         let user = library
             .create_user_with_login(UserRole::Member, Some("Abs User"), Some("absuser"), None)
@@ -2099,6 +2100,7 @@ mod tests {
             in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
+            samples: Arc::new(crate::samples::SampleService::detached()),
         });
         (state, library)
     }

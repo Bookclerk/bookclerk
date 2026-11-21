@@ -1,12 +1,14 @@
 /**
- * Fetches cover images and streams each body into the host's sink.
+ * Fetches cover images, or a store's audio samples, and streams each body
+ * into the host's sink.
  *
  * `fetch` and the sink are passed in so the unit tests can answer them; in
  * the isolate `fetch` is the global one, which the host's egress gate limits
  * to public hostnames, and the sink is the host-served `Destination` the call
  * received. Nothing here trusts a body: the host sniffs, decodes and
  * re-encodes every image it stores. This module only keeps a guest from
- * spending its budget on answers that cannot be covers.
+ * spending its budget on answers that cannot be covers (or, for a request
+ * with `media = "audio"`, samples).
  */
 /** Most URLs one call may ask for (the ABI's `maxCoverUrls`). */
 export const MAX_URLS = 32;
@@ -95,7 +97,11 @@ export function checkParams(params) {
     if (!Array.isArray(rawConditions) || rawConditions.length > urls.length) {
         throw new CoverFailure("conditions must hold at most one entry per url");
     }
-    return { urls, maxBytes, conditions: rawConditions.map(checkCondition) };
+    const media = p.media ?? "image";
+    if (media !== "image" && media !== "audio") {
+        throw new CoverFailure('media must be "image" or "audio"');
+    }
+    return { urls, media, maxBytes, conditions: rawConditions.map(checkCondition) };
 }
 /**
  * Whether `url` is one the fetcher will request: absolute `https`, the
@@ -163,6 +169,26 @@ export function maybeImage(contentType) {
     const essence = (contentType.split(";")[0] ?? "").trim().toLowerCase();
     return (essence === "" ||
         essence.startsWith("image/") ||
+        essence === "application/octet-stream" ||
+        essence === "binary/octet-stream");
+}
+/**
+ * Whether a `Content-Type` could be an audio sample. Absent and generic
+ * binary types pass, since the host decodes the bytes anyway; so do
+ * `video/mp4` and `application/ogg`, which some CDNs send for M4A and Ogg
+ * audio. Text, HTML and JSON (an error page, usually) do not.
+ *
+ * @param contentType - The header value, or `null` when absent.
+ * @returns `true` unless the type names something other than audio.
+ */
+export function maybeAudio(contentType) {
+    if (contentType === null)
+        return true;
+    const essence = (contentType.split(";")[0] ?? "").trim().toLowerCase();
+    return (essence === "" ||
+        essence.startsWith("audio/") ||
+        essence === "video/mp4" ||
+        essence === "application/ogg" ||
         essence === "application/octet-stream" ||
         essence === "binary/octet-stream");
 }
@@ -247,9 +273,10 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
  * @param maxBytes - Largest body accepted.
  * @param sink - The host's destination.
  * @param condition - Validators to send, so an unchanged image answers `304`.
+ * @param media - What the URL names: an image, or an audio sample.
  * @returns What happened; a failure is an answer, never a throw.
  */
-export async function fetchOne(options, url, index, maxBytes, sink, condition = {}) {
+export async function fetchOne(options, url, index, maxBytes, sink, condition = {}, media = "image") {
     const failed = (error) => ({
         url,
         stored: false,
@@ -263,7 +290,7 @@ export async function fetchOne(options, url, index, maxBytes, sink, condition = 
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     let current = target;
     const headers = {
-        accept: "image/*",
+        accept: media === "audio" ? "audio/*" : "image/*",
         "user-agent": `Bookclerk-Covers/${options.version} (+https://bookclerk.app)`,
     };
     if (condition.ifNoneMatch !== undefined)
@@ -313,9 +340,10 @@ export async function fetchOne(options, url, index, maxBytes, sink, condition = 
         return failed(`HTTP ${response.status}`);
     }
     const contentType = response.headers.get("content-type");
-    if (!maybeImage(contentType)) {
+    if (media === "audio" ? !maybeAudio(contentType) : !maybeImage(contentType)) {
         await drop(response);
-        return failed(`not an image (${(contentType ?? "").slice(0, 100)})`);
+        const kind = media === "audio" ? "audio" : "an image";
+        return failed(`not ${kind} (${(contentType ?? "").slice(0, 100)})`);
     }
     const length = declaredLength(response.headers);
     if (length !== undefined && length > maxBytes) {
@@ -353,12 +381,12 @@ export async function fetchOne(options, url, index, maxBytes, sink, condition = 
  * @throws {CoverFailure} When the params are malformed.
  */
 export async function fetchCovers(options, params, sink) {
-    const { urls, maxBytes, conditions } = checkParams(params);
+    const { urls, media, maxBytes, conditions } = checkParams(params);
     const out = new Array(urls.length);
     let next = 0;
     const worker = async () => {
         for (let i = next++; i < urls.length; i = next++) {
-            out[i] = await fetchOne(options, urls[i], i, maxBytes, sink, conditions[i]);
+            out[i] = await fetchOne(options, urls[i], i, maxBytes, sink, conditions[i], media);
         }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, urls.length) }, worker));

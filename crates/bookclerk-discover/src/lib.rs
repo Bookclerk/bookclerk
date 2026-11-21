@@ -93,8 +93,8 @@ pub use shelves::{
 };
 pub use title_meta::{
     check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_batch,
-    resolve_title_reviews, FillLookup, FillStoreLookups, TitleMeta, TitleMetaQuery,
-    TitleMetaQueryProblem, TitleReview, TitleReviewsPage, TitleReviewsQuery,
+    resolve_title_reviews, resolve_title_sample, FillLookup, FillStoreLookups, TitleMeta,
+    TitleMetaQuery, TitleMetaQueryProblem, TitleReview, TitleReviewsPage, TitleReviewsQuery,
     TITLE_META_BATCH_DEADLINE, TITLE_META_MAX_STORE_EDITIONS,
 };
 pub use wish_pool::{

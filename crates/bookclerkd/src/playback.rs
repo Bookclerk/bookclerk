@@ -161,7 +161,7 @@ fn write_failed(route: &str, err: &LibraryError) -> PlaybackError {
 ///
 /// A 403 for the operator token, an operator session nobody elevated
 /// from (in the window), or a session linked to no library user.
-async fn listener(state: &AppState, headers: &HeaderMap) -> Result<i64, PlaybackError> {
+pub(crate) async fn listener(state: &AppState, headers: &HeaderMap) -> Result<i64, PlaybackError> {
     let no_user = || {
         refuse(
             StatusCode::FORBIDDEN,
@@ -187,7 +187,7 @@ async fn listener(state: &AppState, headers: &HeaderMap) -> Result<i64, Playback
 ///
 /// A 404 for an unknown or hidden edition, a 401 when the session ended,
 /// a 500 when the library cannot be read.
-async fn edition_in_scope(
+pub(crate) async fn edition_in_scope(
     state: &AppState,
     library: &LibraryStore,
     headers: &HeaderMap,

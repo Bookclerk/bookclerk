@@ -34,6 +34,15 @@ in the browser. Amazon accounts with **2FA/MFA enabled require completing OTP**
 (or SMS / mobile verification) during that browser step, so headless agents
 need an interactive Desktop session or a TOTP seed.
 
+## Catalog detail and samples
+
+The plugin declares `detailByProductId`: `catalogDetail` answers an ASIN
+from Audible's public catalog, trying the US marketplace and then the
+others for 8 seconds at most, without an account. Its records carry the
+product's public `sample_url` as `sampleUrl` when it is an `https` URL, so
+a title's details can play
+[Audible's sample](../../../../docs/adr/book-samples.md).
+
 ## Acquire download path
 
 `fetchTitle` (`guest_fetch_title`):

@@ -693,6 +693,96 @@ async fn fill_in_order(
     None
 }
 
+/// Process-wide TTL cache of title-sample answers (6 hours, 512 entries):
+/// the sample URL a store gave, or `None` when none had one.
+fn title_sample_cache() -> &'static TtlCache<Option<String>> {
+    static CACHE: OnceLock<TtlCache<Option<String>>> = OnceLock::new();
+    CACHE.get_or_init(|| TtlCache::new(Duration::from_secs(6 * 60 * 60), 512))
+}
+
+/// Longest a title-sample lookup spends on storefront calls. Longer than
+/// [`STORE_FILL_TIMEOUT`]: a person pressed play and waits for this one
+/// answer, and a store may try several marketplaces for a product id.
+const SAMPLE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The public audio sample a storefront offers for a title, for the
+/// "Play sample" control of a title's details.
+///
+/// Asks the same stores, in the same order, as the title-meta store fill
+/// ([`plan_title_meta_fill`]): the listing stores that declared
+/// `detailByProductId` by their own product ids, then the stores that
+/// declared `detailByIsbn` by the title's ISBN. The first catalog record
+/// with a `sample_url` wins; a store that fails is skipped, and the calls
+/// together stop after ten seconds. Answers, misses included,
+/// are cached for six hours.
+///
+/// # Arguments
+///
+/// * `query` - The title, as the details dialog sends title-meta.
+/// * `sources` - Loaded storefronts.
+///
+/// # Returns
+///
+/// The sample's URL as the store gave it; the caller signs it into a
+/// same-origin path and never hands it to a client. `None` when no store
+/// offered one.
+pub async fn resolve_title_sample(
+    query: &TitleMetaQuery,
+    sources: &SourceRegistry,
+) -> Option<String> {
+    let editions: Vec<String> = query
+        .store_editions
+        .iter()
+        .map(|ed| format!("{}:{}", ed.source.trim(), ed.product_id.trim()))
+        .collect();
+    let editions = editions.join(",");
+    let key = cache_key(&[
+        "title-sample-v1",
+        query.isbn.as_deref().unwrap_or(""),
+        editions.as_str(),
+    ]);
+    if let Some(cached) = title_sample_cache().get(&key) {
+        return cached;
+    }
+    let plan = store_fill_plan(query, sources);
+    let found = tokio::time::timeout(SAMPLE_LOOKUP_TIMEOUT, sample_in_order(plan))
+        .await
+        .unwrap_or_else(|_| {
+            tracing::debug!(title = %query.title, "title-sample lookup timed out");
+            None
+        });
+    title_sample_cache().insert(key, found.clone());
+    found
+}
+
+/// Runs a fill plan in order and returns the first sample URL a record
+/// carries.
+async fn sample_in_order(plan: Vec<(Arc<dyn ContentSource>, FillLookup)>) -> Option<String> {
+    for (store, lookup) in plan {
+        let result = match &lookup {
+            FillLookup::Product(product_id) => store.catalog_detail(product_id).await,
+            FillLookup::Isbn(isbn) => store.catalog_detail_by_isbn(isbn).await,
+        };
+        match result {
+            Ok(Some(hit)) => {
+                if let Some(url) = hit.sample_url.filter(|url| !url.trim().is_empty()) {
+                    return Some(url);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::debug!(
+                    source = %store.id(),
+                    lookup = lookup.kind(),
+                    error = %err,
+                    "title-sample catalog_detail failed"
+                );
+            }
+        }
+    }
+    None
+}
+
 /// Resolve public metadata for a title detail dialog.
 ///
 /// When `sources` is provided, sparse Audible/Audnexus results are gap-filled
@@ -1168,6 +1258,59 @@ mod tests {
                 .is_none()
         );
         assert_eq!(isbn_calls.lock().unwrap().len(), 1);
+    }
+
+    /// The first record in fill order that carries a sample wins: a
+    /// listing store's record without one falls through to the ISBN store,
+    /// and the answer is cached so a second press asks no store again.
+    #[tokio::test]
+    async fn the_title_sample_comes_from_the_first_record_with_one() {
+        let (listing, listing_calls) = store("graphicaudio", false, true, "From GA.");
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let with_sample: Arc<dyn ContentSource> = Arc::new(DetailStore {
+            id: "libro",
+            by_isbn: true,
+            by_product_id: false,
+            answer: Some(CatalogHit {
+                product_id: "libro-1".into(),
+                title: "Mistborn".into(),
+                sample_url: Some("https://samples.example/mistborn.mp3".into()),
+                ..CatalogHit::default()
+            }),
+            fails: false,
+            calls: calls.clone(),
+            listed: Vec::new(),
+        });
+        let mut registry = SourceRegistry::new();
+        registry.register(listing);
+        registry.register(with_sample);
+
+        let query = query(&[("graphicaudio", "sample-1")], Some("9780000005551"));
+        let found = resolve_title_sample(&query, &registry).await;
+        assert_eq!(
+            found.as_deref(),
+            Some("https://samples.example/mistborn.mp3")
+        );
+        assert_eq!(*listing_calls.lock().unwrap(), vec!["product:sample-1"]);
+        assert_eq!(*calls.lock().unwrap(), vec!["isbn:9780000005551"]);
+
+        assert_eq!(
+            resolve_title_sample(&query, &registry).await.as_deref(),
+            Some("https://samples.example/mistborn.mp3")
+        );
+        assert_eq!(calls.lock().unwrap().len(), 1, "answered from the cache");
+
+        // No store with a sample: none.
+        let (only_listing, _) = store("graphicaudio", false, true, "From GA.");
+        let mut bare = SourceRegistry::new();
+        bare.register(only_listing);
+        let miss = query_for_miss();
+        assert!(resolve_title_sample(&miss, &bare).await.is_none());
+    }
+
+    /// A query no store offers a sample for.
+    fn query_for_miss() -> TitleMetaQuery {
+        query(&[("graphicaudio", "sample-miss")], None)
     }
 
     /// Many editions, repeats and unknown stores still make at most
