@@ -1066,7 +1066,7 @@ async fn a_stalled_send_is_cancelled_and_failed_in_one_write_under_every_profile
             .unwrap();
         let delivery = routed.deliveries[0].id.clone();
         let later = chrono::Utc::now() + chrono::Duration::minutes(1);
-        let stalled = store.stalled_notify_sends(later, 10).await.unwrap();
+        let stalled = store.stalled_notify_sends(later, None, 10).await.unwrap().0;
         assert_eq!(stalled.len(), 1, "{name}");
         assert_eq!(
             stalled[0].delivery_id.as_deref(),
@@ -1102,13 +1102,102 @@ async fn a_stalled_send_is_cancelled_and_failed_in_one_write_under_every_profile
         );
         assert!(
             store
-                .stalled_notify_sends(later, 10)
+                .stalled_notify_sends(later, None, 10)
                 .await
                 .unwrap()
+                .0
                 .is_empty(),
             "{name}"
         );
+
+        // A job whose link write never landed is still matched with its
+        // delivery through its dedup key, and the failure is counted.
+        let routed = store
+            .route_notification(&operational("test", NotificationSeverity::Info), LIMITS)
+            .await
+            .unwrap();
+        let unlinked = routed.deliveries[0].id.clone();
+        unlink(&store, &unlinked).await;
+        let stalled = store.stalled_notify_sends(later, None, 10).await.unwrap().0;
+        assert_eq!(stalled.len(), 1, "{name}");
+        assert_eq!(
+            stalled[0].delivery_id.as_deref(),
+            Some(unlinked.as_str()),
+            "{name}"
+        );
+        assert_eq!(stalled[0].notifier.as_deref(), Some("slack-1"), "{name}");
+        assert_eq!(
+            store
+                .fail_stalled_notify_send(&stalled[0], "not running")
+                .await
+                .unwrap(),
+            crate::notifications::StallOutcome::Failed(
+                crate::notifications::FailureEffect::Counted
+            ),
+            "{name}"
+        );
+        let work = store.notify_send_work(&unlinked).await.unwrap().unwrap();
+        assert_eq!(work.destination.map(|d| d.failure_count), Some(2), "{name}");
+
+        // Once the destination is paused, a stalled delivery is dropped
+        // without counting an attempt or a failure.
+        let routed = store
+            .route_notification(&operational("test", NotificationSeverity::Info), LIMITS)
+            .await
+            .unwrap();
+        let held = routed.deliveries[0].id.clone();
+        pause(&store, &ops).await;
+        let stalled = store.stalled_notify_sends(later, None, 10).await.unwrap().0;
+        assert_eq!(stalled.len(), 1, "{name}");
+        assert_eq!(
+            store
+                .fail_stalled_notify_send(&stalled[0], "not running")
+                .await
+                .unwrap(),
+            crate::notifications::StallOutcome::Dropped,
+            "{name}"
+        );
+        let work = store.notify_send_work(&held).await.unwrap().unwrap();
+        assert_eq!(
+            work.state,
+            crate::notifications::DeliveryState::Dropped,
+            "{name}"
+        );
+        assert_eq!(work.attempts, 0, "{name}");
+        assert_eq!(work.destination.map(|d| d.failure_count), Some(2), "{name}");
     }
+}
+
+/// Clears the send-job link of `delivery`, as when the enqueue landed but
+/// the link write did not.
+async fn unlink(store: &LibraryStore, delivery: &str) {
+    store
+        .execute_host_batch(crate::control_plane::batch::request(
+            &format!("test-unlink-{delivery}"),
+            vec![crate::control_plane::batch::exec(
+                "UPDATE notify_deliveries SET job_id = NULL WHERE id = ?",
+                vec![crate::control_plane::batch::text(delivery)],
+            )],
+        ))
+        .await
+        .unwrap();
+}
+
+/// Marks `destination` paused.
+async fn pause(store: &LibraryStore, destination: &str) {
+    store
+        .execute_host_batch(crate::control_plane::batch::request(
+            &format!("test-pause-{destination}"),
+            vec![crate::control_plane::batch::exec(
+                "UPDATE notify_destinations SET paused_at = ?, paused_reason = 'test' WHERE id = ?",
+                vec![
+                    crate::control_plane::batch::text(&chrono::Utc::now().to_rfc3339()),
+                    crate::control_plane::batch::text(destination),
+                ],
+            )],
+        ))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

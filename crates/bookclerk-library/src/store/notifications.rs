@@ -745,12 +745,25 @@ impl LibraryStore {
         Ok(batch::rows_affected(&reply, 0))
     }
 
-    /// Send jobs still pending although they have been ready to run since
-    /// before `ready_before`: nothing claimed them, because their notifier
-    /// instance is deployed but not running. Each comes with its pending
-    /// delivery, if it still has one. Read from the oldest jobs first, at
-    /// most `limit` jobs per call; a job without a delivery is listed too,
-    /// so cancelling it keeps such jobs from filling every page.
+    /// One page of send jobs still pending although they have been ready
+    /// to run since before `ready_before`, with the pending delivery and
+    /// notifier instance of each when it still has one. Whether a job is
+    /// stalled or only waiting behind other work depends on whether its
+    /// notifier runs anywhere, which the caller decides.
+    ///
+    /// Pending send jobs are walked by id, `after` the last id of the
+    /// previous page (`None` for the first), at most `limit` rows a page;
+    /// the second value is the cursor of the next page, `None` after the
+    /// last. Only the id, readiness, lease generation and dedup key columns
+    /// are read, so a page stays narrow under the database's result-size
+    /// cap, and a page the database still refuses for its size is read
+    /// again at half the rows. Readiness is compared here rather than in
+    /// SQL because stored timestamps carry a varying number of fractional
+    /// digits, so they do not order as text.
+    ///
+    /// The delivery comes from the job's dedup key (it names the delivery
+    /// the job was enqueued for), not from the delivery's `job_id`, so a
+    /// job whose link write failed is still matched with its delivery.
     ///
     /// # Errors
     ///
@@ -758,17 +771,58 @@ impl LibraryStore {
     pub async fn stalled_notify_sends(
         &self,
         ready_before: DateTime<Utc>,
+        after: Option<&str>,
         limit: u64,
-    ) -> Result<Vec<StalledSend>> {
-        let stalled: Vec<jobs::Model> = jobs::Entity::find()
-            .filter(jobs::Column::Kind.eq(JobKind::NotifySend.as_str()))
-            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-            .order_by_asc(jobs::Column::RunAfter)
-            .order_by_asc(jobs::Column::Id)
-            .limit(page(limit).min(self.result_row_cap()))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
+    ) -> Result<(Vec<StalledSend>, Option<String>)> {
+        /// The columns of a pending send job the stall check needs.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct PendingSendRow {
+            /// Job id.
+            id: String,
+            /// When the job became ready to run, as stored.
+            run_after: String,
+            /// Lease generation when read.
+            lease_generation: i64,
+            /// Dedup key; names the delivery the job sends.
+            dedup_key: Option<String>,
+        }
+        let mut rows = page(limit).min(self.result_row_cap());
+        let page_rows = loop {
+            let mut query = jobs::Entity::find()
+                .select_only()
+                .column(jobs::Column::Id)
+                .column(jobs::Column::RunAfter)
+                .column(jobs::Column::LeaseGeneration)
+                .column(jobs::Column::DedupKey)
+                .filter(jobs::Column::Kind.eq(JobKind::NotifySend.as_str()))
+                .filter(jobs::Column::State.eq(JobState::Pending.as_str()));
+            if let Some(after) = after {
+                query = query.filter(jobs::Column::Id.gt(after));
+            }
+            match query
+                .order_by_asc(jobs::Column::Id)
+                .limit(rows)
+                .into_model::<PendingSendRow>()
+                .all(&self.db)
+                .await
+            {
+                Ok(found) => break found,
+                Err(err)
+                    if rows > 1
+                        && bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string())
+                            .is_some() =>
+                {
+                    rows /= 2;
+                }
+                Err(err) => return Err(LibraryError::Orm(err)),
+            }
+        };
+        let next = if u64::try_from(page_rows.len()).unwrap_or(u64::MAX) < rows {
+            None
+        } else {
+            page_rows.last().map(|row| row.id.clone())
+        };
+        let stalled: Vec<PendingSendRow> = page_rows
             .into_iter()
             .filter(|job| {
                 DateTime::parse_from_rfc3339(&job.run_after)
@@ -776,36 +830,65 @@ impl LibraryStore {
             })
             .collect();
         if stalled.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), next));
         }
-        let ids: Vec<String> = stalled.iter().map(|job| job.id.clone()).collect();
-        let deliveries: BTreeMap<String, String> = super::library_model::find_chunked::<
-            notify_deliveries::Entity,
-            _,
-        >(self, &ids, |chunk| {
-            notify_deliveries::Entity::find()
-                .filter(notify_deliveries::Column::JobId.is_in(chunk.to_vec()))
-                .filter(notify_deliveries::Column::State.eq(DeliveryState::Pending.as_str()))
-        })
-        .await?
-        .into_iter()
-        .filter_map(|row| row.job_id.map(|job_id| (job_id, row.id)))
-        .collect();
-        Ok(stalled
+        let prefix = crate::models::notify_send_dedup_key("");
+        let delivery_ids: Vec<String> = stalled
+            .iter()
+            .filter_map(|job| job.dedup_key.as_deref()?.strip_prefix(prefix.as_str()))
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>()
             .into_iter()
-            .map(|job| StalledSend {
-                delivery_id: deliveries.get(&job.id).cloned(),
-                job_id: job.id,
-                run_after: job.run_after,
-                lease_generation: job.lease_generation,
-            })
-            .collect())
+            .collect();
+        let deliveries: BTreeMap<String, notify_deliveries::Model> =
+            super::library_model::find_chunked::<notify_deliveries::Entity, _>(
+                self,
+                &delivery_ids,
+                |chunk| {
+                    notify_deliveries::Entity::find()
+                        .filter(notify_deliveries::Column::Id.is_in(chunk.to_vec()))
+                        .filter(
+                            notify_deliveries::Column::State.eq(DeliveryState::Pending.as_str()),
+                        )
+                },
+            )
+            .await?
+            .into_iter()
+            .map(|row| (row.id.clone(), row))
+            .collect();
+        Ok((
+            stalled
+                .into_iter()
+                .map(|job| {
+                    // A delivery linked to another job is not this job's.
+                    let delivery = job
+                        .dedup_key
+                        .as_deref()
+                        .and_then(|key| key.strip_prefix(prefix.as_str()))
+                        .and_then(|id| deliveries.get(id))
+                        .filter(|d| d.job_id.as_deref().is_none_or(|linked| linked == job.id));
+                    StalledSend {
+                        delivery_id: delivery.map(|d| d.id.clone()),
+                        notifier: delivery.map(|d| d.plugin_instance_id.clone()),
+                        job_id: job.id,
+                        run_after: job.run_after,
+                        lease_generation: job.lease_generation,
+                    }
+                })
+                .collect(),
+            next,
+        ))
     }
 
     /// Cancels one stalled send job and fails its pending delivery in a
     /// single atomic write, so a claim racing the sweep either wins (and
     /// nothing changes) or loses (and the failure is counted toward the
     /// destination's pause), and the cancel never lands without the count.
+    /// A delivery whose destination is already paused is dropped instead,
+    /// with no attempt or failure counted, as a send would drop it. Only
+    /// call this for a job whose notifier runs nowhere; a job that is only
+    /// waiting for a worker is not a notifier failure.
     ///
     /// # Returns
     ///
@@ -837,19 +920,42 @@ impl LibraryStore {
             ],
         )];
         // Each delivery write applies only when this batch's own cancel
-        // took (the job now carries this commit's stamp).
+        // took (the job now carries this commit's stamp), and only to a
+        // pending delivery that is this job's: linked to it, or not linked
+        // to any job yet (its link write failed).
         let gate = "EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = 'cancelled' \
                     AND error_kind = 'notify_stalled' AND updated_at = ?)";
+        let ours = "state = 'pending' AND (job_id IS NULL OR job_id = ?)";
         if let Some(delivery_id) = &stalled.delivery_id {
+            // A paused destination's delivery is dropped, as a send would
+            // drop it: no attempt and no failure are counted.
+            statements.push(batch::exec(
+                &format!(
+                    "UPDATE notify_deliveries SET state = 'dropped', reason = ?, updated_at = ? \
+                     WHERE id = ? AND {ours} AND destination_id IN (SELECT id FROM \
+                     notify_destinations WHERE paused_at IS NOT NULL) AND {gate}"
+                ),
+                vec![
+                    batch::text("the destination is paused"),
+                    batch::text(&now),
+                    batch::text(delivery_id),
+                    batch::text(&stalled.job_id),
+                    batch::text(&stalled.job_id),
+                    batch::text(&now),
+                ],
+            ));
+            // The rest only sees the delivery while it is still pending,
+            // so after the drop above none of it applies.
             statements.push(batch::exec(
                 &format!(
                     "UPDATE notify_destinations SET failure_count = failure_count + 1, \
-                     updated_at = ? WHERE id IN (SELECT destination_id FROM \
-                     notify_deliveries WHERE id = ? AND state = 'pending') AND {gate}"
+                     updated_at = ? WHERE paused_at IS NULL AND id IN (SELECT destination_id \
+                     FROM notify_deliveries WHERE id = ? AND {ours}) AND {gate}"
                 ),
                 vec![
                     batch::text(&now),
                     batch::text(delivery_id),
+                    batch::text(&stalled.job_id),
                     batch::text(&stalled.job_id),
                     batch::text(&now),
                 ],
@@ -859,7 +965,7 @@ impl LibraryStore {
                     "UPDATE notify_destinations SET paused_at = ?, paused_reason = ? \
                      WHERE paused_at IS NULL AND failure_count >= ? AND id IN \
                      (SELECT destination_id FROM notify_deliveries \
-                     WHERE id = ? AND state = 'pending') AND {gate}"
+                     WHERE id = ? AND {ours}) AND {gate}"
                 ),
                 vec![
                     batch::text(&now),
@@ -867,18 +973,20 @@ impl LibraryStore {
                     batch::int(PAUSE_AFTER_FAILURES),
                     batch::text(delivery_id),
                     batch::text(&stalled.job_id),
+                    batch::text(&stalled.job_id),
                     batch::text(&now),
                 ],
             ));
             statements.push(batch::exec(
                 &format!(
                     "UPDATE notify_deliveries SET state = 'failed', attempts = attempts + 1, \
-                     reason = ?, updated_at = ? WHERE id = ? AND state = 'pending' AND {gate}"
+                     reason = ?, updated_at = ? WHERE id = ? AND {ours} AND {gate}"
                 ),
                 vec![
                     batch::text(&reason),
                     batch::text(&now),
                     batch::text(delivery_id),
+                    batch::text(&stalled.job_id),
                     batch::text(&stalled.job_id),
                     batch::text(&now),
                 ],
@@ -897,9 +1005,12 @@ impl LibraryStore {
         if batch::rows_affected(&reply, 0) != 1 {
             return Ok(StallOutcome::NotStalled);
         }
-        if stalled.delivery_id.is_some() && batch::rows_affected(&reply, 3) == 1 {
+        if stalled.delivery_id.is_some() && batch::rows_affected(&reply, 1) == 1 {
+            return Ok(StallOutcome::Dropped);
+        }
+        if stalled.delivery_id.is_some() && batch::rows_affected(&reply, 4) == 1 {
             return Ok(StallOutcome::Failed(
-                if batch::rows_affected(&reply, 2) == 1 {
+                if batch::rows_affected(&reply, 3) == 1 {
                     FailureEffect::Paused
                 } else {
                     FailureEffect::Counted

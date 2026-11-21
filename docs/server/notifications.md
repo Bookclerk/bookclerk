@@ -96,7 +96,10 @@ people outside its own account.
   notifier instance on at least one such node. A send job for an instance
   that runs only elsewhere, or is deployed but not running, waits in the
   queue for up to an hour; then the job is cancelled and the delivery
-  fails, counting toward a pause.
+  fails, counting toward a pause (or is dropped, if its destination was
+  paused meanwhile). A send that waits that long only because other work
+  is ahead of it, while its notifier is running, is left in the queue and
+  counts nothing.
 - A notifier that does not answer within 30 seconds is retried like one
   that asked to.
 

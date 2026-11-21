@@ -342,7 +342,8 @@ pub struct PendingDelivery {
 }
 
 /// A send job that has been ready to run for a long time and that nothing
-/// claimed: its notifier instance is deployed but not running.
+/// claimed. It is stalled only when its notifier instance runs on no live
+/// node; otherwise it is waiting for a worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StalledSend {
     /// The pending send job nothing claimed.
@@ -352,9 +353,13 @@ pub struct StalledSend {
     pub run_after: String,
     /// The job's lease generation when it was read, matched the same way.
     pub lease_generation: i64,
-    /// Its pending delivery; `None` when the delivery is gone or already
-    /// finished, and the job only needs cancelling.
+    /// Its pending delivery, named by the job's dedup key; `None` when the
+    /// delivery is gone, already finished or linked to another job, and
+    /// the job only needs cancelling.
     pub delivery_id: Option<String>,
+    /// The notifier instance the delivery goes through; `None` exactly
+    /// when `delivery_id` is.
+    pub notifier: Option<String>,
 }
 
 /// What failing one [`StalledSend`] did.
@@ -364,6 +369,9 @@ pub enum StallOutcome {
     NotStalled,
     /// The job was cancelled; it had no pending delivery to fail.
     Cancelled,
+    /// The job was cancelled and its delivery dropped, because the
+    /// destination was already paused; nothing was counted.
+    Dropped,
     /// The job was cancelled and its delivery failed, in one write.
     Failed(FailureEffect),
 }

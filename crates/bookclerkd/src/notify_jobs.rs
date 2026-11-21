@@ -46,8 +46,9 @@ pub const NOTIFY_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const NOTIFY_SWEEP_BATCH: u64 = 100;
 
 /// How long a send job may stay ready to run without being claimed
-/// before the sweep fails its delivery: its notifier instance is deployed
-/// but not running.
+/// before the sweep fails its delivery, when its notifier instance runs
+/// on no live node. A send waiting this long behind other work while its
+/// notifier runs is left alone.
 pub const NOTIFY_STALL_AFTER: Duration = Duration::from_secs(60 * 60);
 
 /// The delivery-log reason of a send that waited out [`NOTIFY_STALL_AFTER`].
@@ -319,8 +320,12 @@ pub async fn sweep_once(state: &AppState) -> anyhow::Result<()> {
             "dropped deliveries whose send job ended without a result"
         );
     }
+    // A failed stall check is logged and the pass goes on, so unscheduled
+    // deliveries are still enqueued.
     let stall = chrono::Duration::from_std(NOTIFY_STALL_AFTER)?;
-    fail_stalled_sends(&library, chrono::Utc::now() - stall).await?;
+    if let Err(err) = fail_stalled_sends(&library, chrono::Utc::now(), stall).await {
+        warn!(error = %err, "could not check for stalled notification sends");
+    }
     let limits = notify_queue_limits(state).await;
     for delivery in library
         .unscheduled_notify_deliveries(NOTIFY_SWEEP_BATCH)
@@ -353,42 +358,74 @@ pub async fn sweep_once(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Fails the deliveries whose send job has been ready to run since before
-/// `ready_before` without being claimed (the notifier instance is deployed
-/// but not running): the job is cancelled and the delivery counts as a
-/// failed attempt, so the destination pauses as it would for any other
-/// run of failures.
+/// Fails the deliveries whose send job has been ready to run for longer
+/// than `stall` without being claimed because its notifier instance runs
+/// on no live node: the job is cancelled and the delivery counts as a
+/// failed attempt, so the destination pauses as it would for any other run
+/// of failures. A job whose notifier is running somewhere is only waiting
+/// behind other work and is left to run. A job with no pending delivery
+/// left is cancelled, since it has nothing to send.
 ///
 /// # Errors
 ///
-/// An error when the read of stalled sends fails.
+/// An error when a read of stalled sends or of a notifier's deployments
+/// fails; sends handled before it keep their writes.
 async fn fail_stalled_sends(
     library: &bookclerk_library::LibraryStore,
-    ready_before: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+    stall: chrono::Duration,
 ) -> anyhow::Result<()> {
-    for stalled in library
-        .stalled_notify_sends(ready_before, NOTIFY_SWEEP_BATCH)
-        .await?
-    {
-        // One write cancels the job and fails its delivery; a claim that
-        // got there first leaves both alone.
-        match library
-            .fail_stalled_notify_send(&stalled, STALLED_REASON)
-            .await
-        {
-            Ok(StallOutcome::Failed(FailureEffect::Paused)) => warn!(
-                job = %stalled.job_id,
-                "notification destination paused after repeated failures"
-            ),
-            Ok(StallOutcome::Failed(FailureEffect::Counted))
-            | Ok(StallOutcome::Cancelled)
-            | Ok(StallOutcome::NotStalled) => {}
-            Err(err) => {
-                warn!(job = %stalled.job_id, error = %err, "could not fail a stalled send");
+    let ready_before = now - stall;
+    let now_ms = now.timestamp_millis();
+    // Whether each notifier runs, read once per pass.
+    let mut running: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+    let mut after: Option<String> = None;
+    loop {
+        let (page, next) = library
+            .stalled_notify_sends(ready_before, after.as_deref(), NOTIFY_SWEEP_BATCH)
+            .await?;
+        for stalled in page {
+            if let Some(notifier) = stalled.notifier.as_deref() {
+                let up = match running.get(notifier) {
+                    Some(up) => *up,
+                    None => {
+                        let up =
+                            bookclerk_library::control_plane::instance_running_on_database_node(
+                                library, notifier, now_ms,
+                            )
+                            .await?;
+                        running.insert(notifier.to_string(), up);
+                        up
+                    }
+                };
+                if up {
+                    continue;
+                }
+            }
+            // One write cancels the job and fails its delivery; a claim that
+            // got there first leaves both alone.
+            match library
+                .fail_stalled_notify_send(&stalled, STALLED_REASON)
+                .await
+            {
+                Ok(StallOutcome::Failed(FailureEffect::Paused)) => warn!(
+                    job = %stalled.job_id,
+                    "notification destination paused after repeated failures"
+                ),
+                Ok(StallOutcome::Failed(FailureEffect::Counted))
+                | Ok(StallOutcome::Dropped)
+                | Ok(StallOutcome::Cancelled)
+                | Ok(StallOutcome::NotStalled) => {}
+                Err(err) => {
+                    warn!(job = %stalled.job_id, error = %err, "could not fail a stalled send");
+                }
             }
         }
+        match next {
+            Some(next) => after = Some(next),
+            None => return Ok(()),
+        }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -610,6 +647,27 @@ mod tests {
         assert!(fake.sent.lock().unwrap().is_empty());
     }
 
+    /// Runs the stall check with sends ready before `ready_before` counted
+    /// as having waited too long.
+    async fn sweep_stalls(library: &LibraryStore, ready_before: chrono::DateTime<chrono::Utc>) {
+        let now = chrono::Utc::now();
+        fail_stalled_sends(library, now, now - ready_before)
+            .await
+            .expect("stall pass");
+    }
+
+    /// The pending send jobs ready before `ready_before`, first page.
+    async fn stalled(
+        library: &LibraryStore,
+        ready_before: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<bookclerk_library::notifications::StalledSend> {
+        library
+            .stalled_notify_sends(ready_before, None, 10)
+            .await
+            .expect("stalled sends")
+            .0
+    }
+
     #[tokio::test]
     async fn a_send_no_notifier_claims_fails_and_counts_toward_a_pause() {
         let (state, fake, channel) = daemon(Vec::new()).await;
@@ -617,16 +675,14 @@ mod tests {
         let payload = routed_under(&library, 1_000).await;
         let delivery = payload.notify_delivery.expect("delivery");
         // Within the wait, nothing is failed.
-        fail_stalled_sends(&library, chrono::Utc::now() - chrono::Duration::hours(1))
-            .await
-            .expect("early pass");
+        sweep_stalls(&library, chrono::Utc::now() - chrono::Duration::hours(1)).await;
         let work = library.notify_send_work(&delivery).await.unwrap().unwrap();
         assert_eq!(work.state, DeliveryState::Pending);
-        // Once the job has waited past the cutoff, it is cancelled and its
-        // delivery fails like any other failed attempt.
-        fail_stalled_sends(&library, chrono::Utc::now() + chrono::Duration::minutes(1))
-            .await
-            .expect("late pass");
+        // Once the job has waited past the cutoff with its notifier running
+        // on no node, it is cancelled and its delivery fails like any other
+        // failed attempt.
+        let later = chrono::Utc::now() + chrono::Duration::minutes(1);
+        sweep_stalls(&library, later).await;
         let work = library.notify_send_work(&delivery).await.unwrap().unwrap();
         assert_eq!(work.state, DeliveryState::Failed);
         assert_eq!(work.attempts, 1);
@@ -635,15 +691,114 @@ mod tests {
         assert_eq!(dest.failure_count, 1);
         assert!(fake.sent.lock().unwrap().is_empty());
         // Its job was cancelled, so nothing is left to claim it.
-        assert!(library
-            .stalled_notify_sends(chrono::Utc::now() + chrono::Duration::minutes(1), 10)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(stalled(&library, later).await.is_empty());
     }
 
     #[tokio::test]
-    async fn a_stalled_job_without_a_delivery_is_cancelled_and_a_raced_one_is_left_alone() {
+    async fn a_send_waiting_behind_other_work_is_not_a_stall() {
+        let (state, _fake, channel) = daemon(Vec::new()).await;
+        let library = state.library_snapshot().await;
+        // A notifier that runs on a live node: its send can still be
+        // claimed, however long it has waited.
+        let instance = bookclerk_library::control_plane::create_plugin_instance(
+            &library,
+            &bookclerk_library::control_plane::ConfigActor::Operator {
+                id: "operator".into(),
+            },
+            "path:file:///tmp/notifier#notifier",
+            "",
+        )
+        .await
+        .expect("instance");
+        let deployment = bookclerk_library::control_plane::ensure_plugin_deployment(
+            &library,
+            &bookclerk_library::control_plane::ConfigActor::Bootstrap,
+            &instance.id,
+            "node-a",
+            bookclerk_library::control_plane::DesiredState::Present,
+        )
+        .await
+        .expect("deployment");
+        bookclerk_library::control_plane::upsert_observation(
+            &library,
+            &bookclerk_library::control_plane::DeploymentObservation {
+                deployment_id: deployment.deployment_id,
+                node_id: "node-a".into(),
+                incarnation: "test".into(),
+                status: bookclerk_library::control_plane::DeploymentStatus::Running,
+                detail: String::new(),
+                applied_config_revision: None,
+                observed_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .expect("observation");
+        bookclerk_library::control_plane::record_node_heartbeat(
+            &library,
+            "node-a",
+            &bookclerk_library::control_plane::NodeHeartbeat {
+                incarnation: "test".into(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+                interval: std::time::Duration::from_secs(15),
+                cpu_millicores: 1000,
+                memory_bytes: None,
+                cpu_used_millicores: None,
+                memory_available_bytes: None,
+                files_dir_free_bytes: None,
+                cache: None,
+                public_origin: None,
+            },
+        )
+        .await
+        .expect("heartbeat");
+        let busy = library
+            .create_notify_destination(&NewDestination {
+                plugin_instance_id: instance.id.as_str().to_string(),
+                kind: DestinationKind::Channel,
+                user_id: None,
+                label: "Busy".into(),
+                address_json: String::new(),
+            })
+            .await
+            .expect("channel")
+            .id;
+        library
+            .set_notify_routes(
+                "test",
+                &[
+                    Route {
+                        destination_id: channel.clone(),
+                        min_severity: NotificationSeverity::Info,
+                    },
+                    Route {
+                        destination_id: busy.clone(),
+                        min_severity: NotificationSeverity::Info,
+                    },
+                ],
+            )
+            .await
+            .expect("routes");
+        routed_under(&library, 1_000).await;
+        let later = chrono::Utc::now() + chrono::Duration::minutes(1);
+        sweep_stalls(&library, later).await;
+        // Only the send whose notifier runs nowhere was failed; the other
+        // is still pending, and its destination counts no failure.
+        let left = stalled(&library, later).await;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].notifier.as_deref(), Some(instance.id.as_str()));
+        let waiting = library
+            .notify_send_work(left[0].delivery_id.as_deref().expect("delivery"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(waiting.state, DeliveryState::Pending);
+        assert_eq!(waiting.destination.map(|d| d.failure_count), Some(0));
+        let ops = library.notify_destination(&channel).await.unwrap().unwrap();
+        assert_eq!(ops.failure_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_job_without_a_delivery_is_cancelled_and_a_claimed_one_is_left_alone() {
         let (state, _fake, _) = daemon(Vec::new()).await;
         let library = state.library_snapshot().await;
         let later = chrono::Utc::now() + chrono::Duration::minutes(1);
@@ -661,23 +816,58 @@ mod tests {
             .await
             .notify_delivery
             .expect("delivery");
-        let stalled = library.stalled_notify_sends(later, 10).await.unwrap();
-        assert_eq!(stalled.len(), 2);
+        let read = stalled(&library, later).await;
+        assert_eq!(read.len(), 2);
         assert_eq!(
-            stalled.iter().filter(|s| s.delivery_id.is_none()).count(),
+            read.iter().filter(|s| s.delivery_id.is_none()).count(),
             1,
             "the finished delivery's job is listed without it"
         );
-        // A job claimed or retried after it was read is not touched.
-        let mut raced = stalled
+        let snapshot = read
             .iter()
             .find(|s| s.delivery_id.as_deref() == Some(live.as_str()))
             .expect("live job")
             .clone();
-        raced.run_after = chrono::Utc::now().to_rfc3339();
+        // A worker claims the job after the sweep read it: the stale
+        // snapshot changes nothing, and the claim keeps its lease.
+        let claimed = library
+            .claim_job_by_id(&snapshot.job_id, snapshot.lease_generation, "worker", 60)
+            .await
+            .unwrap()
+            .expect("claimed");
         assert_eq!(
             library
-                .fail_stalled_notify_send(&raced, STALLED_REASON)
+                .fail_stalled_notify_send(&snapshot, STALLED_REASON)
+                .await
+                .unwrap(),
+            StallOutcome::NotStalled
+        );
+        let job = library.get_job(&snapshot.job_id).await.unwrap().unwrap();
+        assert_eq!(job.state, bookclerk_library::JobState::Running);
+        assert_eq!(job.lease_owner.as_deref(), Some("worker"));
+        let work = library.notify_send_work(&live).await.unwrap().unwrap();
+        assert_eq!(work.state, DeliveryState::Pending);
+        // Handed back to the queue without a new run time, the job is
+        // pending again at its old readiness; only its lease generation
+        // tells the snapshot is stale, and that alone keeps it untouched.
+        assert!(library
+            .release_job_claim(&claimed.fence().expect("fence"), false)
+            .await
+            .unwrap());
+        let job = library.get_job(&snapshot.job_id).await.unwrap().unwrap();
+        assert_eq!(job.state, bookclerk_library::JobState::Pending);
+        assert_eq!(
+            stalled(&library, later)
+                .await
+                .into_iter()
+                .find(|s| s.job_id == snapshot.job_id)
+                .expect("still listed")
+                .run_after,
+            snapshot.run_after
+        );
+        assert_eq!(
+            library
+                .fail_stalled_notify_send(&snapshot, STALLED_REASON)
                 .await
                 .unwrap(),
             StallOutcome::NotStalled
@@ -685,12 +875,8 @@ mod tests {
         let work = library.notify_send_work(&live).await.unwrap().unwrap();
         assert_eq!(work.state, DeliveryState::Pending);
         // The sweep cancels both and fails only the live delivery.
-        fail_stalled_sends(&library, later).await.expect("pass");
-        assert!(library
-            .stalled_notify_sends(later, 10)
-            .await
-            .unwrap()
-            .is_empty());
+        sweep_stalls(&library, later).await;
+        assert!(stalled(&library, later).await.is_empty());
         let work = library.notify_send_work(&live).await.unwrap().unwrap();
         assert_eq!(work.state, DeliveryState::Failed);
         let work = library.notify_send_work(&orphan).await.unwrap().unwrap();
