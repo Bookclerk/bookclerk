@@ -94,6 +94,16 @@ pub fn tagged_m4b() -> Vec<u8> {
 /// When `asc` is longer than 100 bytes, which a one-byte descriptor length
 /// cannot hold here.
 pub fn tagged_m4b_with_audio_config(asc: &[u8]) -> Vec<u8> {
+    tagged_m4b_with_sample_entry(b"mp4a", &full(b"esds", 0, &es_descriptor(asc)))
+}
+
+/// [`tagged_m4b`] whose audio sample entry is of type `kind` (stereo,
+/// 44.1 kHz in the entry itself) with `child` as its one child box.
+///
+/// # Panics
+///
+/// Never: the fixed sizes all fit their fields.
+pub fn tagged_m4b_with_sample_entry(kind: &[u8; 4], child: &[u8]) -> Vec<u8> {
     let ftyp = mp4_box(b"ftyp", b"M4B \0\0\0\0M4B mp42isom");
     let samples = [text_sample("Opening"), text_sample("Chapter One")];
     let mut mdat_body = vec![0xAAu8; 4096];
@@ -134,9 +144,9 @@ pub fn tagged_m4b_with_audio_config(asc: &[u8]) -> Vec<u8> {
     mp4a[16..18].copy_from_slice(&2u16.to_be_bytes());
     mp4a[18..20].copy_from_slice(&16u16.to_be_bytes());
     mp4a[24..28].copy_from_slice(&(44_100u32 << 16).to_be_bytes());
-    mp4a.extend_from_slice(&full(b"esds", 0, &es_descriptor(asc)));
+    mp4a.extend_from_slice(child);
     let mut stsd = 1u32.to_be_bytes().to_vec();
-    stsd.extend_from_slice(&mp4_box(b"mp4a", &mp4a));
+    stsd.extend_from_slice(&mp4_box(kind, &mp4a));
     let audio_stbl = mp4_box(
         b"stbl",
         &[

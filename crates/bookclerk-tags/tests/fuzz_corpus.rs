@@ -112,6 +112,11 @@ fn read_seeds() -> Vec<(&'static str, Vec<u8>)> {
             "xhe_aac.m4b",
             tagged_m4b_with_audio_config(&[0xF9, 0x46, 0x40]),
         ),
+        // HE-AAC behind the 0x2b7 sync extension of an LC config.
+        (
+            "he_aac_sync.m4b",
+            tagged_m4b_with_audio_config(&[0x13, 0x08, 0x56, 0xE5, 0x98]),
+        ),
         ("cropped.opus", cropped),
         ("page_in_page.opus", page_in_page),
         ("tagged.mp3", mp3.clone()),

@@ -104,7 +104,7 @@ pub(crate) fn read(src: &Source<'_>) -> Step<TagRecord> {
 ///
 /// After the block sizes and frame sizes come 20 bits of rate, then the
 /// channel count less one in 3 bits.
-fn streaminfo_format(body: &[u8]) -> AudioFormat {
+pub(crate) fn streaminfo_format(body: &[u8]) -> AudioFormat {
     let Some(bits) = body
         .get(10..18)
         .and_then(|bits| <[u8; 8]>::try_from(bits).ok())
