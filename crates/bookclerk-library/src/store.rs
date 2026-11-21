@@ -8115,7 +8115,7 @@ pub use edition_files::{
 };
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
-pub use notifications::{NotifyCursor, NotifyQueueLimits, MAX_NOTIFY_PAGE};
+pub use notifications::{NotifyCursor, NotifyPage, NotifyQueueLimits, MAX_NOTIFY_PAGE};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub use taste_titles::{apply_user_states, HeldIdentifiers};
 pub(crate) mod job_queue;

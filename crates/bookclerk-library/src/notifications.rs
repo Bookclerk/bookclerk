@@ -478,6 +478,16 @@ pub enum FailureEffect {
     Paused,
 }
 
+/// Whether recording a failed delivery spends one more attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailedAttempt {
+    /// A send the notifier refused for good: this answer is a new attempt.
+    New,
+    /// A delivery that ran out of attempts: its last answer (a retry) was
+    /// already counted when it was recorded.
+    AlreadyCounted,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

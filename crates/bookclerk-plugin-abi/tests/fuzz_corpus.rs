@@ -1981,6 +1981,36 @@ fn notify_raise_seeds_are_current() {
                 ..full.clone()
             },
         ),
+        // The patron-scope parse: a canonical user id, and ones that name
+        // a user another way or not at all.
+        (
+            "patron_user_id",
+            NotifyRaiseParams {
+                patron_id: Some("42".into()),
+                ..full.clone()
+            },
+        ),
+        (
+            "patron_signed",
+            NotifyRaiseParams {
+                patron_id: Some("+42".into()),
+                ..full.clone()
+            },
+        ),
+        (
+            "patron_leading_zero",
+            NotifyRaiseParams {
+                patron_id: Some("042".into()),
+                ..full.clone()
+            },
+        ),
+        (
+            "patron_past_i64",
+            NotifyRaiseParams {
+                patron_id: Some("9223372036854775808".into()),
+                ..full.clone()
+            },
+        ),
     ];
     for (name, raise) in raises {
         let mut json = vec![0];

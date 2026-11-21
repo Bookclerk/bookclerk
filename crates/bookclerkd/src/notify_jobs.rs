@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::notifications::{
-    link_for, DeliveryState, FailureEffect, SendWork, MAX_SEND_ATTEMPTS,
+    link_for, DeliveryState, FailedAttempt, FailureEffect, SendWork, MAX_SEND_ATTEMPTS,
 };
 use bookclerk_library::{JobPayload, NotifyQueueLimits};
 use bookclerk_plugin_abi::notifications::{check_send_params, classify_send_reply, SendOutcome};
@@ -99,6 +99,10 @@ pub async fn run_notify_send(
     if job_cancelled(ctx, &library).await {
         anyhow::bail!("cancelled");
     }
+    // Every outcome write is fenced by this job's claim, so a send that
+    // lost its lease (while a replacement job took the delivery over)
+    // records nothing.
+    let fence = ctx.map(|ctx| &ctx.fence);
     let Some(work) = library.notify_send_work(delivery_id).await? else {
         return Ok(format!("delivery {delivery_id} is gone"));
     };
@@ -110,7 +114,7 @@ pub async fn run_notify_send(
     }
     let Some(destination) = work.destination.as_ref() else {
         library
-            .record_notify_dropped(delivery_id, "the destination was removed")
+            .record_notify_dropped(delivery_id, "the destination was removed", fence)
             .await?;
         return Ok(format!(
             "delivery {delivery_id} dropped: destination removed"
@@ -118,7 +122,7 @@ pub async fn run_notify_send(
     };
     if destination.paused_at.is_some() {
         library
-            .record_notify_dropped(delivery_id, "the destination is paused")
+            .record_notify_dropped(delivery_id, "the destination is paused", fence)
             .await?;
         return Ok(format!(
             "delivery {delivery_id} dropped: destination paused"
@@ -137,6 +141,7 @@ pub async fn run_notify_send(
             .record_notify_dropped(
                 delivery_id,
                 "the notifier instance is not running or no longer delivers notifications",
+                fence,
             )
             .await?;
         return Ok(format!(
@@ -150,7 +155,9 @@ pub async fn run_notify_send(
         // a retry. It is the host's fault, not the destination's, so it is
         // dropped rather than failed and never counts toward a pause.
         let reason = format!("the stored notification is not sendable: {err}");
-        library.record_notify_dropped(delivery_id, &reason).await?;
+        library
+            .record_notify_dropped(delivery_id, &reason, fence)
+            .await?;
         return Err(JobFailedForGood(reason).into());
     }
     let reply = notifier.notify_send(params).await;
@@ -164,13 +171,18 @@ pub async fn run_notify_send(
     match outcome {
         SendOutcome::Delivered { provider_id } => {
             library
-                .record_notify_delivered(delivery_id, provider_id.as_deref())
+                .record_notify_delivered(delivery_id, provider_id.as_deref(), fence)
                 .await?;
             Ok(format!("delivered to {}", destination.label))
         }
-        SendOutcome::Failed { reason } => fail(state, &work, &reason).await,
+        SendOutcome::Failed { reason } => {
+            fail(state, &work, &reason, FailedAttempt::New, fence).await
+        }
         SendOutcome::Retry { after, reason } => {
-            let Some(attempts) = library.record_notify_retry(delivery_id, &reason).await? else {
+            let Some(attempts) = library
+                .record_notify_retry(delivery_id, &reason, fence)
+                .await?
+            else {
                 return Ok(format!("delivery {delivery_id} finished elsewhere"));
             };
             if attempts >= MAX_SEND_ATTEMPTS {
@@ -178,6 +190,8 @@ pub async fn run_notify_send(
                     state,
                     &work,
                     &format!("gave up after {attempts} attempts: {reason}"),
+                    FailedAttempt::AlreadyCounted,
+                    fence,
                 )
                 .await;
             }
@@ -197,10 +211,22 @@ pub async fn run_notify_send(
 }
 
 /// Records a failed delivery and ends the job for good.
-async fn fail(state: &AppState, work: &SendWork, reason: &str) -> anyhow::Result<String> {
+///
+/// # Arguments
+///
+/// * `attempt` - Whether this answer spends an attempt of its own (a
+///   refusal) or was already counted (the last of the retries).
+/// * `fence` - The job's claim; a claim that lost the job records nothing.
+async fn fail(
+    state: &AppState,
+    work: &SendWork,
+    reason: &str,
+    attempt: FailedAttempt,
+    fence: Option<&bookclerk_library::JobFence>,
+) -> anyhow::Result<String> {
     let library = state.library.read().await.clone();
     if library
-        .record_notify_failed(&work.delivery_id, reason)
+        .record_notify_failed(&work.delivery_id, reason, attempt, fence)
         .await?
         == Some(FailureEffect::Paused)
     {

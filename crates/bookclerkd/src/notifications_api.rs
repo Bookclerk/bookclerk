@@ -10,12 +10,12 @@
 //! The rules live in [`bookclerk_library::notifications`]; these handlers
 //! only check who may call and translate the bodies.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
+use axum::{Extension, Json};
 use bookclerk_library::notifications::{
     host_notification_type, qualified_plugin_type, DeliveryRecord, Destination, DestinationKind,
     InboxEntry, NewDestination, NewNotification, PatronChoice, PatronOffer, Route,
@@ -24,18 +24,18 @@ use bookclerk_library::notifications::{
 use bookclerk_library::{LibraryError, LibraryStore, NotifyCursor};
 use bookclerk_plugin_abi::notifications::{
     check_address_against_fields, check_validated, is_qualified_notification_type,
-    parse_address_document, AddressFieldRule,
+    parse_address_document, AddressFieldRule, NotifyAddress,
 };
 use bookclerk_plugin_abi::{
     NotificationAlertAction, NotificationAudience, NotificationField, NotificationSeverity,
-    NotifyValidateParams,
+    NotifyValidateParams, NotifyValidated,
 };
 use bookclerk_plugin_manifest::NotifierDestination;
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
+use crate::auth::UserCaller;
 use crate::http_error::ErrorMessage;
-use crate::library_works::caller_user_id;
 
 /// An error answer: a status and a JSON body, or the session-check refusal.
 type ApiError = axum::response::ErrorResponse;
@@ -97,17 +97,20 @@ async fn administrator(state: &AppState, headers: &HeaderMap) -> Result<(), ApiE
         })
 }
 
-/// The signed-in user behind `headers`, or a `403` for a session with no
-/// user (the operator token alone has no inbox).
-async fn patron(state: &AppState, headers: &HeaderMap) -> Result<i64, ApiError> {
-    caller_user_id(state, headers).await.ok_or_else(|| {
-        ApiError::from((
+/// The library user the route's sign-in check admitted, or a `403` for the
+/// operator (the operator token alone has no inbox). The identity is the
+/// one the middleware already resolved, so a session lookup that fails
+/// keeps that check's retryable answer rather than becoming a `403` here.
+fn patron(caller: &UserCaller) -> Result<i64, ApiError> {
+    match caller {
+        UserCaller::User { user_id } => Ok(*user_id),
+        UserCaller::Operator => Err(ApiError::from((
             StatusCode::FORBIDDEN,
             Json(ErrorMessage::new(
                 "this session has no library user to keep notification settings for",
             )),
-        ))
-    })
+        ))),
+    }
 }
 
 /// A severity from its wire name.
@@ -304,6 +307,8 @@ async fn catalog(
 /// Types come from the host and from the `[[notifications.types]]` of the
 /// plugins installed on this server; notifiers are the instances of
 /// installed `notifier` plugins.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     get,
     path = "/api/notifications/catalog",
@@ -340,7 +345,8 @@ pub(crate) struct DestinationJson {
     /// Name shown in pickers.
     #[schema(example = "Ops room")]
     label: String,
-    /// Failures since the last success.
+    /// Permanent failures in a row; a delivery, or resuming the
+    /// destination, resets it to 0. It pauses at 5.
     #[schema(example = 0)]
     failure_count: i64,
     /// When repeated failures paused it (RFC 3339); absent while active.
@@ -409,6 +415,8 @@ async fn channel(library: &LibraryStore, id: &str) -> Result<Destination, ApiErr
 }
 
 /// Lists the library's channels.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     get,
     path = "/api/notifications/channels",
@@ -435,6 +443,8 @@ pub(crate) async fn list_channels(
 }
 
 /// Makes a library channel on a notifier instance.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     post,
     path = "/api/notifications/channels",
@@ -479,6 +489,8 @@ pub(crate) async fn post_channel(
 }
 
 /// Renames a channel.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     patch,
     path = "/api/notifications/channels/{id}",
@@ -510,6 +522,8 @@ pub(crate) async fn patch_channel(
 }
 
 /// Deletes a channel with its routes and delivery-log rows.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     delete,
     path = "/api/notifications/channels/{id}",
@@ -540,6 +554,8 @@ pub(crate) async fn delete_channel(
 
 /// Resumes a channel repeated failures paused, and clears its failure
 /// count.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     post,
     path = "/api/notifications/channels/{id}/resume",
@@ -581,12 +597,14 @@ pub(crate) struct TestSent {
 /// Sends a test notification to one channel, whatever the routes say.
 ///
 /// The send runs as a job; its outcome lands in the delivery log.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     post,
     path = "/api/notifications/channels/{id}/test",
     params(("id" = String, Path, description = "Channel id.")),
     responses(
-        (status = 202, description = "The test is queued.", body = TestSent),
+        (status = 202, description = "The test is accepted. Its send job is queued, or, when the queue is full, the next sweep (within a minute) queues it.", body = TestSent),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
         (status = 404, description = "No such channel.", body = ErrorMessage, example = json!({"error": "channel 8a7b6c5d not found"})),
@@ -684,6 +702,7 @@ pub(crate) struct RouteTable {
 pub(crate) struct RoutesBody {
     /// The type's routes, replacing the old ones; at most 32. Empty sends
     /// the type nowhere.
+    #[schema(max_items = 32)]
     routes: Vec<RouteJson>,
 }
 
@@ -709,7 +728,29 @@ fn known_type<'a>(
     Ok(found)
 }
 
+/// Checks the type a routes or offers replacement names. Clearing (an
+/// empty replacement) also takes a type the catalog no longer knows, such
+/// as one a plugin upgrade dropped, so its stale rules can be removed;
+/// anything else must be a known type of `audience`.
+///
+/// # Errors
+///
+/// A 400 as [`known_type`] answers, except for clearing an unknown type.
+fn replaceable_type(
+    catalog: &NotificationCatalog,
+    id: &str,
+    audience: NotificationAudience,
+    clearing: bool,
+) -> Result<(), ApiError> {
+    if clearing && is_qualified_notification_type(id) && catalog.notification_type(id).is_none() {
+        return Ok(());
+    }
+    known_type(catalog, id, audience).map(|_| ())
+}
+
 /// Lists every routing rule.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     get,
     path = "/api/notifications/routes",
@@ -749,6 +790,8 @@ pub(crate) async fn get_routes(
 }
 
 /// Replaces the routes of one operational type.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     put,
     path = "/api/notifications/routes/{type}",
@@ -756,7 +799,7 @@ pub(crate) async fn get_routes(
     request_body = RoutesBody,
     responses(
         (status = 204, description = "The routes are replaced."),
-        (status = 400, description = "An unknown or patron type, a bad severity, a personal destination, a repeat, or more than 32.", body = ErrorMessage, example = json!({"error": "destination 8a7b6c5d is routed twice"})),
+        (status = 400, description = "An unknown or patron type (an unknown one may still be cleared with no routes), a bad severity, a personal destination, a repeat, or more than 32.", body = ErrorMessage, example = json!({"error": "destination 8a7b6c5d is routed twice"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
         (status = 404, description = "A destination does not exist.", body = ErrorMessage, example = json!({"error": "notification destination 8a7b6c5d not found"})),
@@ -772,10 +815,11 @@ pub(crate) async fn put_routes(
     administrator(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let catalog = catalog(&state, &library).await?;
-    known_type(
+    replaceable_type(
         &catalog,
         &notification_type,
         NotificationAudience::Operational,
+        body.routes.is_empty(),
     )?;
     let routes = body
         .routes
@@ -821,10 +865,13 @@ pub(crate) struct OfferTable {
 pub(crate) struct OffersBody {
     /// The type's offers, replacing the old ones; at most 32. Empty keeps
     /// the type in patrons' inboxes only.
+    #[schema(max_items = 32)]
     offers: Vec<OfferJson>,
 }
 
 /// Lists which notifiers patrons may pick for each patron type.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     get,
     path = "/api/notifications/offers",
@@ -862,6 +909,8 @@ fn offer_json(o: PatronOffer) -> OfferJson {
 }
 
 /// Replaces which notifiers patrons may pick for one patron type.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     put,
     path = "/api/notifications/offers/{type}",
@@ -869,7 +918,7 @@ fn offer_json(o: PatronOffer) -> OfferJson {
     request_body = OffersBody,
     responses(
         (status = 204, description = "The offers are replaced."),
-        (status = 400, description = "An unknown or operational type, an instance that is not a personal notifier, a repeat, or more than 32.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e does not send to patrons"})),
+        (status = 400, description = "An unknown or operational type (an unknown one may still be cleared with no offers), an instance that is not a personal notifier, a repeat, or more than 32.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e does not send to patrons"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
         (status = 500, description = "The offers could not be written.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
@@ -884,7 +933,12 @@ pub(crate) async fn put_offers(
     administrator(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let catalog = catalog(&state, &library).await?;
-    known_type(&catalog, &notification_type, NotificationAudience::Patron)?;
+    replaceable_type(
+        &catalog,
+        &notification_type,
+        NotificationAudience::Patron,
+        body.offers.is_empty(),
+    )?;
     for offer in &body.offers {
         if !catalog
             .notifier(&offer.plugin_instance_id)
@@ -922,7 +976,8 @@ pub(crate) struct DeliveryQuery {
     destination_id: Option<String>,
     /// `next_cursor` of the previous page.
     cursor: Option<String>,
-    /// Page size, 1 to 200 (default 50).
+    /// Page size (default 50); a value outside 1 to 200 is clamped to that
+    /// range.
     limit: Option<u64>,
 }
 
@@ -997,13 +1052,15 @@ pub(crate) struct DeliveryPage {
 }
 
 /// Pages the delivery log, newest first.
+///
+/// Access: the operator, an Owner or an Administrator.
 #[utoipa::path(
     get,
     path = "/api/notifications/deliveries",
     params(DeliveryQuery),
     responses(
         (status = 200, description = "One page of deliveries.", body = DeliveryPage),
-        (status = 400, description = "The cursor is not one this route made.", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
+        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number (answered as plain text by the query parser).", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
         (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
@@ -1021,20 +1078,18 @@ pub(crate) async fn list_deliveries(
         .unwrap_or(DEFAULT_PAGE)
         .clamp(1, bookclerk_library::MAX_NOTIFY_PAGE);
     let library = state.library_snapshot().await;
-    let rows = library
+    let page = library
         .notify_deliveries(query.destination_id.as_deref(), before.as_ref(), limit)
         .await
         .map_err(|err| store_error("list_deliveries", err))?;
-    let next_cursor = (u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit)
-        .then(|| rows.last())
-        .flatten()
-        .map(|last| {
-            NotifyCursor {
-                created_at: last.created_at.clone(),
-                id: last.id.clone(),
-            }
-            .encode()
-        });
+    let rows = page.items;
+    let next_cursor = page.more.then(|| rows.last()).flatten().map(|last| {
+        NotifyCursor {
+            created_at: last.created_at.clone(),
+            id: last.id.clone(),
+        }
+        .encode()
+    });
     Ok(Json(DeliveryPage {
         deliveries: rows.into_iter().map(DeliveryJson::from).collect(),
         next_cursor,
@@ -1071,7 +1126,9 @@ pub(crate) struct PatronTypeJson {
     /// Whether the patron made a choice; without one the defaults apply.
     #[schema(example = false)]
     chosen: bool,
-    /// Whether it is sent beyond the inbox (`true` when not chosen).
+    /// The patron's preference, not a delivery result: `false` keeps the
+    /// type in the inbox only. `true` when nothing is chosen, in which case
+    /// the offers' defaults pick where it goes.
     #[schema(example = true)]
     enabled: bool,
     /// The patron's destinations it goes to, when chosen.
@@ -1092,6 +1149,9 @@ pub(crate) struct PatronSettings {
 
 /// Reads the caller's notification settings: the types they can receive
 /// beyond the inbox, what they chose, and their destinations.
+///
+/// Access: any signed-in library user, for their own settings; the
+/// operator token alone has none.
 #[utoipa::path(
     get,
     path = "/api/me/notifications",
@@ -1104,9 +1164,9 @@ pub(crate) struct PatronSettings {
 )]
 pub(crate) async fn get_my_settings(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Extension(caller): Extension<UserCaller>,
 ) -> Result<Json<PatronSettings>, ApiError> {
-    let user = patron(&state, &headers).await?;
+    let user = patron(&caller)?;
     let library = state.library_snapshot().await;
     let catalog = catalog(&state, &library).await?;
     let offers = library
@@ -1124,6 +1184,11 @@ pub(crate) async fn get_my_settings(
         .personal_destinations(user)
         .await
         .map_err(|err| store_error("get_my_settings", err))?;
+    let offered: BTreeSet<String> = offers
+        .values()
+        .flatten()
+        .map(|o| o.plugin_instance_id.clone())
+        .collect();
     let mut types = Vec::new();
     for (type_id, type_offers) in offers {
         let Some(known) = catalog.notification_type(&type_id) else {
@@ -1156,10 +1221,13 @@ pub(crate) async fn get_my_settings(
             .into_iter()
             .map(DestinationJson::from)
             .collect(),
+        // Only notifiers offered for some type can take a new address; the
+        // patron's existing addresses stay listed above either way, so
+        // they can still be removed.
         notifiers: catalog
             .notifiers
             .into_iter()
-            .filter(|n| n.personal)
+            .filter(|n| n.personal && offered.contains(&n.plugin_instance_id))
             .collect(),
     }))
 }
@@ -1173,11 +1241,14 @@ pub(crate) struct ChoiceBody {
     enabled: bool,
     /// The caller's own destinations it goes to; at most 32.
     #[serde(default)]
-    #[schema(example = json!(["8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"]))]
+    #[schema(max_items = 32, example = json!(["8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"]))]
     destination_ids: Vec<String>,
 }
 
 /// Sets what the caller gets for one patron type, replacing the defaults.
+///
+/// Access: any signed-in library user, for their own settings; the
+/// operator token alone has none.
 #[utoipa::path(
     put,
     path = "/api/me/notifications/choices/{type}",
@@ -1185,7 +1256,7 @@ pub(crate) struct ChoiceBody {
     request_body = ChoiceBody,
     responses(
         (status = 204, description = "The choice is saved."),
-        (status = 400, description = "A bad type id, a repeat, or more than 32 destinations.", body = ErrorMessage, example = json!({"error": "destination 8a7b6c5d is chosen twice"})),
+        (status = 400, description = "A bad type id, a repeat, more than 32 destinations, or (when enabled) a destination on a notifier not offered for the type.", body = ErrorMessage, example = json!({"error": "destination 8a7b6c5d is chosen twice"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep notification settings for"})),
         (status = 404, description = "A destination is not one of the caller's.", body = ErrorMessage, example = json!({"error": "notification destination 8a7b6c5d not found"})),
@@ -1194,11 +1265,11 @@ pub(crate) struct ChoiceBody {
 )]
 pub(crate) async fn put_my_choice(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Extension(caller): Extension<UserCaller>,
     AxumPath(notification_type): AxumPath<String>,
     Json(body): Json<ChoiceBody>,
 ) -> Result<StatusCode, ApiError> {
-    let user = patron(&state, &headers).await?;
+    let user = patron(&caller)?;
     if !is_qualified_notification_type(&notification_type) {
         return Err(bad(format!(
             "`{notification_type}` is not a notification type id"
@@ -1220,6 +1291,9 @@ pub(crate) async fn put_my_choice(
 }
 
 /// Drops the caller's choice for one type, so the defaults apply again.
+///
+/// Access: any signed-in library user, for their own settings; the
+/// operator token alone has none.
 #[utoipa::path(
     delete,
     path = "/api/me/notifications/choices/{type}",
@@ -1233,10 +1307,10 @@ pub(crate) async fn put_my_choice(
 )]
 pub(crate) async fn delete_my_choice(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Extension(caller): Extension<UserCaller>,
     AxumPath(notification_type): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
-    let user = patron(&state, &headers).await?;
+    let user = patron(&caller)?;
     let library = state.library_snapshot().await;
     library
         .clear_patron_choice(user, &notification_type)
@@ -1288,13 +1362,16 @@ pub(crate) fn personal_address(
 /// The notifier normalises and checks the address first
 /// (`Notifier.validateDestination`); the host checks its answer again
 /// against the declared fields before saving it.
+///
+/// Access: any signed-in library user, for their own settings; the
+/// operator token alone has none.
 #[utoipa::path(
     post,
     path = "/api/me/notifications/destinations",
     request_body = NewPersonalBody,
     responses(
         (status = 201, description = "The destination.", body = DestinationJson),
-        (status = 400, description = "A bad address or label, or an instance that does not send to patrons.", body = ErrorMessage, example = json!({"error": "address field `chat_id` is required"})),
+        (status = 400, description = "A bad address or label, an instance that does not send to patrons or is not offered for any type, or a patron who already keeps 32 addresses.", body = ErrorMessage, example = json!({"error": "address field `chat_id` is required"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep notification settings for"})),
         (status = 409, description = "The notifier is not running on this server.", body = ErrorMessage, example = json!({"error": "the notifier is not running on this server"})),
@@ -1304,10 +1381,10 @@ pub(crate) fn personal_address(
 )]
 pub(crate) async fn post_my_destination(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Extension(caller): Extension<UserCaller>,
     Json(body): Json<NewPersonalBody>,
 ) -> Result<(StatusCode, Json<DestinationJson>), ApiError> {
-    let user = patron(&state, &headers).await?;
+    let user = patron(&caller)?;
     let library = state.library_snapshot().await;
     let catalog = catalog(&state, &library).await?;
     let notifier_info = catalog
@@ -1319,6 +1396,21 @@ pub(crate) async fn post_my_destination(
                 body.plugin_instance_id
             ))
         })?;
+    // An address is only useful on a notifier offered for some type:
+    // routing sends patrons nowhere else.
+    let offered = library
+        .patron_offers()
+        .await
+        .map_err(|err| store_error("post_my_destination", err))?
+        .values()
+        .flatten()
+        .any(|o| o.plugin_instance_id == body.plugin_instance_id);
+    if !offered {
+        return Err(bad(format!(
+            "plugin instance {} is not offered to patrons",
+            body.plugin_instance_id
+        )));
+    }
     let rules: Vec<AddressFieldRule> = notifier_info
         .address_fields
         .iter()
@@ -1345,8 +1437,10 @@ pub(crate) async fn post_my_destination(
             )),
         )
     })?;
-    let unreachable = |detail: String| {
-        tracing::warn!(notifier = %body.plugin_instance_id, error = %detail, "validateDestination failed");
+    // Only a host-chosen category is logged: a notifier's own message may
+    // repeat the address it was sent, which can hold a secret.
+    let unreachable = |category: &str| {
+        tracing::warn!(notifier = %body.plugin_instance_id, category, "validateDestination failed");
         (
             StatusCode::BAD_GATEWAY,
             Json(ErrorMessage::new(
@@ -1368,18 +1462,12 @@ pub(crate) async fn post_my_destination(
             )));
         }
         Ok(Err(other)) => {
-            return Err(unreachable(format!("{}: {}", other.code, other.message)).into())
+            return Err(unreachable(&format!("the notifier answered {}", other.code)).into())
         }
-        Err(err) => return Err(unreachable(err.to_string()).into()),
+        Err(_) => return Err(unreachable("the notifier could not be reached").into()),
     };
-    let normalised = check_validated(&validated)
-        .and_then(|address| check_address_against_fields(&address, &rules).map(|()| address))
-        .map_err(|err| unreachable(format!("the notifier's answer was refused: {err}")))?;
-    let label = body
-        .label
-        .filter(|l| !l.trim().is_empty())
-        .or(validated.label.filter(|l| notifier_label_fits(l)))
-        .unwrap_or_else(|| notifier_info.name.clone());
+    let (normalised, label) = accept_validated(validated, &rules, body.label, &notifier_info.name)
+        .map_err(|()| unreachable("the notifier's answer was refused"))?;
     let created = library
         .create_notify_destination(&NewDestination {
             plugin_instance_id: body.plugin_instance_id,
@@ -1391,6 +1479,33 @@ pub(crate) async fn post_my_destination(
         .await
         .map_err(|err| store_error("post_my_destination", err))?;
     Ok((StatusCode::CREATED, Json(created.into())))
+}
+
+/// Takes a notifier's `validateDestination` answer: the address it
+/// normalised, checked again against the declared fields, and the label to
+/// save (the patron's, else the notifier's suggestion, else `fallback`).
+///
+/// An unusable suggested label is dropped before the answer is checked, so
+/// it gives way to the next label rather than refusing a good address.
+///
+/// # Errors
+///
+/// `Err(())` when the address breaks the address rules or the fields.
+fn accept_validated(
+    mut validated: NotifyValidated,
+    rules: &[AddressFieldRule],
+    patron_label: Option<String>,
+    fallback: &str,
+) -> Result<(NotifyAddress, String), ()> {
+    let suggested = validated.label.take().filter(|l| notifier_label_fits(l));
+    let address = check_validated(&validated)
+        .and_then(|address| check_address_against_fields(&address, rules).map(|()| address))
+        .map_err(|_| ())?;
+    let label = patron_label
+        .filter(|l| !l.trim().is_empty())
+        .or(suggested)
+        .unwrap_or_else(|| fallback.to_string());
+    Ok((address, label))
 }
 
 /// Whether a label a notifier proposed is usable as is: one non-blank line
@@ -1405,6 +1520,9 @@ fn notifier_label_fits(label: &str) -> bool {
 }
 
 /// Deletes one of the caller's destinations.
+///
+/// Access: any signed-in library user, for their own settings; the
+/// operator token alone has none.
 #[utoipa::path(
     delete,
     path = "/api/me/notifications/destinations/{id}",
@@ -1419,10 +1537,10 @@ fn notifier_label_fits(label: &str) -> bool {
 )]
 pub(crate) async fn delete_my_destination(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Extension(caller): Extension<UserCaller>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
-    let user = patron(&state, &headers).await?;
+    let user = patron(&caller)?;
     let library = state.library_snapshot().await;
     let mine = library
         .notify_destination(&id)
@@ -1441,6 +1559,9 @@ pub(crate) async fn delete_my_destination(
 
 /// Resumes one of the caller's destinations that repeated failures paused,
 /// and clears its failure count.
+///
+/// Access: any signed-in library user, for their own settings; the
+/// operator token alone has none.
 #[utoipa::path(
     post,
     path = "/api/me/notifications/destinations/{id}/resume",
@@ -1455,10 +1576,10 @@ pub(crate) async fn delete_my_destination(
 )]
 pub(crate) async fn post_my_destination_resume(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Extension(caller): Extension<UserCaller>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<DestinationJson>, ApiError> {
-    let user = patron(&state, &headers).await?;
+    let user = patron(&caller)?;
     let library = state.library_snapshot().await;
     let mine = |found: Option<Destination>| {
         found
@@ -1492,7 +1613,8 @@ pub(crate) async fn post_my_destination_resume(
 pub(crate) struct InboxQuery {
     /// `next_cursor` of the previous page.
     cursor: Option<String>,
-    /// Page size, 1 to 200 (default 50).
+    /// Page size (default 50); a value outside 1 to 200 is clamped to that
+    /// range.
     limit: Option<u64>,
 }
 
@@ -1573,13 +1695,16 @@ pub(crate) struct InboxPage {
 }
 
 /// Pages the caller's inbox, newest first.
+///
+/// Access: any signed-in library user, for their own settings; the
+/// operator token alone has none.
 #[utoipa::path(
     get,
     path = "/api/me/notifications/inbox",
     params(InboxQuery),
     responses(
         (status = 200, description = "One page of the inbox.", body = InboxPage),
-        (status = 400, description = "The cursor is not one this route made.", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
+        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number (answered as plain text by the query parser).", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep notification settings for"})),
         (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
@@ -1587,34 +1712,32 @@ pub(crate) struct InboxPage {
 )]
 pub(crate) async fn get_my_inbox(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Extension(caller): Extension<UserCaller>,
     Query(query): Query<InboxQuery>,
 ) -> Result<Json<InboxPage>, ApiError> {
-    let user = patron(&state, &headers).await?;
+    let user = patron(&caller)?;
     let before = parse_cursor(query.cursor.as_deref())?;
     let limit = query
         .limit
         .unwrap_or(DEFAULT_PAGE)
         .clamp(1, bookclerk_library::MAX_NOTIFY_PAGE);
     let library = state.library_snapshot().await;
-    let rows = library
+    let page = library
         .inbox(user, before.as_ref(), limit)
         .await
         .map_err(|err| store_error("get_my_inbox", err))?;
+    let rows = page.items;
     let unread = library
         .inbox_unread(user)
         .await
         .map_err(|err| store_error("get_my_inbox", err))?;
-    let next_cursor = (u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit)
-        .then(|| rows.last())
-        .flatten()
-        .map(|last| {
-            NotifyCursor {
-                created_at: last.notification.created_at.clone(),
-                id: last.notification.id.clone(),
-            }
-            .encode()
-        });
+    let next_cursor = page.more.then(|| rows.last()).flatten().map(|last| {
+        NotifyCursor {
+            created_at: last.notification.created_at.clone(),
+            id: last.notification.id.clone(),
+        }
+        .encode()
+    });
     Ok(Json(InboxPage {
         entries: rows.into_iter().map(InboxEntryJson::from).collect(),
         unread,
@@ -1640,6 +1763,9 @@ pub(crate) struct ReadMarked {
 }
 
 /// Marks one inbox entry, or all of them, read.
+///
+/// Access: any signed-in library user, for their own settings; the
+/// operator token alone has none.
 #[utoipa::path(
     post,
     path = "/api/me/notifications/inbox/read",
@@ -1654,10 +1780,10 @@ pub(crate) struct ReadMarked {
 )]
 pub(crate) async fn post_my_inbox_read(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Extension(caller): Extension<UserCaller>,
     Json(body): Json<ReadBody>,
 ) -> Result<Json<ReadMarked>, ApiError> {
-    let user = patron(&state, &headers).await?;
+    let user = patron(&caller)?;
     let library = state.library_snapshot().await;
     let marked = library
         .mark_inbox_read(user, body.notification_id.as_deref())

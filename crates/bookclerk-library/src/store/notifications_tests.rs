@@ -8,10 +8,10 @@ use bookclerk_plugin_abi::{
 use super::notifications::{NotifyCursor, NotifyQueueLimits};
 use super::LibraryStore;
 use crate::error::LibraryError;
-use crate::models::{JobKind, UserRole};
+use crate::models::{JobFence, JobKind, UserRole};
 use crate::notifications::{
-    DeliveryState, DestinationKind, FailureEffect, NewDestination, NewNotification, PatronChoice,
-    PatronOffer, Route, PAUSE_AFTER_FAILURES,
+    DeliveryState, DestinationKind, FailedAttempt, FailureEffect, NewDestination, NewNotification,
+    PatronChoice, PatronOffer, Route, PAUSE_AFTER_FAILURES,
 };
 use crate::test_support::{sqlite::memory, Profile};
 
@@ -134,12 +134,17 @@ async fn an_operational_notification_goes_to_the_routes_its_severity_reaches_und
                 let dest = work.destination.unwrap().id;
                 if dest == quiet {
                     store
-                        .record_notify_failed(&delivery.id, "401 from Slack")
+                        .record_notify_failed(
+                            &delivery.id,
+                            "401 from Slack",
+                            FailedAttempt::New,
+                            None,
+                        )
                         .await
                         .unwrap();
                 } else {
                     store
-                        .record_notify_delivered(&delivery.id, Some("msg-1"))
+                        .record_notify_delivered(&delivery.id, Some("msg-1"), None)
                         .await
                         .unwrap();
                 }
@@ -234,7 +239,7 @@ async fn a_patron_notification_follows_offers_defaults_and_choices_under_every_p
         let riley = member(&store, "Riley").await;
         let telegram = personal(&store, riley, "telegram-1").await;
         let mail = personal(&store, riley, "email-1").await;
-        let _unoffered = personal(&store, riley, "discord-1").await;
+        let unoffered = personal(&store, riley, "discord-1").await;
 
         // Nothing offered: the inbox only.
         let routed = store
@@ -348,6 +353,40 @@ async fn a_patron_notification_follows_offers_defaults_and_choices_under_every_p
             .await
             .unwrap_err();
         assert!(matches!(err, LibraryError::Invalid(_)), "{name}: {err}");
+        // A notifier not offered for the type cannot be picked for it,
+        // though a choice that is off may still name it.
+        let unoffered_pick = |enabled| PatronChoice {
+            notification_type: "echo:book_new".into(),
+            enabled,
+            destination_ids: vec![unoffered.clone()],
+        };
+        let err = store
+            .set_patron_choice(riley, &unoffered_pick(true))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Invalid(_)), "{name}: {err}");
+        store
+            .set_patron_choice(riley, &unoffered_pick(false))
+            .await
+            .unwrap();
+
+        // A patron keeps a bounded number of addresses, so the default
+        // fanout fits one routing batch.
+        let many = member(&store, "Many").await;
+        for n in 0..crate::notifications::MAX_ROUTES_PER_TYPE {
+            personal(&store, many, &format!("telegram-{n}")).await;
+        }
+        let err = store
+            .create_notify_destination(&NewDestination {
+                plugin_instance_id: "telegram-x".into(),
+                kind: DestinationKind::Personal,
+                user_id: Some(many),
+                label: "One too many".into(),
+                address_json: "{\"chat_id\":\"1\"}".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Invalid(_)), "{name}: {err}");
 
         // A patron notification needs a patron who exists.
         let err = store
@@ -387,26 +426,46 @@ async fn the_inbox_pages_newest_first_and_marks_read_under_every_profile() {
             .unwrap();
         assert_eq!(store.inbox_unread(riley).await.unwrap(), 5, "{name}");
 
+        // Every entry in one page, newest first: (created_at, id) falls.
+        let all = store.inbox(riley, None, 50).await.unwrap();
+        assert!(!all.more, "{name}");
+        let keys: Vec<(String, String)> = all
+            .items
+            .iter()
+            .map(|e| (e.notification.created_at.clone(), e.notification.id.clone()))
+            .collect();
+        assert!(keys.windows(2).all(|w| w[0] > w[1]), "{name}: {keys:?}");
+        let mut expected = ids.clone();
+        expected.sort();
+        let mut listed: Vec<String> = keys.iter().map(|(_, id)| id.clone()).collect();
+        listed.sort();
+        assert_eq!(listed, expected, "{name}");
+
+        // Walking two at a time gives the same order, and the last page
+        // (one entry) hands out no cursor.
         let mut seen = Vec::new();
         let mut cursor: Option<NotifyCursor> = None;
+        let mut pages = 0;
         loop {
             let page = store.inbox(riley, cursor.as_ref(), 2).await.unwrap();
-            if page.is_empty() {
-                break;
-            }
-            let last = page.last().unwrap();
+            pages += 1;
+            let last = page.items.last().unwrap();
             cursor = Some(NotifyCursor {
                 created_at: last.notification.created_at.clone(),
                 id: last.notification.id.clone(),
             });
-            seen.extend(page.into_iter().map(|e| e.notification.id));
+            seen.extend(page.items.into_iter().map(|e| e.notification.id));
+            if !page.more {
+                break;
+            }
         }
-        assert_eq!(seen.len(), 5, "{name}");
-        let mut sorted = seen.clone();
-        sorted.sort();
-        let mut expected = ids.clone();
-        expected.sort();
-        assert_eq!(sorted, expected, "{name}");
+        assert_eq!(pages, 3, "{name}");
+        let walked: Vec<String> = keys.iter().map(|(_, id)| id.clone()).collect();
+        assert_eq!(seen, walked, "{name}");
+        // A full final page says no more follows.
+        let two = store.inbox(sam, None, 1).await.unwrap();
+        assert_eq!(two.items.len(), 1, "{name}");
+        assert!(!two.more, "{name}");
 
         assert_eq!(
             store.mark_inbox_read(riley, Some(&ids[0])).await.unwrap(),
@@ -456,47 +515,116 @@ async fn send_outcomes_move_deliveries_once_under_every_profile() {
         let retried = route().await;
         assert_eq!(
             store
-                .record_notify_retry(&retried, "429 rate limited")
+                .record_notify_retry(&retried, "429 rate limited", None)
                 .await
                 .unwrap(),
             Some(1),
             "{name}"
         );
         assert_eq!(
-            store.record_notify_retry(&retried, "again").await.unwrap(),
+            store
+                .record_notify_retry(&retried, "again", None)
+                .await
+                .unwrap(),
             Some(2),
             "{name}"
         );
-        assert!(store.record_notify_delivered(&retried, None).await.unwrap());
+        assert!(store
+            .record_notify_delivered(&retried, None, None)
+            .await
+            .unwrap());
         // A finished delivery does not move again.
-        assert!(!store.record_notify_delivered(&retried, None).await.unwrap());
+        assert!(!store
+            .record_notify_delivered(&retried, None, None)
+            .await
+            .unwrap());
         assert_eq!(
-            store.record_notify_failed(&retried, "late").await.unwrap(),
+            store
+                .record_notify_failed(&retried, "late", FailedAttempt::New, None)
+                .await
+                .unwrap(),
             None,
             "{name}"
         );
         assert_eq!(
-            store.record_notify_retry(&retried, "late").await.unwrap(),
+            store
+                .record_notify_retry(&retried, "late", None)
+                .await
+                .unwrap(),
             None,
             "{name}"
         );
 
         let dropped = route().await;
         assert!(store
-            .record_notify_dropped(&dropped, "destination paused")
+            .record_notify_dropped(&dropped, "destination paused", None)
             .await
             .unwrap());
         let failed = route().await;
         assert_eq!(
             store
-                .record_notify_failed(&failed, "bad\naddress")
+                .record_notify_failed(&failed, "bad\naddress", FailedAttempt::New, None)
                 .await
                 .unwrap(),
             Some(FailureEffect::Counted),
             "{name}"
         );
+        // A delivery that ran out of retries is not charged its last
+        // answer twice.
+        let exhausted = route().await;
+        assert_eq!(
+            store
+                .record_notify_retry(&exhausted, "429", None)
+                .await
+                .unwrap(),
+            Some(1),
+            "{name}"
+        );
+        assert_eq!(
+            store
+                .record_notify_failed(&exhausted, "gave up", FailedAttempt::AlreadyCounted, None)
+                .await
+                .unwrap(),
+            Some(FailureEffect::Counted),
+            "{name}"
+        );
+        // A send whose claim no longer holds its job records nothing.
+        let stale = route().await;
+        let fence = JobFence {
+            job_id: "notify_send-gone".into(),
+            owner: "worker".into(),
+            generation: 1,
+        };
+        assert!(!store
+            .record_notify_delivered(&stale, None, Some(&fence))
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .record_notify_retry(&stale, "429", Some(&fence))
+                .await
+                .unwrap(),
+            None,
+            "{name}"
+        );
+        assert_eq!(
+            store
+                .record_notify_failed(&stale, "refused", FailedAttempt::New, Some(&fence))
+                .await
+                .unwrap(),
+            None,
+            "{name}"
+        );
+        assert!(!store
+            .record_notify_dropped(&stale, "paused", Some(&fence))
+            .await
+            .unwrap());
 
-        let log = store.notify_deliveries(Some(&ops), None, 50).await.unwrap();
+        let log = store
+            .notify_deliveries(Some(&ops), None, 50)
+            .await
+            .unwrap()
+            .items;
         let state_of = |id: &str| log.iter().find(|d| d.id == id).unwrap().clone();
         let r = state_of(&retried);
         assert_eq!(r.state, DeliveryState::Delivered, "{name}");
@@ -507,6 +635,10 @@ async fn send_outcomes_move_deliveries_once_under_every_profile() {
         assert_eq!(f.state, DeliveryState::Failed, "{name}");
         // Reasons are one line.
         assert!(!f.reason.unwrap().contains('\n'), "{name}");
+        assert_eq!(state_of(&exhausted).attempts, 1, "{name}");
+        let st = state_of(&stale);
+        assert_eq!(st.state, DeliveryState::Pending, "{name}");
+        assert_eq!(st.attempts, 0, "{name}");
         assert_eq!(
             store
                 .notify_destination(&ops)
@@ -514,7 +646,7 @@ async fn send_outcomes_move_deliveries_once_under_every_profile() {
                 .unwrap()
                 .unwrap()
                 .failure_count,
-            1,
+            2,
             "{name}"
         );
 
@@ -526,6 +658,7 @@ async fn send_outcomes_move_deliveries_once_under_every_profile() {
             .notify_deliveries(None, None, 50)
             .await
             .unwrap()
+            .items
             .is_empty());
     }
 }
@@ -557,7 +690,10 @@ async fn a_paused_destination_resumes_and_routes_refuse_bad_targets_under_every_
                 .deliveries
                 .remove(0)
                 .id;
-            effect = store.record_notify_failed(&id, "410 gone").await.unwrap();
+            effect = store
+                .record_notify_failed(&id, "410 gone", FailedAttempt::New, None)
+                .await
+                .unwrap();
         }
         assert_eq!(effect, Some(FailureEffect::Paused), "{name}");
         store.resume_notify_destination(&ops).await.unwrap();
@@ -712,7 +848,7 @@ async fn pruning_deletes_old_notifications_with_their_rows_under_every_profile()
         );
         let later = chrono::Utc::now() + chrono::Duration::days(31);
         assert_eq!(store.prune_notifications(later).await.unwrap(), 1, "{name}");
-        assert!(store.inbox(riley, None, 10).await.unwrap().is_empty());
+        assert!(store.inbox(riley, None, 10).await.unwrap().items.is_empty());
     }
 }
 

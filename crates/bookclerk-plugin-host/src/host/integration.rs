@@ -19,6 +19,15 @@ use crate::discover::DiscoveredPlugin;
 use crate::rpc_session::{PluginSession, SessionServices, HOST_SHARED_ACCOUNT};
 use crate::Result;
 
+/// Longest a notifier's `send` may run before the host drops it and answers
+/// `unavailable` (the send job retries it later). Calls on one session run
+/// one at a time, so without it a stalled send would hold every later call.
+const NOTIFY_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Longest a notifier's `validateDestination` may run: a patron is waiting
+/// on the answer, so it stays inside the daemon's default 8 s API deadline.
+const NOTIFY_VALIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
 /// External integration backed by a discovered plugin binary.
 pub struct ExternalIntegration {
     /// Cap'n Proto session (never given `library.db`); opened once with the
@@ -686,10 +695,23 @@ impl Integration for ExternalIntegration {
         std::result::Result<bookclerk_plugin_abi::NotifySent, bookclerk_plugin_abi::PluginError>,
     > {
         // The guest's own error is the answer the send job classifies, so
-        // it travels inside a successful call.
+        // it travels inside a successful call. The deadline runs on the vat
+        // side, so a stalled send is dropped and frees the session; it
+        // answers `unavailable`, which the send job retries.
         Ok(self
             .session
-            .notifier(move |notifier| async move { Ok(notifier.send(params).await) })
+            .notifier(move |notifier| async move {
+                Ok(
+                    tokio::time::timeout(NOTIFY_SEND_TIMEOUT, notifier.send(params))
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(bookclerk_plugin_abi::PluginError::unavailable(format!(
+                                "send took longer than {} s",
+                                NOTIFY_SEND_TIMEOUT.as_secs()
+                            )))
+                        }),
+                )
+            })
             .await?)
     }
 
@@ -704,9 +726,19 @@ impl Integration for ExternalIntegration {
     > {
         Ok(self
             .session
-            .notifier(
-                move |notifier| async move { Ok(notifier.validate_destination(params).await) },
-            )
+            .notifier(move |notifier| async move {
+                Ok(tokio::time::timeout(
+                    NOTIFY_VALIDATE_TIMEOUT,
+                    notifier.validate_destination(params),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(bookclerk_plugin_abi::PluginError::unavailable(format!(
+                        "validateDestination took longer than {} s",
+                        NOTIFY_VALIDATE_TIMEOUT.as_secs()
+                    )))
+                }))
+            })
             .await?)
     }
 

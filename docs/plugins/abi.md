@@ -1656,6 +1656,10 @@ export class Notifier extends NotifierEntrypoint<Env> {
 }
 ```
 
+The host gives `send` 30 seconds and `validateDestination` 6 seconds;
+a call that runs longer is dropped and answers `unavailable`, so a send
+is retried.
+
 The host calls `send` from one `notify_send` job per delivery and
 records the answer in the delivery log; see
 [Notifications](../server/notifications.md) for retries and pausing.
@@ -1681,8 +1685,9 @@ await env.NOTIFY.raise({
   the host adds.
 - `fields` are `{ name, value }` rows or a plain object, with the caps of
   a message's fields.
-- `patronId` is required for a `patron` type and must be inside the
-  invocation's account scope.
+- `patronId` is required for a `patron` type: the patron's library
+  user id in decimal (`"42"`, with no sign or leading zero), for a patron
+  who holds the store account the invocation runs for.
 - `linkPath` is a path inside the library (`/books/42`): it starts with
   one `/` and has no space or backslash. The host adds its public origin.
 - `groupKey`, `alertAction` and `alertKey` follow the message rules.

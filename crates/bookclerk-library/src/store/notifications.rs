@@ -13,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_plugin_abi::notifications::{is_layout_char, sanitize_reason};
 use bookclerk_plugin_abi::{
-    NotificationAlertAction, NotificationAudience, NotificationField, NotificationSeverity,
+    DbValue, NotificationAlertAction, NotificationAudience, NotificationField,
+    NotificationSeverity, TypedDbStatement,
 };
 use chrono::{DateTime, Duration, Utc};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
@@ -26,12 +27,12 @@ use crate::entities::{
     portal_identities, users,
 };
 use crate::error::{EntityKind, LibraryError, Result};
-use crate::models::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobTrigger};
+use crate::models::{EnqueueJobSpec, EnqueueOutcome, JobFence, JobKind, JobPayload, JobTrigger};
 use crate::notifications::{
-    severity_reaches, DeliveryRecord, DeliveryState, Destination, DestinationKind, FailureEffect,
-    InboxEntry, NewDestination, NewNotification, PatronChoice, PatronOffer, PendingDelivery, Route,
-    Routed, SendWork, StoredNotification, MAX_DESTINATION_LABEL_BYTES, MAX_ROUTES_PER_TYPE,
-    NOTIFICATION_RETENTION_DAYS, PAUSE_AFTER_FAILURES,
+    severity_reaches, DeliveryRecord, DeliveryState, Destination, DestinationKind, FailedAttempt,
+    FailureEffect, InboxEntry, NewDestination, NewNotification, PatronChoice, PatronOffer,
+    PendingDelivery, Route, Routed, SendWork, StoredNotification, MAX_DESTINATION_LABEL_BYTES,
+    MAX_ROUTES_PER_TYPE, NOTIFICATION_RETENTION_DAYS, PAUSE_AFTER_FAILURES,
 };
 
 /// Queue limits a `notify_send` admission uses (the daemon's `[jobs]`).
@@ -124,6 +125,29 @@ fn parse_state(s: &str) -> Result<DeliveryState> {
         .ok_or_else(|| LibraryError::Invalid(format!("stored delivery state `{s}` is unknown")))
 }
 
+/// The send job's lease as a predicate on one outcome write: with a fence,
+/// the write applies only while that claim still holds the job, so a send
+/// that lost its lease (whose delivery a replacement job may have
+/// reclaimed) cannot record an outcome. `None`, for a caller outside a job,
+/// adds nothing. `sql` must end with its `WHERE` clause.
+fn fenced(sql: &str, mut parameters: Vec<DbValue>, fence: Option<&JobFence>) -> TypedDbStatement {
+    match fence {
+        Some(fence) => {
+            parameters.push(batch::text(&fence.job_id));
+            parameters.push(batch::text(&fence.owner));
+            parameters.push(batch::int(fence.generation));
+            batch::exec(
+                &format!(
+                    "{sql} AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = 'running' \
+                     AND lease_owner = ? AND lease_generation = ?)"
+                ),
+                parameters,
+            )
+        }
+        None => batch::exec(sql, parameters),
+    }
+}
+
 /// A destination from its row.
 fn destination(row: notify_destinations::Model) -> Result<Destination> {
     let kind = DestinationKind::parse(&row.kind).ok_or_else(|| {
@@ -194,6 +218,24 @@ fn before_cursor<C: ColumnTrait>(created: C, id: C, cursor: &NotifyCursor) -> Co
 /// A page size clamped to `1..=MAX_NOTIFY_PAGE`.
 fn page(limit: u64) -> u64 {
     limit.clamp(1, MAX_NOTIFY_PAGE)
+}
+
+/// One page of a newest-first listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotifyPage<T> {
+    /// The page's rows, at most the page size asked for.
+    pub items: Vec<T>,
+    /// Whether at least one row follows the last one: only then does the
+    /// listing hand out a cursor, so a full final page ends the walk.
+    pub more: bool,
+}
+
+/// Splits `rows`, read with one row beyond `size`, into a page.
+fn split_page<T>(mut rows: Vec<T>, size: u64) -> (Vec<T>, bool) {
+    let size = usize::try_from(size).unwrap_or(usize::MAX);
+    let more = rows.len() > size;
+    rows.truncate(size);
+    (rows, more)
 }
 
 impl LibraryStore {
@@ -644,6 +686,12 @@ impl LibraryStore {
     ///
     /// `false` when the delivery was no longer pending (a replayed job).
     ///
+    /// # Arguments
+    ///
+    /// * `fence` - The send job's claim; the write is skipped (and answers
+    ///   as if the delivery were no longer pending) once that claim has lost
+    ///   the job.
+    ///
     /// # Errors
     ///
     /// An error when the batch fails.
@@ -651,19 +699,21 @@ impl LibraryStore {
         &self,
         delivery_id: &str,
         provider_id: Option<&str>,
+        fence: Option<&JobFence>,
     ) -> Result<bool> {
         let now = super::now_str();
         let reply = self
             .execute_host_batch(batch::request(
                 &format!("notify-delivered-{delivery_id}-{}", uuid::Uuid::new_v4()),
                 vec![
-                    batch::exec(
+                    fenced(
                         "UPDATE notify_destinations SET failure_count = 0, updated_at = ? \
                          WHERE id IN (SELECT destination_id FROM notify_deliveries \
                          WHERE id = ? AND state = 'pending')",
                         vec![batch::text(&now), batch::text(delivery_id)],
+                        fence,
                     ),
-                    batch::exec(
+                    fenced(
                         "UPDATE notify_deliveries SET state = 'delivered', \
                          attempts = attempts + 1, provider_id = ?, reason = NULL, updated_at = ? \
                          WHERE id = ? AND state = 'pending'",
@@ -672,6 +722,7 @@ impl LibraryStore {
                             batch::text(&now),
                             batch::text(delivery_id),
                         ],
+                        fence,
                     ),
                 ],
             ))
@@ -686,6 +737,12 @@ impl LibraryStore {
     /// The attempts made, this one included; `None` when the delivery was
     /// no longer pending.
     ///
+    /// # Arguments
+    ///
+    /// * `fence` - The send job's claim; the write is skipped (and answers
+    ///   as if the delivery were no longer pending) once that claim has lost
+    ///   the job.
+    ///
     /// # Errors
     ///
     /// An error when the batch or the read fails.
@@ -693,12 +750,13 @@ impl LibraryStore {
         &self,
         delivery_id: &str,
         reason: &str,
+        fence: Option<&JobFence>,
     ) -> Result<Option<i64>> {
         let reason = sanitize_reason(reason);
         let reply = self
             .execute_host_batch(batch::request(
                 &format!("notify-retry-{delivery_id}-{}", uuid::Uuid::new_v4()),
-                vec![batch::exec(
+                vec![fenced(
                     "UPDATE notify_deliveries SET attempts = attempts + 1, reason = ?, \
                      updated_at = ? WHERE id = ? AND state = 'pending'",
                     vec![
@@ -706,6 +764,7 @@ impl LibraryStore {
                         batch::text(&super::now_str()),
                         batch::text(delivery_id),
                     ],
+                    fence,
                 )],
             ))
             .await?;
@@ -728,6 +787,13 @@ impl LibraryStore {
     /// Whether this failure paused the destination; `None` when the
     /// delivery was no longer pending.
     ///
+    /// # Arguments
+    ///
+    /// * `fence` - The send job's claim; the write is skipped (and answers
+    ///   as if the delivery were no longer pending) once that claim has lost
+    ///   the job.
+    /// * `attempt` - Whether this answer spends an attempt of its own.
+    ///
     /// # Errors
     ///
     /// An error when the batch or the read fails.
@@ -735,20 +801,27 @@ impl LibraryStore {
         &self,
         delivery_id: &str,
         reason: &str,
+        attempt: FailedAttempt,
+        fence: Option<&JobFence>,
     ) -> Result<Option<FailureEffect>> {
         let reason = sanitize_reason(reason);
         let now = super::now_str();
+        let spent = match attempt {
+            FailedAttempt::New => 1,
+            FailedAttempt::AlreadyCounted => 0,
+        };
         let reply = self
             .execute_host_batch(batch::request(
                 &format!("notify-failed-{delivery_id}-{}", uuid::Uuid::new_v4()),
                 vec![
-                    batch::exec(
+                    fenced(
                         "UPDATE notify_destinations SET failure_count = failure_count + 1, \
                          updated_at = ? WHERE id IN (SELECT destination_id FROM \
                          notify_deliveries WHERE id = ? AND state = 'pending')",
                         vec![batch::text(&now), batch::text(delivery_id)],
+                        fence,
                     ),
-                    batch::exec(
+                    fenced(
                         "UPDATE notify_destinations SET paused_at = ?, paused_reason = ? \
                          WHERE paused_at IS NULL AND failure_count >= ? AND id IN \
                          (SELECT destination_id FROM notify_deliveries \
@@ -759,16 +832,19 @@ impl LibraryStore {
                             batch::int(PAUSE_AFTER_FAILURES),
                             batch::text(delivery_id),
                         ],
+                        fence,
                     ),
-                    batch::exec(
+                    fenced(
                         "UPDATE notify_deliveries SET state = 'failed', \
-                         attempts = attempts + 1, reason = ?, updated_at = ? \
+                         attempts = attempts + ?, reason = ?, updated_at = ? \
                          WHERE id = ? AND state = 'pending'",
                         vec![
+                            batch::int(spent),
                             batch::text(&reason),
                             batch::text(&now),
                             batch::text(delivery_id),
                         ],
+                        fence,
                     ),
                 ],
             ))
@@ -791,15 +867,26 @@ impl LibraryStore {
     ///
     /// `false` when the delivery was no longer pending.
     ///
+    /// # Arguments
+    ///
+    /// * `fence` - The send job's claim; the write is skipped (and answers
+    ///   as if the delivery were no longer pending) once that claim has lost
+    ///   the job.
+    ///
     /// # Errors
     ///
     /// An error when the batch fails.
-    pub async fn record_notify_dropped(&self, delivery_id: &str, reason: &str) -> Result<bool> {
+    pub async fn record_notify_dropped(
+        &self,
+        delivery_id: &str,
+        reason: &str,
+        fence: Option<&JobFence>,
+    ) -> Result<bool> {
         let reason = sanitize_reason(reason);
         let reply = self
             .execute_host_batch(batch::request(
                 &format!("notify-dropped-{delivery_id}-{}", uuid::Uuid::new_v4()),
-                vec![batch::exec(
+                vec![fenced(
                     "UPDATE notify_deliveries SET state = 'dropped', reason = ?, updated_at = ? \
                      WHERE id = ? AND state = 'pending'",
                     vec![
@@ -807,6 +894,7 @@ impl LibraryStore {
                         batch::text(&super::now_str()),
                         batch::text(delivery_id),
                     ],
+                    fence,
                 )],
             ))
             .await?;
@@ -818,7 +906,8 @@ impl LibraryStore {
     /// # Errors
     ///
     /// [`LibraryError::Invalid`] for a bad label, a channel with an owner or
-    /// an address, or a personal destination without an owner;
+    /// an address, a personal destination without an owner, or one past
+    /// the owner's [`MAX_ROUTES_PER_TYPE`] addresses;
     /// [`LibraryError::NotFound`] when the owner does not exist; an error
     /// when the batch fails.
     pub async fn create_notify_destination(&self, new: &NewDestination) -> Result<Destination> {
@@ -835,7 +924,18 @@ impl LibraryStore {
                     "a channel destination has no owner and no address".into(),
                 ));
             }
-            (DestinationKind::Personal, Some(user)) => self.require_user(user).await?,
+            (DestinationKind::Personal, Some(user)) => {
+                self.require_user(user).await?;
+                // A patron's default fanout is every one of their addresses
+                // on a default-on notifier, written in the routing batch
+                // with the notification and inbox rows: the cap keeps that
+                // batch within the strictest database's statement limit.
+                if self.personal_destinations(user).await?.len() >= MAX_ROUTES_PER_TYPE {
+                    return Err(LibraryError::Invalid(format!(
+                        "a patron keeps at most {MAX_ROUTES_PER_TYPE} notification addresses"
+                    )));
+                }
+            }
             (DestinationKind::Personal, None) => {
                 return Err(LibraryError::Invalid(
                     "a personal destination belongs to a patron".into(),
@@ -863,9 +963,21 @@ impl LibraryStore {
             )],
         ))
         .await?;
-        self.notify_destination(&id)
-            .await?
-            .ok_or_else(|| LibraryError::not_found(EntityKind::NotifyDestination, &id))
+        // Built from what was written rather than read back, so a failed
+        // read after the commit cannot answer an error for a destination
+        // that exists (and invite a retry that makes a second one).
+        Ok(Destination {
+            id,
+            plugin_instance_id: new.plugin_instance_id.clone(),
+            kind: new.kind,
+            user_id: new.user_id,
+            label: new.label.trim().to_string(),
+            address_json: new.address_json.clone(),
+            failure_count: 0,
+            paused_at: None,
+            paused_reason: None,
+            created_at: now,
+        })
     }
 
     /// One destination by id.
@@ -1198,8 +1310,9 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// [`LibraryError::Invalid`] for too many or repeated destinations, or
-    /// one that is not this patron's personal destination;
+    /// [`LibraryError::Invalid`] for too many or repeated destinations, or,
+    /// when the choice is enabled, one on a notifier not offered for the
+    /// type;
     /// [`LibraryError::NotFound`] when a destination does not exist.
     pub async fn set_patron_choice(&self, user_id: i64, choice: &PatronChoice) -> Result<()> {
         if choice.destination_ids.len() > MAX_ROUTES_PER_TYPE {
@@ -1207,6 +1320,16 @@ impl LibraryStore {
                 "a type goes to at most {MAX_ROUTES_PER_TYPE} destinations"
             )));
         }
+        // Only a notifier offered for the type can carry it: routing skips
+        // any other, so such a pick would quietly leave the inbox alone.
+        let offered: BTreeSet<String> = notify_patron_offers::Entity::find()
+            .filter(notify_patron_offers::Column::NotificationType.eq(&choice.notification_type))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|o| o.plugin_instance_id)
+            .collect();
         let mut seen = BTreeSet::new();
         for id in &choice.destination_ids {
             if !seen.insert(id.as_str()) {
@@ -1221,6 +1344,12 @@ impl LibraryStore {
             if dest.kind != DestinationKind::Personal || dest.user_id != Some(user_id) {
                 // Someone else's destination answers like a missing one.
                 return Err(LibraryError::not_found(EntityKind::NotifyDestination, id));
+            }
+            if choice.enabled && !offered.contains(&dest.plugin_instance_id) {
+                return Err(LibraryError::Invalid(format!(
+                    "destination {id} is on a notifier not offered for `{}`",
+                    choice.notification_type
+                )));
             }
         }
         let now = super::now_str();
@@ -1303,11 +1432,12 @@ impl LibraryStore {
         destination_id: Option<&str>,
         before: Option<&NotifyCursor>,
         limit: u64,
-    ) -> Result<Vec<DeliveryRecord>> {
+    ) -> Result<NotifyPage<DeliveryRecord>> {
+        // One row past the page says whether another page follows.
         let mut query = notify_deliveries::Entity::find()
             .order_by_desc(notify_deliveries::Column::CreatedAt)
             .order_by_desc(notify_deliveries::Column::Id)
-            .limit(page(limit));
+            .limit(page(limit) + 1);
         if let Some(dest) = destination_id {
             query = query.filter(notify_deliveries::Column::DestinationId.eq(dest));
         }
@@ -1318,7 +1448,10 @@ impl LibraryStore {
                 cursor,
             ));
         }
-        let rows = query.all(&self.db).await.map_err(LibraryError::Orm)?;
+        let (rows, more) = split_page(
+            query.all(&self.db).await.map_err(LibraryError::Orm)?,
+            page(limit),
+        );
         let ids: BTreeSet<String> = rows.iter().map(|r| r.notification_id.clone()).collect();
         let notes: BTreeMap<String, notifications::Model> = if ids.is_empty() {
             BTreeMap::new()
@@ -1332,7 +1465,8 @@ impl LibraryStore {
                 .map(|n| (n.id.clone(), n))
                 .collect()
         };
-        rows.into_iter()
+        let items = rows
+            .into_iter()
             .map(|row| {
                 let note = notes.get(&row.notification_id);
                 Ok(DeliveryRecord {
@@ -1352,7 +1486,8 @@ impl LibraryStore {
                     updated_at: row.updated_at,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        Ok(NotifyPage { items, more })
     }
 
     /// One page of a patron's inbox, newest first.
@@ -1372,12 +1507,13 @@ impl LibraryStore {
         user_id: i64,
         before: Option<&NotifyCursor>,
         limit: u64,
-    ) -> Result<Vec<InboxEntry>> {
+    ) -> Result<NotifyPage<InboxEntry>> {
+        // One row past the page says whether another page follows.
         let mut query = notify_inbox::Entity::find()
             .filter(notify_inbox::Column::UserId.eq(user_id))
             .order_by_desc(notify_inbox::Column::CreatedAt)
             .order_by_desc(notify_inbox::Column::NotificationId)
-            .limit(page(limit));
+            .limit(page(limit) + 1);
         if let Some(cursor) = before {
             query = query.filter(before_cursor(
                 notify_inbox::Column::CreatedAt,
@@ -1385,7 +1521,10 @@ impl LibraryStore {
                 cursor,
             ));
         }
-        let rows = query.all(&self.db).await.map_err(LibraryError::Orm)?;
+        let (rows, more) = split_page(
+            query.all(&self.db).await.map_err(LibraryError::Orm)?,
+            page(limit),
+        );
         let ids: Vec<String> = rows.iter().map(|r| r.notification_id.clone()).collect();
         let mut notes: BTreeMap<String, notifications::Model> = if ids.is_empty() {
             BTreeMap::new()
@@ -1408,7 +1547,7 @@ impl LibraryStore {
                 });
             }
         }
-        Ok(out)
+        Ok(NotifyPage { items: out, more })
     }
 
     /// How many entries in a patron's inbox are unread.

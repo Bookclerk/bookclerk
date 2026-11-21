@@ -14818,7 +14818,7 @@
           "Notifications"
         ],
         "summary": "Lists the notification types and the notifier instances the routing\nscreens pick from.",
-        "description": "Types come from the host and from the `[[notifications.types]]` of the\nplugins installed on this server; notifiers are the instances of\ninstalled `notifier` plugins.",
+        "description": "Types come from the host and from the `[[notifications.types]]` of the\nplugins installed on this server; notifiers are the instances of\ninstalled `notifier` plugins.\n\nAccess: the operator, an Owner or an Administrator.",
         "operationId": "get_catalog",
         "responses": {
           "200": {
@@ -14952,6 +14952,7 @@
           "Notifications"
         ],
         "summary": "Lists the library's channels.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "list_channels",
         "responses": {
           "200": {
@@ -15083,6 +15084,7 @@
           "Notifications"
         ],
         "summary": "Makes a library channel on a notifier instance.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "post_channel",
         "requestBody": {
           "content": {
@@ -15267,6 +15269,7 @@
           "Notifications"
         ],
         "summary": "Deletes a channel with its routes and delivery-log rows.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "delete_channel",
         "parameters": [
           {
@@ -15415,6 +15418,7 @@
           "Notifications"
         ],
         "summary": "Renames a channel.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "patch_channel",
         "parameters": [
           {
@@ -15623,6 +15627,7 @@
           "Notifications"
         ],
         "summary": "Resumes a channel repeated failures paused, and clears its failure\ncount.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "post_channel_resume",
         "parameters": [
           {
@@ -15780,7 +15785,7 @@
           "Notifications"
         ],
         "summary": "Sends a test notification to one channel, whatever the routes say.",
-        "description": "The send runs as a job; its outcome lands in the delivery log.",
+        "description": "The send runs as a job; its outcome lands in the delivery log.\n\nAccess: the operator, an Owner or an Administrator.",
         "operationId": "post_channel_test",
         "parameters": [
           {
@@ -15795,7 +15800,7 @@
         ],
         "responses": {
           "202": {
-            "description": "The test is queued.",
+            "description": "The test is accepted. Its send job is queued, or, when the queue is full, the next sweep (within a minute) queues it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15951,6 +15956,7 @@
           "Notifications"
         ],
         "summary": "Lists every routing rule.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "get_routes",
         "responses": {
           "200": {
@@ -16084,6 +16090,7 @@
           "Notifications"
         ],
         "summary": "Replaces the routes of one operational type.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "put_routes",
         "parameters": [
           {
@@ -16111,7 +16118,7 @@
             "description": "The routes are replaced."
           },
           "400": {
-            "description": "An unknown or patron type, a bad severity, a personal destination, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "An unknown or patron type (an unknown one may still be cleared with no routes), a bad severity, a personal destination, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16285,6 +16292,7 @@
           "Notifications"
         ],
         "summary": "Lists which notifiers patrons may pick for each patron type.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "get_offers",
         "responses": {
           "200": {
@@ -16418,6 +16426,7 @@
           "Notifications"
         ],
         "summary": "Replaces which notifiers patrons may pick for one patron type.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "put_offers",
         "parameters": [
           {
@@ -16445,7 +16454,7 @@
             "description": "The offers are replaced."
           },
           "400": {
-            "description": "An unknown or operational type, an instance that is not a personal notifier, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "An unknown or operational type (an unknown one may still be cleared with no offers), an instance that is not a personal notifier, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16606,6 +16615,7 @@
           "Notifications"
         ],
         "summary": "Pages the delivery log, newest first.",
+        "description": "Access: the operator, an Owner or an Administrator.",
         "operationId": "list_deliveries",
         "parameters": [
           {
@@ -16629,7 +16639,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size, 1 to 200 (default 50).",
+            "description": "Page size (default 50); a value outside 1 to 200 is clamped to that\nrange.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -16650,7 +16660,7 @@
             }
           },
           "400": {
-            "description": "The cursor is not one this route made.",
+            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number (answered as plain text by the query parser).",
             "content": {
               "application/json": {
                 "schema": {
@@ -16783,6 +16793,7 @@
           "Notifications"
         ],
         "summary": "Reads the caller's notification settings: the types they can receive\nbeyond the inbox, what they chose, and their destinations.",
+        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
         "operationId": "get_my_settings",
         "responses": {
           "200": {
@@ -16916,6 +16927,7 @@
           "Notifications"
         ],
         "summary": "Sets what the caller gets for one patron type, replacing the defaults.",
+        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
         "operationId": "put_my_choice",
         "parameters": [
           {
@@ -16943,7 +16955,7 @@
             "description": "The choice is saved."
           },
           "400": {
-            "description": "A bad type id, a repeat, or more than 32 destinations. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "A bad type id, a repeat, more than 32 destinations, or (when enabled) a destination on a notifier not offered for the type. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17115,6 +17127,7 @@
           "Notifications"
         ],
         "summary": "Drops the caller's choice for one type, so the defaults apply again.",
+        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
         "operationId": "delete_my_choice",
         "parameters": [
           {
@@ -17252,7 +17265,7 @@
           "Notifications"
         ],
         "summary": "Adds a personal destination for the caller.",
-        "description": "The notifier normalises and checks the address first\n(`Notifier.validateDestination`); the host checks its answer again\nagainst the declared fields before saving it.",
+        "description": "The notifier normalises and checks the address first\n(`Notifier.validateDestination`); the host checks its answer again\nagainst the declared fields before saving it.\n\nAccess: any signed-in library user, for their own settings; the\noperator token alone has none.",
         "operationId": "post_my_destination",
         "requestBody": {
           "content": {
@@ -17276,7 +17289,7 @@
             }
           },
           "400": {
-            "description": "A bad address or label, or an instance that does not send to patrons. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "A bad address or label, an instance that does not send to patrons or is not offered for any type, or a patron who already keeps 32 addresses. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17463,6 +17476,7 @@
           "Notifications"
         ],
         "summary": "Deletes one of the caller's destinations.",
+        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
         "operationId": "delete_my_destination",
         "parameters": [
           {
@@ -17613,6 +17627,7 @@
           "Notifications"
         ],
         "summary": "Resumes one of the caller's destinations that repeated failures paused,\nand clears its failure count.",
+        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
         "operationId": "post_my_destination_resume",
         "parameters": [
           {
@@ -17770,6 +17785,7 @@
           "Notifications"
         ],
         "summary": "Pages the caller's inbox, newest first.",
+        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
         "operationId": "get_my_inbox",
         "parameters": [
           {
@@ -17784,7 +17800,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size, 1 to 200 (default 50).",
+            "description": "Page size (default 50); a value outside 1 to 200 is clamped to that\nrange.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -17805,7 +17821,7 @@
             }
           },
           "400": {
-            "description": "The cursor is not one this route made.",
+            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number (answered as plain text by the query parser).",
             "content": {
               "application/json": {
                 "schema": {
@@ -17938,6 +17954,7 @@
           "Notifications"
         ],
         "summary": "Marks one inbox entry, or all of them, read.",
+        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
         "operationId": "post_my_inbox_read",
         "requestBody": {
           "content": {
@@ -44193,7 +44210,8 @@
             "description": "The caller's own destinations it goes to; at most 32.",
             "example": [
               "8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"
-            ]
+            ],
+            "maxItems": 32
           }
         },
         "additionalProperties": false
@@ -45711,7 +45729,7 @@
           "failure_count": {
             "type": "integer",
             "format": "int64",
-            "description": "Failures since the last success.",
+            "description": "Permanent failures in a row; a delivery, or resuming the\ndestination, resets it to 0. It pauses at 5.",
             "example": 0
           },
           "paused_at": {
@@ -50212,7 +50230,8 @@
             "items": {
               "$ref": "#/components/schemas/OfferJson"
             },
-            "description": "The type's offers, replacing the old ones; at most 32. Empty keeps\nthe type in patrons' inboxes only."
+            "description": "The type's offers, replacing the old ones; at most 32. Empty keeps\nthe type in patrons' inboxes only.",
+            "maxItems": 32
           }
         },
         "additionalProperties": false
@@ -52265,7 +52284,7 @@
           },
           "enabled": {
             "type": "boolean",
-            "description": "Whether it is sent beyond the inbox (`true` when not chosen).",
+            "description": "The patron's preference, not a delivery result: `false` keeps the\ntype in the inbox only. `true` when nothing is chosen, in which case\nthe offers' defaults pick where it goes.",
             "example": true
           },
           "destination_ids": {
@@ -57361,7 +57380,8 @@
             "items": {
               "$ref": "#/components/schemas/RouteJson"
             },
-            "description": "The type's routes, replacing the old ones; at most 32. Empty sends\nthe type nowhere."
+            "description": "The type's routes, replacing the old ones; at most 32. Empty sends\nthe type nowhere.",
+            "maxItems": 32
           }
         },
         "additionalProperties": false

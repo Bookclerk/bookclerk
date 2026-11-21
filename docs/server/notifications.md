@@ -43,7 +43,9 @@ one.
 
 A **route** sends one operational type to a channel, from a minimum
 severity up. `PUT /api/notifications/routes/{type}` replaces a type's
-routes; a type with no routes goes nowhere. `GET
+routes; a type with no routes goes nowhere. An empty replacement also
+clears a type the catalog no longer lists, such as one a plugin upgrade
+dropped (offers work the same way). `GET
 /api/notifications/catalog` lists every known type and every notifier
 instance, with the address fields each one asks patrons for.
 
@@ -58,8 +60,9 @@ Administrators **offer** notifiers to patrons per patron type, with
 sends to personal addresses can be offered. Each offer says whether it is
 on by default.
 
-A patron adds their own address on an offered notifier with
-`POST /api/me/notifications/destinations`. The address is a flat object
+A patron adds their own address on a notifier offered for at least one
+type with `POST /api/me/notifications/destinations`, and keeps at most 32
+addresses. The address is a flat object
 of strings, checked against the notifier's declared address fields and
 then by the notifier itself, which may normalise it. The notifier must be
 running to check it (`409` otherwise).
@@ -67,7 +70,8 @@ running to check it (`409` otherwise).
 For each patron type, a patron's notifications go to:
 
 - the destinations the patron chose with
-  `PUT /api/me/notifications/choices/{type}`;
+  `PUT /api/me/notifications/choices/{type}`, each on a notifier offered
+  for that type;
 - nowhere but the inbox, when the patron turned the type off;
 - otherwise, their addresses on the notifiers offered on by default.
 
@@ -81,6 +85,12 @@ store account the plugin is working for, so a store plugin cannot message
 people outside its own account.
 
 ## Retries, pausing and the delivery log
+
+- A send runs on a node that holds the library database, so deploy each
+  notifier instance on at least one such node. A send job for an instance
+  that runs only elsewhere waits in the queue.
+- A notifier that does not answer within 30 seconds is retried like one
+  that asked to.
 
 - A notifier that asks to retry is tried again after the wait it gave,
   or after a backoff that starts at 30 seconds and doubles up to an hour.

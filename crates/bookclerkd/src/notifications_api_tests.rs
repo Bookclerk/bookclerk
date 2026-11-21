@@ -1,7 +1,9 @@
 //! Tests of the notifications routes, driven through the router.
 
 use axum::http::{header, StatusCode};
-use bookclerk_library::notifications::{DestinationKind, NewDestination, NewNotification};
+use bookclerk_library::notifications::{
+    DestinationKind, FailedAttempt, NewDestination, NewNotification,
+};
 use bookclerk_library::{LibraryStore, NotifyQueueLimits};
 use bookclerk_plugin_abi::{NotificationAlertAction, NotificationAudience, NotificationSeverity};
 
@@ -259,7 +261,12 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
         library
-            .record_notify_failed(sent["delivery_id"].as_str().unwrap(), "refused")
+            .record_notify_failed(
+                sent["delivery_id"].as_str().unwrap(),
+                "refused",
+                FailedAttempt::New,
+                None,
+            )
             .await
             .expect("failed");
     }
@@ -481,6 +488,45 @@ async fn a_patron_reads_their_inbox_and_keeps_to_their_own_destinations() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn a_notifier_answer_keeps_its_address_and_gets_a_safe_label() {
+    use bookclerk_plugin_abi::notifications::AddressFieldRule;
+    use bookclerk_plugin_abi::NotifyValidated;
+    let rules = [AddressFieldRule {
+        key: "chat_id".into(),
+        required: true,
+    }];
+    let answer = |label: Option<&str>| NotifyValidated {
+        address_json: r#"{"chat_id":"123"}"#.into(),
+        label: label.map(str::to_string),
+    };
+    // A suggested label that is not one line gives way to the fallback
+    // rather than refusing the normalised address.
+    let (address, label) =
+        super::accept_validated(answer(Some("two\nlines")), &rules, None, "Telegram")
+            .expect("accepted");
+    assert_eq!(address.to_json(), r#"{"chat_id":"123"}"#);
+    assert_eq!(label, "Telegram");
+    // A usable suggestion is kept; the patron's own label wins over it.
+    let (_, label) =
+        super::accept_validated(answer(Some("@ada")), &rules, None, "Telegram").expect("accepted");
+    assert_eq!(label, "@ada");
+    let (_, label) = super::accept_validated(
+        answer(Some("two\nlines")),
+        &rules,
+        Some("My phone".into()),
+        "Telegram",
+    )
+    .expect("accepted");
+    assert_eq!(label, "My phone");
+    // An address the declared fields refuse is still refused.
+    let wrong = NotifyValidated {
+        address_json: r#"{"other":"1"}"#.into(),
+        label: None,
+    };
+    assert!(super::accept_validated(wrong, &rules, None, "Telegram").is_err());
 }
 
 #[test]

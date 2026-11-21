@@ -222,10 +222,8 @@ impl OutboxNotificationRaiser {
     /// library cannot be read.
     async fn patron_in_scope(&self, text: &str) -> Result<i64> {
         let outside = || PluginError::forbidden("the patron is outside this invocation's accounts");
-        if self.account_id.is_empty() {
-            return Err(outside());
-        }
-        let patron: i64 = text.parse().map_err(|_| outside())?;
+        let patron = bookclerk_plugin_abi::notifications::scoped_patron_id(&self.account_id, text)
+            .ok_or_else(outside)?;
         let holds = self
             .outbox
             .store
@@ -381,7 +379,7 @@ title = "New episode"
             .expect("raised");
         let page = store.notify_deliveries(None, None, 10).await.unwrap();
         // Nothing routes the type yet, so it is stored without deliveries.
-        assert!(page.is_empty());
+        assert!(page.items.is_empty());
         let built = raiser
             .notification(raise("sync_failed", None))
             .await

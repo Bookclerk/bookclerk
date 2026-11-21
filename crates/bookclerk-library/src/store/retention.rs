@@ -463,6 +463,14 @@ mod tests {
                 .map(|row| row.token_hash)
                 .collect();
             assert_eq!(tickets, ["t-recent"], "{name}");
+            let kept: Vec<String> = crate::entities::notifications::Entity::find()
+                .all(db)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| row.id)
+                .collect();
+            assert_eq!(kept, ["n-recent"], "{name}");
             let invites: Vec<String> = user_invites::Entity::find()
                 .all(db)
                 .await

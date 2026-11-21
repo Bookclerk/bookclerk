@@ -706,6 +706,37 @@ pub fn check_validated(validated: &NotifyValidated) -> Result<NotifyAddress, Not
     Ok(address)
 }
 
+/// The sans-IO half of the host's patron-scope check on a raise: the
+/// library user a raise's `patron_id` names, which the host then looks up
+/// as a holder of the invocation's store account.
+///
+/// A raise outside every account scope is refused here: an invocation with
+/// no account (an operator invocation) can name no patron, and a patron id
+/// must be a user id written canonically (a positive decimal with no sign,
+/// no leading zero and no other character) that fits an `i64`, so one user
+/// is never named two ways.
+///
+/// # Arguments
+///
+/// * `invocation_account` - `Invocation.accountId`; empty for an operator
+///   invocation.
+/// * `patron_id` - The raise's patron id.
+///
+/// # Returns
+///
+/// The user id to look up, or `None` to refuse the raise.
+#[must_use]
+pub fn scoped_patron_id(invocation_account: &str, patron_id: &str) -> Option<i64> {
+    if invocation_account.is_empty()
+        || patron_id.is_empty()
+        || patron_id.starts_with('0')
+        || !patron_id.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    patron_id.parse().ok()
+}
+
 /// Checks a raise a plugin sent on its `NOTIFY` binding. Whether the type
 /// is one the plugin declared, and whether the patron is inside the
 /// invocation's account scope, are the host's checks, since only it knows
