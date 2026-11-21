@@ -818,6 +818,46 @@ function fieldText(value: unknown, max: number): string {
   }
 }
 
+/**
+ * The source commit a report names, shown after its version.
+ *
+ * @param p - The stored payload (untrusted).
+ * @returns ` (abc1234)` for a 7 to 40 digit hex commit, else nothing.
+ */
+function buildCommit(p: JsonObject): SafeHtml | string {
+  const commit = p.build_commit;
+  if (typeof commit !== "string" || !/^[0-9a-f]{7,40}$/.test(commit)) return "";
+  return html` <span class="fine">(${commit.slice(0, 12)})</span>`;
+}
+
+/**
+ * The CPU and memory limits a report's node ran under, as one row.
+ *
+ * @param p - The stored payload (untrusted).
+ * @returns A row such as "0.25 CPU, 1 GiB", or nothing when none is reported.
+ */
+function nodeLimits(p: JsonObject): SafeHtml | string {
+  const limits = asObject(p.limits);
+  const parts: string[] = [];
+  const cpu = limits.cpu_millis;
+  if (typeof cpu === "number" && Number.isSafeInteger(cpu) && cpu > 0) {
+    parts.push(`${(cpu / 1000).toFixed(2).replace(/\.?0+$/, "")} CPU`);
+  }
+  const memory = limits.memory_bytes;
+  if (typeof memory === "number" && Number.isSafeInteger(memory) && memory > 0) {
+    const mib = memory / 1024 / 1024;
+    parts.push(
+      mib >= 1024 ? `${(mib / 1024).toFixed(1).replace(/\.0$/, "")} GiB` : `${Math.round(mib)} MiB`,
+    );
+  }
+  const cpus = limits.cpus;
+  if (typeof cpus === "number" && Number.isSafeInteger(cpus) && cpus > 0) {
+    parts.push(`${cpus} visible ${cpus === 1 ? "CPU" : "CPUs"}`);
+  }
+  if (!parts.length) return "";
+  return html`<div><dt>Node limits</dt><dd>${parts.join(", ")}</dd></div>`;
+}
+
 /** Event levels the log shows, most severe first. */
 const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
 
@@ -970,8 +1010,9 @@ export function reportPage(d: ReportData): SafeHtml {
       <div class="grid">
         <section class="panel s8"><h2>Report</h2><dl class="meta">
           <div><dt>Received</dt><dd class="num">${fmtTime(r.received_at)} UTC</dd></div>
-          <div><dt>Version</dt><dd class="mono">${r.version}</dd></div>
+          <div><dt>Version</dt><dd class="mono">${r.version}${buildCommit(p)}</dd></div>
           <div><dt>Platform</dt><dd>${`${r.os} ${r.arch}`.trim()}${r.distro ? `, ${r.distro}` : ""}</dd></div>
+          ${nodeLimits(p)}
           <div><dt>rustc</dt><dd class="mono">${typeof p.rustc_release === "string" && p.rustc_release ? `${p.rustc_release.slice(0, 64)} ${typeof p.rustc_channel === "string" ? p.rustc_channel.slice(0, 32) : ""}` : "not reported"}</dd></div>
           <div><dt>Trigger</dt><dd>${r.trigger}</dd></div>
           <div><dt>Events</dt><dd class="num">${fmtInt(r.events)} (${plural(r.errors, "error")}, ${plural(r.warnings, "warning")})</dd></div>

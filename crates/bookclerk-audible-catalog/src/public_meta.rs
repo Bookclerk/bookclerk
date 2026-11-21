@@ -163,6 +163,10 @@ pub struct CatalogProduct {
     pub genre_roots: Vec<String>,
     /// BCP-47 / storefront language code (`en`, `de`, …) when known.
     pub language: Option<String>,
+    /// Whether this edition is abridged, from the catalog's `format_type`
+    /// (`abridged` / `unabridged`); `None` when it gave no format the
+    /// parser knows.
+    pub is_abridged: Option<bool>,
     /// List or deal price in integer cents of [`Self::currency`].
     pub price_cents: Option<i64>,
     /// ISO 4217 currency code for price fields (`USD`, `EUR`, …).
@@ -1230,6 +1234,7 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let is_abridged = abridged_from_format_type(p.get("format_type"));
     let categories = categories_from_catalog_product(p);
     let genre_roots = genre_roots_from_catalog_product(p);
     let (price_cents, currency, price_label) = price_from_catalog_product(p);
@@ -1253,12 +1258,24 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
         categories,
         genre_roots,
         language,
+        is_abridged,
         price_cents,
         currency,
         price_label,
         rating_overall,
         rating_count,
     })
+}
+
+/// Reads the catalog's `format_type` as an abridged flag: `abridged` is
+/// `Some(true)`, `unabridged` is `Some(false)`, anything else (absent, not a
+/// string, or a format such as `original_recording`) is `None`.
+fn abridged_from_format_type(v: Option<&Value>) -> Option<bool> {
+    match v?.as_str()?.trim().to_ascii_lowercase().as_str() {
+        "abridged" => Some(true),
+        "unabridged" => Some(false),
+        _ => None,
+    }
 }
 
 /// Joins the unique names of a product's genre ladders with `; `, or `None`

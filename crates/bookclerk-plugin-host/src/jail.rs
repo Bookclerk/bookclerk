@@ -37,6 +37,7 @@
 //! docs for why, and for what permitting `execve` costs.
 
 use std::path::{Path, PathBuf};
+
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -47,6 +48,38 @@ use crate::discover::{DiscoveredPlugin, StateScope};
 use crate::manifest::JailNetworkNeed;
 use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan};
 use crate::{PluginError, PluginGrant, PluginRuntimeKind, Result};
+
+/// Whether this process already warned that it cannot make session
+/// cgroups, so later spawns log the same cause at debug.
+#[cfg(target_os = "linux")]
+static SESSION_CGROUP_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Logs that a session cgroup could not be made: a WARN the first time
+/// `warned` is unset, at debug afterwards (the cause, no delegated cgroup,
+/// is the same for every spawn of this process).
+///
+/// # Arguments
+///
+/// * `err` - Why the cgroup could not be made.
+/// * `warned` - Whether this process already warned; set by this call.
+#[cfg(target_os = "linux")]
+fn note_session_cgroup_unavailable(
+    err: &dyn std::fmt::Display,
+    warned: &std::sync::atomic::AtomicBool,
+) {
+    if warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::debug!(
+            error = %err,
+            "session cgroup unavailable; process-group kill is the fallback"
+        );
+    } else {
+        tracing::warn!(
+            error = %err,
+            "session cgroup unavailable; process-group kill is the fallback and does not cover a descendant that calls setsid (later spawns log this at debug)"
+        );
+    }
+}
 
 /// Launcher binary that applies the jail.
 const JAIL_BIN_NAME: &str = "bookclerk-jail";
@@ -434,10 +467,7 @@ impl GuestJail {
             ) {
                 Ok(path) => Some(SessionCgroup::new(path)),
                 Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "session cgroup unavailable; process-group kill is the fallback and does not cover a descendant that calls setsid"
-                    );
+                    note_session_cgroup_unavailable(&err, &SESSION_CGROUP_WARNED);
                     None
                 }
             }
@@ -1383,6 +1413,46 @@ fn local_storage_write_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn session_cgroup_failure_warns_once_then_logs_at_debug() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log buf").extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&bytes);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                "bookclerk_plugin_host=debug",
+            ))
+            .with_writer(move || Buf(Arc::clone(&sink)))
+            .finish();
+        let warned = std::sync::atomic::AtomicBool::new(false);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            note_session_cgroup_unavailable(&"no delegated cgroup", &warned);
+            note_session_cgroup_unavailable(&"no delegated cgroup", &warned);
+        });
+        let text = String::from_utf8(bytes.lock().expect("log buf").clone()).expect("utf-8 log");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].contains("WARN"), "{text}");
+        assert!(lines[1].contains("DEBUG"), "{text}");
+        assert!(warned.load(std::sync::atomic::Ordering::Relaxed));
+    }
 
     /// The `media` line a test manifest with `entrypoints` needs: storefronts
     /// and metadata providers must declare their media; other plugins must not.

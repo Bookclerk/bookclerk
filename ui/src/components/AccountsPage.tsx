@@ -80,33 +80,39 @@ export function AccountsPage({
   async function refresh() {
     setError(null);
     setBusy(true);
+    // The three reads are independent, so they run at once; their results
+    // are applied in the old order, and a failed sources read still wins.
+    const sourcesRead = portalSources();
+    const librariesRead =
+      role === "owner"
+        ? fetchBranchSharing().then(
+            (links) => links.libraries.filter((link) => link.state === "active"),
+            () => [],
+          )
+        : Promise.resolve([]);
+    // A pace change applied while the read runs wins over what it returns.
+    const epoch = paceEpoch.current;
+    const connectionsRead = portalConnections().then(
+      (conns) => ({ ok: true as const, conns }),
+      (err: unknown) => ({ ok: false as const, err }),
+    );
     try {
-      const src = await portalSources();
+      const src = await sourcesRead;
       setSources(src);
-      if (role === "owner") {
-        try {
-          const links = await fetchBranchSharing();
-          setLibraries(links.libraries.filter((link) => link.state === "active"));
-        } catch {
-          setLibraries([]);
+      setLibraries(await librariesRead);
+      const conns = await connectionsRead;
+      if (conns.ok) {
+        if (epoch === paceEpoch.current) {
+          setConnections(conns.conns);
         }
       } else {
-        setLibraries([]);
-      }
-      try {
-        const epoch = paceEpoch.current;
-        const conns = await portalConnections();
-        if (epoch === paceEpoch.current) {
-          setConnections(conns);
-        }
-      } catch (err) {
         setConnections([]);
         if (!canConnect) {
           setError(
             "Store linking requires a user session. Sign in with a claim ticket or integration account (operators cannot connect stores).",
           );
         } else {
-          throw err;
+          throw conns.err;
         }
       }
     } catch (err) {

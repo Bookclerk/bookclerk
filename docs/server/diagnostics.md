@@ -98,6 +98,11 @@ not pull the reports.
   reads the report back from the collector: the redacted log lines as they
   were sent, the GitHub issues tracking it, whether each is open, and the
   fix with the first release that has it, once one is recorded.
+- Besides the log, a report carries the install's version and platform,
+  the commit it was built from (when the build knew it, from
+  `BOOKCLERK_BUILD_COMMIT` or the checkout's `git rev-parse HEAD`), and on
+  Linux the CPU and memory limits of its cgroup next to the machine's CPU
+  count. The member dashboard shows both on the report page.
 - **Delete** (or `bookclerk diagnostics delete <report-id>`) removes the
   collector's stored copy. Its one-line summary (version, system and type
   of error, no log) and its issue links stay, so the report still counts
@@ -137,6 +142,9 @@ The design behind this split is in
   carries that span's fields as `span.field` (for example
   `http.request.method` and `http.request.route`), except the concrete
   request path, which stays local.
+- **Events don't repeat their span's fields.** An event field with the
+  same name and value as one of its span's fields is dropped from the
+  report, so `http.request.method` appears once per line.
 - Records from the `log` crate arrive under their own target and module,
   not as `log`.
 - **The WebSocket library's own log records reach neither.** It traces
@@ -152,6 +160,12 @@ The design behind this split is in
 Spawn stages and forwarded guest stderr are `bookclerk::spawn` tracing
 events, so they follow that filter and stay inside the JSON daemon sink.
 
+- A guest's or helper's stderr line is relayed at the level it names:
+  a line whose first word (or second, after a timestamp) is `TRACE`,
+  `DEBUG` or `INFO` keeps that level, with the prefix removed, and `WARN`
+  or `ERROR` is relayed as WARN, so a guest can't raise an ERROR burst on
+  the host. A line with no level word is relayed whole at INFO. Each line
+  names its guest in `guest_ref`.
 - Raw `bookclerk-spawn:` lines are written only when
   `BOOKCLERK_SPAWN_DIAG` is `1`, `true` or `stderr` (gateway CI sets
   this).
@@ -587,7 +601,7 @@ in with GitHub, and these pages are member-only:
 | --- | --- |
 | `/dash` | The overview: reports per day, the [triage queue](#triage-queue-and-mutes), active installs from [usage check-ins](#share-usage), top signatures, platforms and versions (with errors and warnings per report) |
 | `/reports` | A filterable list of reports (version, platform, trigger, filed, triage state), with the slowest request in each and checkboxes to mark a page of them at once |
-| `/reports/<report_id>` | One report: its facts (route and slowest request when it has them), triage state and mute, and its event log |
+| `/reports/<report_id>` | One report: its facts (route and slowest request when it has them, build commit, CPU and memory limits), triage state and mute, and its event log |
 | `/issues` | Diagnostics issues, their pull requests, the version each fix shipped in, and reports that keep arriving from that version on |
 | `/issues/<number>` | One issue's reports, with the [corrections](#corrections) below, a **Copy branch command** button, and for owners the [close buttons](#closing-issues) |
 | `/demo` | The [hosted demo's runs](#hosted-demo-runs): runs open now, and runs, hours of use, run length and startup time per day over 30, 90 or 365 days |

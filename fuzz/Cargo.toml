@@ -612,3 +612,10 @@ path = "fuzz_targets/notify_cursor.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "relayed_log_line"
+path = "fuzz_targets/relayed_log_line.rs"
+test = false
+doc = false
+bench = false

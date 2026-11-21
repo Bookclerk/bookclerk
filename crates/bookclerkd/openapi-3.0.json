@@ -59598,7 +59598,8 @@
         "type": "object",
         "description": "Title-metadata results aligned with the request; failed items are `null`.",
         "required": [
-          "results"
+          "results",
+          "incomplete"
         ],
         "properties": {
           "results": {
@@ -59756,6 +59757,17 @@
               "nullable": true
             },
             "description": "One optional metadata payload per query; enrichment errors become `None`."
+          },
+          "incomplete": {
+            "type": "array",
+            "items": {
+              "type": "boolean"
+            },
+            "description": "Per query, in order: `true` when its `null` is a failure or a query\nthat ran past the batch deadline, not an answer, so the client should\nnot keep it and may ask again later.",
+            "example": [
+              false,
+              true
+            ]
           }
         }
       },
