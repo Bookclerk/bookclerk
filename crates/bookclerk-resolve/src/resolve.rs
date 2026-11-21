@@ -62,15 +62,17 @@ pub trait IdSource {
 
 /// Whether a stored expression may take `listing`.
 ///
-/// Kinds must be equal; language and abridgement must be known on both
-/// sides and equal; the performer credit keys must be equal and, except
+/// Kinds must be equal; language (in its canonical spelling) and
+/// abridgement must be known on both sides and equal; the performer credit keys must be equal and, except
 /// for the text itself, non-empty.
 fn expression_compatible(expression: &ExpressionRow, listing: &Listing) -> bool {
     let credit_key = listing.expression_credit_key();
     expression.kind == listing.expression_kind
+        // Rows stored before languages were canonical may still spell the
+        // language the store's way, so the stored side is canonicalised too.
         && matches!(
             (&expression.language, &listing.language),
-            (Some(a), Some(b)) if a == b
+            (Some(a), Some(b)) if crate::listing::canonical_language(a) == *b
         )
         && expression.abridgement != Abridgement::Unknown
         && expression.abridgement == listing.abridgement

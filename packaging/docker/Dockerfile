@@ -50,12 +50,16 @@ COPY --from=ui /src/ui/dist ui/dist
 # thin LTO and parallel codegen units, which links in a fraction of the time.
 ARG RELEASE_LTO=true
 ARG RELEASE_CODEGEN_UNITS=1
+# The commit being built, which diagnostics reports carry (the build context
+# has no .git to read it from). Empty leaves reports saying "unknown".
+ARG BUILD_COMMIT=
 # Release hosts + helpers + pinned workerd + sqlite/local, stamped and laid
 # out exactly as the release archive. The bundle-local ledger is dropped: the
 # host stamps its own ledger in BOOKCLERK_FILES_DIR when it installs the
 # plugins.
 RUN CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RELEASE_CODEGEN_UNITS" \
+    BOOKCLERK_BUILD_COMMIT="$BUILD_COMMIT" \
     cargo package-platform --out /dist \
     && bundle=$(find /dist -mindepth 1 -maxdepth 1 -type d -name 'bookclerk-*') \
     && test -n "$bundle" \
