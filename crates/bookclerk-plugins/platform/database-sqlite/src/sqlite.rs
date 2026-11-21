@@ -162,7 +162,7 @@ impl SqliteProxy {
     /// Returns when this connection refuses the query-deadline progress
     /// handler. rusqlite 0.38+ returns that error when the handle is not owned
     /// by this [`Connection`], which would leave statements without a deadline.
-    pub fn new(conn: Connection) -> rusqlite::Result<Self> {
+    pub fn new(mut conn: Connection) -> rusqlite::Result<Self> {
         // TRUNCATE journal serializes writers. Each attempt waits only
         // [`BEGIN_BUSY_SLICE`]; [`SqliteProxy::begin`] and autocommit
         // statements retry on the async runtime up to
@@ -354,7 +354,6 @@ impl SqliteProxy {
             }
             let decltypes: Vec<Option<String>> = stmt
                 .columns()
-                .iter()
                 .map(|c| c.decl_type().map(str::to_ascii_uppercase))
                 .collect();
             let positional: Vec<DbColumn> = names

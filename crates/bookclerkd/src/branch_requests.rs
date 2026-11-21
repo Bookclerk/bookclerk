@@ -137,4 +137,4 @@ pub(crate) async fn create_branch_request(
 
 #[cfg(test)]
 #[path = "branch_requests_tests.rs"]
-mod tests;
+pub(crate) mod tests;

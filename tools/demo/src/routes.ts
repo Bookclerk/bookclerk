@@ -107,6 +107,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/config/clerk", "allow"],
   ["POST", "/api/config/clerk/callback", "deny"],
   ["POST", "/api/config/clerk/inspect", "deny"],
+  ["POST", "/api/config/clerk/request", "deny"],
   ["POST", "/api/config/clerk/sign-out", "deny"],
   ["POST", "/api/config/clerk/start", "deny"],
   ["GET", "/api/config/library-consents", "allow"],

@@ -8,7 +8,10 @@
 //! names no user or account. The library answers with every book on its
 //! store accounts, and marks each edition the person holds through a store
 //! account of their own ([`WindowEdition::yours`]), and says what copy of
-//! it the library already holds ([`WindowEdition::copy`]).
+//! it the library already holds ([`WindowEdition::copy`]). A clerk's pages
+//! then go on with the books only the library's branches hold, each
+//! edition [`Availability::Reachable`]: the person may ask the library for
+//! one with its member request route. Those pages never name the branch.
 //!
 //! 1. window → library: [`crate::Body::WindowBooks`] with the cursor of the
 //!    previous page ([`WindowCursor`]; empty for the first).
@@ -108,7 +111,10 @@ pub struct WindowWork {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub identifiers: Vec<LookupIdentifier>,
     /// The library's editions of the work; 1 to [`MAX_LOOKUP_EDITIONS`],
-    /// each [`Availability::Owned`].
+    /// each [`Availability::Owned`] (the library holds it on a store
+    /// account) or, on a clerk's page, [`Availability::Reachable`] (only a
+    /// branch of the library lists it; never the person's and with no
+    /// copy).
     pub editions: Vec<WindowEdition>,
 }
 
@@ -207,9 +213,10 @@ impl WindowWork {
     /// Why the work is malformed, or `None`: a grouping key
     /// ([`is_work_ref`]), at most [`MAX_LOOKUP_IDENTIFIERS`] distinct
     /// well-formed identifiers, and 1 to [`MAX_LOOKUP_EDITIONS`] well-formed
-    /// editions the library holds, with distinct (store, marketplace,
-    /// product id) and, where one is stated, a well-formed copy
-    /// ([`WindowCopy::is_well_formed`]).
+    /// editions, with distinct (store, marketplace, product id) and, where
+    /// one is stated, a well-formed copy ([`WindowCopy::is_well_formed`]).
+    /// An edition is [`Availability::Owned`], or [`Availability::Reachable`]
+    /// with neither a copy nor [`WindowEdition::yours`].
     #[must_use]
     pub fn problem(&self) -> Option<&'static str> {
         if !is_work_ref(&self.work) {
@@ -236,8 +243,11 @@ impl WindowWork {
             if let Some(problem) = edition.problem() {
                 return Some(problem);
             }
-            if edition.availability != Availability::Owned {
-                return Some("invalid_availability");
+            let reachable_ok = listed.copy.is_none() && !listed.yours;
+            match edition.availability {
+                Availability::Owned => {}
+                Availability::Reachable if reachable_ok => {}
+                Availability::Reachable => return Some("invalid_availability"),
             }
             if !keys.insert((
                 edition.store.as_str(),
@@ -421,9 +431,22 @@ mod tests {
             copy: None,
         });
         assert_eq!(bad.problem(), Some("invalid_editions"));
+        // A book only a branch lists is never the person's and has no copy.
         let mut bad = work();
         bad.editions[0].edition.availability = Availability::Reachable;
         assert_eq!(bad.problem(), Some("invalid_availability"));
+        let mut reachable = work();
+        reachable.editions[0].edition.availability = Availability::Reachable;
+        reachable.editions[0].yours = false;
+        assert_eq!(reachable.problem(), None);
+        reachable.editions[0].copy = Some(WindowCopy {
+            source_store: None,
+            content_type: "audio/mp4".into(),
+            bitrate_kbps: None,
+            lossless: false,
+            version: "v1".into(),
+        });
+        assert_eq!(reachable.problem(), Some("invalid_availability"));
         let mut bad = work();
         bad.identifiers.push(bad.identifiers[0].clone());
         assert_eq!(bad.problem(), Some("invalid_identifiers"));

@@ -139,6 +139,7 @@ __all__ = [
     "KvNamespace",
     "CoverEntrypoint",
     "MetadataFilesEntrypoint",
+    "IngressEntrypoint",
     "MetadataEntrypoint",
     "NamedEntrypoint",
     "NotifierEntrypoint",
@@ -2511,6 +2512,35 @@ class NotifierEntrypoint(NamedEntrypoint):
         default accepts the address as given.
         """
         return {"addressJson": params["addressJson"]}
+
+
+class IngressEntrypoint(NamedEntrypoint):
+    """``ingress`` entrypoint: gives the library a public ``https`` address.
+
+    The host starts at most one ingress instance at a time. The Python SDK
+    serves ``[ingress] kind = "direct"`` plugins (dynamic DNS, port mapping),
+    which keep the address current and never receive requests; the ``ORIGIN``
+    binding a relay plugin hands requests to is provided by the TypeScript
+    SDK only.
+    """
+
+    bookclerk_methods = ("start", "health", "stop")
+
+    async def start(self) -> abi.IngressStarted:
+        """Bring the address up and return it once it serves (``IngressStarted``).
+
+        The origin is ``https://`` and a host name, with no port, path or
+        trailing slash.
+        """
+        raise _unsupported("start")
+
+    async def health(self) -> abi.IngressHealth:
+        """Whether the address is serving (``IngressHealth``)."""
+        return {"serving": True}
+
+    async def stop(self) -> None:
+        """Take the address down; the host stops relying on it after this returns."""
+        return None
 
 
 # ---------------------------------------------------------------------------
