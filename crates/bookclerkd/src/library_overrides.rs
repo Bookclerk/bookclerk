@@ -106,18 +106,24 @@ pub(crate) struct ConflictPage {
     next_cursor: Option<String>,
 }
 
-/// The Administrator behind `headers`, or the refusal.
+/// The Administrator behind `headers`, or the refusal. With `fixes`, the
+/// caller is about to change how listings resolve, which an Owner can turn
+/// off for one Administrator (the "Fix the catalog" switch).
 async fn administrator(
     state: &AppState,
     headers: &HeaderMap,
+    fixes: bool,
 ) -> Result<Option<i64>, OverrideError> {
-    crate::auth::library_administrator(state, headers)
+    let control = fixes.then_some(bookclerk_library::control_plane::AdminControl::FixCatalog);
+    crate::auth::library_administrator(state, headers, control)
         .await
         .map_err(|refusal| {
             refusal
                 .answer(|status| {
                     let message = if status == StatusCode::UNAUTHORIZED {
                         "sign in first"
+                    } else if status == StatusCode::INTERNAL_SERVER_ERROR {
+                        "your permissions could not be read"
                     } else {
                         "only an Administrator can change how listings resolve"
                     };
@@ -170,7 +176,7 @@ pub(crate) async fn put_listing_pin(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<PinBody>,
 ) -> Result<Json<PinJson>, OverrideError> {
-    let user_id = administrator(&state, &headers).await?;
+    let user_id = administrator(&state, &headers, true).await?;
     let library = state.library_snapshot().await;
     let outcome = library
         .pin_listing(&id, &body.edition_id, user_id)
@@ -211,7 +217,7 @@ pub(crate) async fn delete_listing_pin(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, OverrideError> {
-    let user_id = administrator(&state, &headers).await?;
+    let user_id = administrator(&state, &headers, true).await?;
     let library = state.library_snapshot().await;
     let removed = library
         .unpin_listing(&id)
@@ -247,7 +253,7 @@ pub(crate) async fn list_conflicts(
     headers: HeaderMap,
     Query(query): Query<ConflictQuery>,
 ) -> Result<Json<ConflictPage>, OverrideError> {
-    administrator(&state, &headers).await?;
+    administrator(&state, &headers, false).await?;
     let after = query
         .cursor
         .as_deref()
@@ -318,7 +324,7 @@ pub(crate) async fn post_work_split(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<WorkSplitBody>,
 ) -> Result<Json<SplitJson>, OverrideError> {
-    let user_id = administrator(&state, &headers).await?;
+    let user_id = administrator(&state, &headers, true).await?;
     let bad = |message: String| -> OverrideError {
         (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message))).into()
     };

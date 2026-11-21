@@ -77,6 +77,13 @@ input_from = "plugin package"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.egress_relay_head]
+crate = "bookclerk-workerd"
+boundary = "HTTP heads through the launcher's egress relay (plugin requests, server responses)"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.egress_policy]
 crate = "bookclerk-plugin-manifest"
 boundary = "Guest egress allowlist (EgressPolicy JSON wire form)"
@@ -228,6 +235,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-media"
 boundary = "Audio the media worker demuxes and decodes before encoding or repackaging it (store downloads, library copies, files on storage)"
 input_from = "store"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.media_pcm_wire]
+crate = "bookclerk-media"
+boundary = "PCM worker frames (requests the worker reads, replies and reply streams the host reads while a player plays)"
+input_from = "media worker"
 side = "host"
 artifacts = ["bookclerk"]
 

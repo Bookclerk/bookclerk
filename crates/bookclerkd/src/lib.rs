@@ -14,6 +14,7 @@
     clippy::expect_used
 )]
 
+mod admin_controls;
 mod api;
 mod auth;
 mod branch_requests;
@@ -27,6 +28,7 @@ mod covers;
 mod cron_worker;
 mod cross_origin;
 mod csrf;
+mod destination_sync;
 mod diagnostics_lookup;
 mod discover_events;
 mod discover_jobs;
@@ -552,6 +554,7 @@ async fn assemble_host(
         tray_handoff: Mutex::new(None),
         deployment_runtime: std::sync::OnceLock::new(),
         node_api_tls_bound: std::sync::OnceLock::new(),
+        in_window: std::sync::OnceLock::new(),
         library_swaps: tokio::sync::watch::Sender::new(0),
         covers: Arc::new(open_cover_service(&paths.cache_dir)),
     });

@@ -23,5 +23,9 @@
       "artifact": "workerd-windows-64.gz",
       "sha256_hex": "a2fb2c3b90bf72f6238161009fa9059586e1cc050ca29ddf739fc93c9b4f074d"
     }
+  },
+  "pyodide_bundle": {
+    "file": "pyodide_0.28.2_2025-01-16_20.capnp.bin",
+    "sha256_hex": "330d40e5bb3762cd54890d09122e173fca689ec420a98a1dd475215724e3df7d"
   }
 }

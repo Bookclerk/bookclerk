@@ -37,7 +37,7 @@ Instead the unsandboxed host:
    first instance, rejects remote clients, and is connected before the handle
    is delivered. The AppContainer guest uses that inherited handle; it does
    not open the pipe by name.
-2. Spawns two `bookclerk-jail.exe` processes (gateway `OutboundListen`, guest
+2. Spawns two `bookclerk-jail.exe` processes (gateway `LocalIpc`, guest
    `NetPolicy::Deny`). Isolation::Off still goes through the jail with
    `Enforcement::Disabled` so handle handoff has a single-threaded parent.
 3. `DuplicateHandle`s each link end into the matching jail, then writes one

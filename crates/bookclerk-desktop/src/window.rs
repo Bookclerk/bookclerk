@@ -10,6 +10,8 @@ use tauri::{Manager as _, RunEvent, State, Url, Webview, WebviewUrl, WebviewWind
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
 
+use crate::player::{NativePlayer, PlayerCommand};
+
 /// The custom scheme the web app is served on.
 const SCHEME: &str = "bookclerk";
 
@@ -41,7 +43,7 @@ struct LiveFeed {
 /// `/api/live` socket would carry (see [`EmbeddedHost::live`]), replacing
 /// any feed an earlier call started.
 ///
-/// The only command the window allows (`capabilities/main.json`), and only
+/// Allowed by the window's capability (`capabilities/main.json`), and only
 /// on the app's own pages: the library's sign-in pages the window shows
 /// during a join or a library card sign-in are remote, so Tauri refuses
 /// them. The page passes nothing but the channel.
@@ -63,16 +65,7 @@ fn live(
     feed: State<'_, LiveFeed>,
     on_frame: Channel<String>,
 ) -> Result<(), String> {
-    let page = webview.url().map(String::from).unwrap_or_default();
-    match live_refusal(webview.label(), &page) {
-        None => {}
-        Some(LiveRefusal::OtherWebview) => {
-            return Err("live updates are for the main window".into());
-        }
-        Some(LiveRefusal::ForeignPage) => {
-            return Err("live updates are for the app's own pages".into());
-        }
-    }
+    own_page(&webview)?;
     let host = Arc::clone(&feed.host);
     let task = feed.runtime.spawn(async move {
         host.live(move |text| on_frame.send(text).is_ok()).await;
@@ -86,6 +79,67 @@ fn live(
         previous.abort();
     }
     tracing::debug!(replaced, "window live updates started");
+    Ok(())
+}
+
+/// Refuses any caller but the main window on one of the app's own pages
+/// (see [`live_refusal`]).
+///
+/// # Errors
+///
+/// Says which rule the caller broke.
+fn own_page(webview: &Webview) -> Result<(), String> {
+    let page = webview.url().map(String::from).unwrap_or_default();
+    match live_refusal(webview.label(), &page) {
+        None => Ok(()),
+        Some(LiveRefusal::OtherWebview) => Err("this is for the main window".into()),
+        Some(LiveRefusal::ForeignPage) => Err("this is for the app's own pages".into()),
+    }
+}
+
+/// One command to the window's own player (see [`crate::player`]): load,
+/// play, pause, seek, speed, stop, probe, or what the system's media
+/// controls show.
+///
+/// # Arguments
+///
+/// * `webview` - The calling webview; refused unless it is the main window
+///   on one of the app's own pages.
+/// * `player` - The window's player.
+/// * `command` - The command, as the page's JSON object.
+///
+/// # Returns
+///
+/// For `probe`, the track's length in milliseconds when known.
+///
+/// # Errors
+///
+/// Returns an error for a foreign caller, a command out of range, or one
+/// that could not run (no audio device, a track the host refused).
+#[tauri::command]
+async fn player(
+    webview: Webview,
+    player: State<'_, NativePlayer>,
+    command: PlayerCommand,
+) -> Result<Option<u64>, String> {
+    own_page(&webview)?;
+    player.run(command).await
+}
+
+/// Sends the window's player's events to `on_event` from now on, replacing
+/// the channel an earlier call gave.
+///
+/// # Errors
+///
+/// Returns an error for a foreign caller.
+#[tauri::command]
+fn player_events(
+    webview: Webview,
+    player: State<'_, NativePlayer>,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    own_page(&webview)?;
+    player.subscribe(on_event);
     Ok(())
 }
 
@@ -109,6 +163,8 @@ pub fn run() -> anyhow::Result<()> {
     let scheme_host = host.clone();
     let navigation_host = host.clone();
     let spawner = runtime.handle().clone();
+    let player_host = host.clone();
+    let player_runtime = runtime.handle().clone();
     let live_feed = LiveFeed {
         host: host.clone(),
         runtime: runtime.handle().clone(),
@@ -116,7 +172,7 @@ pub fn run() -> anyhow::Result<()> {
     };
     let app = tauri::Builder::default()
         .manage(live_feed)
-        .invoke_handler(tauri::generate_handler![live])
+        .invoke_handler(tauri::generate_handler![live, player, player_events])
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_ctx, request, responder| {
             let host = scheme_host.clone();
             spawner.spawn(async move {
@@ -125,6 +181,11 @@ pub fn run() -> anyhow::Result<()> {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
+            app.manage(NativePlayer::new(
+                player_host,
+                player_runtime,
+                handle.clone(),
+            ));
             WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::CustomProtocol(start))
                 .title("Bookclerk")
                 .inner_size(1280.0, 820.0)

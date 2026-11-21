@@ -8,6 +8,7 @@
 //! See `docs/adr/control-plane.md`.
 
 mod account_links;
+mod admin_controls;
 mod artifacts;
 pub(crate) mod batch;
 mod branch_catalog;
@@ -71,6 +72,14 @@ use serde::{Deserialize, Serialize};
 
 pub use account_links::{
     account_slot, link_signed_in_account, revoke_account_link, LinkRevoked, SignInLink,
+};
+pub use admin_controls::{
+    admin_control_overrides, admin_may, administrator_switch_allows, assigned_admin_controls,
+    change_admin_control_overrides, change_default_admin_controls, default_admin_controls,
+    effective_admin_controls, load_default_admin_controls, set_admin_control_overrides,
+    set_default_admin_controls, AdminControl, AdminControlOverrides, AdminControls,
+    AdminSwitchChoice, AssignedAdminControls, DefaultSwitchChanges, OverrideSwitchChanges,
+    ADMIN_CONTROLS_NAMESPACE,
 };
 #[cfg(test)]
 pub(crate) use artifacts::chunk_bytes;

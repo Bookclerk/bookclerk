@@ -52,6 +52,10 @@ mod native;
 mod opus_dec;
 mod opus_enc;
 mod package_m4b;
+/// Decoded samples for a player, from a confined worker.
+mod pcm_stream;
+pub mod pcm_wire;
+mod pcm_worker;
 mod pool;
 mod probe;
 mod resample;
@@ -78,6 +82,9 @@ pub use metadata::{bookclerk_tool_tag, fixup_audiobook, FixupRequest, BOOKCLERK_
 pub use native::remux_trimmed;
 pub use opus_enc::{encode_to_opus_native, OpusEncodeOptions, MAX_OPUS_KBPS, MIN_OPUS_KBPS};
 pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};
+pub use pcm_stream::PcmStream;
+pub use pcm_wire::{PcmHeader, PCM_WORKER_ARG};
+pub use pcm_worker::serve_pcm;
 pub use pool::{
     init_pool, init_pool_from_config, pool, replace_pool, Confinement, MediaPool, MediaPoolConfig,
     JAIL_BIN_ENV, JAIL_BIN_NAME, WORKER_BIN_ENV, WORKER_BIN_NAME, WORKER_ENFORCEMENT_ENV,

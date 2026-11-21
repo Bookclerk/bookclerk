@@ -61,7 +61,7 @@ pub use link::{
     LinkSpecError, StdioEnds, GATEWAY_GUEST_RPC_ENV, GATEWAY_GUEST_RPC_WRITE_ENV,
     GATEWAY_PROXY_ENV, GATEWAY_PROXY_FD, GATEWAY_PROXY_WRITE_ENV, GATEWAY_RPC_FD, GUEST_PROXY_FD,
     JAIL_HANDOFF_ENV, SOCKET_PROXY_ENV, SOCKET_PROXY_WRITE_ENV, TEST_EXTRA_ENDPOINT_FD,
-    WORKERD_STATE_DIR_ENV,
+    WORKERD_EGRESS_ENV, WORKERD_EGRESS_FD, WORKERD_EGRESS_WRITE_ENV, WORKERD_STATE_DIR_ENV,
 };
 
 #[cfg(unix)]
@@ -164,6 +164,16 @@ pub enum NetPolicy {
     OutboundListen,
     /// Unrestricted. The daemon binds its own control-plane listener.
     Full,
+    /// No IP reach beyond the process's own local IPC: a workerd jail.
+    ///
+    /// On Linux and macOS this is [`Deny`](Self::Deny): no IPv4, IPv6 or
+    /// packet sockets, only the Unix sockets the policy's socket directories
+    /// allow. Workerd on Windows has no Unix sockets, so there its bridge
+    /// listens on loopback inside the AppContainer: the container gets
+    /// `privateNetworkClientServer` (needed for that loopback bind) and no
+    /// `internetClient`. That capability also opens the local network on
+    /// Windows; see `docs/internals/guest-jail.md`.
+    LocalIpc,
 }
 
 /// A confinement request: an allowlist of paths plus a few coarse switches.

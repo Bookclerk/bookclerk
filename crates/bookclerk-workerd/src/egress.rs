@@ -10,6 +10,10 @@ use bookclerk_plugin_manifest::{EgressPolicy, NetworkMode, PluginManifest};
 pub struct EgressProxy {
     /// Approved initial-host allowlist and redirect-hop budget from the guest manifest.
     inner: EgressPolicy,
+    /// Workerd `external` address of the launcher's egress relay
+    /// ([`crate::egress_relay`]): `unix:…`, `unix-abstract:…` or
+    /// `127.0.0.1:port`. `None` leaves the isolate with no way out at all.
+    relay: Option<String>,
 }
 
 impl EgressProxy {
@@ -26,6 +30,7 @@ impl EgressProxy {
     pub fn from_manifest(manifest: &PluginManifest) -> Self {
         Self {
             inner: EgressPolicy::from_manifest(manifest),
+            relay: None,
         }
     }
 
@@ -40,7 +45,28 @@ impl EgressProxy {
     /// Updated `Self` for chaining.
     #[must_use]
     pub fn from_policy(inner: EgressPolicy) -> Self {
-        Self { inner }
+        Self { inner, relay: None }
+    }
+
+    /// Routes the isolate's egress through the launcher's relay.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - Workerd `external` address the relay listens on.
+    ///
+    /// # Returns
+    ///
+    /// Updated `Self` for chaining.
+    #[must_use]
+    pub fn with_relay(mut self, addr: impl Into<String>) -> Self {
+        self.relay = Some(addr.into());
+        self
+    }
+
+    /// Workerd `external` address of the egress relay, when one is set.
+    #[must_use]
+    pub fn relay(&self) -> Option<&str> {
+        self.relay.as_deref()
     }
 
     /// Returns the underlying egress policy for inspection / logging.

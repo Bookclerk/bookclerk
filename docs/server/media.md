@@ -179,6 +179,34 @@ alone. With `media.isolation = "off"` tags are read in the daemon.
 The reader lives in `bookclerk-tags` and is fuzzed by the `tags_read` and
 `tags_wire` targets (see [Fuzzing](../contributing/fuzzing.md)).
 
+### Audio for the desktop player
+
+The desktop window's player can't stream audio to its webview, so the
+window decodes it natively instead (see
+[Playback](playback.md#the-desktop-window)). The decoding happens in a
+`bookclerk-media-worker pcm` process, one for each track being played,
+never in the window's process. The worker:
+
+1. Reads the track's size and the starting position from the host.
+2. Asks for the byte ranges it needs, 256 KiB at a time. The host reads
+   them through the play session's stream route, so every block passes
+   the same checks a browser's request does.
+3. Seeks to the start, reports the sample rate, channel count (mono or
+   stereo), actual start and running time, then sends 16-bit samples
+   until the track ends.
+
+Like the tag process, it is confined to no path and no network before it
+reads its first frame. The host treats it as compromised. It answers only
+ranges inside the track, and stops the process when the format or a range
+request takes longer than 30 seconds or the process asks for more than
+the track's size plus 64 MiB in all. It checks every frame against the
+wire's limits and the order the protocol allows. Seeking or closing the
+track stops the process.
+
+Playback never decodes in-process: with `media.isolation = "off"` the
+desktop player refuses to play. The frames are fuzzed by the
+`media_pcm_wire` target (see [Fuzzing](../contributing/fuzzing.md)).
+
 ### What a stored file's row says
 
 Every audio file an acquire writes is probed once it is on its
@@ -402,6 +430,7 @@ through `bookclerk-jail`, the launcher plugins use:
 | `align_chapters` | The input file | Nothing |
 | `covers` | Nothing (images arrive on stdin) | Nothing |
 | `tags` | Nothing (file ranges arrive on stdin) | Nothing |
+| `pcm` | Nothing (track ranges arrive on stdin) | Nothing |
 | `extract_archive` | The uploaded archive | The empty folder it expands into |
 
 Write grants are folders, not single files, because codecs stage output

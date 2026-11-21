@@ -335,7 +335,7 @@ enum StoredCopies {
     Tracked {
         /// Destinations holding the edition, with their keys.
         present: Vec<(DestinationId, String)>,
-        /// Destinations whose copy is `failed`: an acquire leaves them
+        /// Destinations whose copy is `failed` or `missing`: an acquire leaves them
         /// alone until a forced one tries them again.
         held: Vec<DestinationId>,
         /// True when every destination in the target set holds the
@@ -419,9 +419,10 @@ async fn stored_copies(
         .items
         .iter()
         .filter(|dest| {
-            copies
-                .iter()
-                .any(|copy| copy.destination == dest.id.as_str() && copy.state == CopyState::Failed)
+            copies.iter().any(|copy| {
+                copy.destination == dest.id.as_str()
+                    && matches!(copy.state, CopyState::Failed | CopyState::Missing)
+            })
         })
         .map(|dest| dest.id.clone())
         .collect();
