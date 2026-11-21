@@ -109,6 +109,176 @@ impl AdminControl {
     }
 }
 
+/// What a change does to one switch of one Administrator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminSwitchChoice {
+    /// Allow the switch for this Administrator, whatever the default says.
+    On,
+    /// Refuse the switch for this Administrator, whatever the default says.
+    Off,
+    /// Follow the library's default again.
+    Default,
+}
+
+impl AdminSwitchChoice {
+    /// The stored override: `Some(true)`, `Some(false)`, or `None` to
+    /// follow the default.
+    #[must_use]
+    pub fn value(self) -> Option<bool> {
+        match self {
+            Self::On => Some(true),
+            Self::Off => Some(false),
+            Self::Default => None,
+        }
+    }
+}
+
+/// Changes to some of the library's default switches: a new value for
+/// each named switch; an absent switch keeps its stored value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DefaultSwitchChanges {
+    /// New default for [`AdminControl::ManageMembers`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub manage_members: Option<bool>,
+    /// New default for [`AdminControl::SetPatronLimits`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub set_patron_limits: Option<bool>,
+    /// New default for [`AdminControl::LibraryScan`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = false)]
+    pub library_scan: Option<bool>,
+    /// New default for [`AdminControl::RunJobs`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub run_jobs: Option<bool>,
+    /// New default for [`AdminControl::FixCatalog`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub fix_catalog: Option<bool>,
+    /// New default for [`AdminControl::InviteBranches`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub invite_branches: Option<bool>,
+    /// New default for [`AdminControl::ApproveRequests`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub approve_requests: Option<bool>,
+}
+
+impl DefaultSwitchChanges {
+    /// The change named for `control`, if any.
+    #[must_use]
+    pub fn get(&self, control: AdminControl) -> Option<bool> {
+        match control {
+            AdminControl::ManageMembers => self.manage_members,
+            AdminControl::SetPatronLimits => self.set_patron_limits,
+            AdminControl::LibraryScan => self.library_scan,
+            AdminControl::RunJobs => self.run_jobs,
+            AdminControl::FixCatalog => self.fix_catalog,
+            AdminControl::InviteBranches => self.invite_branches,
+            AdminControl::ApproveRequests => self.approve_requests,
+        }
+    }
+
+    /// Names (or, with `None`, stops naming) a change for `control`.
+    pub fn set(&mut self, control: AdminControl, value: Option<bool>) {
+        let slot = match control {
+            AdminControl::ManageMembers => &mut self.manage_members,
+            AdminControl::SetPatronLimits => &mut self.set_patron_limits,
+            AdminControl::LibraryScan => &mut self.library_scan,
+            AdminControl::RunJobs => &mut self.run_jobs,
+            AdminControl::FixCatalog => &mut self.fix_catalog,
+            AdminControl::InviteBranches => &mut self.invite_branches,
+            AdminControl::ApproveRequests => &mut self.approve_requests,
+        };
+        *slot = value;
+    }
+
+    /// `control` changed to `value`, for building a change.
+    #[must_use]
+    pub fn with(mut self, control: AdminControl, value: bool) -> Self {
+        self.set(control, Some(value));
+        self
+    }
+}
+
+/// Changes to some of one Administrator's overrides: `on` or `off` for
+/// them alone, or `default` to follow the library's default again; an
+/// absent switch keeps what it had.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OverrideSwitchChanges {
+    /// Change to [`AdminControl::ManageMembers`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub manage_members: Option<AdminSwitchChoice>,
+    /// Change to [`AdminControl::SetPatronLimits`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub set_patron_limits: Option<AdminSwitchChoice>,
+    /// Change to [`AdminControl::LibraryScan`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "off")]
+    pub library_scan: Option<AdminSwitchChoice>,
+    /// Change to [`AdminControl::RunJobs`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub run_jobs: Option<AdminSwitchChoice>,
+    /// Change to [`AdminControl::FixCatalog`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub fix_catalog: Option<AdminSwitchChoice>,
+    /// Change to [`AdminControl::InviteBranches`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub invite_branches: Option<AdminSwitchChoice>,
+    /// Change to [`AdminControl::ApproveRequests`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub approve_requests: Option<AdminSwitchChoice>,
+}
+
+impl OverrideSwitchChanges {
+    /// The change named for `control`, if any.
+    #[must_use]
+    pub fn get(&self, control: AdminControl) -> Option<AdminSwitchChoice> {
+        match control {
+            AdminControl::ManageMembers => self.manage_members,
+            AdminControl::SetPatronLimits => self.set_patron_limits,
+            AdminControl::LibraryScan => self.library_scan,
+            AdminControl::RunJobs => self.run_jobs,
+            AdminControl::FixCatalog => self.fix_catalog,
+            AdminControl::InviteBranches => self.invite_branches,
+            AdminControl::ApproveRequests => self.approve_requests,
+        }
+    }
+
+    /// Names (or, with `None`, stops naming) a change for `control`.
+    pub fn set(&mut self, control: AdminControl, value: Option<AdminSwitchChoice>) {
+        let slot = match control {
+            AdminControl::ManageMembers => &mut self.manage_members,
+            AdminControl::SetPatronLimits => &mut self.set_patron_limits,
+            AdminControl::LibraryScan => &mut self.library_scan,
+            AdminControl::RunJobs => &mut self.run_jobs,
+            AdminControl::FixCatalog => &mut self.fix_catalog,
+            AdminControl::InviteBranches => &mut self.invite_branches,
+            AdminControl::ApproveRequests => &mut self.approve_requests,
+        };
+        *slot = value;
+    }
+
+    /// `control` changed to `value`, for building a change.
+    #[must_use]
+    pub fn with(mut self, control: AdminControl, value: AdminSwitchChoice) -> Self {
+        self.set(control, Some(value));
+        self
+    }
+}
+
 /// The serde default of every switch: allowed.
 fn allowed() -> bool {
     true
@@ -351,6 +521,48 @@ pub async fn set_default_admin_controls(
     actor: &ConfigActor,
     controls: AdminControls,
 ) -> Result<ConfigurationDocument<AdminControls>> {
+    write_default(store, actor, |_| controls).await
+}
+
+/// Changes only the named default switches under compare-and-swap: each
+/// attempt applies `changes` to the stored default it read, so a
+/// concurrent edit of another switch is kept rather than overwritten.
+///
+/// # Arguments
+///
+/// * `store` - The library database.
+/// * `actor` - Who is writing: the operator or a verified Owner
+///   ([`super::verify_library_owner`]).
+/// * `changes` - The switches to change and their new values.
+///
+/// # Errors
+///
+/// Returns an error when the actor may not write, or
+/// [`LibraryError::Conflict`] when the document keeps changing underneath.
+pub async fn change_default_admin_controls(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    changes: &DefaultSwitchChanges,
+) -> Result<ConfigurationDocument<AdminControls>> {
+    write_default(store, actor, |mut controls| {
+        for control in AdminControl::ALL {
+            if let Some(value) = changes.get(control) {
+                controls.set(control, value);
+            }
+        }
+        controls
+    })
+    .await
+}
+
+/// Writes the default that `next` makes of the stored one, under
+/// compare-and-swap, creating the document when absent and retrying a few
+/// times on a concurrent edit.
+async fn write_default(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    next: impl Fn(AdminControls) -> AdminControls,
+) -> Result<ConfigurationDocument<AdminControls>> {
     let key = DocumentKey::library(ADMIN_CONTROLS_NAMESPACE);
     for attempt in 0..4 {
         let current = match load_default_admin_controls(store).await? {
@@ -367,6 +579,7 @@ pub async fn set_default_admin_controls(
                 .await?,
             )?,
         };
+        let controls = next(current.body);
         if current.body == controls {
             return Ok(current);
         }
@@ -538,6 +751,82 @@ pub async fn set_admin_control_overrides(
         .execute_host_batch(batch::request(&operation_id, statements))
         .await?;
     assigned_admin_controls(store, &user).await
+}
+
+/// Changes only the named overrides of `user_id`: each attempt applies
+/// `changes` to the row it read and writes it back only if the row is
+/// still what it read, so a concurrent edit of another switch is kept
+/// rather than overwritten.
+///
+/// The caller has already checked that the actor is the operator or an
+/// Owner. With no override left, the row is deleted and the Administrator
+/// follows the library's default for every switch.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::NotFound`] for an unknown user,
+/// [`LibraryError::Conflict`] when the row keeps changing underneath, or
+/// the read or write error.
+pub async fn change_admin_control_overrides(
+    store: &LibraryStore,
+    user_id: i64,
+    changes: &OverrideSwitchChanges,
+) -> Result<AssignedAdminControls> {
+    let Some(user) = store.get_user(user_id).await? else {
+        return Err(LibraryError::not_found(EntityKind::User, user_id));
+    };
+    for attempt in 0..4 {
+        let row = admin_controls::Entity::find_by_id(user_id)
+            .one(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let current = row.as_ref().map(parse_row).transpose()?.unwrap_or_default();
+        let mut next = current;
+        for control in AdminControl::ALL {
+            if let Some(choice) = changes.get(control) {
+                next.set(control, choice.value());
+            }
+        }
+        if next == current {
+            return assigned_admin_controls(store, &user).await;
+        }
+        let now = Utc::now().to_rfc3339();
+        let json = serde_json::to_string(&next).map_err(|err| invalid(&err.to_string()))?;
+        let statement = match (&row, next.is_empty()) {
+            (Some(old), true) => batch::exec(
+                "DELETE FROM admin_controls WHERE user_id = ? AND controls_json = ?",
+                vec![int(user_id), text(&old.controls_json)],
+            ),
+            (Some(old), false) => batch::exec(
+                "UPDATE admin_controls SET controls_json = ?, updated_at = ? \
+                 WHERE user_id = ? AND controls_json = ?",
+                vec![
+                    text(&json),
+                    text(&now),
+                    int(user_id),
+                    text(&old.controls_json),
+                ],
+            ),
+            (None, _) => batch::exec(
+                "INSERT OR IGNORE INTO admin_controls (user_id, controls_json, updated_at) \
+                 VALUES (?, ?, ?)",
+                vec![int(user_id), text(&json), text(&now)],
+            ),
+        };
+        let operation_id = format!(
+            "admin-controls-{user_id}-{attempt}-{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        store
+            .execute_host_batch(batch::request(&operation_id, vec![statement]))
+            .await?;
+        if admin_control_overrides(store, user_id).await? == next {
+            return assigned_admin_controls(store, &user).await;
+        }
+    }
+    Err(LibraryError::Conflict(
+        "the administrator's switches kept changing; retry".into(),
+    ))
 }
 
 /// Parses a stored default document, failing closed on an unknown schema.

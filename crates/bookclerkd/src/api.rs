@@ -1479,11 +1479,11 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(
             crate::admin_controls::get_default_admin_controls,
-            crate::admin_controls::put_default_admin_controls
+            crate::admin_controls::patch_default_admin_controls
         ))
         .routes(routes!(
             crate::admin_controls::get_user_admin_controls,
-            crate::admin_controls::put_user_admin_controls
+            crate::admin_controls::patch_user_admin_controls
         ))
         .routes(routes!(auth::create_user_claim_ticket))
         .routes(routes!(auth::reset_user_password))

@@ -285,9 +285,9 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["PUT", "/api/users/{id}/controls", "deny"],
   // Administrator switches: readable, never changed.
   ["GET", "/api/users/default-admin-controls", "allow"],
-  ["PUT", "/api/users/default-admin-controls", "deny"],
+  ["PATCH", "/api/users/default-admin-controls", "deny"],
   ["GET", "/api/users/{id}/admin-controls", "allow"],
-  ["PUT", "/api/users/{id}/admin-controls", "deny"],
+  ["PATCH", "/api/users/{id}/admin-controls", "deny"],
   ["POST", "/api/users", "deny"],
   ["DELETE", "/api/users/{id}", "deny"],
   ["PATCH", "/api/users/{id}", "deny"],

@@ -1763,22 +1763,28 @@ export async function getUserAdminControls(id: number): Promise<UserAdminControl
   return parseJson(res);
 }
 
+/** What a change does to one of an Administrator's switches. */
+export type AdminSwitchChoice = "on" | "off" | "default";
+
 /**
- * Sets the switches that differ for one Administrator (Owner or operator only).
+ * Changes some switches for one Administrator (Owner or operator only).
+ *
+ * Only the named switches change, so a concurrent edit of another switch
+ * is kept.
  *
  * @param id - The user.
- * @param overrides - The switches set for them alone (`{}` for none).
+ * @param changes - `on` or `off` for them alone, or `default` to follow the library's default.
  * @returns The switches after the change.
  */
-export async function putUserAdminControls(
+export async function patchUserAdminControls(
   id: number,
-  overrides: AdminControlOverrides,
+  changes: Partial<Record<AdminControl, AdminSwitchChoice>>,
 ): Promise<UserAdminControls> {
   const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/admin-controls`, {
-    method: "PUT",
+    method: "PATCH",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ overrides }),
+    body: JSON.stringify({ changes }),
   });
   return parseJson(res);
 }
@@ -1794,19 +1800,22 @@ export async function getDefaultAdminControls(): Promise<{ controls: AdminContro
 }
 
 /**
- * Replaces the library's default Administrator switches (Owner or operator only).
+ * Changes some of the library's default Administrator switches (Owner or operator only).
  *
- * @param controls - The new default.
+ * Only the named switches change, so a concurrent edit of another switch
+ * is kept.
+ *
+ * @param changes - The switches to change and their new values.
  * @returns The default after the change.
  */
-export async function putDefaultAdminControls(
-  controls: AdminControls,
+export async function patchDefaultAdminControls(
+  changes: Partial<AdminControls>,
 ): Promise<{ controls: AdminControls }> {
   const res = await fetch("/api/users/default-admin-controls", {
-    method: "PUT",
+    method: "PATCH",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(controls),
+    body: JSON.stringify({ changes }),
   });
   return parseJson(res);
 }

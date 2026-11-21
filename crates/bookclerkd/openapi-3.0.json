@@ -3269,17 +3269,17 @@
         ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       },
-      "put": {
+      "patch": {
         "tags": [
           "Users"
         ],
-        "summary": "Replaces the library's default Administrator switches. Every\nAdministrator follows the change at once, except in the switches set\nfor them alone. Only an Owner or the operator may.",
-        "operationId": "put_default_admin_controls",
+        "summary": "Changes the named default Administrator switches; the others keep\ntheir stored value. Every Administrator follows the change at once,\nexcept in the switches set for them alone. Only an Owner or the\noperator may.",
+        "operationId": "patch_default_admin_controls",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AdminControls"
+                "$ref": "#/components/schemas/PatchDefaultAdminControls"
               }
             }
           },
@@ -3372,7 +3372,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: manage_members: invalid type: integer `1`, expected a boolean at line 1 column 19"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `changes` at line 1 column 2"
               }
             }
           },
@@ -3522,12 +3522,12 @@
         ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       },
-      "put": {
+      "patch": {
         "tags": [
           "Users"
         ],
-        "summary": "Sets the switches that differ for one Administrator; every other\nswitch follows the library's default. Only an Owner or the operator\nmay, and switches stored for someone who is not an Administrator apply\nonly if their role changes to Administrator.",
-        "operationId": "put_user_admin_controls",
+        "summary": "Changes the named switches for one Administrator; every switch it does\nnot name keeps what it had. Only an Owner or the operator\nmay, and switches stored for someone who is not an Administrator apply\nonly if their role changes to Administrator.",
+        "operationId": "patch_user_admin_controls",
         "parameters": [
           {
             "name": "id",
@@ -3544,7 +3544,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PutUserAdminControls"
+                "$ref": "#/components/schemas/PatchUserAdminControls"
               }
             }
           },
@@ -3619,6 +3619,19 @@
               }
             }
           },
+          "409": {
+            "description": "The switches kept changing underneath the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches kept changing; retry"
+                }
+              }
+            }
+          },
           "415": {
             "description": "The request did not declare a JSON body.",
             "content": {
@@ -3637,7 +3650,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `overrides` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `changes` at line 1 column 2"
               }
             }
           },
@@ -38910,6 +38923,15 @@
         },
         "additionalProperties": false
       },
+      "AdminSwitchChoice": {
+        "type": "string",
+        "description": "What a change does to one switch of one Administrator.",
+        "enum": [
+          "on",
+          "off",
+          "default"
+        ]
+      },
       "ApiError": {
         "type": "object",
         "description": "An error. `error` is a stable slug; bodies the error middleware writes also carry `message` and `status`, and some routes add fields of their own.",
@@ -41841,6 +41863,55 @@
             "description": "The scope patrons without their own follow."
           }
         }
+      },
+      "DefaultSwitchChanges": {
+        "type": "object",
+        "description": "Changes to some of the library's default switches: a new value for\neach named switch; an absent switch keeps its stored value.",
+        "properties": {
+          "manage_members": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::ManageMembers`].",
+            "example": null,
+            "nullable": true
+          },
+          "set_patron_limits": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::SetPatronLimits`].",
+            "example": null,
+            "nullable": true
+          },
+          "library_scan": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::LibraryScan`].",
+            "example": false,
+            "nullable": true
+          },
+          "run_jobs": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::RunJobs`].",
+            "example": null,
+            "nullable": true
+          },
+          "fix_catalog": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::FixCatalog`].",
+            "example": null,
+            "nullable": true
+          },
+          "invite_branches": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::InviteBranches`].",
+            "example": null,
+            "nullable": true
+          },
+          "approve_requests": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::ApproveRequests`].",
+            "example": null,
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "DeliveryBacklog": {
         "type": "object",
@@ -47158,6 +47229,90 @@
         },
         "additionalProperties": false
       },
+      "OverrideSwitchChanges": {
+        "type": "object",
+        "description": "Changes to some of one Administrator's overrides: `on` or `off` for\nthem alone, or `default` to follow the library's default again; an\nabsent switch keeps what it had.",
+        "properties": {
+          "manage_members": {
+            "description": "Change to [`AdminControl::ManageMembers`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "set_patron_limits": {
+            "description": "Change to [`AdminControl::SetPatronLimits`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "library_scan": {
+            "description": "Change to [`AdminControl::LibraryScan`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "run_jobs": {
+            "description": "Change to [`AdminControl::RunJobs`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "fix_catalog": {
+            "description": "Change to [`AdminControl::FixCatalog`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "invite_branches": {
+            "description": "Change to [`AdminControl::InviteBranches`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "approve_requests": {
+            "description": "Change to [`AdminControl::ApproveRequests`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "OwnerBootstrapped": {
         "type": "object",
         "description": "JSON body after the first Owner was created.",
@@ -47657,6 +47812,24 @@
           }
         }
       },
+      "PatchDefaultAdminControls": {
+        "type": "object",
+        "description": "`PATCH /api/users/default-admin-controls` body.",
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DefaultSwitchChanges"
+              }
+            ],
+            "description": "The default switches to change and their new values. Switches it\ndoes not name keep their stored value, so two Owners editing\ndifferent switches do not undo each other."
+          }
+        },
+        "additionalProperties": false
+      },
       "PatchPreferencesBody": {
         "type": "object",
         "description": "Partial preferences update; omitted fields keep their stored values.",
@@ -47762,6 +47935,24 @@
             "nullable": true
           }
         }
+      },
+      "PatchUserAdminControls": {
+        "type": "object",
+        "description": "`PATCH /api/users/{id}/admin-controls` body.",
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OverrideSwitchChanges"
+              }
+            ],
+            "description": "The switches to change for this Administrator: `on` or `off` sets\nthe switch for them alone, `default` follows the library's default\nagain. Switches it does not name keep what they had, so two Owners\nediting different switches do not undo each other."
+          }
+        },
+        "additionalProperties": false
       },
       "PatchUserRequest": {
         "type": "object",
@@ -51450,24 +51641,6 @@
             "nullable": true
           }
         }
-      },
-      "PutUserAdminControls": {
-        "type": "object",
-        "description": "`PUT /api/users/{id}/admin-controls` body.",
-        "required": [
-          "overrides"
-        ],
-        "properties": {
-          "overrides": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/AdminControlOverrides"
-              }
-            ],
-            "description": "The switches set for this Administrator alone; an absent or `null`\nswitch follows the library's default, so `{}` returns them to the\ndefault for all of them."
-          }
-        },
-        "additionalProperties": false
       },
       "PutUserControls": {
         "type": "object",

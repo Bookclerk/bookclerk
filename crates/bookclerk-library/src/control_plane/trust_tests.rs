@@ -658,6 +658,22 @@ async fn scan_planner_splits_and_scopes(owner_db: LibraryStore, host_db: Library
         .await
         .unwrap_err();
     assert!(matches!(err, LibraryError::Forbidden(_)), "{err}");
+    // An account linked to them still scans, named or not.
+    add_account(&owner_db, PLUGIN, "a4", true).await;
+    link(&owner_db, admin, PLUGIN, "a4").await;
+    let plan = plan_scan(&host_db, ScanRequester::User(admin), None, None)
+        .await
+        .unwrap();
+    assert_eq!(accounts_of(plan), vec!["a4"]);
+    let plan = plan_scan(&host_db, ScanRequester::User(admin), Some("a4"), None)
+        .await
+        .unwrap();
+    assert_eq!(accounts_of(plan), vec!["a4"]);
+    // Out of the unnamed scans below again.
+    owner_db
+        .set_scan_enabled(PLUGIN, "a4", false)
+        .await
+        .unwrap();
     crate::control_plane::set_admin_control_overrides(
         &owner_db,
         admin,

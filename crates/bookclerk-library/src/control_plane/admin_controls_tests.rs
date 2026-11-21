@@ -209,3 +209,137 @@ async fn only_an_owner_or_the_operator_writes_the_default() {
         AdminControls::all(false)
     );
 }
+
+#[tokio::test]
+async fn a_change_keeps_switches_it_does_not_name() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ada = store
+            .create_user(UserRole::Administrator, Some("Ada"), None)
+            .await
+            .unwrap();
+        let operator = ConfigActor::Operator {
+            id: "operator".into(),
+        };
+
+        // Two editors that read the same default each change one switch;
+        // the second keeps the first's change.
+        let first = change_default_admin_controls(
+            store,
+            &operator,
+            &DefaultSwitchChanges::default().with(AdminControl::ManageMembers, false),
+        )
+        .await
+        .unwrap();
+        assert!(!first.body.manage_members, "{name}");
+        let second = change_default_admin_controls(
+            store,
+            &operator,
+            &DefaultSwitchChanges::default().with(AdminControl::RunJobs, false),
+        )
+        .await
+        .unwrap();
+        let mut expected = AdminControls::all(true);
+        expected.manage_members = false;
+        expected.run_jobs = false;
+        assert_eq!(second.body, expected, "{name}");
+        // A change to what is already stored writes nothing.
+        let same = change_default_admin_controls(
+            store,
+            &operator,
+            &DefaultSwitchChanges::default().with(AdminControl::RunJobs, false),
+        )
+        .await
+        .unwrap();
+        assert_eq!(same.revision, second.revision, "{name}");
+
+        // The same for one Administrator's overrides, which end deleted
+        // once every switch follows the default again.
+        change_admin_control_overrides(
+            store,
+            ada.id,
+            &OverrideSwitchChanges::default()
+                .with(AdminControl::LibraryScan, AdminSwitchChoice::Off),
+        )
+        .await
+        .unwrap();
+        let both = change_admin_control_overrides(
+            store,
+            ada.id,
+            &OverrideSwitchChanges::default().with(AdminControl::RunJobs, AdminSwitchChoice::On),
+        )
+        .await
+        .unwrap();
+        assert_eq!(both.overrides.library_scan, Some(false), "{name}");
+        assert_eq!(both.overrides.run_jobs, Some(true), "{name}");
+        assert!(
+            both.effective.run_jobs && !both.effective.library_scan,
+            "{name}"
+        );
+        let flipped = change_admin_control_overrides(
+            store,
+            ada.id,
+            &OverrideSwitchChanges::default()
+                .with(AdminControl::LibraryScan, AdminSwitchChoice::On),
+        )
+        .await
+        .unwrap();
+        assert_eq!(flipped.overrides.library_scan, Some(true), "{name}");
+        let cleared = change_admin_control_overrides(
+            store,
+            ada.id,
+            &OverrideSwitchChanges::default()
+                .with(AdminControl::LibraryScan, AdminSwitchChoice::Default)
+                .with(AdminControl::RunJobs, AdminSwitchChoice::Default),
+        )
+        .await
+        .unwrap();
+        assert!(cleared.overrides.is_empty(), "{name}");
+        assert_eq!(cleared.effective, expected, "{name}");
+        assert!(admin_controls::Entity::find_by_id(ada.id)
+            .one(store.db())
+            .await
+            .unwrap()
+            .is_none());
+
+        let err = change_admin_control_overrides(
+            store,
+            987_654,
+            &OverrideSwitchChanges::default().with(AdminControl::RunJobs, AdminSwitchChoice::Off),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, LibraryError::NotFound(_)), "{err}");
+    }
+}
+
+#[test]
+fn switch_choices_use_their_wire_names() {
+    let changes: OverrideSwitchChanges =
+        serde_json::from_str(r#"{"run_jobs":"off","library_scan":"default","fix_catalog":"on"}"#)
+            .unwrap();
+    assert_eq!(
+        changes
+            .get(AdminControl::RunJobs)
+            .map(AdminSwitchChoice::value),
+        Some(Some(false))
+    );
+    assert_eq!(
+        changes
+            .get(AdminControl::LibraryScan)
+            .map(AdminSwitchChoice::value),
+        Some(None)
+    );
+    assert_eq!(
+        changes
+            .get(AdminControl::FixCatalog)
+            .map(AdminSwitchChoice::value),
+        Some(Some(true))
+    );
+    assert_eq!(changes.get(AdminControl::ManageMembers), None);
+    assert!(serde_json::from_str::<OverrideSwitchChanges>(r#"{"fly":"on"}"#).is_err());
+    assert!(serde_json::from_str::<OverrideSwitchChanges>(r#"{"run_jobs":true}"#).is_err());
+    assert!(serde_json::from_str::<DefaultSwitchChanges>(r#"{"fly":true}"#).is_err());
+}

@@ -1,4 +1,9 @@
-import type { AdminControl, AdminControlOverrides, AdminControls } from "@/lib/api";
+import type {
+  AdminControl,
+  AdminControlOverrides,
+  AdminControls,
+  AdminSwitchChoice,
+} from "@/lib/api";
 
 /** One Administrator switch as the editor shows it. */
 export interface AdminControlInfo {
@@ -62,7 +67,7 @@ export const ALL_ADMIN_ALLOWED: AdminControls = {
 };
 
 /** An Administrator's choice for one switch: follow the default, or set it. */
-export type AdminOverrideChoice = "default" | "on" | "off";
+export type AdminOverrideChoice = AdminSwitchChoice;
 
 /**
  * The choice an override stands for.
@@ -78,23 +83,4 @@ export function adminOverrideChoice(
   const value = overrides[control];
   if (value === undefined) return "default";
   return value ? "on" : "off";
-}
-
-/**
- * The overrides with one switch set to `choice`.
- *
- * @param overrides - The Administrator's overrides.
- * @param control - The switch to change.
- * @param choice - Follow the default, or set it on or off.
- * @returns New overrides; `overrides` is not changed.
- */
-export function withAdminOverride(
-  overrides: AdminControlOverrides,
-  control: AdminControl,
-  choice: AdminOverrideChoice,
-): AdminControlOverrides {
-  const next: AdminControlOverrides = { ...overrides };
-  if (choice === "default") delete next[control];
-  else next[control] = choice === "on";
-  return next;
 }

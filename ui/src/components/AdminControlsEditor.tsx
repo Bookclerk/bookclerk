@@ -3,8 +3,8 @@ import {
   getDefaultAdminControls,
   getUserAdminControls,
   isApiError,
-  putDefaultAdminControls,
-  putUserAdminControls,
+  patchDefaultAdminControls,
+  patchUserAdminControls,
   type AdminControl,
   type AdminControlOverrides,
   type AdminControls,
@@ -13,7 +13,6 @@ import {
   ADMIN_CONTROLS,
   ALL_ADMIN_ALLOWED,
   adminOverrideChoice,
-  withAdminOverride,
   type AdminOverrideChoice,
 } from "@/lib/adminControls";
 
@@ -70,7 +69,7 @@ export function AdminControlsEditor({ target, disabled = false }: AdminControlsE
     setSaving(true);
     setError(null);
     try {
-      setDefaults((await putDefaultAdminControls({ ...defaults, [control]: value })).controls);
+      setDefaults((await patchDefaultAdminControls({ [control]: value })).controls);
     } catch (err) {
       setError(isApiError(err) ? err.message : "The switches could not be saved.");
     } finally {
@@ -82,7 +81,7 @@ export function AdminControlsEditor({ target, disabled = false }: AdminControlsE
     setSaving(true);
     setError(null);
     try {
-      const res = await putUserAdminControls(id, withAdminOverride(overrides, control, choice));
+      const res = await patchUserAdminControls(id, { [control]: choice });
       setDefaults(res.defaults);
       setOverrides(res.overrides);
     } catch (err) {

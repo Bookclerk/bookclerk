@@ -84,10 +84,10 @@ async fn only_an_owner_sets_switches_and_an_administrator_reads_their_own() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let off = r#"{"overrides":{"manage_members":false}}"#;
+    let off = r#"{"changes":{"manage_members":"off"}}"#;
     let (status, _) = send(
         &app,
-        "PUT",
+        "PATCH",
         &format!("/api/users/{administrator}/admin-controls"),
         &admin,
         Some(off),
@@ -96,10 +96,10 @@ async fn only_an_owner_sets_switches_and_an_administrator_reads_their_own() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = send(
         &app,
-        "PUT",
+        "PATCH",
         "/api/users/default-admin-controls",
         &admin,
-        Some(r#"{"run_jobs":false}"#),
+        Some(r#"{"changes":{"run_jobs":false}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -107,7 +107,7 @@ async fn only_an_owner_sets_switches_and_an_administrator_reads_their_own() {
     // The Owner turns member management off for this Administrator.
     let (status, body) = send(
         &app,
-        "PUT",
+        "PATCH",
         &format!("/api/users/{administrator}/admin-controls"),
         &owner,
         Some(off),
@@ -140,10 +140,10 @@ async fn only_an_owner_sets_switches_and_an_administrator_reads_their_own() {
     // A unknown switch is refused.
     let (status, _) = send(
         &app,
-        "PUT",
+        "PATCH",
         &format!("/api/users/{administrator}/admin-controls"),
         &owner,
-        Some(r#"{"overrides":{"fly":false}}"#),
+        Some(r#"{"changes":{"fly":"off"}}"#),
     )
     .await;
     assert!(status.is_client_error(), "{status}");
@@ -155,10 +155,10 @@ async fn the_default_limits_every_administrator_route_by_route() {
     let owner = portal_cookie_for(&library, "test", "admin-ext").await;
     let admin = portal_cookie_for(&library, "test", "administrator-ext").await;
 
-    let all_off = r#"{"manage_members":false,"set_patron_limits":false,"library_scan":false,"run_jobs":false,"fix_catalog":false,"invite_branches":false,"approve_requests":false}"#;
+    let all_off = r#"{"changes":{"manage_members":false,"set_patron_limits":false,"library_scan":false,"run_jobs":false,"fix_catalog":false,"invite_branches":false,"approve_requests":false}}"#;
     let (status, body) = send(
         &app,
-        "PUT",
+        "PATCH",
         "/api/users/default-admin-controls",
         &owner,
         Some(all_off),
@@ -228,10 +228,10 @@ async fn queue_and_integration_scan_actions_follow_their_switches() {
     let owner = portal_cookie_for(&library, "test", "admin-ext").await;
     let admin = portal_cookie_for(&library, "test", "administrator-ext").await;
 
-    let off = r#"{"manage_members":true,"set_patron_limits":true,"library_scan":false,"run_jobs":false,"fix_catalog":true,"invite_branches":true,"approve_requests":true}"#;
+    let off = r#"{"changes":{"library_scan":false,"run_jobs":false}}"#;
     let (status, body) = send(
         &app,
-        "PUT",
+        "PATCH",
         "/api/users/default-admin-controls",
         &owner,
         Some(off),
@@ -274,10 +274,10 @@ async fn switch_routes_refuse_strangers_and_unknown_users() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     let (status, body) = send(
         &app,
-        "PUT",
+        "PATCH",
         missing,
         &owner,
-        Some(r#"{"overrides":{"run_jobs":false}}"#),
+        Some(r#"{"changes":{"run_jobs":"off"}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
@@ -287,11 +287,11 @@ async fn switch_routes_refuse_strangers_and_unknown_users() {
         .clone()
         .oneshot(
             Request::builder()
-                .method("PUT")
+                .method("PATCH")
                 .uri("/api/users/default-admin-controls")
                 .header(header::AUTHORIZATION, "Bearer op-token-admin-errors")
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"run_jobs":false}"#))
+                .body(Body::from(r#"{"changes":{"run_jobs":false}}"#))
                 .expect("request"),
         )
         .await

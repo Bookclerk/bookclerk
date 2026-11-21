@@ -10,9 +10,9 @@
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    admin_control_overrides, assigned_admin_controls, default_admin_controls,
-    set_admin_control_overrides, set_default_admin_controls, AdminControl, AdminControls,
-    AssignedAdminControls,
+    assigned_admin_controls, change_admin_control_overrides, change_default_admin_controls,
+    default_admin_controls, AdminControl, AdminControls, AdminSwitchChoice, AssignedAdminControls,
+    DefaultSwitchChanges, OverrideSwitchChanges,
 };
 use bookclerk_library::control_plane::{
     assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
@@ -420,23 +420,30 @@ async fn run_admin_controls(
             if changes.is_empty() {
                 anyhow::bail!("name a switch with --allow, --deny or --follow-default");
             }
+            // Only the named switches change, read and written in one
+            // guarded step, so a concurrent edit of another switch stays.
             match (user, default) {
                 (_, true) => {
-                    let mut controls = default_admin_controls(store).await?;
+                    let mut patch = DefaultSwitchChanges::default();
                     for (control, value) in changes {
-                        controls.set(control, value.unwrap_or(true));
+                        patch.set(control, Some(value.unwrap_or(true)));
                     }
                     let actor = ConfigActor::Operator { id: "cli".into() };
-                    let stored = set_default_admin_controls(store, &actor, controls).await?;
+                    let stored = change_default_admin_controls(store, &actor, &patch).await?;
                     print_default_admin_controls(format, &stored.body)
                 }
                 (Some(user), false) => {
                     let user = resolve_user(store, &user).await?;
-                    let mut overrides = admin_control_overrides(store, user.id).await?;
+                    let mut patch = OverrideSwitchChanges::default();
                     for (control, value) in changes {
-                        overrides.set(control, value);
+                        let choice = match value {
+                            Some(true) => AdminSwitchChoice::On,
+                            Some(false) => AdminSwitchChoice::Off,
+                            None => AdminSwitchChoice::Default,
+                        };
+                        patch.set(control, Some(choice));
                     }
-                    let assigned = set_admin_control_overrides(store, user.id, overrides).await?;
+                    let assigned = change_admin_control_overrides(store, user.id, &patch).await?;
                     print_user_admin_controls(format, &user, &assigned)
                 }
                 (None, false) => anyhow::bail!("name a user or pass --default"),
@@ -641,6 +648,7 @@ async fn resolve_user(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bookclerk_library::control_plane::admin_control_overrides;
 
     #[test]
     fn admin_switches_parse_by_wire_name() {

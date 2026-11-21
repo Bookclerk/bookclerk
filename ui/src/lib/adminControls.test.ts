@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  ADMIN_CONTROLS,
-  ALL_ADMIN_ALLOWED,
-  adminOverrideChoice,
-  withAdminOverride,
-} from "@/lib/adminControls";
+import { ADMIN_CONTROLS, ALL_ADMIN_ALLOWED, adminOverrideChoice } from "@/lib/adminControls";
 
 describe("administrator switches", () => {
   it("lists every switch once", () => {
@@ -13,15 +8,10 @@ describe("administrator switches", () => {
     expect(names.sort()).toEqual(Object.keys(ALL_ADMIN_ALLOWED).sort());
   });
 
-  it("sets and clears one override without touching the others", () => {
-    const start = { run_jobs: false };
-    const off = withAdminOverride(start, "manage_members", "off");
-    expect(off).toEqual({ run_jobs: false, manage_members: false });
-    expect(start).toEqual({ run_jobs: false });
-    expect(adminOverrideChoice(off, "manage_members")).toBe("off");
-    expect(adminOverrideChoice(off, "invite_branches")).toBe("default");
-    const on = withAdminOverride(off, "run_jobs", "on");
-    expect(adminOverrideChoice(on, "run_jobs")).toBe("on");
-    expect(withAdminOverride(on, "run_jobs", "default")).toEqual({ manage_members: false });
+  it("reads the choice an override stands for", () => {
+    const overrides = { run_jobs: true, manage_members: false };
+    expect(adminOverrideChoice(overrides, "manage_members")).toBe("off");
+    expect(adminOverrideChoice(overrides, "run_jobs")).toBe("on");
+    expect(adminOverrideChoice(overrides, "invite_branches")).toBe("default");
   });
 });

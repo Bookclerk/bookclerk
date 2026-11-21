@@ -11,9 +11,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    assigned_admin_controls, default_admin_controls, set_admin_control_overrides,
-    set_default_admin_controls, verify_library_owner, AdminControl, AdminControlOverrides,
-    AdminControls, AssignedAdminControls, ConfigActor,
+    assigned_admin_controls, change_admin_control_overrides, change_default_admin_controls,
+    default_admin_controls, verify_library_owner, AdminControl, AdminControlOverrides,
+    AdminControls, AssignedAdminControls, ConfigActor, DefaultSwitchChanges, OverrideSwitchChanges,
 };
 use bookclerk_library::{LibraryError, UserRole};
 use serde::{Deserialize, Serialize};
@@ -53,14 +53,25 @@ pub(crate) struct UserAdminControlsJson {
     applies: bool,
 }
 
-/// `PUT /api/users/{id}/admin-controls` body.
+/// `PATCH /api/users/{id}/admin-controls` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PutUserAdminControls {
-    /// The switches set for this Administrator alone; an absent or `null`
-    /// switch follows the library's default, so `{}` returns them to the
-    /// default for all of them.
-    overrides: AdminControlOverrides,
+pub(crate) struct PatchUserAdminControls {
+    /// The switches to change for this Administrator: `on` or `off` sets
+    /// the switch for them alone, `default` follows the library's default
+    /// again. Switches it does not name keep what they had, so two Owners
+    /// editing different switches do not undo each other.
+    changes: OverrideSwitchChanges,
+}
+
+/// `PATCH /api/users/default-admin-controls` body.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PatchDefaultAdminControls {
+    /// The default switches to change and their new values. Switches it
+    /// does not name keep their stored value, so two Owners editing
+    /// different switches do not undo each other.
+    changes: DefaultSwitchChanges,
 }
 
 /// The library's default Administrator switches as the switch routes
@@ -86,7 +97,7 @@ fn refused(status: StatusCode, message: impl std::fmt::Display) -> Refusal {
 }
 
 /// Maps a library error to the route's answer: 404 for an unknown user,
-/// 403 for a refused write, 409 for a default that kept changing, 500
+/// 403 for a refused write, 409 for switches that kept changing, 500
 /// otherwise.
 fn library_error(route: &str, err: LibraryError) -> Refusal {
     match err {
@@ -209,15 +220,15 @@ pub(crate) async fn get_user_admin_controls(
     Ok(Json(user_json(&user, assigned)))
 }
 
-/// Sets the switches that differ for one Administrator; every other
-/// switch follows the library's default. Only an Owner or the operator
+/// Changes the named switches for one Administrator; every switch it does
+/// not name keeps what it had. Only an Owner or the operator
 /// may, and switches stored for someone who is not an Administrator apply
 /// only if their role changes to Administrator.
 #[utoipa::path(
-    put,
+    patch,
     path = "/api/users/{id}/admin-controls",
     params(("id" = i64, Path, description = "User id.")),
-    request_body = PutUserAdminControls,
+    request_body = PatchUserAdminControls,
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The user's switches after the change.", body = UserAdminControlsJson),
@@ -225,21 +236,22 @@ pub(crate) async fn get_user_admin_controls(
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller is not an Owner or the operator.", body = ErrorMessage, example = json!({"error": "only an Owner can change what Administrators may do"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 4 not found"})),
+        (status = 409, description = "The switches kept changing underneath the write; retry.", body = ErrorMessage, example = json!({"error": "the administrator's switches kept changing; retry"})),
         (status = 500, description = "The switches could not be written.", body = ErrorMessage, example = json!({"error": "the administrator's switches could not be read or written"})),
     ),
 )]
-pub(crate) async fn put_user_admin_controls(
+pub(crate) async fn patch_user_admin_controls(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(user_id): Path<i64>,
-    Json(body): Json<PutUserAdminControls>,
+    Json(body): Json<PatchUserAdminControls>,
 ) -> Result<Json<UserAdminControlsJson>, SwitchError> {
-    const ROUTE: &str = "PUT /api/users/{id}/admin-controls";
+    const ROUTE: &str = "PATCH /api/users/{id}/admin-controls";
     let actor = provisioner(&state, &headers).await?;
     require_owner(actor)?;
     let library = state.library_snapshot().await;
     let user = load_user(&library, user_id, ROUTE).await?;
-    let assigned = set_admin_control_overrides(&library, user_id, body.overrides)
+    let assigned = change_admin_control_overrides(&library, user_id, &body.changes)
         .await
         .map_err(|err| library_error(ROUTE, err))?;
     let _ = library
@@ -280,13 +292,14 @@ pub(crate) async fn get_default_admin_controls(
     Ok(Json(DefaultAdminControlsJson { controls }))
 }
 
-/// Replaces the library's default Administrator switches. Every
-/// Administrator follows the change at once, except in the switches set
-/// for them alone. Only an Owner or the operator may.
+/// Changes the named default Administrator switches; the others keep
+/// their stored value. Every Administrator follows the change at once,
+/// except in the switches set for them alone. Only an Owner or the
+/// operator may.
 #[utoipa::path(
-    put,
+    patch,
     path = "/api/users/default-admin-controls",
-    request_body = AdminControls,
+    request_body = PatchDefaultAdminControls,
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The default switches after the change.", body = DefaultAdminControlsJson),
@@ -297,12 +310,12 @@ pub(crate) async fn get_default_admin_controls(
         (status = 500, description = "The switches could not be written.", body = ErrorMessage, example = json!({"error": "the administrator's switches could not be read or written"})),
     ),
 )]
-pub(crate) async fn put_default_admin_controls(
+pub(crate) async fn patch_default_admin_controls(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(controls): Json<AdminControls>,
+    Json(body): Json<PatchDefaultAdminControls>,
 ) -> Result<Json<DefaultAdminControlsJson>, SwitchError> {
-    const ROUTE: &str = "PUT /api/users/default-admin-controls";
+    const ROUTE: &str = "PATCH /api/users/default-admin-controls";
     let actor = provisioner(&state, &headers).await?;
     require_owner(actor)?;
     let library = state.library_snapshot().await;
@@ -316,7 +329,7 @@ pub(crate) async fn put_default_admin_controls(
             .await
             .map_err(|err| library_error(ROUTE, err))?,
     };
-    let stored = set_default_admin_controls(&library, &config_actor, controls)
+    let stored = change_default_admin_controls(&library, &config_actor, &body.changes)
         .await
         .map_err(|err| library_error(ROUTE, err))?;
     let _ = library
