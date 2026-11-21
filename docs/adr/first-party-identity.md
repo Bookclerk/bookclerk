@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (Phases 0–6 landed on `main`); which actions need the operator is refined by [owner-and-operator.md](owner-and-operator.md)
 - **Date:** 2026-08-11
-- **Updated:** 2026-08-15 (plugin-provided OIDC clients; see [plugin-oidc-clients.md](plugin-oidc-clients.md))
+- **Updated:** 2026-08-15 (plugin-provided OIDC clients; see [plugin-oidc-clients.md](plugin-oidc-clients.md)); 2026-11-20 (the desktop window acts as a patron once an Owner exists; see [desktop-window-identity.md](desktop-window-identity.md))
 - **Tracking:** [#117](https://github.com/Bookclerk/bookclerk/issues/117) (closed via [#129](https://github.com/Bookclerk/bookclerk/pull/129)); follow-ups [#150](https://github.com/Bookclerk/bookclerk/pull/150), [#152](https://github.com/Bookclerk/bookclerk/pull/152)
 - **Prerequisite:** [#116](https://github.com/Bookclerk/bookclerk/issues/116) (atomic config reload; closed)
 

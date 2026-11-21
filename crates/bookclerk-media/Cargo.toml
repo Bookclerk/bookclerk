@@ -15,6 +15,9 @@ bookclerk-config.workspace = true
 bookclerk-cover.workspace = true
 # Embedded tag reader and the frames the tag worker speaks.
 bookclerk-tags.workspace = true
+# Bounded archive extraction for the `extract_archive` job, and the report
+# the host re-checks.
+bookclerk-archive.workspace = true
 # Capability probe only: the pool reports at startup whether this platform can
 # confine a worker at all, instead of letting the first acquire discover it.
 bookclerk-sandbox.workspace = true
@@ -38,11 +41,19 @@ symphonia = { version = "0.6", default-features = false, features = [
     "mp1",
     "mp2",
     "mp3",
+    "ogg",
     "pcm",
+    "vorbis",
     "wav",
 ] }
 mp3lame-encoder = "0.3"
 fdk-aac = "0.8"
+# libopus through its safe bindings (opusic-sys underneath, bundled build):
+# the Opus decoder behind Ogg Opus input and the encoder for Opus output.
+opusic-c = { version = "1.6", default-features = false, features = ["bundled"] }
+# Vorbis comment and picture writing for Ogg Opus output; M4B stays on
+# mp4ameta (chapters) and MP3 on id3.
+lofty = "0.25"
 
 [dev-dependencies]
 # The faststart layout is written by the remuxer, so the tests that cover
@@ -51,6 +62,7 @@ bookclerk-mp4 = { workspace = true, features = ["fixtures"] }
 # The probe tests read the tag reader's own sample files.
 bookclerk-tags = { workspace = true, features = ["fixtures"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+bookclerk-archive = { workspace = true, features = ["fixtures"] }
 
 [lints]
 workspace = true

@@ -55,6 +55,9 @@ var CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"];
 var PRICE_LOOKUPS = ["unspecified", "product", "isbn", "asin", "title"];
 var ABRIDGEMENTS = ["unknown", "unabridged", "abridged"];
 var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"];
+var NOTIFICATION_SEVERITYS = ["info", "warning", "critical"];
+var NOTIFICATION_ALERT_ACTIONS = ["none", "trigger", "resolve"];
+var NOTIFY_DESTINATION_KINDS = ["channel", "personal"];
 var DB_TYPES = ["unspecified", "bool", "int64", "float64", "text", "bytes"];
 var DB_STATEMENT_KINDS = ["execute", "select", "returning"];
 var DB_RESULT_SELECTIONS = ["discard", "affectedRows", "rows"];
@@ -1234,6 +1237,20 @@ var HeadManyResultCodec = {
     };
   }
 };
+var TranslateKeysResultCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0)
+    };
+  }
+};
 var ChangesRequestCodec = {
   dataWords: 1,
   pointerCount: 1,
@@ -2117,6 +2134,39 @@ var HeadManyReplyCodec = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HeadManyReply", disc);
+    }
+  }
+};
+var TranslateKeysReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          TranslateKeysResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("TranslateKeysReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: TranslateKeysResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("TranslateKeysReply", disc);
     }
   }
 };
@@ -5299,6 +5349,247 @@ var MetadataFileRenderReplyCodec = {
     }
   }
 };
+var NotificationFieldCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setText(1, v.value ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      value: s.getText(1)
+    };
+  }
+};
+var NotificationMessageCodec = {
+  dataWords: 1,
+  pointerCount: 10,
+  write(s, v, caps) {
+    s.setText(0, v.notificationId ?? "");
+    s.setText(1, v.notificationType ?? "");
+    s.setUint16(0, ord(NOTIFICATION_SEVERITYS, v.severity ?? NOTIFICATION_SEVERITYS[0], "NotificationSeverity"));
+    s.setText(2, v.title ?? "");
+    s.setText(3, v.text ?? "");
+    if (v.markdown !== void 0) {
+      s.setText(4, v.markdown ?? "");
+    }
+    if (v.html !== void 0) {
+      s.setText(5, v.html ?? "");
+    }
+    if (v.link !== void 0) {
+      s.setText(6, v.link ?? "");
+    }
+    {
+      const list = v.fields ?? [];
+      const items = s.initStructList(7, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        NotificationFieldCodec.write(items[i], list[i], caps);
+      }
+    }
+    if (v.groupKey !== void 0) {
+      s.setText(8, v.groupKey ?? "");
+    }
+    s.setUint16(1, ord(NOTIFICATION_ALERT_ACTIONS, v.alertAction ?? NOTIFICATION_ALERT_ACTIONS[0], "NotificationAlertAction"));
+    if (v.alertKey !== void 0) {
+      s.setText(9, v.alertKey ?? "");
+    }
+    s.setBool(32, v.sensitive ?? false);
+  },
+  read(s, caps) {
+    const out = {
+      notificationId: s.getText(0),
+      notificationType: s.getText(1),
+      severity: fromOrd(NOTIFICATION_SEVERITYS, s.getUint16(0), "NotificationSeverity"),
+      title: s.getText(2),
+      text: s.getText(3),
+      fields: s.getStructList(7, 0, 2).map((item) => NotificationFieldCodec.read(item, caps)),
+      alertAction: fromOrd(NOTIFICATION_ALERT_ACTIONS, s.getUint16(1), "NotificationAlertAction"),
+      sensitive: s.getBool(32)
+    };
+    const markdownValue = s.getText(4);
+    if (!(markdownValue === "")) {
+      out.markdown = markdownValue;
+    }
+    const htmlValue = s.getText(5);
+    if (!(htmlValue === "")) {
+      out.html = htmlValue;
+    }
+    const linkValue = s.getText(6);
+    if (!(linkValue === "")) {
+      out.link = linkValue;
+    }
+    const groupKeyValue = s.getText(8);
+    if (!(groupKeyValue === "")) {
+      out.groupKey = groupKeyValue;
+    }
+    const alertKeyValue = s.getText(9);
+    if (!(alertKeyValue === "")) {
+      out.alertKey = alertKeyValue;
+    }
+    return out;
+  }
+};
+var NotifyDestinationCodec = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(NOTIFY_DESTINATION_KINDS, v.kind ?? NOTIFY_DESTINATION_KINDS[0], "NotifyDestinationKind"));
+    s.setText(0, v.destinationId ?? "");
+    s.setText(1, v.addressJson ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      kind: fromOrd(NOTIFY_DESTINATION_KINDS, s.getUint16(0), "NotifyDestinationKind"),
+      destinationId: s.getText(0),
+      addressJson: s.getText(1)
+    };
+  }
+};
+var NotifySendParamsCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.message != null) {
+      NotificationMessageCodec.write(s.initStruct(0, 1, 10), v.message, caps);
+    }
+    if (v.destination != null) {
+      NotifyDestinationCodec.write(s.initStruct(1, 1, 2), v.destination, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      message: NotificationMessageCodec.read(s.getStruct(0, 1, 10), caps),
+      destination: NotifyDestinationCodec.read(s.getStruct(1, 1, 2), caps)
+    };
+  }
+};
+var NotifySentCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    if (v.providerId !== void 0) {
+      s.setText(0, v.providerId ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {};
+    const providerIdValue = s.getText(0);
+    if (!(providerIdValue === "")) {
+      out.providerId = providerIdValue;
+    }
+    return out;
+  }
+};
+var NotifySendReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          NotifySentCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("NotifySendReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: NotifySentCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("NotifySendReply", disc);
+    }
+  }
+};
+var NotifyValidateParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.addressJson ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      addressJson: s.getText(0)
+    };
+  }
+};
+var NotifyValidatedCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.addressJson ?? "");
+    if (v.label !== void 0) {
+      s.setText(1, v.label ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      addressJson: s.getText(0)
+    };
+    const labelValue = s.getText(1);
+    if (!(labelValue === "")) {
+      out.label = labelValue;
+    }
+    return out;
+  }
+};
+var NotifyValidateReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          NotifyValidatedCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("NotifyValidateReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: NotifyValidatedCodec.read(s.getStruct(0, 0, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("NotifyValidateReply", disc);
+    }
+  }
+};
 var SocketFrameCodec = {
   dataWords: 1,
   pointerCount: 1,
@@ -6846,6 +7137,34 @@ var DestinationChangesResultsCodec = {
     };
   }
 };
+var DestinationTranslateKeysParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0)
+    };
+  }
+};
+var DestinationTranslateKeysResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      TranslateKeysReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: TranslateKeysReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var JobRunnerJobParamsCodec = {
   dataWords: 0,
   pointerCount: 1,
@@ -7999,6 +8318,90 @@ var MetadataFilesRenderResultsCodec = {
   read(s, caps) {
     return {
       result: MetadataFileRenderReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var NotifierHealthParamsCodec = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  }
+};
+var NotifierHealthResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HealthReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var NotifierSendParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      NotifySendParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: NotifySendParamsCodec.read(s.getStruct(0, 0, 2), caps)
+    };
+  }
+};
+var NotifierSendResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      NotifySendReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: NotifySendReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var NotifierValidateDestinationParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      NotifyValidateParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: NotifyValidateParamsCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var NotifierValidateDestinationResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      NotifyValidateReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: NotifyValidateReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -10038,6 +10441,19 @@ var okFileBytes = (value) => {
   }
   return okValue({ bytes: value });
 };
+var okNotifySent = (value) => {
+  const v = value ?? {};
+  const providerId = v.providerId === void 0 || v.providerId === null ? "" : String(v.providerId);
+  return okValue(providerId ? { providerId } : {});
+};
+var okNotifyValidated = (value) => {
+  const v = value ?? {};
+  if (typeof v.addressJson !== "string") {
+    throw PluginError.fromWire("internal", "validateDestination must return an object with an addressJson string");
+  }
+  const label = typeof v.label === "string" ? v.label : "";
+  return okValue(label ? { addressJson: v.addressJson, label } : { addressJson: v.addressJson });
+};
 var okLines = (value) => okValue({ lines: asList(value).map((l) => String(l)) });
 var okHealth = (value) => {
   const v = value ?? {};
@@ -10330,6 +10746,13 @@ var METHODS = {
         }))
       })
     }),
+    translateKeys: spec({
+      params: DestinationTranslateKeysParamsCodec,
+      results: DestinationTranslateKeysResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "translateKeys", [batchKeys(p.keys)]),
+      ok: (value) => okValue({ keys: asList(value).map(String) })
+    }),
     changes: spec({
       params: DestinationChangesParamsCodec,
       results: DestinationChangesResultsCodec,
@@ -10448,6 +10871,11 @@ var METHODS = {
       },
       ok: okCoverImages
     })
+  },
+  Notifier: {
+    health: withoutParams("notifier", "health", NotifierHealthParamsCodec, NotifierHealthResultsCodec, okHealth),
+    send: withParams("notifier", "send", NotifierSendParamsCodec, NotifierSendResultsCodec, okNotifySent),
+    validateDestination: withParams("notifier", "validateDestination", NotifierValidateDestinationParamsCodec, NotifierValidateDestinationResultsCodec, okNotifyValidated)
   },
   MetadataFiles: {
     health: withoutParams("metadataFiles", "health", MetadataFilesHealthParamsCodec, MetadataFilesHealthResultsCodec, okHealth),
@@ -10984,6 +11412,20 @@ var Destination = class extends RpcTarget {
   changes(_request) {
     return Promise.reject(unsupported("changes"));
   }
+  /**
+   * Translate up to `MAX_BATCH_KEYS` host keys into the keys this
+   * destination stores them under (declare `storage.translateKeys`). A host
+   * key is `/`-joined segments, none empty, `.`, `..` or holding `\` or a
+   * control character; return a relative key with the same properties. The
+   * same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param _keys - Host keys.
+   * @returns One translated key per host key, in order.
+   */
+  translateKeys(_keys) {
+    return Promise.reject(unsupported("translateKeys"));
+  }
 };
 var Source = class extends RpcTarget {
   /**
@@ -11166,6 +11608,8 @@ function invocationEnv(rawEnv, context) {
       merged.WORK_FS = context.storage;
     if (context.events)
       merged.EVENTS = context.events;
+    if (context.notify)
+      merged.NOTIFY = context.notify;
     if (Array.isArray(context.databases)) {
       for (const entry of context.databases) {
         if (!entry || typeof entry.name !== "string" || !entry.name)
@@ -12107,7 +12551,8 @@ var STORAGE_METHODS = Object.freeze([
   "moveMany",
   "deleteMany",
   "headMany",
-  "changes"
+  "changes",
+  "translateKeys"
 ]);
 var StorageEntrypoint = class extends NamedEntrypoint {
   static bookclerkMethods = STORAGE_METHODS;
@@ -12237,6 +12682,20 @@ var StorageEntrypoint = class extends NamedEntrypoint {
    */
   changes(_request) {
     return Promise.reject(unsupported("changes"));
+  }
+  /**
+   * Translate up to `MAX_BATCH_KEYS` host keys into the keys this
+   * destination stores them under (declare `storage.translateKeys`). A host
+   * key is `/`-joined segments, none empty, `.`, `..` or holding `\` or a
+   * control character; return a relative key with the same properties. The
+   * same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param _keys - Host keys.
+   * @returns One translated key per host key, in order.
+   */
+  translateKeys(_keys) {
+    return Promise.reject(unsupported("translateKeys"));
   }
 };
 var REMOTE_LIBRARY_METHODS = Object.freeze([
@@ -12536,6 +12995,40 @@ var MetadataFilesEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("render"));
   }
 };
+var NotifierEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["health", "send", "validateDestination"]);
+  /**
+   * Reports whether the service can be reached with the current settings.
+   *
+   * @returns Health flag plus detail.
+   */
+  health() {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * Delivers one message to one destination. Throw `rate_limited` (with
+   * `details.retryAfterMs` when the service says when) or `unavailable` for
+   * a failure worth retrying; any other error fails this destination. Never
+   * log `params.message` when `sensitive` is set, nor `addressJson`.
+   *
+   * @param _params - The rendered message and its destination.
+   * @returns The service's message id, when it gives one.
+   */
+  send(_params) {
+    return Promise.reject(unsupported("send"));
+  }
+  /**
+   * Checks and normalises a personal address a patron entered. Throw
+   * `invalid_params` for an address the service would refuse. The default
+   * accepts the address as given.
+   *
+   * @param params - The address document as entered.
+   * @returns The address to save and an optional label that is never a secret.
+   */
+  validateDestination(params) {
+    return Promise.resolve({ addressJson: params.addressJson });
+  }
+};
 var ENTRYPOINT_BINDINGS = Object.freeze({
   storefront: "PLUGIN_STOREFRONT",
   storage: "PLUGIN_STORAGE",
@@ -12545,7 +13038,8 @@ var ENTRYPOINT_BINDINGS = Object.freeze({
   oidc: "PLUGIN_OIDC",
   metadata: "PLUGIN_METADATA",
   covers: "PLUGIN_COVERS",
-  metadataFiles: "PLUGIN_METADATA_FILES"
+  metadataFiles: "PLUGIN_METADATA_FILES",
+  notifier: "PLUGIN_NOTIFIER"
 });
 var ENTRYPOINT_CLASSES = Object.freeze({
   storefront: "Storefront",
@@ -12556,7 +13050,8 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   oidc: "Oidc",
   metadata: "Metadata",
   covers: "Covers",
-  metadataFiles: "MetadataFiles"
+  metadataFiles: "MetadataFiles",
+  notifier: "Notifier"
 });
 function exactLengthBody(body, expected) {
   if (body == null || expected == null || !Number.isFinite(expected)) {
@@ -12681,6 +13176,63 @@ function publishPayloadBytes(payload) {
     return new TextEncoder().encode(payload);
   return new TextEncoder().encode(JSON.stringify(payload));
 }
+function notifyFields(fields) {
+  if (fields === void 0)
+    return [];
+  if (Array.isArray(fields)) {
+    return fields.map((f) => ({ name: String(f?.name ?? ""), value: String(f?.value ?? "") }));
+  }
+  if (fields === null || typeof fields !== "object") {
+    throw PluginError.fromWire("invalid_params", "fields must be a list or an object");
+  }
+  return Object.entries(fields).map(([name, value]) => ({ name, value: String(value) }));
+}
+var GrantedNotify = class extends RpcTarget {
+  #granted;
+  #auth;
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the notify grant.
+   */
+  constructor(granted, auth) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+  /**
+   * Raise one declared notification type.
+   *
+   * @param raise - Type, fields, optional patron, link path and alert.
+   * @returns The host's notification id.
+   */
+  async raise(raise) {
+    if (!raise || typeof raise.notificationType !== "string" || !raise.notificationType) {
+      throw PluginError.fromWire("invalid_params", "raise requires notificationType");
+    }
+    const wire = {
+      notificationType: raise.notificationType,
+      fields: notifyFields(raise.fields),
+      patronId: raise.patronId || void 0,
+      linkPath: raise.linkPath || void 0,
+      groupKey: raise.groupKey || void 0,
+      alertAction: raise.alertAction ?? "none",
+      alertKey: raise.alertKey || void 0
+    };
+    const resp = await this.#granted.fetch("http://granted/notify/raise", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify(wire)
+    });
+    const value = await resp.json().catch(() => ({}));
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `notify raise HTTP ${resp.status}`);
+    }
+    return { notificationId: String(value.notificationId ?? "") };
+  }
+};
 var GrantedEvents = class extends RpcTarget {
   #granted;
   #auth;
@@ -13386,12 +13938,17 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx) {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, queues, kv, sockets, ...rest } = source;
+      const { eventsToken, notifyToken, databases, queues, kv, sockets, ...rest } = source;
       const bound = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
         bound.events = new GrantedEvents(granted, {
           Authorization: `Bearer ${eventsToken}`
+        });
+      }
+      if (typeof notifyToken === "string" && notifyToken && granted) {
+        bound.notify = new GrantedNotify(granted, {
+          Authorization: `Bearer ${notifyToken}`
         });
       }
       if (databases && typeof databases === "object" && !Array.isArray(databases) && granted) {
@@ -14014,6 +14571,7 @@ export {
   MetadataEntrypoint,
   MetadataFilesEntrypoint,
   NamedEntrypoint,
+  NotifierEntrypoint,
   OidcEntrypoint,
   PRODUCT_API_VERSION,
   PluginError,

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/bookclerk-acquire",
+    "crates/bookclerk-archive",
     "crates/bookclerk-audible-catalog",
     "crates/bookclerk-cli",
     "crates/bookclerk-config",
@@ -28,6 +29,7 @@ members = [
     "crates/bookclerk-plugin-catalog",
     "crates/bookclerk-plugin-e2e",
     "crates/bookclerk-plugin-host",
+    "crates/bookclerk-player-engine",
     "crates/bookclerk-plugin-manifest",
     "crates/bookclerk-plugin-sdk",
     "crates/bookclerk-plugin-tools",
@@ -100,6 +102,7 @@ bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-mp4 = { path = "crates/bookclerk-mp4" }
 bookclerk-cover = { path = "crates/bookclerk-cover" }
 bookclerk-tags = { path = "crates/bookclerk-tags" }
+bookclerk-archive = { path = "crates/bookclerk-archive" }
 bookclerk-media = { path = "crates/bookclerk-media" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }

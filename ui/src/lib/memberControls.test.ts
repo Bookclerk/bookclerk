@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { ALL_ALLOWED, MEMBER_CONTROLS, overrideChoice, withOverride } from "@/lib/memberControls";
+import {
+  LIBRARY_DEFAULT,
+  MEMBER_CONTROLS,
+  overrideChoice,
+  withOverride,
+} from "@/lib/memberControls";
 
 describe("member controls", () => {
   it("lists every control once", () => {
     const names = MEMBER_CONTROLS.map((info) => info.control);
     expect(new Set(names).size).toBe(names.length);
-    expect(names.sort()).toEqual(Object.keys(ALL_ALLOWED).sort());
+    expect(names.sort()).toEqual(Object.keys(LIBRARY_DEFAULT).sort());
   });
 
   it("sets and clears one override without touching the others", () => {

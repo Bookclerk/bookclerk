@@ -1498,7 +1498,8 @@ entrypoints = ["{entrypoint}"]
     /// Front-door plan against fake `bookclerk-workerd` + `workerd` files in `helpers`.
     fn fronted(plugin: &DiscoveredPlugin, helpers: &Path) -> SpawnPlan {
         for name in ["bookclerk-workerd", "workerd", "bookclerk-jail"] {
-            let path = helpers.join(name);
+            // `locate_in` looks for the platform file name (`.exe` on Windows).
+            let path = helpers.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
             if !path.exists() {
                 std::fs::write(&path, b"").expect("fake helper");
             }

@@ -86,11 +86,11 @@ pub struct ObjectProbe {
 
 /// Audio extensions considered acquired media for storage matching.
 ///
-/// Includes default remux/encode outputs (`m4b` / `mp3` / `m4a`) plus plain
+/// Includes default remux/encode outputs (`m4b` / `mp3` / `m4a` / `opus`) plus plain
 /// passthrough containers Chirp / GraphicAudio may store under noop/`as_is`
 /// output (`flac` / `aac` / `ogg` / `oga`). Keep aligned with
 /// `bookclerk_source::media` sniffing and GraphicAudio ZIP audio filters.
-pub const AUDIO_EXTENSIONS: &[&str] = &["m4b", "mp3", "m4a", "flac", "aac", "ogg", "oga"];
+pub const AUDIO_EXTENSIONS: &[&str] = &["m4b", "mp3", "m4a", "flac", "aac", "ogg", "oga", "opus"];
 
 /// True when `key` ends with a known acquired audio extension.
 #[must_use]
@@ -363,6 +363,20 @@ pub trait StorageBackend: Send + Sync {
     /// Returns an error only when the whole call fails.
     async fn delete_many(&self, keys: &[String]) -> Result<Vec<crate::KeyResult>> {
         Ok(crate::intent::fallback_delete_many(self, keys).await)
+    }
+
+    /// Translates each host key into the key this backend stores it
+    /// under, one per key in order ([`crate::key_syntax`]).
+    ///
+    /// The default stores a host key as written. The same host key must
+    /// always translate to the same key, and two different host keys should
+    /// translate to different keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the whole call fails.
+    async fn translate_keys(&self, keys: &[crate::key_syntax::HostKey]) -> Result<Vec<String>> {
+        Ok(keys.iter().map(|key| key.as_str().to_string()).collect())
     }
 
     /// Probe each key, one entry per key in order. The default loops

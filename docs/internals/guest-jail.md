@@ -414,7 +414,8 @@ process-group SIGKILL. That fallback is a different path: a descendant that
 has called `setsid` is outside the group, and without a delegated cgroup
 this path does not own it. The host
 records each leader's pid and start time (`/proc/<pid>/stat` starttime on
-Linux, `proc_pidinfo` on macOS). It observes leader exit with `waitid`
+Linux, `sysctl(KERN_PROC_PID)` `kinfo_proc` on macOS, which still answers
+for an unreaped zombie). It observes leader exit with `waitid`
 `WNOWAIT` so the zombie still has that start time, signals the group only
 while the start time matches, and reaps afterward. It does not signal a
 process-group id whose start time is gone.

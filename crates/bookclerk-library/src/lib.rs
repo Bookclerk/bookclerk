@@ -37,6 +37,7 @@ pub mod migrations;
 mod models;
 mod named_atomic;
 pub mod operator_token;
+pub mod pacing;
 pub mod password;
 pub mod proxy_txn;
 mod schema_state;
@@ -133,9 +134,9 @@ pub use models::{
     UserTitleState, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
     EDITION_ACQUIRE_CHANGED, EVENT_DELIVERY_DEFAULT_RETENTION_SECS, EVENT_DELIVERY_MAX_ATTEMPTS,
     EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, HOST_CONSUMER_PREFIX,
-    JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN, MAX_QUEUE_WISHERS,
-    NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON,
-    QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
+    INGEST_BATCH_FINISHED, JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN,
+    MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
+    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
 };
 pub use named_atomic::{NamedAtomicBackend, NamedAtomicRunner};
 pub use operator_token::{
@@ -190,6 +191,7 @@ pub use store::{
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
+    pacing::{AccountPaceState, DownloadId, DownloadStarter},
     playback::{
         reaches_end, Bookmark, NewPlaybackSession, PlaybackChange, PlaybackEdition, PlaybackEvent,
         PlaybackMs, PlaybackProgress, PlaybackProgressEdit, PlaybackSession, PlaybackSync,

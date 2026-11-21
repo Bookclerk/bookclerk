@@ -15,7 +15,8 @@
 //! - The default is one JSON object with no repeated keys whose keys are
 //!   among the six control names (`link_accounts`, `download`,
 //!   `edit_metadata`, `upload`, `request_books`, `see_prices`), each a
-//!   boolean. A control the body leaves out is allowed.
+//!   boolean. A control the body leaves out is allowed, except `upload`,
+//!   which is refused until a body turns it on.
 //! - A patron's body is one object with no repeated keys and exactly the
 //!   key `overrides`, an object with no repeated keys whose keys are among
 //!   the six control names, each a boolean or `null`. A control left out
@@ -113,7 +114,7 @@ fn values_of_overrides(overrides: &ControlOverrides) -> Values {
 }
 
 /// The expected values for a default body, or `None` when it is refused.
-/// A control the body leaves out is allowed.
+/// A control the body leaves out is allowed, except `upload`.
 fn expected_default(body: &[u8]) -> Option<Values> {
     if has_repeated_key(body) {
         return None;
@@ -122,7 +123,12 @@ fn expected_default(body: &[u8]) -> Option<Values> {
         return None;
     };
     let values = read_values(&fields, false)?;
-    Some(values.map(|value| Some(value.unwrap_or(true))))
+    let mut out: Values = [None; 6];
+    for (index, value) in values.into_iter().enumerate() {
+        let left_out = DOCUMENTED_NAMES[index] != "upload";
+        out[index] = Some(value.unwrap_or(left_out));
+    }
+    Some(out)
 }
 
 /// The expected values for a patron's body, or `None` when it is refused.

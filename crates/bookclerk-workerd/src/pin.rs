@@ -14,10 +14,10 @@ const WORKERD_PIN_JSON: &str = include_str!("../workerd-pin.json");
 const _: &str = include_str!("../workerd-pin.json");
 
 /// Newest compatibility date this Bookclerk build claims to understand.
-pub const BUNDLED_WORKERD_COMPAT_DATE: &str = "2026-11-12";
+pub const BUNDLED_WORKERD_COMPAT_DATE: &str = "2026-11-13";
 
 /// GitHub release tag (includes leading `v`).
-pub const WORKERD_RELEASE_TAG: &str = "v1.20261112.1";
+pub const WORKERD_RELEASE_TAG: &str = "v1.20261113.1";
 
 /// Filename written beside the binary so ensure can skip re-downloads.
 pub const WORKERD_VERSION_STAMP: &str = "workerd.version";
@@ -46,23 +46,23 @@ pub fn asset_for_target(os: &str, arch: &str) -> Option<WorkerdAsset> {
     match (os, arch) {
         ("linux", "x86_64") => Some(WorkerdAsset {
             artifact: "workerd-linux-64.gz",
-            sha256_hex: "259d48fa2fdc4bfd75d8c07501b294da23719ee5f390c572d09be018f15d43be",
+            sha256_hex: "e2acccc13aa4a2f66c520d13021e8375a59f88cefa17c96b14b2fcb2c2270f76",
         }),
         ("linux", "aarch64") => Some(WorkerdAsset {
             artifact: "workerd-linux-arm64.gz",
-            sha256_hex: "635610f0569ee119ae76738758113ebc90a81fe8ec1d1bd569a5a42c3a199a99",
+            sha256_hex: "dbd82af58fbed5014c22a20b40990140c44c4c8e52ceeffd2655891a809d1de1",
         }),
         ("macos", "x86_64") => Some(WorkerdAsset {
             artifact: "workerd-darwin-64.gz",
-            sha256_hex: "a87e3334af6769d22189c7112850ebcf561d871344120cec68845f2411433e42",
+            sha256_hex: "de4390078c2b8e62e69c32c5d0dd15a8997f2f81283b15bfd935b4876cfad82b",
         }),
         ("macos", "aarch64") => Some(WorkerdAsset {
             artifact: "workerd-darwin-arm64.gz",
-            sha256_hex: "3c75bdb15a6e846cf12123ac9b6ba0d83ee79db76bbee87f78d88887d1b6349f",
+            sha256_hex: "33c43647ea7a2d5f8c36eee492e18f6d47c08672a0e85b6c87864a3efa4520af",
         }),
         ("windows", "x86_64") => Some(WorkerdAsset {
             artifact: "workerd-windows-64.gz",
-            sha256_hex: "6d843ba3fe8f03fa29e7731d6f345d2847b1cc13edbd777f8c9a19110867ff48",
+            sha256_hex: "a2fb2c3b90bf72f6238161009fa9059586e1cc050ca29ddf739fc93c9b4f074d",
         }),
         _ => None,
     }

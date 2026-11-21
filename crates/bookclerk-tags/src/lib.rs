@@ -16,7 +16,8 @@
 //!
 //! Supported containers: MP4 (`ilst` items, QuickTime chapter tracks and
 //! Nero `chpl`), MP3 (ID3v2 with `CHAP`, ID3v1, Xing/Info/VBRI frame counts)
-//! and FLAC (Vorbis comments, `PICTURE`, `STREAMINFO`).
+//! FLAC (Vorbis comments, `PICTURE`, `STREAMINFO`) and Ogg Opus or Vorbis
+//! (comment header, `METADATA_BLOCK_PICTURE`, last granule position).
 
 mod cache;
 #[cfg(any(test, feature = "fixtures"))]
@@ -25,6 +26,7 @@ mod flac;
 mod id3v2;
 mod mp4;
 mod mpeg;
+mod ogg;
 mod reader;
 mod record;
 mod text;
@@ -96,7 +98,7 @@ impl ByteSpan {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TagError {
     /// The file is not a container the reader understands.
-    #[error("not an MP4, MP3 or FLAC file")]
+    #[error("not an MP4, MP3, FLAC or Ogg Opus/Vorbis file")]
     Unsupported,
     /// The container is malformed: a structure runs past its parent or the
     /// file, or a required box is missing.

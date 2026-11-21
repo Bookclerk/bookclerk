@@ -12,7 +12,7 @@ use bookclerk_plugin_sdk::{
     MoveManyTarget, ObjectChange as AbiObjectChange, ObjectInfo as AbiObjectInfo, ObjectMetadata,
     PluginError, WriteOptions, FEATURE_STORAGE_CHANGES, FEATURE_STORAGE_CONDITIONAL_WRITE,
     FEATURE_STORAGE_DELETE_MANY, FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE,
-    FEATURE_STORAGE_MOVE_MANY, MAX_BATCH_KEYS,
+    FEATURE_STORAGE_MOVE_MANY, FEATURE_STORAGE_TRANSLATE_KEYS, MAX_BATCH_KEYS,
 };
 
 use crate::error::StorageError;
@@ -55,6 +55,7 @@ pub fn storage_features(capabilities: StorageCapabilities) -> Vec<String> {
         head_many,
         conditional_write,
         changes,
+        translate_keys,
     } = capabilities;
     [
         (move_object, FEATURE_STORAGE_MOVE),
@@ -63,6 +64,7 @@ pub fn storage_features(capabilities: StorageCapabilities) -> Vec<String> {
         (head_many, FEATURE_STORAGE_HEAD_MANY),
         (conditional_write, FEATURE_STORAGE_CONDITIONAL_WRITE),
         (changes, FEATURE_STORAGE_CHANGES),
+        (translate_keys, FEATURE_STORAGE_TRANSLATE_KEYS),
     ]
     .into_iter()
     .filter(|(native, _)| *native)
@@ -283,6 +285,27 @@ pub async fn head_many<B: StorageBackend + ?Sized>(
         .collect())
 }
 
+/// Translates up to [`MAX_BATCH_KEYS`] host keys into the keys the backend
+/// stores them under, one per key in order.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] for too many keys or a key that
+/// breaks the host key syntax ([`crate::key_syntax::HostKey`]), and the
+/// backend's failure.
+pub async fn translate_keys<B: StorageBackend + ?Sized>(
+    backend: &B,
+    keys: Vec<String>,
+) -> GuestResult<Vec<String>> {
+    require_batch(&keys, "translateKeys")?;
+    let parsed = keys
+        .iter()
+        .map(|key| crate::key_syntax::HostKey::parse(key))
+        .collect::<crate::Result<Vec<_>>>()
+        .map_err(plugin_error)?;
+    backend.translate_keys(&parsed).await.map_err(plugin_error)
+}
+
 /// Serves `changes` from the backend's change feed.
 ///
 /// A backend without a feed (for the `local` plugin, an instance with
@@ -393,6 +416,7 @@ mod tests {
                 FEATURE_STORAGE_DELETE_MANY,
                 FEATURE_STORAGE_HEAD_MANY,
                 FEATURE_STORAGE_CONDITIONAL_WRITE,
+                FEATURE_STORAGE_TRANSLATE_KEYS,
             ]
         );
     }

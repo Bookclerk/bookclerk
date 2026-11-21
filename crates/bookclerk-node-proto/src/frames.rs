@@ -1398,14 +1398,21 @@ pub struct UploadCommitRequest {
 /// Answer of the upload endpoint (every status carries one).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UploadAnswer {
-    /// Stable outcome: `received`, `committed`, `lost`, `refused`,
+    /// Stable outcome: `received`, `partial` (a part that is not the
+    /// file's last was taken), `committed`, `lost`, `refused`,
     /// `misdirected`, `unauthorized`, `unavailable`.
     #[schema(example = "received")]
     pub status: String,
-    /// Why, for `refused`.
+    /// Why, for `refused`, and `resume` for an `unavailable` part that
+    /// does not continue the open file at [`Self::offset`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "size_mismatch")]
     pub reason: Option<String>,
+    /// For `partial`, and an `unavailable` part with reason `resume`: the
+    /// offset of the next byte of the file the owner needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 67_108_864)]
+    pub offset: Option<u64>,
     /// For `committed`: the job is finished.
     #[serde(default)]
     #[schema(example = false)]

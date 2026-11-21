@@ -14,12 +14,14 @@
 //!   not parse as a URL on an app origin. Otherwise it is refused exactly
 //!   when its path's first two segments are `api` and `node` (or `api` and
 //!   `live`) and nothing else follows them but a `/`.
-//! - **Rewrite.** The headers the router sees hold no `Cookie`,
-//!   `Proxy-Authorization`, `Forwarded`, `Referer`, `X-Forwarded-*` or
-//!   `X-Real-IP`; exactly one `Host: localhost` and one
-//!   `Origin: http://localhost`; `Authorization` only when a token was given,
-//!   and then exactly `Bearer <token>` (or none, when that is not a valid
-//!   header value); and every other header the page sent, unchanged.
+//! - **Rewrite.** The headers the router sees hold no `Proxy-Authorization`,
+//!   `Forwarded`, `Referer`, `X-Forwarded-*` or `X-Real-IP`; exactly one
+//!   `Host: localhost` and one `Origin: http://localhost`; `Authorization`
+//!   only when an operator token was given, and then exactly
+//!   `Bearer <token>`; `Cookie` only when the window's cookies were given,
+//!   and then exactly that text (either left out when it is not a valid
+//!   header value); never the page's own `Cookie` or `Authorization`; and
+//!   every other header the page sent, unchanged.
 //! - **Navigation.** An app URL is always allowed. With no sign-in open
 //!   (a join's or a library card's) nothing else is. With one open, a
 //!   loopback `http` URL on the join or library card callback path returns
@@ -34,15 +36,16 @@
 //!   `expires_in_secs`, for that many seconds up to an hour.
 //!
 //! Input layout: the first byte holds flags (bit 0: a sign-in is open, bit 1:
-//! a token is given, bit 2: the `live` caller is labelled `main`, otherwise
-//! its label is the method's text); the rest splits on `0x00` into the
-//! method, the path, the navigation URL (also the `live` caller's page),
-//! the start route's answer body, the token, and then header lines
-//! `name: value`.
+//! a credential is given, bit 2: the `live` caller is labelled `main`,
+//! otherwise its label is the method's text, bit 3: that credential is the
+//! window's cookies rather than an operator token); the rest splits on
+//! `0x00` into the method, the path, the navigation URL (also the `live`
+//! caller's page), the start route's answer body, the credential text, and
+//! then header lines `name: value`.
 
 use bookclerk_window_policy::{
-    classify_navigation, live_refusal, refusal, rewrite_request_headers, sign_in_ttl, LiveRefusal,
-    Navigation, Refusal,
+    classify_navigation, live_refusal, refusal, rewrite_request_headers, sign_in_ttl, Credential,
+    LiveRefusal, Navigation, Refusal,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 
@@ -69,6 +72,8 @@ struct Case<'a> {
     start_body: &'a [u8],
     /// The operator token, when one is given.
     token: Option<&'a str>,
+    /// The window's cookie text, when that is the credential instead.
+    cookies: Option<&'a str>,
     /// The headers the page sent.
     headers: HeaderMap,
     /// Whether the `live` caller is labelled `main` rather than with the
@@ -104,7 +109,8 @@ fn decode(data: &[u8]) -> Option<Case<'_>> {
         path,
         navigation,
         start_body,
-        token: (flags & 2 != 0).then_some(token),
+        token: (flags & 2 != 0 && flags & 8 == 0).then_some(token),
+        cookies: (flags & 2 != 0 && flags & 8 != 0).then_some(token),
         headers,
         main_label: flags & 4 != 0,
     })
@@ -208,14 +214,13 @@ pub fn check(data: &[u8]) -> bool {
     assert_eq!(got, expected_refusal(&case), "refusal for {:?}", case.path);
 
     // Rewrite.
-    let seen = rewrite_request_headers(&case.headers, case.token);
-    for gone in [
-        "cookie",
-        "proxy-authorization",
-        "forwarded",
-        "referer",
-        "x-real-ip",
-    ] {
+    let credential = match (case.token, case.cookies) {
+        (Some(token), _) => Credential::Operator(token),
+        (None, Some(cookies)) => Credential::Cookies(cookies),
+        (None, None) => Credential::None,
+    };
+    let seen = rewrite_request_headers(&case.headers, credential);
+    for gone in ["proxy-authorization", "forwarded", "referer", "x-real-ip"] {
         assert!(seen.get(gone).is_none(), "{gone} reached the router");
     }
     assert!(
@@ -248,6 +253,21 @@ pub fn check(data: &[u8]) -> bool {
                 assert_eq!(auth, [want.as_bytes()]);
             } else {
                 assert!(auth.is_empty(), "an invalid token was sent");
+            }
+        }
+    }
+    let cookie: Vec<&[u8]> = seen
+        .get_all("cookie")
+        .iter()
+        .map(HeaderValue::as_bytes)
+        .collect();
+    match case.cookies {
+        None => assert!(cookie.is_empty(), "a cookie reached the router"),
+        Some(text) => {
+            if HeaderValue::from_str(text).is_ok() {
+                assert_eq!(cookie, [text.as_bytes()]);
+            } else {
+                assert!(cookie.is_empty(), "invalid cookie text was sent");
             }
         }
     }

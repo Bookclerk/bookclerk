@@ -36,7 +36,7 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::{AcquireTitle, JobKind, LibraryStore};
 use bookclerk_node_proto::{
     seal_upload_token, AcquireTarget, Body, CallNumber, Frame, PlanDestination, TargetTitle,
-    MAX_FRAME_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
+    UploadFile, MAX_FRAME_BYTES, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
 use rand::RngCore as _;
 use zeroize::Zeroize as _;
@@ -389,11 +389,15 @@ async fn title_destinations(
     for destination in destinations {
         let (title_folders, title_names) = match title {
             Some(title) => {
-                let request = crate::library_link::host_jobs::acquire_request(
+                let mut request = crate::library_link::host_jobs::acquire_request(
                     &cfg,
                     title.into(),
                     &destination.options,
                 );
+                // The scope is in the keys this destination stores, which
+                // is what the grant rewrites the host's keys to.
+                request.destination_keys =
+                    bookclerk_acquire::DestinationKeys::of(destination.backend.as_ref());
                 let planned = bookclerk_acquire::planned_title_names(library, &request).await;
                 let names = (!planned.own_folder).then_some(TitleNames {
                     audio_stems: planned.audio_stems,
@@ -410,6 +414,44 @@ async fn title_destinations(
         });
     }
     out
+}
+
+/// The upload manifest in the keys this node's destinations store: each
+/// copy's host key translated by the destination it names, and the primary
+/// and PDF keys by the primary destination (the first). A copy naming a
+/// destination this node lacks keeps its key, and the grant refuses it.
+///
+/// # Returns
+///
+/// The files, the primary key and the PDF key, translated.
+async fn translate_manifest(
+    request: &UploadGrantRequest<'_>,
+    destinations: &[super::uploads::OwnerDestination],
+) -> (Vec<UploadFile>, String, Option<String>) {
+    let keys_of = |id: &str| {
+        destinations
+            .iter()
+            .find(|destination| destination.id == id)
+            .map(|destination| bookclerk_acquire::DestinationKeys::of(destination.backend.as_ref()))
+    };
+    let mut files = request.files.to_vec();
+    for file in &mut files {
+        for copy in &mut file.copies {
+            if let Some(keys) = keys_of(&copy.destination) {
+                copy.key = keys.translate(std::mem::take(&mut copy.key)).await;
+            }
+        }
+    }
+    let primary = destinations
+        .first()
+        .map(|destination| bookclerk_acquire::DestinationKeys::of(destination.backend.as_ref()))
+        .unwrap_or_default();
+    let primary_key = primary.translate(request.primary_key.to_string()).await;
+    let pdf_key = match request.pdf_key {
+        Some(key) => Some(primary.translate(key.to_string()).await),
+        None => None,
+    };
+    (files, primary_key, pdf_key)
 }
 
 /// `upload.grant`: opens an upload of one title and seals its token to the
@@ -429,6 +471,12 @@ pub(super) async fn upload_grant(
     // upload endpoint re-checks that every one is still deployed for every
     // file), each only under the title's own keys there, computed here from
     // this node's row.
+    // The host sends host keys; each destination here stores the key it
+    // translates them to, so the manifest is checked, claimed and recorded
+    // in those keys.
+    let mut translated_files = None;
+    let mut translated_primary = None;
+    let mut translated_pdf = None;
     let scoped = if request.holding_id.is_empty() {
         Vec::new()
     } else {
@@ -461,10 +509,17 @@ pub(super) async fn upload_grant(
             Some(title) => super::uploads::title_target_set(library, destinations, title).await?,
             None => destinations,
         };
+        let (files, primary, pdf) = translate_manifest(&request, &destinations).await;
+        translated_files = Some(files);
+        translated_primary = Some(primary);
+        translated_pdf = pdf;
         title_destinations(library, host, title.as_ref(), &destinations).await
     };
     let request = UploadGrantRequest {
         destinations: &scoped,
+        files: translated_files.as_deref().unwrap_or(request.files),
+        primary_key: translated_primary.as_deref().unwrap_or(request.primary_key),
+        pdf_key: translated_pdf.as_deref().or(request.pdf_key),
         ..request
     };
     let granted = grant_upload(

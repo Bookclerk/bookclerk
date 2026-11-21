@@ -42,6 +42,7 @@ mod library_overrides;
 mod library_works;
 mod live;
 mod maintenance;
+mod media_capabilities;
 mod node_api;
 mod node_queue;
 mod oidc;
@@ -68,6 +69,7 @@ mod search_index;
 mod startup_tests;
 mod totp;
 mod tray_companion;
+mod uploads;
 
 pub mod embedded;
 
@@ -550,6 +552,7 @@ async fn assemble_host(
         tray_handoff: Mutex::new(None),
         deployment_runtime: std::sync::OnceLock::new(),
         node_api_tls_bound: std::sync::OnceLock::new(),
+        in_window: std::sync::OnceLock::new(),
         library_swaps: tokio::sync::watch::Sender::new(0),
         covers: Arc::new(open_cover_service(&paths.cache_dir)),
     });
@@ -573,6 +576,7 @@ async fn assemble_host(
     clerk_link::spawn_clerk_links(state.clone());
     placement::spawn_placement_scheduler(state.clone());
     maintenance::spawn_maintenance(state.clone());
+    uploads::spawn_prune(state.clone());
     cron_worker::spawn_cron_worker(state.clone());
     requirements_sweep::spawn_requirements_sweep(state.clone());
     spawn_scheduler(state.clone());

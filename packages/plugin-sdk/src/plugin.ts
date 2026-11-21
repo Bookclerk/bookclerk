@@ -53,6 +53,8 @@ import type {
   KvPutOptionsBinding,
   KvValueType,
   KvValueWithMetadata,
+  NotifyBinding,
+  NotifyRaise,
   PublishEvent,
   QueueBinding,
   QueueSendBatchEntry,
@@ -117,6 +119,12 @@ import type {
   MetadataRecord,
   MetadataSearchParams,
   NetworkGrant,
+  NotificationField,
+  NotifyRaised,
+  NotifySendParams,
+  NotifySent,
+  NotifyValidateParams,
+  NotifyValidated,
   OidcClientTemplate,
   PlainFetch,
   PluginCapabilities as WirePluginCapabilities,
@@ -199,6 +207,19 @@ export type {
   MetadataRecord,
   MetadataSearchParams,
   NetworkGrant,
+  NotificationAlertAction,
+  NotificationAudience,
+  NotificationField,
+  NotificationMessage,
+  NotificationSeverity,
+  NotifyDestination,
+  NotifyDestinationKind,
+  NotifyRaiseParams,
+  NotifyRaised,
+  NotifySendParams,
+  NotifySent,
+  NotifyValidateParams,
+  NotifyValidated,
   OidcClientTemplate,
   PluginCapabilities,
   PluginMigration,
@@ -610,6 +631,21 @@ export class Destination extends RpcTarget {
   changes(_request: ChangesRequest): Promise<ChangesPage> {
     return Promise.reject(unsupported("changes"));
   }
+
+  /**
+   * Translate up to `MAX_BATCH_KEYS` host keys into the keys this
+   * destination stores them under (declare `storage.translateKeys`). A host
+   * key is `/`-joined segments, none empty, `.`, `..` or holding `\` or a
+   * control character; return a relative key with the same properties. The
+   * same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param _keys - Host keys.
+   * @returns One translated key per host key, in order.
+   */
+  translateKeys(_keys: string[]): Promise<string[]> {
+    return Promise.reject(unsupported("translateKeys"));
+  }
 }
 
 /** Byte source capability: `job.input`. */
@@ -774,6 +810,8 @@ export interface GrantedContext {
   storage?: Destination;
   /** `EVENTS` publisher, when `[[events.producers]]` is granted. */
   events?: EventPublisherBinding;
+  /** `NOTIFY` binding, when `[[notifications.types]]` is declared. */
+  notify?: NotifyBinding;
   /** Named `[[databases]]` bindings. */
   databases?: NamedDatabase[];
   /** `[[queues.producers]]` bindings, when granted. */
@@ -901,6 +939,8 @@ export interface BridgeContext extends Omit<
 > {
   /** Granted-channel bearer for `env.EVENTS.publish`; stripped before dispatch. */
   eventsToken?: string;
+  /** Granted-channel bearer for `env.NOTIFY.raise`; stripped before dispatch. */
+  notifyToken?: string;
   /** Named `[[databases]]` binding → database-only bearer for `/db/execute`. */
   databases?: Record<string, string>;
   /** `[[queues.producers]]` binding → queue-only bearer for `/queues/send`. */
@@ -991,6 +1031,7 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     if (context.secrets !== undefined) merged.SECRETS = decodeExtensibleConfig(context.secrets);
     if (context.storage) merged.WORK_FS = context.storage;
     if (context.events) merged.EVENTS = context.events;
+    if (context.notify) merged.NOTIFY = context.notify;
     if (Array.isArray(context.databases)) {
       for (const entry of context.databases) {
         if (!entry || typeof entry.name !== "string" || !entry.name) continue;
@@ -2463,6 +2504,7 @@ const STORAGE_METHODS = Object.freeze([
   "deleteMany",
   "headMany",
   "changes",
+  "translateKeys",
 ]);
 
 /**
@@ -2610,6 +2652,21 @@ export class StorageEntrypoint<
    */
   changes(_request: ChangesRequest): Promise<ChangesPage> {
     return Promise.reject(unsupported("changes"));
+  }
+
+  /**
+   * Translate up to `MAX_BATCH_KEYS` host keys into the keys this
+   * destination stores them under (declare `storage.translateKeys`). A host
+   * key is `/`-joined segments, none empty, `.`, `..` or holding `\` or a
+   * control character; return a relative key with the same properties. The
+   * same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param _keys - Host keys.
+   * @returns One translated key per host key, in order.
+   */
+  translateKeys(_keys: string[]): Promise<string[]> {
+    return Promise.reject(unsupported("translateKeys"));
   }
 }
 
@@ -2992,6 +3049,52 @@ export class MetadataFilesEntrypoint<
   }
 }
 
+/**
+ * `notifier` entrypoint (`Notifier`): delivers messages the host already
+ * rendered to one outside service (a chat webhook, a mail relay, a paging
+ * service). The host decides what to send and where; the entrypoint only
+ * sends. `[notifier]` in `plugin.toml` declares the destination kinds,
+ * formats and personal address fields. Export it as
+ * `export class Notifier extends NotifierEntrypoint`.
+ */
+export class NotifierEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["health", "send", "validateDestination"]);
+
+  /**
+   * Reports whether the service can be reached with the current settings.
+   *
+   * @returns Health flag plus detail.
+   */
+  health(): Promise<HealthOk> {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * Delivers one message to one destination. Throw `rate_limited` (with
+   * `details.retryAfterMs` when the service says when) or `unavailable` for
+   * a failure worth retrying; any other error fails this destination. Never
+   * log `params.message` when `sensitive` is set, nor `addressJson`.
+   *
+   * @param _params - The rendered message and its destination.
+   * @returns The service's message id, when it gives one.
+   */
+  send(_params: NotifySendParams): Promise<NotifySent> {
+    return Promise.reject(unsupported("send"));
+  }
+  /**
+   * Checks and normalises a personal address a patron entered. Throw
+   * `invalid_params` for an address the service would refuse. The default
+   * accepts the address as given.
+   *
+   * @param params - The address document as entered.
+   * @returns The address to save and an optional label that is never a secret.
+   */
+  validateDestination(params: NotifyValidateParams): Promise<NotifyValidated> {
+    return Promise.resolve({ addressJson: params.addressJson });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Adapter isolate (trusted; owns GRANTED / BRIDGE_TOKEN / PLUGIN_DESCRIBE)
 // ---------------------------------------------------------------------------
@@ -3006,7 +3109,8 @@ export type EntrypointName =
   | "oidc"
   | "metadata"
   | "covers"
-  | "metadataFiles";
+  | "metadataFiles"
+  | "notifier";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -3019,6 +3123,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   metadata: "PLUGIN_METADATA",
   covers: "PLUGIN_COVERS",
   metadataFiles: "PLUGIN_METADATA_FILES",
+  notifier: "PLUGIN_NOTIFIER",
 });
 
 /** Exported class name the launcher binds for each named entrypoint. */
@@ -3032,6 +3137,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   metadata: "Metadata",
   covers: "Covers",
   metadataFiles: "MetadataFiles",
+  notifier: "Notifier",
 });
 
 /** Reverse-channel fetcher bound as `GRANTED` on the adapter isolate. */
@@ -3234,6 +3340,82 @@ function publishPayloadBytes(payload: PublishEvent["payload"]): Uint8Array {
   if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
   if (typeof payload === "string") return new TextEncoder().encode(payload);
   return new TextEncoder().encode(JSON.stringify(payload));
+}
+
+/**
+ * Normalises {@link NotifyRaise.fields} to `{ name, value }` rows.
+ *
+ * @param fields - Rows or a plain `name → value` object.
+ * @returns The rows, with every value stringified.
+ * @throws {PluginError} `invalid_params` when `fields` is neither shape.
+ */
+function notifyFields(fields: NotifyRaise["fields"]): NotificationField[] {
+  if (fields === undefined) return [];
+  if (Array.isArray(fields)) {
+    return fields.map((f) => ({ name: String(f?.name ?? ""), value: String(f?.value ?? "") }));
+  }
+  if (fields === null || typeof fields !== "object") {
+    throw PluginError.fromWire("invalid_params", "fields must be a list or an object");
+  }
+  return Object.entries(fields).map(([name, value]) => ({ name, value: String(value) }));
+}
+
+/**
+ * `NOTIFY` binding handed to the author: the adapter exchanges the host's
+ * notify grant token on the granted channel, so the author isolate never
+ * holds the bearer itself. The host checks every raise against the
+ * plugin's declared types.
+ */
+class GrantedNotify extends RpcTarget implements NotifyBinding {
+  #granted: GrantedFetcher;
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the notify grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Raise one declared notification type.
+   *
+   * @param raise - Type, fields, optional patron, link path and alert.
+   * @returns The host's notification id.
+   */
+  async raise(raise: NotifyRaise): Promise<NotifyRaised> {
+    if (!raise || typeof raise.notificationType !== "string" || !raise.notificationType) {
+      throw PluginError.fromWire("invalid_params", "raise requires notificationType");
+    }
+    const wire = {
+      notificationType: raise.notificationType,
+      fields: notifyFields(raise.fields),
+      patronId: raise.patronId || undefined,
+      linkPath: raise.linkPath || undefined,
+      groupKey: raise.groupKey || undefined,
+      alertAction: raise.alertAction ?? "none",
+      alertKey: raise.alertKey || undefined,
+    };
+    const resp = await this.#granted.fetch("http://granted/notify/raise", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify(wire),
+    });
+    const value = (await resp.json().catch(() => ({}))) as {
+      error?: { code?: string; message?: string };
+      notificationId?: unknown;
+    };
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `notify raise HTTP ${resp.status}`);
+    }
+    return { notificationId: String(value.notificationId ?? "") };
+  }
 }
 
 /**
@@ -4227,12 +4409,17 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx: BridgeContext | undefined): GrantedContext {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, queues, kv, sockets, ...rest } = source;
+      const { eventsToken, notifyToken, databases, queues, kv, sockets, ...rest } = source;
       const bound: GrantedContext = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
         bound.events = new GrantedEvents(granted, {
           Authorization: `Bearer ${eventsToken}`,
+        });
+      }
+      if (typeof notifyToken === "string" && notifyToken && granted) {
+        bound.notify = new GrantedNotify(granted, {
+          Authorization: `Bearer ${notifyToken}`,
         });
       }
       if (databases && typeof databases === "object" && !Array.isArray(databases) && granted) {

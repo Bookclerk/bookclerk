@@ -34,11 +34,11 @@ use bookclerk_plugin_abi::{
     Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer, EventConsumerClient,
     ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Invocation, JobController, JobOutcome,
     JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles, MetadataFilesClient,
-    MetadataProvider, MetadataProviderClient, ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints,
-    PluginCapabilities, PluginCli, PluginCliClient, PluginClient, PluginDescribe, PluginMigration,
-    PluginWorker, PutResult, QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary,
-    RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient, SocketHandler,
-    SocketHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
+    MetadataProvider, MetadataProviderClient, Notifier, NotifierClient, ObjectMetadata, Oidc,
+    OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient, PluginClient,
+    PluginDescribe, PluginMigration, PluginWorker, PutResult, QueueConsumer, QueueConsumerClient,
+    ReadResult, RemoteLibrary, RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient,
+    SocketHandler, SocketHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
     PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
@@ -182,6 +182,7 @@ impl WorkerdRoot {
             kv: BTreeMap::new(),
             sockets: BTreeMap::new(),
             network: bindings.network.clone(),
+            notify_token: None,
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -223,6 +224,7 @@ impl WorkerdRoot {
                 .sockets
                 .filter(|_| self.capabilities.sockets)
                 .map(Arc::from),
+            notify: bindings.notify.map(Arc::from),
         };
         let opened = client.open(&invocation, host_bindings).await?;
         Ok(native_entrypoints(opened, &allowed))
@@ -347,6 +349,29 @@ impl WorkerdRoot {
             }
             None => (BTreeMap::new(), None),
         };
+        // A notify-only grant token for the `NOTIFY` binding: the adapter
+        // isolate raises through `/notify/raise` with it and installs
+        // `env.NOTIFY` on the author's `env`.
+        let (notify_token, notify_grant) = match bindings.notify {
+            Some(raiser) => {
+                let token = format!("{:032x}", rand::random::<u128>());
+                self.table.borrow_mut().insert(
+                    token.clone(),
+                    GrantedSlot::notify_only(
+                        Rc::from(raiser),
+                        grant_expiry(invocation.deadline_unix_ms),
+                    ),
+                );
+                (
+                    Some(token.clone()),
+                    Some(RevokeGrant {
+                        table: Rc::clone(&self.table),
+                        grant: token,
+                    }),
+                )
+            }
+            None => (None, None),
+        };
         let ctx = BridgeContext {
             invocation,
             config: bindings.config,
@@ -357,6 +382,7 @@ impl WorkerdRoot {
             kv,
             sockets,
             network: bindings.network,
+            notify_token,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
@@ -365,6 +391,7 @@ impl WorkerdRoot {
             _queues: queue_grants,
             _kv: kv_grants,
             _sockets: sockets_grant,
+            _notify: notify_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
             Some(Rc::clone(&grants) as Rc<dyn std::any::Any>);
@@ -410,6 +437,9 @@ impl WorkerdRoot {
         if self.exports(Entrypoint::MetadataFiles) {
             exported.metadata_files = Some(Box::new(MetadataFilesClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::Notifier) {
+            exported.notifier = Some(Box::new(NotifierClient::new(invoke.typed())));
+        }
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
         }
@@ -450,6 +480,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         covers,
         socket_handler,
         metadata_files,
+        notifier,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -494,6 +525,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         metadata_files: metadata_files
             .filter(|_| allow(Entrypoint::MetadataFiles.wire_name()))
             .map(|c| Box::new(c) as Box<dyn MetadataFiles>),
+        notifier: notifier
+            .filter(|_| allow(Entrypoint::Notifier.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn Notifier>),
     }
 }
 
@@ -546,6 +580,10 @@ struct BridgeContext {
     /// `NETWORK`: the network grant in effect, which the adapter hands the
     /// author as `env.NETWORK`.
     network: bookclerk_plugin_abi::NetworkGrant,
+    /// Notify-only bearer for `/notify/raise`, when the manifest declares
+    /// `[[notifications.types]]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notify_token: Option<String>,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -566,6 +604,7 @@ struct OpenGrants {
     _queues: Vec<RevokeGrant>,
     _kv: Vec<RevokeGrant>,
     _sockets: Option<RevokeGrant>,
+    _notify: Option<RevokeGrant>,
 }
 
 /// Grant expiry for an `open`: the invocation deadline when it has one,
@@ -811,6 +850,7 @@ impl JobRunner for InvokeJobRunner {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -958,6 +998,7 @@ mod tests {
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
             sockets: BTreeMap::from([("SOCKETS".to_string(), "stok".to_string())]),
             network: bookclerk_plugin_abi::NetworkGrant::default(),
+            notify_token: None,
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,

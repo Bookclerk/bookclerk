@@ -107,6 +107,11 @@ pub struct AppState {
     /// is bound at startup and outlives config reloads, so a reload that
     /// turns auth off is checked against it as well as the new config.
     pub node_api_tls_bound: OnceLock<std::net::SocketAddr>,
+    /// Set once when the host runs inside the desktop window
+    /// (`crate::embedded`), which binds no socket: every request then comes
+    /// from the person at this computer, and playback keeps their listening
+    /// state as the library's Owner (see `crate::playback`).
+    pub in_window: OnceLock<()>,
     /// Counts database swaps: bumped after [`Self::library`] is replaced so
     /// the library-link supervisor restarts its host clients on the new
     /// store.
@@ -1206,6 +1211,7 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(legacy_cancel_job))
         .routes(routes!(trigger_integration_scan))
         .routes(routes!(status))
+        .routes(routes!(crate::media_capabilities::media_capabilities))
         .routes(routes!(list_jobs))
         .routes(routes!(cancel_job))
         .routes(routes!(list_events))
@@ -1485,6 +1491,19 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::profile::get_avatar))
         .routes(routes!(get_preferences, patch_preferences))
+        // Uploads: the handlers resolve the patron who holds the books, and
+        // the review list admits only an Administrator.
+        .routes(routes!(
+            crate::uploads::create_upload,
+            crate::uploads::list_uploads
+        ))
+        .routes(routes!(crate::uploads::list_upload_review))
+        .routes(routes!(
+            crate::uploads::get_upload,
+            crate::uploads::delete_upload
+        ))
+        .routes(routes!(crate::uploads::patch_upload_file))
+        .routes(routes!(crate::uploads::commit_upload))
 }
 
 /// Routes with no auth layer; each handler checks what it needs.
@@ -5011,6 +5030,8 @@ async fn trigger_acquire(
         plugin_instance_id: body.plugin_instance_id,
         force: body.force,
         pdf_only: body.pdf_only,
+        // A person asked for it: counted against the pace, never held.
+        paced: false,
     };
     match enqueue_acquire(state, requester, ask, JobTrigger::Api).await {
         Ok(admits) => plan_response("acquire", admits),
@@ -8177,6 +8198,7 @@ tcp = {tcp}
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         })
@@ -8803,6 +8825,7 @@ default_port = 5432
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });
@@ -8906,6 +8929,7 @@ default_port = 5432
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });
@@ -9067,6 +9091,7 @@ default_port = 5432
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });

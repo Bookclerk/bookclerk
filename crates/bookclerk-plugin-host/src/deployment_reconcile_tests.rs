@@ -217,17 +217,55 @@ fn write_archive(dir: &Path, id: &str, secrets: bool) -> PathBuf {
     )
     .unwrap();
     std::fs::write(staging.join("echo"), b"#!/bin/sh\necho ok\n").unwrap();
-    let archive = dir.join(format!("{id}.tar.gz"));
-    let status = std::process::Command::new("tar")
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&staging)
-        .args(["plugin.toml", "echo"])
-        .status()
-        .expect("tar");
-    assert!(status.success(), "tar czf failed");
-    archive
+    pack_fixture(&staging, dir, id)
+}
+
+/// Packs `plugin.toml` and `echo` from `staging` into `dir/<stem>.<ext>`
+/// in the format the installer reads for this host's own target.
+fn pack_fixture(staging: &Path, dir: &Path, stem: &str) -> PathBuf {
+    pack_fixture_for(staging, dir, stem, host_bookclerk_target())
+}
+
+/// Packs `plugin.toml` and `echo` from `staging` into `dir/<stem>.<ext>`
+/// in the format the installer reads for `target`.
+///
+/// That is ZIP for `windows-*` targets and tar.gz everywhere else (see
+/// `bookclerk_plugin_catalog::Installer`); the wrong one fails to extract
+/// ("Could not find EOCD" or "invalid gzip header"). Both are written
+/// in-process, so no system `tar` is needed.
+fn pack_fixture_for(staging: &Path, dir: &Path, stem: &str, target: &str) -> PathBuf {
+    use std::io::Write as _;
+    let names = ["plugin.toml", "echo"];
+    if target.starts_with("windows-") {
+        let archive = dir.join(format!("{stem}.zip"));
+        let file = std::fs::File::create(&archive).expect("create zip");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for name in names {
+            zip.start_file(name, options).expect("zip start_file");
+            let bytes = std::fs::read(staging.join(name)).expect("read staged file");
+            zip.write_all(&bytes).expect("zip write");
+        }
+        zip.finish().expect("finish zip");
+        archive
+    } else {
+        let archive = dir.join(format!("{stem}.tar.gz"));
+        let file = std::fs::File::create(&archive).expect("create tar.gz");
+        let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut tar = tar::Builder::new(gz);
+        for name in names {
+            tar.append_path_with_name(staging.join(name), name)
+                .expect("tar append");
+        }
+        tar.into_inner()
+            .expect("finish tar")
+            .finish()
+            .expect("finish gzip")
+            .flush()
+            .expect("flush tar.gz");
+        archive
+    }
 }
 
 fn package_manifest(id: &str) -> bookclerk_plugin_catalog::BookclerkPackageManifest {
@@ -523,16 +561,7 @@ async fn publish_version(world: &World, version: &str, activate: crate::Activate
     )
     .unwrap();
     std::fs::write(stage.join("echo"), format!("#!/bin/sh\necho {version}\n")).unwrap();
-    let archive = world.files.join(format!("fxdep-{version}.tar.gz"));
-    let status = std::process::Command::new("tar")
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&stage)
-        .args(["plugin.toml", "echo"])
-        .status()
-        .expect("tar");
-    assert!(status.success());
+    let archive = pack_fixture(&stage, &world.files, &format!("fxdep-{version}"));
     let grant = PluginGrantStore::load(&world.files)
         .unwrap()
         .get_by_plugin_key(&world.key)
@@ -2309,10 +2338,6 @@ async fn the_local_destination_sleeps_when_idle_and_wakes_on_its_next_call() {
     let deployed = runtime.destinations.read().await.destinations();
     assert_eq!(deployed.len(), 1);
     assert_eq!(deployed[0].id.as_str(), instance.id.as_str());
-    assert_eq!(
-        deployed[0].key_style,
-        bookclerk_config::DestinationKeyStyle::Filesystem
-    );
     let local = std::sync::Arc::clone(&deployed[0].backend);
     local
         .put(
@@ -2459,9 +2484,15 @@ async fn exercise_intent_operations(
     );
 }
 
-/// A tar.gz artifact whose `plugin.toml` is the fixture manifest with
+/// An artifact for `target` (see [`pack_fixture_for`]) whose `plugin.toml` is the fixture manifest with
 /// `extra` prepended (top-level keys) and `command` set, and its digest.
-fn variant_archive(dir: &Path, name: &str, extra: &str, command: &str) -> (PathBuf, String) {
+fn variant_archive(
+    dir: &Path,
+    name: &str,
+    extra: &str,
+    command: &str,
+    target: &str,
+) -> (PathBuf, String) {
     let staging = dir.join(format!("{name}-stage"));
     std::fs::create_dir_all(&staging).unwrap();
     let manifest = format!(
@@ -2471,16 +2502,7 @@ fn variant_archive(dir: &Path, name: &str, extra: &str, command: &str) -> (PathB
     );
     std::fs::write(staging.join("plugin.toml"), manifest).unwrap();
     std::fs::write(staging.join("echo"), b"#!/bin/sh\necho ok\n").unwrap();
-    let archive = dir.join(format!("{name}.tar.gz"));
-    let status = std::process::Command::new("tar")
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&staging)
-        .args(["plugin.toml", "echo"])
-        .status()
-        .expect("tar");
-    assert!(status.success(), "tar czf failed");
+    let archive = pack_fixture_for(&staging, dir, name, target);
     let digest = bookclerk_plugin_catalog::sha256_file(&archive).expect("digest");
     (archive, digest)
 }
@@ -2532,12 +2554,19 @@ async fn artifacts_that_disagree_on_credentials_are_refused() {
     let world = open_world(false).await;
     let dir = world.files.join("variants");
     std::fs::create_dir_all(&dir).unwrap();
-    let shareable = variant_archive(&dir, "shareable", "credentials = \"shareable\"\n", "./echo");
+    let shareable = variant_archive(
+        &dir,
+        "shareable",
+        "credentials = \"shareable\"\n",
+        "./echo",
+        "linux-x64-gnu",
+    );
     let keeper = variant_archive(
         &dir,
         "keeper",
         "credentials = \"single_keeper\"\n",
         "./echo",
+        "macos-arm64",
     );
     let err = publish_two_artifacts(
         &world,
@@ -2555,8 +2584,20 @@ async fn artifacts_that_disagree_on_credentials_are_refused() {
         .is_none());
 
     // A different launch line alone is fine.
-    let linux = variant_archive(&dir, "linux", "credentials = \"shareable\"\n", "./echo");
-    let mac = variant_archive(&dir, "mac", "credentials = \"shareable\"\n", "echo");
+    let linux = variant_archive(
+        &dir,
+        "linux",
+        "credentials = \"shareable\"\n",
+        "./echo",
+        "linux-x64-gnu",
+    );
+    let mac = variant_archive(
+        &dir,
+        "mac",
+        "credentials = \"shareable\"\n",
+        "echo",
+        "macos-arm64",
+    );
     let added = publish_two_artifacts(&world, [("linux-x64-gnu", linux), ("macos-arm64", mac)])
         .await
         .expect("artifacts differing only in command are accepted");

@@ -12,6 +12,7 @@ use bookclerk_node_proto::{
 };
 
 use crate::client::Shared;
+use crate::endpoint::UploadSource;
 
 /// A job the owner handed this host, under its fence.
 #[derive(Debug, Clone)]
@@ -487,20 +488,20 @@ impl HostJobCtx {
             .await
     }
 
-    /// Streams declared file `index` of `upload` (`length` bytes of
-    /// `body`) to the owner, which writes it to its destinations as it
-    /// arrives.
+    /// Streams declared file `index` of `upload` (`length` bytes read from
+    /// `source`) to the owner, which writes it to its destinations as it
+    /// arrives; an interrupted file resumes where the owner stands.
     ///
     /// # Errors
     ///
     /// Returns [`OwnerCallError`]; `Lost` (the owner aborted the upload)
     /// also cancels the job.
-    pub async fn upload_file<R: tokio::io::AsyncRead + Unpin + Send>(
+    pub async fn upload_file<S: UploadSource + ?Sized>(
         &self,
         upload: &HostUpload,
         index: usize,
         length: u64,
-        body: R,
+        source: &S,
     ) -> Result<(), OwnerCallError> {
         self.shared
             .upload_file(
@@ -509,7 +510,7 @@ impl HostJobCtx {
                 upload,
                 index,
                 length,
-                body,
+                source,
             )
             .await
     }

@@ -295,6 +295,25 @@ Consent is keyed by `entrypoints`, the granted bindings (`[vars]`,
 `[triggers] crons` schedule (`cron:<schedule>`). There is no separate
 method list.
 
+### Plugins that can message people
+
+Notifications go through [notifier](abi.md#notifiers) plugins, so the
+administrators' routing rules and each patron's preferences decide who
+hears what. A plugin can still post to a chat service itself when its
+network grant reaches one. So when a plugin that does not export
+`notifier` asks for a known chat, push or mail service (Discord, Slack,
+Telegram, PagerDuty, ntfy, a mail API, a browser push service), for any
+public website (`*`), or for a TCP grant on an SMTP port (25, 465 or 587):
+
+- `bookclerk-plugin check` warns about it;
+- the consent summary adds "Can send messages outside Bookclerk", naming
+  the hosts.
+
+This is a flag for the operator, not a refusal: a storefront may have a
+real reason to reach such a host. A plugin that wants to tell people
+something should declare [notification types](manifest.md#notificationstypes-notifications-a-plugin-raises)
+and raise them instead.
+
 ## Consent before enable (and every spawn)
 
 Third-party (and newly installed) plugins need an explicit permission

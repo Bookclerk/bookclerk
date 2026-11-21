@@ -37,6 +37,7 @@ use symphonia::core::meta::MetadataOptions;
 
 use crate::aac_fdk::FdkAacDecoder;
 use crate::error::{MediaError, Result};
+use crate::opus_dec::OpusDecoder;
 
 /// Highest sample rate a decoded stream may report, in Hz. Anything above
 /// is refused as malformed rather than handed to an encoder.
@@ -191,13 +192,14 @@ fn to_i16(sample: f32) -> i16 {
 }
 
 /// The codec registry the decode front uses: Symphonia's enabled decoders,
-/// with FDK preferred for AAC.
+/// with FDK preferred for AAC and libopus for Opus.
 fn codecs() -> &'static CodecRegistry {
     static REGISTRY: OnceLock<CodecRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
         let mut registry = CodecRegistry::new();
         symphonia::default::register_enabled_codecs(&mut registry);
         registry.register_audio_decoder_at_tier::<FdkAacDecoder>(Tier::Preferred);
+        registry.register_audio_decoder_at_tier::<OpusDecoder>(Tier::Preferred);
         registry
     })
 }
@@ -299,6 +301,21 @@ impl OpenedAudio {
             Ok(Some(packet)) => packet,
             Ok(None) => return Ok(NextPcm::End),
             Err(SymphoniaError::ResetRequired) => {
+                // A chained Ogg file replaces its tracks here. Decoding on
+                // with the old track id would skip the rest of the audio
+                // and still report success, so refuse the file instead.
+                if !self
+                    .format
+                    .tracks()
+                    .iter()
+                    .any(|track| track.id == self.track_id)
+                {
+                    return Err(MediaError::Native(
+                        "the audio stream changes partway through the file (a chained Ogg \
+                         file), which is not supported"
+                            .into(),
+                    ));
+                }
                 self.decoder.reset();
                 return Ok(NextPcm::Skipped);
             }
@@ -579,6 +596,43 @@ mod tests {
         }
     }
 
+    /// `file` with every page moved to logical stream `serial`, checksums
+    /// recomputed.
+    fn with_serial(mut file: Vec<u8>, serial: u32) -> Vec<u8> {
+        let mut at = 0;
+        while at + 27 <= file.len() {
+            assert_eq!(&file[at..at + 4], b"OggS");
+            let segments = usize::from(file[at + 26]);
+            let body: usize = file[at + 27..at + 27 + segments]
+                .iter()
+                .map(|len| usize::from(*len))
+                .sum();
+            let end = at + 27 + segments + body;
+            file[at + 14..at + 18].copy_from_slice(&serial.to_le_bytes());
+            file[at + 22..at + 26].fill(0);
+            let crc = crate::opus_enc::ogg_crc(&file[at..end]);
+            file[at + 22..at + 26].copy_from_slice(&crc.to_le_bytes());
+            at = end;
+        }
+        file
+    }
+
+    #[test]
+    fn a_chained_ogg_file_is_refused_rather_than_cut_short() {
+        let corpus =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/media_decode");
+        let first = std::fs::read(corpus.join("tone_2ch.opus")).expect("first");
+        let second = std::fs::read(corpus.join("tone_1ch.opus")).expect("second");
+        // On its own, each stream decodes.
+        decode_pcm_bytes(first.clone(), OutChannels::SourceUpToStereo, |_, _| Ok(()))
+            .expect("one stream");
+        let mut chained = first;
+        chained.extend(with_serial(second, 0x5EC0_4D00));
+        let err = decode_pcm_bytes(chained, OutChannels::SourceUpToStereo, |_, _| Ok(()))
+            .expect_err("chained");
+        assert!(err.to_string().contains("chained Ogg"), "{err}");
+    }
+
     /// Two seconds of a stereo 44.1 kHz tone, encoded as HE-AAC (or v2).
     fn he_aac_bytes(v2: bool) -> Vec<u8> {
         let dir = tempfile::tempdir().expect("dir");
@@ -658,6 +712,46 @@ mod tests {
             );
             // 4,000 frames, give or take a codec frame of padding.
             assert!((3_000..=6_000).contains(&frames), "{name}: {frames} frames");
+        }
+    }
+
+    #[test]
+    fn ogg_opus_and_vorbis_decode() {
+        // Quarter-second 16 kHz tones, also `media_decode` seeds. Opus always
+        // decodes at 48 kHz; Vorbis keeps the source rate.
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/media_decode");
+        for (name, rate, channels) in [
+            ("tone_1ch.opus", 48_000, 1),
+            ("tone_2ch.opus", 48_000, 2),
+            ("tone_2ch.ogg", 16_000, 2),
+        ] {
+            let bytes = std::fs::read(corpus.join(name)).expect(name);
+            let mut frames = 0usize;
+            let mut peak = 0i16;
+            let format = decode_pcm_bytes(bytes, OutChannels::SourceUpToStereo, |f, pcm| {
+                frames += pcm.len() / usize::from(f.channels);
+                peak = pcm
+                    .iter()
+                    .fold(peak, |peak, s| peak.max(s.saturating_abs()));
+                Ok(())
+            })
+            .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(
+                format,
+                PcmFormat {
+                    sample_rate: rate,
+                    channels
+                },
+                "{name}"
+            );
+            // A quarter second, give or take pre-skip and a packet of padding.
+            let expected = usize::try_from(rate / 4).expect("frames");
+            assert!(
+                (expected * 3 / 4..=expected * 3 / 2).contains(&frames),
+                "{name}: {frames} frames"
+            );
+            // The tone is audible, not decoded silence.
+            assert!(peak > 2_000, "{name}: peak {peak}");
         }
     }
 

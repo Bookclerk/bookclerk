@@ -45,9 +45,15 @@ a later change supersedes one, its **Status** says so.
 - [Patron scopes and linked sign-in](patron-scopes.md): which part of the
   library a Member sees, and how a linked server's permissions and
   suspensions follow one authority.
+- [Uploads and ingest batches](uploads-and-ingest.md): one batch per
+  upload, patron holdings for uploaded books, identification by strong
+  identifiers only, and archives expanded under caps in the media worker.
 - [Storage destinations](storage-destinations.md): every storage plugin
   instance is a destination with its own template and filter,
   opportunistic change feeds and host-held webhooks.
+- [Desktop window identity](desktop-window-identity.md): the desktop
+  window is the person signed in to the computer's OS account, whose session its
+  branch keeps sealed, and elevates like anyone else.
 - [What needs the operator](owner-and-operator.md): the rule for which
   actions need elevation, and the switches an Owner sets on each
   Administrator.

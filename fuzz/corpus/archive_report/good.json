@@ -1,0 +1,1 @@
+{"format":"zip","written":[{"path":"Book/01.mp3","bytes":10},{"path":"Book/cover.jpg","bytes":5}],"refused":[{"name":"../x","reason":{"kind":"path","refusal":"parent_dir"}},{"name":"l","reason":{"kind":"link"}}],"stopped":null,"totalBytes":15}

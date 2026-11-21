@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tomllib
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -32,6 +32,7 @@ from .plan import (
     JOB_CHECKS,
     NON_CARGO_CHECKS,
     OS_LEG_JOBS,
+    REPORT_JOBS,
     STEP_GATED_JOBS,
     PlanError,
     Plan,
@@ -97,13 +98,19 @@ NEXTEST_RUN = (
 MERGE_GROUP_TEST_RETRIES = 1
 
 
-def _nextest_mode(event: str) -> list[str]:
-    """Failure handling for one nextest run, by the event the plan was resolved for.
+def _nextest_mode(event: str, os_suite: bool = False) -> list[str]:
+    """Failure handling for one nextest run, by the event and the job.
 
     A merge group only needs to know whether it can land, so it retries once and
     stops at the first test that still fails. Pull requests run every test, so
-    one round of CI shows every failure to fix.
+    one round of CI shows every failure to fix. The ``test-os`` job
+    (``os_suite``, set through ``OS_SUITE_ENV``) only reports
+    (``REPORT_JOBS``), so it uses ``NEXTEST_OS_PROFILE`` whatever the event:
+    every test runs, and a hung test is stopped and named instead of holding
+    the job until its timeout.
     """
+    if os_suite:
+        return ["--profile", NEXTEST_OS_PROFILE]
     if event == "merge_group":
         return ["--retries", str(MERGE_GROUP_TEST_RETRIES), "--fail-fast"]
     return ["--no-fail-fast"]
@@ -248,6 +255,12 @@ QUEUE_ONLY_CHECKS = frozenset({"windows_cluster"})
 # dependencies (about 13 of its 17 minutes) on every queue run
 # (docs/contributing/ci.md#build-only-main-pushes).
 BUILD_ONLY_HOSTED_CHECKS = {"windows_cluster": "native-gateway"}
+# The `test-os` job's legs (`os_test_matrix` plan output): each runner label
+# and how many parts a whole-workspace `rust_test` run splits into there
+# (TEST_PARTS on Linux). Windows takes about twice Linux's time and macOS
+# about 1.3 times, so these parts finish in about 30 minutes each
+# (docs/contributing/ci.md#full-suite-on-windows-and-macos).
+OS_TEST_PARTS: tuple[tuple[str, int], ...] = (("windows-latest", 3), ("macos-latest", 2))
 # Runner labels of the matrix jobs' `os` legs (`os_matrix` plan output).
 LINUX_RUNNERS = ("ubuntu-latest",)
 ALL_RUNNERS = ("ubuntu-latest", "windows-latest")
@@ -272,6 +285,9 @@ class Command:
     argv: list[str]
     cwd: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    # A failing test command that lets the rest of the check run first: the
+    # check still fails, after every command has reported (``run_check``).
+    keep_going: bool = False
 
 
 @dataclass
@@ -469,6 +485,15 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
     # build-only `main` push only compiles, so it keeps one leg.
     split = plan.selected("rust_test") and plan.params("rust_test").get("workspace") and not artifact.get("build_only")
     out["test_parts"] = json.dumps(list(range(1, (TEST_PARTS if split else 1) + 1)), separators=(",", ":"))
+    # The `test-os` job's matrix (see OS_TEST_PARTS): empty in a Linux-only
+    # pull request run or without `rust_test`; one leg per OS on a build-only
+    # push, which only compiles and saves each OS's test cache.
+    legs: list[dict[str, Any]] = []
+    if plan.selected("rust_test") and not linux_only:
+        for runner, parts in OS_TEST_PARTS:
+            count = parts if split else 1
+            legs += [{"os": runner, "part": n, "parts": count} for n in range(1, count + 1)]
+    out["os_test_matrix"] = json.dumps(legs, separators=(",", ":"))
     return out
 
 
@@ -625,6 +650,13 @@ VISUAL_BASELINES_ENV = "CI_VISUAL_BASELINES"
 # report into the coverage directory even when tests fail.
 NEXTEST_JUNIT_PROFILE = "ci"
 NEXTEST_JUNIT_DIR = "target/nextest/ci"
+# The nextest profile (.config/nextest.toml) of the `test-os` job's
+# `rust_test` runs on Windows and macOS: no fail-fast, one retry, and a test
+# still running after ten minutes is stopped (see _nextest_mode).
+NEXTEST_OS_PROFILE = "ci-os"
+# Set to "1" by the `test-os` job: its `rust_test` run uses
+# NEXTEST_OS_PROFILE (see _nextest_mode). Any other value is refused.
+OS_SUITE_ENV = "CI_OS_SUITE"
 
 
 def _db_testkit(ctx: Context) -> tuple[Command, dict[str, str]]:
@@ -1272,7 +1304,12 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         if os.environ.get("BOOKCLERK_SKIP_WORKERD"):
             raise ExecError("CI must run the workerd contract (do not set BOOKCLERK_SKIP_WORKERD)")
         env = {**runtime_env, "BOOKCLERK_REQUIRE_TEST_GUESTS": "1"}
-        failure_mode = _nextest_mode(event)
+        os_suite = os.environ.get(OS_SUITE_ENV, "")
+        if os_suite not in ("", "1"):
+            raise ExecError(f"{OS_SUITE_ENV} must be 1 or unset, not {os_suite!r}")
+        if os_suite and _coverage_report("rust") is not None:
+            raise ExecError(f"{OS_SUITE_ENV} runs without coverage (unset {COVERAGE_DIR_ENV})")
+        failure_mode = _nextest_mode(event, bool(os_suite))
         cmds: list[Command] = []
         part = test_part()
         if part is not None and part[1] > 1 and not params.get("workspace"):
@@ -1344,6 +1381,11 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             cmds.append(Command("bench targets build", ["cargo", "bench", *_pkg_args(params["benches"]), "--benches", "--no-run"]))
         if params.get("examples") and first:
             cmds.append(Command("example targets build", ["cargo", "build", *_pkg_args(params["examples"]), "--examples"]))
+        if os_suite:
+            # The report-only suite wants every failure in one run, so a
+            # failing test command lets the custom harnesses and feature runs
+            # after it still run; the check fails at the end.
+            cmds = [replace(c, keep_going=True) for c in cmds]
         return cmds
     if check == "e2e":
         env = {
@@ -1741,6 +1783,7 @@ def run_check(
         print(f"::notice::{check}: the saved dependency cache is current; nothing to build")
     if prereqs_only:
         commands = [(key, cmd) for key, cmd in commands if key]
+    failed: list[str] = []
     for key, cmd in commands:
         env_note = " ".join(f"{k}={v}" for k, v in sorted(cmd.env.items()) if k != "PATH")
         line = f"{cmd.label}: {' '.join(cmd.argv)}" + (f"  [{env_note}]" if env_note else "")
@@ -1754,11 +1797,20 @@ def run_check(
         print(f"::group::{line}", flush=True)
         try:
             _run_one(cmd, ctx)
+        except ExecError as err:
+            # Prerequisites (keyed) always stop the check.
+            if key or not cmd.keep_going:
+                raise
+            print(f"::error::{err}", flush=True)
+            failed.append(str(err))
+            continue
         finally:
             print("::endgroup::", flush=True)
         if marker is not None:
             markers.mkdir(parents=True, exist_ok=True)
             marker.write_text(line + "\n", encoding="utf-8")
+    if failed:
+        raise ExecError(f"{check}: {len(failed)} command(s) failed: " + "; ".join(failed))
 
 
 # ---------------------------------------------------------------------------
@@ -1906,6 +1958,7 @@ def artifact_summary(artifact: Mapping[str, Any]) -> str:
 __all__ = [
     "ARTIFACT_NAME",
     "DRAFT_JOBS",
+    "OS_TEST_PARTS",
     "QUEUE_ONLY_CHECKS",
     "BUILD_ONLY_HOSTED_CHECKS",
     "BUILD_ONLY_CACHE",

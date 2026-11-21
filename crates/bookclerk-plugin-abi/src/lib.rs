@@ -5,7 +5,7 @@
 //! `describe()` advertises typed [`PluginCapabilities`], then
 //! `open(invocation, bindings)` returns the exported [`Entrypoints`]
 //! (`storefront`, `storage`, `databaseAdapter`, `remoteLibrary`, `cli`,
-//! `oidc`, `metadata`, `covers`, `metadataFiles`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
+//! `oidc`, `metadata`, `covers`, `metadataFiles`, `notifier`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
 //! [`Bindings`] carry `CONFIG` / `SECRETS`, the `EVENTS` publisher, and named
 //! `[[databases]]` sessions — the Workers `env` idiom.
 //!
@@ -48,6 +48,7 @@
 //! | --- | --- |
 //! | [`metadata_files`] | Checks on `metadataFiles` requests and the records dialects return |
 //! | [`methods`] | Capability / consent method name constants (`login`, `event`, …) |
+//! | [`notifications`] | Checks on notification messages, addresses, raises and notifier replies |
 //! | Crate-root DTOs | [`PluginDescribe`], health, CLI, destination objects |
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
 //! | [`settings_schema`] | `[[settings]]` operator settings schema shared by manifest and host |
@@ -89,6 +90,7 @@ pub mod media;
 pub mod metadata_files;
 pub mod methods;
 pub mod network_grant;
+pub mod notifications;
 pub mod package_version;
 mod plugin_migration;
 mod roles;
@@ -250,8 +252,8 @@ pub use db_stream::{
 pub use features::{
     negotiate_rpc_features, RpcFeature, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_CHANGES,
     FEATURE_STORAGE_CONDITIONAL_WRITE, FEATURE_STORAGE_COPY, FEATURE_STORAGE_DELETE_MANY,
-    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, FEATURE_STREAMS,
-    STORAGE_OPERATION_FEATURES,
+    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY,
+    FEATURE_STORAGE_TRANSLATE_KEYS, FEATURE_STREAMS, STORAGE_OPERATION_FEATURES,
 };
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
@@ -259,7 +261,9 @@ pub use limits::{
     MAX_CRON_BYTES, MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES,
     MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_METADATA_AUDIO_FILES,
     MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
-    MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_PLUGIN_MIGRATION_OPS,
+    MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_NOTIFICATION_FIELDS,
+    MAX_NOTIFICATION_FIELD_BYTES, MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES,
+    MAX_NOTIFICATION_TITLE_BYTES, MAX_NOTIFIER_ADDRESS_BYTES, MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
     MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
     MAX_SOCKETS_PER_INSTANCE, MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES,
@@ -283,10 +287,10 @@ pub use roles::{
     hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,
     ByteRange, Cancellation, ContentSource, CoverFetcher, Database, Destination, Entrypoints,
     EventConsumer, EventPublisher, GuestDatabase, JobController, JobRunner, KvNamespace,
-    MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc,
-    PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
-    ScheduledHandler, SocketHandler, Sockets, Source, PURCHASE_HINTS_BUDGET,
-    PURCHASE_HINTS_CONCURRENCY,
+    MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel,
+    NotificationRaiser, Notifier, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer,
+    QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source,
+    PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
@@ -296,10 +300,11 @@ pub use rpc::{
     roundtrip_socket_message, serve_plugin, serve_plugin_stdio, serve_socket_broker,
     ContentSourceClient, CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer,
     EventConsumerClient, EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings,
-    JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient, OidcClient,
-    OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer, QueueConsumerClient,
-    QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient, SocketCodec,
-    SocketHandlerClient, SocketWireMessage, SocketsClient, SourceClient, SourceServer,
+    JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient,
+    NotificationRaiserClient, NotifierClient, OidcClient, OpenedEntrypoints, PluginCliClient,
+    PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
+    ScheduledHandlerClient, SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient,
+    SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,
@@ -319,9 +324,10 @@ pub use settings_schema::{
 pub use storage_ops::{
     decode_storage_reply_bytes, encode_storage_reply_bytes, require_batch_len,
     validate_changes_page, validate_head_many, validate_key_outcomes, validate_move_many_page,
-    ChangesPage, ChangesRequest, KeyOutcome, KeyPair, MoveManyPage, MoveManyRequest,
-    MoveManyTarget, MoveOptions, MoveResult, ObjectChange, ObjectChangeKind, StorageReply,
-    StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
+    validate_translated_keys, ChangesPage, ChangesRequest, KeyOutcome, KeyPair, MoveManyPage,
+    MoveManyRequest, MoveManyTarget, MoveOptions, MoveResult, ObjectChange, ObjectChangeKind,
+    StorageReply, StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
+    MAX_TRANSLATED_KEY_BYTES,
 };
 
 /// Embedded JSON Schema for install `plugin.toml` files (shared with language

@@ -40,6 +40,7 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk nodes`](#bookclerk-nodes): Library nodes: liveness, capacity, budgets, and placement labels
 - [`bookclerk users`](#bookclerk-users): The library's people: patron scopes and member controls
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
+- [`bookclerk media`](#bookclerk-media): What this build's media worker reads and writes
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
 - [`bookclerk version`](#bookclerk-version): Print version information
@@ -56,10 +57,12 @@ Commands:
 
 - [`bookclerk library accounts`](#bookclerk-library-accounts): List configured bookstore accounts
 - [`bookclerk library set-scan`](#bookclerk-library-set-scan): Enable or disable an account for library scans (GUI: Include in library scan)
+- [`bookclerk library set-pace`](#bookclerk-library-set-pace): Show or set how fast Bookclerk downloads from an account when it starts the downloads itself (auto-acquire, upgrades, requests from other libraries). With no option, prints the account's pace
 - [`bookclerk library status`](#bookclerk-library-status): Show token validity / refresh health across sources
 - [`bookclerk library revoke-account`](#bookclerk-library-revoke-account): Remove store credentials but keep acquired books and account rows
 - [`bookclerk library scan`](#bookclerk-library-scan): Sync the library from the content sources: queues one scan job per account (every scan-enabled account when none is named) for a bookclerkd node to run, and waits for them
 - [`bookclerk library acquire`](#bookclerk-library-acquire): Download + decrypt + store titles: queues one acquire job per title id (or one for every pending title) for a bookclerkd node to run, and waits for them. `--dry-run` only prints planned keys, here
+- [`bookclerk library upload`](#bookclerk-library-upload): Upload files, folders or ZIP / tar archives to a running bookclerkd as one upload, then wait for the ingest job
 - [`bookclerk library set-status`](#bookclerk-library-set-status): Match storage files to library rows and update acquire status
 - [`bookclerk library get-license`](#bookclerk-library-get-license): Fetch a content license for an ASIN
 - [`bookclerk library search`](#bookclerk-library-search): Search the library's works by title, people, series or store id
@@ -97,6 +100,27 @@ Options:
 
 - `--source <SOURCE>`: Content source, when the same account id exists on several plugins
 - `--scan <SCAN>`: Include this account when scanning (default: true) (one of `true`, `false`)
+
+### `bookclerk library set-pace`
+
+Show or set how fast Bookclerk downloads from an account when it starts the downloads itself (auto-acquire, upgrades, requests from other libraries). With no option, prints the account's pace
+
+```text
+bookclerk library set-pace [OPTIONS] <ACCOUNT>
+```
+
+Arguments:
+
+- `<ACCOUNT>`: Account id, auth-file stem, or nickname
+
+Options:
+
+- `--source <SOURCE>`: Content source, when the same account id exists on several plugins
+- `--per-day <PER_DAY>`: Downloads allowed in any rolling 24 hours (1 to 10000)
+- `--gap-seconds <GAP_SECONDS>`: Seconds between two downloads (0 to 86400)
+- `--unlimited`: No daily budget and no gap (a store's cool-down still applies)
+- `--default`: Go back to the storefront's declared pace
+- `--clear-cooldown`: End the cool-down the store asked for
 
 ### `bookclerk library status`
 
@@ -169,6 +193,25 @@ Options:
 - `-f, --force`: Re-download even when matching media already exists in storage
 - `-p, --pdf`: Download companion PDF only
 - `--no-wait`: Queue the acquire jobs and print their ids without waiting for a bookclerkd node to run them
+
+### `bookclerk library upload`
+
+Upload files, folders or ZIP / tar archives to a running bookclerkd as one upload, then wait for the ingest job.
+
+Each folder keeps its name and layout; symbolic links are skipped. The books are held by the library's first active Owner. Unidentified books are stored for an Administrator to review.
+
+```text
+bookclerk library upload [OPTIONS] <PATH>...
+```
+
+Arguments:
+
+- `<PATH>...`: Files, folders and archives to upload
+
+Options:
+
+- `--no-wait`: Commit the upload and print its job id without waiting for the ingest job
+- `--resume <UPLOAD_ID>`: Continue an earlier upload of the same paths that did not finish, from the bytes the daemon already holds
 
 ### `bookclerk library set-status`
 
@@ -2004,6 +2047,26 @@ bookclerk queues inspect [OPTIONS] <NAME>
 Arguments:
 
 - `<NAME>`: Queue name (`core.events` is the domain-event bus)
+
+## `bookclerk media`
+
+What this build's media worker reads and writes
+
+```text
+bookclerk media [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk media capabilities`](#bookclerk-media-capabilities): List the audio codecs, file types and output formats this build's media worker handles (the daemon's `GET /api/status/media`)
+
+### `bookclerk media capabilities`
+
+List the audio codecs, file types and output formats this build's media worker handles (the daemon's `GET /api/status/media`)
+
+```text
+bookclerk media capabilities [OPTIONS]
+```
 
 ## `bookclerk login`
 

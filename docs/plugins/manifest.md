@@ -222,6 +222,35 @@ fetches = ["audio"]           # what fetchTitle can deliver
 `describe()` returns the same declaration, and the host refuses records
 outside it. See [Declaring media](abi.md#declaring-media) for the rules.
 
+### `[acquire]` (download pace)
+
+A storefront can say how fast Bookclerk should download from one store
+account. The table is optional, and only a plugin with the `storefront`
+entrypoint may carry it.
+
+```toml
+[acquire]
+downloads_per_day = 100   # 1 to 10000, over a rolling 24 hours
+min_gap_seconds = 30      # 0 to 86400, between two downloads
+cooldown_seconds = 86400  # 1 to 604800, pause after the store says slow down
+```
+
+- `downloads_per_day`: how many downloads Bookclerk starts on its own for
+  one account in any 24 hours. Leave it out for no daily limit.
+- `min_gap_seconds`: the shortest time between two downloads Bookclerk
+  starts on its own. Leave it out for no gap.
+- `cooldown_seconds`: how long the account rests after `fetchTitle` fails
+  with `rate_limited` and no `retryAfterMs`. It defaults to one hour. When
+  the store sends `retryAfterMs`, the account rests that long instead (at
+  most a week).
+
+The pace holds only downloads Bookclerk starts itself: auto-acquire and
+requests from other libraries. A download a person starts is counted
+toward the day but never held. The account's person (on **Accounts**) or
+the operator (`bookclerk library set-pace`) can replace the declared pace
+for one account with a custom pace or no limit. See
+[Download pacing](../internals/jobs.md#download-pacing).
+
 ### `[metadata_files]` (metadata file dialects)
 
 A plugin with the `metadataFiles` entrypoint lists the file formats it
@@ -268,6 +297,67 @@ credit_roles = ["author", "narrator"]
 The host refuses a parsed record that states anything outside its row.
 See [Metadata file dialects](abi.md#metadata-file-dialects) for the
 methods and limits.
+
+### `[notifier]` (notifiers)
+
+A plugin with the `notifier` entrypoint says what it sends to. The table
+is required for that entrypoint, and every other plugin must leave it out.
+
+```toml
+entrypoints = ["notifier"]
+
+[notifier]
+destinations = ["channel", "personal"]
+account_mail = true
+formats = ["text", "html"]
+
+[[notifier.address_fields]]
+key = "email"
+label = "Email address"
+required = true
+```
+
+- `destinations`: `channel` (one shared target the operator sets up in
+  the instance's settings, such as a Slack webhook) and `personal` (each
+  patron's own address). At least one, no repeats.
+- `account_mail`: whether the plugin can carry account mail (invites,
+  password resets, recovery notices). It needs a required, non-secret
+  `email` address field. Defaults to false.
+- `formats`: the bodies the service shows, from `text`, `markdown` and
+  `html`. Must include `text`. Defaults to `["text"]`.
+- `[[notifier.address_fields]]`: the fields of a personal address, at most
+  16, required exactly when `destinations` names `personal`. `key` is
+  `[a-z][a-z0-9_]{0,63}` and unique; `label` is shown to the patron;
+  `required` and `secret` default to false. At least one field is
+  required. A `secret` value (a personal token) is sealed at rest and never
+  shown again.
+
+See [Notifiers](abi.md#notifiers) for the methods and limits.
+
+### `[[notifications.types]]` (notifications a plugin raises)
+
+Any plugin may declare the notification types it raises through
+`env.NOTIFY`. Declaring one grants the `NOTIFY` binding, so no other
+binding may be named `NOTIFY`.
+
+```toml
+[[notifications.types]]
+id = "sync_failed"
+audience = "operational"
+severity = "warning"
+title = "Library sync failed"
+```
+
+- `id`: `[a-z][a-z0-9_]{0,63}`, unique within the plugin. The host names
+  the type `<plugin id>:<id>` in routing rules.
+- `audience`: `operational` (routed by the administrators to library
+  channels) or `patron` (sent to the one patron a raise names, by that
+  patron's preferences). `account` is reserved to Bookclerk.
+- `severity`: `info`, `warning` or `critical`.
+- `title`: one line of 1 to 256 bytes, shown in notification settings.
+
+At most 64 types. See [Raising notifications](abi.md#raising-notifications)
+for the binding.
 
 ### `command` (native)
 

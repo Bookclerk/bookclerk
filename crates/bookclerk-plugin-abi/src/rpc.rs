@@ -69,7 +69,8 @@ use crate::plugin_capnp::{
     guest_database as guest_database_capnp, handle_reply, head_reply, health_reply, job_invocation,
     job_outcome, job_runner as job_runner_capnp, kv_namespace as kv_namespace_capnp, list_reply,
     metadata_files as metadata_files_capnp, metadata_provider as metadata_provider_capnp,
-    object_metadata, oidc as oidc_capnp, oidc_client_template, oidc_clients_reply, open_reply,
+    notification_raiser as notification_raiser_capnp, notifier as notifier_capnp, object_metadata,
+    oidc as oidc_capnp, oidc_client_template, oidc_clients_reply, open_reply,
     plugin_cli as plugin_cli_capnp, plugin_describe, plugin_error, plugin_migration,
     plugin_migration_op, plugin_migrations_ok, plugin_migrations_reply, plugin_worker,
     progress_sink, pull_reply, put_reply, queue_consumer as queue_consumer_capnp,
@@ -82,8 +83,9 @@ use crate::roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
     JobController, JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding,
-    NamedQueueBinding, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer,
-    QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, Source,
+    NamedQueueBinding, NeverCancel, NotificationRaiser, Notifier, Oidc, PluginCli, PluginWorker,
+    ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler,
+    Source,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
@@ -1412,6 +1414,30 @@ impl dest_iface::Server for DestinationServer {
         Ok(())
     }
 
+    async fn translate_keys(
+        self: Rc<Self>,
+        params: dest_iface::TranslateKeysParams,
+        mut results: dest_iface::TranslateKeysResults,
+    ) -> capnp::Result<()> {
+        let keys = read_key_list("translateKeys", params.get()?.get_keys()?);
+        let result = results.get().init_result();
+        let outcome = match keys {
+            Ok(keys) => self.inner.translate_keys(keys).await,
+            Err(err) => Err(err),
+        };
+        match outcome {
+            Ok(keys) => {
+                if let Err(err) =
+                    crate::storage_ops::fill_translate_keys_result(result.init_ok(), &keys)
+                {
+                    return Err(capnp::Error::failed(err.to_string()));
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
     async fn changes(
         self: Rc<Self>,
         params: dest_iface::ChangesParams,
@@ -1759,6 +1785,31 @@ impl Destination for DestinationClient {
         Ok(objects)
     }
 
+    async fn translate_keys(&self, keys: Vec<String>) -> Result<Vec<String>> {
+        crate::storage_ops::require_batch_len("translateKeys", keys.len())?;
+        let mut req = self.client.translate_keys_request();
+        fill_key_list(
+            req.get().init_keys(capnp_u32_len(keys.len(), "key list")?),
+            &keys,
+        )?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        let translated = match result.which().map_err(from_capnp)? {
+            crate::plugin_capnp::translate_keys_reply::Ok(r) => {
+                crate::storage_ops::read_translate_keys_result(r.map_err(from_capnp)?)?
+            }
+            crate::plugin_capnp::translate_keys_reply::Err(err) => {
+                return Err(read_error(err.map_err(from_capnp)?))
+            }
+        };
+        crate::storage_ops::validate_translated_keys(&keys, &translated)?;
+        Ok(translated)
+    }
+
     async fn changes(&self, request: crate::ChangesRequest) -> Result<crate::ChangesPage> {
         let mut req = self.client.changes_request();
         crate::storage_ops::fill_changes_request(req.get().init_request(), &request);
@@ -2077,6 +2128,11 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
     } else {
         crate::NetworkGrant::default()
     };
+    let notify: Option<Box<dyn NotificationRaiser>> = if b.has_notify() {
+        Some(Box::new(NotificationRaiserClient::new(b.get_notify()?)))
+    } else {
+        None
+    };
     Ok(Bindings {
         config,
         secrets,
@@ -2089,6 +2145,7 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
         queues,
         kv,
         sockets,
+        notify,
     })
 }
 
@@ -2164,6 +2221,11 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
     }
     if let Some(x) = eps.metadata_files {
         b.set_metadata_files(capnp_rpc::new_client(MetadataFilesServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.notifier {
+        b.set_notifier(capnp_rpc::new_client(NotifierServer {
             inner: Arc::from(x),
         }));
     }
@@ -3119,6 +3181,67 @@ impl metadata_files_capnp::Server for MetadataFilesServer {
     }
 }
 
+/// Serves a guest's [`Notifier`] as the Cap'n Proto `Notifier`.
+struct NotifierServer {
+    /// The guest implementation every method forwards to.
+    inner: Arc<dyn Notifier>,
+}
+
+impl notifier_capnp::Server for NotifierServer {
+    async fn health(
+        self: Rc<Self>,
+        _params: notifier_capnp::HealthParams,
+        mut results: notifier_capnp::HealthResults,
+    ) -> capnp::Result<()> {
+        write_health_reply(results.get().init_result(), self.inner.health().await);
+        Ok(())
+    }
+
+    async fn send(
+        self: Rc<Self>,
+        params: notifier_capnp::SendParams,
+        mut results: notifier_capnp::SendResults,
+    ) -> capnp::Result<()> {
+        let params = crate::generated::read_notify_send_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.send(params).await;
+        crate::generated::write_notify_send_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn validate_destination(
+        self: Rc<Self>,
+        params: notifier_capnp::ValidateDestinationParams,
+        mut results: notifier_capnp::ValidateDestinationResults,
+    ) -> capnp::Result<()> {
+        let params = crate::generated::read_notify_validate_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.validate_destination(params).await;
+        crate::generated::write_notify_validate_reply(results.get().init_result(), &outcome)
+    }
+}
+
+/// Host-side server for the [`NotificationRaiser`] handed to a guest on
+/// `Bindings.notify`. Every raise is checked
+/// ([`crate::notifications::check_raise_params`]) before the host's router
+/// sees it.
+struct NotificationRaiserServer {
+    /// The host router entry every raise forwards to.
+    inner: Arc<dyn NotificationRaiser>,
+}
+
+impl notification_raiser_capnp::Server for NotificationRaiserServer {
+    async fn raise(
+        self: Rc<Self>,
+        params: notification_raiser_capnp::RaiseParams,
+        mut results: notification_raiser_capnp::RaiseResults,
+    ) -> capnp::Result<()> {
+        let params = crate::generated::read_notify_raise_params(params.get()?.get_params()?)?;
+        let outcome = match crate::notifications::check_raise_params(&params) {
+            Ok(()) => self.inner.raise(params).await,
+            Err(err) => Err(err.into()),
+        };
+        crate::generated::write_notify_raise_reply(results.get().init_result(), &outcome)
+    }
+}
+
 /// Serves a guest's [`CoverFetcher`] as the Cap'n Proto `CoverFetcher`.
 struct CoverFetcherServer {
     /// The guest implementation every method forwards to.
@@ -4011,6 +4134,9 @@ pub struct HostBindings {
     pub kv: Vec<(String, String, Arc<dyn KvNamespace>)>,
     /// `SOCKETS` broker link; `None` unless `[sockets]` is granted.
     pub sockets: Option<Arc<dyn crate::Sockets>>,
+    /// `NOTIFY` raiser; `None` unless the manifest declares
+    /// `[[notifications.types]]`.
+    pub notify: Option<Arc<dyn NotificationRaiser>>,
 }
 
 impl HostBindings {
@@ -4026,6 +4152,7 @@ impl HostBindings {
             queues: Vec::new(),
             kv: Vec::new(),
             sockets: None,
+            notify: None,
         }
     }
 }
@@ -4068,6 +4195,8 @@ pub struct OpenedEntrypoints {
     pub socket_handler: Option<SocketHandlerClient>,
     /// `metadataFiles` entrypoint.
     pub metadata_files: Option<MetadataFilesClient>,
+    /// `notifier` entrypoint.
+    pub notifier: Option<NotifierClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -4208,6 +4337,12 @@ impl PluginClient {
                         inner: sockets,
                     }));
             }
+            if let Some(notify) = bindings.notify {
+                b.reborrow()
+                    .set_notify(capnp_rpc::new_client(NotificationRaiserServer {
+                        inner: notify,
+                    }));
+            }
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -4321,6 +4456,11 @@ impl PluginClient {
             },
             metadata_files: if eps.has_metadata_files() {
                 Some(MetadataFilesClient::new(eps.get_metadata_files()?))
+            } else {
+                None
+            },
+            notifier: if eps.has_notifier() {
+                Some(NotifierClient::new(eps.get_notifier()?))
             } else {
                 None
             },
@@ -4714,6 +4854,114 @@ impl MetadataFiles for MetadataFilesClient {
         crate::check_rendered(&rendered)
             .map_err(|err| PluginError::internal(format!("render {}: {err}", params.dialect)))?;
         Ok(rendered)
+    }
+}
+
+/// Cap'n Proto client for [`Notifier`].
+///
+/// The client checks each request before it leaves
+/// ([`crate::notifications::check_send_params`]) and each
+/// `validateDestination` answer before the caller sees it
+/// ([`crate::notifications::check_validated`]): a malformed address is an
+/// `internal` error. A `send` reply comes back as the notifier said it;
+/// the caller turns it into an outcome with
+/// [`crate::notifications::classify_send_reply`].
+#[derive(Clone)]
+pub struct NotifierClient {
+    /// The guest's `Notifier` capability.
+    client: notifier_capnp::Client,
+}
+
+impl NotifierClient {
+    /// Wraps a `Notifier` capability client (any transport that yields one,
+    /// including the bookclerk-workerd `/invoke` hook).
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - The guest's `Notifier` capability.
+    ///
+    /// # Returns
+    ///
+    /// The typed client.
+    #[must_use]
+    pub fn new(client: notifier_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl Notifier for NotifierClient {
+    async fn health(&self) -> Result<HealthOk> {
+        let req = self.client.health_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_health_reply(reply_result!(reply))
+    }
+
+    async fn send(&self, params: crate::NotifySendParams) -> Result<crate::NotifySent> {
+        crate::notifications::check_send_params(&params)?;
+        let mut req = self.client.send_request();
+        crate::generated::write_notify_send_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_notify_send_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+
+    async fn validate_destination(
+        &self,
+        params: crate::NotifyValidateParams,
+    ) -> Result<crate::NotifyValidated> {
+        crate::notifications::parse_address_document(&params.address_json)?;
+        let mut req = self.client.validate_destination_request();
+        crate::generated::write_notify_validate_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let validated = crate::generated::read_notify_validate_reply(reply_result!(reply))
+            .map_err(from_capnp)??;
+        let address = crate::notifications::check_validated(&validated)
+            .map_err(|err| PluginError::internal(format!("validateDestination: {err}")))?;
+        // Hand back the canonical text, so equal addresses store equal.
+        Ok(crate::NotifyValidated {
+            address_json: address.to_json(),
+            label: validated.label,
+        })
+    }
+}
+
+/// Guest-side client for the host `NOTIFY` binding
+/// ([`NotificationRaiser`]). Raises are checked before they leave, so a
+/// plugin learns of a malformed raise without a round trip; the host
+/// checks again.
+#[derive(Clone)]
+pub struct NotificationRaiserClient {
+    /// The host's `NotificationRaiser` capability.
+    client: notification_raiser_capnp::Client,
+}
+
+impl NotificationRaiserClient {
+    /// Wraps a `NotificationRaiser` capability client.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - The host's `NotificationRaiser` capability.
+    ///
+    /// # Returns
+    ///
+    /// The typed client.
+    #[must_use]
+    pub fn new(client: notification_raiser_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl NotificationRaiser for NotificationRaiserClient {
+    async fn raise(&self, params: crate::NotifyRaiseParams) -> Result<crate::NotifyRaised> {
+        crate::notifications::check_raise_params(&params)?;
+        let mut req = self.client.raise_request();
+        crate::generated::write_notify_raise_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_notify_raise_reply(reply_result!(reply)).map_err(from_capnp)?
     }
 }
 
@@ -8195,6 +8443,280 @@ mod tests {
         assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
     }
 
+    /// Notifier that records the destination and answers by destination
+    /// id: `limited` is rate limited, `bad_label` validates to a label with
+    /// a line break.
+    struct TestNotifier;
+
+    #[async_trait::async_trait(?Send)]
+    impl Notifier for TestNotifier {
+        async fn send(&self, params: crate::NotifySendParams) -> Result<crate::NotifySent> {
+            if params.destination.destination_id == "limited" {
+                return Err(PluginError::rate_limited(
+                    "slow down",
+                    Some(std::time::Duration::from_secs(3)),
+                ));
+            }
+            Ok(crate::NotifySent {
+                provider_id: Some(format!("sent:{}", params.message.title)),
+            })
+        }
+
+        async fn validate_destination(
+            &self,
+            params: crate::NotifyValidateParams,
+        ) -> Result<crate::NotifyValidated> {
+            let label = if params.address_json.contains("bad_label") {
+                "two\nlines".to_string()
+            } else {
+                "a***".to_string()
+            };
+            Ok(crate::NotifyValidated {
+                address_json: params.address_json.to_lowercase(),
+                label: Some(label),
+            })
+        }
+    }
+
+    fn notify_params(destination_id: &str) -> crate::NotifySendParams {
+        crate::NotifySendParams {
+            message: crate::NotificationMessage {
+                notification_id: "n_1".into(),
+                notification_type: "job_failed".into(),
+                title: "Job failed".into(),
+                text: "Scan failed".into(),
+                ..crate::NotificationMessage::default()
+            },
+            destination: crate::NotifyDestination {
+                kind: crate::NotifyDestinationKind::Channel,
+                destination_id: destination_id.into(),
+                address_json: String::new(),
+            },
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn notifier_roundtrip_and_checks() {
+        let client = NotifierClient::new(capnp_rpc::new_client(NotifierServer {
+            inner: Arc::new(TestNotifier),
+        }));
+        assert!(client.health().await.expect("health").ok);
+        let sent = client.send(notify_params("d_1")).await.expect("send");
+        assert_eq!(sent.provider_id.as_deref(), Some("sent:Job failed"));
+        let err = client
+            .send(notify_params("limited"))
+            .await
+            .expect_err("rate limited");
+        assert_eq!(err.code, crate::PluginErrorCode::RateLimited);
+        assert_eq!(
+            err.retry_after(),
+            Some(std::time::Duration::from_secs(3)),
+            "Retry-After survives the wire"
+        );
+        let mut bad = notify_params("d_1");
+        bad.message.title = String::new();
+        let err = client.send(bad).await.expect_err("blank title");
+        assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+
+        let validated = client
+            .validate_destination(crate::NotifyValidateParams {
+                address_json: r#"{"email":"A@Example.com"}"#.into(),
+            })
+            .await
+            .expect("validate");
+        assert_eq!(validated.address_json, r#"{"email":"a@example.com"}"#);
+        let err = client
+            .validate_destination(crate::NotifyValidateParams {
+                address_json: r#"{"email":"bad_label"}"#.into(),
+            })
+            .await
+            .expect_err("label with a line break");
+        assert_eq!(err.code, crate::PluginErrorCode::Internal);
+        let err = client
+            .validate_destination(crate::NotifyValidateParams {
+                address_json: "[1]".into(),
+            })
+            .await
+            .expect_err("not an object");
+        assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn notifier_defaults() {
+        struct Bare;
+        impl Notifier for Bare {}
+        let client = NotifierClient::new(capnp_rpc::new_client(NotifierServer {
+            inner: Arc::new(Bare),
+        }));
+        let err = client.send(notify_params("d_1")).await.expect_err("send");
+        assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
+        let validated = client
+            .validate_destination(crate::NotifyValidateParams {
+                address_json: r#"{"to":"x"}"#.into(),
+            })
+            .await
+            .expect("default accepts");
+        assert_eq!(validated.address_json, r#"{"to":"x"}"#);
+    }
+
+    /// Host raiser that counts raises and names each by its type.
+    struct CountingRaiser(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait(?Send)]
+    impl NotificationRaiser for CountingRaiser {
+        async fn raise(&self, params: crate::NotifyRaiseParams) -> Result<crate::NotifyRaised> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::NotifyRaised {
+                notification_id: format!("n:{}", params.notification_type),
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn raises_are_checked_on_both_sides() {
+        let raiser = Arc::new(CountingRaiser(std::sync::atomic::AtomicUsize::new(0)));
+        let client =
+            NotificationRaiserClient::new(capnp_rpc::new_client(NotificationRaiserServer {
+                inner: raiser.clone(),
+            }));
+        let raised = client
+            .raise(crate::NotifyRaiseParams {
+                notification_type: "sync_failed".into(),
+                ..crate::NotifyRaiseParams::default()
+            })
+            .await
+            .expect("raise");
+        assert_eq!(raised.notification_id, "n:sync_failed");
+        let err = client
+            .raise(crate::NotifyRaiseParams {
+                notification_type: "host:job_failed".into(),
+                ..crate::NotifyRaiseParams::default()
+            })
+            .await
+            .expect_err("qualified type");
+        assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+
+        // A guest that skips the client check still meets the server's.
+        let raw: notification_raiser_capnp::Client =
+            capnp_rpc::new_client(NotificationRaiserServer {
+                inner: raiser.clone(),
+            });
+        let mut req = raw.raise_request();
+        crate::generated::write_notify_raise_params(
+            req.get().init_params(),
+            &crate::NotifyRaiseParams {
+                notification_type: "sync_failed".into(),
+                link_path: Some("https://evil.example".into()),
+                ..crate::NotifyRaiseParams::default()
+            },
+        )
+        .expect("write");
+        let reply = req.send().promise.await.expect("reply");
+        let outcome = crate::generated::read_notify_raise_reply(
+            reply.get().expect("get").get_result().expect("result"),
+        )
+        .expect("read");
+        assert_eq!(
+            outcome.expect_err("bad path").code,
+            crate::PluginErrorCode::InvalidParams
+        );
+        assert_eq!(raiser.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Plugin whose notifier raises a `relayed` notification on its
+    /// `NOTIFY` binding for every send, so one call exercises both the
+    /// entrypoint and the binding over a plugin connection.
+    struct RelayPlugin;
+
+    /// Notifier holding the `NOTIFY` binding it was opened with.
+    struct RelayNotifier(Box<dyn NotificationRaiser>);
+
+    #[async_trait::async_trait(?Send)]
+    impl Notifier for RelayNotifier {
+        async fn send(&self, _params: crate::NotifySendParams) -> Result<crate::NotifySent> {
+            let raised = self
+                .0
+                .raise(crate::NotifyRaiseParams {
+                    notification_type: "relayed".into(),
+                    ..crate::NotifyRaiseParams::default()
+                })
+                .await?;
+            Ok(crate::NotifySent {
+                provider_id: Some(raised.notification_id),
+            })
+        }
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl PluginWorker for RelayPlugin {
+        async fn describe(&self) -> Result<PluginDescribe> {
+            Ok(PluginDescribe {
+                api_version: PRODUCT_API_VERSION,
+                id: "relay_test".into(),
+                capabilities: PluginCapabilities {
+                    entrypoints: vec![Entrypoint::Notifier],
+                    ..PluginCapabilities::default()
+                },
+                rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
+                scalar_limits: ScalarLimits::default().into(),
+                ..PluginDescribe::default()
+            })
+        }
+
+        async fn open(
+            &self,
+            _invocation: Invocation,
+            mut bindings: Bindings,
+        ) -> Result<Entrypoints> {
+            let notify = bindings
+                .notify
+                .take()
+                .ok_or_else(|| PluginError::internal("NOTIFY was not granted"))?;
+            Ok(Entrypoints {
+                notifier: Some(Box::new(RelayNotifier(notify))),
+                ..Entrypoints::default()
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn notifier_and_notify_binding_cross_the_plugin_connection() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (client_end, server_end) = duplex(64 * 1024);
+                let (server_r, server_w) = tokio::io::split(server_end);
+                let (client_r, client_w) = tokio::io::split(client_end);
+                tokio::task::spawn_local(async move {
+                    let _ =
+                        serve_plugin(Arc::new(RelayPlugin), server_r, server_w, 64 * 1024).await;
+                });
+                let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+                tokio::task::spawn_local(rpc);
+                let raiser = Arc::new(CountingRaiser(std::sync::atomic::AtomicUsize::new(0)));
+                let bindings = HostBindings {
+                    notify: Some(raiser.clone()),
+                    ..HostBindings::default()
+                };
+                let opened = client
+                    .open(&Invocation::default(), bindings)
+                    .await
+                    .expect("open");
+                let notifier = opened.notifier.expect("notifier exported");
+                let sent = notifier.send(notify_params("d_1")).await.expect("send");
+                assert_eq!(sent.provider_id.as_deref(), Some("n:relayed"));
+                assert_eq!(raiser.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+                let err = client
+                    .open(&Invocation::default(), HostBindings::default())
+                    .await
+                    .err()
+                    .expect("NOTIFY is null when not granted");
+                assert_eq!(err.code, crate::PluginErrorCode::Internal);
+            })
+            .await;
+    }
+
     /// Cover fetcher that stores each URL's own text as its body, except
     /// URLs containing `missing`, which fail.
     struct TestCovers;
@@ -8968,6 +9490,7 @@ mod tests {
                             queues: Vec::new(),
                             kv: Vec::new(),
                             sockets: None,
+                            notify: None,
                         },
                     )
                     .await

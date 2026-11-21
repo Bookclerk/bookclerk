@@ -88,18 +88,22 @@ const selectClassName =
  * acquire actions. Each book or podcast is one row however many editions
  * and accounts hold it.
  *
- * @param props - Logout, acquire permission, nav, and optional role.
+ * @param props - Logout, acquire permission, nav, optional role, and
+ *   whether a patron elevated to the operator.
  */
 export function LibraryPage({
   onLogout,
   canAcquire,
   nav,
   role,
+  elevated = false,
 }: {
   onLogout: () => void;
   canAcquire: boolean;
   nav: AppNavProps;
   role?: AuthRole;
+  /** Whether the caller is a patron elevated to the operator. */
+  elevated?: boolean;
 }) {
   const [works, setWorks] = useState<WorkSummary[]>([]);
   // False until the first load answers, so the list shows that it is
@@ -349,10 +353,9 @@ export function LibraryPage({
     [status, works],
   );
 
-  // The operator token is no library user, so it has nothing to play as.
-  // The desktop window cannot stream by `Range` over its custom scheme; it
-  // gets its own player, so the web one stays out of it.
-  const canListen = role != null && role !== "operator" && !isDesktopWindow();
+  // The operator is no library user, so it has nothing to play as. In the
+  // desktop window a patron who elevated keeps listening as themselves.
+  const canListen = (role != null && role !== "operator") || (isDesktopWindow() && elevated);
 
   async function onScan() {
     setBusyKey("scan");

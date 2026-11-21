@@ -434,6 +434,55 @@ export interface PortalConnection {
   connection_status: string;
   source_enabled: boolean;
   brand?: PortalBrand;
+  /** How fast Bookclerk downloads from this account when it starts the downloads itself. */
+  pace: PortalPace;
+}
+
+/**
+ * A store account's download pace from `/api/portal/connections`: the limits
+ * in force for downloads Bookclerk starts itself (auto-acquire, upgrades,
+ * requests from other libraries). Downloads a person starts are counted but
+ * never held.
+ */
+export interface PortalPace {
+  /** `default` (the store's pace), `custom` or `unlimited`. */
+  mode: PortalPaceMode;
+  /** Downloads allowed in any rolling 24 hours; `null` for no daily budget. */
+  downloads_per_day: number | null;
+  /** Seconds between two downloads. */
+  min_gap_seconds: number;
+  /** The store's declared daily budget; `null` when none or its plugin isn't deployed here. */
+  store_downloads_per_day: number | null;
+  /** The store's declared gap; `null` when its plugin isn't deployed here. */
+  store_min_gap_seconds: number | null;
+  /** The custom daily budget, when `mode` is `custom`. */
+  custom_downloads_per_day: number | null;
+  /** The custom gap, when `mode` is `custom`. */
+  custom_min_gap_seconds: number | null;
+  /** Downloads from this account in the last 24 hours. */
+  downloads_last_day: number;
+  /** End of the store's cool-down (RFC 3339), when one is running. */
+  cooldown_until: string | null;
+  /** When the next automatic download may start (RFC 3339); `null` for now. */
+  next_automatic_at: string | null;
+}
+
+/** How a store account's pace is set. */
+export type PortalPaceMode = "default" | "custom" | "unlimited";
+
+/** Body of {@link portalSetConnectionPace}. */
+export interface PortalPaceChange {
+  /**
+   * `default`, `custom` or `unlimited`. Leave it out to only end the
+   * cool-down (with `clear_cooldown: true`) and keep the stored pace.
+   */
+  mode?: PortalPaceMode;
+  /** Custom downloads per rolling 24 hours (1 to 10000); `custom` only. */
+  downloads_per_day?: number;
+  /** Custom seconds between downloads (0 to 86400); `custom` only. */
+  min_gap_seconds?: number;
+  /** Also end a cool-down the store asked for. */
+  clear_cooldown?: boolean;
 }
 
 /**
@@ -3387,6 +3436,32 @@ export async function portalConnections(): Promise<PortalConnection[]> {
   const res = await fetch("/api/portal/connections", { credentials: "include" });
   const body = await parseJson<{ connections: PortalConnection[] }>(res);
   return body.connections;
+}
+
+/**
+ * Changes how fast Bookclerk downloads from one of the caller's store accounts
+ * when it starts the downloads itself.
+ *
+ * @param source - Source id or PluginKey from {@link portalConnections}.
+ * @param accountId - Store account id from {@link portalConnections}.
+ * @param change - The new pace, and whether to end the store's cool-down.
+ * @returns The account's pace as it now stands.
+ */
+export async function portalSetConnectionPace(
+  source: string,
+  accountId: string,
+  change: PortalPaceChange,
+): Promise<PortalPace> {
+  const res = await fetch(
+    `/api/portal/sources/${encodeURIComponent(source)}/connections/${encodeURIComponent(accountId)}/pace`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(change),
+    },
+  );
+  return parseJson<PortalPace>(res);
 }
 
 /**

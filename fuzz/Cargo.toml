@@ -32,6 +32,7 @@ bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-tags = { path = "../crates/bookclerk-tags" }
+bookclerk-archive = { path = "../crates/bookclerk-archive" }
 # media_decode drives the media worker's demux and decode path.
 bookclerk-media = { path = "../crates/bookclerk-media" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
@@ -172,6 +173,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "notifier_reply"
+path = "fuzz_targets/notifier_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notify_raise"
+path = "fuzz_targets/notify_raise.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "event_read"
 path = "fuzz_targets/event_read.rs"
 test = false
@@ -298,6 +313,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "media_pcm_wire"
+path = "fuzz_targets/media_pcm_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tags_read"
 path = "fuzz_targets/tags_read.rs"
 test = false
@@ -354,6 +376,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "upload_part"
+path = "fuzz_targets/upload_part.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "copy_answer"
 path = "fuzz_targets/copy_answer.rs"
 test = false
@@ -405,6 +434,13 @@ bench = false
 [[bin]]
 name = "job_cap_request"
 path = "fuzz_targets/job_cap_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pace_request"
+path = "fuzz_targets/pace_request.rs"
 test = false
 doc = false
 bench = false
@@ -480,6 +516,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "download_resume"
+path = "fuzz_targets/download_resume.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "throttle_reason"
+path = "fuzz_targets/throttle_reason.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "graphicaudio_catalog"
 path = "fuzz_targets/graphicaudio_catalog.rs"
 test = false
@@ -503,6 +553,27 @@ bench = false
 [[bin]]
 name = "s3_event"
 path = "fuzz_targets/s3_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_extract"
+path = "fuzz_targets/archive_extract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_report"
+path = "fuzz_targets/archive_report.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "upload_manifest"
+path = "fuzz_targets/upload_manifest.rs"
 test = false
 doc = false
 bench = false
