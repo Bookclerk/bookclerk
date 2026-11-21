@@ -292,23 +292,23 @@ pub use roles::{
     EventConsumer, EventPublisher, GuestDatabase, JobController, JobRunner, KvNamespace,
     MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel,
     NotificationRaiser, Notifier, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer,
-    QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source, WebhookHandler, Webhooks,
-    PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
+    QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source,
+    WebhookHandler, Webhooks, PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
 pub use rpc::{
     byte_source_from_async_read, connect_plugin, connect_socket_broker, decode_empty_reply_bytes,
     decode_plugin_error_bytes, pull_byte_source_to_writer, roundtrip_event_read_message,
-    roundtrip_socket_message, serve_plugin, serve_plugin_stdio, serve_socket_broker,
-    ContentSourceClient, CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer,
-    EventConsumerClient, EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings,
-    JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient,
-    NotificationRaiserClient, NotifierClient, OidcClient, OpenedEntrypoints, PluginCliClient,
-    PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
-    ScheduledHandlerClient, SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient,
-    WebhookCodec, WebhookHandlerClient, WebhookWireMessage, WebhooksClient, roundtrip_webhook_message,
-    SourceClient, SourceServer,
+    roundtrip_socket_message, roundtrip_webhook_message, serve_plugin, serve_plugin_stdio,
+    serve_socket_broker, ContentSourceClient, CoverFetcherClient, DatabaseClient,
+    DestinationClient, DestinationServer, EventConsumerClient, EventPublisherClient,
+    EventReadCodec, EventReadMessage, HostBindings, JobRunnerClient, KvNamespaceClient,
+    MetadataFilesClient, MetadataProviderClient, NotificationRaiserClient, NotifierClient,
+    OidcClient, OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer,
+    QueueConsumerClient, QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient,
+    SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient, SourceClient, SourceServer,
+    WebhookCodec, WebhookHandlerClient, WebhookWireMessage, WebhooksClient,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

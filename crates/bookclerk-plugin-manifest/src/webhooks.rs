@@ -362,7 +362,9 @@ secret_setting = "webhook_secret"
         let bad = |edit: &str| {
             let text = B2.replace("name = \"b2-events\"", edit);
             let rows = parse(&text).expect("parse");
-            validate_webhooks(&rows, secret).expect_err(edit).to_string()
+            validate_webhooks(&rows, secret)
+                .expect_err(edit)
+                .to_string()
         };
         assert!(bad("name = \"B2\"").contains("name"));
         assert!(bad("name = \"a\"\nmax_body_bytes = 0").contains("max_body_bytes"));

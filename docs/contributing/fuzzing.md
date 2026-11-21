@@ -57,6 +57,9 @@ boundary extends it.
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
 | `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
+| `webhook_route` | A workerd plugin's `env.WEBHOOKS` calls on the granted reverse channel: the `POST /webhooks/<op>` JSON body for `url`, `pull` and `ack` | `bookclerk-workerd::granted_webhooks` |
+| `webhook_message` | The Cap'n Proto `Webhooks` messages a native plugin sends the host (pull and ack requests) and the deliveries the host hands out | `bookclerk-plugin-abi::webhooks` |
+| `webhook_request` | A request on the public webhook route `POST /hooks/<token>/<name>` from anyone on the Internet: its body, headers and HMAC-SHA256 signature | `bookclerk-workerd::webhook_request` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
@@ -507,6 +510,31 @@ only that. The others check:
   accepted call written back out in the route's form parses the same way.
   The shared oracle is `fuzz/oracles/socket_route.rs`, replayed from
   `bookclerk-workerd`.
+- **`webhook_route`**: the first byte picks the operation and the rest is
+  the JSON body. An unknown operation is refused as not found, and nothing
+  else is; a body that is not a JSON object, or that carries a field the
+  operation does not define, is refused as invalid; every accepted call is
+  inside restated ABI rules (names, batch size, visibility timeout, lease
+  ids, list sizes, no lease both acknowledged and retried); and an
+  accepted call written back out in the route's form parses the same way.
+  The shared oracle is `fuzz/oracles/webhook_route.rs`, replayed from
+  `bookclerk-workerd`.
+- **`webhook_message`**: byte 0 picks a pull request, an ack request or a
+  delivery, and the rest is the Cap'n Proto message. What decodes
+  re-encodes to an equal value, and the host's pull and ack checks accept
+  a request exactly when it is inside the rules the oracle restates. The
+  shared oracle is `fuzz/oracles/webhook_message.rs`, replayed from
+  `bookclerk-plugin-abi`.
+- **`webhook_request`**: byte 0 picks the row's signature rule and whether
+  the oracle adds a correct signature; the rest is the secret, the body
+  and header pairs. A body over the cap is refused as too large before
+  anything else; a signed row without a secret is unavailable; a signed
+  request is accepted only when its one signature header carries the
+  HMAC-SHA256 the oracle computes from SHA-256 alone (RFC 2104), and the
+  correct signature is accepted unless a header repeats or is malformed;
+  and the kept headers are exactly the ones sent among `content-type` and
+  the row's list, unchanged and well formed. The shared oracle is
+  `fuzz/oracles/webhook_request.rs`, replayed from `bookclerk-workerd`.
 - **`guest_sql_authz`**: every table, column, function and schema action
   that SQLite's own authorizer reports for an admitted statement is inside
   the policy. The shared oracle is `fuzz/oracles/guest_sql_authz.rs`,

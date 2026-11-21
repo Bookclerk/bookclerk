@@ -1311,6 +1311,7 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         "media.isolation" => config.media.isolation.as_str().to_string(),
         "media.worker_bin" => helper_bin(&config.media.worker_bin),
         "plugins.isolation" => config.plugins.isolation.as_str().to_string(),
+        "plugins.webhooks" => config.plugins.webhooks.as_str().to_string(),
         "plugins.jail_bin" => helper_bin(&config.plugins.jail_bin),
         "daemon.listen" => config.daemon.listen.join_comma(),
         "daemon.json_logs" => config.daemon.json_logs.to_string(),

@@ -75,8 +75,7 @@ pub const MAX_WEBHOOK_HEADERS: u32 = crate::plugin_capnp::MAX_WEBHOOK_HEADERS;
 pub const MAX_WEBHOOK_NAME_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_NAME_BYTES;
 
 /// Longest kept request header value, in bytes.
-pub const MAX_WEBHOOK_HEADER_VALUE_BYTES: u32 =
-    crate::plugin_capnp::MAX_WEBHOOK_HEADER_VALUE_BYTES;
+pub const MAX_WEBHOOK_HEADER_VALUE_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_HEADER_VALUE_BYTES;
 
 /// Most URLs in one `CoverFetcher.fetchCovers` call.
 pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;

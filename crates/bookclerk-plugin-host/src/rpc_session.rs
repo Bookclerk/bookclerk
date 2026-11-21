@@ -92,6 +92,9 @@ type NotifierCall = EntrypointCall<dyn bookclerk_plugin_sdk::Notifier>;
 /// Typed call against the opened `socketHandler` entrypoint.
 type SocketHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::SocketHandler>;
 
+/// Typed call against the opened `webhookHandler` entrypoint.
+type WebhookHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::WebhookHandler>;
+
 /// `!Send` boxed future pinned for the vat's `LocalSet`.
 type LocalBoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
@@ -211,6 +214,11 @@ enum Work {
     SocketHandler {
         /// Typed call; replies through the sender it captured.
         call: SocketHandlerCall,
+    },
+    /// One `WebhookHandler.delivered` wake on the opened primary entrypoints.
+    WebhookHandler {
+        /// Typed call; replies through the sender it captured.
+        call: WebhookHandlerCall,
     },
     /// One typed `remoteLibrary` method on the opened primary entrypoints.
     RemoteLibrary {
@@ -605,6 +613,11 @@ pub struct SessionServices {
     /// the covering grant has the `sockets` token; `None` never exposes
     /// `SOCKETS`.
     pub sockets: Option<crate::SocketBroker>,
+    /// The deployed instance whose inbound webhooks back the `WEBHOOKS`
+    /// binding. The session hands the binding out only when the manifest
+    /// declares `[[webhooks]]`, the covering grant has the `webhooks` token
+    /// and the library store is attached; `None` never exposes `WEBHOOKS`.
+    pub webhooks: Option<bookclerk_library::control_plane::PluginInstanceId>,
 }
 
 impl SessionServices {
@@ -851,6 +864,14 @@ impl PluginSession {
             .event_outbox
             .clone()
             .and_then(|store| QueueOutbox::new(store, &id, &manifest, &grant));
+        // `WEBHOOKS` needs the library, the deployed instance, a
+        // `[[webhooks]]` row and the `webhooks` grant token.
+        let webhooks = crate::webhook_binding::granted(
+            services.event_outbox.clone(),
+            services.webhooks.clone(),
+            &manifest,
+            &grant,
+        );
         // `[[kv_namespaces]]` rows live on the same library; the `plugin_kv`
         // grant token covers every row.
         let kv = services
@@ -956,6 +977,7 @@ impl PluginSession {
                         queues,
                         kv,
                         sockets,
+                        webhooks,
                         network,
                     },
                     rx,
@@ -1437,6 +1459,26 @@ impl PluginSession {
     {
         self.entrypoint_call(call, |call| Work::Notifier { call })
             .await
+    }
+
+    /// Tells the guest's `webhookHandler` entrypoint that requests wait for
+    /// one of its webhooks.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `webhookHandler`
+    /// or its handler failed.
+    pub async fn deliver_webhook_wake(
+        &self,
+        event: bookclerk_plugin_abi::WebhookDelivered,
+    ) -> Result<()> {
+        self.entrypoint_call(
+            move |handler: Box<dyn bookclerk_plugin_abi::WebhookHandler>| async move {
+                handler.delivered(event).await
+            },
+            |call| Work::WebhookHandler { call },
+        )
+        .await
     }
 
     /// Hands one socket event to the guest's `socketHandler` entrypoint.
@@ -2430,6 +2472,8 @@ struct PrimaryState {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker; `None` unless `[sockets]` is declared and granted.
     sockets: Option<crate::SocketBroker>,
+    /// `WEBHOOKS` store; `None` unless `[[webhooks]]` is declared and granted.
+    webhooks: Option<crate::webhook_binding::HostWebhooks>,
     /// `NETWORK`: the grant in effect, carried by every `open`.
     network: bookclerk_plugin_abi::NetworkGrant,
 }
@@ -2445,6 +2489,8 @@ struct BindingHooks {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker.
     sockets: Option<crate::SocketBroker>,
+    /// `WEBHOOKS` store.
+    webhooks: Option<crate::webhook_binding::HostWebhooks>,
     /// `NETWORK` grant computed at spawn.
     network: bookclerk_plugin_abi::NetworkGrant,
 }
@@ -2458,6 +2504,7 @@ impl PrimaryState {
             queues: hooks.queues,
             kv: hooks.kv,
             sockets: hooks.sockets,
+            webhooks: hooks.webhooks,
             network: hooks.network,
         }
     }
@@ -2467,6 +2514,13 @@ impl PrimaryState {
         self.sockets.clone().map(|broker| {
             Arc::new(crate::BrokerSockets::new(broker)) as Arc<dyn bookclerk_plugin_abi::Sockets>
         })
+    }
+
+    /// The `WEBHOOKS` binding, when granted.
+    fn webhooks_binding(&self) -> Option<Arc<dyn bookclerk_plugin_abi::Webhooks>> {
+        self.webhooks
+            .clone()
+            .map(|hooks| Arc::new(hooks) as Arc<dyn bookclerk_plugin_abi::Webhooks>)
     }
 
     /// KV namespace bindings, when any are granted.
@@ -2549,6 +2603,7 @@ async fn primary_entrypoints<'a>(
                     queues: primary.queues_for(&invocation),
                     kv: primary.kv_bindings(),
                     sockets: primary.sockets_binding(),
+                    webhooks: primary.webhooks_binding(),
                     ..HostBindings::from_values(want.clone())
                 },
             )
@@ -3518,6 +3573,23 @@ fn vat_thread(
                                 |eps| {
                                     eps.socket_handler.clone().map(|stub| {
                                         Box::new(stub) as Box<dyn bookclerk_plugin_abi::SocketHandler>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
+                        Work::WebhookHandler { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "webhookHandler",
+                                |eps| {
+                                    eps.webhook_handler.clone().map(|stub| {
+                                        Box::new(stub)
+                                            as Box<dyn bookclerk_plugin_abi::WebhookHandler>
                                     })
                                 },
                                 call,

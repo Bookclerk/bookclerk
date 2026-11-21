@@ -39,6 +39,7 @@ pub mod socket_table;
 pub mod state_sweep;
 #[cfg(unix)]
 pub mod unix_bind;
+pub mod webhook_request;
 
 pub use bridge_http::generate_bridge_token;
 pub use config::{

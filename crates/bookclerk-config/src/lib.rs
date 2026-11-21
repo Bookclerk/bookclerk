@@ -126,7 +126,7 @@ pub use placement::{
 pub use platform::{detect_distro, node_limits, NodeLimits};
 pub use plugins::{
     host_cpu_rate_max, node_logical_cpus, IntegrationsConfig, PluginRegistryEntry, PluginsConfig,
-    PluginsJailConfig,
+    PluginsJailConfig, WebhooksExposure,
 };
 pub use redact::{
     contains_registered_secret, is_sensitive_field, is_upload_identifying_field,

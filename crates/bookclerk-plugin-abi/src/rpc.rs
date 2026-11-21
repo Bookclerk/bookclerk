@@ -6154,7 +6154,8 @@ pub use sockets_glue::{
 #[path = "rpc_webhooks.rs"]
 mod webhooks_glue;
 pub use webhooks_glue::{
-    roundtrip_webhook_message, WebhookCodec, WebhookHandlerClient, WebhookWireMessage, WebhooksClient,
+    roundtrip_webhook_message, WebhookCodec, WebhookHandlerClient, WebhookWireMessage,
+    WebhooksClient,
 };
 
 #[cfg(test)]

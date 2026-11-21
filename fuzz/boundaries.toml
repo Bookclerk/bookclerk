@@ -210,6 +210,27 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.webhook_route]
+crate = "bookclerk-workerd"
+boundary = "A workerd isolate's env.WEBHOOKS calls on the granted reverse channel: the POST /webhooks/<op> JSON body for url, pull and ack"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.webhook_request]
+crate = "bookclerk-workerd"
+boundary = "A request on the public webhook route POST /hooks/<token>/<name>: the body, headers and HMAC-SHA256 signature anyone on the Internet sends"
+input_from = "anyone on the Internet"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.webhook_message]
+crate = "bookclerk-plugin-abi"
+boundary = "Cap'n Proto Webhooks messages a native guest sends the host: pull and ack requests, and deliveries"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.db_stream]
 crate = "bookclerk-plugin-abi"
 boundary = "executeStreamed frames an adapter sends, reassembled under the streamed result budget"
