@@ -434,33 +434,48 @@ fn test_manifest(id: &str, digest: String, url: String, target: &str) -> Bookcle
     }
 }
 
-/// Writes a tiny gzipped plugin archive and returns `(path, sha256)`.
+/// Writes a tiny plugin archive and returns `(path, sha256)`: a zip on
+/// Windows (the installer reads `windows-*` artifacts as zip), a gzipped
+/// tar elsewhere, whatever `filename` says.
 fn make_named_archive(dir: &Path, filename: &str, id: &str) -> (PathBuf, String) {
     let archive = dir.join(filename);
-    {
-        let file = fs::File::create(&archive).unwrap();
-        let enc = GzEncoder::new(file, Compression::default());
-        let mut tar = Builder::new(enc);
-        let toml = format!(
-            "api_version = 3\nid = \"{id}\"\ncommand = \"./echo\"\nentrypoints = [\"cli\"]\n\
-             [capabilities.network]\nmode = \"outbound\"\n"
-        );
-        let toml = toml.into_bytes();
-        let mut h = tar::Header::new_gnu();
-        h.set_size(toml.len() as u64);
-        h.set_mode(0o644);
-        h.set_cksum();
-        tar.append_data(&mut h, "plugin.toml", toml.as_slice())
-            .unwrap();
-        let bin = b"#!/bin/sh\necho ok\n";
-        let mut h2 = tar::Header::new_gnu();
-        h2.set_size(bin.len() as u64);
-        h2.set_mode(0o755);
-        h2.set_cksum();
-        tar.append_data(&mut h2, "echo", &bin[..]).unwrap();
-        let enc = tar.into_inner().unwrap();
-        enc.finish().unwrap();
-    }
+    let toml = format!(
+        "api_version = 3\nid = \"{id}\"\ncommand = \"./echo\"\nentrypoints = [\"cli\"]\n\
+         [capabilities.network]\nmode = \"outbound\"\n"
+    );
+    let entries: [(&str, &[u8], u32); 2] = [
+        ("plugin.toml", toml.as_bytes(), 0o644),
+        ("echo", b"#!/bin/sh\necho ok\n", 0o755),
+    ];
+    write_archive(&archive, &entries);
     let digest = bookclerk_plugin_catalog::sha256_file(&archive).unwrap();
     (archive, digest)
+}
+
+/// Writes `entries` (name, bytes, Unix mode) to `path` in the host's
+/// plugin archive format.
+fn write_archive(path: &Path, entries: &[(&str, &[u8], u32)]) {
+    let file = fs::File::create(path).unwrap();
+    if cfg!(windows) {
+        use std::io::Write as _;
+        let mut zip = zip::ZipWriter::new(file);
+        for (name, bytes, mode) in entries {
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .unix_permissions(*mode);
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    } else {
+        let mut tar = Builder::new(GzEncoder::new(file, Compression::default()));
+        for (name, bytes, mode) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(*mode);
+            header.set_cksum();
+            tar.append_data(&mut header, name, *bytes).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+    }
 }
