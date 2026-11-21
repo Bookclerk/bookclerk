@@ -423,7 +423,8 @@ async fn register_begin(
     Ok(creation_options(&challenge_id, &ccr)?)
 }
 
-/// Schema for the `credential` member of [`CeremonyFinish`]: the browser's
+/// Schema for the `credential` member of [`RegistrationFinish`] and
+/// [`AssertionFinish`]: the browser's
 /// `PublicKeyCredential` serialized to JSON, an attestation after
 /// `navigator.credentials.create()` or an assertion after
 /// `navigator.credentials.get()`, binary fields base64url-encoded.
@@ -461,26 +462,45 @@ pub(crate) fn credential_schema() -> utoipa::openapi::schema::Schema {
         .into()
 }
 
+/// `POST /api/auth/passkeys/register/finish` body: the browser's attestation
+/// plus the challenge id from `register/begin`.
+///
+/// The credential is read straight into WebAuthn's typed attestation, so the
+/// handler never decodes caller JSON itself.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
-/// Browser attestation/assertion plus the challenge id from `begin`.
-struct CeremonyFinish {
+struct RegistrationFinish {
     /// Server-issued challenge id (consumed once; 5-minute TTL).
     #[schema(example = "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f")]
     challenge_id: String,
-    /// Browser `PublicKeyCredential` JSON for `finish_*`.
+    /// Browser `PublicKeyCredential` JSON from `navigator.credentials.create()`.
     #[schema(schema_with = credential_schema)]
-    credential: Value,
-    #[serde(default)]
+    credential: Box<RegisterPublicKeyCredential>,
     /// Label stored with the credential (`Passkey` when empty).
+    #[serde(default)]
     #[schema(example = "YubiKey 5C")]
     name: Option<String>,
+}
+
+/// `POST /api/auth/passkeys/login/finish` and `elevate/finish` body: the
+/// browser's assertion plus the challenge id from the matching `begin`.
+///
+/// The credential is read straight into WebAuthn's typed assertion, so the
+/// handler never decodes caller JSON itself.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+struct AssertionFinish {
+    /// Server-issued challenge id (consumed once; 5-minute TTL).
+    #[schema(example = "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f")]
+    challenge_id: String,
+    /// Browser `PublicKeyCredential` JSON from `navigator.credentials.get()`.
+    #[schema(schema_with = credential_schema)]
+    credential: Box<PublicKeyCredential>,
 }
 
 /// Completes registration, stores the passkey, and revokes elevated operator sessions.
 #[utoipa::path(
     post,
     path = "/api/auth/passkeys/register/finish",
-    request_body = CeremonyFinish,
+    request_body = RegistrationFinish,
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "The passkey was stored.", body = OkResponse),
@@ -495,7 +515,7 @@ struct CeremonyFinish {
 async fn register_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<CeremonyFinish>,
+    Json(body): Json<RegistrationFinish>,
 ) -> Result<Json<OkResponse>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     let webauthn = origin_webauthn(&state, &headers).await?;
@@ -512,8 +532,7 @@ async fn register_finish(
     }
     let reg_state: PasskeyRegistration =
         serde_json::from_str(&state_json).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let cred: RegisterPublicKeyCredential =
-        serde_json::from_value(body.credential).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let cred = body.credential;
     let passkey = webauthn
         .finish_passkey_registration(&cred, &reg_state)
         .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -695,10 +714,10 @@ async fn login_begin_inner(
 #[utoipa::path(
     post,
     path = "/api/auth/passkeys/login/finish",
-    request_body = CeremonyFinish,
+    request_body = AssertionFinish,
     responses(
         (status = 200, description = "Signed in; the response sets the portal session cookie.", body = PortalSessionIssued),
-        (status = 400, description = "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party."),
+        (status = 400, description = "The challenge is unknown or expired, or the daemon's origin is not a valid WebAuthn relying party."),
         (status = 401, description = "The assertion does not verify, or the credential is not one of the challenged user's."),
         (status = 403, description = "The user is disabled."),
         (status = 500, description = "The library could not be read or written."),
@@ -707,7 +726,7 @@ async fn login_begin_inner(
 async fn login_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<CeremonyFinish>,
+    Json(body): Json<AssertionFinish>,
 ) -> Result<Response, StatusCode> {
     let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
@@ -720,8 +739,7 @@ async fn login_finish(
     };
     let auth_state: PasskeyAuthentication =
         serde_json::from_str(&state_json).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let cred: PublicKeyCredential =
-        serde_json::from_value(body.credential).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let cred = body.credential;
     let result = webauthn
         .finish_passkey_authentication(&cred, &auth_state)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -815,11 +833,11 @@ async fn elevate_begin(
 #[utoipa::path(
     post,
     path = "/api/auth/passkeys/elevate/finish",
-    request_body = CeremonyFinish,
+    request_body = AssertionFinish,
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = Elevated),
-        (status = 400, description = "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party."),
+        (status = 400, description = "The challenge is unknown or expired, or the daemon's origin is not a valid WebAuthn relying party."),
         (status = 401, description = "The caller is not signed in, the assertion does not verify or was not user-verified, or the credential is not the caller's."),
         (status = 403, description = "The caller is not an Owner, or the challenge was issued to another user."),
         (status = 500, description = "The library could not be read or written."),
@@ -829,7 +847,7 @@ async fn elevate_begin(
 async fn elevate_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<CeremonyFinish>,
+    Json(body): Json<AssertionFinish>,
 ) -> Result<Response, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     if user.role != UserRole::Owner {
@@ -849,8 +867,7 @@ async fn elevate_finish(
     }
     let auth_state: PasskeyAuthentication =
         serde_json::from_str(&state_json).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let cred: PublicKeyCredential =
-        serde_json::from_value(body.credential).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let cred = body.credential;
     let result = webauthn
         .finish_passkey_authentication(&cred, &auth_state)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -998,6 +1015,189 @@ mod tests {
     use super::*;
     use webauthn_authenticator_rs::softpasskey::SoftPasskey;
     use webauthn_authenticator_rs::WebauthnAuthenticator;
+
+    /// Posts `body` (or nothing, without the JSON content type, when
+    /// `body` is `None`) to `uri` as the signed-in browser, and returns the
+    /// status and the JSON answer (`Null` for an empty or non-JSON body).
+    async fn post_json(
+        app: &axum::Router,
+        uri: &str,
+        cookie: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        use axum::body::Body;
+        use axum::http::{header, Request};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::ORIGIN, "http://localhost:8787");
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        let request = match body {
+            Some(body) => request
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string())),
+            None => request.body(Body::from("{}")),
+        }
+        .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// The three `finish` routes read the browser's credential straight into
+    /// WebAuthn's typed structs: a software authenticator registers, signs in
+    /// and elevates through the HTTP routes, while a credential of the wrong
+    /// shape is refused `422` and a body without the JSON content type `415`,
+    /// the JSON extractor's documented answers.
+    #[tokio::test]
+    async fn finish_routes_take_typed_credentials() {
+        use crate::auth::tests::{phase2_harness, phase2_owner_password, portal_cookie_for};
+
+        let (state, app, library) = phase2_harness("op-token-passkey-finish").await;
+        {
+            let mut cfg = state.config.write().await;
+            cfg.integrations.public_origin = Some("http://localhost:8787".into());
+        }
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        // The bridged Owner signs in by this login name below.
+        let owner_id = library
+            .get_portal_identity("test", "admin-ext")
+            .await
+            .unwrap()
+            .and_then(|identity| identity.user_id)
+            .expect("bridged owner");
+        library
+            .set_user_login_name(owner_id, Some("passkey-owner"))
+            .await
+            .unwrap();
+        let origin = Url::parse("http://localhost:8787").unwrap();
+        let mut authenticator = SoftPasskey::new(true);
+
+        let (status, begun) = post_json(
+            &app,
+            "/api/auth/passkeys/register/begin",
+            Some(&cookie),
+            Some(serde_json::json!({ "current_password": phase2_owner_password() })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{begun}");
+        let creation: CreationChallengeResponse =
+            serde_json::from_value(serde_json::json!({ "publicKey": begun["publicKey"] })).unwrap();
+        let attestation = authenticator
+            .do_registration(origin.clone(), creation)
+            .expect("authenticator registers");
+
+        let (status, _) = post_json(
+            &app,
+            "/api/auth/passkeys/register/finish",
+            Some(&cookie),
+            Some(serde_json::json!({
+                "challenge_id": begun["challenge_id"],
+                "credential": { "id": "not-a-credential" },
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a malformed attestation"
+        );
+        let (status, _) = post_json(
+            &app,
+            "/api/auth/passkeys/register/finish",
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        let (status, stored) = post_json(
+            &app,
+            "/api/auth/passkeys/register/finish",
+            Some(&cookie),
+            Some(serde_json::json!({
+                "challenge_id": begun["challenge_id"],
+                "credential": attestation,
+                "name": "Test key",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{stored}");
+
+        let (status, begun) = post_json(
+            &app,
+            "/api/auth/passkeys/login/begin",
+            None,
+            Some(serde_json::json!({ "login": "passkey-owner" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{begun}");
+        let request: RequestChallengeResponse =
+            serde_json::from_value(serde_json::json!({ "publicKey": begun["publicKey"] })).unwrap();
+        let assertion = authenticator
+            .do_authentication(origin.clone(), request)
+            .expect("authenticator signs in");
+        let (status, _) = post_json(
+            &app,
+            "/api/auth/passkeys/login/finish",
+            None,
+            Some(serde_json::json!({
+                "challenge_id": begun["challenge_id"],
+                "credential": { "type": "public-key" },
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a malformed assertion"
+        );
+        let (status, signed_in) = post_json(
+            &app,
+            "/api/auth/passkeys/login/finish",
+            None,
+            Some(serde_json::json!({
+                "challenge_id": begun["challenge_id"],
+                "credential": assertion,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{signed_in}");
+
+        let (status, begun) = post_json(
+            &app,
+            "/api/auth/passkeys/elevate/begin",
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{begun}");
+        let request: RequestChallengeResponse =
+            serde_json::from_value(serde_json::json!({ "publicKey": begun["publicKey"] })).unwrap();
+        let assertion = authenticator
+            .do_authentication(origin, request)
+            .expect("authenticator elevates");
+        let (status, elevated) = post_json(
+            &app,
+            "/api/auth/passkeys/elevate/finish",
+            Some(&cookie),
+            Some(serde_json::json!({
+                "challenge_id": begun["challenge_id"],
+                "credential": assertion,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{elevated}");
+    }
 
     #[test]
     fn user_uuid_is_stable() {

@@ -181,7 +181,7 @@ indexmap = { version = "2", features = ["serde"] }
 # (`>=0.30.1, <0.38`). rusqlite 0.40 needs libsqlite3-sys ^0.38 and cannot
 # coexist in one binary. Vendored audible-rs under third_party/ matches this
 # pin on its optional `cli` feature.
-rusqlite = { version = "0.39", features = ["bundled", "column_decltype", "hooks"] }
+rusqlite = { version = "0.41", features = ["bundled", "column_decltype", "hooks"] }
 sea-orm = { version = "2.0.0", default-features = false, features = [
     "macros",
     "with-chrono",
@@ -209,7 +209,7 @@ url = "2"
 webauthn-rs = { version = "0.6.2", features = ["danger-allow-state-serialisation"] }
 totp-rs = { version = "6", default-features = false, features = ["std", "otpauth", "gen_secret"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "11.0", features = ["aws_lc_rs"] }
 openidconnect = { version = "4", default-features = false }
 # aws-sdk-s3's default `rustls` feature enables smithy's *legacy* rustls 0.21
 # path (vulnerable rustls-webpki 0.101). Prefer `default-https-client`, which
