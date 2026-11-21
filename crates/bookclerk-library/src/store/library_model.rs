@@ -2935,6 +2935,115 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn an_editions_audio_files_read_back_with_their_streams() {
+        use crate::{AudioStream, FileOwner, FileProbe, FileRole};
+        use bookclerk_tags::{AacProfile, AudioCodec, AudioFormat};
+        let store = self::store().await;
+        let owner = FileOwner::Edition("an-edition".into());
+        let copy = bookclerk_config::OutputCopy {
+            format: bookclerk_config::CopyFormat::M4b,
+            quality: bookclerk_config::CopyQuality::ORIGINAL,
+        };
+        for (key, role) in [
+            ("A/T.m4b", FileRole::Audio),
+            ("A/T.pdf", FileRole::Pdf),
+            ("A/T - 02.m4b", FileRole::Part),
+        ] {
+            assert!(store
+                .record_edition_copy_file("local", key, &owner, role, Some(&copy))
+                .await
+                .unwrap());
+        }
+        let probe = FileProbe {
+            content_type: "audio/mp4".into(),
+            bitrate_kbps: Some(125),
+            lossless: false,
+            source_store: Some("audible".into()),
+        };
+        let stream = AudioStream {
+            codec: Some(AudioCodec::Aac),
+            format: AudioFormat {
+                channels: Some(2),
+                sample_rate_hz: Some(44_100),
+                aac_profile: Some(AacProfile::Lc),
+            },
+            duration_ms: Some(3_600_000),
+        };
+        assert!(store
+            .set_edition_file_probe("local", "A/T.m4b", &owner, &probe)
+            .await
+            .unwrap());
+        assert!(store
+            .set_edition_file_stream("local", "A/T.m4b", &owner, &stream)
+            .await
+            .unwrap());
+        // Another edition's stream of the key describes nothing.
+        assert!(!store
+            .set_edition_file_stream(
+                "local",
+                "A/T.m4b",
+                &FileOwner::Edition("another".into()),
+                &AudioStream::default(),
+            )
+            .await
+            .unwrap());
+        // Out-of-range values are refused before any write.
+        for bad in [
+            AudioStream {
+                duration_ms: Some(0),
+                ..stream
+            },
+            AudioStream {
+                codec: Some(AudioCodec::Mp3),
+                ..stream
+            },
+            AudioStream {
+                format: AudioFormat {
+                    channels: Some(0),
+                    ..stream.format
+                },
+                ..stream
+            },
+        ] {
+            assert!(store
+                .set_edition_file_stream("local", "A/T.m4b", &owner, &bad)
+                .await
+                .is_err());
+        }
+
+        let files = store.edition_audio_files("an-edition").await.unwrap();
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| (file.storage_key.as_str(), file.role))
+                .collect::<Vec<_>>(),
+            [
+                ("A/T - 02.m4b", FileRole::Part),
+                ("A/T.m4b", FileRole::Audio)
+            ]
+        );
+        assert_eq!(files[0].probe, None);
+        assert_eq!(files[0].stream, AudioStream::default());
+        assert_eq!(files[1].probe, Some(probe));
+        assert_eq!(files[1].stream, stream);
+        assert_eq!(files[1].copy, Some(copy.clone()));
+
+        // A new write of the key clears what the old file's probe said.
+        assert!(store
+            .record_edition_copy_file("local", "A/T.m4b", &owner, FileRole::Audio, Some(&copy))
+            .await
+            .unwrap());
+        let files = store.edition_audio_files("an-edition").await.unwrap();
+        assert_eq!(files[1].probe, None);
+        assert_eq!(files[1].stream, AudioStream::default());
+        assert!(store
+            .edition_audio_files("another")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn only_a_live_editions_file_holds_a_name() {
         use crate::{FileOwner, FileRole};
         let store = self::store().await;

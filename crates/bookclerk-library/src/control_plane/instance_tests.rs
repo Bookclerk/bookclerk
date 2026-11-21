@@ -48,6 +48,8 @@ fn fixture_schema() -> bookclerk_plugin_abi::SettingsSchema {
         required: false,
         description: None,
         columns: Vec::new(),
+        network: None,
+        default_port: None,
     };
     SettingsSchema::new(vec![
         SettingSpec {
@@ -604,6 +606,8 @@ async fn resolve_merges_schema_defaults_and_drops_retired_keys() {
         required: false,
         description: None,
         columns: Vec::new(),
+        network: None,
+        default_port: None,
     });
     import_instance_config_if_absent(
         &store,
@@ -1139,6 +1143,8 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
             required: false,
             description: None,
             columns: Vec::new(),
+            network: None,
+            default_port: None,
         },
     ]);
     let upgraded = pin_plugin_schema(&store, &pin("0.2.0", "node-b")(&v2))
@@ -1191,6 +1197,8 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
             required: false,
             description: None,
             columns: Vec::new(),
+            network: None,
+            default_port: None,
         },
         v2.get("token").cloned().unwrap(),
     ]);
@@ -1275,6 +1283,8 @@ async fn concurrent_pins_never_leave_an_older_version_on_top() {
             required: false,
             description: None,
             columns: Vec::new(),
+            network: None,
+            default_port: None,
         }])
     };
     let (v1, v2, v3) = (schema_for("one"), schema_for("two"), schema_for("three"));

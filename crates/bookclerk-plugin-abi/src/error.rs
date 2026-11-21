@@ -48,6 +48,10 @@ pub enum PluginErrorCode {
     /// The backend asked the guest to slow down (HTTP 429 or its
     /// equivalent); [`PluginError::retry_after`] says for how long.
     RateLimited,
+    /// The network grant does not cover the destination; `details` names
+    /// it (`destination`) and the network setting that names it
+    /// (`setting`), when one does.
+    NetworkNotGranted,
     /// Unrecognized wire code. See [`PluginError::wire_str`].
     Unknown,
 }
@@ -71,6 +75,7 @@ impl PluginErrorCode {
             Self::Conflict => "conflict",
             Self::LimitExceeded => "limit_exceeded",
             Self::RateLimited => "rate_limited",
+            Self::NetworkNotGranted => "network_not_granted",
             Self::Unknown => "unknown",
         }
     }
@@ -93,6 +98,7 @@ impl PluginErrorCode {
             "conflict" | "unique" | "constraint" | "unique_constraint" => Self::Conflict,
             "limit_exceeded" | "limitExceeded" => Self::LimitExceeded,
             "rate_limited" | "rateLimited" | "too_many_requests" => Self::RateLimited,
+            "network_not_granted" | "networkNotGranted" => Self::NetworkNotGranted,
             "timeout" | "timed_out" => Self::DeadlineExceeded,
             "retryable" => Self::Unavailable,
             _ => Self::Unknown,
@@ -212,6 +218,32 @@ impl PluginError {
     #[must_use]
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self::new(PluginErrorCode::Unavailable, message)
+    }
+
+    /// Convenience for [`PluginErrorCode::NetworkNotGranted`].
+    ///
+    /// # Arguments
+    ///
+    /// * `destination` - The refused `host:port`; stored as
+    ///   `details.destination`.
+    /// * `setting` - The network setting whose value names the destination
+    ///   and awaits approval, when one does; stored as `details.setting`.
+    #[must_use]
+    pub fn network_not_granted(destination: &str, setting: Option<&str>) -> Self {
+        let message = match setting {
+            Some(setting) => format!(
+                "{destination} is named by setting `{setting}` and awaits the operator's approval"
+            ),
+            None => format!("{destination} is not on the plugin's network grant"),
+        };
+        let mut err = Self::new(PluginErrorCode::NetworkNotGranted, message);
+        let mut details = serde_json::Map::new();
+        details.insert("destination".into(), destination.into());
+        if let Some(setting) = setting {
+            details.insert("setting".into(), setting.into());
+        }
+        err.details = Some(details);
+        err
     }
 
     /// Convenience for [`PluginErrorCode::RateLimited`].
@@ -455,6 +487,23 @@ impl<'de> Deserialize<'de> for PluginError {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_not_granted_names_the_setting() {
+        let err = PluginError::network_not_granted("abs.home.lan:13378", Some("server_url"));
+        assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
+        assert_eq!(err.wire_str(), "network_not_granted");
+        let details = err.details.clone().unwrap_or_default();
+        assert_eq!(details["destination"], "abs.home.lan:13378");
+        assert_eq!(details["setting"], "server_url");
+        assert!(err.message.contains("server_url"), "{err}");
+        let bare = PluginError::network_not_granted("db.lan:5432", None);
+        assert!(!bare.details.unwrap_or_default().contains_key("setting"));
+        assert_eq!(
+            PluginErrorCode::from_wire("networkNotGranted"),
+            PluginErrorCode::NetworkNotGranted
+        );
+    }
 
     #[test]
     fn a_rate_limit_keeps_its_wait_across_the_wire() {

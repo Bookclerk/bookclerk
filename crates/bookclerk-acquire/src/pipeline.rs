@@ -2765,6 +2765,28 @@ async fn store_plain_fetch(
         return store_plain_parts(library, destinations, req, work_dir, plain, library_pdf).await;
     }
 
+    // A single file bound for MP3 or Opus is packaged into M4B only when an
+    // Audible chapter overlay needs one timeline. Look the overlay up first,
+    // so a book with none keeps its file instead of being decoded and
+    // encoded twice for nothing (#680).
+    // A split by chapter cuts an M4B, so a file that will be split is
+    // packaged whatever its format.
+    let splits_store_chapters = req.options.wants_split_by_chapter() && plain.chapters.len() > 1;
+    let single_lossy_part = plain.m4b_path.is_none()
+        && plain.parts.len() == 1
+        && (want_mp3 || want_opus)
+        && !splits_store_chapters;
+    // The overlay looked up early, with the duration it was scaled to.
+    let mut early_overlay = None;
+    if single_lossy_part && audible_overlay_possible {
+        let plain_duration = plain_duration_ms(req, &plain.parts[0].path).await;
+        early_overlay = Some((
+            plain_duration,
+            overlay_audible_chapters_for_plain(library, req, plain_duration).await,
+        ));
+    }
+    let overlay_ruled_out = matches!(early_overlay, Some((_, None)));
+
     let mut chapters = plain.chapters.clone();
     let mut replace_chapters = false;
     let mut acquired_path = if let Some(m4b) = plain.m4b_path.clone() {
@@ -2775,7 +2797,7 @@ async fn store_plain_fetch(
             req.source,
             req.asin
         )));
-    } else if plain.parts.len() == 1 && (want_mp3 || want_opus) && !audible_overlay_possible {
+    } else if single_lossy_part && (!audible_overlay_possible || overlay_ruled_out) {
         plain.parts[0].path.clone()
     } else {
         // Package MP3/M4A part(s) into M4B (single-file M4B target, multi→single, or
@@ -2809,11 +2831,15 @@ async fn store_plain_fetch(
     let mut catalog = PlainAudibleCatalog::default();
     let mut plain_chapter_tree: Option<Value> = None;
     if audible_overlay_possible {
-        let plain_duration = probe_audio_duration_ms(&acquired_path);
+        let plain_duration = plain_duration_ms(req, &acquired_path).await;
         catalog = fetch_plain_catalog_overlay(library, req, work_dir).await;
-        if let Some((overlaid, tree)) =
-            overlay_audible_chapters_for_plain(library, req, plain_duration).await
-        {
+        // The early overlay stands only when it was scaled to the duration
+        // of the audio it now lands on (packaging may change it).
+        let overlay = match early_overlay {
+            Some((duration, found)) if duration == plain_duration => found,
+            _ => overlay_audible_chapters_for_plain(library, req, plain_duration).await,
+        };
+        if let Some((overlaid, tree)) = overlay {
             let audible_asin = resolve_title(library, req)
                 .await
                 .and_then(|t| t.asin.clone());
@@ -4110,6 +4136,23 @@ async fn overlay_audible_chapters_for_plain(
         let tree = rebase_chapter_tree_for_plain_audio(&info, plain_audio_duration_ms);
         Some((chapters, tree))
     }
+}
+
+/// The running time of the plain audio at `path` in milliseconds: read
+/// from an MP4's sample table, or else from the file's headers through the
+/// confined media worker (MP3, FLAC, Ogg). `None` when neither knows.
+async fn plain_duration_ms(req: &AcquireRequest, path: &Path) -> Option<u64> {
+    if let Some(ms) = probe_audio_duration_ms(path) {
+        return Some(ms);
+    }
+    let size = tokio::fs::metadata(path).await.ok()?.len();
+    let record = req
+        .library_copies
+        .media()
+        .read_tags(size, &bookclerk_media::FileRange::new(path))
+        .await
+        .ok()?;
+    record.duration.map(|d| d.ms).filter(|ms| *ms > 0)
 }
 
 /// Probes MP4-family duration in milliseconds; returns `None` for other containers or parse failure.
@@ -6407,6 +6450,8 @@ mod tests {
         /// True when the store sends a lossy MP3 of lower bitrate than the
         /// M4B ([`real_m4b`]) instead of the M4B itself.
         mp3: bool,
+        /// Store track markers the fetch reports, `(title, start ms)`.
+        chapters: Vec<(String, u64)>,
     }
 
     /// Writes four seconds of real AAC audio as an M4B at `path` (about
@@ -6518,7 +6563,7 @@ mod tests {
                 parts,
                 m4b_path,
                 cover_path: Some(cover),
-                chapters: Vec::new(),
+                chapters: self.chapters.clone(),
                 pdf_url: self.pdf_url.clone(),
             })
         }
@@ -6558,6 +6603,7 @@ mod tests {
             fetches: fetches.clone(),
             pdf_url: None,
             mp3: false,
+            chapters: Vec::new(),
         };
         let job = job_id(&store).await;
 
@@ -6618,6 +6664,7 @@ mod tests {
             fetches: fetches.clone(),
             pdf_url: None,
             mp3: true,
+            chapters: Vec::new(),
         };
         edition_book(&store, "B00BADOTHER", "user-1", "Twin", None).await;
         let bad = || {
@@ -6690,6 +6737,7 @@ mod tests {
             fetches: fetches.clone(),
             pdf_url: Some(serve_http_body(b"%PDF-1.4 from the store".to_vec()).await),
             mp3: true,
+            chapters: Vec::new(),
         };
         let job = job_id(&store).await;
         let uuid = edition_book(&store, "B00WIN", "user-1", "Twin", None).await;
@@ -6757,6 +6805,95 @@ mod tests {
             std::fs::read(dest.join(pdf_key)).unwrap(),
             b"%PDF-1.4 from the store"
         );
+    }
+
+    #[tokio::test]
+    async fn a_single_mp3_with_no_chapter_overlay_is_stored_as_delivered() {
+        media_in_process();
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut destinations = title_named_destinations(&tmp.path().join("dest"), puts);
+        for item in &mut destinations.items {
+            item.options.format = bookclerk_config::OutputFormat::SingleMp3;
+            // A re-encode probes at 96 kb/s; the store's 32 kb/s MP3 probes
+            // near 64 with its tags, as the file is only four seconds long.
+            item.options.lame = bookclerk_config::LameConfig {
+                target: "bitrate".into(),
+                constant_bitrate: true,
+                bitrate_kbps: 96,
+                ..bookclerk_config::LameConfig::default()
+            };
+        }
+        let source = RealAudioSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+            mp3: true,
+            chapters: Vec::new(),
+        };
+        let job = job_id(&store).await;
+        // An enriched title: its Audible ASIN is not its product id, so an
+        // Audible chapter overlay is possible, but no provider has one.
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let mut book = bookclerk_library::NewBook::minimal("9780000000680", "user-1", "us", "Twin");
+        book.asin = Some("B0ENRICHED".into());
+        store.upsert_book(&book).await.unwrap();
+        let mut req = edition_req(&cache, job, "9780000000680", "user-1");
+        req.options = destinations.primary_destination().options.clone();
+
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        let probe = store
+            .edition_file_probe("local", &result.storage_key)
+            .await
+            .unwrap()
+            .expect("the stored audio was probed");
+        assert_eq!(probe.content_type, "audio/mpeg");
+        let kbps = probe.bitrate_kbps.unwrap();
+        assert!(kbps < 90, "the MP3 was encoded again ({kbps} kb/s)");
+    }
+
+    #[tokio::test]
+    async fn a_single_mp3_split_by_chapter_is_packaged_first() {
+        media_in_process();
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut destinations = title_named_destinations(&tmp.path().join("dest"), puts);
+        for item in &mut destinations.items {
+            item.options.format = bookclerk_config::OutputFormat::SplitMp3ByChapter;
+        }
+        // Two store chapters: a split runs, and it cuts an M4B, so the
+        // store's MP3 is not kept as delivered.
+        let source = RealAudioSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+            mp3: true,
+            chapters: vec![("One".into(), 0), ("Two".into(), 2000)],
+        };
+        let job = job_id(&store).await;
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let mut book =
+            bookclerk_library::NewBook::minimal("9780000000681", "user-1", "us", "Split");
+        book.asin = Some("B0ENRICHED".into());
+        store.upsert_book(&book).await.unwrap();
+        let mut req = edition_req(&cache, job, "9780000000681", "user-1");
+        req.options = destinations.primary_destination().options.clone();
+
+        acquire_book(&store, &destinations, req, &source)
+            .await
+            .expect("the split ran on the packaged audio");
     }
 
     #[tokio::test]

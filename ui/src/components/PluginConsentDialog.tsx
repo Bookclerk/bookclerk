@@ -3,7 +3,11 @@ import { Check, ChevronDown, Globe, HardDrive, Layers, Shield, X } from "lucide-
 import { CpuCoresSlider } from "@/components/CpuCoresSlider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { PluginConsentResponse } from "@/lib/api";
+import type {
+  PluginConsentResponse,
+  PluginSettingDestination,
+  PluginSettingDestinationApproval,
+} from "@/lib/api";
 import { domainLabel, fetchHostsSummary } from "@/lib/networkGrant";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +26,8 @@ export type PluginConsentGrantDraft = {
   memoryMib?: number;
   cpuCores?: number;
   extraProcesses?: number;
+  /** Setting destinations the operator approves; the rest stay pending. */
+  settingDestinations?: PluginSettingDestinationApproval[];
 };
 
 type SectionId = "network" | "bindings" | "resources" | "workerd" | "flags";
@@ -242,6 +248,105 @@ function ConsentSection({
   );
 }
 
+/** The key a setting destination is ticked under in the form. */
+function settingDestinationKey(row: { setting: string; destination?: string }): string {
+  return `${row.setting}\u0000${row.destination ?? ""}`;
+}
+
+/**
+ * What kind of address a setting destination is, in operator words.
+ *
+ * @param row - One consent row with a destination.
+ * @returns A short label, or null for a public name with nothing to add.
+ */
+function settingScopeLabel(row: PluginSettingDestination): string | null {
+  switch (row.scope) {
+    case "name":
+      return "May be on your local network: this name may resolve to a private address, for this name only";
+    case "localAddress":
+      return "Local network: this one address";
+    case "publicAddress":
+      return "Public address";
+    case "restricted":
+      return "Loopback or special address: also needs an address-space CIDR below";
+    default:
+      return null;
+  }
+}
+
+/**
+ * The consent form's "From settings" block: one checkbox per destination a
+ * network setting names, labelled with the setting it comes from.
+ *
+ * @param props.rows - The consent response's setting destinations.
+ * @param props.selected - Keys (see `settingDestinationKey`) ticked in the draft.
+ * @param props.disabled - True while a request is in flight or the network is denied.
+ * @param props.onToggle - Receives the key of the row that was clicked.
+ */
+function SettingDestinationsGrant({
+  rows,
+  selected,
+  disabled,
+  onToggle,
+}: {
+  rows: PluginSettingDestination[];
+  selected: Set<string>;
+  disabled: boolean;
+  onToggle: (key: string) => void;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="space-y-2 border-b border-ink/10 py-3.5 pl-8 text-sm text-ink">
+      <p className="font-medium">Destinations from settings</p>
+      <p className="text-xs text-ink/55">
+        These come from the plugin&apos;s settings. Changing a setting replaces its destination, and
+        the new one waits for your approval.
+      </p>
+      <ul className="space-y-2">
+        {rows.map((row) => {
+          const key = settingDestinationKey(row);
+          const rowKey = `${row.instanceId ?? "default"}:${row.setting}`;
+          if (!row.destination) {
+            return (
+              <li key={rowKey} className="text-xs text-ink/55">
+                <span className="font-medium text-ink/70">{row.label}</span>:{" "}
+                {row.state === "invalid" ? (row.error ?? "invalid value") : "not set"}
+              </li>
+            );
+          }
+          const scope = settingScopeLabel(row);
+          return (
+            <li key={rowKey}>
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 accent-teal"
+                  checked={selected.has(key)}
+                  disabled={disabled}
+                  onChange={() => onToggle(key)}
+                />
+                <span className="min-w-0">
+                  <span className="font-mono text-[13px]">{row.destination}</span>{" "}
+                  <span className="text-xs text-ink/55">
+                    {row.network === "fetch" ? "HTTP" : "TCP"} · from {row.label}
+                    {row.state === "pending" ? " · new" : ""}
+                  </span>
+                  {scope ? <span className="block text-xs text-ink/55">{scope}</span> : null}
+                  {row.tls === false && row.scope !== "localAddress" ? (
+                    <span className="block text-xs text-ink/55">
+                      Not encrypted: the plugin trusts your network&apos;s DNS answer for this name.
+                    </span>
+                  ) : null}
+                </span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 /**
  * Branded plugin consent dialog in an OAuth-style grant review layout.
  *
@@ -296,6 +401,8 @@ export function PluginConsentDialog({
   const [memoryMib, setMemoryMib] = useState("");
   const [cpuCores, setCpuCores] = useState(limits.cpu_cores ?? 0.8);
   const [extraProcesses, setExtraProcesses] = useState(String(limits.extra_processes ?? 2));
+  const settingRows = useMemo(() => consent.setting_destinations ?? [], [consent]);
+  const [settingSelection, setSettingSelection] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setNetworkMode(existing?.networkMode || request.networkMode || "deny");
@@ -342,12 +449,20 @@ export function PluginConsentDialog({
     setExtraProcesses(
       String(existing?.extraProcesses ?? request.extraProcesses ?? limits.extra_processes ?? 2),
     );
+    // A destination a setting names now is shown ticked, like what a new version adds.
+    setSettingSelection(
+      new Set(
+        settingRows
+          .filter((row) => row.destination && (row.state === "approved" || row.state === "pending"))
+          .map(settingDestinationKey),
+      ),
+    );
     setDomainDraft("");
     setTcpDraft("");
     setCidrDraft("");
     setFlagDraft("");
     setOpenSection(null);
-  }, [consent, existing, pending, request, limits]);
+  }, [consent, existing, pending, request, limits, settingRows]);
 
   const selectedDomains = useMemo(() => uniqueValues(domains), [domains]);
   const suggestedDomains = useMemo(
@@ -366,6 +481,12 @@ export function PluginConsentDialog({
     }
     if (addressCidrs.length > 0) {
       parts.push(`${addressCidrs.length} CIDR${addressCidrs.length === 1 ? "" : "s"}`);
+    }
+    const fromSettings = settingRows.filter((row) =>
+      settingSelection.has(settingDestinationKey(row)),
+    ).length;
+    if (fromSettings > 0) {
+      parts.push(`${fromSettings} destination${fromSettings === 1 ? "" : "s"} from settings`);
     }
     if (allowUndeclaredPublicRedirects) {
       parts.push("undeclared public redirects");
@@ -388,6 +509,8 @@ export function PluginConsentDialog({
     networkMode,
     ownUserAgentHosts.length,
     selectedDomains,
+    settingRows,
+    settingSelection,
     tcp.length,
   ]);
 
@@ -627,7 +750,7 @@ export function PluginConsentDialog({
           >
             <p className="text-xs text-ink/55">
               {isWorkerd
-                ? "The plugin's sandbox has no network of its own: every connection goes through Bookclerk, which checks it against this grant. Fetch hosts are the isolate allowlist, and you may add destinations the author omitted. TCP connect() is a separate grant. Undeclared public redirects never include loopback, private networks, or cloud metadata. Fetch hosts are checked by name, not port, so code that escaped the isolate could reach a listed host on any port."
+                ? "The plugin's sandbox has no network of its own: every connection goes through Bookclerk, which checks it against this grant. Fetch hosts are the isolate allowlist, and you may add destinations the author omitted. TCP connect() is a separate grant. Undeclared public redirects never include loopback, private networks, or cloud metadata. A fetch host without a port reaches ports 80 and 443 only; add host:port for another."
                 : "Native guests cannot declare fetch domains. The guest's sandbox has no network of its own: outbound TCP goes through Bookclerk's socket proxy, with the same policy as workerd connect()."}
             </p>
             <select
@@ -824,6 +947,20 @@ export function PluginConsentDialog({
               </div>
             ) : null}
           </ConsentSection>
+
+          <SettingDestinationsGrant
+            rows={settingRows}
+            selected={settingSelection}
+            disabled={busy || networkMode === "deny"}
+            onToggle={(key) =>
+              setSettingSelection((current) => {
+                const next = new Set(current);
+                if (next.has(key)) next.delete(key);
+                else next.add(key);
+                return next;
+              })
+            }
+          />
 
           <ConsentSection
             id="consent-bindings"
@@ -1090,6 +1227,14 @@ export function PluginConsentDialog({
                 extraProcesses: isWorkerd
                   ? undefined
                   : parseNonNegInt(extraProcesses, limits.max_extra_processes),
+                settingDestinations:
+                  networkMode === "deny"
+                    ? []
+                    : settingRows.flatMap((row) =>
+                        row.destination && settingSelection.has(settingDestinationKey(row))
+                          ? [{ setting: row.setting, destination: row.destination }]
+                          : [],
+                      ),
               })
             }
           >

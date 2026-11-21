@@ -290,6 +290,7 @@ fn from_guest_error(err: PluginError) -> LibraryError {
         | PluginErrorCode::InvalidCursor
         | PluginErrorCode::Conflict
         | PluginErrorCode::LimitExceeded
+        | PluginErrorCode::NetworkNotGranted
         | PluginErrorCode::Unknown => LibraryError::Other(anyhow::anyhow!(err.to_string())),
     }
 }

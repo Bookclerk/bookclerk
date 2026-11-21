@@ -1,0 +1,30 @@
+api_version = 3
+id = "network_settings"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+
+[capabilities.network]
+mode = "outbound"
+domains = ["api.example.com", "files.example.com:8443"]
+
+[vars]
+
+[[settings]]
+key = "server_url"
+label = "Server address"
+type = "string"
+network = "fetch"
+default = "http://abs.home.lan:13378"
+
+[[settings]]
+key = "db_host"
+label = "Database host"
+type = "string"
+network = "tcp"
+default_port = 5432
+default = "db.home.lan"

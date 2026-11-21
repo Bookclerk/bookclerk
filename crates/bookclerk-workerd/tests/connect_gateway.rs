@@ -96,10 +96,13 @@ async fn http_once(listener: TcpListener, response: &[u8]) {
     s.write_all(response).await.expect("http write");
 }
 
-fn policy(echo_port: u16, allow_public_redirects: bool) -> EgressPolicy {
+/// A loopback grant: fetch to `127.0.0.1` on the web ports and on
+/// `http_port` (an entry without a port grants only 80 and 443), and a TCP
+/// grant for `echo_port`.
+fn policy(echo_port: u16, http_port: u16, allow_public_redirects: bool) -> EgressPolicy {
     EgressPolicy {
         mode: NetworkMode::Outbound,
-        domains: vec!["127.0.0.1".into()],
+        domains: vec!["127.0.0.1".into(), format!("127.0.0.1:{http_port}")],
         max_redirects: 10,
         subrequests: Some(50),
         allow_undeclared_public_redirects: allow_public_redirects,
@@ -110,6 +113,8 @@ fn policy(echo_port: u16, allow_public_redirects: bool) -> EgressPolicy {
         address_cidrs: vec!["127.0.0.1/32".into()],
         user_agent: None,
         own_user_agent_hosts: Vec::new(),
+        local_names: Vec::new(),
+        pending_settings: Vec::new(),
     }
 }
 
@@ -223,7 +228,7 @@ async fn workerd_connect_and_fetch_share_policy() {
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
     let tmp = tempfile::tempdir().expect("tmpdir");
-    let grant_policy = policy(echo_port, false);
+    let grant_policy = policy(echo_port, http_port, false);
     let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
     local
@@ -293,7 +298,7 @@ async fn workerd_redirect_to_private_denied_even_with_public_redirect_flag() {
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
     let tmp = tempfile::tempdir().expect("tmpdir");
-    let grant_policy = policy(1, true);
+    let grant_policy = policy(1, http_port, true);
     let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
     local
@@ -343,7 +348,7 @@ async fn workerd_manual_redirect_returns_the_3xx_unfollowed() {
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
     let tmp = tempfile::tempdir().expect("tmpdir");
-    let grant_policy = policy(1, false);
+    let grant_policy = policy(1, http_port, false);
     let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
     local
@@ -382,7 +387,7 @@ async fn workerd_manual_redirect_returns_the_3xx_unfollowed() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn workerd_any_public_host_matches_names_but_not_addresses() {
+async fn workerd_any_public_host_grants_no_address_socket_or_other_port() {
     let Some(workerd) = find_workerd() else {
         panic!(
             "pinned workerd binary missing; run `cargo ensure-workerd`. Do not set BOOKCLERK_SKIP_WORKERD."
@@ -395,9 +400,9 @@ async fn workerd_any_public_host_matches_names_but_not_addresses() {
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
     let tmp = tempfile::tempdir().expect("tmpdir");
-    // `*` plus a loopback address grant: the name `localhost` passes both
-    // layers, while the literal `127.0.0.1` is no hostname, so `*` does not
-    // cover it, and `*` never grants a socket.
+    // `*` plus a loopback address grant: the literal `127.0.0.1` is no
+    // hostname, so `*` does not cover it, `*` never grants a socket, and
+    // `*` grants no port beyond 80 and 443.
     let grant_policy = EgressPolicy {
         mode: NetworkMode::Outbound,
         domains: vec!["*".into()],
@@ -411,6 +416,8 @@ async fn workerd_any_public_host_matches_names_but_not_addresses() {
         address_cidrs: vec!["127.0.0.1/32".into()],
         user_agent: None,
         own_user_agent_hosts: Vec::new(),
+        local_names: Vec::new(),
+        pending_settings: Vec::new(),
     };
     let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();
@@ -449,11 +456,13 @@ async fn workerd_any_public_host_matches_names_but_not_addresses() {
                 .expect_err("`*` is no TCP grant");
             assert_denied(&socket, &["tcp", "failed", "network connection lost"]);
 
+            // `*` names no port, so it grants the web ports only: a test
+            // server on an ephemeral port is out of reach even by name. The
+            // unit tests cover `*` matching a name on 80 and 443.
             let named = get_text(&dest, &format!("fetch:http://localhost:{http_port}/"))
                 .await
-                .expect("`*` covers a hostname");
-            assert!(named.starts_with("200\n"), "{named}");
-            assert!(named.contains("pong"), "{named}");
+                .expect_err("`*` grants only ports 80 and 443");
+            assert_denied(&named, &["localhost", "permitted", "failed"]);
             let _ = child.kill().await;
         })
         .await;
@@ -499,7 +508,10 @@ async fn workerd_fetch_carries_the_host_user_agent_except_on_approved_hosts() {
     let host_agent = "bookclerk/0.0.0-test (+https://bookclerk.app)";
     let grant_policy = EgressPolicy {
         mode: NetworkMode::Outbound,
-        domains: vec!["127.0.0.1".into(), "localhost".into()],
+        domains: vec![
+            format!("127.0.0.1:{http_port}"),
+            format!("localhost:{http_port}"),
+        ],
         max_redirects: 10,
         subrequests: None,
         allow_undeclared_public_redirects: false,
@@ -508,6 +520,8 @@ async fn workerd_fetch_carries_the_host_user_agent_except_on_approved_hosts() {
         user_agent: Some(host_agent.into()),
         // A padded or dotted `*` must not exempt every host.
         own_user_agent_hosts: vec!["127.0.0.1".into(), " * ".into(), "*.".into()],
+        local_names: Vec::new(),
+        pending_settings: Vec::new(),
     };
     let grant = serde_json::to_string(&grant_policy).expect("policy json");
     let local = tokio::task::LocalSet::new();

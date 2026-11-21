@@ -14,7 +14,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use bookclerk_library::{FileOwner, FileProbe, FileRole, LibraryStore};
+use bookclerk_library::{AudioStream, FileOwner, FileProbe, FileRole, LibraryStore};
 use bookclerk_storage::{
     ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend,
     StorageError,
@@ -89,30 +89,50 @@ impl RecordingBackend {
             | FileRole::Transcript
             | FileRole::Epub => return,
         }
-        let probe = match self.media.probe_file(path).await {
-            Ok(probe) => FileProbe {
-                content_type: probe.content_type.to_owned(),
-                bitrate_kbps: probe
-                    .bitrate_kbps
-                    .map(|kbps| kbps.min(FileProbe::MAX_BITRATE_KBPS)),
-                lossless: probe.lossless,
-                source_store: self
-                    .stored_from
-                    .get()
-                    .and_then(|store| source_store_of(&store))
-                    .or_else(|| self.source_store.clone()),
-            },
+        let probed = match self.media.probe_file(path).await {
+            Ok(probed) => probed,
             Err(err) => {
                 tracing::debug!(key, error = %err, "written audio file was not probed");
                 return;
             }
         };
-        if let Err(err) = self
+        let probe = FileProbe {
+            content_type: probed.content_type.to_owned(),
+            bitrate_kbps: probed
+                .bitrate_kbps
+                .map(|kbps| kbps.min(FileProbe::MAX_BITRATE_KBPS)),
+            lossless: probed.lossless,
+            source_store: self
+                .stored_from
+                .get()
+                .and_then(|store| source_store_of(&store))
+                .or_else(|| self.source_store.clone()),
+        };
+        let destination = self.destination.as_str();
+        match self
             .library
-            .set_edition_file_probe(self.destination.as_str(), key, &self.owner, &probe)
+            .set_edition_file_probe(destination, key, &self.owner, &probe)
             .await
         {
-            tracing::warn!(key, error = %err, "could not store a file's probe result");
+            Ok(true) => {}
+            // Another edition took the key over: nothing to describe.
+            Ok(false) => return,
+            Err(err) => {
+                tracing::warn!(key, error = %err, "could not store a file's probe result");
+                return;
+            }
+        }
+        let stream = AudioStream {
+            codec: probed.codec,
+            format: probed.format,
+            duration_ms: probed.duration_ms,
+        };
+        if let Err(err) = self
+            .library
+            .set_edition_file_stream(destination, key, &self.owner, &stream)
+            .await
+        {
+            tracing::warn!(key, error = %err, "could not store a file's audio stream");
         }
     }
 

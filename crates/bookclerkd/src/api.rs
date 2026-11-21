@@ -887,6 +887,67 @@ struct PluginConsentResponse {
     /// the request's `ownUserAgentHosts`.
     #[schema(example = "bookclerk/0.1.0 (+https://bookclerk.app)")]
     host_user_agent: String,
+    /// The destination each network setting (`network = "fetch"` or
+    /// `"tcp"`) names on each instance, and whether it is approved. Empty
+    /// when the plugin declares no network setting. A `pending` row is not
+    /// reachable until it is approved; `covered` is false while one is.
+    setting_destinations: Vec<PluginSettingDestinationView>,
+}
+
+/// One network setting's destination on one plugin instance.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct PluginSettingDestinationView {
+    /// The instance whose settings name it; absent when the plugin has no
+    /// instance yet and the row shows the setting's default.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_id: Option<String>,
+    /// The setting key, the source the grant is stored under.
+    #[schema(example = "server_url")]
+    setting: String,
+    /// The setting's label (its key when it has none).
+    #[schema(example = "Server URL")]
+    label: String,
+    /// `fetch` (HTTP requests) or `tcp` (a raw socket).
+    #[schema(example = "fetch")]
+    network: String,
+    /// The destination: `scheme://host:port` for a fetch, `host:port` for
+    /// TCP (IPv6 in brackets); absent when the setting is unset or invalid.
+    #[schema(example = "http://abs.home.lan:13378")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    destination: Option<String>,
+    /// What kind of host it is: `name` (may resolve to a local-network
+    /// address, for this name only), `publicAddress`, `localAddress` (this
+    /// one local-network address) or `restricted` (loopback, link-local or
+    /// a name such as `localhost`, which also needs an address grant).
+    #[schema(example = "name")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+    /// True for an `https` fetch, whose certificate is verified; false for
+    /// plain HTTP and raw TCP, which trust the network's DNS answer.
+    #[schema(example = false)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tls: Option<bool>,
+    /// `approved`, `pending` (awaiting consent), `unset` or `invalid`.
+    #[schema(example = "pending")]
+    state: String,
+    /// Why the value names no destination, when `state` is `invalid`.
+    #[schema(example = "the URL must start with http:// or https://")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// A setting destination the operator approves.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct PluginSettingDestinationApproval {
+    /// The setting key.
+    #[schema(example = "server_url")]
+    setting: String,
+    /// The destination exactly as the consent response shows it.
+    #[schema(example = "http://abs.home.lan:13378")]
+    destination: String,
 }
 
 /// The difference between a plugin's request and its stored grant.
@@ -932,6 +993,12 @@ struct PluginConsentApproveRequest {
     #[serde(default)]
     /// Optional operator overrides applied on top of the manifest request.
     grant: Option<PluginGrantOverride>,
+    #[serde(default)]
+    /// Setting destinations to approve, from the response's
+    /// `setting_destinations`. An approved destination stays approved while
+    /// a setting still names it; one left out stays pending, and one no
+    /// setting names any more is withdrawn.
+    setting_destinations: Vec<PluginSettingDestinationApproval>,
 }
 
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
@@ -2313,6 +2380,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     }
 
     refresh_tray_after_reload(state, &new_cfg).await;
+    // A changed `[auth].key_store` applies to the next key placed.
+    crate::refresh_key_store_preference(&new_cfg);
 
     let mut detail = format!(
         "reloaded {} (master.key wrap={})",
@@ -3815,9 +3884,11 @@ async fn get_plugin_consent(
     let pending = existing
         .as_ref()
         .map(|grant| pending_structural(grant, &request));
+    let (setting_destinations, _) =
+        plugin_setting_destinations(&state, plugin, existing.as_ref()).await?;
     let covered = existing.as_ref().is_some_and(|grant| {
         grant_covers(grant, &request) && pending.as_ref().is_some_and(|p| p.is_empty())
-    });
+    }) && !any_setting_pending(&setting_destinations);
     let brand = plugin_consent_brand(&state, plugin).await;
     let limits = plugin_consent_limits(plugin, cfg.plugins.jail.cpu_rate_percent);
     let runtime = match plugin.manifest.runtime {
@@ -3838,7 +3909,87 @@ async fn get_plugin_consent(
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
+        setting_destinations,
     }))
+}
+
+/// The consent rows for `plugin`'s network settings, plus the destinations
+/// its instances name now, per setting key.
+///
+/// # Errors
+///
+/// 500 when the library cannot be read.
+async fn plugin_setting_destinations(
+    state: &AppState,
+    plugin: &bookclerk_plugin_host::DiscoveredPlugin,
+    grant: Option<&PluginGrant>,
+) -> Result<
+    (
+        Vec<PluginSettingDestinationView>,
+        bookclerk_plugin_host::SettingDestinationMap,
+    ),
+    StatusCode,
+> {
+    if bookclerk_plugin_host::network_settings(&plugin.manifest)
+        .next()
+        .is_none()
+    {
+        return Ok((Vec::new(), Default::default()));
+    }
+    let library = state.library_snapshot().await;
+    let rows = bookclerk_plugin_host::library_setting_statuses(
+        &library,
+        &plugin.manifest,
+        plugin.plugin_key().canonical(),
+        grant,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!(error = %err, "failed to read plugin instance settings");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let in_use = bookclerk_plugin_host::destinations_in_use(&rows);
+    let views = rows
+        .into_iter()
+        .flat_map(|row| {
+            let instance_id = row.instance_id;
+            row.statuses
+                .into_iter()
+                .map(move |status| PluginSettingDestinationView {
+                    instance_id: instance_id.clone(),
+                    setting: status.key,
+                    label: status.label,
+                    network: status.network.as_str().to_string(),
+                    destination: status.destination.as_ref().map(|d| d.display()),
+                    scope: status
+                        .destination
+                        .as_ref()
+                        .map(|d| destination_scope_name(d.scope).to_string()),
+                    tls: status.destination.as_ref().map(|d| d.tls),
+                    state: status.state.as_str().to_string(),
+                    error: status.error.map(|err| err.to_string()),
+                })
+        })
+        .collect();
+    Ok((views, in_use))
+}
+
+/// The wire name of a destination scope.
+fn destination_scope_name(scope: bookclerk_plugin_manifest::DestinationScope) -> &'static str {
+    use bookclerk_plugin_manifest::DestinationScope;
+    match scope {
+        DestinationScope::Name => "name",
+        DestinationScope::PublicAddress => "publicAddress",
+        DestinationScope::LocalAddress => "localAddress",
+        DestinationScope::Restricted => "restricted",
+    }
+}
+
+/// Whether any consent row still awaits approval.
+fn any_setting_pending(views: &[PluginSettingDestinationView]) -> bool {
+    views
+        .iter()
+        .any(|view| view.state == bookclerk_plugin_host::SettingGrantState::Pending.as_str())
 }
 
 /// Persists an approved plugin grant after validating operator overrides.
@@ -3868,11 +4019,36 @@ async fn post_plugin_consent(
     let plugin = resolve_consent_plugin(&discovered, &id, query.plugin_key.as_deref())?;
     let request = consent_request(&plugin.manifest, plugin.plugin_key());
     let summary = consent_summary(&request);
-    let approved = build_approved_grant(&request, body.grant)?;
+    let mut approved = build_approved_grant(&request, body.grant)?;
     let mut store = PluginGrantStore::load(&cfg.paths().files_dir).map_err(|err| {
         tracing::error!(error = %err, "failed to load plugin grants");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    let existing = store.get_by_plugin_key(plugin.plugin_key().canonical());
+    let (_, in_use) = plugin_setting_destinations(&state, plugin, existing).await?;
+    let mut approve = bookclerk_plugin_host::SettingDestinationMap::new();
+    for item in &body.setting_destinations {
+        // Only a destination a setting names now can be approved; a stale
+        // one (the value changed since the dialog loaded) stays out.
+        if let Some(destination) = in_use
+            .get(&item.setting)
+            .and_then(|set| set.iter().find(|d| d.display() == item.destination))
+        {
+            approve
+                .entry(item.setting.clone())
+                .or_default()
+                .insert(destination.clone());
+        }
+    }
+    let kept = existing
+        .map(|grant| grant.setting_destinations.clone())
+        .unwrap_or_default();
+    approved.setting_destinations = bookclerk_plugin_host::approve_setting_destinations(
+        &kept,
+        &plugin.manifest,
+        &in_use,
+        &approve,
+    );
     store.upsert(approved.clone());
     store.save(&cfg.paths().files_dir).map_err(|err| {
         tracing::error!(error = %err, "failed to save plugin grants");
@@ -3888,19 +4064,22 @@ async fn post_plugin_consent(
     // An approval can leave a structural capability unticked; it stays
     // pending, so the answer says so instead of claiming coverage.
     let pending = pending_structural(&approved, &request);
+    let (setting_destinations, _) =
+        plugin_setting_destinations(&state, plugin, Some(&approved)).await?;
     Ok(Json(PluginConsentResponse {
         plugin_id: plugin.alias().to_string(),
         plugin_key: plugin.plugin_key().canonical().to_string(),
         provenance: plugin.identity.provenance.to_string(),
         runtime,
         request: PluginGrantView::from_grant(&request),
-        covered: pending.is_empty(),
+        covered: pending.is_empty() && !any_setting_pending(&setting_destinations),
         summary,
         existing: Some(PluginGrantView::from_grant(&approved)),
         pending: Some(PluginConsentPending::from(&pending)),
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
+        setting_destinations,
     }))
 }
 
@@ -8155,6 +8334,7 @@ tcp = {tcp}
             Json(super::PluginConsentApproveRequest {
                 approve: true,
                 grant: None,
+                setting_destinations: Vec::new(),
             }),
         )
         .await
@@ -8162,6 +8342,202 @@ tcp = {tcp}
         let body = serde_json::to_value(&after).unwrap();
         assert_eq!(body["covered"], true, "{body}");
         assert_eq!(body["pending"]["lines"], serde_json::json!([]));
+    }
+
+    /// Stages a native plugin whose `server_url` setting names a fetch
+    /// destination (default `default_url`) and whose `db` setting names a
+    /// TCP one.
+    fn stage_setting_network_plugin(files: &std::path::Path, default_url: &str) {
+        let root = files.join("plugins").join("abs_echo");
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("guest");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            root.join("plugin.toml"),
+            format!(
+                r#"
+api_version = 3
+id = "abs_echo"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["cli"]
+
+[vars]
+
+[capabilities.network]
+mode = "outbound"
+
+[[settings]]
+key = "server_url"
+label = "Server URL"
+type = "string"
+network = "fetch"
+default = "{default_url}"
+
+[[settings]]
+key = "db"
+type = "string"
+network = "tcp"
+default_port = 5432
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// A setting's destination shows as pending, approving it stores it per
+    /// setting, a stale approval is ignored, and a changed value withdraws
+    /// the old destination.
+    #[tokio::test]
+    async fn plugin_consent_lists_and_approves_setting_destinations() {
+        use axum::extract::{Path, Query, State};
+        use axum::Json;
+        use bookclerk_library::control_plane::{
+            create_plugin_instance, import_instance_config_if_absent, ConfigActor,
+            PluginInstanceConfigV1, SettingValue,
+        };
+
+        let files = tempfile::tempdir().unwrap();
+        stage_setting_network_plugin(files.path(), "http://abs.home.lan:13378");
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        let plugin = bookclerk_plugin_host::discover_plugins(&cfg)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.manifest.id == "abs_echo")
+            .expect("staged plugin");
+        let mut store = bookclerk_plugin_host::PluginGrantStore::default();
+        store.upsert(bookclerk_plugin_host::consent_request(
+            &plugin.manifest,
+            plugin.plugin_key(),
+        ));
+        store.save(files.path()).unwrap();
+        let state = consent_test_state(cfg).await;
+        let get = || {
+            super::get_plugin_consent(
+                State(state.clone()),
+                Path("abs_echo".to_string()),
+                Query(super::PluginConsentQuery::default()),
+            )
+        };
+        let approve = |items: Vec<(&str, &str)>| {
+            super::post_plugin_consent(
+                State(state.clone()),
+                Path("abs_echo".to_string()),
+                Query(super::PluginConsentQuery::default()),
+                Json(super::PluginConsentApproveRequest {
+                    approve: true,
+                    grant: None,
+                    setting_destinations: items
+                        .into_iter()
+                        .map(
+                            |(setting, destination)| super::PluginSettingDestinationApproval {
+                                setting: setting.into(),
+                                destination: destination.into(),
+                            },
+                        )
+                        .collect(),
+                }),
+            )
+        };
+
+        // No instance yet: the default is judged, and it awaits consent.
+        let Json(before) = get().await.expect("consent");
+        let body = serde_json::to_value(&before).unwrap();
+        assert_eq!(body["covered"], false, "{body}");
+        assert_eq!(
+            body["setting_destinations"],
+            serde_json::json!([
+                {
+                    "setting": "server_url",
+                    "label": "Server URL",
+                    "network": "fetch",
+                    "destination": "http://abs.home.lan:13378",
+                    "scope": "name",
+                    "tls": false,
+                    "state": "pending",
+                },
+                { "setting": "db", "label": "db", "network": "tcp", "state": "unset" },
+            ])
+        );
+
+        // A destination no setting names is not approved.
+        let Json(stale) = approve(vec![("server_url", "https://abs.evil.example:443")])
+            .await
+            .expect("approve");
+        let body = serde_json::to_value(&stale).unwrap();
+        assert_eq!(body["covered"], false, "{body}");
+        assert_eq!(body["setting_destinations"][0]["state"], "pending");
+
+        let Json(after) = approve(vec![("server_url", "http://abs.home.lan:13378")])
+            .await
+            .expect("approve");
+        let body = serde_json::to_value(&after).unwrap();
+        assert_eq!(body["covered"], true, "{body}");
+        assert_eq!(body["setting_destinations"][0]["state"], "approved");
+        let grants = bookclerk_plugin_host::PluginGrantStore::load(files.path()).unwrap();
+        let stored = grants
+            .get_by_plugin_key(plugin.plugin_key().canonical())
+            .unwrap();
+        assert_eq!(
+            stored.setting_destinations["server_url"]
+                .iter()
+                .map(bookclerk_plugin_manifest::SettingDestination::display)
+                .collect::<Vec<_>>(),
+            vec!["http://abs.home.lan:13378".to_string()]
+        );
+
+        // The instance now names another server and an invalid database.
+        let library = state.library_snapshot().await;
+        let instance = create_plugin_instance(
+            &library,
+            &ConfigActor::Bootstrap,
+            plugin.plugin_key().canonical(),
+            "",
+        )
+        .await
+        .unwrap();
+        let mut body = PluginInstanceConfigV1::empty();
+        body.settings.insert(
+            "server_url".into(),
+            SettingValue::String("https://192.168.1.20".into()),
+        );
+        body.settings
+            .insert("db".into(), SettingValue::String("user@db.lan".into()));
+        import_instance_config_if_absent(
+            &library,
+            &ConfigActor::Bootstrap,
+            &instance.id,
+            &plugin.manifest.settings_schema(),
+            &body,
+            "test-import",
+        )
+        .await
+        .unwrap();
+        let Json(changed) = get().await.expect("consent");
+        let body = serde_json::to_value(&changed).unwrap();
+        assert_eq!(body["covered"], false, "{body}");
+        let rows = &body["setting_destinations"];
+        assert_eq!(rows[0]["instanceId"], instance.id.to_string());
+        assert_eq!(rows[0]["destination"], "https://192.168.1.20:443");
+        assert_eq!(rows[0]["scope"], "localAddress");
+        assert_eq!(rows[0]["tls"], true);
+        assert_eq!(rows[0]["state"], "pending");
+        assert_eq!(rows[1]["state"], "invalid");
+        assert!(rows[1]["error"].as_str().unwrap().contains("user name"));
+
+        // Answering the dialog again drops the old server's approval.
+        let Json(_) = approve(Vec::new()).await.expect("approve");
+        let grants = bookclerk_plugin_host::PluginGrantStore::load(files.path()).unwrap();
+        let stored = grants
+            .get_by_plugin_key(plugin.plugin_key().canonical())
+            .unwrap();
+        assert!(stored.setting_destinations.is_empty(), "{stored:?}");
     }
 
     fn write_logo_svg(root: &std::path::Path, svg: &str) {
