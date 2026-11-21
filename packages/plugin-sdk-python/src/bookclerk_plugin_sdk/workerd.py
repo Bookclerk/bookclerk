@@ -1972,6 +1972,7 @@ STOREFRONT_METHODS: tuple[str, ...] = (
     "listDeals",
     "catalogDetail",
     "revokeAccount",
+    "qualityOffers",
     "diagnose",
     "health",
 )
@@ -2095,6 +2096,16 @@ class StorefrontEntrypoint(NamedEntrypoint):
         default does nothing (``RevokeAccountParams`` → ``None``).
         """
         return None
+
+    async def qualityOffers(self, _params: abi.QualityOffersParams) -> abi.QualityOffersResult:
+        """Audio quality one account would download for each title.
+
+        One answer per title id in order (``found`` false when the store
+        cannot say); it must not license or download anything. The host asks
+        only a store that declares ``catalog.qualityOffers``; the default
+        raises unsupported (``QualityOffersParams`` → ``QualityOffersResult``).
+        """
+        raise _unsupported("qualityOffers")
 
     async def health(self):
         """Liveness / readiness probe (``HealthOk``)."""

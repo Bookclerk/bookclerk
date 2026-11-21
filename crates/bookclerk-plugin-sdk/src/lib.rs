@@ -88,11 +88,13 @@ pub use protocol::{
     EventPollResult, ExpandCandidatesParams, Explicitness, ExpressionKind, ExternalUser,
     FetchOptions, FetchTitleParams, FetchedFile, FetchedFileRole, Identifier, IdentifierScheme,
     ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
-    LoginStartResult, MediaKind, MediaSupport, OutputLocalContextDto, OutputS3ContextDto,
-    PlainFetch, PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
-    PurchaseHintsParams, PurchaseHintsResult, RevokeAccountParams, S3CredentialsDto, ScanBook,
+    LoginStartResult, MediaKind, MediaSupport, OfferedAacProfile, OfferedCodec,
+    OutputLocalContextDto, OutputS3ContextDto, PlainFetch, PortalAuthMode, PurchaseHint,
+    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult, QualityOffer,
+    QualityOffersParams, QualityOffersResult, RevokeAccountParams, S3CredentialsDto, ScanBook,
     ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams, SeriesEntry, SourceAccount,
-    SourceAccounts, SyncListeningResult, WorkKind, MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
+    SourceAccounts, SyncListeningResult, TitleQualityOffer, WorkKind, MAX_RPC_LINE_BYTES,
+    PROTOCOL_NAME,
 };
 pub use scan_page::{scan_page, StorePage};
 pub use sockets::{

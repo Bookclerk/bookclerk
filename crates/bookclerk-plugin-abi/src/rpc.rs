@@ -29,10 +29,11 @@ use crate::generated::{
     read_login_start_reply, read_metadata_chapters_params, read_metadata_chapters_reply,
     read_metadata_lookup_params, read_metadata_records_reply, read_metadata_search_params,
     read_plugin_event, read_publish_reply, read_purchase_hint_params, read_purchase_hint_reply,
-    read_purchase_hints_params, read_purchase_hints_reply, read_revoke_account_params,
-    read_scan_library_params, read_scan_params, read_scan_reply, read_search_catalog_params,
-    read_source_accounts_reply, read_sync_listening_reply, write_authenticate_user_params,
-    write_brand, write_catalog_detail_params, write_catalog_detail_reply, write_catalog_hits_reply,
+    read_purchase_hints_params, read_purchase_hints_reply, read_quality_offers_params,
+    read_quality_offers_reply, read_revoke_account_params, read_scan_library_params,
+    read_scan_params, read_scan_reply, read_search_catalog_params, read_source_accounts_reply,
+    read_sync_listening_reply, write_authenticate_user_params, write_brand,
+    write_catalog_detail_params, write_catalog_detail_reply, write_catalog_hits_reply,
     write_cli_invoke_params, write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply,
     write_config_option, write_cover_fetch_params, write_cover_images_reply,
     write_database_adapter_config, write_diagnose_reply, write_event_poll_reply,
@@ -42,13 +43,14 @@ use crate::generated::{
     write_metadata_chapters_params, write_metadata_chapters_reply, write_metadata_lookup_params,
     write_metadata_records_reply, write_metadata_search_params, write_plugin_event,
     write_publish_reply, write_purchase_hint_params, write_purchase_hint_reply,
-    write_purchase_hints_params, write_purchase_hints_reply, write_revoke_account_params,
-    write_scan_library_params, write_scan_params, write_scan_reply, write_search_catalog_params,
-    write_source_accounts_reply, write_sync_listening_reply, CatalogDetail, CatalogHits,
-    CoverFetchParams, CoverImage, CoverImages, DiagnoseResult, EventPollResult, Invocation,
-    MetadataChapters, MetadataChaptersParams, MetadataLookupParams, MetadataRecord,
-    MetadataRecords, MetadataSearchParams, PluginEvent, PublishOk, PurchaseHintResult,
-    PurchaseHintsResult, SourceAccounts, SyncListeningResult,
+    write_purchase_hints_params, write_purchase_hints_reply, write_quality_offers_params,
+    write_quality_offers_reply, write_revoke_account_params, write_scan_library_params,
+    write_scan_params, write_scan_reply, write_search_catalog_params, write_source_accounts_reply,
+    write_sync_listening_reply, CatalogDetail, CatalogHits, CoverFetchParams, CoverImage,
+    CoverImages, DiagnoseResult, EventPollResult, Invocation, MetadataChapters,
+    MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataRecords,
+    MetadataSearchParams, PluginEvent, PublishOk, PurchaseHintResult, PurchaseHintsResult,
+    SourceAccounts, SyncListeningResult,
 };
 #[cfg(feature = "host")]
 use crate::host_roles::HostAdapterDatabaseSession;
@@ -98,8 +100,9 @@ use crate::{
     EventReadRequest, ExpandCandidatesParams, ExternalUser, FetchTitleParams, ListDealsParams,
     ListeningProgress, LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch,
     PluginError, PluginMigration, PluginMigrationOp, PurchaseHint, PurchaseHintParams,
-    PurchaseHintsParams, Result, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams,
-    SearchCatalogParams, SourceAccount, MAX_PLUGIN_MIGRATION_ID_BYTES,
+    PurchaseHintsParams, QualityOffersParams, QualityOffersResult, Result, RevokeAccountParams,
+    ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams, SourceAccount,
+    MAX_PLUGIN_MIGRATION_ID_BYTES,
 };
 
 use crate::generated::RoundTripFailure;
@@ -2992,6 +2995,16 @@ impl content_source_capnp::Server for ContentSourceServer {
         write_catalog_detail_reply(results.get().init_result(), &outcome)
     }
 
+    async fn quality_offers(
+        self: Rc<Self>,
+        params: content_source_capnp::QualityOffersParams,
+        mut results: content_source_capnp::QualityOffersResults,
+    ) -> capnp::Result<()> {
+        let params = read_quality_offers_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.quality_offers(params).await;
+        write_quality_offers_reply(results.get().init_result(), &outcome)
+    }
+
     async fn revoke_account(
         self: Rc<Self>,
         params: content_source_capnp::RevokeAccountParams,
@@ -4684,6 +4697,12 @@ impl ContentSource for ContentSourceClient {
             .map_err(from_capnp)?
             .map(|ok| ok.found.then_some(ok.hit))
     }
+    async fn quality_offers(&self, params: QualityOffersParams) -> Result<QualityOffersResult> {
+        let mut req = self.client.quality_offers_request();
+        write_quality_offers_params(req.get().init_params(), &params).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_quality_offers_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
     async fn revoke_account(&self, params: RevokeAccountParams) -> Result<()> {
         let mut req = self.client.revoke_account_request();
         write_revoke_account_params(req.get().init_params(), &params).map_err(from_capnp)?;
@@ -6193,6 +6212,7 @@ mod tests {
                 price_by_isbn: true,
                 price_by_asin: false,
                 detail_by_product_id: true,
+                quality_offers: true,
             },
             ..PluginDescribe::default()
         };
@@ -6212,6 +6232,7 @@ mod tests {
         assert!(back.catalog.price_by_isbn);
         assert!(!back.catalog.price_by_asin);
         assert!(back.catalog.detail_by_product_id);
+        assert!(back.catalog.quality_offers);
         assert_eq!(back, declared);
 
         // A guest that never sets the struct declares nothing.
@@ -6225,6 +6246,7 @@ mod tests {
         .expect("decode bare describe");
         assert!(!back.catalog.detail_by_isbn);
         assert!(!back.catalog.detail_by_product_id);
+        assert!(!back.catalog.quality_offers);
     }
 
     struct MemDest {
@@ -6987,6 +7009,96 @@ mod tests {
                     .await
                     .expect_err("a rate limit");
                 assert_eq!(err.code, PluginErrorCode::RateLimited, "{err}");
+            })
+            .await;
+    }
+
+    /// Answers a quality offer for title `hi`, nothing for the others, and
+    /// hands back refreshed credentials.
+    struct OfferStore;
+
+    #[async_trait::async_trait(?Send)]
+    impl ContentSource for OfferStore {
+        async fn quality_offers(
+            &self,
+            params: crate::QualityOffersParams,
+        ) -> Result<crate::QualityOffersResult> {
+            if params.account_id.is_empty() {
+                return Err(PluginError::rate_limited("slow down", None));
+            }
+            Ok(crate::QualityOffersResult {
+                offers: params
+                    .title_ids
+                    .iter()
+                    .map(|id| crate::TitleQualityOffer {
+                        found: id == "hi",
+                        offer: if id == "hi" {
+                            crate::QualityOffer {
+                                codec: crate::OfferedCodec::Aac,
+                                aac_profile: crate::OfferedAacProfile::Xhe,
+                                bitrate_kbps: Some(137),
+                                sample_rate_hz: Some(44_100),
+                                channels: Some(2),
+                            }
+                        } else {
+                            crate::QualityOffer::default()
+                        },
+                    })
+                    .collect(),
+                refreshed_credentials: Some(br#"{"t":1}"#.to_vec()),
+            })
+        }
+    }
+
+    /// Offers cross the wire in order with every stream field, a store
+    /// without the method answers `unsupported`, and a rate limit keeps
+    /// its code.
+    #[tokio::test(flavor = "current_thread")]
+    async fn quality_offers_round_trip_over_capnp() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let client = ContentSourceClient {
+                    client: capnp_rpc::new_client(ContentSourceServer {
+                        inner: Arc::new(OfferStore),
+                    }),
+                };
+                let params = crate::QualityOffersParams {
+                    account_id: "a".into(),
+                    credentials: Some(b"{}".to_vec()),
+                    title_ids: vec!["lo".into(), "hi".into()],
+                    ..crate::QualityOffersParams::default()
+                };
+                let result = client.quality_offers(params.clone()).await.expect("offers");
+                assert_eq!(result.offers.len(), 2);
+                assert!(!result.offers[0].found);
+                assert!(result.offers[1].found);
+                assert_eq!(result.offers[1].offer.codec, crate::OfferedCodec::Aac);
+                assert_eq!(
+                    result.offers[1].offer.aac_profile,
+                    crate::OfferedAacProfile::Xhe
+                );
+                assert_eq!(result.offers[1].offer.bitrate_kbps, Some(137));
+                assert_eq!(result.offers[1].offer.sample_rate_hz, Some(44_100));
+                assert_eq!(result.offers[1].offer.channels, Some(2));
+                assert_eq!(
+                    result.refreshed_credentials.as_deref(),
+                    Some(&br#"{"t":1}"#[..])
+                );
+
+                let err = client
+                    .quality_offers(crate::QualityOffersParams::default())
+                    .await
+                    .expect_err("a rate limit");
+                assert_eq!(err.code, PluginErrorCode::RateLimited, "{err}");
+
+                let plain = ContentSourceClient {
+                    client: capnp_rpc::new_client(ContentSourceServer {
+                        inner: Arc::new(PricingStore { limited: false }),
+                    }),
+                };
+                let err = plain.quality_offers(params).await.expect_err("unsupported");
+                assert_eq!(err.code, PluginErrorCode::Unsupported, "{err}");
             })
             .await;
     }

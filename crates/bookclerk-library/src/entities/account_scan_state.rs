@@ -27,6 +27,12 @@ pub struct Model {
     /// on the holdings it listed (`holdings.seen_pass`). Empty before the
     /// first pass.
     pub pass_id: String,
+    /// Holding id the quality-upgrade check continues after; empty to start
+    /// from the account's first holding.
+    pub quality_cursor: String,
+    /// RFC 3339 time the quality-upgrade check last ran for the account;
+    /// `None` before it first ran.
+    pub quality_checked_at: Option<String>,
     /// RFC 3339 time of the last write (a resume cursor's age).
     pub updated_at: String,
 }

@@ -40,7 +40,8 @@ export const MAX_SCAN_CURSOR_BYTES = 4096 as const;
 
 /**
  * Maximum bytes of refreshed credentials a storefront hands back
- * (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`).
+ * (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`,
+ * `QualityOffersResult.refreshedCredentials`).
  */
 export const MAX_REFRESHED_CREDENTIAL_BYTES = 65536 as const;
 
@@ -440,6 +441,27 @@ export const EXPLICITNESSS = ["unknown", "clean", "explicit"] as const;
 
 /** Union of `EXPLICITNESSS` wire names. */
 export type Explicitness = (typeof EXPLICITNESSS)[number];
+
+/**
+ * Audio codec of a stream a store offers (`QualityOffer.codec`). Spelled as
+ * the host's probed codecs are, so an offer compares with a held file.
+ *
+ * Ordinal-ordered `OfferedCodec` wire names (index = Cap'n Proto ordinal).
+ */
+export const OFFERED_CODECS = ["unknown", "aac", "alac", "flac", "mp3", "opus", "vorbis", "eac3", "ac4"] as const;
+
+/** Union of `OFFERED_CODECS` wire names. */
+export type OfferedCodec = (typeof OFFERED_CODECS)[number];
+
+/**
+ * AAC profile of an offered AAC stream (`QualityOffer.aacProfile`).
+ *
+ * Ordinal-ordered `OfferedAacProfile` wire names (index = Cap'n Proto ordinal).
+ */
+export const OFFERED_AAC_PROFILES = ["unknown", "lc", "he", "heV2", "xhe"] as const;
+
+/** Union of `OFFERED_AAC_PROFILES` wire names. */
+export type OfferedAacProfile = (typeof OFFERED_AAC_PROFILES)[number];
 
 /**
  * A field of a `MetadataFileRecord`. Dialects declare in the manifest which

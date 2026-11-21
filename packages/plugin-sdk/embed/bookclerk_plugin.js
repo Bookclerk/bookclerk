@@ -58,6 +58,8 @@ var CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"];
 var PRICE_LOOKUPS = ["unspecified", "product", "isbn", "asin", "title"];
 var ABRIDGEMENTS = ["unknown", "unabridged", "abridged"];
 var EXPLICITNESSS = ["unknown", "clean", "explicit"];
+var OFFERED_CODECS = ["unknown", "aac", "alac", "flac", "mp3", "opus", "vorbis", "eac3", "ac4"];
+var OFFERED_AAC_PROFILES = ["unknown", "lc", "he", "heV2", "xhe"];
 var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration", "explicitness"];
 var NOTIFICATION_SEVERITYS = ["info", "warning", "critical"];
 var NOTIFICATION_ALERT_ACTIONS = ["none", "trigger", "resolve"];
@@ -4106,6 +4108,149 @@ var PurchaseHintsReplyCodec = {
     }
   }
 };
+var QualityOfferCodec = {
+  dataWords: 2,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(OFFERED_CODECS, v.codec ?? OFFERED_CODECS[0], "OfferedCodec"));
+    s.setUint16(1, ord(OFFERED_AAC_PROFILES, v.aacProfile ?? OFFERED_AAC_PROFILES[0], "OfferedAacProfile"));
+    if (v.bitrateKbps !== void 0) {
+      s.setUint32(1, v.bitrateKbps ?? 0);
+    }
+    if (v.sampleRateHz !== void 0) {
+      s.setUint32(2, v.sampleRateHz ?? 0);
+    }
+    if (v.channels !== void 0) {
+      s.setUint32(3, v.channels ?? 0);
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      codec: fromOrd(OFFERED_CODECS, s.getUint16(0), "OfferedCodec"),
+      aacProfile: fromOrd(OFFERED_AAC_PROFILES, s.getUint16(1), "OfferedAacProfile")
+    };
+    const bitrateKbpsValue = s.getUint32(1);
+    if (!(bitrateKbpsValue === 0)) {
+      out.bitrateKbps = bitrateKbpsValue;
+    }
+    const sampleRateHzValue = s.getUint32(2);
+    if (!(sampleRateHzValue === 0)) {
+      out.sampleRateHz = sampleRateHzValue;
+    }
+    const channelsValue = s.getUint32(3);
+    if (!(channelsValue === 0)) {
+      out.channels = channelsValue;
+    }
+    return out;
+  }
+};
+var QualityOffersParamsCodec = {
+  dataWords: 0,
+  pointerCount: 5,
+  write(s, v, caps) {
+    s.setText(0, v.accountId ?? "");
+    if (v.credentials !== void 0) {
+      s.setData(1, v.credentials ?? EMPTY_BYTES);
+    }
+    if (v.sourceConfig != null) {
+      ExtensibleConfigCodec.write(s.initStruct(2, 1, 2), v.sourceConfig, caps);
+    }
+    s.setTextList(3, v.titleIds ?? []);
+    if (v.fetch != null) {
+      FetchOptionsCodec.write(s.initStruct(4, 1, 4), v.fetch, caps);
+    }
+  },
+  read(s, caps) {
+    const out = {
+      accountId: s.getText(0),
+      sourceConfig: ExtensibleConfigCodec.read(s.getStruct(2, 1, 2), caps),
+      titleIds: s.getTextList(3),
+      fetch: FetchOptionsCodec.read(s.getStruct(4, 1, 4), caps)
+    };
+    const credentialsValue = s.getData(1);
+    if (!(credentialsValue.length === 0)) {
+      out.credentials = credentialsValue;
+    }
+    return out;
+  }
+};
+var TitleQualityOfferCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    s.setBool(0, v.found ?? false);
+    if (v.offer != null) {
+      QualityOfferCodec.write(s.initStruct(0, 2, 0), v.offer, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      found: s.getBool(0),
+      offer: QualityOfferCodec.read(s.getStruct(0, 2, 0), caps)
+    };
+  }
+};
+var QualityOffersResultCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.offers ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        TitleQualityOfferCodec.write(items[i], list[i], caps);
+      }
+    }
+    if (v.refreshedCredentials !== void 0) {
+      s.setData(1, v.refreshedCredentials ?? EMPTY_BYTES);
+    }
+  },
+  read(s, caps) {
+    const out = {
+      offers: s.getStructList(0, 1, 1).map((item) => TitleQualityOfferCodec.read(item, caps))
+    };
+    const refreshedCredentialsValue = s.getData(1);
+    if (!(refreshedCredentialsValue.length === 0)) {
+      out.refreshedCredentials = refreshedCredentialsValue;
+    }
+    return out;
+  }
+};
+var QualityOffersReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          QualityOffersResultCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("QualityOffersReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: QualityOffersResultCodec.read(s.getStruct(0, 0, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("QualityOffersReply", disc);
+    }
+  }
+};
 var ScanLibraryParamsCodec = {
   dataWords: 1,
   pointerCount: 0,
@@ -7951,6 +8096,34 @@ var ContentSourcePurchaseHintsResultsCodec = {
     };
   }
 };
+var ContentSourceQualityOffersParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      QualityOffersParamsCodec.write(s.initStruct(0, 0, 5), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: QualityOffersParamsCodec.read(s.getStruct(0, 0, 5), caps)
+    };
+  }
+};
+var ContentSourceQualityOffersResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      QualityOffersReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: QualityOffersReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var RemoteLibraryHealthParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -10842,7 +11015,8 @@ var METHODS = {
     health: withoutParams("storefront", "health", ContentSourceHealthParamsCodec, ContentSourceHealthResultsCodec, okHealth),
     diagnose: withoutParams("storefront", "diagnose", ContentSourceDiagnoseParamsCodec, ContentSourceDiagnoseResultsCodec, okLines),
     catalogDetail: withParams("storefront", "catalogDetail", ContentSourceCatalogDetailParamsCodec, ContentSourceCatalogDetailResultsCodec, (value) => okValue({ found: value != null, hit: value ?? void 0 })),
-    revokeAccount: withParams("storefront", "revokeAccount", ContentSourceRevokeAccountParamsCodec, ContentSourceRevokeAccountResultsCodec, okEmpty)
+    revokeAccount: withParams("storefront", "revokeAccount", ContentSourceRevokeAccountParamsCodec, ContentSourceRevokeAccountResultsCodec, okEmpty),
+    qualityOffers: withParams("storefront", "qualityOffers", ContentSourceQualityOffersParamsCodec, ContentSourceQualityOffersResultsCodec, okPass)
   },
   Destination: {
     head: spec({
@@ -12757,6 +12931,7 @@ var STOREFRONT_METHODS = Object.freeze([
   "listDeals",
   "catalogDetail",
   "revokeAccount",
+  "qualityOffers",
   "diagnose",
   "health"
 ]);
@@ -12924,6 +13099,19 @@ var StorefrontEntrypoint = class extends NamedEntrypoint {
    */
   revokeAccount(_params) {
     return Promise.resolve();
+  }
+  /**
+   * The audio quality one account would download for each title today, one
+   * answer per title id in order (`found: false` when the store cannot
+   * say). It must not license or download anything. The host asks only a
+   * store that declares `catalog.qualityOffers` in `describe()`; the
+   * default rejects as unsupported.
+   *
+   * @param _params - Account, its credentials, settings and title ids.
+   * @returns One answer per title, plus any refreshed credentials.
+   */
+  qualityOffers(_params) {
+    return Promise.reject(unsupported("qualityOffers"));
   }
   /**
    * Operator-facing diagnostic lines.

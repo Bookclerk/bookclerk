@@ -312,6 +312,38 @@ pub trait ContentSource: Send + Sync {
             .collect())
     }
 
+    /// Whether [`Self::quality_offers`] answers which stream an account
+    /// would download today (the guest's declared
+    /// `CatalogCapabilities.qualityOffers`).
+    ///
+    /// Default: `false`, so the quality-upgrade check skips the store.
+    fn answers_quality_offers(&self) -> bool {
+        false
+    }
+
+    /// The stream `account_id` would download for each of `title_ids` (the
+    /// store's product ids) today with `download`'s fetch options, one
+    /// answer per id in order; `None` where the store could not say.
+    /// Nothing is licensed or downloaded.
+    ///
+    /// Default: no answers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::RateLimited`] when the store asked to slow
+    /// down, and another error when the credentials cannot be read or the
+    /// call or its reply fails; either applies to the whole batch.
+    async fn quality_offers(
+        &self,
+        scope: &SourceScope,
+        account_id: &str,
+        title_ids: &[String],
+        download: &crate::DownloadOptions,
+    ) -> Result<Vec<Option<bookclerk_library::quality::StreamQuality>>> {
+        let _ = (scope, account_id, download);
+        Ok(vec![None; title_ids.len()])
+    }
+
     /// Current deals / promos for discovery shelves.
     ///
     /// Default: empty.

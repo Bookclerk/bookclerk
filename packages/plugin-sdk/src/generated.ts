@@ -34,6 +34,8 @@ import type {
   PriceLookup,
   Abridgement,
   Explicitness,
+  OfferedCodec,
+  OfferedAacProfile,
   MetadataField,
   NotificationSeverity,
   NotificationAudience,
@@ -68,6 +70,8 @@ export type {
   PriceLookup,
   Abridgement,
   Explicitness,
+  OfferedCodec,
+  OfferedAacProfile,
   MetadataField,
   NotificationSeverity,
   NotificationAudience,
@@ -1763,6 +1767,16 @@ export interface ContentSource {
    * @returns {@link PurchaseHintsReply}
    */
   purchaseHints(params: PurchaseHintsParams): Promise<PurchaseHintsReply>;
+  /**
+   * The audio quality one account would download for each of several
+   * titles today, so the host can tell when a better file than the one it
+   * holds is on offer. Asked only of guests that declare
+   * `CatalogCapabilities.qualityOffers`; it must not license or download.
+   *
+   * @param params - Account, credentials, and title ids.
+   * @returns {@link QualityOffersReply}
+   */
+  qualityOffers(params: QualityOffersParams): Promise<QualityOffersReply>;
 }
 
 /**
@@ -2083,6 +2097,12 @@ export interface CatalogCapabilities {
    * that leaves it false is never woken for a detail lookup by product id.
    */
   detailByProductId: boolean;
+  /**
+   * True when `qualityOffers` answers which audio quality an account would
+   * download for a title. The host's quality-upgrade check asks only stores
+   * that declare it.
+   */
+  qualityOffers: boolean;
 }
 
 /**
@@ -3148,6 +3168,88 @@ export interface PurchaseHintsResult {
  */
 export type PurchaseHintsReply =
   | { kind: "ok"; value: PurchaseHintsResult } // Success: an answer per query.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** The stream one account would download for a title today. */
+export interface QualityOffer {
+  /** Codec of the offered stream. */
+  codec: OfferedCodec;
+  /** AAC profile when `codec` is `aac`; `unknown` otherwise. */
+  aacProfile: OfferedAacProfile;
+  /**
+   * Average bitrate in kbit/s; zero when unknown.
+   * Omitted when absent (wire zero value).
+   */
+  bitrateKbps?: number;
+  /**
+   * Sample rate in Hz; zero when unknown.
+   * Omitted when absent (wire zero value).
+   */
+  sampleRateHz?: number;
+  /**
+   * Channel count; zero when unknown.
+   * Omitted when absent (wire zero value).
+   */
+  channels?: number;
+}
+
+/** Params of `ContentSource.qualityOffers`: the titles one account holds. */
+export interface QualityOffersParams {
+  /** Account whose download would be made. */
+  accountId: string;
+  /**
+   * Decrypted credential blob for this account; never log it. Empty when
+   * none is stored.
+   * Omitted when absent (wire zero value).
+   */
+  credentials?: Uint8Array;
+  /**
+   * The instance's settings as `application/json` (bitrate tier and the
+   * like, which change what a download gets).
+   */
+  sourceConfig: ExtensibleConfig;
+  /**
+   * Store product ids, as the account's scan listed them; at most
+   * `maxListPage`.
+   */
+  titleIds: string[];
+  /**
+   * The fetch options a download would carry (DRM path, xHE-AAC), so the
+   * answer names what that download would get.
+   */
+  fetch: FetchOptions;
+}
+
+/** One title's answer in `QualityOffersResult`. */
+export interface TitleQualityOffer {
+  /** False when the store could not say for this title (`offer` is empty). */
+  found: boolean;
+  /** What a download would get, when `found`. */
+  offer: QualityOffer;
+}
+
+/** Success payload of `ContentSource.qualityOffers`. */
+export interface QualityOffersResult {
+  /**
+   * One answer per title id, in the order they were sent. A short list
+   * leaves the rest unanswered.
+   */
+  offers: TitleQualityOffer[];
+  /**
+   * The account's credentials as the guest holds them after refreshing them
+   * during the call, as in `ScanPage.refreshedCredentials`. Empty when
+   * nothing changed.
+   * Omitted when absent (wire zero value).
+   */
+  refreshedCredentials?: Uint8Array;
+}
+
+/**
+ * Result union of `ContentSource.qualityOffers`. A whole-batch `err` (for
+ * example `rateLimited`) applies to every title in it.
+ */
+export type QualityOffersReply =
+  | { kind: "ok"; value: QualityOffersResult } // Success: an answer per title.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** Params of `RemoteLibrary.scanLibrary` (remote library sync). */
