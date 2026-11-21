@@ -22,12 +22,14 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, Quer
 use super::LibraryStore;
 use crate::control_plane::batch;
 use crate::entities::{
-    account_links, notifications, notify_deliveries, notify_destinations, notify_inbox,
+    account_links, jobs, notifications, notify_deliveries, notify_destinations, notify_inbox,
     notify_patron_offers, notify_patron_prefs, notify_patron_targets, notify_routes,
     portal_identities, users,
 };
 use crate::error::{EntityKind, LibraryError, Result};
-use crate::models::{EnqueueJobSpec, EnqueueOutcome, JobFence, JobKind, JobPayload, JobTrigger};
+use crate::models::{
+    EnqueueJobSpec, EnqueueOutcome, JobFence, JobKind, JobPayload, JobState, JobTrigger,
+};
 use crate::notifications::{
     severity_reaches, DeliveryRecord, DeliveryState, Destination, DestinationKind, FailedAttempt,
     FailureEffect, InboxEntry, NewDestination, NewNotification, PatronChoice, PatronOffer,
@@ -220,6 +222,44 @@ fn page(limit: u64) -> u64 {
     limit.clamp(1, MAX_NOTIFY_PAGE)
 }
 
+/// A patron's choice for one notification type, as routing reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PatronPick {
+    /// No choice: the type's default-on notifiers apply.
+    Default,
+    /// The patron turned the type off: inbox only.
+    Off,
+    /// The patron picked these destination ids (none means inbox only).
+    Chosen(BTreeSet<String>),
+}
+
+/// How one listing read is sized under the database's result-row cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PageWindow {
+    /// Rows the page holds: the asked size, clamped, and never more than
+    /// the cap.
+    size: u64,
+    /// Rows the first read asks for: one past `size` (the look-ahead that
+    /// says another page follows) when the cap leaves room, else `size`.
+    read: u64,
+}
+
+impl PageWindow {
+    /// The window for a page of `limit` rows under a cap of `cap` rows per
+    /// read (at least 1).
+    fn new(limit: u64, cap: u64) -> Self {
+        let size = page(limit).min(cap.max(1));
+        let read = size.saturating_add(1).min(cap.max(1));
+        Self { size, read }
+    }
+
+    /// Whether a full page read without its look-ahead row needs a
+    /// one-row probe past its last row to learn whether more follow.
+    fn needs_probe(self, got: usize, more: bool) -> bool {
+        !more && self.read == self.size && u64::try_from(got).is_ok_and(|n| n == self.size)
+    }
+}
+
 /// One page of a newest-first listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotifyPage<T> {
@@ -239,6 +279,12 @@ fn split_page<T>(mut rows: Vec<T>, size: u64) -> (Vec<T>, bool) {
 }
 
 impl LibraryStore {
+    /// The read window for a listing page of `limit` rows under this
+    /// database's result-row cap.
+    fn page_window(&self, limit: u64) -> PageWindow {
+        PageWindow::new(limit, self.result_row_cap())
+    }
+
     /// Accepts a notification: stores it, writes one delivery-log row per
     /// destination the routing rules pick and, for a patron, the inbox row,
     /// in one batch; then enqueues one `notify_send` job per delivery.
@@ -383,6 +429,55 @@ impl LibraryStore {
         })
     }
 
+    /// What a patron chose for `notification_type`: the preference and its
+    /// targets are two reads, so the preference is read again after the
+    /// targets and the pair is read afresh (up to three times) when a
+    /// concurrent change or clear moved it, so routing follows one
+    /// complete configuration rather than an enabled preference with
+    /// another revision's targets.
+    ///
+    /// # Errors
+    ///
+    /// An error when a read fails.
+    async fn patron_pick(&self, patron: i64, notification_type: &str) -> Result<PatronPick> {
+        let read_pref = || {
+            notify_patron_prefs::Entity::find()
+                .filter(notify_patron_prefs::Column::UserId.eq(patron))
+                .filter(notify_patron_prefs::Column::NotificationType.eq(notification_type))
+                .one(&self.db)
+        };
+        let mut pref = read_pref().await.map_err(LibraryError::Orm)?;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let pick = match &pref {
+                None => PatronPick::Default,
+                Some(p) if p.enabled == 0 => PatronPick::Off,
+                Some(_) => PatronPick::Chosen(
+                    notify_patron_targets::Entity::find()
+                        .filter(notify_patron_targets::Column::UserId.eq(patron))
+                        .filter(
+                            notify_patron_targets::Column::NotificationType.eq(notification_type),
+                        )
+                        .all(&self.db)
+                        .await
+                        .map_err(LibraryError::Orm)?
+                        .into_iter()
+                        .map(|t| t.destination_id)
+                        .collect(),
+                ),
+            };
+            if !matches!(pick, PatronPick::Chosen(_)) || attempt >= 3 {
+                return Ok(pick);
+            }
+            let again = read_pref().await.map_err(LibraryError::Orm)?;
+            if again == pref {
+                return Ok(pick);
+            }
+            pref = again;
+        }
+    }
+
     /// The active destinations the routing rules pick for `new`, each once.
     ///
     /// # Errors
@@ -439,14 +534,6 @@ impl LibraryStore {
                     .filter(|o| o.default_on != 0)
                     .map(|o| o.plugin_instance_id.clone())
                     .collect();
-                let choice = notify_patron_prefs::Entity::find()
-                    .filter(notify_patron_prefs::Column::UserId.eq(patron))
-                    .filter(
-                        notify_patron_prefs::Column::NotificationType.eq(&new.notification_type),
-                    )
-                    .one(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?;
                 let personal = notify_destinations::Entity::find()
                     .filter(notify_destinations::Column::UserId.eq(patron))
                     .filter(notify_destinations::Column::Kind.eq("personal"))
@@ -454,23 +541,10 @@ impl LibraryStore {
                     .all(&self.db)
                     .await
                     .map_err(LibraryError::Orm)?;
-                let picked: Option<BTreeSet<String>> = match choice {
-                    Some(pref) if pref.enabled == 0 => return Ok(Vec::new()),
-                    Some(_) => Some(
-                        notify_patron_targets::Entity::find()
-                            .filter(notify_patron_targets::Column::UserId.eq(patron))
-                            .filter(
-                                notify_patron_targets::Column::NotificationType
-                                    .eq(&new.notification_type),
-                            )
-                            .all(&self.db)
-                            .await
-                            .map_err(LibraryError::Orm)?
-                            .into_iter()
-                            .map(|t| t.destination_id)
-                            .collect(),
-                    ),
-                    None => None,
+                let picked = match self.patron_pick(patron, &new.notification_type).await? {
+                    PatronPick::Off => return Ok(Vec::new()),
+                    PatronPick::Default => None,
+                    PatronPick::Chosen(picked) => Some(picked),
                 };
                 for row in personal {
                     let dest = destination(row)?;
@@ -602,7 +676,7 @@ impl LibraryStore {
             .filter(notify_deliveries::Column::JobId.is_null())
             .order_by_asc(notify_deliveries::Column::CreatedAt)
             .order_by_asc(notify_deliveries::Column::Id)
-            .limit(page(limit))
+            .limit(page(limit).min(self.result_row_cap()))
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?
@@ -640,6 +714,47 @@ impl LibraryStore {
             ))
             .await?;
         Ok(batch::rows_affected(&reply, 0))
+    }
+
+    /// Drops a pending delivery no send job is linked to when a send job
+    /// for it already ended: its enqueue succeeded but the link write did
+    /// not, and the job was then cancelled or failed. Without this the
+    /// sweep would queue a second send behind the operator's back, since
+    /// the ended job no longer blocks a new one with the same dedup key.
+    ///
+    /// # Returns
+    ///
+    /// Whether the delivery was dropped (and must not be enqueued again).
+    ///
+    /// # Errors
+    ///
+    /// An error when the read or the batch fails.
+    pub async fn drop_notify_delivery_if_job_ended(&self, delivery_id: &str) -> Result<bool> {
+        let ended = jobs::Entity::find()
+            .filter(jobs::Column::DedupKey.eq(crate::models::notify_send_dedup_key(delivery_id)))
+            .filter(
+                jobs::Column::State
+                    .is_not_in([JobState::Pending.as_str(), JobState::Running.as_str()]),
+            )
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_some();
+        if !ended {
+            return Ok(false);
+        }
+        let reply = self
+            .execute_host_batch(batch::request(
+                &format!("notify-unlinked-{delivery_id}-{}", uuid::Uuid::new_v4()),
+                vec![batch::exec(
+                    "UPDATE notify_deliveries SET state = 'dropped', \
+                     reason = 'the send job ended without a result', updated_at = ? \
+                     WHERE id = ? AND state = 'pending' AND job_id IS NULL",
+                    vec![batch::text(&super::now_str()), batch::text(delivery_id)],
+                )],
+            ))
+            .await?;
+        Ok(batch::rows_affected(&reply, 0) == 1)
     }
 
     /// Everything the send job of `delivery_id` needs; `None` when the row
@@ -1433,25 +1548,42 @@ impl LibraryStore {
         before: Option<&NotifyCursor>,
         limit: u64,
     ) -> Result<NotifyPage<DeliveryRecord>> {
-        // One row past the page says whether another page follows.
-        let mut query = notify_deliveries::Entity::find()
-            .order_by_desc(notify_deliveries::Column::CreatedAt)
-            .order_by_desc(notify_deliveries::Column::Id)
-            .limit(page(limit) + 1);
-        if let Some(dest) = destination_id {
-            query = query.filter(notify_deliveries::Column::DestinationId.eq(dest));
+        let read = |after: Option<&NotifyCursor>, rows: u64| {
+            let mut query = notify_deliveries::Entity::find()
+                .order_by_desc(notify_deliveries::Column::CreatedAt)
+                .order_by_desc(notify_deliveries::Column::Id)
+                .limit(rows);
+            if let Some(dest) = destination_id {
+                query = query.filter(notify_deliveries::Column::DestinationId.eq(dest));
+            }
+            if let Some(cursor) = after {
+                query = query.filter(before_cursor(
+                    notify_deliveries::Column::CreatedAt,
+                    notify_deliveries::Column::Id,
+                    cursor,
+                ));
+            }
+            query
+        };
+        let window = self.page_window(limit);
+        let rows = read(before, window.read)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let (rows, mut more) = split_page(rows, window.size);
+        if window.needs_probe(rows.len(), more) {
+            if let Some(last) = rows.last() {
+                let next = NotifyCursor {
+                    created_at: last.created_at.clone(),
+                    id: last.id.clone(),
+                };
+                more = read(Some(&next), 1)
+                    .one(&self.db)
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .is_some();
+            }
         }
-        if let Some(cursor) = before {
-            query = query.filter(before_cursor(
-                notify_deliveries::Column::CreatedAt,
-                notify_deliveries::Column::Id,
-                cursor,
-            ));
-        }
-        let (rows, more) = split_page(
-            query.all(&self.db).await.map_err(LibraryError::Orm)?,
-            page(limit),
-        );
         let ids: BTreeSet<String> = rows.iter().map(|r| r.notification_id.clone()).collect();
         let notes: BTreeMap<String, notifications::Model> = if ids.is_empty() {
             BTreeMap::new()
@@ -1508,23 +1640,40 @@ impl LibraryStore {
         before: Option<&NotifyCursor>,
         limit: u64,
     ) -> Result<NotifyPage<InboxEntry>> {
-        // One row past the page says whether another page follows.
-        let mut query = notify_inbox::Entity::find()
-            .filter(notify_inbox::Column::UserId.eq(user_id))
-            .order_by_desc(notify_inbox::Column::CreatedAt)
-            .order_by_desc(notify_inbox::Column::NotificationId)
-            .limit(page(limit) + 1);
-        if let Some(cursor) = before {
-            query = query.filter(before_cursor(
-                notify_inbox::Column::CreatedAt,
-                notify_inbox::Column::NotificationId,
-                cursor,
-            ));
+        let read = |after: Option<&NotifyCursor>, rows: u64| {
+            let mut query = notify_inbox::Entity::find()
+                .filter(notify_inbox::Column::UserId.eq(user_id))
+                .order_by_desc(notify_inbox::Column::CreatedAt)
+                .order_by_desc(notify_inbox::Column::NotificationId)
+                .limit(rows);
+            if let Some(cursor) = after {
+                query = query.filter(before_cursor(
+                    notify_inbox::Column::CreatedAt,
+                    notify_inbox::Column::NotificationId,
+                    cursor,
+                ));
+            }
+            query
+        };
+        let window = self.page_window(limit);
+        let rows = read(before, window.read)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let (rows, mut more) = split_page(rows, window.size);
+        if window.needs_probe(rows.len(), more) {
+            if let Some(last) = rows.last() {
+                let next = NotifyCursor {
+                    created_at: last.created_at.clone(),
+                    id: last.notification_id.clone(),
+                };
+                more = read(Some(&next), 1)
+                    .one(&self.db)
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .is_some();
+            }
         }
-        let (rows, more) = split_page(
-            query.all(&self.db).await.map_err(LibraryError::Orm)?,
-            page(limit),
-        );
         let ids: Vec<String> = rows.iter().map(|r| r.notification_id.clone()).collect();
         let mut notes: BTreeMap<String, notifications::Model> = if ids.is_empty() {
             BTreeMap::new()

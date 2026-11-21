@@ -295,6 +295,14 @@ pub async fn sweep_once(state: &AppState) -> anyhow::Result<()> {
         .unscheduled_notify_deliveries(NOTIFY_SWEEP_BATCH)
         .await?
     {
+        // A send job that ended before its link was written means the
+        // delivery is finished (cancelled or failed), not unscheduled.
+        if library
+            .drop_notify_delivery_if_job_ended(&delivery.id)
+            .await?
+        {
+            continue;
+        }
         if library
             .enqueue_notify_send(&delivery, limits)
             .await?

@@ -21,6 +21,32 @@ const LIMITS: NotifyQueueLimits = NotifyQueueLimits {
     max_attempts: 3,
 };
 
+/// Every delivery-log row (for one destination when given), newest first,
+/// walked page by page so no read passes the profile's result-row cap.
+async fn all_deliveries(
+    store: &LibraryStore,
+    destination: Option<&str>,
+) -> Vec<crate::notifications::DeliveryRecord> {
+    let mut out = Vec::new();
+    let mut cursor: Option<NotifyCursor> = None;
+    loop {
+        let page = store
+            .notify_deliveries(destination, cursor.as_ref(), 50)
+            .await
+            .unwrap();
+        if let Some(last) = page.items.last() {
+            cursor = Some(NotifyCursor {
+                created_at: last.created_at.clone(),
+                id: last.id.clone(),
+            });
+        }
+        out.extend(page.items);
+        if !page.more {
+            return out;
+        }
+    }
+}
+
 /// An operational notification of `notification_type` at `severity`.
 fn operational(notification_type: &str, severity: NotificationSeverity) -> NewNotification {
     NewNotification {
@@ -426,14 +452,41 @@ async fn the_inbox_pages_newest_first_and_marks_read_under_every_profile() {
             .unwrap();
         assert_eq!(store.inbox_unread(riley).await.unwrap(), 5, "{name}");
 
-        // Every entry in one page, newest first: (created_at, id) falls.
-        let all = store.inbox(riley, None, 50).await.unwrap();
-        assert!(!all.more, "{name}");
-        let keys: Vec<(String, String)> = all
-            .items
-            .iter()
-            .map(|e| (e.notification.created_at.clone(), e.notification.id.clone()))
-            .collect();
+        // Pages never pass the profile's result-row cap; walking them
+        // gives every entry newest first: (created_at, id) falls.
+        let cap = match profile.capabilities().max_result_rows {
+            0 => usize::MAX,
+            rows => usize::try_from(rows).unwrap(),
+        };
+        let walk = |size: u64| {
+            let store = &store;
+            async move {
+                let mut seen = Vec::new();
+                let mut cursor: Option<NotifyCursor> = None;
+                let mut pages = 0;
+                loop {
+                    let page = store.inbox(riley, cursor.as_ref(), size).await.unwrap();
+                    pages += 1;
+                    assert!(page.items.len() <= cap, "{size}: page past the cap");
+                    let last = page.items.last().unwrap();
+                    cursor = Some(NotifyCursor {
+                        created_at: last.notification.created_at.clone(),
+                        id: last.notification.id.clone(),
+                    });
+                    seen.extend(
+                        page.items
+                            .into_iter()
+                            .map(|e| (e.notification.created_at, e.notification.id)),
+                    );
+                    if !page.more {
+                        break;
+                    }
+                }
+                (seen, pages)
+            }
+        };
+        let (keys, pages) = walk(50).await;
+        assert_eq!(pages, 5usize.div_ceil(cap.min(50)), "{name}");
         assert!(keys.windows(2).all(|w| w[0] > w[1]), "{name}: {keys:?}");
         let mut expected = ids.clone();
         expected.sort();
@@ -442,26 +495,10 @@ async fn the_inbox_pages_newest_first_and_marks_read_under_every_profile() {
         assert_eq!(listed, expected, "{name}");
 
         // Walking two at a time gives the same order, and the last page
-        // (one entry) hands out no cursor.
-        let mut seen = Vec::new();
-        let mut cursor: Option<NotifyCursor> = None;
-        let mut pages = 0;
-        loop {
-            let page = store.inbox(riley, cursor.as_ref(), 2).await.unwrap();
-            pages += 1;
-            let last = page.items.last().unwrap();
-            cursor = Some(NotifyCursor {
-                created_at: last.notification.created_at.clone(),
-                id: last.notification.id.clone(),
-            });
-            seen.extend(page.items.into_iter().map(|e| e.notification.id));
-            if !page.more {
-                break;
-            }
-        }
-        assert_eq!(pages, 3, "{name}");
-        let walked: Vec<String> = keys.iter().map(|(_, id)| id.clone()).collect();
-        assert_eq!(seen, walked, "{name}");
+        // hands out no cursor.
+        let (two_at_a_time, pages) = walk(2).await;
+        assert_eq!(pages, 5usize.div_ceil(cap.min(2)), "{name}");
+        assert_eq!(two_at_a_time, keys, "{name}");
         // A full final page says no more follows.
         let two = store.inbox(sam, None, 1).await.unwrap();
         assert_eq!(two.items.len(), 1, "{name}");
@@ -620,11 +657,7 @@ async fn send_outcomes_move_deliveries_once_under_every_profile() {
             .await
             .unwrap());
 
-        let log = store
-            .notify_deliveries(Some(&ops), None, 50)
-            .await
-            .unwrap()
-            .items;
+        let log = all_deliveries(&store, Some(&ops)).await;
         let state_of = |id: &str| log.iter().find(|d| d.id == id).unwrap().clone();
         let r = state_of(&retried);
         assert_eq!(r.state, DeliveryState::Delivered, "{name}");
@@ -827,6 +860,42 @@ async fn a_full_queue_leaves_deliveries_for_the_sweep_under_every_profile() {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(work.state, DeliveryState::Dropped, "{name}");
+
+        // A send job whose link write was lost: once it ends, the sweep
+        // drops the delivery instead of queueing a second send.
+        let routed = store
+            .route_notification(&operational("test", NotificationSeverity::Info), full)
+            .await
+            .unwrap();
+        let unlinked = routed.deliveries[0].id.clone();
+        let outcome = store
+            .enqueue_job(crate::models::EnqueueJobSpec {
+                kind: JobKind::NotifySend,
+                payload: crate::models::JobPayload {
+                    notify_delivery: Some(unlinked.clone()),
+                    ..crate::models::JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: 1,
+                max_pending: 1_000,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let crate::models::EnqueueOutcome::Created { id: lost } = outcome else {
+            panic!("{name}: {outcome:?}");
+        };
+        assert!(!store
+            .drop_notify_delivery_if_job_ended(&unlinked)
+            .await
+            .unwrap());
+        store.request_job_cancel(&lost).await.unwrap();
+        assert!(store
+            .drop_notify_delivery_if_job_ended(&unlinked)
+            .await
+            .unwrap());
+        let work = store.notify_send_work(&unlinked).await.unwrap().unwrap();
         assert_eq!(work.state, DeliveryState::Dropped, "{name}");
     }
 }

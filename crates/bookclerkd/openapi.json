@@ -15643,7 +15643,7 @@
         ],
         "responses": {
           "202": {
-            "description": "The test is accepted. Its send job is queued, or, when the queue is full, the next sweep (within a minute) queues it.",
+            "description": "The test is accepted. Its send job is queued, or, when the queue is full or enqueueing fails, may be queued by a later sweep.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16503,7 +16503,7 @@
             }
           },
           "400": {
-            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number (answered as plain text by the query parser).",
+            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number (plain text, from the query parser).",
             "content": {
               "application/json": {
                 "schema": {
@@ -16512,6 +16512,12 @@
                 "example": {
                   "error": "invalid page cursor"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize query string: limit: invalid digit found in string"
               }
             }
           },
@@ -16752,12 +16758,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
             "portalSession": []
           }
         ],
@@ -16954,12 +16954,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
             "portalSession": []
           }
         ],
@@ -17089,12 +17083,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -17301,12 +17289,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
             "portalSession": []
           }
         ],
@@ -17451,12 +17433,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -17610,12 +17586,6 @@
         },
         "security": [
           {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
             "portalSession": []
           }
         ],
@@ -17664,7 +17634,7 @@
             }
           },
           "400": {
-            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number (answered as plain text by the query parser).",
+            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number (plain text, from the query parser).",
             "content": {
               "application/json": {
                 "schema": {
@@ -17673,6 +17643,12 @@
                 "example": {
                   "error": "invalid page cursor"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize query string: limit: invalid digit found in string"
               }
             }
           },
@@ -17778,12 +17754,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }
@@ -17968,12 +17938,6 @@
           }
         },
         "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
           {
             "portalSession": []
           }

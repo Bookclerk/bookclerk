@@ -604,7 +604,7 @@ pub(crate) struct TestSent {
     path = "/api/notifications/channels/{id}/test",
     params(("id" = String, Path, description = "Channel id.")),
     responses(
-        (status = 202, description = "The test is accepted. Its send job is queued, or, when the queue is full, the next sweep (within a minute) queues it.", body = TestSent),
+        (status = 202, description = "The test is accepted. Its send job is queued, or, when the queue is full or enqueueing fails, may be queued by a later sweep.", body = TestSent),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
         (status = 404, description = "No such channel.", body = ErrorMessage, example = json!({"error": "channel 8a7b6c5d not found"})),
@@ -1060,7 +1060,10 @@ pub(crate) struct DeliveryPage {
     params(DeliveryQuery),
     responses(
         (status = 200, description = "One page of deliveries.", body = DeliveryPage),
-        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number (answered as plain text by the query parser).", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
+        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number (plain text, from the query parser).", content(
+            (ErrorMessage = "application/json", example = json!({"error": "invalid page cursor"})),
+            (String = "text/plain", example = json!("Failed to deserialize query string: limit: invalid digit found in string")),
+        )),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
         (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
@@ -1155,6 +1158,7 @@ pub(crate) struct PatronSettings {
 #[utoipa::path(
     get,
     path = "/api/me/notifications",
+    security(("portalSession" = [])),
     responses(
         (status = 200, description = "The settings.", body = PatronSettings),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
@@ -1252,6 +1256,7 @@ pub(crate) struct ChoiceBody {
 #[utoipa::path(
     put,
     path = "/api/me/notifications/choices/{type}",
+    security(("portalSession" = [])),
     params(("type" = String, Path, description = "Notification type id.")),
     request_body = ChoiceBody,
     responses(
@@ -1297,6 +1302,7 @@ pub(crate) async fn put_my_choice(
 #[utoipa::path(
     delete,
     path = "/api/me/notifications/choices/{type}",
+    security(("portalSession" = [])),
     params(("type" = String, Path, description = "Notification type id.")),
     responses(
         (status = 204, description = "The defaults apply again."),
@@ -1368,6 +1374,7 @@ pub(crate) fn personal_address(
 #[utoipa::path(
     post,
     path = "/api/me/notifications/destinations",
+    security(("portalSession" = [])),
     request_body = NewPersonalBody,
     responses(
         (status = 201, description = "The destination.", body = DestinationJson),
@@ -1526,6 +1533,7 @@ fn notifier_label_fits(label: &str) -> bool {
 #[utoipa::path(
     delete,
     path = "/api/me/notifications/destinations/{id}",
+    security(("portalSession" = [])),
     params(("id" = String, Path, description = "Destination id.")),
     responses(
         (status = 204, description = "The destination is gone."),
@@ -1565,6 +1573,7 @@ pub(crate) async fn delete_my_destination(
 #[utoipa::path(
     post,
     path = "/api/me/notifications/destinations/{id}/resume",
+    security(("portalSession" = [])),
     params(("id" = String, Path, description = "Destination id.")),
     responses(
         (status = 200, description = "The destination.", body = DestinationJson),
@@ -1701,10 +1710,14 @@ pub(crate) struct InboxPage {
 #[utoipa::path(
     get,
     path = "/api/me/notifications/inbox",
+    security(("portalSession" = [])),
     params(InboxQuery),
     responses(
         (status = 200, description = "One page of the inbox.", body = InboxPage),
-        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number (answered as plain text by the query parser).", body = ErrorMessage, example = json!({"error": "invalid page cursor"})),
+        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number (plain text, from the query parser).", content(
+            (ErrorMessage = "application/json", example = json!({"error": "invalid page cursor"})),
+            (String = "text/plain", example = json!("Failed to deserialize query string: limit: invalid digit found in string")),
+        )),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep notification settings for"})),
         (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
@@ -1769,6 +1782,7 @@ pub(crate) struct ReadMarked {
 #[utoipa::path(
     post,
     path = "/api/me/notifications/inbox/read",
+    security(("portalSession" = [])),
     request_body = ReadBody,
     responses(
         (status = 200, description = "What was marked.", body = ReadMarked),
