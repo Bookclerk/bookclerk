@@ -1054,6 +1054,10 @@ const SVG_FRAGMENTS = [
   "\u0000",
 ];
 
+/** Classes a drawn diagram may keep, written apart from diagram.ts's list. */
+const CLASSES =
+  /^(mono|xychart-(bar|line|line-shadow|dot|grid|label|axis-title|title|color-[0-9]{1,2}))$/;
+
 /** Elements a drawn diagram may hold, written apart from diagram.ts's list. */
 const SVG_ELEMENTS =
   /^(svg|g|defs|marker|path|polygon|polyline|line|rect|circle|ellipse|text|tspan)$/;
@@ -1062,7 +1066,8 @@ const SVG_ELEMENTS =
  * Checks markup the docs page will embed as a diagram, independently of
  * diagram.ts: it splits on `<…>` runs and checks each tag and text, then
  * that elements nest, that the root is one `<svg>`, that no attribute can run
- * script, style, or load anything, that the only class is `mono`, that
+ * script, style, or load anything, that the only classes are `mono` and
+ * the chart parts site.css colors, that
  * paints are the site's variables rather than literal colors, and that every
  * id and `url(#…)` carries the page prefix.
  *
@@ -1108,7 +1113,9 @@ function checkSvg(svg: string, prefix: string, context: string): void {
           !lower.startsWith("data-"),
         `${context}: attribute ${key}`,
       );
-      if (lower === "class") assert.equal(value, "mono", `${context}: class ${value}`);
+      if (lower === "class")
+        for (const name of value.split(" "))
+          assert.match(name, CLASSES, `${context}: class ${value}`);
       if (lower === "fill" || lower === "stroke")
         assert.ok(
           value === "none" || value.startsWith("var(--") || value.startsWith(`url(#${prefix}-`),
