@@ -977,8 +977,9 @@ pub(crate) struct DeliveryQuery {
     /// `next_cursor` of the previous page.
     cursor: Option<String>,
     /// Page size (default 50): a whole number, where 0 is read as 1 and
-    /// anything past 200 as 200; a negative or non-numeric value is refused
-    /// with a plain-text 400. A page may hold fewer rows than asked when the
+    /// anything from 201 up to 18446744073709551615 as 200; a negative or
+    /// non-numeric value, or one past 18446744073709551615, is refused with
+    /// a plain-text 400. A page may hold fewer rows than asked when the
     /// library's database returns fewer per read.
     limit: Option<u64>,
 }
@@ -1063,7 +1064,7 @@ pub(crate) struct DeliveryPage {
     params(DeliveryQuery),
     responses(
         (status = 200, description = "One page of deliveries.", body = DeliveryPage),
-        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number (plain text, from the query parser).", content(
+        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).", content(
             (ErrorMessage = "application/json", example = json!({"error": "invalid page cursor"})),
             (String = "text/plain", example = json!("Failed to deserialize query string: limit: invalid digit found in string")),
         )),
@@ -1632,8 +1633,9 @@ pub(crate) struct InboxQuery {
     /// `next_cursor` of the previous page.
     cursor: Option<String>,
     /// Page size (default 50): a whole number, where 0 is read as 1 and
-    /// anything past 200 as 200; a negative or non-numeric value is refused
-    /// with a plain-text 400. A page may hold fewer rows than asked when the
+    /// anything from 201 up to 18446744073709551615 as 200; a negative or
+    /// non-numeric value, or one past 18446744073709551615, is refused with
+    /// a plain-text 400. A page may hold fewer rows than asked when the
     /// library's database returns fewer per read.
     limit: Option<u64>,
 }
@@ -1727,7 +1729,7 @@ pub(crate) struct InboxPage {
     params(InboxQuery),
     responses(
         (status = 200, description = "One page of the inbox.", body = InboxPage),
-        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number (plain text, from the query parser).", content(
+        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).", content(
             (ErrorMessage = "application/json", example = json!({"error": "invalid page cursor"})),
             (String = "text/plain", example = json!("Failed to deserialize query string: limit: invalid digit found in string")),
         )),

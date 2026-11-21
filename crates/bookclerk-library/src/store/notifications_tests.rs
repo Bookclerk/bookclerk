@@ -11,7 +11,7 @@ use crate::error::LibraryError;
 use crate::models::{JobFence, JobKind, UserRole};
 use crate::notifications::{
     DeliveryState, DestinationKind, FailedAttempt, FailureEffect, NewDestination, NewNotification,
-    PatronChoice, PatronOffer, Route, PAUSE_AFTER_FAILURES,
+    PatronChoice, PatronOffer, Route, MAX_ADDRESS_BYTES, PAUSE_AFTER_FAILURES,
 };
 use crate::test_support::{sqlite::memory, Profile};
 
@@ -996,6 +996,52 @@ async fn a_test_goes_to_one_destination_whatever_the_routes_under_every_profile(
             .await
             .unwrap_err();
         assert!(matches!(err, LibraryError::NotFound(_)), "{name}: {err}");
+    }
+}
+
+#[tokio::test]
+async fn an_address_past_the_cell_limit_is_refused_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let riley = member(&store, "Riley").await;
+        let cap = match usize::try_from(store.db_capabilities().max_cell_bytes).unwrap() {
+            0 => MAX_ADDRESS_BYTES,
+            cell => cell.min(MAX_ADDRESS_BYTES),
+        };
+        // `{"chatId":"…"}` around the padding.
+        let overhead = r#"{"chatId":""}"#.len();
+        let address = |len: usize| format!(r#"{{"chatId":"{}"}}"#, "7".repeat(len - overhead));
+        let fits = store
+            .create_notify_destination(&NewDestination {
+                plugin_instance_id: "telegram-1".into(),
+                kind: DestinationKind::Personal,
+                user_id: Some(riley),
+                label: "Fits".into(),
+                address_json: address(cap),
+            })
+            .await
+            .unwrap_or_else(|err| panic!("{name}: an address at the limit refused: {err:?}"));
+        let read = store.notify_destination(&fits.id).await.unwrap().unwrap();
+        assert_eq!(read.address_json.len(), cap, "{name}");
+        let over = store
+            .create_notify_destination(&NewDestination {
+                plugin_instance_id: "telegram-1".into(),
+                kind: DestinationKind::Personal,
+                user_id: Some(riley),
+                label: "Too long".into(),
+                address_json: address(cap + 1),
+            })
+            .await;
+        assert!(
+            matches!(over, Err(LibraryError::Invalid(_))),
+            "{name}: {over:?}"
+        );
+        assert_eq!(
+            store.personal_destinations(riley).await.unwrap().len(),
+            1,
+            "{name}"
+        );
     }
 }
 

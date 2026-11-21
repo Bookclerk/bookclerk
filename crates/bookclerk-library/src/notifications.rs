@@ -34,6 +34,11 @@ use serde::{Deserialize, Serialize};
 /// paused destination by hand.
 pub const PAUSE_AFTER_FAILURES: i64 = 5;
 
+/// Longest stored destination address, in bytes of its JSON text. A
+/// database whose cell limit is smaller lowers it further. 1 KiB keeps the
+/// insert inside the smallest statement payload any adapter advertises.
+pub const MAX_ADDRESS_BYTES: usize = 1024;
+
 /// Send attempts one delivery may make, retries included. A delivery whose
 /// notifier still asks to retry after this many fails.
 pub const MAX_SEND_ATTEMPTS: i64 = 10;

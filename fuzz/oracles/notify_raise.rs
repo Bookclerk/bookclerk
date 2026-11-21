@@ -77,12 +77,12 @@ pub fn check(data: &[u8]) {
     let accepted = check_raise_params(&params).is_ok();
     assert_eq!(accepted, expected(&params), "raise {params:?}");
     let patron = params.patron_id.as_deref().unwrap_or("");
-    for account in ["", "acct-a", "acct-b"] {
+    for (index, account) in ["", "acct-a", "acct-b"].into_iter().enumerate() {
         let scoped = scoped_patron_id(account, patron);
         assert_eq!(
             scoped,
             expected_patron(account, patron),
-            "patron {patron:?} in {account:?}"
+            "patron {patron:?} in account {index}"
         );
         if let Some(id) = scoped {
             assert_eq!(

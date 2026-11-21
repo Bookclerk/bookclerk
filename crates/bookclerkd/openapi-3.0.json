@@ -16639,7 +16639,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size (default 50): a whole number, where 0 is read as 1 and\nanything past 200 as 200; a negative or non-numeric value is refused\nwith a plain-text 400. A page may hold fewer rows than asked when the\nlibrary's database returns fewer per read.",
+            "description": "Page size (default 50): a whole number, where 0 is read as 1 and\nanything from 201 up to 18446744073709551615 as 200; a negative or\nnon-numeric value, or one past 18446744073709551615, is refused with\na plain-text 400. A page may hold fewer rows than asked when the\nlibrary's database returns fewer per read.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -16660,7 +16660,7 @@
             }
           },
           "400": {
-            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number (plain text, from the query parser).",
+            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).",
             "content": {
               "application/json": {
                 "schema": {
@@ -17788,7 +17788,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size (default 50): a whole number, where 0 is read as 1 and\nanything past 200 as 200; a negative or non-numeric value is refused\nwith a plain-text 400. A page may hold fewer rows than asked when the\nlibrary's database returns fewer per read.",
+            "description": "Page size (default 50): a whole number, where 0 is read as 1 and\nanything from 201 up to 18446744073709551615 as 200; a negative or\nnon-numeric value, or one past 18446744073709551615, is refused with\na plain-text 400. A page may hold fewer rows than asked when the\nlibrary's database returns fewer per read.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -17809,7 +17809,7 @@
             }
           },
           "400": {
-            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number (plain text, from the query parser).",
+            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).",
             "content": {
               "application/json": {
                 "schema": {

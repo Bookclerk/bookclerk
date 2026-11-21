@@ -1063,13 +1063,16 @@ impl LibraryStore {
             }
         }
         // A stored address must read back on every database: refuse one
-        // past the advertised cell limit instead of storing a row that later
-        // reads fail on.
+        // past the address limit or the advertised cell limit instead of
+        // storing a row that later reads fail on.
         let cell_cap = self.db_capabilities().max_cell_bytes;
-        if cell_cap != 0 && new.address_json.len() > usize::try_from(cell_cap).unwrap_or(usize::MAX)
-        {
+        let max = match usize::try_from(cell_cap) {
+            Ok(0) | Err(_) => crate::notifications::MAX_ADDRESS_BYTES,
+            Ok(cap) => cap.min(crate::notifications::MAX_ADDRESS_BYTES),
+        };
+        if new.address_json.len() > max {
             return Err(LibraryError::Invalid(format!(
-                "the address is {} bytes; this library stores at most {cell_cap}",
+                "the address is {} bytes; this library stores at most {max}",
                 new.address_json.len()
             )));
         }
@@ -1703,7 +1706,7 @@ impl LibraryStore {
                 .map(|n| (n.id.clone(), n))
                 .collect()
         };
-        let mut out = Vec::with_capacity(rows.len());
+        let mut out = Vec::new();
         for row in rows {
             if let Some(note) = notes.remove(&row.notification_id) {
                 out.push(InboxEntry {

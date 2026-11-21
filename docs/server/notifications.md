@@ -65,8 +65,9 @@ type with `POST /api/me/notifications/destinations`, and keeps at most 32
 addresses. The address is a flat object
 of strings, checked against the notifier's declared address fields and
 then by the notifier itself, which may normalise it. The notifier must be
-running to check it (`409` otherwise). The stored address must fit the
-library database's cell limit, or it is refused with `400`.
+running to check it (`409` otherwise). The stored address is at most
+1 KiB of JSON, and no more than the library database's cell limit, or it
+is refused with `400`.
 
 For each patron type, a patron's notifications go to:
 
