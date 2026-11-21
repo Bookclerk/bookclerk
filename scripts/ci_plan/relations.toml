@@ -675,6 +675,17 @@ package = "bookclerk-plugin-e2e"
 reference = "bookclerk-jail"
 reason = "PluginSession::spawn_with launches bookclerk-jail; the native_gateway smoke already builds that binary, and this crate is excluded from rust_test"
 
+# The player API's oracles are shared by the fuzz targets and the
+# bookclerk-player-api replay test through `#[path]`.
+[[test_input]]
+package = "bookclerk-player-api"
+paths = [
+    "fuzz/corpus/player_request/**",
+    "fuzz/oracles/player_request.rs",
+    "fuzz/corpus/player_socket/**",
+    "fuzz/oracles/player_socket.rs",
+]
+
 [[reviewed]]
 package = "bookclerk-config"
 reference = ".git"

@@ -497,6 +497,20 @@ input_from = "any signed-in patron"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.player_request]
+crate = "bookclerk-player-api"
+boundary = "What a player app sends the /player API: sign-in bodies, card tokens, list and detail queries, ids in paths, session, progress and bookmark bodies, and the browser sign-in's queries"
+input_from = "anyone who can reach the library (sign-in), any patron with a player card (the rest)"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.player_socket]
+crate = "bookclerk-player-api"
+boundary = "Text frames a player app sends on the /player/socket.io websocket (Engine.IO 4, Socket.IO 5)"
+input_from = "anyone who can reach the library"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.work_tags_request]
 crate = "bookclerk-library"
 boundary = "An Administrator's library tags for a work, from PUT /api/library/works/{id}/tags"

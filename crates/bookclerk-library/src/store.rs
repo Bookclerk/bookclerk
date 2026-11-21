@@ -1320,6 +1320,11 @@ impl LibraryStore {
         } else {
             crate::db_atomic::delete_user(&self.db, id).await?;
         }
+        // The user's player passwords and cards are swept after the plan,
+        // which stays within the smallest adapter's `maxStatements`.
+        // Until then they cannot sign in: a card is read through its
+        // session row and a password through its user, both deleted.
+        self.sweep_ended_player_rows().await?;
         for wish in wishes {
             self.publish_wishlist_changed(&wish.uuid, wish.identity_id, "deleted")
                 .await;
@@ -1363,6 +1368,24 @@ impl LibraryStore {
                 .map_err(LibraryError::Orm)?;
             claim_tickets::Entity::delete_many()
                 .filter(claim_tickets::Column::IdentityId.eq(identity.id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let card_sessions = sea_orm::sea_query::Query::select()
+                .column(portal_sessions::Column::Id)
+                .from(portal_sessions::Entity)
+                .and_where(portal_sessions::Column::IdentityId.eq(identity.id))
+                .to_owned();
+            crate::entities::player_card_tokens::Entity::delete_many()
+                .filter(
+                    crate::entities::player_card_tokens::Column::SessionId
+                        .in_subquery(card_sessions.clone()),
+                )
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            crate::entities::player_cards::Entity::delete_many()
+                .filter(crate::entities::player_cards::Column::SessionId.in_subquery(card_sessions))
                 .exec(txn)
                 .await
                 .map_err(LibraryError::Orm)?;
@@ -1453,6 +1476,11 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)?;
         crate::entities::bookmarks::Entity::delete_many()
             .filter(crate::entities::bookmarks::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        crate::entities::player_passwords::Entity::delete_many()
+            .filter(crate::entities::player_passwords::Column::UserId.eq(id))
             .exec(txn)
             .await
             .map_err(LibraryError::Orm)?;
@@ -2705,6 +2733,21 @@ impl LibraryStore {
         else {
             return Ok(None);
         };
+        self.touch_session_identity(session, slide).await
+    }
+
+    /// The identity of a live session row, touching the row at most once a
+    /// minute and, with `slide`, moving its expiry to `slide` from now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or the touch fails.
+    pub(crate) async fn touch_session_identity(
+        &self,
+        session: portal_sessions::Model,
+        slide: Option<chrono::Duration>,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
+        let now = now_str();
         let identity_id = session.identity_id;
         let should_touch = match parse_dt_opt(session.last_used_at.as_deref()) {
             None => true,
@@ -8079,6 +8122,8 @@ pub(crate) mod overrides;
 pub(crate) mod pacing;
 pub(crate) mod playback;
 pub(crate) mod playback_request;
+pub(crate) mod player_cards;
+pub(crate) mod player_catalog;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod request_queue;
