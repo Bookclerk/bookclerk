@@ -66,30 +66,41 @@ function parseDelivery(delivery: unknown): ChannelDelivery | null {
   return null;
 }
 
+/** A channel the page passes to a shell command. */
+export interface ShellChannel {
+  /** The argument to pass the shell (Tauri reads it by its JSON form). */
+  readonly channel: { toJSON(): string };
+  /** Stops listening; idempotent. */
+  close(): void;
+}
+
 /**
- * Opens the shell's live feed as a {@link LiveSocket}, so the shared live
- * client treats it as its socket: frames arrive as messages, and the end
- * of the feed (or a failed `live` call) closes it, which the client
- * retries with backoff.
+ * Listens on a new Tauri channel, delivering its messages in order.
  *
  * Tauri numbers channel deliveries; out-of-order ones are held until the
- * gap fills, as Tauri's own channel class does. Closing from the page
- * stops listening; the shell replaces its feed on the next `live` call.
+ * gap fills, as Tauri's own channel class does. The end of the channel
+ * calls `onEnd` once every message before it was delivered.
  *
  * @param bridge - The page's Tauri bridge.
- * @returns The socket.
+ * @param onMessage - Called with each message, in order.
+ * @param onEnd - Called once when the shell ends the channel.
+ * @returns The channel to pass the shell, and a way to stop listening.
  */
-export function openDesktopLive(bridge: TauriBridge): LiveSocket {
+export function listenOnChannel(
+  bridge: TauriBridge,
+  onMessage: (message: unknown) => void,
+  onEnd: () => void = () => undefined,
+): ShellChannel {
   let closed = false;
   let next = 0;
   let endAt: number | null = null;
   const held = new Map<number, unknown>();
 
-  const socket: LiveSocket = {
-    onmessage: null,
-    onclose: null,
-    onerror: null,
-    close: () => finish(null),
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    held.clear();
+    bridge.unregisterCallback(id);
   };
 
   const id = bridge.transformCallback((raw) => {
@@ -99,31 +110,61 @@ export function openDesktopLive(bridge: TauriBridge): LiveSocket {
     if ("end" in delivery) {
       endAt = delivery.index;
     } else if (delivery.index === next) {
-      socket.onmessage?.({ data: delivery.message });
+      onMessage(delivery.message);
       next += 1;
       while (!closed && held.has(next)) {
         const message = held.get(next);
         held.delete(next);
-        socket.onmessage?.({ data: message });
+        onMessage(message);
         next += 1;
       }
     } else if (delivery.index > next) {
       held.set(delivery.index, delivery.message);
     }
-    if (!closed && endAt !== null && next >= endAt) finish(1000);
+    if (!closed && endAt !== null && next >= endAt) {
+      close();
+      onEnd();
+    }
   });
+
+  return { channel: { toJSON: () => `${CHANNEL_PREFIX}${id}` }, close };
+}
+
+/**
+ * Opens the shell's live feed as a {@link LiveSocket}, so the shared live
+ * client treats it as its socket: frames arrive as messages, and the end
+ * of the feed (or a failed `live` call) closes it, which the client
+ * retries with backoff.
+ *
+ * Closing from the page stops listening; the shell replaces its feed on
+ * the next `live` call.
+ *
+ * @param bridge - The page's Tauri bridge.
+ * @returns The socket.
+ */
+export function openDesktopLive(bridge: TauriBridge): LiveSocket {
+  let closed = false;
+  const socket: LiveSocket = {
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+    close: () => finish(null),
+  };
+  const listening = listenOnChannel(
+    bridge,
+    (message) => socket.onmessage?.({ data: message }),
+    () => finish(1000),
+  );
 
   // `code`: the close event to report, or `null` when the page closed it.
   function finish(code: number | null) {
     if (closed) return;
     closed = true;
-    held.clear();
-    bridge.unregisterCallback(id);
+    listening.close();
     if (code !== null) socket.onclose?.({ code });
   }
 
-  const channel = { toJSON: () => `${CHANNEL_PREFIX}${id}` };
-  bridge.invoke(LIVE_COMMAND, { onFrame: channel }).catch((err: unknown) => {
+  bridge.invoke(LIVE_COMMAND, { onFrame: listening.channel }).catch((err: unknown) => {
     socket.onerror?.(err);
     // 1011: the shell could not start the feed; the client retries.
     finish(1011);

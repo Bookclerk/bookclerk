@@ -470,6 +470,77 @@ function bindingMessage(manifest) {
   }
   console.log("ok metadata_files rejects unknown keys and non-bool writes");
 }
+// [notifier] and [[notifications.types]]: the host parses both with
+// deny_unknown_fields and typed enums; the SDK checks reject the same input.
+{
+  const notifier = (table) => ({ ...bindingBase, entrypoints: ["notifier"], notifier: table });
+  const raiser = (types, extra = {}) => ({ ...bindingBase, notifications: { types }, ...extra });
+  const type = {
+    id: "sync_failed",
+    audience: "operational",
+    severity: "warning",
+    title: "Sync failed",
+  };
+  const cases = [
+    [notifier({ destinations: ["channel"] }), ""],
+    [
+      notifier({ destinations: ["channel"], extra: 1 }),
+      "plugin.toml: `[notifier]` has unknown key `extra`",
+    ],
+    [
+      notifier({ destinations: ["channel"], account_mail: "yes" }),
+      "plugin.toml: `[notifier].account_mail` must be a boolean",
+    ],
+    [
+      notifier({ destinations: ["pager"] }),
+      "plugin.toml: `[notifier].destinations` names unknown kind `pager`",
+    ],
+    [
+      notifier({ destinations: ["channel"], formats: ["text", "rtf"] }),
+      "plugin.toml: `[notifier].formats` names unknown format `rtf`",
+    ],
+    [
+      notifier({
+        destinations: ["personal"],
+        address_fields: [{ key: "email", label: "Email", required: true, hint: "x" }],
+      }),
+      "plugin.toml: notifier.address_fields[0] has unknown key `hint`",
+    ],
+    [raiser([type]), ""],
+    [
+      raiser([type], { notifications: { types: [type], extra: 1 } }),
+      "plugin.toml: `[notifications]` has unknown key `extra`",
+    ],
+    [
+      raiser([{ ...type, colour: "red" }]),
+      "plugin.toml: notifications.types[0] has unknown key `colour`",
+    ],
+    [
+      raiser([{ ...type, severity: "page" }]),
+      "plugin.toml: notifications.types[0].severity must be `info`, `warning` or `critical`",
+    ],
+  ];
+  for (const [manifest, want] of cases) {
+    const got = bindingMessage(manifest);
+    if (got !== want) {
+      console.error("FAIL notifier key check", JSON.stringify({ got, want }));
+      process.exit(1);
+    }
+  }
+  const { renderEnvTypes } = await import("../dist/tools/types.js");
+  const types = renderEnvTypes(raiser([type]));
+  if (!types.includes("NOTIFY: NotifyBinding;") || !types.includes("NotifyBinding }")) {
+    console.error(
+      "FAIL notification types env: missing the NOTIFY NotifyBinding property or import",
+    );
+    process.exit(1);
+  }
+  if (renderEnvTypes(bindingBase).includes("NOTIFY")) {
+    console.error("FAIL a plugin without notification types got a NOTIFY binding");
+    process.exit(1);
+  }
+  console.log("ok notifier and notification types reject unknown keys and type NOTIFY");
+}
 // [capabilities.network.own_user_agent]: outbound, 1-32 hosts that are not `*`,
 // and a one-line reason.
 {
@@ -714,6 +785,11 @@ console.log("ok materialize rejects disk-only python even with both flags");
   const files = healthInterfaces(["metadataFiles", "covers"]);
   if (JSON.stringify(files) !== JSON.stringify(["CoverFetcher", "MetadataFiles"])) {
     console.error("FAIL smoke probes metadataFiles health", files);
+    process.exit(1);
+  }
+  const notifier = healthInterfaces(["notifier"]);
+  if (JSON.stringify(notifier) !== JSON.stringify(["Notifier"])) {
+    console.error("FAIL smoke probes notifier health", notifier);
     process.exit(1);
   }
   if (healthInterfaces(["cli"]).length !== 0) {

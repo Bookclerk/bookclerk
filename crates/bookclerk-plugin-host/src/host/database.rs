@@ -2788,22 +2788,19 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
 
     async fn set_acquire_status(
         &self,
-        book_uuid: &str,
-        title: Option<&bookclerk_library::TitleHolding>,
+        holding: &bookclerk_library::TitleHolding,
+        book_uuid: Option<&str>,
         status: bookclerk_library::AcquireStatus,
         storage_key: Option<&str>,
         error_message: Option<&str>,
-        event: Option<bookclerk_library::PublishDomainEventSpec>,
+        event: bookclerk_library::PublishDomainEventSpec,
     ) -> bookclerk_library::Result<()> {
-        let event = match event {
-            Some(spec) => bookclerk_library::prepare_publish_domain_event(spec)?,
-            None => bookclerk_library::PublishDomainEventSpec::default(),
-        };
+        let event = bookclerk_library::prepare_publish_domain_event(event)?;
         let result = self
             .call(DbAtomicParams::SetAcquireStatus {
-                book_uuid: book_uuid.to_string(),
-                edition_id: title.map(|t| t.edition_id.clone()),
-                holding_id: title.map(|t| t.holding_id.clone()),
+                holding_id: holding.holding_id.clone(),
+                edition_id: holding.edition_id.clone(),
+                book_uuid: book_uuid.map(str::to_string),
                 status: status.as_str().to_string(),
                 storage_key: storage_key.map(str::to_string),
                 error_message: error_message.map(str::to_string),
@@ -2821,7 +2818,10 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .await?;
         if let Some(err) = atomic_app_err(
             &result.status,
-            bookclerk_library::LibraryError::not_found(EntityKind::Book, book_uuid),
+            bookclerk_library::LibraryError::not_found(
+                EntityKind::Book,
+                holding.holding_id.as_str(),
+            ),
         ) {
             return Err(err);
         }

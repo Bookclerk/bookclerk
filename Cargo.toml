@@ -30,6 +30,7 @@ members = [
     "crates/bookclerk-plugin-catalog",
     "crates/bookclerk-plugin-e2e",
     "crates/bookclerk-plugin-host",
+    "crates/bookclerk-player-engine",
     "crates/bookclerk-plugin-manifest",
     "crates/bookclerk-plugin-sdk",
     "crates/bookclerk-plugin-tools",

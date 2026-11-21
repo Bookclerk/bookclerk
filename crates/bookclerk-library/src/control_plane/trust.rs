@@ -46,8 +46,9 @@ use super::job_routing::{JobClaimRequest, RoutedJobClaim};
 use super::semaphore::release_permits;
 use crate::entities::{account_links, accounts, nodes, portal_identities, users};
 use crate::error::{LibraryError, Result};
-use crate::models::{BookRecord, JobKind, JobPayload, JobRecord, JobState, UserRole, UserStatus};
+use crate::models::{JobKind, JobPayload, JobRecord, JobState, UserRole, UserStatus};
 use crate::store::LibraryStore;
+use crate::AcquireTitle;
 
 /// How the claiming node reaches the job queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -781,8 +782,14 @@ pub async fn plan_scan(
     let owner = match requester {
         ScanRequester::Operator => None,
         ScanRequester::User(user_id) => match active_role(store, user_id).await? {
-            Some(role) if role.is_privileged() => None,
-            Some(_) => Some(user_id),
+            Some(UserRole::Owner) => None,
+            // An Owner can turn library-wide scans off for one
+            // Administrator, who then scans only their own accounts.
+            Some(UserRole::Administrator) => {
+                (!super::admin_may(store, user_id, super::AdminControl::LibraryScan).await?)
+                    .then_some(user_id)
+            }
+            Some(UserRole::Member) => Some(user_id),
             None => {
                 return Err(LibraryError::Forbidden(
                     "this user may not scan the library".into(),
@@ -1055,7 +1062,9 @@ pub async fn plan_acquire(
 ///
 /// # Returns
 ///
-/// One title uuid per edition, in the order the editions were given.
+/// One title per edition, named by its account holding (`holdings.id`,
+/// which an acquire job's title accepts), in the order the editions were
+/// given.
 ///
 /// # Errors
 ///
@@ -1111,63 +1120,65 @@ pub async fn acquire_titles_of_editions(
     };
     let mut out = Vec::with_capacity(editions.len());
     for edition in editions {
-        let mut titles: Vec<BookRecord> = Vec::new();
-        for listing in store.listing_refs_of_edition(edition).await? {
-            titles.extend(store.books_of_listing(&listing).await?);
-        }
+        let titles = store.held_titles_of_edition(edition).await?;
         if titles.is_empty() {
             return Err(LibraryError::Invalid(format!(
                 "edition {edition} has no title in the library"
             )));
         }
-        titles.sort_by(|a, b| a.uuid.cmp(&b.uuid));
-        let on_pin = |book: &BookRecord| {
+        let on_pin = |title: &AcquireTitle| {
             pinned_key
                 .as_deref()
-                .is_none_or(|key| key == book.plugin_key)
+                .is_none_or(|key| key == title.plugin_key)
         };
-        let in_account = |book: &BookRecord| match &named {
+        let in_account = |title: &AcquireTitle| match &named {
             None => true,
-            Some((needle, keys)) if keys.is_empty() => book.account_id == *needle,
-            Some((_, keys)) => keys.contains(&(book.plugin_key.clone(), book.account_id.clone())),
+            Some((needle, keys)) if keys.is_empty() => title.account_id == *needle,
+            Some((_, keys)) => keys.contains(&(title.plugin_key.clone(), title.account_id.clone())),
         };
-        let titles: Vec<BookRecord> = titles
+        let titles: Vec<AcquireTitle> = titles
             .into_iter()
-            .filter(|book| on_pin(book) && in_account(book))
+            .filter(|title| on_pin(title) && in_account(title))
             .collect();
         if titles.is_empty() {
             return Err(LibraryError::Invalid(format!(
                 "edition {edition} has no title in that account or on the pinned plugin"
             )));
         }
-        let allowed = titles.iter().find(|book| {
+        let allowed = titles.iter().find(|title| {
             owned.as_ref().is_none_or(|owned| {
-                owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
+                owned.contains(&(title.plugin_key.clone(), title.account_id.clone()))
             })
         });
-        let Some(book) = allowed else {
+        let Some(title) = allowed else {
             return Err(LibraryError::Forbidden(
                 "that edition is not in a store account linked to this user".into(),
             ));
         };
-        out.push(book.uuid.clone());
+        out.push(title.holding_id.clone());
     }
     Ok(out)
 }
 
 /// `None` when `requester` may act on every account (operator authority,
-/// an Owner or an Administrator), otherwise the user whose accounts bound
-/// the request.
+/// an Owner, or an Administrator whose "Library-wide scan and acquire"
+/// switch is on), otherwise the user whose accounts bound the request.
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::Forbidden`] for an unknown or disabled user.
+/// Returns [`LibraryError::Forbidden`] for an unknown or disabled user, or
+/// the read error of the Administrator's switch.
 async fn requester_scope(store: &LibraryStore, requester: ScanRequester) -> Result<Option<i64>> {
     match requester {
         ScanRequester::Operator => Ok(None),
         ScanRequester::User(user_id) => match active_role(store, user_id).await? {
-            Some(role) if role.is_privileged() => Ok(None),
-            Some(_) => Ok(Some(user_id)),
+            Some(UserRole::Owner) => Ok(None),
+            Some(UserRole::Administrator) => {
+                let library_wide =
+                    super::admin_may(store, user_id, super::AdminControl::LibraryScan).await?;
+                Ok((!library_wide).then_some(user_id))
+            }
+            Some(UserRole::Member) => Ok(Some(user_id)),
             None => Err(LibraryError::Forbidden(
                 "this user may not queue library work".into(),
             )),

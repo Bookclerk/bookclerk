@@ -368,24 +368,30 @@ bookclerk config set output.copies "mp3:64k-mono,mp3_chapters:v4"
 | `m4b` | One M4B with tags and chapters (`enriched_m4b`) | `original` |
 | `mp3` | One MP3 (`single_mp3`) | A bitrate or a VBR level |
 | `mp3_chapters` | One MP3 per chapter (`split_mp3_by_chapter`) | A bitrate or a VBR level |
+| `opus` | One Ogg Opus file with tags and chapters (`opus`) | An Opus bitrate |
 | `original` | The store's files as delivered (`none`) | `original` |
 
 A quality is `original` (the store's audio, repackaged without
 re-encoding), a constant bitrate the MP3 encoder writes (`64k`, `96k`,
 `128k`, `160k`, `192k`, `256k` or `320k`), or a LAME VBR level from `v0`
-(best) to `v9`. A bitrate or VBR level may end in `-mono` to mix the copy
-down to one channel. The main output is a copy too: an M4B or
-as-delivered output is `original`, and an MP3 output takes its quality
+(best) to `v9`. An Opus copy takes an Opus bitrate instead: `16k`,
+`24k`, `32k`, `48k`, `64k`, `96k` or `128k`, which the encoder targets
+in variable bitrate. A bitrate or VBR level may end in `-mono` to mix the
+copy down to one channel; without it, a copy keeps the source's channels,
+up to stereo. Opus is an advanced format: fewer players open it than M4B
+and MP3.
+The main output is a copy too: an M4B or as-delivered output is
+`original`, an Opus output is `64k`, and an MP3 output takes its quality
 from the `output.lame` settings, named after the bitrate the encoder
 writes (it rounds `lame.bitrate_kbps` up to the next of those rates). A
 copy may not repeat another or the main output.
 
 Each acquire downloads the book once and makes every copy from that
 download, main output first. When a library keeps more than one copy,
-every MP3 copy is encoded at its own quality, even when the store
-delivers MP3, so each copy holds the audio its name says. A library with
-only the main output keeps storing a store's MP3 as delivered, as
-before. Every destination receives each copy its
+every MP3 or Opus copy is encoded at its own quality, even when the
+store delivers that format, so each copy holds the audio its name says. A
+library with only the main output keeps storing a store's MP3 or Opus
+file as delivered, rather than encoding lossy audio a second time. Every destination receives each copy its
 filter takes (see
 [Choosing which books a destination takes](#choosing-which-books-a-destination-takes)).
 For example, to send only the MP3 copy to a bucket a phone syncs from:
@@ -559,7 +565,7 @@ apply that set everywhere instead, or list your own
 
 ```toml
 [output]
-format = "enriched_m4b"   # single_mp3 | split_mp3_by_chapter | …
+format = "enriched_m4b"   # single_mp3 | split_mp3_by_chapter | opus | none
 copies = []               # extra copies, see "Keeping several copies"
 download_cover = true
 download_pdf = true

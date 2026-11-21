@@ -193,42 +193,18 @@ impl GraphicAudioClient {
         Ok(serde_json::from_str(&body)?)
     }
 
-    /// Download bytes from an absolute media URL (no Authorization).
-    ///
-    /// Prefer [`Self::download_to_path`] for large Hi/Lo media (~100MB–500MB+).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn download_bytes(&self, url: &str) -> Result<bytes::Bytes> {
-        let resp = self
-            .http
-            .get(url)
-            .header(USER_AGENT, USER_AGENT_VALUE)
-            .send()
-            .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(GraphicAudioError::download(format!(
-                "download failed ({status}) for {url}"
-            )));
-        }
-        Ok(resp.bytes().await?)
-    }
-
-    /// Stream an absolute media URL to `path` without buffering the whole body.
+    /// Stream an absolute media URL to `path` without buffering the whole
+    /// body, resuming a dropped transfer.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns an error when the store refuses the file or the transfer
+    /// keeps failing.
     pub async fn download_to_path(&self, url: &str, path: &Path) -> Result<()> {
-        let resp = self
-            .http
-            .get(url)
-            .header(USER_AGENT, USER_AGENT_VALUE)
-            .send()
-            .await?;
-        crate::http_util::response_to_path(resp, path).await
+        crate::http_util::download_resumable(path, || {
+            self.http.get(url).header(USER_AGENT, USER_AGENT_VALUE)
+        })
+        .await
     }
 
     /// `POST activation/remove` — drop a device slot for `client_id`.

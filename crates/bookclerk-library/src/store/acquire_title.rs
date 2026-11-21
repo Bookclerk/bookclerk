@@ -97,7 +97,7 @@ pub struct AcquireTitle {
     /// PDF state; `None` as for [`Self::acquired_by`].
     pub pdf_acquired_by: Option<String>,
     /// The flat `books` row of this account's title, while that table
-    /// exists: the status writes are still keyed by it.
+    /// exists: writers that still mirror it name it (book model step 6).
     pub book_uuid: Option<String>,
 }
 
@@ -417,6 +417,28 @@ impl LibraryStore {
         .await?;
         holdings.sort_by(|a, b| a.id.cmp(&b.id));
         self.acquire_titles_of(holdings).await
+    }
+
+    /// The held titles of edition `edition_id`: one per account holding of
+    /// any of its listings, in holding id order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn held_titles_of_edition(&self, edition_id: &str) -> Result<Vec<AcquireTitle>> {
+        use super::library_model::find_chunked_paged;
+        let listings = find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &[edition_id.to_string()],
+            |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
+                    .order_by_asc(store_listings::Column::Id)
+            },
+        )
+        .await?;
+        let ids: Vec<String> = listings.into_iter().map(|l| l.id).collect();
+        self.acquire_titles_of_listings(&ids).await
     }
 
     /// The title of one account holding (`holdings.id`), as acquire reads

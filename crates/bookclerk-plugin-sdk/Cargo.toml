@@ -25,6 +25,7 @@ db = [
 # Storefront / D1 / integration guests should enable this. Platform sqlite/local
 # leave it off.
 http = [
+    "tokio/fs",
     "dep:bytes",
     "dep:cookie",
     "dep:cookie_store",

@@ -167,12 +167,6 @@ pub async fn match_storage_using_index(
                 summary.unchanged += 1;
                 continue;
             }
-            // The status writes are still keyed by the title's flat row.
-            let Some(book_uuid) = title.book_uuid.as_deref() else {
-                summary.unchanged += 1;
-                continue;
-            };
-
             let Some(mut key) = find_audio_for_title(title, index, storage, library).await? else {
                 if options.only_mark_found || !options.clear_missing {
                     summary.unchanged += 1;
@@ -191,9 +185,8 @@ pub async fn match_storage_using_index(
                     continue;
                 }
                 library
-                    .set_acquire_status(
-                        book_uuid,
-                        &title.account_id,
+                    .set_holding_acquire_status(
+                        &title.holding_id,
                         AcquireStatus::NotAcquired,
                         None,
                         None,
@@ -237,9 +230,8 @@ pub async fn match_storage_using_index(
             match title_update(title, &walk, Some(&key)) {
                 TitleUpdate::Acquired(key) => {
                     library
-                        .set_acquire_status(
-                            book_uuid,
-                            &title.account_id,
+                        .set_holding_acquire_status(
+                            &title.holding_id,
                             AcquireStatus::Acquired,
                             Some(&key),
                             None,

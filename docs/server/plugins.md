@@ -61,7 +61,10 @@ version answers to.
 
 ### Artifact URLs
 
-- A registry artifact keeps its download URL.
+- A registry artifact keeps its download URL. Installing streams it to
+  disk (at most 512 MiB) and resumes a dropped or timed-out transfer from
+  where it stopped; each attempt has two minutes, and the archive's digest
+  is checked once it is complete.
 - A local archive up to 1 MiB is stored in the database
   (`blob:sha256:<hex>`), so every node can materialize it. It is split into
   chunks small enough for the database plugin's cell, request and result

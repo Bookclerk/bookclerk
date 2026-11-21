@@ -2357,13 +2357,15 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
     let done = w.store.get_job(&job_id).await.unwrap().unwrap();
     assert_eq!(done.state, crate::models::JobState::Succeeded);
     assert_eq!(done.progress.as_deref(), Some("1 title"));
+    // `book_acquired` names the uploading holding.
+    let holding = holding_of(&w.store, &book_uuid).await;
     assert!(w
         .store
         .list_domain_events(50)
         .await
         .unwrap()
         .iter()
-        .any(|event| event.event_type == "book_acquired" && event.correlation_id == book_uuid));
+        .any(|event| event.event_type == "book_acquired" && event.correlation_id == holding));
     assert!(
         live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
             .await

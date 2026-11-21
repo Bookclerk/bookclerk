@@ -86,11 +86,11 @@ pub struct ObjectProbe {
 
 /// Audio extensions considered acquired media for storage matching.
 ///
-/// Includes default remux/encode outputs (`m4b` / `mp3` / `m4a`) plus plain
+/// Includes default remux/encode outputs (`m4b` / `mp3` / `m4a` / `opus`) plus plain
 /// passthrough containers Chirp / GraphicAudio may store under noop/`as_is`
 /// output (`flac` / `aac` / `ogg` / `oga`). Keep aligned with
 /// `bookclerk_source::media` sniffing and GraphicAudio ZIP audio filters.
-pub const AUDIO_EXTENSIONS: &[&str] = &["m4b", "mp3", "m4a", "flac", "aac", "ogg", "oga"];
+pub const AUDIO_EXTENSIONS: &[&str] = &["m4b", "mp3", "m4a", "flac", "aac", "ogg", "oga", "opus"];
 
 /// True when `key` ends with a known acquired audio extension.
 #[must_use]

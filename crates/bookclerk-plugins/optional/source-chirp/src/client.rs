@@ -813,25 +813,26 @@ impl ChirpClient {
         ))
     }
 
-    /// Download bytes from an absolute media URL.
+    /// Streams a track or cover URL to `dest`, resuming a dropped transfer
+    /// through the SDK's resumable download (`bookclerk_plugin_sdk::download`)
+    /// instead of holding the file in memory.
+    ///
+    /// # Returns
+    ///
+    /// The file's length in bytes.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
-    pub async fn download_bytes(&self, url: &str) -> Result<bytes::Bytes> {
-        let resp = self
-            .http
-            .get(url)
-            .header(USER_AGENT, USER_AGENT_VALUE)
-            .send()
-            .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(ChirpError::download(format!(
-                "download failed ({status}) for {url}"
-            )));
-        }
-        Ok(resp.bytes().await?)
+    /// Returns [`ChirpError::Download`] when the store refuses the file or
+    /// the transfer keeps failing.
+    pub async fn download_to_file(&self, url: &str, dest: &std::path::Path) -> Result<u64> {
+        let done = bookclerk_plugin_sdk::download::Download::new()
+            .to_file(dest, || {
+                self.http.get(url).header(USER_AGENT, USER_AGENT_VALUE)
+            })
+            .await
+            .map_err(|err| ChirpError::download(err.to_string()))?;
+        Ok(done.bytes)
     }
 }
 

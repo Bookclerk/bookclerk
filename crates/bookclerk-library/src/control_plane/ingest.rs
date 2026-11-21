@@ -769,7 +769,7 @@ pub async fn create_intake_batch(
     if batch::rows_affected(&reply, 0) == 0 {
         return Ok(Err(CreateRefusal::NotAllowed));
     }
-    insert_members(store, &id, specs, &now).await?;
+    insert_members(store, id, specs, &now).await?;
     // An intake member's bytes are already in place.
     store
         .execute_host_batch(batch::request(
@@ -780,7 +780,7 @@ pub async fn create_intake_batch(
             )],
         ))
         .await?;
-    load_batch(store, &id)
+    load_batch(store, id)
         .await?
         .map(Ok)
         .ok_or_else(|| LibraryError::Other(anyhow::anyhow!("the new intake batch is gone")))
