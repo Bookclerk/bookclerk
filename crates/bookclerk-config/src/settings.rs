@@ -101,8 +101,9 @@ pub struct AuthConfig {
     /// Where this install keeps the library's data-encryption key
     /// (`[auth].key_store`). Unset means the host's default: the OS keychain
     /// for the desktop app, the `master.key` file for the daemon and CLI.
-    /// Set, it is required: a keychain that can't be reached is an error
-    /// rather than a fallback to the file.
+    /// Set to `keychain`, it is required: a keychain that can't be reached
+    /// is an error rather than a fallback to the file. `systemd-creds`
+    /// always falls back to the file when the key can't be sealed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_store: Option<KeyStoreKind>,
     /// Optional upstream OIDC/OAuth identity broker (`[auth.oidc]`).
@@ -112,7 +113,7 @@ pub struct AuthConfig {
 
 /// Where an install keeps the library's data-encryption key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum KeyStoreKind {
     /// `{files_dir}/master.key` holds the key itself (`BCK1`, or `BCK2`
     /// under the auth password).
@@ -120,15 +121,20 @@ pub enum KeyStoreKind {
     /// The OS keychain (Keychain Services, Credential Manager or Secret
     /// Service) holds the key; `master.key` only names the item (`BCK3`).
     Keychain,
+    /// `systemd-creds` seals the key to this machine (its TPM where there
+    /// is one) and the daemon's user, or the service unit hands it in;
+    /// `master.key` only names the item (`BCK4`). For headless Linux.
+    SystemdCreds,
 }
 
 impl KeyStoreKind {
-    /// The setting's spelling: `file` or `keychain`.
+    /// The setting's spelling: `file`, `keychain` or `systemd-creds`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::File => "file",
             Self::Keychain => "keychain",
+            Self::SystemdCreds => "systemd-creds",
         }
     }
 }
@@ -140,12 +146,19 @@ impl std::str::FromStr for KeyStoreKind {
         match s.trim() {
             "file" => Ok(Self::File),
             "keychain" => Ok(Self::Keychain),
+            "systemd-creds" => Ok(Self::SystemdCreds),
             other => Err(format!(
-                "unknown key store `{other}` (expected `file` or `keychain`)"
+                "unknown key store `{other}` (expected `file`, `keychain` or `systemd-creds`)"
             )),
         }
     }
 }
+
+/// Default for [`LibraryConfig::upgrade_daily_limit`].
+pub const DEFAULT_UPGRADE_DAILY_LIMIT: u32 = 5;
+
+/// Highest [`LibraryConfig::upgrade_daily_limit`] the settings accept.
+pub const MAX_UPGRADE_DAILY_LIMIT: u32 = 100;
 
 /// Library / scan related settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -173,6 +186,14 @@ pub struct LibraryConfig {
     /// accompanying sidecars) onto the configured naming-profile layout.
     /// Default false — match in place without moving files.
     pub fix_storage_layout: bool,
+    /// Once a day, ask each store that answers quality offers whether an
+    /// account would now download a better file than the one the library
+    /// holds, and download it again when it would (`bookclerkd`). Off by
+    /// default.
+    pub upgrade_quality: bool,
+    /// Most quality upgrades queued per store account per day (at least
+    /// 1); each download also waits for the account's pace.
+    pub upgrade_daily_limit: u32,
 }
 
 /// Discovery / recommendations / embeddings settings.
@@ -237,6 +258,8 @@ impl Default for LibraryConfig {
             enrich_from_audible: true,
             enrich_min_confidence: 90,
             fix_storage_layout: false,
+            upgrade_quality: false,
+            upgrade_daily_limit: DEFAULT_UPGRADE_DAILY_LIMIT,
         }
     }
 }
@@ -315,6 +338,10 @@ pub enum NodeApiMode {
     /// The built-in TLS listener with a self-signed certificate whose SPKI
     /// pin travels in enrollment links.
     SelfSigned,
+    /// The library's active relay ingress plugin carries public traffic
+    /// through its `ORIGIN` binding; branches verify the relay's edge
+    /// certificate against the webpki roots.
+    Tunnel,
 }
 
 impl NodeApiMode {
@@ -326,6 +353,7 @@ impl NodeApiMode {
             Self::Proxy => "proxy",
             Self::Acme => "acme",
             Self::SelfSigned => "self_signed",
+            Self::Tunnel => "tunnel",
         }
     }
 }
@@ -443,7 +471,9 @@ impl NodeApiConfig {
             )),
         };
         match self.mode {
-            NodeApiMode::Loopback => Ok(()),
+            // The relay plugin reports the public origin; no listener or
+            // proxy to configure here.
+            NodeApiMode::Loopback | NodeApiMode::Tunnel => Ok(()),
             NodeApiMode::Proxy => {
                 if trusted_proxies.iter().all(|entry| entry.trim().is_empty()) {
                     return Err(

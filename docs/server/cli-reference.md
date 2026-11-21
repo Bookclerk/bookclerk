@@ -37,6 +37,7 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk daemon`](#bookclerk-daemon): Talk to a running bookclerkd control plane
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
 - [`bookclerk libraries`](#bookclerk-libraries): Owner libraries this install hosts for, and consent to their plugins
+- [`bookclerk ingress`](#bookclerk-ingress): The library's public address from an ingress plugin
 - [`bookclerk nodes`](#bookclerk-nodes): Library nodes: liveness, capacity, budgets, and placement labels
 - [`bookclerk users`](#bookclerk-users): The library's people: patron scopes, member controls and Administrator switches
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
@@ -1213,15 +1214,16 @@ bookclerk config master-key [OPTIONS] <COMMAND>
 
 Commands:
 
-- [`bookclerk config master-key status`](#bookclerk-config-master-key-status): Show where the key is kept (the file or the OS keychain) and whether it is raw (BCK1) or wrapped (BCK2)
+- [`bookclerk config master-key status`](#bookclerk-config-master-key-status): Show where the key is kept (the file, the OS keychain or systemd-creds) and whether it is raw (BCK1) or wrapped (BCK2)
 - [`bookclerk config master-key wrap`](#bookclerk-config-master-key-wrap): Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in `master.key` or in its OS keychain item
-- [`bookclerk config master-key move`](#bookclerk-config-master-key-move): Move the key to the OS keychain or back into `master.key`, and record the choice as `[auth].key_store` in config.toml
+- [`bookclerk config master-key move`](#bookclerk-config-master-key-move): Move the key to the OS keychain, into a systemd-creds credential, or back into `master.key`, and record the choice as `[auth].key_store` in config.toml
 - [`bookclerk config master-key export`](#bookclerk-config-master-key-export): Write a recovery copy of the key, wrapped with a password read from stdin (never argv)
+- [`bookclerk config master-key credential`](#bookclerk-config-master-key-credential): Write the key's envelope, exactly as stored (BCK1, or BCK2 under the auth password), to stdout for `systemd-creds encrypt`
 - [`bookclerk config master-key import`](#bookclerk-config-master-key-import): Restore the key from a recovery copy (or a copied `master.key`) on an install that has no `master.key`. A wrapped copy's password is read from stdin
 
 #### `bookclerk config master-key status`
 
-Show where the key is kept (the file or the OS keychain) and whether it is raw (BCK1) or wrapped (BCK2)
+Show where the key is kept (the file, the OS keychain or systemd-creds) and whether it is raw (BCK1) or wrapped (BCK2)
 
 ```text
 bookclerk config master-key status [OPTIONS]
@@ -1239,7 +1241,7 @@ bookclerk config master-key wrap [OPTIONS]
 
 #### `bookclerk config master-key move`
 
-Move the key to the OS keychain or back into `master.key`, and record the choice as `[auth].key_store` in config.toml.
+Move the key to the OS keychain, into a systemd-creds credential, or back into `master.key`, and record the choice as `[auth].key_store` in config.toml.
 
 The key itself doesn't change, so every sealed secret stays readable. Stop `bookclerkd` first.
 
@@ -1249,7 +1251,7 @@ bookclerk config master-key move [OPTIONS] <TO>
 
 Arguments:
 
-- `<TO>`: Where to keep the key: `keychain` or `file`
+- `<TO>`: Where to keep the key: `keychain`, `systemd-creds` or `file`
 
 #### `bookclerk config master-key export`
 
@@ -1264,6 +1266,16 @@ bookclerk config master-key export [OPTIONS] --out <OUT>
 Options:
 
 - `--out <OUT>`: File to write (created with mode 0600; never overwritten) (required)
+
+#### `bookclerk config master-key credential`
+
+Write the key's envelope, exactly as stored (BCK1, or BCK2 under the auth password), to stdout for `systemd-creds encrypt`.
+
+For administrators who seal the key into a unit credential themselves (systemd older than 256, or a system credential store): pipe it into `systemd-creds encrypt --name=bookclerk-master-key - <file>`, load that file with `LoadCredentialEncrypted=` in the unit, and set `[auth].key_store = "systemd-creds"`. The next start adopts the credential. Refuses to write to a terminal.
+
+```text
+bookclerk config master-key credential [OPTIONS]
+```
 
 #### `bookclerk config master-key import`
 
@@ -1883,6 +1895,70 @@ Options:
 
 - `--library <LIBRARY>`: Library id (default: the only enrolled library)
 
+## `bookclerk ingress`
+
+The library's public address from an ingress plugin
+
+```text
+bookclerk ingress [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk ingress status`](#bookclerk-ingress-status): Show the active ingress, what it exposes and the public origin
+- [`bookclerk ingress activate`](#bookclerk-ingress-activate): Make a plugin instance the library's active ingress. Needs an Owner account and operator auth on
+- [`bookclerk ingress deactivate`](#bookclerk-ingress-deactivate): Turn ingress off. The adopted origin is kept for next time
+- [`bookclerk ingress exposure`](#bookclerk-ingress-exposure): Choose what public traffic may reach
+- [`bookclerk ingress accept-origin`](#bookclerk-ingress-accept-origin): Adopt the new origin the active ingress reported. Passkeys and sign-in redirects registered under the old name stop working
+
+### `bookclerk ingress status`
+
+Show the active ingress, what it exposes and the public origin
+
+```text
+bookclerk ingress status [OPTIONS]
+```
+
+### `bookclerk ingress activate`
+
+Make a plugin instance the library's active ingress. Needs an Owner account and operator auth on
+
+```text
+bookclerk ingress activate [OPTIONS] <PLUGIN>
+```
+
+Arguments:
+
+- `<PLUGIN>`: A plugin instance UUID, or a plugin key for its default instance
+
+### `bookclerk ingress deactivate`
+
+Turn ingress off. The adopted origin is kept for next time
+
+```text
+bookclerk ingress deactivate [OPTIONS]
+```
+
+### `bookclerk ingress exposure`
+
+Choose what public traffic may reach
+
+```text
+bookclerk ingress exposure [OPTIONS] <EXPOSURE>
+```
+
+Arguments:
+
+- `<EXPOSURE>`: `branches` (the default) or `library` (one of `branches`, `library`)
+
+### `bookclerk ingress accept-origin`
+
+Adopt the new origin the active ingress reported. Passkeys and sign-in redirects registered under the old name stop working
+
+```text
+bookclerk ingress accept-origin [OPTIONS]
+```
+
 ## `bookclerk nodes`
 
 Library nodes: liveness, capacity, budgets, and placement labels
@@ -2085,6 +2161,7 @@ Options:
 - `--default`: Set the library's default scope instead of one patron's
 - `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author, narrator, tag (a library tag) and collection. Repeatable: a book needs one
 - `--exclude <FIELD=VALUE>`: Hide books with this value, whatever `--include` says. Repeatable
+- `--hide-explicit`: Hide books a store or metadata file marks as explicit content
 - `--follow-default`: Drop the patron's own scope so they follow the library's default
 
 ### `bookclerk users controls`

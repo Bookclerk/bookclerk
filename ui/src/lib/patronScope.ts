@@ -75,14 +75,17 @@ export function scopeProblem(scope: PatronScope): string | null {
  * A one-line description of a scope for a summary.
  *
  * @param scope - The scope.
- * @returns "Whole library", or how many rules of each kind it has.
+ * @returns "Whole library", or how many rules of each kind it has and
+ *   whether explicit books are hidden.
  */
 export function scopeSummary(scope: PatronScope): string {
-  if (scope.rules.length === 0) return "Whole library";
+  const hidesExplicit = scope.explicit === "hide";
+  if (scope.rules.length === 0 && !hidesExplicit) return "Whole library";
   const include = scope.rules.filter((r) => r.effect === "include").length;
   const exclude = scope.rules.length - include;
   const parts: string[] = [];
   if (include) parts.push(`${include} show-only ${include === 1 ? "rule" : "rules"}`);
   if (exclude) parts.push(`${exclude} hide ${exclude === 1 ? "rule" : "rules"}`);
+  if (hidesExplicit) parts.push("explicit books hidden");
   return parts.join(", ");
 }

@@ -151,6 +151,8 @@ import type {
   PurchaseHint,
   PurchaseHintParams,
   PurchaseHintsParams,
+  QualityOffersParams,
+  QualityOffersResult,
   QueueMessage as WireQueueMessage,
   QueueSendOk,
   RevokeAccountParams,
@@ -2346,6 +2348,7 @@ const STOREFRONT_METHODS = Object.freeze([
   "listDeals",
   "catalogDetail",
   "revokeAccount",
+  "qualityOffers",
   "diagnose",
   "health",
 ]);
@@ -2532,6 +2535,19 @@ export class StorefrontEntrypoint<
    */
   revokeAccount(_params: RevokeAccountParams): Promise<void> {
     return Promise.resolve();
+  }
+  /**
+   * The audio quality one account would download for each title today, one
+   * answer per title id in order (`found: false` when the store cannot
+   * say). It must not license or download anything. The host asks only a
+   * store that declares `catalog.qualityOffers` in `describe()`; the
+   * default rejects as unsupported.
+   *
+   * @param _params - Account, its credentials, settings and title ids.
+   * @returns One answer per title, plus any refreshed credentials.
+   */
+  qualityOffers(_params: QualityOffersParams): Promise<QualityOffersResult> {
+    return Promise.reject(unsupported("qualityOffers"));
   }
   /**
    * Operator-facing diagnostic lines.

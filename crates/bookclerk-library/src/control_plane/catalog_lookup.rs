@@ -469,6 +469,67 @@ where
     Ok(out)
 }
 
+/// [`read_chunked_all`] reading only the columns `query` selects, into `M`
+/// (a [`sea_orm::FromQueryResult`] projection), for callers that need a
+/// few narrow columns of wide rows.
+///
+/// Each chunk of `ids` is as wide as the statement still fits the
+/// plugin's per-statement limits, and is read a result page at a time in
+/// primary key order (a page refused for its bytes is read again at half
+/// the rows, see [`read_shrinking`]).
+///
+/// # Errors
+///
+/// Returns the read error, including a byte-limit refusal of a single row.
+pub(crate) async fn read_chunked_all_as<E, M, F>(
+    store: &LibraryStore,
+    ids: &[String],
+    query: F,
+) -> Result<Vec<M>>
+where
+    E: EntityTrait,
+    M: sea_orm::FromQueryResult + Send + Sync,
+    F: Fn(Vec<String>) -> sea_orm::Select<E>,
+{
+    use sea_orm::{Iterable as _, PrimaryKeyToColumn as _};
+    let fits = |part: &[String]| {
+        super::sea_exec(&query(part.to_vec()))
+            .map(|statement| store.admits_read(&statement))
+            .unwrap_or(true)
+    };
+    let page = u64::try_from(result_page(store).max(1)).unwrap_or(1);
+    let mut out = Vec::new();
+    let mut rest = ids;
+    while !rest.is_empty() {
+        let mut width = in_chunk(store, PAGED_FIXED_BINDS).min(rest.len());
+        while width > 1 && !fits(&rest[..width]) {
+            width /= 2;
+        }
+        let (part, tail) = rest.split_at(width);
+        let mut select = query(part.to_vec());
+        for key in E::PrimaryKey::iter() {
+            select = select.order_by_asc(key.into_column());
+        }
+        out.extend(
+            read_shrinking(page, None, |offset, limit| {
+                let select = select.clone();
+                async move {
+                    select
+                        .offset(offset)
+                        .limit(limit)
+                        .into_model::<M>()
+                        .all(store.db())
+                        .await
+                        .map_err(LibraryError::Orm)
+                }
+            })
+            .await?,
+        );
+        rest = tail;
+    }
+    Ok(out)
+}
+
 /// One statement per run of `ids`, each run as long as `build`'s
 /// statement still fits the database plugin's per-statement limits (binds
 /// and payload), starting from [`in_chunk`] ids and halving.
@@ -943,7 +1004,7 @@ pub(crate) async fn works_of_editions(
 }
 
 /// The editions of `work_ids`, with their work.
-async fn editions_of_works(
+pub(super) async fn editions_of_works(
     store: &LibraryStore,
     work_ids: &[String],
 ) -> Result<HashMap<String, String>> {

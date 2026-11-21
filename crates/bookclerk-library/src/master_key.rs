@@ -41,7 +41,10 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use argon2::{Algorithm, Argon2, Params as ArgonParams, Version};
 use bookclerk_config::KeyStoreKind;
-use bookclerk_keystore::{KeychainItemId, KeychainPointer, OsKeychain, PointerError, Vault};
+use bookclerk_keystore::{
+    KeychainItemId, KeychainPointer, OsKeychain, PointerError, PointerStore, SystemdCredsVault,
+    Vault,
+};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,
@@ -171,12 +174,95 @@ fn vault() -> Result<Arc<dyn Vault>> {
         .map_err(|_| LibraryError::Other(anyhow::anyhow!("keychain slot lock poisoned")))
 }
 
+/// Builds the `systemd-creds` store for a files directory.
+pub type SystemdCredsFactory = dyn Fn(&Path) -> Arc<dyn Vault> + Send + Sync;
+
+/// The process-wide `systemd-creds` store builder
+/// ([`set_systemd_creds_vault`]); [`SystemdCredsVault::new`] by default.
+static CREDS_FACTORY: OnceLock<RwLock<Arc<SystemdCredsFactory>>> = OnceLock::new();
+
+/// The `systemd-creds` builder slot, initialised to the system tool.
+fn creds_factory_slot() -> &'static RwLock<Arc<SystemdCredsFactory>> {
+    CREDS_FACTORY.get_or_init(|| {
+        RwLock::new(Arc::new(|dir: &Path| -> Arc<dyn Vault> {
+            Arc::new(SystemdCredsVault::new(dir))
+        }))
+    })
+}
+
+/// Replaces how this process builds its `systemd-creds` store, for tests
+/// (a fake tool, or a [`bookclerk_keystore::MemoryVault`]).
+///
+/// # Arguments
+///
+/// * `factory` - builds the store for a files directory.
+pub fn set_systemd_creds_vault(factory: Arc<SystemdCredsFactory>) {
+    if let Ok(mut guard) = creds_factory_slot().write() {
+        *guard = factory;
+    }
+}
+
+/// The store `store` names, for the files directory `dir`.
+fn vault_for(store: PointerStore, dir: &Path) -> Result<Arc<dyn Vault>> {
+    match store {
+        PointerStore::Keychain => vault(),
+        PointerStore::SystemdCreds => creds_factory_slot()
+            .read()
+            .map(|factory| factory(dir))
+            .map_err(|_| LibraryError::Other(anyhow::anyhow!("systemd-creds slot lock poisoned"))),
+    }
+}
+
+/// The directory holding the `master.key` at `path` (where a
+/// `systemd-creds` item lives beside it).
+fn dir_of(path: &Path) -> &Path {
+    path.parent().unwrap_or_else(|| Path::new("."))
+}
+
+/// A store item that holds a key's envelope.
+#[derive(Debug, Clone)]
+struct ItemHome {
+    /// The store holding the item.
+    store: PointerStore,
+    /// The item.
+    item: KeychainItemId,
+    /// The files directory (where a `systemd-creds` item lives).
+    dir: PathBuf,
+}
+
+impl ItemHome {
+    /// The item `pointer` names, for the `master.key` in `dir`.
+    fn of(pointer: &KeychainPointer, dir: &Path) -> Self {
+        Self {
+            store: pointer.store,
+            item: pointer.item,
+            dir: dir.to_path_buf(),
+        }
+    }
+}
+
+/// How an item is named in messages.
+fn describe_item(store: PointerStore, item: KeychainItemId) -> String {
+    match store {
+        PointerStore::Keychain => format!("OS keychain item {item}"),
+        PointerStore::SystemdCreds => format!("systemd-creds credential {item}"),
+    }
+}
+
+/// The key store a pointer's store is.
+fn store_kind(store: PointerStore) -> KeyStoreKind {
+    match store {
+        PointerStore::Keychain => KeyStoreKind::Keychain,
+        PointerStore::SystemdCreds => KeyStoreKind::SystemdCreds,
+    }
+}
+
 /// Where a loaded envelope came from, so a re-wrap writes it back there.
 #[derive(Clone, Copy)]
 enum Location {
     /// `master.key` holds the envelope.
     File,
-    /// The keychain item `master.key` points at holds it.
+    /// The keychain or `systemd-creds` item `master.key` points at holds it.
     Keychain(KeychainPointer),
 }
 
@@ -190,16 +276,20 @@ pub enum MasterKeyFormat {
     /// A pointer to an OS keychain item (`BCK3`); the item holds `BCK1` or
     /// `BCK2`.
     Keychain,
+    /// A pointer to a `systemd-creds` credential (`BCK4`); the credential
+    /// holds `BCK1` or `BCK2`.
+    SystemdCreds,
 }
 
 impl MasterKeyFormat {
-    /// The four-character header: `BCK1`, `BCK2` or `BCK3`.
+    /// The four-character header: `BCK1`, `BCK2`, `BCK3` or `BCK4`.
     #[must_use]
     pub fn header(self) -> &'static str {
         match self {
             Self::Raw => "BCK1",
             Self::Wrapped => "BCK2",
             Self::Keychain => "BCK3",
+            Self::SystemdCreds => "BCK4",
         }
     }
 
@@ -209,6 +299,7 @@ impl MasterKeyFormat {
         match self {
             Self::Raw | Self::Wrapped => KeyStoreKind::File,
             Self::Keychain => KeyStoreKind::Keychain,
+            Self::SystemdCreds => KeyStoreKind::SystemdCreds,
         }
     }
 }
@@ -284,12 +375,12 @@ pub fn inspect_master_key(files_dir: &Path) -> Result<Option<MasterKeyFormat>> {
     match &raw[..4] {
         b"BCK1" => Ok(Some(MasterKeyFormat::Raw)),
         b"BCK2" => Ok(Some(MasterKeyFormat::Wrapped)),
-        b"BCK3" => {
-            parse_pointer(&raw, &path)?;
-            Ok(Some(MasterKeyFormat::Keychain))
-        }
+        b"BCK3" | b"BCK4" => Ok(Some(match parse_pointer(&raw, &path)?.store {
+            PointerStore::Keychain => MasterKeyFormat::Keychain,
+            PointerStore::SystemdCreds => MasterKeyFormat::SystemdCreds,
+        })),
         _ => Err(LibraryError::Other(anyhow::anyhow!(
-            "master key file {} has unknown magic (expected BCK1/BCK2/BCK3)",
+            "master key file {} has unknown magic (expected BCK1/BCK2/BCK3/BCK4)",
             path.display()
         ))),
     }
@@ -308,10 +399,7 @@ pub fn master_key_is_wrapped(files_dir: &Path) -> Result<Option<bool>> {
     }
     let (envelope, location) = read_envelope(&path)?;
     envelope_is_wrapped(&envelope).map(Some).ok_or_else(|| {
-        let source = match location {
-            Location::File => format!("master key file {}", path.display()),
-            Location::Keychain(pointer) => format!("OS keychain item {}", pointer.item),
-        };
+        let source = envelope_source(location, &path);
         LibraryError::Other(anyhow::anyhow!("{source} is not a valid key envelope"))
     })
 }
@@ -485,7 +573,7 @@ pub fn discard_minted_master_key(files_dir: &Path, key: &MasterKey) -> Result<()
             .ok()
             .and_then(|raw| KeychainPointer::parse(&raw).ok())
             .filter(|pointer| pointer.fingerprint == fingerprint_bytes(key))
-            .map(|pointer| pointer.item);
+            .map(|pointer| ItemHome::of(&pointer, files_dir));
         std::fs::remove_file(&path).map_err(|e| {
             LibraryError::Other(anyhow::anyhow!(
                 "failed to remove minted master key {}: {e}",
@@ -493,7 +581,7 @@ pub fn discard_minted_master_key(files_dir: &Path, key: &MasterKey) -> Result<()
             ))
         })?;
         if let Some(item) = minted_item {
-            delete_item_logged(item, "a minted key's keychain item");
+            delete_item_logged(&item, "a minted key's store item");
         }
     }
     if let Ok(mut guard) = cache_slot().lock() {
@@ -555,15 +643,16 @@ pub fn install_master_key(files_dir: &Path, dek: &[u8], password: Option<&str>) 
     let old_item = std::fs::read(&path)
         .ok()
         .and_then(|raw| KeychainPointer::parse(&raw).ok())
-        .map(|pointer| pointer.item);
-    let stored = store_master_key(dek, password)?;
+        .map(|pointer| ItemHome::of(&pointer, files_dir));
+    let stored = store_master_key(files_dir, dek, password)?;
     if let Err(err) = write_secret_file_atomic(&path, stored.bytes()) {
         stored.discard();
         return Err(err);
     }
     let in_keychain = stored.item.is_some();
-    if let Some(old) = old_item.filter(|old| Some(*old) != stored.item) {
-        delete_item_logged(old, "the keychain item of the key this install replaced");
+    let new_item = stored.item.as_ref().map(|home| (home.store, home.item));
+    if let Some(old) = old_item.filter(|old| Some((old.store, old.item)) != new_item) {
+        delete_item_logged(&old, "the store item of the key this install replaced");
     }
     let wrapped = password.map(str::trim).is_some_and(|p| !p.is_empty());
     tracing::info!(
@@ -658,7 +747,7 @@ fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKeyResol
         })?;
         harden_path(parent, true)?;
     }
-    let placed = place_envelope(&dek, password)?;
+    let placed = place_envelope(&dek, password, dir_of(path))?;
     match write_secret_file_create_new(path, &placed.file_bytes) {
         Ok(()) => {
             tracing::info!(
@@ -677,8 +766,8 @@ fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKeyResol
         }
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
             // Lost a mint race: drop our item and load the winner's key.
-            if let Some(item) = placed.item {
-                delete_item_logged(item, "a keychain item from a lost mint race");
+            if let Some(item) = &placed.item {
+                delete_item_logged(item, "a store item from a lost mint race");
             }
             Ok(MasterKeyResolution {
                 key: load_master_key_at(path, password)?,
@@ -686,8 +775,8 @@ fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKeyResol
             })
         }
         Err(e) => {
-            if let Some(item) = placed.item {
-                delete_item_logged(item, "a keychain item whose pointer could not be written");
+            if let Some(item) = &placed.item {
+                delete_item_logged(item, "a store item whose pointer could not be written");
             }
             Err(LibraryError::Other(anyhow::anyhow!(
                 "failed to mint master key {}: {e}",
@@ -699,17 +788,17 @@ fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKeyResol
 
 /// A key placed in its store, and the bytes `master.key` must then hold.
 struct PlacedKey {
-    /// `master.key`'s contents: the envelope, or a `BCK3` pointer.
+    /// `master.key`'s contents: the envelope, or a `BCK3`/`BCK4` pointer.
     file_bytes: Zeroizing<Vec<u8>>,
-    /// The keychain item now holding the envelope, when the key went there.
-    item: Option<KeychainItemId>,
+    /// The store item now holding the envelope, when the key went to one.
+    item: Option<ItemHome>,
 }
 
 impl PlacedKey {
     /// The store the key went to.
     fn store(&self) -> KeyStoreKind {
-        match self.item {
-            Some(_) => KeyStoreKind::Keychain,
+        match &self.item {
+            Some(home) => store_kind(home.store),
             None => KeyStoreKind::File,
         }
     }
@@ -717,73 +806,105 @@ impl PlacedKey {
 
 /// Puts `dek`'s envelope where the [`key_store_preference`] says.
 ///
-/// For the keychain, writes a new item, reads it back to check it, and
-/// returns the pointer for `master.key`. A keychain that can't be reached is
-/// an error when the preference is required, and otherwise falls back to the
-/// file with a warning.
-fn place_envelope(dek: &MasterKey, password: Option<&str>) -> Result<PlacedKey> {
+/// For the keychain or `systemd-creds`, writes a new item, reads it back to
+/// check it, and returns the pointer for `master.key`. A keychain that can't
+/// be reached is an error when the preference is required, and otherwise
+/// falls back to the file with a warning. `systemd-creds` always falls back
+/// to the file when it can't seal the key.
+///
+/// # Arguments
+///
+/// * `dek` - the key.
+/// * `password` - wraps the envelope as `BCK2` when set.
+/// * `dir` - the files directory `master.key` lives in.
+fn place_envelope(dek: &MasterKey, password: Option<&str>, dir: &Path) -> Result<PlacedKey> {
     let envelope = Zeroizing::new(match password {
         Some(pw) => encode_wrapped_master_key(dek, pw)?,
         None => encode_raw_master_key(dek),
     });
     let preference = key_store_preference();
-    match preference.kind {
-        KeyStoreKind::File => Ok(PlacedKey {
-            file_bytes: envelope,
-            item: None,
+    let (store, fallback_ok, label) = match preference.kind {
+        KeyStoreKind::File => {
+            return Ok(PlacedKey {
+                file_bytes: envelope,
+                item: None,
+            })
+        }
+        KeyStoreKind::Keychain => (
+            PointerStore::Keychain,
+            !preference.required,
+            "the OS keychain",
+        ),
+        KeyStoreKind::SystemdCreds => (PointerStore::SystemdCreds, true, "systemd-creds"),
+    };
+    match put_in_store(store, dir, dek, &envelope) {
+        Ok(pointer) => Ok(PlacedKey {
+            file_bytes: Zeroizing::new(pointer.encode().to_vec()),
+            item: Some(ItemHome::of(&pointer, dir)),
         }),
-        KeyStoreKind::Keychain => match put_in_keychain(dek, &envelope) {
-            Ok(pointer) => Ok(PlacedKey {
-                file_bytes: Zeroizing::new(pointer.encode().to_vec()),
-                item: Some(pointer.item),
-            }),
-            Err(err) if !preference.required => {
-                tracing::warn!(
-                    "the OS keychain could not take the data-encryption key ({err}); \
-                     keeping it in master.key instead. Run `bookclerk config master-key \
-                     move keychain` once the keychain is available."
-                );
-                Ok(PlacedKey {
-                    file_bytes: envelope,
-                    item: None,
-                })
-            }
-            Err(err) => Err(err),
-        },
+        Err(err) if fallback_ok => {
+            tracing::warn!(
+                "{label} could not take the data-encryption key ({err}); keeping it in \
+                 master.key instead. Run `bookclerk config master-key move {}` once it is \
+                 available.",
+                preference.kind.as_str()
+            );
+            Ok(PlacedKey {
+                file_bytes: envelope,
+                item: None,
+            })
+        }
+        Err(err) => Err(err),
     }
 }
 
-/// Writes `envelope` to a fresh keychain item, reads it back, and checks it
-/// still unwraps to a key with `dek`'s fingerprint (a `BCK2` envelope is
-/// only checked for its bytes). Deletes the item again if the check fails.
-fn put_in_keychain(dek: &MasterKey, envelope: &[u8]) -> Result<KeychainPointer> {
+/// Writes `envelope` to a fresh item in `store`, reads it back, and checks
+/// the bytes match. Deletes the item again if the check fails.
+///
+/// # Arguments
+///
+/// * `store` - the keychain or `systemd-creds`.
+/// * `dir` - the files directory (where a `systemd-creds` item lives).
+/// * `dek` - the key, whose fingerprint the pointer records.
+/// * `envelope` - the `BCK1`/`BCK2` bytes to store.
+fn put_in_store(
+    store: PointerStore,
+    dir: &Path,
+    dek: &MasterKey,
+    envelope: &[u8],
+) -> Result<KeychainPointer> {
     let pointer = KeychainPointer {
+        store,
         item: KeychainItemId::random(),
         fingerprint: fingerprint_bytes(dek),
     };
-    let vault = vault()?;
+    let home = ItemHome::of(&pointer, dir);
+    let vault = vault_for(store, dir)?;
     vault.set(pointer.item, envelope).map_err(keychain_error)?;
     let back = vault.get(pointer.item).map_err(keychain_error);
     match back {
         Ok(bytes) if bytes.as_slice() == envelope => Ok(pointer),
         Ok(_) => {
-            delete_item_logged(pointer.item, "a keychain item that read back differently");
+            delete_item_logged(&home, "a store item that read back differently");
             Err(LibraryError::Other(anyhow::anyhow!(
-                "the OS keychain returned different bytes than were written"
+                "{} returned different bytes than were written",
+                describe_item(store, pointer.item)
             )))
         }
         Err(err) => {
-            delete_item_logged(pointer.item, "a keychain item that could not be read back");
+            delete_item_logged(&home, "a store item that could not be read back");
             Err(err)
         }
     }
 }
 
-/// Deletes a keychain item, logging (not returning) a failure. Used to clean
+/// Deletes a store item, logging (not returning) a failure. Used to clean
 /// up items that never became a key's home.
-fn delete_item_logged(item: KeychainItemId, what: &str) {
-    if let Err(err) = vault().and_then(|v| v.delete(item).map_err(keychain_error)) {
-        tracing::warn!(%item, "could not delete {what}: {err}");
+fn delete_item_logged(home: &ItemHome, what: &str) {
+    let deleted =
+        vault_for(home.store, &home.dir).and_then(|v| v.delete(home.item).map_err(keychain_error));
+    if let Err(err) = deleted {
+        tracing::warn!(item = %home.item, "could not delete {what}: {err}");
     }
 }
 
@@ -801,7 +922,7 @@ fn fingerprint_bytes(key: &MasterKey) -> [u8; 32] {
     Sha256::digest(key.as_bytes()).into()
 }
 
-/// Parses a `BCK3` pointer read from `path`, naming the file in errors.
+/// Parses a `BCK3`/`BCK4` pointer read from `path`, naming the file in errors.
 fn parse_pointer(raw: &[u8], path: &Path) -> Result<KeychainPointer> {
     KeychainPointer::parse(raw).map_err(|err| match err {
         PointerError::NotAPointer => LibraryError::Other(anyhow::anyhow!(
@@ -824,17 +945,19 @@ fn read_envelope(path: &Path) -> Result<(Zeroizing<Vec<u8>>, Location)> {
             path.display()
         ))
     })?);
-    if !raw.starts_with(bookclerk_keystore::POINTER_MAGIC) {
+    if PointerStore::for_header(&raw).is_none() {
         return Ok((raw, Location::File));
     }
     let pointer = parse_pointer(&raw, path)?;
-    let envelope = vault()?.get(pointer.item).map_err(|err| {
-        LibraryError::Other(anyhow::anyhow!(
-            "master key file {} keeps the key in OS keychain item {}, which could not be read: {err}",
-            path.display(),
-            pointer.item
-        ))
-    })?;
+    let envelope = vault_for(pointer.store, dir_of(path))?
+        .get(pointer.item)
+        .map_err(|err| {
+            LibraryError::Other(anyhow::anyhow!(
+                "master key file {} keeps the key in {}, which could not be read: {err}",
+                path.display(),
+                describe_item(pointer.store, pointer.item)
+            ))
+        })?;
     Ok((envelope, Location::Keychain(pointer)))
 }
 
@@ -843,7 +966,9 @@ fn read_envelope(path: &Path) -> Result<(Zeroizing<Vec<u8>>, Location)> {
 fn write_envelope(location: Location, path: &Path, envelope: &[u8]) -> Result<()> {
     match location {
         Location::File => write_secret_file_atomic(path, envelope),
-        Location::Keychain(pointer) => vault()?.set(pointer.item, envelope).map_err(keychain_error),
+        Location::Keychain(pointer) => vault_for(pointer.store, dir_of(path))?
+            .set(pointer.item, envelope)
+            .map_err(keychain_error),
     }
 }
 
@@ -881,8 +1006,8 @@ fn read_key_snapshot(
     if let Location::Keychain(pointer) = location {
         if fingerprint_bytes(&key) != pointer.fingerprint {
             return Err(LibraryError::Other(anyhow::anyhow!(
-                "OS keychain item {} holds a different key than master key file {} names",
-                pointer.item,
+                "{} holds a different key than master key file {} names",
+                describe_item(pointer.store, pointer.item),
                 path.display()
             )));
         }
@@ -894,7 +1019,7 @@ fn read_key_snapshot(
 fn envelope_source(location: Location, path: &Path) -> String {
     match location {
         Location::File => format!("master key file {}", path.display()),
-        Location::Keychain(pointer) => format!("OS keychain item {}", pointer.item),
+        Location::Keychain(pointer) => describe_item(pointer.store, pointer.item),
     }
 }
 
@@ -982,6 +1107,8 @@ fn normalized_password(password: Option<&str>) -> Option<&str> {
 ///
 /// # Arguments
 ///
+/// * `files_dir` - the files directory `master.key` will be written in
+///   (where a `systemd-creds` credential lives beside it).
 /// * `dek` - the 32-byte data-encryption key.
 /// * `password` - wraps the envelope as `BCK2` when set and non-empty.
 ///
@@ -989,12 +1116,16 @@ fn normalized_password(password: Option<&str>) -> Option<&str> {
 ///
 /// Returns [`LibraryError::Invalid`] when `dek` is not 32 bytes, the
 /// wrapping error, and a keychain failure when the keychain is required.
-pub fn store_master_key(dek: &[u8], password: Option<&str>) -> Result<StoredMasterKey> {
+pub fn store_master_key(
+    files_dir: &Path,
+    dek: &[u8],
+    password: Option<&str>,
+) -> Result<StoredMasterKey> {
     let bytes: [u8; DEK_LEN] = dek
         .try_into()
         .map_err(|_| LibraryError::Invalid(format!("a data-encryption key is {DEK_LEN} bytes")))?;
     let key = MasterKey::from_bytes(bytes);
-    let placed = place_envelope(&key, normalized_password(password))?;
+    let placed = place_envelope(&key, normalized_password(password), files_dir)?;
     Ok(StoredMasterKey {
         bytes: placed.file_bytes,
         item: placed.item,
@@ -1004,10 +1135,10 @@ pub fn store_master_key(dek: &[u8], password: Option<&str>) -> Result<StoredMast
 /// A key [`store_master_key`] placed, waiting for its `master.key` to be
 /// published.
 pub struct StoredMasterKey {
-    /// `master.key`'s contents: the envelope, or a `BCK3` pointer.
+    /// `master.key`'s contents: the envelope, or a `BCK3`/`BCK4` pointer.
     bytes: Zeroizing<Vec<u8>>,
-    /// The keychain item now holding the envelope, when the key went there.
-    item: Option<KeychainItemId>,
+    /// The store item now holding the envelope, when the key went to one.
+    item: Option<ItemHome>,
 }
 
 impl StoredMasterKey {
@@ -1017,17 +1148,20 @@ impl StoredMasterKey {
         &self.bytes
     }
 
-    /// Whether the key went to the OS keychain (`master.key` is a pointer).
+    /// The store the key went to: the file, or the store `master.key`
+    /// points at.
     #[must_use]
-    pub fn in_keychain(&self) -> bool {
-        self.item.is_some()
+    pub fn store(&self) -> KeyStoreKind {
+        self.item
+            .as_ref()
+            .map_or(KeyStoreKind::File, |home| store_kind(home.store))
     }
 
-    /// Deletes the keychain item again, for a caller whose `master.key`
-    /// was never published. Does nothing for a key kept in the file.
+    /// Deletes the store item again, for a caller whose `master.key` was
+    /// never published. Does nothing for a key kept in the file.
     pub fn discard(self) {
-        if let Some(item) = self.item {
-            delete_item_logged(item, "a keychain item whose master.key was never published");
+        if let Some(item) = &self.item {
+            delete_item_logged(item, "a store item whose master.key was never published");
         }
     }
 }
@@ -1035,10 +1169,13 @@ impl StoredMasterKey {
 /// Moves the existing key to `to`, keeping its bytes (and its password
 /// wrap) unchanged, so every sealed secret stays readable.
 ///
-/// To the keychain: writes a new item, reads it back, then replaces
-/// `master.key` with a pointer atomically. To the file: writes the envelope
-/// over the pointer atomically, reloads it, then deletes the old item.
-/// Moving to the store the key is already in does nothing.
+/// To the keychain or `systemd-creds`: writes a new item, reads it back,
+/// replaces `master.key` with a pointer atomically, then deletes any item
+/// the key was in before. To the file: writes the envelope over the pointer
+/// atomically, reloads it, then deletes the old item. Moving to the store
+/// the key is already in does nothing. Unlike starting a library, an
+/// explicit move never falls back: a store that can't take the key is an
+/// error.
 ///
 /// # Arguments
 ///
@@ -1062,30 +1199,45 @@ pub fn move_master_key(
     let path = master_key_path(files_dir);
     // One read: the key and the envelope it came from always match.
     let (key, envelope, location) = load_existing(files_dir, password)?;
-    match (location, to) {
-        (Location::File, KeyStoreKind::File) => Ok(if envelope.starts_with(MAGIC_WRAPPED) {
-            MasterKeyFormat::Wrapped
-        } else {
-            MasterKeyFormat::Raw
-        }),
-        (Location::Keychain(_), KeyStoreKind::Keychain) => Ok(MasterKeyFormat::Keychain),
-        (Location::File, KeyStoreKind::Keychain) => {
-            let pointer = put_in_keychain(&key, &envelope)?;
+    let file_format = if envelope.starts_with(MAGIC_WRAPPED) {
+        MasterKeyFormat::Wrapped
+    } else {
+        MasterKeyFormat::Raw
+    };
+    let target = match to {
+        KeyStoreKind::File => None,
+        KeyStoreKind::Keychain => Some(PointerStore::Keychain),
+        KeyStoreKind::SystemdCreds => Some(PointerStore::SystemdCreds),
+    };
+    let old = match location {
+        Location::File => None,
+        Location::Keychain(pointer) => Some(ItemHome::of(&pointer, files_dir)),
+    };
+    match (old, target) {
+        (None, None) => Ok(file_format),
+        (Some(old), Some(store)) if old.store == store => Ok(pointer_format(store)),
+        (old, Some(store)) => {
+            let pointer = put_in_store(store, files_dir, &key, &envelope)?;
             if let Err(err) = write_secret_file_atomic(&path, &pointer.encode()) {
                 delete_item_logged(
-                    pointer.item,
-                    "a keychain item whose pointer could not be written",
+                    &ItemHome::of(&pointer, files_dir),
+                    "a store item whose pointer could not be written",
                 );
                 return Err(err);
+            }
+            if let Some(old) = &old {
+                delete_item_logged(old, "the old store item after moving the key");
             }
             tracing::info!(
                 path = %path.display(),
                 item = %pointer.item,
-                "moved the data-encryption key into the OS keychain; master.key now only names the item"
+                store = to.as_str(),
+                "moved the data-encryption key into {}; master.key now only names the item",
+                describe_item(store, pointer.item)
             );
-            Ok(MasterKeyFormat::Keychain)
+            Ok(pointer_format(store))
         }
-        (Location::Keychain(pointer), KeyStoreKind::File) => {
+        (Some(old), None) => {
             // Stage and verify the file before it replaces the pointer, so a
             // bad write never leaves master.key without a working key.
             let staged = staged_master_key_path(&path);
@@ -1094,28 +1246,56 @@ pub fn move_master_key(
             if !reloaded.is_ok_and(|(back, _, _)| back.as_bytes() == key.as_bytes()) {
                 let _ = std::fs::remove_file(&staged);
                 return Err(LibraryError::Other(anyhow::anyhow!(
-                    "master key file {} did not reload to the same key; it still points at \
-                     OS keychain item {}",
+                    "master key file {} did not reload to the same key; it still points at {}",
                     path.display(),
-                    pointer.item
+                    describe_item(old.store, old.item)
                 )));
             }
             commit_staged_master_key(&staged, &path)?;
             delete_item_logged(
-                pointer.item,
-                "the old keychain item after moving the key to master.key",
+                &old,
+                "the old store item after moving the key to master.key",
             );
-            tracing::info!(path = %path.display(), "moved the data-encryption key from the OS keychain into master.key");
+            tracing::info!(
+                path = %path.display(),
+                "moved the data-encryption key from {} into master.key",
+                describe_item(old.store, old.item)
+            );
             if !envelope.starts_with(MAGIC_WRAPPED) {
                 warn_unwrapped_master_key(&path);
             }
-            Ok(if envelope.starts_with(MAGIC_WRAPPED) {
-                MasterKeyFormat::Wrapped
-            } else {
-                MasterKeyFormat::Raw
-            })
+            Ok(file_format)
         }
     }
+}
+
+/// The `master.key` format of a pointer into `store`.
+fn pointer_format(store: PointerStore) -> MasterKeyFormat {
+    match store {
+        PointerStore::Keychain => MasterKeyFormat::Keychain,
+        PointerStore::SystemdCreds => MasterKeyFormat::SystemdCreds,
+    }
+}
+
+/// The key's envelope exactly as it is stored (`BCK1`, or `BCK2` under the
+/// auth password), for an administrator who seals it into a unit
+/// credential themselves (`systemd-creds encrypt --name=bookclerk-master-key`
+/// on systemd older than 256, or a system-wide credential store). A
+/// `systemd-creds` move then adopts that credential instead of sealing its
+/// own copy, because the bytes match.
+///
+/// # Arguments
+///
+/// * `files_dir` - the files directory holding `master.key`.
+/// * `password` - the auth password, needed when the key is wrapped (the
+///   envelope stays wrapped; the password only proves it opens).
+///
+/// # Errors
+///
+/// Returns an error when there is no key or it can't be unwrapped.
+pub fn master_key_envelope(files_dir: &Path, password: Option<&str>) -> Result<Zeroizing<Vec<u8>>> {
+    let (_, envelope, _) = load_existing(files_dir, password)?;
+    Ok(envelope)
 }
 
 /// A recovery copy of the key: a `BCK2` envelope wrapped with
@@ -1196,10 +1376,10 @@ pub fn import_master_key(
         }
     };
     prepare_master_key_dir(files_dir)?;
-    let placed = place_envelope(&key, normalized_password(password))?;
+    let placed = place_envelope(&key, normalized_password(password), files_dir)?;
     if let Err(e) = write_secret_file_create_new(&path, &placed.file_bytes) {
-        if let Some(item) = placed.item {
-            delete_item_logged(item, "a keychain item whose pointer could not be written");
+        if let Some(item) = &placed.item {
+            delete_item_logged(item, "a store item whose pointer could not be written");
         }
         return Err(LibraryError::Other(anyhow::anyhow!(
             "failed to write master key {}: {e}",
@@ -1719,8 +1899,8 @@ mod tests {
         assert_eq!(scope.vault.len(), 1, "the staged item is gone");
         assert!(resolve_master_key_with(dir.path(), None).is_ok());
 
-        let stored = store_master_key(&[4u8; DEK_LEN], None).unwrap();
-        assert!(stored.in_keychain());
+        let stored = store_master_key(dir.path(), &[4u8; DEK_LEN], None).unwrap();
+        assert_eq!(stored.store(), KeyStoreKind::Keychain);
         assert_eq!(scope.vault.len(), 2);
         stored.discard();
         assert_eq!(scope.vault.len(), 1);
@@ -1901,6 +2081,191 @@ mod tests {
                 .as_bytes(),
             key.as_bytes()
         );
+    }
+
+    /// Points the process at a fresh in-memory `systemd-creds` store with
+    /// the `systemd-creds` preference, and puts the system tool and the file
+    /// preference back on drop. Hold the master-key test lock while it lives.
+    struct CredsScope {
+        /// The in-memory store this scope installed (shared by every
+        /// files directory).
+        vault: Arc<MemoryVault>,
+    }
+
+    impl CredsScope {
+        /// Installs a fresh in-memory store and the `systemd-creds` preference.
+        fn new() -> Self {
+            let vault = Arc::new(MemoryVault::new());
+            let shared = vault.clone();
+            set_systemd_creds_vault(Arc::new(move |_: &Path| -> Arc<dyn Vault> {
+                shared.clone()
+            }));
+            set_key_store_preference(KeyStorePreference::from_config(
+                Some(KeyStoreKind::SystemdCreds),
+                KeyStoreKind::File,
+            ));
+            Self { vault }
+        }
+    }
+
+    impl Drop for CredsScope {
+        fn drop(&mut self) {
+            set_systemd_creds_vault(Arc::new(|dir: &Path| -> Arc<dyn Vault> {
+                Arc::new(SystemdCredsVault::new(dir))
+            }));
+            set_key_store_preference(DEFAULT_PREFERENCE);
+        }
+    }
+
+    #[test]
+    fn a_systemd_creds_mint_leaves_only_a_pointer_on_disk() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let scope = CredsScope::new();
+        let dir = tempdir().unwrap();
+        let key = resolve_master_key(dir.path()).unwrap();
+        let raw = std::fs::read(master_key_path(dir.path())).unwrap();
+        assert_eq!(&raw[..4], b"BCK4");
+        assert!(!raw.windows(DEK_LEN).any(|w| w == key.as_bytes()));
+        assert_eq!(
+            inspect_master_key(dir.path()).unwrap(),
+            Some(MasterKeyFormat::SystemdCreds)
+        );
+        assert_eq!(
+            MasterKeyFormat::SystemdCreds.store(),
+            KeyStoreKind::SystemdCreds
+        );
+        assert_eq!(scope.vault.len(), 1);
+        assert_eq!(
+            resolve_master_key(dir.path()).unwrap().as_bytes(),
+            key.as_bytes()
+        );
+    }
+
+    #[test]
+    fn systemd_creds_always_falls_back_to_the_file() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let scope = CredsScope::new();
+        scope.vault.fail_with(Some(KeystoreErrorKind::Unavailable));
+        let dir = tempdir().unwrap();
+        // Configured (so "required"), yet a failed seal keeps the file store.
+        assert!(key_store_preference().required);
+        resolve_master_key(dir.path()).unwrap();
+        assert_eq!(
+            inspect_master_key(dir.path()).unwrap(),
+            Some(MasterKeyFormat::Raw)
+        );
+        // An explicit move never falls back: the key stays where it was.
+        let before = std::fs::read(master_key_path(dir.path())).unwrap();
+        assert!(move_master_key(dir.path(), KeyStoreKind::SystemdCreds, None).is_err());
+        assert_eq!(std::fs::read(master_key_path(dir.path())).unwrap(), before);
+    }
+
+    #[test]
+    fn an_unreadable_credential_fails_closed() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let scope = CredsScope::new();
+        let dir = tempdir().unwrap();
+        resolve_master_key(dir.path()).unwrap();
+        scope.vault.fail_with(Some(KeystoreErrorKind::AccessDenied));
+        let err = resolve_master_key(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("systemd-creds credential"), "{err}");
+        assert_eq!(
+            inspect_master_key(dir.path()).unwrap(),
+            Some(MasterKeyFormat::SystemdCreds),
+            "no new key minted over the pointer"
+        );
+    }
+
+    #[test]
+    fn a_key_moves_between_the_keychain_and_systemd_creds() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let creds = CredsScope::new();
+        let keychain = KeychainScope::new(DEFAULT_PREFERENCE);
+        let dir = tempdir().unwrap();
+        let key = resolve_master_key_with(dir.path(), None).unwrap();
+        assert_eq!(
+            move_master_key(dir.path(), KeyStoreKind::SystemdCreds, None).unwrap(),
+            MasterKeyFormat::SystemdCreds
+        );
+        assert_eq!(
+            move_master_key(dir.path(), KeyStoreKind::SystemdCreds, None).unwrap(),
+            MasterKeyFormat::SystemdCreds,
+            "already there"
+        );
+        assert_eq!(creds.vault.len(), 1);
+        assert_eq!(
+            move_master_key(dir.path(), KeyStoreKind::Keychain, None).unwrap(),
+            MasterKeyFormat::Keychain
+        );
+        assert!(creds.vault.is_empty(), "the old credential is deleted");
+        assert_eq!(keychain.vault.len(), 1);
+        assert_eq!(
+            move_master_key(dir.path(), KeyStoreKind::SystemdCreds, None).unwrap(),
+            MasterKeyFormat::SystemdCreds
+        );
+        assert!(keychain.vault.is_empty());
+        assert_eq!(
+            move_master_key(dir.path(), KeyStoreKind::File, None).unwrap(),
+            MasterKeyFormat::Raw
+        );
+        assert!(creds.vault.is_empty());
+        assert_eq!(
+            resolve_master_key_with(dir.path(), None)
+                .unwrap()
+                .as_bytes(),
+            key.as_bytes()
+        );
+        drop(keychain);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_administrators_unit_credential_is_adopted_without_the_tool() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let dir = tempdir().unwrap();
+        let key = resolve_master_key_with(dir.path(), None).unwrap();
+        let password = test_passphrase("unit-credential");
+        wrap_master_key(dir.path(), &password).unwrap();
+        // What `bookclerk config master-key credential` hands the admin.
+        let envelope = master_key_envelope(dir.path(), Some(&password)).unwrap();
+        assert!(envelope.starts_with(MAGIC_WRAPPED));
+        // systemd decrypts the admin's credential into the unit's directory.
+        let credentials = tempdir().unwrap();
+        std::fs::write(
+            credentials.path().join(bookclerk_keystore::CREDENTIAL_NAME),
+            &envelope,
+        )
+        .unwrap();
+        let reset = CredsScope::new();
+        // No systemd-creds tool (older systemd), so self-sealing can't work;
+        // the unit's credential is all there is.
+        let creds_dir = credentials.path().to_path_buf();
+        set_systemd_creds_vault(Arc::new(move |dir: &Path| -> Arc<dyn Vault> {
+            Arc::new(SystemdCredsVault::with_program(
+                dir,
+                None,
+                Some(creds_dir.clone()),
+            ))
+        }));
+        assert_eq!(
+            move_master_key(dir.path(), KeyStoreKind::SystemdCreds, Some(&password)).unwrap(),
+            MasterKeyFormat::SystemdCreds
+        );
+        assert_eq!(
+            resolve_master_key_with(dir.path(), Some(&password))
+                .unwrap()
+                .as_bytes(),
+            key.as_bytes()
+        );
+        // Without the unit credential the key is gone: fail closed.
+        std::fs::remove_file(credentials.path().join(bookclerk_keystore::CREDENTIAL_NAME)).unwrap();
+        assert!(resolve_master_key_with(dir.path(), Some(&password)).is_err());
+        drop(reset);
     }
 
     #[test]

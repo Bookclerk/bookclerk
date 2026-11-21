@@ -178,6 +178,17 @@ function daemonPortError(port: string): string | null {
   return null;
 }
 
+/** The daemon's default `library.upgrade_daily_limit`, as the input shows it. */
+const DEFAULT_UPGRADE_DAILY_LIMIT = "5";
+
+/** The highest `library.upgrade_daily_limit` the daemon accepts. */
+const MAX_UPGRADE_DAILY_LIMIT = 100;
+
+/** The saved `library.upgrade_daily_limit`, or the default when unset. */
+function upgradeLimitOf(response: SettingsResponse): string {
+  return response.settings["library.upgrade_daily_limit"] ?? DEFAULT_UPGRADE_DAILY_LIMIT;
+}
+
 function optionalIntegerError(value: string, label: string, min = 0, max?: number): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -427,6 +438,8 @@ export function SettingsPage({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [daemonAuthEnabled, setDaemonAuthEnabled] = useState(true);
   const [autoAcquire, setAutoAcquire] = useState(false);
+  const [upgradeQuality, setUpgradeQuality] = useState(false);
+  const [upgradeDailyLimit, setUpgradeDailyLimit] = useState(DEFAULT_UPGRADE_DAILY_LIMIT);
   const [shareReports, setShareReports] = useState(false);
   const [shareUsage, setShareUsage] = useState(false);
   const [pluginsIsolation, setPluginsIsolation] = useState("required");
@@ -451,6 +464,8 @@ export function SettingsPage({
     daemonListen: string;
     daemonAuthEnabled: boolean;
     autoAcquire: boolean;
+    upgradeQuality: boolean;
+    upgradeDailyLimit: string;
     shareReports: boolean;
     shareUsage: boolean;
     pluginsIsolation: string;
@@ -495,6 +510,12 @@ export function SettingsPage({
       : null;
   const jailProcessError = optionalIntegerError(jailExtraProcesses, "Additional processes", 0, 62);
   const confinementHasErrors = Boolean(jailMemoryError || jailCpuError || jailProcessError);
+  const upgradeLimitError = optionalIntegerError(
+    upgradeDailyLimit,
+    "Upgrades per account per day",
+    1,
+    MAX_UPGRADE_DAILY_LIMIT,
+  );
   const isImpersonating = Boolean(session?.impersonating);
   const showOperatorChrome = role === "operator" && !isImpersonating;
   // Node administrators (Administrators, Owners, and Members who own a
@@ -667,7 +688,10 @@ export function SettingsPage({
   }
 
   const operatorHasValidationErrors =
-    Object.keys(pluginErrors).length > 0 || daemonListenError !== null || confinementHasErrors;
+    Object.keys(pluginErrors).length > 0 ||
+    daemonListenError !== null ||
+    confinementHasErrors ||
+    upgradeLimitError !== null;
 
   const pluginsByFamily = useMemo(() => {
     const buckets = new Map<string, PluginSettingsGroup[]>();
@@ -693,7 +717,11 @@ export function SettingsPage({
     if (daemonAuthEnabled !== operatorBaseline.daemonAuthEnabled) {
       return true;
     }
-    if (autoAcquire !== operatorBaseline.autoAcquire) {
+    if (
+      autoAcquire !== operatorBaseline.autoAcquire ||
+      upgradeQuality !== operatorBaseline.upgradeQuality ||
+      upgradeDailyLimit !== operatorBaseline.upgradeDailyLimit
+    ) {
       return true;
     }
     if (
@@ -736,6 +764,8 @@ export function SettingsPage({
     pluginsIsolation,
     shareReports,
     shareUsage,
+    upgradeDailyLimit,
+    upgradeQuality,
   ]);
 
   const refresh = useCallback(async () => {
@@ -764,6 +794,8 @@ export function SettingsPage({
         setAdvancedOpen(exposure === "custom");
         setDaemonAuthEnabled(nextSettings.settings["daemon.auth.enabled"] === "true");
         setAutoAcquire(nextSettings.settings["library.auto_acquire"] === "true");
+        setUpgradeQuality(nextSettings.settings["library.upgrade_quality"] === "true");
+        setUpgradeDailyLimit(upgradeLimitOf(nextSettings));
         setShareReports(nextSettings.settings["diagnostics.share_reports"] === "true");
         setShareUsage(nextSettings.settings["diagnostics.share_usage"] === "true");
         setPluginsIsolation(nextSettings.settings["plugins.isolation"] ?? "required");
@@ -782,6 +814,8 @@ export function SettingsPage({
               : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
           daemonAuthEnabled: nextSettings.settings["daemon.auth.enabled"] === "true",
           autoAcquire: nextSettings.settings["library.auto_acquire"] === "true",
+          upgradeQuality: nextSettings.settings["library.upgrade_quality"] === "true",
+          upgradeDailyLimit: upgradeLimitOf(nextSettings),
           shareReports: nextSettings.settings["diagnostics.share_reports"] === "true",
           shareUsage: nextSettings.settings["diagnostics.share_usage"] === "true",
           pluginsIsolation: nextSettings.settings["plugins.isolation"] ?? "required",
@@ -912,6 +946,11 @@ export function SettingsPage({
           { key: "daemon.listen", value: nextListen },
           { key: "daemon.auth.enabled", value: String(daemonAuthEnabled) },
           { key: "library.auto_acquire", value: String(autoAcquire) },
+          { key: "library.upgrade_quality", value: String(upgradeQuality) },
+          {
+            key: "library.upgrade_daily_limit",
+            value: upgradeDailyLimit.trim() || DEFAULT_UPGRADE_DAILY_LIMIT,
+          },
           { key: "diagnostics.share_reports", value: String(shareReports) },
           { key: "diagnostics.share_usage", value: String(shareUsage) },
           { key: "plugins.isolation", value: pluginsIsolation },
@@ -955,6 +994,8 @@ export function SettingsPage({
           : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
       daemonAuthEnabled: next.settings["daemon.auth.enabled"] === "true",
       autoAcquire: next.settings["library.auto_acquire"] === "true",
+      upgradeQuality: next.settings["library.upgrade_quality"] === "true",
+      upgradeDailyLimit: upgradeLimitOf(next),
       shareReports: next.settings["diagnostics.share_reports"] === "true",
       shareUsage: next.settings["diagnostics.share_usage"] === "true",
       pluginsIsolation: next.settings["plugins.isolation"] ?? "required",
@@ -1826,7 +1867,32 @@ export function SettingsPage({
                           checked={autoAcquire}
                           onChange={setAutoAcquire}
                         />
+                        <ToggleRow
+                          id="upgrade-quality"
+                          label="Upgrade quality automatically"
+                          description="Once a day, ask each store whether it now offers a better file for books you hold, and download it in place of the old one."
+                          checked={upgradeQuality}
+                          onChange={setUpgradeQuality}
+                        />
                       </div>
+                      {upgradeQuality ? (
+                        <FieldBlock
+                          label="Upgrades per account per day"
+                          htmlFor="upgrade-daily-limit"
+                          hint={`Most books one store account downloads again each day (1 to ${MAX_UPGRADE_DAILY_LIMIT}).`}
+                          error={upgradeLimitError ?? undefined}
+                        >
+                          <Input
+                            id="upgrade-daily-limit"
+                            type="number"
+                            min={1}
+                            max={MAX_UPGRADE_DAILY_LIMIT}
+                            value={upgradeDailyLimit}
+                            onChange={(e) => setUpgradeDailyLimit(e.target.value)}
+                            placeholder={DEFAULT_UPGRADE_DAILY_LIMIT}
+                          />
+                        </FieldBlock>
+                      ) : null}
                     </section>
 
                     <section className="space-y-3">

@@ -28,7 +28,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // resumes there), when the last complete pass ended (a full pass is
     // forced once that is older than the full-pass interval), and the id of
     // the pass in progress, which each page stamps on the holdings it lists
-    // (`holdings.seen_pass`).
+    // (`holdings.seen_pass`). The quality-upgrade check keeps its place in
+    // the account's holdings here too: the holding id it continues after
+    // (empty to start over) and when it last ran (`store::quality_checks`).
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS account_scan_state (
         plugin_key TEXT NOT NULL,
@@ -38,6 +40,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         resume_token TEXT NOT NULL DEFAULT '',
         last_complete_at TEXT,
         pass_id TEXT NOT NULL DEFAULT '',
+        quality_cursor TEXT NOT NULL DEFAULT '',
+        quality_checked_at TEXT,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (plugin_key, account_id),
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
@@ -216,7 +220,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         device_type TEXT,
         client_label TEXT,
         last_used_at TEXT,
-        kind TEXT NOT NULL DEFAULT 'browser' CHECK (kind IN ('browser', 'clerk')),
+        kind TEXT NOT NULL DEFAULT 'browser' CHECK (kind IN ('browser', 'clerk', 'player')),
         FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE
     )",
     ),
@@ -487,6 +491,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         rating_overall REAL,
         rating_count INTEGER,
         is_abridged INTEGER,
+        is_explicit INTEGER,
         observed_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -1864,13 +1869,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // The page index's filter values: one row per value a held top-level
     // work has under a facet (author, narrator, series, genre, publisher,
-    // source, library tag, collection). `key` is the lower-cased value the filter matches; `value`
+    // source, library tag, collection, explicit). `key` is the lower-cased value the filter matches; `value`
     // is how it is shown. Written with the work's `library_work_rows` row
     // and fenced by its `refreshed_at`; an unheld work has none.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS library_work_facets (
         work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source', 'tag', 'collection')),
+        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source', 'tag', 'collection', 'explicit')),
         key TEXT NOT NULL,
         value TEXT NOT NULL,
         PRIMARY KEY (work_id, facet, key)
@@ -2224,6 +2229,125 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Data(
         r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES ('playback', 0)",
     ),
+    // A chapter list, stored once and named by the SHA-256 of its
+    // canonical encoding (`store::chapters`). The row is written in the
+    // last batch of a list's write, after every entry, so a list with a
+    // row here is complete; `chapter_count` says how many entries it has.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS chapter_lists (
+        digest TEXT PRIMARY KEY NOT NULL,
+        chapter_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )",
+    ),
+    // One chapter of a stored list, in pre-order: a chapter at `depth`
+    // n + 1 is nested under the nearest earlier chapter at `depth` n.
+    // `start_ms` is milliseconds from the start of the edition's timeline.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS chapter_list_entries (
+        digest TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        start_ms INTEGER NOT NULL,
+        depth INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        PRIMARY KEY (digest, position)
+    )",
+    ),
+    // One source's value for one field of one subject
+    // (`docs/adr/metadata-claims-and-file-sync.md`, decision 1). Chapters
+    // of an edition are the first field. There is one current claim per
+    // subject, field, source and language; `revision` is the subject's
+    // claim counter when the claim last changed, never a clock, and
+    // decides which edit is newest. `quality` places a machine source in
+    // the field's ranking (how a provider found the edition, whether a
+    // store's markers are chapters or tracks). `runtime_ms` is the length
+    // of the timeline the value was measured on, `input_digest` the value
+    // a processed claim was derived from. An Administrator pins at most
+    // one claim per subject and field (`pinned_at`).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS metadata_claims (
+        subject_kind TEXT NOT NULL CHECK (subject_kind IN ('edition')),
+        subject_id TEXT NOT NULL,
+        field TEXT NOT NULL CHECK (field IN ('chapters')),
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('person', 'outside_edit', 'processed', 'provider', 'listing', 'file', 'part_names')),
+        source_id TEXT NOT NULL DEFAULT '',
+        locale TEXT NOT NULL DEFAULT '',
+        quality TEXT NOT NULL DEFAULT '' CHECK (quality IN ('', 'strong_accurate', 'strong_estimated', 'weak', 'chapters', 'tracks', 'unknown')),
+        value_digest TEXT NOT NULL,
+        runtime_ms INTEGER,
+        input_digest TEXT,
+        revision INTEGER NOT NULL,
+        pinned_at TEXT,
+        pinned_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (subject_kind, subject_id, field, source_kind, source_id, locale)
+    )",
+    ),
+    // Where an edition's chapters resolved to: the winning claim's list
+    // (`digest`, a `chapter_lists` row), its source and the timeline it was
+    // measured on. `revision` is the highest claim revision the resolver
+    // read, so a resolution computed from older claims never overwrites a
+    // newer one. No row means the edition has no chapters.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS edition_chapters (
+        edition_id TEXT PRIMARY KEY NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        digest TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('person', 'outside_edit', 'processed', 'provider', 'listing', 'file', 'part_names')),
+        source_id TEXT NOT NULL DEFAULT '',
+        runtime_ms INTEGER,
+        revision INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    // Passwords a patron makes in Account settings for one player app
+    // that has only a username and password box (`docs/adr/player-api.md`).
+    // Each is generated by the host with at least 100 bits of entropy and
+    // shown once, so only its SHA-256 is kept, looked up directly. The
+    // account password is never accepted by `/player/login`.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS player_passwords (
+        id TEXT PRIMARY KEY NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        label TEXT NOT NULL,
+        password_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_player_passwords_user ON player_passwords(user_id)",
+    ),
+    // A player library card: a `player` row in `portal_sessions` (so the
+    // patron sees and revokes it in their session list) and how it was
+    // signed in to. `password_id` names the player password it was made
+    // with; removing that password ends the card.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS player_cards (
+        session_id INTEGER PRIMARY KEY NOT NULL REFERENCES portal_sessions(id) ON DELETE CASCADE,
+        password_id TEXT REFERENCES player_passwords(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_player_cards_password ON player_cards(password_id)",
+    ),
+    // The tokens of a player card, by SHA-256: one-hour access tokens and
+    // thirty-day refresh tokens. Using a refresh token mints a new pair and
+    // gives every other refresh token of the card ten more minutes, so two
+    // refreshes racing with the same token both succeed and the losing
+    // token stops working soon after.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS player_card_tokens (
+        token_hash TEXT PRIMARY KEY NOT NULL,
+        session_id INTEGER NOT NULL REFERENCES portal_sessions(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+        expires_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_player_card_tokens_session ON player_card_tokens(session_id, kind)",
+    ),
     // Inbound webhooks (docs/adr/storage-destinations.md, decision 6): one
     // row per instance and `[[webhooks]]` name, holding the URL token
     // sealed with the library key and its SHA-256 for the public route's
@@ -2405,6 +2529,21 @@ mod tests {
             "playback_sessions",
             "client_kind",
             crate::PlayerKind::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "metadata_claims",
+            "source_kind",
+            crate::ChapterSourceKind::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "edition_chapters",
+            "source_kind",
+            crate::ChapterSourceKind::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "metadata_claims",
+            "quality",
+            crate::ClaimQuality::ALL.iter().map(|k| k.as_str()),
         );
     }
 }

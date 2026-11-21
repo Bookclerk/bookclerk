@@ -43,6 +43,7 @@ pub const METHOD_NAMES: &[&str] = &[
     expand_candidates::NAME,
     purchase_hint::NAME,
     purchase_hints::NAME,
+    quality_offers::NAME,
     list_deals::NAME,
     list_accounts::NAME,
     catalog_detail::NAME,
@@ -356,6 +357,14 @@ pub mod purchase_hints {
     pub const NAME: &str = "purchaseHints";
 }
 
+/// Report the audio quality one account would download for several titles.
+///
+/// Params: [`crate::QualityOffersParams`]. Result: [`crate::QualityOffersResult`].
+pub mod quality_offers {
+    /// Wire method name `"qualityOffers"`.
+    pub const NAME: &str = "qualityOffers";
+}
+
 /// List current storefront deals / promotions.
 ///
 /// Params: [`crate::ListDealsParams`].
@@ -493,6 +502,8 @@ pub mod names {
     pub use super::purchase_hints::NAME as PURCHASE_HINTS;
     /// Alias of [`super::put::NAME`] (`"put"`).
     pub use super::put::NAME as PUT;
+    /// Alias of [`super::quality_offers::NAME`] (`"qualityOffers"`).
+    pub use super::quality_offers::NAME as QUALITY_OFFERS;
     /// Alias of [`super::revoke_account::NAME`] (`"revokeAccount"`).
     pub use super::revoke_account::NAME as REVOKE_ACCOUNT;
     /// Alias of [`super::scan::NAME`] (`"scan"`).

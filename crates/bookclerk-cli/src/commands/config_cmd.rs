@@ -12,8 +12,9 @@ use bookclerk_library::control_plane::{
     EventsReplace, EventsSettingsV1, OutputReplace, OutputSettingsV1, OUTPUT_SETTING_KEYS,
 };
 use bookclerk_library::{
-    export_master_key, import_master_key, inspect_master_key, master_key_is_wrapped,
-    move_master_key, wrap_master_key, LibraryStore, MasterKeyFormat, MASTER_KEY_AUTH_PASSWORD_ENV,
+    export_master_key, import_master_key, inspect_master_key, master_key_envelope,
+    master_key_is_wrapped, move_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
+    MASTER_KEY_AUTH_PASSWORD_ENV, SYSTEMD_CREDENTIAL_NAME as CREDENTIAL_NAME,
 };
 use bookclerk_source::DownloadOptions;
 use chrono::Datelike;
@@ -93,21 +94,22 @@ pub enum DatabaseCommand {
 #[derive(Debug, Subcommand)]
 /// Nested `config master-key` actions for the library's data-encryption key.
 pub enum MasterKeyCommand {
-    /// Show where the key is kept (the file or the OS keychain) and whether it
-    /// is raw (BCK1) or wrapped (BCK2).
+    /// Show where the key is kept (the file, the OS keychain or
+    /// systemd-creds) and whether it is raw (BCK1) or wrapped (BCK2).
     Status,
     /// Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in
     /// `master.key` or in its OS keychain item.
     ///
     /// Password from `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — never argv.
     Wrap,
-    /// Move the key to the OS keychain or back into `master.key`, and record
-    /// the choice as `[auth].key_store` in config.toml.
+    /// Move the key to the OS keychain, into a systemd-creds credential, or
+    /// back into `master.key`, and record the choice as `[auth].key_store`
+    /// in config.toml.
     ///
     /// The key itself doesn't change, so every sealed secret stays readable.
     /// Stop `bookclerkd` first.
     Move {
-        /// Where to keep the key: `keychain` or `file`.
+        /// Where to keep the key: `keychain`, `systemd-creds` or `file`.
         #[arg(value_parser = parse_key_store)]
         to: KeyStoreKind,
     },
@@ -121,6 +123,16 @@ pub enum MasterKeyCommand {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Write the key's envelope, exactly as stored (BCK1, or BCK2 under the
+    /// auth password), to stdout for `systemd-creds encrypt`.
+    ///
+    /// For administrators who seal the key into a unit credential
+    /// themselves (systemd older than 256, or a system credential store):
+    /// pipe it into `systemd-creds encrypt --name=bookclerk-master-key - <file>`,
+    /// load that file with `LoadCredentialEncrypted=` in the unit, and set
+    /// `[auth].key_store = "systemd-creds"`. The next start adopts the
+    /// credential. Refuses to write to a terminal.
+    Credential,
     /// Restore the key from a recovery copy (or a copied `master.key`) on an
     /// install that has no `master.key`. A wrapped copy's password is read
     /// from stdin.
@@ -131,7 +143,7 @@ pub enum MasterKeyCommand {
     },
 }
 
-/// Parses `keychain` or `file` for `config master-key move`.
+/// Parses `keychain`, `systemd-creds` or `file` for `config master-key move`.
 fn parse_key_store(value: &str) -> Result<KeyStoreKind, String> {
     value.parse()
 }
@@ -448,13 +460,35 @@ fn run_master_key(
                 println!("the data-encryption key is now in the {}", store_label(to));
                 println!("set auth.key_store={}", to.as_str());
                 println!("wrote {}", config_path.display());
-                if to == KeyStoreKind::Keychain {
+                if to != KeyStoreKind::File {
                     println!(
                         "back it up with `bookclerk config master-key export --out <file>`: \
                          copies of the files directory no longer include it"
                     );
                 }
             })
+        }
+        MasterKeyCommand::Credential => {
+            use std::io::{IsTerminal as _, Write as _};
+            let mut stdout = std::io::stdout();
+            if stdout.is_terminal() {
+                anyhow::bail!(
+                    "refusing to write the key to a terminal; pipe it into \
+                     `systemd-creds encrypt --name={CREDENTIAL_NAME} - <file>`"
+                );
+            }
+            let password = config.auth_password();
+            let envelope = master_key_envelope(files_dir, password.as_deref())?;
+            stdout
+                .write_all(&envelope)
+                .and_then(|()| stdout.flush())
+                .map_err(|e| anyhow::anyhow!("failed to write the key to stdout: {e}"))?;
+            eprintln!(
+                "wrote the key's envelope for credential {CREDENTIAL_NAME}; load it with \
+                 LoadCredentialEncrypted={CREDENTIAL_NAME}:<file> and set \
+                 auth.key_store=systemd-creds"
+            );
+            Ok(())
         }
         MasterKeyCommand::Export { out } => {
             if out.exists() {
@@ -522,6 +556,7 @@ fn store_label(store: KeyStoreKind) -> &'static str {
     match store {
         KeyStoreKind::File => "master.key file",
         KeyStoreKind::Keychain => "OS keychain",
+        KeyStoreKind::SystemdCreds => "systemd-creds credential",
     }
 }
 
@@ -1284,6 +1319,8 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
             .unwrap_or_default(),
         "library.auto_acquire" => config.library.auto_acquire.to_string(),
         "library.scan_interval_minutes" => config.library.scan_interval_minutes.to_string(),
+        "library.upgrade_quality" => config.library.upgrade_quality.to_string(),
+        "library.upgrade_daily_limit" => config.library.upgrade_daily_limit.to_string(),
         "library.import_episodes" => config.library.import_episodes.to_string(),
         "library.import_plus_titles" => config.library.import_plus_titles.to_string(),
         "library.download_episodes" => config.library.download_episodes.to_string(),

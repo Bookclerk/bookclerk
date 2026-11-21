@@ -527,6 +527,32 @@ pub async fn deregister_device(client: &Client) -> Result<Option<String>> {
     Ok(client.deregister(false).await?)
 }
 
+/// Answers `qualityOffers`: the stream the account would download for each
+/// title today, from Audible's content metadata (nothing is licensed).
+///
+/// The host's fetch options in `params.fetch` (DRM path, xHE-AAC) and the
+/// instance's `bitrate` setting pick the request, as for a download. A
+/// token refreshed on the way is handed back.
+///
+/// # Errors
+///
+/// Returns an error when the credentials do not sign in or Audible
+/// throttles the account.
+pub async fn guest_quality_offers(
+    credentials: &Value,
+    params: &bookclerk_plugin_sdk::QualityOffersParams,
+) -> Result<bookclerk_plugin_sdk::QualityOffersResult> {
+    let (auth, refreshed) = capturing_authenticator(credentials)?;
+    let marketplace = auth.locale().country_code.to_string();
+    let client = Client::new(auth).map_err(AudibleError::from)?;
+    let source_config = params.source_config.json_value().unwrap_or(Value::Null);
+    let options = DownloadOptions::from_host(&params.fetch, &source_config);
+    let mut result =
+        crate::quality::quality_offers_with_client(&client, &marketplace, params, &options).await?;
+    result.refreshed_credentials = refreshed.hand_back(credentials);
+    Ok(result)
+}
+
 /// Download + decrypt one title; return plain paths (never encrypted on the wire).
 ///
 /// `fetch` carries the host fetch knobs from the ABI `FetchTitleParams.fetch`
@@ -684,6 +710,7 @@ pub async fn guest_fetch_title(
             .into_iter()
             .map(|(title, start_ms)| bookclerk_plugin_sdk::ChapterMarker { title, start_ms })
             .collect(),
+        chapter_kind: bookclerk_plugin_sdk::ChapterKind::Chapters,
         pdf_url: downloaded.pdf_url,
         refreshed_credentials: refreshed.hand_back(credentials),
     })

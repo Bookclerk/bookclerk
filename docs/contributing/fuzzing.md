@@ -46,6 +46,7 @@ boundary extends it.
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
+| `quality_offers` | A storefront's `qualityOffers` reply: how many titles it answers, the stream bounds of each offer and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_quality_offers` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
@@ -85,18 +86,22 @@ boundary extends it.
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
 | `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
 | `upload_part` | The `Content-Range` header of an upload `PUT`, `/api/node/v1/uploads/{upload_id}/files/{n}`, which decides which bytes of a declared file the body is, or that it only asks where the owner is | `bookclerk-node-proto::parse_upload_range` |
+| `tunnel_policy` | Paths of requests a relay ingress plugin carries from the public internet on the `tunnel` transport, which reach the router unless refused as operator-only or outside the exposure the operator chose | `bookclerk-node-proto::normalize_tunnel_path`, `tunnel_refusal` |
 | `copy_answer` | A library's answer to a copy download, read on the branch or clerk that took the copy: where its head ends, how many bytes follow and where in the file they are written | `bookclerk-node-proto::copy_answer_head_end`, `parse_copy_answer` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics, pages of the library's books with the person's marked, and the grant of a copy with its download token) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `instance_config` | A plugin instance's settings, table rows included: the `settings` object of `PUT /api/config/plugin-instances/{id}/config` and the row text of `bookclerk plugins config set` | `bookclerk-library::control_plane::PluginInstanceConfigV1::validate`, `parse_setting_text` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
-| `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
+| `branch_request` | An interlibrary request, the body of `POST /api/branch-requests`, and a request that the library download a book it holds, the body of `POST /api/download-requests` | `bookclerk-library::control_plane::parse_branch_request`, `parse_download_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
 | `upload_manifest` | What a patron sends to start and fill an upload: the body of `POST /api/uploads` and the `Upload-Offset` header of each `PATCH /api/uploads/{id}/files/{member_no}` | `bookclerk-library::control_plane::parse_upload_manifest`, `parse_upload_offset` |
 | `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
+| `chapter_request` | An Administrator's chapter list for an edition or the claim to pin, the bodies of `PUT /api/library/editions/{id}/chapters` and `PUT /api/library/editions/{id}/chapters/pin` | `bookclerk-library::parse_chapter_edit_request`, `parse_chapter_pin_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
+| `player_request` | What a player app sends the `/player` API: the bodies of `POST /player/login`, session syncs, offline sessions, progress changes and bookmarks, card tokens (`Authorization: Bearer` or `?token=`), list and detail queries, author, series and file ids in paths, and the browser sign-in's queries | `bookclerk-player-api::request`, `ids`, `oauth` |
+| `player_socket` | Text frames a player app sends on the live socket, `GET /player/socket.io/` (Engine.IO 4 and Socket.IO 5 over a websocket) | `bookclerk-player-api::socket::parse_client_frame` |
 | `work_tags_request` | An Administrator's library tags for a work, the body of `PUT /api/library/works/{id}/tags` | `bookclerk-library::parse_work_tags_request` |
 | `collections_request` | An Administrator's collections for the library, the body of `PUT /api/library/collections` and the stored `core.collections` document | `bookclerk-library::control_plane::parse_collections_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
@@ -382,6 +387,16 @@ only that. The others check:
   `PlainFetch` reply's refreshed credentials). An accepted
   page round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/scan_page.rs`, replayed from
+  `bookclerk-plugin-abi`.
+- **`quality_offers`**: byte 0 is how many title ids the host sent and the
+  rest is a `QualityOffersResult` message. The host accepts the reply
+  exactly when an independent check agrees: no more answers than titles
+  sent, every found offer within `MAX_OFFER_CHANNELS`,
+  `MAX_OFFER_SAMPLE_RATE_HZ` and `MAX_OFFER_BITRATE_KBPS` with an AAC
+  profile only on AAC, and refreshed credentials that are absent, empty,
+  or one JSON object within `MAX_REFRESHED_CREDENTIAL_BYTES`. An accepted
+  reply round-trips through the codec and is accepted again. The shared
+  oracle is `fuzz/oracles/quality_offers.rs`, replayed from
   `bookclerk-plugin-abi`.
 - **`plain_fetch`**: the input is a `PlainFetch` message. The host accepts
   it exactly when an independent check agrees, against a fixed declaration
@@ -696,6 +711,16 @@ only that. The others check:
   part, `status-*` as a status query, and the others must be refused.
   The shared oracle is `fuzz/oracles/upload_part.rs`, replayed from
   `bookclerk-node-proto`.
+- **`tunnel_policy`**: the input is one byte choosing the exposure (even:
+  branches, odd: the whole library) and then the path as sent. The
+  normalized path is what the router matches (one leading slash, no
+  trailing slash) and normalizing it again changes nothing; the
+  operator-only paths are refused under both exposures; the whole-library
+  exposure refuses nothing else; and the answer equals the one the oracle
+  works out by comparing path segments rather than string prefixes. Seeds
+  named `served-*` must be served, `operator-*` refused as operator-only,
+  and `refused-*` refused as not exposed. The shared oracle is
+  `fuzz/oracles/tunnel_policy.rs`, replayed from `bookclerk-node-proto`.
 - **`copy_answer`**: the input is the byte the reader asked to resume
   from and the file's size (eight bytes each, big endian) and then the
   answer as received: the head, the blank line that ends it (CRLF CRLF)
@@ -770,7 +795,10 @@ only that. The others check:
   a string), where the trimmed `work_id` is 1 to 64 ASCII letters, digits
   and `-`, and a trimmed `node_id` is 1 to 58 lowercase ASCII letters,
   digits, `.`, `_` and `-`. The parser then returns those trimmed ids,
-  and otherwise refuses it as `Invalid`. The shared oracle is
+  and otherwise refuses it as `Invalid`. The download request parser reads
+  the same bytes: it accepts exactly the bodies the branch request parser
+  accepts that have no `node_id` key at all, with the same trimmed work
+  id, and refuses the rest as `Invalid`. The shared oracle is
   `fuzz/oracles/branch_request.rs`, replayed from `bookclerk-library`.
 - **`title_meta_fill`**: the first byte declares `detailByProductId` and
   `detailByIsbn` for four fake stores; the rest is the query body, read as
@@ -830,6 +858,24 @@ only that. The others check:
   order with trimmed values, and otherwise refuses the body as `Invalid`.
   The shared oracle is `fuzz/oracles/patron_scope_request.rs`, replayed
   from `bookclerk-library`.
+- **`chapter_request`**: an input's first byte picks the route (even:
+  edit, odd: pin) and the rest is the body, read as an untyped JSON value
+  with no key written twice anywhere. An edit is accepted exactly when it
+  is one object holding only `chapters`, an array of at most 2,000
+  objects each with a string `title`, a whole-number `start_ms`,
+  optionally a 32-bit `depth` and no other key, where every title is 1
+  to 512 bytes with no control character and no leading or trailing
+  white space, every start is at most sixty days of milliseconds and no
+  earlier than the one before, and the first depth is 0 and each later
+  one at most one deeper than the one before and at most 7; the parser
+  then returns exactly those chapters. A pin is accepted exactly when it
+  is one object with a `source_kind` naming one of the seven kinds and
+  optionally a `source_id`, a string (or `null`, read as empty) of at
+  most 256 bytes with no control character. Anything else is refused as
+  `Invalid`. The routes refuse a body over the parsers' length limits
+  (`413`) and one not sent as JSON (`415`) before parsing it. The shared
+  oracle is `fuzz/oracles/chapter_request.rs`, replayed from
+  `bookclerk-library`.
 - **`work_split_request`**: reads the body as an untyped JSON value. It
   is accepted exactly when it is one object with no repeated keys and
   exactly the key `expression_ids`, an array of strings each 1 to 64 bytes
@@ -866,6 +912,31 @@ only that. The others check:
   parsers refuse.
   The shared oracle is `fuzz/oracles/playback_request.rs`, replayed from
   `bookclerk-library`.
+- **`player_request`**: an input's first byte picks the part. A login
+  body is accepted only when it is one object with string `username` and
+  `password`, and comes back with the username trimmed, both at most 256
+  bytes and the password kept out of `Debug`. A card token is accepted
+  exactly when it is 43 URL-safe Base64 letters. Accepted list and detail
+  queries are at most 4,096 bytes, with a page size of at most 1,000 and a
+  search term of at most 256 bytes with no control character. An author,
+  series or narrator id writes back from its key to the same id, and a
+  file `ino` is accepted exactly when it is a canonical decimal below 512.
+  Every length a sync, progress change, batch or bookmark yields is at
+  most sixty days of milliseconds, a bookmark title at most 200 bytes, and
+  a batch at most 100 entries of entity ids. The browser sign-in's start
+  and way back name only the apps the library returns to, the start with
+  a 43-byte S256 challenge, and a typed player password normalizes to 20
+  symbols of its alphabet that format back to the same password. The
+  shared oracle is `fuzz/oracles/player_request.rs`, replayed from
+  `bookclerk-player-api`.
+- **`player_socket`**: checks each frame from its leading characters
+  rather than through the parser: a frame over 16 KiB is refused as too
+  long, `1` alone is a close, `2…` a ping, `3…` a pong, `5` or `6` alone
+  nothing, and only `40`, `41` and `42` are a connect, a disconnect and an
+  event. An `auth` event carries its first argument when that is a string
+  (else an empty token), and any other event's name is at most 64 bytes.
+  The shared oracle is `fuzz/oracles/player_socket.rs`, replayed from
+  `bookclerk-player-api`.
 - **`work_tags_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and exactly
   the key `tags`, an array of strings each at most 256 bytes once trimmed,

@@ -360,6 +360,7 @@ export class RecordBuilder {
     tags: [],
     abridgement: "unknown",
     expressionKind: "unspecified",
+    explicitness: "unknown",
     identifiers: [],
     credits: [],
     creditRoles: [],
@@ -446,6 +447,19 @@ export class RecordBuilder {
     this.state("abridgement");
     this.record.abridgement =
       abridged === undefined ? "unknown" : abridged ? "abridged" : "unabridged";
+    return this;
+  }
+
+  /**
+   * Sets whether the edition is explicit (adult) content.
+   *
+   * @param explicit - True for explicit, false for clean, `undefined` when
+   *   the file states the field without a usable value.
+   * @returns This builder.
+   */
+  explicit(explicit: boolean | undefined): this {
+    this.state("explicitness");
+    this.record.explicitness = explicit === undefined ? "unknown" : explicit ? "explicit" : "clean";
     return this;
   }
 

@@ -1,5 +1,5 @@
 //! Periodic scan / auto-acquire / listening-sync / copy-retry /
-//! destination-sync scheduler (queue producers).
+//! destination-sync / quality-upgrade scheduler (queue producers).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +18,7 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
     spawn_listen_sync_loop(state.clone());
     spawn_copy_retry_loop(state.clone());
     crate::destination_sync::spawn_destination_sync_loop(state.clone());
+    crate::quality_upgrades::spawn_quality_upgrade_loop(state.clone());
     crate::webhooks::spawn_origin_publisher(state.clone());
     spawn_discover_refresh_loop(state);
 }

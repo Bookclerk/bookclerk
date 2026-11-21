@@ -328,7 +328,8 @@ mod tests {
     }
 
     /// Digest of `path` through the cache with no racy window, and whether
-    /// the cache now holds it.
+    /// the cache now holds it. Only the Unix cache tests below use it.
+    #[cfg(unix)]
     fn cached_digest(path: &Path) -> (String, bool) {
         let meta = fs::symlink_metadata(path).unwrap();
         let digest = payload_file_sha256_within(path, &meta, Duration::ZERO).unwrap();

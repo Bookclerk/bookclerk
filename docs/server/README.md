@@ -26,12 +26,16 @@ Bookclerk on your own computer first, see
   plugins; isolation modes.
 - [Libraries and branches](branches.md): join a library, branches on
   its database and consent.
+- [Public address](ingress.md): reach the library from the internet
+  through an ingress plugin, with no port forwarding.
 - [Media worker](media.md): the confined process that handles audio
   files.
 - [Uploads](uploads.md): adding books from files, folders and archives,
   limits and review.
 - [Playback reference](playback.md): what the daemon stores and serves
   for players.
+- [Player apps](player-apps.md): listen in apps made for Audiobookshelf
+  servers, through `/player`.
 - [Backups, updates, import and export](backups.md): native backups,
   schema backups, updating, Libation and PostgreSQL export.
 - [Diagnostics](diagnostics.md): opt-in error reports.

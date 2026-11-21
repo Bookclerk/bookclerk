@@ -150,6 +150,20 @@ Atmos need **L1**, which isn't available on a desktop, as in classic
 Libation, so the plugin never asks Audible for them: every license
 request is for the stereo edition.
 
+### Quality offers
+
+Audible tells the [daily upgrade check](output.md#upgrading-to-better-files)
+which file an account would download for a book today. The plugin asks
+Audible's content metadata for each book with the same DRM path, quality
+and xHE-AAC choice a download would use, and reads the codec and the
+`<FORMAT>_<kHz>_<kbps>` content format from the answer (`AAX_44_128` is
+AAC-LC at 44.1 kHz and 128 kbps). Nothing is licensed or downloaded.
+
+Spatial streams (Dolby E-AC-3 and AC-4) are never offered, since the
+plugin never downloads them, and an xHE-AAC stream is offered only while
+`output.xhe_aac` is on. A book Audible gives no usable answer for is
+skipped.
+
 ### The Widevine CDM
 
 On the first Widevine acquire, Bookclerk provisions an L3 `.wvd` through

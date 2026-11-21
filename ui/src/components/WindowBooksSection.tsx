@@ -25,15 +25,16 @@ type RequestState =
   { kind: "idle" } | { kind: "sending" } | { kind: "sent" } | { kind: "failed"; message: string };
 
 /**
- * Asks the library for a book only its branches hold: the library fetches
- * it from a branch, as for a request from the person's browser there.
+ * Asks the library for a copy of a book it has none of: the library
+ * fetches it from a branch, or downloads it on its own store account, as
+ * for a request from the person's browser there.
  */
 function RequestButton({ ask }: { ask: WindowRequest }) {
   const [state, setState] = useState<RequestState>({ kind: "idle" });
   const send = async () => {
     setState({ kind: "sending" });
     try {
-      await requestFromLibrary(ask.libraryId, ask.workId);
+      await requestFromLibrary(ask.libraryId, ask.workId, ask.from);
       setState({ kind: "sent" });
     } catch (err) {
       setState({ kind: "failed", message: clerkRequestFailure(err) });
@@ -42,7 +43,9 @@ function RequestButton({ ask }: { ask: WindowRequest }) {
   if (state.kind === "sent") {
     return (
       <p className="mt-1 text-xs text-ink/70" role="status">
-        Requested. It shows with your requests on {ask.host}.
+        {ask.from === "library"
+          ? `Requested. ${ask.host} is downloading it; it shows here once it's there.`
+          : `Requested. It shows with your requests on ${ask.host}.`}
       </p>
     );
   }
@@ -67,7 +70,8 @@ function RequestButton({ ask }: { ask: WindowRequest }) {
 
 /**
  * One work another library holds, marked Yours when it is the person's,
- * or one only that library's branches hold, with a Request button.
+ * with a Request button when that library has no copy yet (it holds the
+ * book on a store account, or only its branches hold it).
  */
 function WindowRow({ entry }: { entry: WindowEntryView }) {
   const first = entry.editions[0];
@@ -106,7 +110,11 @@ function WindowRow({ entry }: { entry: WindowEntryView }) {
               {storeLabel(store)}
             </span>
           ))}
-          <span>{ask ? `· On a branch of ${ask.host}` : `· In ${libraries.join(", ")}`}</span>
+          <span>
+            {ask?.from === "branch"
+              ? `· On a branch of ${ask.host}`
+              : `· In ${libraries.join(", ")}`}
+          </span>
           {series ? <span>· {series}</span> : null}
         </p>
         {ask ? <RequestButton key={`${ask.libraryId}/${ask.workId}`} ask={ask} /> : null}
@@ -186,7 +194,7 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
         </div>
         <p className="text-xs text-ink/55">
           Every book in {libraries.join(", ")}; the ones on your own store accounts there are marked
-          Yours. Books only a library&apos;s branches hold can be requested from it.
+          Yours. A book a library has no copy of yet can be requested from it.
         </p>
       </div>
       {stale ? (

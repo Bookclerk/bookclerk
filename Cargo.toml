@@ -26,6 +26,7 @@ members = [
     "crates/bookclerk-naming",
     "crates/bookclerk-node-client",
     "crates/bookclerk-node-proto",
+    "crates/bookclerk-player-api",
     "crates/bookclerk-plugin-abi",
     "crates/bookclerk-plugin-catalog",
     "crates/bookclerk-plugin-e2e",
@@ -123,6 +124,7 @@ bookclerk-integrations = { path = "crates/bookclerk-integrations" }
 bookclerk-discover = { path = "crates/bookclerk-discover" }
 bookclerk-tray = { path = "crates/bookclerk-tray" }
 bookclerk-tls = { path = "crates/bookclerk-tls" }
+bookclerk-player-api = { path = "crates/bookclerk-player-api" }
 bookclerk-plugin-abi = { path = "crates/bookclerk-plugin-abi" }
 bookclerk-plugin-manifest = { path = "crates/bookclerk-plugin-manifest" }
 bookclerk-plugin-sdk = { path = "crates/bookclerk-plugin-sdk", default-features = false }

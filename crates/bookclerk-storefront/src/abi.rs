@@ -99,6 +99,7 @@ impl From<PlainFetch> for abi::PlainFetch {
                 .into_iter()
                 .map(|(title, start_ms)| abi::ChapterMarker { title, start_ms })
                 .collect(),
+            chapter_kind: plain.chapter_kind,
             pdf_url: plain.pdf_url,
             // A guest that refreshed the account's credentials sets them on
             // the ABI value it answers with.
@@ -161,6 +162,7 @@ impl TryFrom<abi::PlainFetch> for PlainFetch {
                 .into_iter()
                 .map(|marker| (marker.title, marker.start_ms))
                 .collect(),
+            chapter_kind: plain.chapter_kind,
             pdf_url: plain.pdf_url,
         })
     }
@@ -183,6 +185,26 @@ pub fn abridgement_to_flag(abridgement: abi::Abridgement) -> Option<bool> {
         abi::Abridgement::Unknown => None,
         abi::Abridgement::Unabridged => Some(false),
         abi::Abridgement::Abridged => Some(true),
+    }
+}
+
+/// Tri-state explicit flag ↔ the host's `Option<bool>`.
+#[must_use]
+pub fn explicitness_from_flag(is_explicit: Option<bool>) -> abi::Explicitness {
+    match is_explicit {
+        None => abi::Explicitness::Unknown,
+        Some(false) => abi::Explicitness::Clean,
+        Some(true) => abi::Explicitness::Explicit,
+    }
+}
+
+/// Host `Option<bool>` view of the wire tri-state explicit flag.
+#[must_use]
+pub fn explicitness_to_flag(explicitness: abi::Explicitness) -> Option<bool> {
+    match explicitness {
+        abi::Explicitness::Unknown => None,
+        abi::Explicitness::Clean => Some(false),
+        abi::Explicitness::Explicit => Some(true),
     }
 }
 
@@ -215,6 +237,7 @@ impl From<CatalogHit> for abi::CatalogHit {
             series_entries: hit.series_entries,
             parent_product_id: hit.parent_product_id,
             rank_hint: hit.rank_hint.filter(|rank| *rank > 0),
+            explicitness: explicitness_from_flag(hit.is_explicit),
         }
     }
 }
@@ -240,6 +263,7 @@ impl From<abi::CatalogHit> for CatalogHit {
             rating_overall: hit.rating_overall,
             rating_count: hit.rating_count,
             is_abridged: abridgement_to_flag(hit.abridgement),
+            is_explicit: explicitness_to_flag(hit.explicitness),
             work_kind: hit.work_kind,
             expression_kind: hit.expression_kind,
             media_kind: hit.media_kind,
@@ -804,6 +828,7 @@ mod tests {
             m4b_path: None,
             cover_path: Some(PathBuf::from("/tmp/cover.jpg")),
             chapters: vec![("Ch 1".into(), 0), ("Ch 2".into(), 5000)],
+            chapter_kind: abi::ChapterKind::Tracks,
             pdf_url: Some("https://cdn.example/book.pdf".into()),
         };
         let wire: abi::PlainFetch = plain.clone().into();
@@ -817,6 +842,7 @@ mod tests {
         assert_eq!(abi::validate_plain_fetch(&wire, &media), Ok(()));
         let back = PlainFetch::try_from(wire).unwrap();
         assert_eq!(back.chapters, plain.chapters);
+        assert_eq!(back.chapter_kind, abi::ChapterKind::Tracks);
         assert_eq!(back.m4b_path, None);
         assert_eq!(back.cover_path, plain.cover_path);
         assert_eq!(back.parts[0].path, plain.parts[0].path);
@@ -835,6 +861,7 @@ mod tests {
             m4b_path: Some(PathBuf::from("/tmp/book.m4b")),
             cover_path: None,
             chapters: Vec::new(),
+            chapter_kind: abi::ChapterKind::Unknown,
             pdf_url: None,
         };
         let wire: abi::PlainFetch = plain.into();

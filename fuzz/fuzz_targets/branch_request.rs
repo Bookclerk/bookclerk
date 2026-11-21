@@ -1,6 +1,7 @@
 //! Coverage-guided checks of an interlibrary request body
 //! (`bookclerk-library::control_plane::parse_branch_request`): the body of
-//! `POST /api/branch-requests`. The oracle in
+//! `POST /api/branch-requests`, and of its sibling download request
+//! (`parse_download_request`, `POST /api/download-requests`). The oracle in
 //! `fuzz/oracles/branch_request.rs` is shared with the replay test.
 
 #![no_main]

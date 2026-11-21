@@ -1338,6 +1338,15 @@
             "kind": "bool"
           },
           "offset": 3
+        },
+        {
+          "name": "qualityOffers",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 4
         }
       ]
     },
@@ -1685,6 +1694,16 @@
             "kind": "uint32"
           },
           "offset": 10
+        },
+        {
+          "name": "explicitness",
+          "codeOrder": 26,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Explicitness"
+          },
+          "offset": 22
         }
       ]
     },
@@ -2770,6 +2789,46 @@
           "type": {
             "kind": "struct",
             "name": "PurchaseHintsReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ContentSource.qualityOffers$Params": {
+      "name": "ContentSource.qualityOffers$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "QualityOffersParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ContentSource.qualityOffers$Results": {
+      "name": "ContentSource.qualityOffers$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "QualityOffersReply"
           },
           "offset": 0
         }
@@ -9535,6 +9594,16 @@
             "kind": "uint64"
           },
           "offset": 1
+        },
+        {
+          "name": "explicitness",
+          "codeOrder": 17,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Explicitness"
+          },
+          "offset": 2
         }
       ]
     },
@@ -12084,6 +12153,16 @@
             "kind": "data"
           },
           "offset": 3
+        },
+        {
+          "name": "chapterKind",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ChapterKind"
+          },
+          "offset": 1
         }
       ]
     },
@@ -13454,6 +13533,185 @@
         }
       ]
     },
+    "QualityOffer": {
+      "name": "QualityOffer",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "codec",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "OfferedCodec"
+          },
+          "offset": 0
+        },
+        {
+          "name": "aacProfile",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "OfferedAacProfile"
+          },
+          "offset": 1
+        },
+        {
+          "name": "bitrateKbps",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 1
+        },
+        {
+          "name": "sampleRateHz",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 2
+        },
+        {
+          "name": "channels",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 3
+        }
+      ]
+    },
+    "QualityOffersParams": {
+      "name": "QualityOffersParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 5,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "accountId",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "credentials",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 1
+        },
+        {
+          "name": "sourceConfig",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ExtensibleConfig"
+          },
+          "offset": 2
+        },
+        {
+          "name": "titleIds",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 3
+        },
+        {
+          "name": "fetch",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "FetchOptions"
+          },
+          "offset": 4
+        }
+      ]
+    },
+    "QualityOffersReply": {
+      "name": "QualityOffersReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "QualityOffersResult"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QualityOffersResult": {
+      "name": "QualityOffersResult",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "offers",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "TitleQualityOffer"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "refreshedCredentials",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "QueueBatch": {
       "name": "QueueBatch",
       "file": "plugin.capnp",
@@ -14384,7 +14642,7 @@
     "ScanBook": {
       "name": "ScanBook",
       "file": "plugin.capnp",
-      "dataWords": 2,
+      "dataWords": 3,
       "pointerCount": 14,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -14575,6 +14833,16 @@
             "kind": "text"
           },
           "offset": 13
+        },
+        {
+          "name": "explicitness",
+          "codeOrder": 19,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Explicitness"
+          },
+          "offset": 8
         }
       ]
     },
@@ -16239,6 +16507,35 @@
         }
       ]
     },
+    "TitleQualityOffer": {
+      "name": "TitleQualityOffer",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "found",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "offer",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "QualityOffer"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "TranslateKeysReply": {
       "name": "TranslateKeysReply",
       "file": "plugin.capnp",
@@ -16894,6 +17191,15 @@
         "author"
       ]
     },
+    "ChapterKind": {
+      "name": "ChapterKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unknown",
+        "chapters",
+        "tracks"
+      ]
+    },
     "CliArgKind": {
       "name": "CliArgKind",
       "file": "plugin.capnp",
@@ -16976,6 +17282,15 @@
         "ingress"
       ]
     },
+    "Explicitness": {
+      "name": "Explicitness",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unknown",
+        "clean",
+        "explicit"
+      ]
+    },
     "ExpressionKind": {
       "name": "ExpressionKind",
       "file": "plugin.capnp",
@@ -17055,7 +17370,8 @@
         "credits",
         "series",
         "chapters",
-        "duration"
+        "duration",
+        "explicitness"
       ]
     },
     "NotificationAlertAction": {
@@ -17100,6 +17416,32 @@
         "changed",
         "upserted",
         "removed"
+      ]
+    },
+    "OfferedAacProfile": {
+      "name": "OfferedAacProfile",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unknown",
+        "lc",
+        "he",
+        "heV2",
+        "xhe"
+      ]
+    },
+    "OfferedCodec": {
+      "name": "OfferedCodec",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unknown",
+        "aac",
+        "alac",
+        "flac",
+        "mp3",
+        "opus",
+        "vorbis",
+        "eac3",
+        "ac4"
       ]
     },
     "PluginErrorCode": {
@@ -17433,6 +17775,12 @@
           "ordinal": 14,
           "params": "ContentSource.purchaseHints$Params",
           "results": "ContentSource.purchaseHints$Results"
+        },
+        {
+          "name": "qualityOffers",
+          "ordinal": 15,
+          "params": "ContentSource.qualityOffers$Params",
+          "results": "ContentSource.qualityOffers$Results"
         }
       ]
     },

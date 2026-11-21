@@ -79,6 +79,8 @@ paths = [
     "fuzz/oracles/db_stream.rs",
     "fuzz/corpus/scan_page/**",
     "fuzz/oracles/scan_page.rs",
+    "fuzz/corpus/quality_offers/**",
+    "fuzz/oracles/quality_offers.rs",
     "fuzz/corpus/plain_fetch/**",
     "fuzz/oracles/plain_fetch.rs",
     "fuzz/corpus/metadata_file_record/**",
@@ -126,6 +128,8 @@ paths = [
     "fuzz/oracles/work_split_request.rs",
     "fuzz/corpus/playback_request/**",
     "fuzz/oracles/playback_request.rs",
+    "fuzz/corpus/chapter_request/**",
+    "fuzz/oracles/chapter_request.rs",
     "fuzz/corpus/work_tags_request/**",
     "fuzz/oracles/work_tags_request.rs",
     "fuzz/corpus/collections_request/**",
@@ -360,6 +364,14 @@ package = "bookclerk-node-proto"
 paths = [
   "fuzz/corpus/upload_part/**",
   "fuzz/oracles/upload_part.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The tunnel path policy oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/tunnel_policy/**",
+  "fuzz/oracles/tunnel_policy.rs",
 ]
 
 [[test_input]]
@@ -680,6 +692,17 @@ reason = "package-name string in install-path test data, not a launched executab
 package = "bookclerk-plugin-e2e"
 reference = "bookclerk-jail"
 reason = "PluginSession::spawn_with launches bookclerk-jail; the native_gateway smoke already builds that binary, and this crate is excluded from rust_test"
+
+# The player API's oracles are shared by the fuzz targets and the
+# bookclerk-player-api replay test through `#[path]`.
+[[test_input]]
+package = "bookclerk-player-api"
+paths = [
+    "fuzz/corpus/player_request/**",
+    "fuzz/oracles/player_request.rs",
+    "fuzz/corpus/player_socket/**",
+    "fuzz/oracles/player_socket.rs",
+]
 
 [[reviewed]]
 package = "bookclerk-config"

@@ -21,7 +21,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    Abridgement, CreditRole, ExpressionKind, MetadataField, MetadataFileParseParams,
+    Abridgement, CreditRole, Explicitness, ExpressionKind, MetadataField, MetadataFileParseParams,
     MetadataFileRecord, MetadataFileRenderParams, MetadataFileRendered, MAX_METADATA_AUDIO_FILES,
     MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
     MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES,
@@ -345,6 +345,10 @@ pub fn fields_with_values(record: &MetadataFileRecord) -> Vec<MetadataField> {
         (MetadataField::Series, !record.series_entries.is_empty()),
         (MetadataField::Chapters, !record.chapters.is_empty()),
         (MetadataField::Duration, record.duration_ms.is_some()),
+        (
+            MetadataField::Explicitness,
+            record.explicitness != Explicitness::Unknown,
+        ),
     ];
     checks
         .into_iter()
@@ -782,6 +786,16 @@ mod tests {
             validate_metadata_file_record(&record),
             Err(MetadataFileError::ValueNotPresent(
                 MetadataField::Abridgement
+            ))
+        );
+        let record = MetadataFileRecord {
+            explicitness: Explicitness::Explicit,
+            ..MetadataFileRecord::default()
+        };
+        assert_eq!(
+            validate_metadata_file_record(&record),
+            Err(MetadataFileError::ValueNotPresent(
+                MetadataField::Explicitness
             ))
         );
         let record = MetadataFileRecord {

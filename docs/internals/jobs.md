@@ -152,8 +152,12 @@ stateDiagram-v2
   cursor after each written page, and the sync token and time of the last
   finished pass. A retried or later job resumes a cursor younger than 24
   hours and otherwise starts a new pass, full when no complete pass ended in
-  seven days (see [Paged scans](../plugins/abi.md#paged-scans)). The row
-  goes away with its account.
+  seven days (see [Paged scans](../plugins/abi.md#paged-scans)). The same
+  row keeps the daily quality-upgrade check's place (`quality_cursor`, the
+  last holding id asked about, empty after a full walk) and time
+  (`quality_checked_at`); see
+  [Upgrading to better files](../server/output.md#upgrading-to-better-files).
+  The row goes away with its account.
 - Storage scans checkpoint `storage_scan` JSON (instance id, generation,
   phase, cursor) with `checkpoint_running_job` while the row stays `running`.
   The generation is a UUID bound in `storage_scan_generations` to that storage
@@ -416,7 +420,8 @@ The same refresh writes the work's filter values to
 listings), series, genres (the work's and listings' categories, split on
 commas, semicolons and bars), publishers, the storefronts it is held
 through, its library tags (`work_tags`) and the collections whose
-storage prefixes hold one of its editions' files (`core.collections`), each under its lower-cased key. The row write, the removal of
+storage prefixes hold one of its editions' files (`core.collections`),
+and `explicit` when a store marks one of its listings explicit, each under its lower-cased key. The row write, the removal of
 the old values and as many new values as fit share one atomic batch; the
 rest follow in further batches, each checking that the row still carries
 this refresh's stamp, so a later refresh's values are never mixed with an

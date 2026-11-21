@@ -8,9 +8,8 @@ calls and the rules behind them. The decisions are in the
 
 > [!NOTE]
 > The web app's player and the desktop window's player use this core
-> (see [Listen in the web app](../guide/listening.md)). The
-> app-compatible `/player` API is being built on it and is not in this
-> release.
+> (see [Listen in the web app](../guide/listening.md)). Phone and car
+> apps reach it through the [player API](player-apps.md).
 
 ## What is stored
 
@@ -117,6 +116,48 @@ is elevated to the operator, or impersonating someone from the
 elevation, the window still keeps their own listening state, because it
 is the person at the computer who is listening. Before the library has
 an Owner the window is the operator and has nothing to play as.
+
+## Chapters
+
+Chapters belong to the edition and are kept in the database, so every
+player and every stored copy shows the same list. Each source that knows
+an edition's chapters adds a claim, and the library chooses the list it
+plays (decisions in the [Edition chapters ADR](../adr/edition-chapters.md)):
+
+1. A claim an Administrator pinned.
+2. An Administrator's own edit. An empty edit clears the chapters on
+   purpose.
+3. Otherwise the best machine source, best first: Bookclerk's chapters
+   aligned to the audio during acquire; a metadata provider's chapters
+   with exact starts; the store's chapters; a file's chapters; a provider's
+   estimated chapters; store markers of unknown kind; store track markers;
+   one chapter per delivered part.
+
+A storefront says whether its markers are chapters or tracks
+(`chapterKind` in the [Plugin ABI](../plugins/abi.md)), so a store's
+track list never outranks a book's real chapters.
+
+| Route | Who | Purpose |
+| --- | --- | --- |
+| `GET /api/library/editions/{id}/chapters` | Anyone who may see the edition | The chapters it plays, in pre-order with depths, and where they came from |
+| `GET /api/library/editions/{id}/chapters/claims` | Administrator | Every source's list, and which one plays |
+| `PUT /api/library/editions/{id}/chapters` | Administrator | Set the chapters by hand; `{"chapters": []}` clears them |
+| `DELETE /api/library/editions/{id}/chapters` | Administrator | Remove the edit, so the best remaining source plays again |
+| `PUT`, `DELETE /api/library/editions/{id}/chapters/pin` | Administrator | Pin one source's list, or remove the pin |
+
+"Administrator" here means the operator, an Owner or an Administrator, as
+for every other metadata edit; an Owner can stop one Administrator
+changing chapters with the **Fix the catalog** switch (see
+[Sharing](../guide/sharing.md)), which leaves the claims readable. An edit is checked strictly and stored
+exactly as sent: at most 2,000 chapters, each title 1 to 512 bytes with no
+control character and no leading or trailing space, starts that never go
+back and are at most 60 days in, and each depth (0 to 7) at most one
+deeper than the chapter above. A body that breaks a rule gets `400`, one
+over 2 MiB gets `413`.
+
+When the list an edition plays changes, the host emits `edition_updated`
+with `fields: ["chapters"]`. Media files keep the chapters they were
+written with.
 
 ## Events and live updates
 

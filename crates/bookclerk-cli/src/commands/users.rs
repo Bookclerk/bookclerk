@@ -18,8 +18,8 @@ use bookclerk_library::control_plane::{
     assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
     member_control_overrides, role_follows_default_controls, role_has_controls, role_is_scoped,
     set_default_member_controls, set_default_patron_scope, set_member_control_overrides,
-    set_patron_scope, AssignedControls, ConfigActor, MemberControl, MemberControls, PatronScope,
-    RuleEffect, ScopeField, ScopeRule,
+    set_patron_scope, AssignedControls, ConfigActor, ExplicitContent, MemberControl,
+    MemberControls, PatronScope, RuleEffect, ScopeField, ScopeRule,
 };
 use bookclerk_library::{UserRecord, UserRole};
 use clap::Subcommand;
@@ -158,10 +158,13 @@ pub enum ScopeCommand {
         /// Repeatable.
         #[arg(long, value_name = "FIELD=VALUE")]
         exclude: Vec<String>,
+        /// Hide books a store or metadata file marks as explicit content.
+        #[arg(long)]
+        hide_explicit: bool,
         /// Drop the patron's own scope so they follow the library's default.
         #[arg(
             long,
-            conflicts_with_all = ["default", "include", "exclude"]
+            conflicts_with_all = ["default", "include", "exclude", "hide_explicit"]
         )]
         follow_default: bool,
     },
@@ -202,12 +205,13 @@ pub async fn run(
             default,
             include,
             exclude,
+            hide_explicit,
             follow_default,
         } => {
             let scope = if follow_default {
                 None
             } else {
-                Some(scope_from_args(&include, &exclude)?)
+                Some(scope_from_args(&include, &exclude, hide_explicit)?)
             };
             match (user, default) {
                 (_, true) => {
@@ -518,12 +522,17 @@ fn print_user_admin_controls(
     )
 }
 
-/// Builds a scope from `--include` and `--exclude` values.
+/// Builds a scope from `--include` and `--exclude` values and
+/// `--hide-explicit`.
 ///
 /// # Errors
 ///
 /// Returns an error for a value without `=` or an unknown field.
-fn scope_from_args(include: &[String], exclude: &[String]) -> anyhow::Result<PatronScope> {
+fn scope_from_args(
+    include: &[String],
+    exclude: &[String],
+    hide_explicit: bool,
+) -> anyhow::Result<PatronScope> {
     let mut rules = Vec::new();
     for (values, effect) in [
         (include, RuleEffect::Include),
@@ -540,7 +549,14 @@ fn scope_from_args(include: &[String], exclude: &[String]) -> anyhow::Result<Pat
             });
         }
     }
-    Ok(PatronScope { rules })
+    Ok(PatronScope {
+        rules,
+        explicit: if hide_explicit {
+            ExplicitContent::Hide
+        } else {
+            ExplicitContent::Allow
+        },
+    })
 }
 
 /// Parses a rule field name.
@@ -585,6 +601,10 @@ fn print_rules(scope: &PatronScope) {
     }
     for rule in &scope.rules {
         println!("  {}", rule_line(rule));
+    }
+    match scope.explicit {
+        ExplicitContent::Allow => {}
+        ExplicitContent::Hide => println!("  hide explicit books"),
     }
 }
 
@@ -953,11 +973,12 @@ mod tests {
 
     #[test]
     fn rules_parse_from_field_value_pairs() {
-        let scope = scope_from_args(&["genre=Kids".into()], &["Series=Discworld".into()]).unwrap();
+        let scope =
+            scope_from_args(&["genre=Kids".into()], &["Series=Discworld".into()], false).unwrap();
         assert_eq!(scope.rules.len(), 2);
         assert_eq!(rule_line(&scope.rules[0]), "include genre=Kids");
         assert_eq!(rule_line(&scope.rules[1]), "exclude series=Discworld");
-        assert!(scope_from_args(&["Kids".into()], &[]).is_err());
-        assert!(scope_from_args(&["shelf=Kids".into()], &[]).is_err());
+        assert!(scope_from_args(&["Kids".into()], &[], false).is_err());
+        assert!(scope_from_args(&["shelf=Kids".into()], &[], false).is_err());
     }
 }

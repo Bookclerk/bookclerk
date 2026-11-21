@@ -2157,6 +2157,7 @@ def _write_catalog_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
     s.set_bool(1, v["priceByIsbn"])
     s.set_bool(2, v["priceByAsin"])
     s.set_bool(3, v["detailByProductId"])
+    s.set_bool(4, v["qualityOffers"])
 
 
 def _read_catalog_capabilities(s: _StructReader, caps: _CapTable) -> Any:
@@ -2165,6 +2166,7 @@ def _read_catalog_capabilities(s: _StructReader, caps: _CapTable) -> Any:
         "priceByIsbn": s.get_bool(1),
         "priceByAsin": s.get_bool(2),
         "detailByProductId": s.get_bool(3),
+        "qualityOffers": s.get_bool(4),
     }
 
 
@@ -2847,6 +2849,7 @@ def _write_scan_book(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(12, v["purchasedAt"])
     if v.get("categories") is not None:
         s.set_text(13, v["categories"])
+    s.set_u16(8, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
 
 
 def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
@@ -2861,6 +2864,7 @@ def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
         "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(7, 1, 1)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
         "abridgement": _from_ord(A.ABRIDGEMENTS, s.get_u16(7), "Abridgement"),
+        "explicitness": _from_ord(A.EXPLICITNESSS, s.get_u16(8), "Explicitness"),
     }
     marketplace = s.get_text(3)
     if not (marketplace == ""):
@@ -2892,12 +2896,12 @@ def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_scan_book_codec = _Codec(2, 14, _write_scan_book, _read_scan_book)
-"""Wire codec for ``ScanBook`` (2 data words, 14 pointers)."""
+_scan_book_codec = _Codec(3, 14, _write_scan_book, _read_scan_book)
+"""Wire codec for ``ScanBook`` (3 data words, 14 pointers)."""
 
 
 def _write_scan_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["books"]), 2, 14)
+    items = s.init_struct_list(0, len(v["books"]), 3, 14)
     for item, elem in zip(items, v["books"], strict=True):
         _scan_book_codec.write(item, elem, caps)
     s.set_text_list(1, v["removed"])
@@ -2911,7 +2915,7 @@ def _write_scan_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 
 def _read_scan_page(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 2, 14)],
+        "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 3, 14)],
         "removed": s.get_text_list(1),
         "nextCursor": s.get_text(2),
         "syncToken": s.get_text(3),
@@ -3090,6 +3094,7 @@ def _write_plain_fetch(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(2, v["pdfUrl"])
     if v.get("refreshedCredentials") is not None:
         s.set_data(3, v["refreshedCredentials"])
+    s.set_u16(1, _ord(A.CHAPTER_KINDS, v["chapterKind"], "ChapterKind"))
 
 
 def _read_plain_fetch(s: _StructReader, caps: _CapTable) -> Any:
@@ -3097,6 +3102,7 @@ def _read_plain_fetch(s: _StructReader, caps: _CapTable) -> Any:
         "mediaKind": _from_ord(A.MEDIA_KINDS, s.get_u16(0), "MediaKind"),
         "files": [_fetched_file_codec.read(item, caps) for item in s.get_struct_list(0, 2, 3)],
         "chapters": [_chapter_marker_codec.read(item, caps) for item in s.get_struct_list(1, 1, 1)],
+        "chapterKind": _from_ord(A.CHAPTER_KINDS, s.get_u16(1), "ChapterKind"),
     }
     pdf_url = s.get_text(2)
     if not (pdf_url == ""):
@@ -3411,6 +3417,7 @@ def _write_catalog_hit(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(16, v["parentProductId"])
     if v.get("rankHint") is not None:
         s.set_u32(10, v["rankHint"])
+    s.set_u16(22, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
 
 
 def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
@@ -3425,6 +3432,7 @@ def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
         "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(13, 1, 2)],
         "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(14, 1, 1)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(15, 0, 3)],
+        "explicitness": _from_ord(A.EXPLICITNESSS, s.get_u16(22), "Explicitness"),
     }
     url = s.get_text(2)
     if not (url == ""):
@@ -3743,6 +3751,130 @@ def _read_purchase_hints_reply(s: _StructReader, caps: _CapTable) -> Any:
 
 _purchase_hints_reply_codec = _Codec(1, 1, _write_purchase_hints_reply, _read_purchase_hints_reply)
 """Wire codec for ``PurchaseHintsReply`` (1 data words, 1 pointers)."""
+
+
+def _write_quality_offer(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16(0, _ord(A.OFFERED_CODECS, v["codec"], "OfferedCodec"))
+    s.set_u16(1, _ord(A.OFFERED_AAC_PROFILES, v["aacProfile"], "OfferedAacProfile"))
+    if v.get("bitrateKbps") is not None:
+        s.set_u32(1, v["bitrateKbps"])
+    if v.get("sampleRateHz") is not None:
+        s.set_u32(2, v["sampleRateHz"])
+    if v.get("channels") is not None:
+        s.set_u32(3, v["channels"])
+
+
+def _read_quality_offer(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "codec": _from_ord(A.OFFERED_CODECS, s.get_u16(0), "OfferedCodec"),
+        "aacProfile": _from_ord(A.OFFERED_AAC_PROFILES, s.get_u16(1), "OfferedAacProfile"),
+    }
+    bitrate_kbps = s.get_u32(1)
+    if not (bitrate_kbps == 0):
+        out["bitrateKbps"] = bitrate_kbps
+    sample_rate_hz = s.get_u32(2)
+    if not (sample_rate_hz == 0):
+        out["sampleRateHz"] = sample_rate_hz
+    channels = s.get_u32(3)
+    if not (channels == 0):
+        out["channels"] = channels
+    return out
+
+
+_quality_offer_codec = _Codec(2, 0, _write_quality_offer, _read_quality_offer)
+"""Wire codec for ``QualityOffer`` (2 data words, 0 pointers)."""
+
+
+def _write_quality_offers_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["accountId"])
+    if v.get("credentials") is not None:
+        s.set_data(1, v["credentials"])
+    if v.get("sourceConfig") is not None:
+        _extensible_config_codec.write(s.init_struct(2, 1, 2), v["sourceConfig"], caps)
+    s.set_text_list(3, v["titleIds"])
+    if v.get("fetch") is not None:
+        _fetch_options_codec.write(s.init_struct(4, 1, 4), v["fetch"], caps)
+
+
+def _read_quality_offers_params(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "accountId": s.get_text(0),
+        "sourceConfig": _extensible_config_codec.read(s.get_struct(2, 1, 2), caps),
+        "titleIds": s.get_text_list(3),
+        "fetch": _fetch_options_codec.read(s.get_struct(4, 1, 4), caps),
+    }
+    credentials = s.get_data(1)
+    if not (len(credentials) == 0):
+        out["credentials"] = credentials
+    return out
+
+
+_quality_offers_params_codec = _Codec(0, 5, _write_quality_offers_params, _read_quality_offers_params)
+"""Wire codec for ``QualityOffersParams`` (0 data words, 5 pointers)."""
+
+
+def _write_title_quality_offer(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["found"])
+    if v.get("offer") is not None:
+        _quality_offer_codec.write(s.init_struct(0, 2, 0), v["offer"], caps)
+
+
+def _read_title_quality_offer(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "found": s.get_bool(0),
+        "offer": _quality_offer_codec.read(s.get_struct(0, 2, 0), caps),
+    }
+
+
+_title_quality_offer_codec = _Codec(1, 1, _write_title_quality_offer, _read_title_quality_offer)
+"""Wire codec for ``TitleQualityOffer`` (1 data words, 1 pointers)."""
+
+
+def _write_quality_offers_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["offers"]), 1, 1)
+    for item, elem in zip(items, v["offers"], strict=True):
+        _title_quality_offer_codec.write(item, elem, caps)
+    if v.get("refreshedCredentials") is not None:
+        s.set_data(1, v["refreshedCredentials"])
+
+
+def _read_quality_offers_result(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "offers": [_title_quality_offer_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+    }
+    refreshed_credentials = s.get_data(1)
+    if not (len(refreshed_credentials) == 0):
+        out["refreshedCredentials"] = refreshed_credentials
+    return out
+
+
+_quality_offers_result_codec = _Codec(0, 2, _write_quality_offers_result, _read_quality_offers_result)
+"""Wire codec for ``QualityOffersResult`` (0 data words, 2 pointers)."""
+
+
+def _write_quality_offers_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _quality_offers_result_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown QualityOffersReply union member: {kind}")
+
+
+def _read_quality_offers_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _quality_offers_result_codec.read(s.get_struct(0, 0, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown QualityOffersReply union member: {disc}")
+
+
+_quality_offers_reply_codec = _Codec(1, 1, _write_quality_offers_reply, _read_quality_offers_reply)
+"""Wire codec for ``QualityOffersReply`` (1 data words, 1 pointers)."""
 
 
 def _write_scan_library_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -4962,6 +5094,7 @@ def _write_metadata_file_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
         _metadata_chapter_codec.write(item, elem, caps)
     if v.get("durationMs") is not None:
         s.set_u64(1, v["durationMs"])
+    s.set_u16(2, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
 
 
 def _read_metadata_file_record(s: _StructReader, caps: _CapTable) -> Any:
@@ -4976,6 +5109,7 @@ def _read_metadata_file_record(s: _StructReader, caps: _CapTable) -> Any:
         "creditRoles": [_from_ord(A.CREDIT_ROLES, v, "CreditRole") for v in s.get_u16_list(11)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(12, 0, 3)],
         "chapters": [_metadata_chapter_codec.read(item, caps) for item in s.get_struct_list(13, 3, 1)],
+        "explicitness": _from_ord(A.EXPLICITNESSS, s.get_u16(2), "Explicitness"),
     }
     title = s.get_text(1)
     if not (title == ""):
@@ -8786,6 +8920,36 @@ def _read_content_source_purchase_hints_results(s: _StructReader, caps: _CapTabl
 
 _content_source_purchase_hints_results_codec = _Codec(0, 1, _write_content_source_purchase_hints_results, _read_content_source_purchase_hints_results)
 """Wire codec for ``ContentSourcePurchaseHintsResults`` (0 data words, 1 pointers)."""
+
+
+def _write_content_source_quality_offers_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("params") is not None:
+        _quality_offers_params_codec.write(s.init_struct(0, 0, 5), v["params"], caps)
+
+
+def _read_content_source_quality_offers_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _quality_offers_params_codec.read(s.get_struct(0, 0, 5), caps),
+    }
+
+
+_content_source_quality_offers_params_codec = _Codec(0, 1, _write_content_source_quality_offers_params, _read_content_source_quality_offers_params)
+"""Wire codec for ``ContentSourceQualityOffersParams`` (0 data words, 1 pointers)."""
+
+
+def _write_content_source_quality_offers_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _quality_offers_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_content_source_quality_offers_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _quality_offers_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_content_source_quality_offers_results_codec = _Codec(0, 1, _write_content_source_quality_offers_results, _read_content_source_quality_offers_results)
+"""Wire codec for ``ContentSourceQualityOffersResults`` (0 data words, 1 pointers)."""
 
 
 def _write_remote_library_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

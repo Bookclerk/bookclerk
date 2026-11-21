@@ -99,6 +99,33 @@ pub enum RuleEffect {
     Exclude,
 }
 
+/// Whether a patron sees books marked as explicit (adult) content.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ExplicitContent {
+    /// Explicit books are visible (the default: explicit flags are
+    /// incomplete, so hiding is a choice an Administrator makes).
+    #[default]
+    Allow,
+    /// Books a store or metadata file marks explicit are hidden, whatever
+    /// the include rules say; books with no flag stay visible.
+    Hide,
+}
+
+impl ExplicitContent {
+    /// True for [`Self::Allow`], which a stored scope leaves out.
+    #[must_use]
+    pub fn is_allow(&self) -> bool {
+        *self == Self::Allow
+    }
+}
+
+/// The page index value a work marked explicit carries under
+/// [`WorkFacet::Explicit`].
+pub const EXPLICIT_FACET_KEY: &str = "explicit";
+
 /// One rule of a scope: a field, one value of it, and its effect.
 // Read by a strict hand-written reader (module `strict`); the serde
 // attributes here shape the schema and match what that reader takes.
@@ -126,30 +153,43 @@ pub struct PatronScope {
     #[serde(default)]
     #[schema(max_items = 16)]
     pub rules: Vec<ScopeRule>,
+    /// Whether books marked explicit are visible; left out means `allow`.
+    #[serde(default, skip_serializing_if = "ExplicitContent::is_allow")]
+    pub explicit: ExplicitContent,
 }
 
 impl PatronScope {
     /// A scope that restricts nothing: no rules.
     #[must_use]
     pub fn unrestricted() -> Self {
-        Self { rules: Vec::new() }
+        Self {
+            rules: Vec::new(),
+            explicit: ExplicitContent::Allow,
+        }
     }
 
-    /// True when the scope hides no book.
+    /// True when the scope hides no book: no rules, and explicit books
+    /// allowed.
     #[must_use]
     pub fn sees_everything(&self) -> bool {
-        self.rules.is_empty()
+        self.rules.is_empty() && self.explicit.is_allow()
     }
 
     /// The rules with the given effect, as `(facet, facet key)` pairs for
-    /// the page index.
+    /// the page index. Hiding explicit books adds an exclude pair on
+    /// [`WorkFacet::Explicit`].
     #[must_use]
     pub fn facet_keys(&self, effect: RuleEffect) -> Vec<(WorkFacet, String)> {
-        self.rules
+        let mut keys: Vec<(WorkFacet, String)> = self
+            .rules
             .iter()
             .filter(|rule| rule.effect == effect)
             .map(|rule| (rule.field.facet(), crate::facet_key(&rule.value)))
-            .collect()
+            .collect();
+        if effect == RuleEffect::Exclude && self.explicit == ExplicitContent::Hide {
+            keys.push((WorkFacet::Explicit, EXPLICIT_FACET_KEY.to_string()));
+        }
+        keys
     }
 
     /// Checks the scope's bounds.
@@ -271,7 +311,7 @@ mod strict {
     use serde::de::{self, Deserializer, MapAccess, Visitor};
     use serde::Deserialize;
 
-    use super::{PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule};
+    use super::{ExplicitContent, PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule};
 
     /// Reads one of the names of a unit enum from a JSON string.
     struct Name<T: 'static> {
@@ -312,6 +352,19 @@ mod strict {
                     ("collection", ScopeField::Collection),
                 ],
                 expected: &["genre", "series", "author", "narrator", "tag", "collection"],
+            })
+        }
+    }
+
+    impl<'de> Deserialize<'de> for ExplicitContent {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            de.deserialize_str(Name {
+                what: "allow or hide",
+                names: &[
+                    ("allow", ExplicitContent::Allow),
+                    ("hide", ExplicitContent::Hide),
+                ],
+                expected: &["allow", "hide"],
             })
         }
     }
@@ -388,15 +441,18 @@ mod strict {
         }
 
         fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<PatronScope, A::Error> {
-            let mut rules = None;
+            const KEYS: &[&str] = &["rules", "explicit"];
+            let (mut rules, mut explicit) = (None, None);
             while let Some(key) = map.next_key::<String>()? {
                 match key.as_str() {
                     "rules" => once(&mut map, &mut rules, "rules")?,
-                    other => return Err(de::Error::unknown_field(other, &["rules"])),
+                    "explicit" => once(&mut map, &mut explicit, "explicit")?,
+                    other => return Err(de::Error::unknown_field(other, KEYS)),
                 }
             }
             Ok(PatronScope {
                 rules: rules.unwrap_or_default(),
+                explicit: explicit.unwrap_or_default(),
             })
         }
     }
@@ -796,6 +852,7 @@ mod tests {
                 rule(ScopeField::Genre, " Kids ", RuleEffect::Include),
                 rule(ScopeField::Genre, "kids", RuleEffect::Exclude),
             ],
+            explicit: Default::default(),
         };
         scope.validate().unwrap();
         scope
@@ -818,6 +875,7 @@ mod tests {
             rules: (0..=MAX_SCOPE_RULES)
                 .map(|n| rule(ScopeField::Author, &format!("a{n}"), RuleEffect::Include))
                 .collect(),
+            explicit: ExplicitContent::Allow,
         };
         assert!(many.validate().is_err(), "too many rules");
         assert_eq!(
@@ -833,6 +891,7 @@ mod tests {
             rules: (0..MAX_SCOPE_RULES)
                 .map(|n| rule(ScopeField::Genre, &format!("g{n:02}"), RuleEffect::Include))
                 .collect(),
+            explicit: ExplicitContent::Allow,
         }
     }
 
@@ -851,6 +910,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            explicit: ExplicitContent::Allow,
         };
         assert!(longest.validate().is_err(), "the most values of 256 bytes");
         assert_eq!(
@@ -941,6 +1001,7 @@ mod tests {
         let actor = verify_patron_administrator(store, admin.id).await.unwrap();
         let kids = PatronScope {
             rules: vec![rule(ScopeField::Genre, "Kids", RuleEffect::Include)],
+            explicit: Default::default(),
         };
         let before = library(&live_revisions(store).await.unwrap());
         set_patron_scope(store, sam.id, Some(kids.clone()))
@@ -1004,6 +1065,7 @@ mod tests {
             assert!(verify_patron_administrator(store, sam.id).await.is_err());
             let kids = PatronScope {
                 rules: vec![rule(ScopeField::Genre, " Kids ", RuleEffect::Include)],
+                explicit: Default::default(),
             };
             set_default_patron_scope(store, &actor, kids.clone())
                 .await
@@ -1037,6 +1099,7 @@ mod tests {
             // Their own scope, replaced, then removed.
             let own = PatronScope {
                 rules: vec![rule(ScopeField::Series, "Discworld", RuleEffect::Exclude)],
+                explicit: Default::default(),
             };
             let set = set_patron_scope(store, sam.id, Some(own.clone()))
                 .await
@@ -1054,6 +1117,7 @@ mod tests {
             // Bad input and unknown users are refused.
             let blank = PatronScope {
                 rules: vec![rule(ScopeField::Author, " ", RuleEffect::Include)],
+                explicit: Default::default(),
             };
             assert!(set_patron_scope(store, sam.id, Some(blank)).await.is_err());
             assert!(set_patron_scope(store, 9999, None).await.is_err());
@@ -1097,6 +1161,9 @@ mod tests {
             br#"{"rules":[],"rules":[]}"#,
             br#"{"rules":[{"field":"genre","value":"Kids"}]}"#,
             br#"{"rules":[{"field":"genre","field":"genre","value":"Kids","effect":"include"}]}"#,
+            br#"{"explicit":"maybe"}"#,
+            br#"{"explicit":true}"#,
+            br#"{"explicit":"hide","explicit":"hide"}"#,
         ] {
             assert!(
                 matches!(parse_patron_scope(refused), Err(LibraryError::Invalid(_))),
@@ -1115,6 +1182,97 @@ mod tests {
         let scope = parse_patron_scope(rule).unwrap();
         let json = serde_json::to_vec(&scope).unwrap();
         assert_eq!(parse_patron_scope(&json).unwrap(), scope);
+        assert!(
+            !json.windows(8).any(|w| w == b"explicit"),
+            "allow is left out"
+        );
+        let hide = parse_patron_scope(br#"{"explicit":"hide"}"#).unwrap();
+        assert_eq!(hide.explicit, ExplicitContent::Hide);
+        let json = serde_json::to_vec(&hide).unwrap();
+        assert_eq!(parse_patron_scope(&json).unwrap(), hide);
+        assert_eq!(
+            parse_patron_scope(br#"{"explicit":"allow"}"#).unwrap(),
+            PatronScope::unrestricted()
+        );
+    }
+
+    #[test]
+    fn hiding_explicit_books_excludes_the_explicit_facet() {
+        let hide = PatronScope {
+            rules: vec![rule(ScopeField::Genre, "Kids", RuleEffect::Include)],
+            explicit: ExplicitContent::Hide,
+        };
+        assert!(!hide.sees_everything());
+        assert_eq!(
+            hide.facet_keys(RuleEffect::Exclude),
+            [(WorkFacet::Explicit, EXPLICIT_FACET_KEY.to_string())]
+        );
+        assert_eq!(
+            hide.facet_keys(RuleEffect::Include),
+            [(WorkFacet::Genre, "kids".to_string())]
+        );
+        let only_hide = PatronScope {
+            explicit: ExplicitContent::Hide,
+            ..PatronScope::default()
+        };
+        assert!(!only_hide.sees_everything());
+    }
+
+    #[tokio::test]
+    async fn a_scope_hides_works_a_store_marks_explicit_under_every_profile() {
+        use crate::store::library_index::WorkPageQuery;
+        use crate::store::{NewBook, ScannedTitle};
+        use crate::test_support::{sqlite, Profile};
+        for profile in Profile::ALL {
+            let name = profile.name();
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            store
+                .upsert_account("audible", "acct", "us", None, true, "audible")
+                .await
+                .unwrap();
+            let title = |asin: &str, label: &str, is_explicit: Option<bool>| ScannedTitle {
+                is_explicit,
+                ..ScannedTitle::from(NewBook::minimal(asin, "acct", "us", label))
+            };
+            let records = store
+                .upsert_scanned_titles(&[
+                    title("B0ADULT01", "After Dark", Some(true)),
+                    title("B0CLEAN01", "Gruffalo", Some(false)),
+                    title("B0UNKNOWN", "Dune", None),
+                ])
+                .await
+                .unwrap();
+            let mut ids = Vec::new();
+            for record in &records {
+                ids.push(store.work_id_for_book(&record.uuid).await.unwrap().unwrap());
+            }
+            store.refresh_library_works(&ids).await.unwrap();
+            let hide = PatronScope {
+                explicit: ExplicitContent::Hide,
+                ..PatronScope::default()
+            };
+            let mut query = WorkPageQuery {
+                limit: 10,
+                scope: Some(WorkScope {
+                    include: hide.facet_keys(RuleEffect::Include),
+                    exclude: hide.facet_keys(RuleEffect::Exclude),
+                    owner: None,
+                }),
+                ..WorkPageQuery::default()
+            };
+            let mut titles = Vec::new();
+            loop {
+                let page = store.library_works_page(&query).await.unwrap();
+                titles.extend(page.works.into_iter().map(|w| w.title));
+                match page.next {
+                    Some(next) => query.after = Some(next),
+                    None => break,
+                }
+            }
+            titles.sort();
+            assert_eq!(titles, ["Dune", "Gruffalo"], "{name}");
+        }
     }
 
     #[test]
