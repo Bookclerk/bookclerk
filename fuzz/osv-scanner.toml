@@ -11,3 +11,12 @@ INFO / unmaintained `paste` 1.0.15, a compile-time proc-macro pulled by `lofty`
 0.25 through `bookclerk-media`. Same exception, path and expiry as the root
 osv-scanner.toml entry; the fuzz harness is CI only and never shipped.
 """
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-02-23
+reason = """
+INFO / unmaintained chrono 0.4.45, reached through the host crates the fuzz
+harness links. Same exception, reasoning and expiry as the root
+osv-scanner.toml entry; migration tracked in #1255.
+"""

@@ -176,3 +176,22 @@ nothing of it is linked into a binary. Same exit as RUSTSEC-2024-0429:
 remove when tao, wry, webkit2gtk and muda move to gtk 0.19, whose glib-macros
 no longer uses it.
 """
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-02-23
+reason = """
+INFO / unmaintained: chrono 0.4.45 has no fixed release (`patched = []`); the
+advisory recommends jiff or time. Not a vulnerability report: no CVE and no
+known unsound API in the versions we use.
+
+It cannot leave Cargo.lock from our side alone: oauth2 5, openidconnect 4
+and rustls-acme 0.15 depend on chrono without an option to drop it (verified
+`cargo tree -i chrono`). sea-orm, sea-query and sqlx pull it only through
+features we can switch.
+
+Our own code uses chrono for timestamps and durations (about 640 references,
+mostly bookclerk-library and bookclerkd). Migrating to jiff is tracked in
+#1255, starting with one shared timestamp format so stored RFC 3339 strings
+stay byte-identical. Re-evaluate at expiry or when those dependencies move.
+"""
