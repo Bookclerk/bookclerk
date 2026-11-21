@@ -23,10 +23,12 @@ At start, the daemon:
    `[media]`, `[plugins]`, `[daemon]` and the other tables still come
    from TOML.
 
-It then runs two schedules:
+It then runs these schedules:
 
 - a library scan every `library.scan_interval_minutes`;
-- auto-acquire, when `library.auto_acquire = true`.
+- auto-acquire, when `library.auto_acquire = true`;
+- a daily check for better files, when `library.upgrade_quality = true`
+  (see [Upgrading to better files](output.md#upgrading-to-better-files)).
 
 > [!WARNING]
 > Keep `library.auto_acquire = false` until you are happy with where

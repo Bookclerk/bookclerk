@@ -146,8 +146,8 @@ pub use report_lookup::{
 pub use settings::{
     read_node_api_spki_pin, AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig,
     DiagnosticsConfig, DiscoveryConfig, KeyStoreKind, LibraryConfig, NodeApiConfig, NodeApiMode,
-    ProcessEnvGuard, LETS_ENCRYPT_DIRECTORY, NODE_API_ACME_DIR, NODE_API_SELF_SIGNED_DIR,
-    NODE_API_SPKI_PIN_FILE, TRAY_HANDOFF_TTL_SECS_DEFAULT, TRAY_HANDOFF_TTL_SECS_MAX,
-    TRAY_HANDOFF_TTL_SECS_MIN,
+    ProcessEnvGuard, DEFAULT_UPGRADE_DAILY_LIMIT, LETS_ENCRYPT_DIRECTORY, MAX_UPGRADE_DAILY_LIMIT,
+    NODE_API_ACME_DIR, NODE_API_SELF_SIGNED_DIR, NODE_API_SPKI_PIN_FILE,
+    TRAY_HANDOFF_TTL_SECS_DEFAULT, TRAY_HANDOFF_TTL_SECS_MAX, TRAY_HANDOFF_TTL_SECS_MIN,
 };
 pub use uploads::UploadsConfig;

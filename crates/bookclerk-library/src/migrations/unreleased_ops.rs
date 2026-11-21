@@ -28,7 +28,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // resumes there), when the last complete pass ended (a full pass is
     // forced once that is older than the full-pass interval), and the id of
     // the pass in progress, which each page stamps on the holdings it lists
-    // (`holdings.seen_pass`).
+    // (`holdings.seen_pass`). The quality-upgrade check keeps its place in
+    // the account's holdings here too: the holding id it continues after
+    // (empty to start over) and when it last ran (`store::quality_checks`).
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS account_scan_state (
         plugin_key TEXT NOT NULL,
@@ -38,6 +40,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         resume_token TEXT NOT NULL DEFAULT '',
         last_complete_at TEXT,
         pass_id TEXT NOT NULL DEFAULT '',
+        quality_cursor TEXT NOT NULL DEFAULT '',
+        quality_checked_at TEXT,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (plugin_key, account_id),
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE

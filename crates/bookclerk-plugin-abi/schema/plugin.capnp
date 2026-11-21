@@ -56,7 +56,8 @@ const maxScanPageBooks :UInt32 = 500;
 # Maximum bytes of a scan cursor or sync token.
 const maxScanCursorBytes :UInt32 = 4096;
 # Maximum bytes of refreshed credentials a storefront hands back
-# (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`).
+# (`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`,
+# `QualityOffersResult.refreshedCredentials`).
 const maxRefreshedCredentialBytes :UInt32 = 65536;
 # Maximum bytes of an `EventReadRequest.after` / `EventReadPage.cursor`.
 const maxEventCursorBytes :UInt32 = 512;
@@ -1544,6 +1545,13 @@ interface ContentSource {
   purchaseHints @14 (
       params :PurchaseHintsParams  # The titles to price, in order.
   ) -> (result :PurchaseHintsReply);
+  # The audio quality one account would download for each of several
+  # titles today, so the host can tell when a better file than the one it
+  # holds is on offer. Asked only of guests that declare
+  # `CatalogCapabilities.qualityOffers`; it must not license or download.
+  qualityOffers @15 (
+      params :QualityOffersParams  # Account, credentials, and title ids.
+  ) -> (result :QualityOffersReply);
 }
 
 # `remoteLibrary` entrypoint: long-running remote-library lifecycle (start /
@@ -1835,6 +1843,10 @@ struct CatalogCapabilities {
   # itself, and title dialogs ask it for the editions it listed. A store
   # that leaves it false is never woken for a detail lookup by product id.
   detailByProductId @3 :Bool;
+  # True when `qualityOffers` answers which audio quality an account would
+  # download for a title. The host's quality-upgrade check asks only stores
+  # that declare it.
+  qualityOffers @4 :Bool;
 }
 
 # Portal Accounts connect mode for storefronts.
@@ -2837,6 +2849,105 @@ struct PurchaseHintsReply {
   union {
     # Success: an answer per query.
     ok @0 :PurchaseHintsResult;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Audio codec of a stream a store offers (`QualityOffer.codec`). Spelled as
+# the host's probed codecs are, so an offer compares with a held file.
+enum OfferedCodec {
+  # The store did not say; the host never upgrades to an unknown codec.
+  unknown @0;
+  # MPEG-4 AAC, lossy.
+  aac @1;
+  # Apple Lossless.
+  alac @2;
+  # FLAC, lossless.
+  flac @3;
+  # MPEG audio layer III (or I / II), lossy.
+  mp3 @4;
+  # Opus, lossy.
+  opus @5;
+  # Vorbis, lossy.
+  vorbis @6;
+  # Dolby Digital Plus (E-AC-3), lossy.
+  eac3 @7;
+  # Dolby AC-4, lossy.
+  ac4 @8;
+}
+
+# AAC profile of an offered AAC stream (`QualityOffer.aacProfile`).
+enum OfferedAacProfile {
+  # Not AAC, or the store did not say.
+  unknown @0;
+  # AAC-LC.
+  lc @1;
+  # HE-AAC (AAC-LC plus SBR).
+  he @2;
+  # HE-AAC v2 (SBR plus parametric stereo).
+  heV2 @3;
+  # xHE-AAC (USAC).
+  xhe @4;
+}
+
+# The stream one account would download for a title today.
+struct QualityOffer {
+  # Codec of the offered stream.
+  codec @0 :OfferedCodec;
+  # AAC profile when `codec` is `aac`; `unknown` otherwise.
+  aacProfile @1 :OfferedAacProfile;
+  # Average bitrate in kbit/s; zero when unknown.
+  bitrateKbps @2 :UInt32 $optional;
+  # Sample rate in Hz; zero when unknown.
+  sampleRateHz @3 :UInt32 $optional;
+  # Channel count; zero when unknown.
+  channels @4 :UInt32 $optional;
+}
+
+# Params of `ContentSource.qualityOffers`: the titles one account holds.
+struct QualityOffersParams {
+  # Account whose download would be made.
+  accountId @0 :Text;
+  # Decrypted credential blob for this account; never log it. Empty when
+  # none is stored.
+  credentials @1 :Data $optional;
+  # The instance's settings as `application/json` (bitrate tier and the
+  # like, which change what a download gets).
+  sourceConfig @2 :ExtensibleConfig;
+  # Store product ids, as the account's scan listed them; at most
+  # `maxListPage`.
+  titleIds @3 :List(Text);
+  # The fetch options a download would carry (DRM path, xHE-AAC), so the
+  # answer names what that download would get.
+  fetch @4 :FetchOptions;
+}
+
+# One title's answer in `QualityOffersResult`.
+struct TitleQualityOffer {
+  # False when the store could not say for this title (`offer` is empty).
+  found @0 :Bool;
+  # What a download would get, when `found`.
+  offer @1 :QualityOffer;
+}
+
+# Success payload of `ContentSource.qualityOffers`.
+struct QualityOffersResult {
+  # One answer per title id, in the order they were sent. A short list
+  # leaves the rest unanswered.
+  offers @0 :List(TitleQualityOffer);
+  # The account's credentials as the guest holds them after refreshing them
+  # during the call, as in `ScanPage.refreshedCredentials`. Empty when
+  # nothing changed.
+  refreshedCredentials @1 :Data $optional;
+}
+
+# Result union of `ContentSource.qualityOffers`. A whole-batch `err` (for
+# example `rateLimited`) applies to every title in it.
+struct QualityOffersReply {
+  union {
+    # Success: an answer per title.
+    ok @0 :QualityOffersResult;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }

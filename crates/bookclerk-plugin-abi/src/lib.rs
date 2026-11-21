@@ -93,6 +93,7 @@ pub mod network_grant;
 pub mod notifications;
 pub mod package_version;
 mod plugin_migration;
+pub mod quality_offers;
 mod roles;
 mod rpc;
 mod rpc_types;
@@ -282,6 +283,10 @@ pub use metadata_files::{
 };
 pub use network_grant::{
     NetworkGrant, SettingGrantState, SettingNetworkGrant, MAX_NETWORK_GRANT_ENTRIES,
+};
+pub use quality_offers::{
+    decode_quality_offers_bytes, encode_quality_offers_bytes, validate_quality_offers, OfferField,
+    QualityOffersError, MAX_OFFER_BITRATE_KBPS, MAX_OFFER_CHANNELS, MAX_OFFER_SAMPLE_RATE_HZ,
 };
 pub use roles::{
     hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,

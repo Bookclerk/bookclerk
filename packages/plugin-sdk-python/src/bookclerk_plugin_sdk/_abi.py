@@ -40,7 +40,8 @@ MAX_SCAN_CURSOR_BYTES: int = 4096
 
 MAX_REFRESHED_CREDENTIAL_BYTES: int = 65536
 """Maximum bytes of refreshed credentials a storefront hands back
-(`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`).
+(`ScanPage.refreshedCredentials`, `PlainFetch.refreshedCredentials`,
+`QualityOffersResult.refreshedCredentials`).
 """
 
 MAX_EVENT_CURSOR_BYTES: int = 512
@@ -318,6 +319,19 @@ ABRIDGEMENTS: tuple[str, ...] = ("unknown", "unabridged", "abridged")
 Ordinal-ordered ``Abridgement`` wire names (index = Cap'n Proto ordinal).
 """
 
+OFFERED_CODECS: tuple[str, ...] = ("unknown", "aac", "alac", "flac", "mp3", "opus", "vorbis", "eac3", "ac4")
+"""Audio codec of a stream a store offers (`QualityOffer.codec`). Spelled as
+the host's probed codecs are, so an offer compares with a held file.
+
+Ordinal-ordered ``OfferedCodec`` wire names (index = Cap'n Proto ordinal).
+"""
+
+OFFERED_AAC_PROFILES: tuple[str, ...] = ("unknown", "lc", "he", "heV2", "xhe")
+"""AAC profile of an offered AAC stream (`QualityOffer.aacProfile`).
+
+Ordinal-ordered ``OfferedAacProfile`` wire names (index = Cap'n Proto ordinal).
+"""
+
 METADATA_FIELDS: tuple[str, ...] = ("title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration")
 """A field of a `MetadataFileRecord`. Dialects declare in the manifest which
 fields their format carries; a parsed record lists the ones its file
@@ -463,6 +477,8 @@ __all__ = [
     "CATALOG_FIELDS",
     "PRICE_LOOKUPS",
     "ABRIDGEMENTS",
+    "OFFERED_CODECS",
+    "OFFERED_AAC_PROFILES",
     "METADATA_FIELDS",
     "NOTIFICATION_SEVERITYS",
     "NOTIFICATION_AUDIENCES",

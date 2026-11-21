@@ -725,6 +725,13 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.ContentSourceRevokeAccountResultsCodec,
       okEmpty,
     ),
+    qualityOffers: withParams(
+      "storefront",
+      "qualityOffers",
+      W.ContentSourceQualityOffersParamsCodec,
+      W.ContentSourceQualityOffersResultsCodec,
+      okPass,
+    ),
   },
   Destination: {
     head: spec<W.DestinationHeadParams, W.DestinationHeadResults["result"]>({

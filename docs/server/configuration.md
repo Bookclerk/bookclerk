@@ -108,6 +108,8 @@ enrollment; see [Output (shared)](#output-shared).
 [library]
 auto_acquire = false
 scan_interval_minutes = 60
+# upgrade_quality = false      # download better files once a day
+# upgrade_daily_limit = 5      # most upgrades per store account per day (1-100)
 enrich_from_audible = true
 enrich_min_confidence = 90
 # fix_storage_layout = false

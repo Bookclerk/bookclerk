@@ -1284,6 +1284,8 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
             .unwrap_or_default(),
         "library.auto_acquire" => config.library.auto_acquire.to_string(),
         "library.scan_interval_minutes" => config.library.scan_interval_minutes.to_string(),
+        "library.upgrade_quality" => config.library.upgrade_quality.to_string(),
+        "library.upgrade_daily_limit" => config.library.upgrade_daily_limit.to_string(),
         "library.import_episodes" => config.library.import_episodes.to_string(),
         "library.import_plus_titles" => config.library.import_plus_titles.to_string(),
         "library.download_episodes" => config.library.download_episodes.to_string(),

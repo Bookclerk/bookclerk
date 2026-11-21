@@ -63,6 +63,7 @@ impl PluginWorker for GraphicAudioRoot {
                 price_by_isbn: false,
                 price_by_asin: false,
                 detail_by_product_id: true,
+                quality_offers: false,
             },
             ..PluginDescribe::default()
         })

@@ -1043,6 +1043,24 @@ export interface ContentSourcePurchaseHintsResults {
 }
 
 /**
+ * Params envelope of `ContentSource.qualityOffers`.
+ *
+ * @internal
+ */
+export interface ContentSourceQualityOffersParams {
+  params: T.QualityOffersParams;
+}
+
+/**
+ * Results envelope of `ContentSource.qualityOffers`.
+ *
+ * @internal
+ */
+export interface ContentSourceQualityOffersResults {
+  result: T.QualityOffersReply;
+}
+
+/**
  * Params envelope of `RemoteLibrary.health`.
  *
  * @internal
@@ -4644,6 +4662,7 @@ export const CatalogCapabilitiesCodec: StructCodec<T.CatalogCapabilities> = {
     s.setBool(1, v.priceByIsbn ?? false);
     s.setBool(2, v.priceByAsin ?? false);
     s.setBool(3, v.detailByProductId ?? false);
+    s.setBool(4, v.qualityOffers ?? false);
   },
   read(s, caps) {
     void caps;
@@ -4652,6 +4671,7 @@ export const CatalogCapabilitiesCodec: StructCodec<T.CatalogCapabilities> = {
       priceByIsbn: s.getBool(1),
       priceByAsin: s.getBool(2),
       detailByProductId: s.getBool(3),
+      qualityOffers: s.getBool(4),
     };
   },
 };
@@ -6856,6 +6876,179 @@ export const PurchaseHintsReplyCodec: StructCodec<T.PurchaseHintsReply> = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PurchaseHintsReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `QualityOffer` (2 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const QualityOfferCodec: StructCodec<T.QualityOffer> = {
+  dataWords: 2,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(A.OFFERED_CODECS, v.codec ?? A.OFFERED_CODECS[0]!, "OfferedCodec"));
+    s.setUint16(1, ord(A.OFFERED_AAC_PROFILES, v.aacProfile ?? A.OFFERED_AAC_PROFILES[0]!, "OfferedAacProfile"));
+    if (v.bitrateKbps !== undefined) {
+      s.setUint32(1, v.bitrateKbps ?? 0);
+    }
+    if (v.sampleRateHz !== undefined) {
+      s.setUint32(2, v.sampleRateHz ?? 0);
+    }
+    if (v.channels !== undefined) {
+      s.setUint32(3, v.channels ?? 0);
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.QualityOffer = {
+      codec: fromOrd(A.OFFERED_CODECS, s.getUint16(0), "OfferedCodec"),
+      aacProfile: fromOrd(A.OFFERED_AAC_PROFILES, s.getUint16(1), "OfferedAacProfile"),
+    };
+    const bitrateKbpsValue = s.getUint32(1);
+    if (!(bitrateKbpsValue === 0)) {
+      out.bitrateKbps = bitrateKbpsValue;
+    }
+    const sampleRateHzValue = s.getUint32(2);
+    if (!(sampleRateHzValue === 0)) {
+      out.sampleRateHz = sampleRateHzValue;
+    }
+    const channelsValue = s.getUint32(3);
+    if (!(channelsValue === 0)) {
+      out.channels = channelsValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `QualityOffersParams` (0 data words, 5 pointers).
+ *
+ * @internal
+ */
+export const QualityOffersParamsCodec: StructCodec<T.QualityOffersParams> = {
+  dataWords: 0,
+  pointerCount: 5,
+  write(s, v, caps) {
+    s.setText(0, v.accountId ?? "");
+    if (v.credentials !== undefined) {
+      s.setData(1, v.credentials ?? EMPTY_BYTES);
+    }
+    if (v.sourceConfig != null) {
+      ExtensibleConfigCodec.write(s.initStruct(2, 1, 2), v.sourceConfig, caps);
+    }
+    s.setTextList(3, v.titleIds ?? []);
+    if (v.fetch != null) {
+      FetchOptionsCodec.write(s.initStruct(4, 1, 4), v.fetch, caps);
+    }
+  },
+  read(s, caps) {
+    const out: T.QualityOffersParams = {
+      accountId: s.getText(0),
+      sourceConfig: ExtensibleConfigCodec.read(s.getStruct(2, 1, 2), caps),
+      titleIds: s.getTextList(3),
+      fetch: FetchOptionsCodec.read(s.getStruct(4, 1, 4), caps),
+    };
+    const credentialsValue = s.getData(1);
+    if (!(credentialsValue.length === 0)) {
+      out.credentials = credentialsValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `TitleQualityOffer` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const TitleQualityOfferCodec: StructCodec<T.TitleQualityOffer> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    s.setBool(0, v.found ?? false);
+    if (v.offer != null) {
+      QualityOfferCodec.write(s.initStruct(0, 2, 0), v.offer, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      found: s.getBool(0),
+      offer: QualityOfferCodec.read(s.getStruct(0, 2, 0), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `QualityOffersResult` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const QualityOffersResultCodec: StructCodec<T.QualityOffersResult> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.offers ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        TitleQualityOfferCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.refreshedCredentials !== undefined) {
+      s.setData(1, v.refreshedCredentials ?? EMPTY_BYTES);
+    }
+  },
+  read(s, caps) {
+    const out: T.QualityOffersResult = {
+      offers: s.getStructList(0, 1, 1).map((item) => TitleQualityOfferCodec.read(item, caps)),
+    };
+    const refreshedCredentialsValue = s.getData(1);
+    if (!(refreshedCredentialsValue.length === 0)) {
+      out.refreshedCredentials = refreshedCredentialsValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `QualityOffersReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QualityOffersReplyCodec: StructCodec<T.QualityOffersReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          QualityOffersResultCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("QualityOffersReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: QualityOffersResultCodec.read(s.getStruct(0, 0, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("QualityOffersReply", disc);
     }
   },
 };
@@ -13171,6 +13364,46 @@ export const ContentSourcePurchaseHintsResultsCodec: StructCodec<ContentSourcePu
   read(s, caps) {
     return {
       result: PurchaseHintsReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ContentSource.qualityOffers` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ContentSourceQualityOffersParamsCodec: StructCodec<ContentSourceQualityOffersParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      QualityOffersParamsCodec.write(s.initStruct(0, 0, 5), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: QualityOffersParamsCodec.read(s.getStruct(0, 0, 5), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ContentSource.qualityOffers` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ContentSourceQualityOffersResultsCodec: StructCodec<ContentSourceQualityOffersResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      QualityOffersReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: QualityOffersReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

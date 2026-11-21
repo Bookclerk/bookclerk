@@ -2610,6 +2610,7 @@ dependencies = [
  "bookclerk-plugin-database-sqlite",
  "bookclerk-resolve",
  "bookclerk-storefront",
+ "bookclerk-tags",
  "serde",
  "serde_json",
  "tempfile",
