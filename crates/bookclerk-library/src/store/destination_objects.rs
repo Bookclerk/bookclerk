@@ -416,7 +416,8 @@ impl LibraryStore {
     ///
     /// Each object is marked seen at `seq`. One that is new, was removed,
     /// or whose size or signature differs from its row is recorded as
-    /// changed at `seq`; an unchanged one keeps its `changed_seq`.
+    /// changed at `seq`; an unchanged one keeps its `changed_seq`. A row a
+    /// later page or listing already wrote is left as it is.
     ///
     /// # Returns
     ///
@@ -433,7 +434,7 @@ impl LibraryStore {
         now: DateTime<Utc>,
     ) -> Result<u64> {
         let mut changed_count = 0;
-        for chunk in objects.chunks(self.object_keys_per_statement(2)) {
+        for chunk in objects.chunks(self.object_keys_per_statement(3)) {
             let known: HashMap<String, destination_objects::Model> =
                 destination_objects::Entity::find()
                     .filter(destination_objects::Column::Destination.eq(destination))
@@ -450,6 +451,15 @@ impl LibraryStore {
             let mut unchanged = Vec::new();
             let mut changed = Vec::new();
             for object in chunk {
+                // A row a later page or listing already wrote is newer than
+                // what this one saw (a node whose lease lapsed finishing
+                // late); it is left as it is.
+                if known
+                    .get(&object.key)
+                    .is_some_and(|row| row.changed_seq > seq || row.listed_seq > seq)
+                {
+                    continue;
+                }
                 let same = known.get(&object.key).is_some_and(|row| {
                     row.removed == 0
                         && row.size == stored_int(object.size)
@@ -465,6 +475,7 @@ impl LibraryStore {
                 destination_objects::Entity::update_many()
                     .col_expr(destination_objects::Column::ListedSeq, Expr::value(seq))
                     .filter(destination_objects::Column::Destination.eq(destination))
+                    .filter(destination_objects::Column::ListedSeq.lte(seq))
                     .filter(destination_objects::Column::ObjectKey.is_in(unchanged))
                     .exec(self.db())
                     .await
@@ -510,8 +521,8 @@ impl LibraryStore {
     }
 
     /// Records that the objects at `keys` are gone from `destination`, as
-    /// a feed page numbered `seq` reported. A key with no row, or already
-    /// removed, is left alone.
+    /// a feed page numbered `seq` reported. A key with no row, already
+    /// removed, or written by a later page or listing is left alone.
     ///
     /// # Returns
     ///
@@ -528,7 +539,7 @@ impl LibraryStore {
         now: DateTime<Utc>,
     ) -> Result<u64> {
         let mut removed = 0;
-        for chunk in keys.chunks(self.object_keys_per_statement(6)) {
+        for chunk in keys.chunks(self.object_keys_per_statement(8)) {
             let result = destination_objects::Entity::update_many()
                 .col_expr(destination_objects::Column::Removed, Expr::value(1))
                 .col_expr(destination_objects::Column::ChangedSeq, Expr::value(seq))
@@ -539,6 +550,9 @@ impl LibraryStore {
                 )
                 .filter(destination_objects::Column::Destination.eq(destination))
                 .filter(destination_objects::Column::Removed.eq(0))
+                // Never over a row a later page or listing wrote.
+                .filter(destination_objects::Column::ChangedSeq.lte(seq))
+                .filter(destination_objects::Column::ListedSeq.lte(seq))
                 .filter(destination_objects::Column::ObjectKey.is_in(chunk.iter().cloned()))
                 .exec(self.db())
                 .await

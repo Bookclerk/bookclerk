@@ -430,3 +430,40 @@ async fn losing_the_last_two_copies_at_once_still_unacquires() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_late_write_does_not_replace_a_newer_one() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store().clone();
+        let now = Utc::now();
+        let object = |size| SeenObject {
+            key: "A/One.m4b".into(),
+            size,
+            signature: None,
+            modified_at_ms: None,
+        };
+        store
+            .record_seen_objects("d", 5, &[object(10)], now)
+            .await
+            .unwrap();
+
+        // A node whose lease lapsed finishes pages numbered before 5.
+        let removed = store
+            .remove_seen_objects("d", 3, &["A/One.m4b".into()], now)
+            .await
+            .unwrap();
+        assert_eq!(removed, 0, "{profile:?}");
+        let changed = store
+            .record_seen_objects("d", 4, &[object(99)], now)
+            .await
+            .unwrap();
+        assert_eq!(changed, 0, "{profile:?}");
+
+        let rows = store.changed_objects("d", (0, None), 10).await.unwrap();
+        assert_eq!(rows.len(), 1, "{profile:?}");
+        assert!(!rows[0].removed, "{profile:?}");
+        assert_eq!(rows[0].size, 10, "{profile:?}");
+        assert_eq!(rows[0].changed_seq, 5, "{profile:?}");
+    }
+}

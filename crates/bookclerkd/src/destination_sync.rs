@@ -248,6 +248,10 @@ async fn read_feed(
         };
         report.feed_pages += 1;
         let seq = feed.next_seq();
+        // The number is claimed before any object is written: if another
+        // node saved the feed since this one read it, the save conflicts
+        // and nothing of this page is recorded.
+        library.save_destination_feed(feed).await?;
         match apply_feed_page(library, backend, feed, seq, &page.changes).await {
             Ok(changed) => report.changes += changed,
             // Probing the page's keys failed: the cursor stays where it was,
