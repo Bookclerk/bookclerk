@@ -259,7 +259,8 @@ pub fn download_url(artifact: &str) -> String {{
 pub const PYODIDE_BUNDLE_FILE: &str = "{bundle_file}";
 
 /// Expected SHA-256 hex digest of [`PYODIDE_BUNDLE_FILE`].
-pub const PYODIDE_BUNDLE_SHA256_HEX: &str = "{bundle_sha}";
+pub const PYODIDE_BUNDLE_SHA256_HEX: &str =
+    "{bundle_sha}";
 
 /// Directory beside the `workerd` binary that holds [`PYODIDE_BUNDLE_FILE`];
 /// workerd reads it through `--pyodide-bundle-disk-cache-dir`.
