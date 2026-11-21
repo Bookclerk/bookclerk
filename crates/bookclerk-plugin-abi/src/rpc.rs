@@ -2123,6 +2123,11 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
     } else {
         None
     };
+    let webhooks: Option<Box<dyn crate::Webhooks>> = if b.has_webhooks() {
+        Some(Box::new(WebhooksClient::new(b.get_webhooks()?)))
+    } else {
+        None
+    };
     let network = if b.has_network() {
         read_network_grant(b.get_network()?)?
     } else {
@@ -2145,6 +2150,7 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
         queues,
         kv,
         sockets,
+        webhooks,
         notify,
     })
 }
@@ -2216,6 +2222,11 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
     }
     if let Some(x) = eps.socket_handler {
         b.set_socket_handler(capnp_rpc::new_client(sockets_glue::SocketHandlerServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.webhook_handler {
+        b.set_webhook_handler(capnp_rpc::new_client(webhooks_glue::WebhookHandlerServer {
             inner: Arc::from(x),
         }));
     }
@@ -4134,6 +4145,8 @@ pub struct HostBindings {
     pub kv: Vec<(String, String, Arc<dyn KvNamespace>)>,
     /// `SOCKETS` broker link; `None` unless `[sockets]` is granted.
     pub sockets: Option<Arc<dyn crate::Sockets>>,
+    /// `WEBHOOKS` store; `None` unless the manifest declares `[[webhooks]]`.
+    pub webhooks: Option<Arc<dyn crate::Webhooks>>,
     /// `NOTIFY` raiser; `None` unless the manifest declares
     /// `[[notifications.types]]`.
     pub notify: Option<Arc<dyn NotificationRaiser>>,
@@ -4152,6 +4165,7 @@ impl HostBindings {
             queues: Vec::new(),
             kv: Vec::new(),
             sockets: None,
+            webhooks: None,
             notify: None,
         }
     }
@@ -4193,6 +4207,8 @@ pub struct OpenedEntrypoints {
     pub covers: Option<CoverFetcherClient>,
     /// `[sockets]` handler.
     pub socket_handler: Option<SocketHandlerClient>,
+    /// `[[webhooks]]` handler.
+    pub webhook_handler: Option<WebhookHandlerClient>,
     /// `metadataFiles` entrypoint.
     pub metadata_files: Option<MetadataFilesClient>,
     /// `notifier` entrypoint.
@@ -4337,6 +4353,12 @@ impl PluginClient {
                         inner: sockets,
                     }));
             }
+            if let Some(webhooks) = bindings.webhooks {
+                b.reborrow()
+                    .set_webhooks(capnp_rpc::new_client(webhooks_glue::WebhooksServer {
+                        inner: webhooks,
+                    }));
+            }
             if let Some(notify) = bindings.notify {
                 b.reborrow()
                     .set_notify(capnp_rpc::new_client(NotificationRaiserServer {
@@ -4451,6 +4473,11 @@ impl PluginClient {
             },
             socket_handler: if eps.has_socket_handler() {
                 Some(SocketHandlerClient::new(eps.get_socket_handler()?))
+            } else {
+                None
+            },
+            webhook_handler: if eps.has_webhook_handler() {
+                Some(WebhookHandlerClient::new(eps.get_webhook_handler()?))
             } else {
                 None
             },
@@ -6122,6 +6149,12 @@ mod sockets_glue;
 pub use sockets_glue::{
     connect_socket_broker, roundtrip_socket_message, serve_socket_broker, SocketCodec,
     SocketHandlerClient, SocketWireMessage, SocketsClient,
+};
+
+#[path = "rpc_webhooks.rs"]
+mod webhooks_glue;
+pub use webhooks_glue::{
+    roundtrip_webhook_message, WebhookCodec, WebhookHandlerClient, WebhookWireMessage, WebhooksClient,
 };
 
 #[cfg(test)]
@@ -9490,6 +9523,7 @@ mod tests {
                             queues: Vec::new(),
                             kv: Vec::new(),
                             sockets: None,
+                            webhooks: None,
                             notify: None,
                         },
                     )

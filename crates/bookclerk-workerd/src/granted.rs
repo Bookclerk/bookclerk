@@ -148,6 +148,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: Some(sockets),
+            webhooks: None,
             notify: None,
         }
     }
@@ -173,6 +174,7 @@ impl GrantedSlot {
             queue: None,
             kv: Some(kv),
             sockets: None,
+            webhooks: None,
             notify: None,
         }
     }
@@ -198,6 +200,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
         }
     }
@@ -222,6 +225,7 @@ impl GrantedSlot {
             queue: Some(producer),
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
         }
     }
@@ -247,6 +251,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: Some(notify),
         }
     }
@@ -271,6 +276,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
         }
     }
@@ -297,6 +303,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
         }
     }
@@ -2095,6 +2102,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
             },
         );
@@ -2145,6 +2153,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
             },
         );
@@ -2182,6 +2191,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
             },
         );
@@ -2254,6 +2264,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
             },
         );
@@ -2349,6 +2360,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
             },
         );
@@ -2409,6 +2421,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
             },
         );
@@ -2885,6 +2898,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
             },
         );
@@ -3088,6 +3102,7 @@ mod tests {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
         }
     }
@@ -3380,6 +3395,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
             },
         );

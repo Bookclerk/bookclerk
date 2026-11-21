@@ -618,6 +618,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            webhooks: None,
         }
     }
 
@@ -631,6 +632,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            webhooks: None,
         }
     }
 
@@ -647,6 +649,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            webhooks: None,
         }
     }
 }
@@ -4284,6 +4287,7 @@ async fn run_stream_copy(
                 // The stream-copy job never needs a pushed socket; the
                 // broker hands sockets only to a deployment's own open.
                 sockets: None,
+                webhooks: None,
                 // Nor does it raise notifications.
                 notify: None,
             },

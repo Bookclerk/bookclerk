@@ -3712,6 +3712,109 @@ pub struct SocketClosed {
     pub attachment: Vec<u8>,
 }
 
+/// Success payload of `Webhooks.url`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookUrl {
+    /// Absolute `https://` URL; empty when the library cannot be reached from
+    /// the Internet or webhooks are turned off, and the plugin should use its
+    /// fallback.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Arguments of `Webhooks.pull`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookPullRequest {
+    /// `\[\[webhooks\]\]` name.
+    #[serde(default)]
+    pub name: String,
+    /// Most deliveries to lease, 1 to `maxWebhookPullBatch`.
+    #[serde(default)]
+    pub batch_size: u32,
+    /// How long leased deliveries stay hidden from the next pull, in
+    /// milliseconds, at most `maxWebhookVisibilityMs`; zero means one minute.
+    #[serde(default)]
+    pub visibility_timeout_ms: u32,
+}
+
+/// One request header kept with a delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookHeader {
+    /// Lowercase header name, one the row's `headers` names or `content-type`.
+    #[serde(default)]
+    pub name: String,
+    /// Header value as received.
+    #[serde(default)]
+    pub value: String,
+}
+
+/// One stored request, leased to the guest.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDelivery {
+    /// Lease id for `ack`, at most `maxWebhookLeaseIdBytes`; a new one each
+    /// time the delivery is pulled.
+    #[serde(default)]
+    pub lease_id: String,
+    /// When the host stored the request, in Unix milliseconds.
+    #[serde(default)]
+    pub received_at_unix_ms: u64,
+    /// How many times this delivery has been pulled, counting this one.
+    #[serde(default)]
+    pub attempt: u32,
+    /// Kept request headers, in the order the row names them.
+    #[serde(default)]
+    pub headers: Vec<WebhookHeader>,
+    /// Request body as received, at most the row's `max_body_bytes`.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub body: Vec<u8>,
+}
+
+/// Success payload of `Webhooks.pull`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookPullPage {
+    /// Leased deliveries, oldest first.
+    #[serde(default)]
+    pub deliveries: Vec<WebhookDelivery>,
+    /// True when the host dropped deliveries for this webhook since the last
+    /// pull (the waiting cap was full or a delivery expired unacknowledged):
+    /// the guest should treat what it follows as incomplete.
+    #[serde(default)]
+    pub missed: bool,
+}
+
+/// Arguments of `Webhooks.ack`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookAckRequest {
+    /// `\[\[webhooks\]\]` name.
+    #[serde(default)]
+    pub name: String,
+    /// Leases whose deliveries are done and are deleted.
+    #[serde(default)]
+    pub acks: Vec<String>,
+    /// Leases whose deliveries the next pull offers again.
+    #[serde(default)]
+    pub retries: Vec<String>,
+}
+
+/// Argument of `WebhookHandler.delivered`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDelivered {
+    /// `\[\[webhooks\]\]` name.
+    #[serde(default)]
+    pub name: String,
+    /// Deliveries waiting for this webhook when the host called.
+    #[serde(default)]
+    pub waiting: u32,
+}
+
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
 ///
 /// # Errors
@@ -9002,9 +9105,305 @@ pub fn read_socket_closed(
     })
 }
 
+/// Encode a [`WebhookUrl`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_url(
+    mut b: plugin_capnp::webhook_url::Builder<'_>,
+    v: &WebhookUrl,
+) -> capnp::Result<()> {
+    if let Some(value) = &v.url {
+        b.set_url(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`WebhookUrl`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_url(r: plugin_capnp::webhook_url::Reader<'_>) -> capnp::Result<WebhookUrl> {
+    Ok(WebhookUrl {
+        url: opt_text(r.get_url()?)?,
+    })
+}
+
+/// Encode a `WebhookUrlReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_webhook_url_reply(
+    b: plugin_capnp::webhook_url_reply::Builder<'_>,
+    v: &Result<WebhookUrl, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_webhook_url(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `WebhookUrlReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_webhook_url_reply(
+    r: plugin_capnp::webhook_url_reply::Reader<'_>,
+) -> capnp::Result<Result<WebhookUrl, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::webhook_url_reply::Ok(ok) => Ok(Ok(read_webhook_url(ok?)?)),
+        plugin_capnp::webhook_url_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`WebhookPullRequest`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_pull_request(
+    mut b: plugin_capnp::webhook_pull_request::Builder<'_>,
+    v: &WebhookPullRequest,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_batch_size(v.batch_size);
+    b.set_visibility_timeout_ms(v.visibility_timeout_ms);
+    Ok(())
+}
+
+/// Decode a [`WebhookPullRequest`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_pull_request(
+    r: plugin_capnp::webhook_pull_request::Reader<'_>,
+) -> capnp::Result<WebhookPullRequest> {
+    Ok(WebhookPullRequest {
+        name: r.get_name()?.to_string()?,
+        batch_size: r.get_batch_size(),
+        visibility_timeout_ms: r.get_visibility_timeout_ms(),
+    })
+}
+
+/// Encode a [`WebhookHeader`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_header(
+    mut b: plugin_capnp::webhook_header::Builder<'_>,
+    v: &WebhookHeader,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_value(&v.value);
+    Ok(())
+}
+
+/// Decode a [`WebhookHeader`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_header(
+    r: plugin_capnp::webhook_header::Reader<'_>,
+) -> capnp::Result<WebhookHeader> {
+    Ok(WebhookHeader {
+        name: r.get_name()?.to_string()?,
+        value: r.get_value()?.to_string()?,
+    })
+}
+
+/// Encode a [`WebhookDelivery`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_delivery(
+    mut b: plugin_capnp::webhook_delivery::Builder<'_>,
+    v: &WebhookDelivery,
+) -> capnp::Result<()> {
+    b.set_lease_id(&v.lease_id);
+    b.set_received_at_unix_ms(v.received_at_unix_ms);
+    b.set_attempt(v.attempt);
+    {
+        let mut items = b.reborrow().init_headers(list_len(v.headers.len())?);
+        for (i, item) in v.headers.iter().enumerate() {
+            write_webhook_header(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    b.set_body(&v.body);
+    Ok(())
+}
+
+/// Decode a [`WebhookDelivery`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_delivery(
+    r: plugin_capnp::webhook_delivery::Reader<'_>,
+) -> capnp::Result<WebhookDelivery> {
+    Ok(WebhookDelivery {
+        lease_id: r.get_lease_id()?.to_string()?,
+        received_at_unix_ms: r.get_received_at_unix_ms(),
+        attempt: r.get_attempt(),
+        headers: r
+            .get_headers()?
+            .iter()
+            .map(|item| read_webhook_header(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        body: r.get_body()?.to_vec(),
+    })
+}
+
+/// Encode a [`WebhookPullPage`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_pull_page(
+    mut b: plugin_capnp::webhook_pull_page::Builder<'_>,
+    v: &WebhookPullPage,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_deliveries(list_len(v.deliveries.len())?);
+        for (i, item) in v.deliveries.iter().enumerate() {
+            write_webhook_delivery(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    b.set_missed(v.missed);
+    Ok(())
+}
+
+/// Decode a [`WebhookPullPage`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_pull_page(
+    r: plugin_capnp::webhook_pull_page::Reader<'_>,
+) -> capnp::Result<WebhookPullPage> {
+    Ok(WebhookPullPage {
+        deliveries: r
+            .get_deliveries()?
+            .iter()
+            .map(|item| read_webhook_delivery(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        missed: r.get_missed(),
+    })
+}
+
+/// Encode a `WebhookPullReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_webhook_pull_reply(
+    b: plugin_capnp::webhook_pull_reply::Builder<'_>,
+    v: &Result<WebhookPullPage, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_webhook_pull_page(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `WebhookPullReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_webhook_pull_reply(
+    r: plugin_capnp::webhook_pull_reply::Reader<'_>,
+) -> capnp::Result<Result<WebhookPullPage, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::webhook_pull_reply::Ok(ok) => Ok(Ok(read_webhook_pull_page(ok?)?)),
+        plugin_capnp::webhook_pull_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`WebhookAckRequest`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_ack_request(
+    mut b: plugin_capnp::webhook_ack_request::Builder<'_>,
+    v: &WebhookAckRequest,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    {
+        let mut items = b.reborrow().init_acks(list_len(v.acks.len())?);
+        for (i, item) in v.acks.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    {
+        let mut items = b.reborrow().init_retries(list_len(v.retries.len())?);
+        for (i, item) in v.retries.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`WebhookAckRequest`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_ack_request(
+    r: plugin_capnp::webhook_ack_request::Reader<'_>,
+) -> capnp::Result<WebhookAckRequest> {
+    Ok(WebhookAckRequest {
+        name: r.get_name()?.to_string()?,
+        acks: read_text_list(r.get_acks()?)?,
+        retries: read_text_list(r.get_retries()?)?,
+    })
+}
+
+/// Encode a [`WebhookDelivered`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_delivered(
+    mut b: plugin_capnp::webhook_delivered::Builder<'_>,
+    v: &WebhookDelivered,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_waiting(v.waiting);
+    Ok(())
+}
+
+/// Decode a [`WebhookDelivered`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_delivered(
+    r: plugin_capnp::webhook_delivered::Reader<'_>,
+) -> capnp::Result<WebhookDelivered> {
+    Ok(WebhookDelivered {
+        name: r.get_name()?.to_string()?,
+        waiting: r.get_waiting(),
+    })
+}
+
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 139;
+pub const READ_ANY_COUNT: u8 = 148;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -9646,6 +10045,49 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
         138 => {
             let _ =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
+        }
+        139 => {
+            let _ = read_webhook_url(reader.get_root::<plugin_capnp::webhook_url::Reader<'_>>()?)?;
+        }
+        140 => {
+            let _ = read_webhook_url_reply(
+                reader.get_root::<plugin_capnp::webhook_url_reply::Reader<'_>>()?,
+            )?;
+        }
+        141 => {
+            let _ = read_webhook_pull_request(
+                reader.get_root::<plugin_capnp::webhook_pull_request::Reader<'_>>()?,
+            )?;
+        }
+        142 => {
+            let _ = read_webhook_header(
+                reader.get_root::<plugin_capnp::webhook_header::Reader<'_>>()?,
+            )?;
+        }
+        143 => {
+            let _ = read_webhook_delivery(
+                reader.get_root::<plugin_capnp::webhook_delivery::Reader<'_>>()?,
+            )?;
+        }
+        144 => {
+            let _ = read_webhook_pull_page(
+                reader.get_root::<plugin_capnp::webhook_pull_page::Reader<'_>>()?,
+            )?;
+        }
+        145 => {
+            let _ = read_webhook_pull_reply(
+                reader.get_root::<plugin_capnp::webhook_pull_reply::Reader<'_>>()?,
+            )?;
+        }
+        146 => {
+            let _ = read_webhook_ack_request(
+                reader.get_root::<plugin_capnp::webhook_ack_request::Reader<'_>>()?,
+            )?;
+        }
+        147 => {
+            let _ = read_webhook_delivered(
+                reader.get_root::<plugin_capnp::webhook_delivered::Reader<'_>>()?,
+            )?;
         }
         _ => {
             return Err(capnp::Error::failed(format!(
@@ -15623,6 +16065,397 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
                         "round trip changed the decoded SocketClosed value".to_string(),
+                    ));
+                }
+            }
+        }
+        139 => {
+            let first =
+                read_webhook_url(reader.get_root::<plugin_capnp::webhook_url::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_url(
+                message.init_root::<plugin_capnp::webhook_url::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_url(again.get_root::<plugin_capnp::webhook_url::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_url(
+                    message.init_root::<plugin_capnp::webhook_url::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookUrl value".to_string(),
+                    ));
+                }
+            }
+        }
+        140 => {
+            let first = read_webhook_url_reply(
+                reader.get_root::<plugin_capnp::webhook_url_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_url_reply(
+                message.init_root::<plugin_capnp::webhook_url_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_url_reply(
+                    again.get_root::<plugin_capnp::webhook_url_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_url_reply(
+                    message.init_root::<plugin_capnp::webhook_url_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookUrlReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        141 => {
+            let first = read_webhook_pull_request(
+                reader.get_root::<plugin_capnp::webhook_pull_request::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_pull_request(
+                message.init_root::<plugin_capnp::webhook_pull_request::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_pull_request(
+                    again.get_root::<plugin_capnp::webhook_pull_request::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_pull_request(
+                    message.init_root::<plugin_capnp::webhook_pull_request::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookPullRequest value".to_string(),
+                    ));
+                }
+            }
+        }
+        142 => {
+            let first = read_webhook_header(
+                reader.get_root::<plugin_capnp::webhook_header::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_header(
+                message.init_root::<plugin_capnp::webhook_header::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_header(again.get_root::<plugin_capnp::webhook_header::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_header(
+                    message.init_root::<plugin_capnp::webhook_header::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookHeader value".to_string(),
+                    ));
+                }
+            }
+        }
+        143 => {
+            let first = read_webhook_delivery(
+                reader.get_root::<plugin_capnp::webhook_delivery::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_delivery(
+                message.init_root::<plugin_capnp::webhook_delivery::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_delivery(
+                    again.get_root::<plugin_capnp::webhook_delivery::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_delivery(
+                    message.init_root::<plugin_capnp::webhook_delivery::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookDelivery value".to_string(),
+                    ));
+                }
+            }
+        }
+        144 => {
+            let first = read_webhook_pull_page(
+                reader.get_root::<plugin_capnp::webhook_pull_page::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_pull_page(
+                message.init_root::<plugin_capnp::webhook_pull_page::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_pull_page(
+                    again.get_root::<plugin_capnp::webhook_pull_page::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_pull_page(
+                    message.init_root::<plugin_capnp::webhook_pull_page::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookPullPage value".to_string(),
+                    ));
+                }
+            }
+        }
+        145 => {
+            let first = read_webhook_pull_reply(
+                reader.get_root::<plugin_capnp::webhook_pull_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_pull_reply(
+                message.init_root::<plugin_capnp::webhook_pull_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_pull_reply(
+                    again.get_root::<plugin_capnp::webhook_pull_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_pull_reply(
+                    message.init_root::<plugin_capnp::webhook_pull_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookPullReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        146 => {
+            let first = read_webhook_ack_request(
+                reader.get_root::<plugin_capnp::webhook_ack_request::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_ack_request(
+                message.init_root::<plugin_capnp::webhook_ack_request::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_ack_request(
+                    again.get_root::<plugin_capnp::webhook_ack_request::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_ack_request(
+                    message.init_root::<plugin_capnp::webhook_ack_request::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookAckRequest value".to_string(),
+                    ));
+                }
+            }
+        }
+        147 => {
+            let first = read_webhook_delivered(
+                reader.get_root::<plugin_capnp::webhook_delivered::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_delivered(
+                message.init_root::<plugin_capnp::webhook_delivered::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_delivered(
+                    again.get_root::<plugin_capnp::webhook_delivered::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_delivered(
+                    message.init_root::<plugin_capnp::webhook_delivered::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookDelivered value".to_string(),
                     ));
                 }
             }

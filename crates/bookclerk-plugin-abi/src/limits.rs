@@ -56,6 +56,28 @@ pub const MAX_SOCKET_URL_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_URL_BYTES;
 /// Most request headers, and separately subprotocols, on one
 /// `Sockets.connect`.
 pub const MAX_SOCKET_HEADERS: u32 = crate::plugin_capnp::MAX_SOCKET_HEADERS;
+/// Most deliveries one `Webhooks.pull` returns.
+pub const MAX_WEBHOOK_PULL_BATCH: u32 = crate::plugin_capnp::MAX_WEBHOOK_PULL_BATCH;
+
+/// Longest `WebhookDelivery.leaseId`, in bytes.
+pub const MAX_WEBHOOK_LEASE_ID_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_LEASE_ID_BYTES;
+
+/// Longest `Webhooks.pull` visibility timeout, in milliseconds (12 hours).
+pub const MAX_WEBHOOK_VISIBILITY_MS: u32 = crate::plugin_capnp::MAX_WEBHOOK_VISIBILITY_MS;
+
+/// Largest stored webhook request body, in bytes (1 MiB).
+pub const MAX_WEBHOOK_BODY_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_BODY_BYTES;
+
+/// Most request headers a `[[webhooks]]` row keeps.
+pub const MAX_WEBHOOK_HEADERS: u32 = crate::plugin_capnp::MAX_WEBHOOK_HEADERS;
+
+/// Longest `[[webhooks]]` name, in bytes.
+pub const MAX_WEBHOOK_NAME_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_NAME_BYTES;
+
+/// Longest kept request header value, in bytes.
+pub const MAX_WEBHOOK_HEADER_VALUE_BYTES: u32 =
+    crate::plugin_capnp::MAX_WEBHOOK_HEADER_VALUE_BYTES;
+
 /// Most URLs in one `CoverFetcher.fetchCovers` call.
 pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;
 

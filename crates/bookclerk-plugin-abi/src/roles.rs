@@ -16,7 +16,8 @@ use crate::generated::{
     NotifyValidated, PlainFetch, PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams,
     PurchaseHintResult, PurchaseHintsParams, RevokeAccountParams, ScanLibraryParams, ScanPage,
     ScanParams, SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
-    SocketMessage, SocketMessageOk, SourceAccount,
+    SocketMessage, SocketMessageOk, SourceAccount, WebhookAckRequest, WebhookDelivered,
+    WebhookPullPage, WebhookPullRequest,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -507,6 +508,36 @@ pub trait SocketHandler {
 
     /// A socket closed. The default ignores it.
     async fn closed(&self, _event: SocketClosed) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Host-served inbound webhooks granted on [`Bindings::webhooks`].
+///
+/// The host serves each `[[webhooks]]` row at a secret URL under the
+/// library's public origin, checks and stores each request, and keeps it
+/// until the guest acknowledges it or it expires. The methods are shaped
+/// like a pulled queue so a feed can treat webhook deliveries and queue
+/// messages alike.
+#[async_trait::async_trait(?Send)]
+pub trait Webhooks {
+    /// The URL an outside service should call for webhook `name`; `None`
+    /// when the library cannot be reached from the Internet or webhooks are
+    /// turned off.
+    async fn url(&self, name: String) -> Result<Option<String>>;
+    /// Leases up to `request.batch_size` waiting deliveries, oldest first.
+    async fn pull(&self, request: WebhookPullRequest) -> Result<WebhookPullPage>;
+    /// Deletes acknowledged deliveries and offers retried ones again.
+    async fn ack(&self, request: WebhookAckRequest) -> Result<()>;
+}
+
+/// `[[webhooks]]` handler: told when the host stored deliveries.
+#[async_trait::async_trait(?Send)]
+pub trait WebhookHandler {
+    /// The host stored deliveries for one webhook; the guest pulls them
+    /// through [`Bindings::webhooks`]. The default ignores the call, and the
+    /// plugin reads deliveries on its own schedule.
+    async fn delivered(&self, _event: WebhookDelivered) -> Result<()> {
         Ok(())
     }
 }
@@ -1077,6 +1108,9 @@ pub struct Bindings {
     /// `SOCKETS`: host-brokered WebSockets; `None` unless `[sockets]` is
     /// granted.
     pub sockets: Option<Box<dyn Sockets>>,
+    /// `WEBHOOKS`: the instance's inbound webhooks; `None` unless the
+    /// manifest declares `[[webhooks]]`.
+    pub webhooks: Option<Box<dyn Webhooks>>,
     /// `NETWORK`: the network grant in effect (see
     /// [`BindingValues::network`]).
     pub network: crate::NetworkGrant,
@@ -1102,6 +1136,7 @@ impl Bindings {
             queues: Vec::new(),
             kv: Vec::new(),
             sockets: None,
+            webhooks: None,
             notify: None,
         }
     }
@@ -1172,6 +1207,8 @@ pub struct Entrypoints {
     pub covers: Option<Box<dyn CoverFetcher>>,
     /// `[sockets]` handler.
     pub socket_handler: Option<Box<dyn SocketHandler>>,
+    /// `[[webhooks]]` handler.
+    pub webhook_handler: Option<Box<dyn WebhookHandler>>,
     /// `metadataFiles` entrypoint.
     pub metadata_files: Option<Box<dyn MetadataFiles>>,
     /// `notifier` entrypoint.

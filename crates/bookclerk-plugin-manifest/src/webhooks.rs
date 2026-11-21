@@ -22,13 +22,13 @@ pub const WEBHOOKS_BINDING: &str = "WEBHOOKS";
 pub const MAX_WEBHOOKS: usize = 8;
 
 /// Longest webhook name in bytes.
-pub const MAX_WEBHOOK_NAME_LEN: usize = 32;
+pub const MAX_WEBHOOK_NAME_LEN: usize = bookclerk_plugin_abi::MAX_WEBHOOK_NAME_BYTES as usize;
 
 /// Default body cap in bytes (64 KiB).
 pub const DEFAULT_WEBHOOK_MAX_BODY_BYTES: u32 = 64 * 1024;
 
 /// Largest body cap a row may declare, in bytes (1 MiB).
-pub const MAX_WEBHOOK_BODY_BYTES: u32 = 1024 * 1024;
+pub const MAX_WEBHOOK_BODY_BYTES: u32 = bookclerk_plugin_abi::MAX_WEBHOOK_BODY_BYTES;
 
 /// Default request rate per minute for one instance's webhook.
 pub const DEFAULT_WEBHOOK_RATE_PER_MINUTE: u32 = 60;
@@ -43,10 +43,11 @@ pub const DEFAULT_WEBHOOK_RETENTION_SECS: u32 = 86_400;
 pub const MAX_WEBHOOK_RETENTION_SECS: u32 = 7 * 86_400;
 
 /// Most request headers a row may keep with each delivery.
-pub const MAX_WEBHOOK_HEADERS: usize = 16;
+pub const MAX_WEBHOOK_HEADERS: usize = bookclerk_plugin_abi::MAX_WEBHOOK_HEADERS as usize;
 
 /// Longest header name a row may name, in bytes.
-pub const MAX_WEBHOOK_HEADER_NAME_LEN: usize = 64;
+pub const MAX_WEBHOOK_HEADER_NAME_LEN: usize =
+    bookclerk_plugin_abi::webhooks::MAX_WEBHOOK_HEADER_NAME_BYTES;
 
 /// Longest signature prefix, in bytes.
 pub const MAX_WEBHOOK_SIGNATURE_PREFIX_LEN: usize = 16;
@@ -183,47 +184,9 @@ fn is_default_retention_secs(value: &u32) -> bool {
     *value == DEFAULT_WEBHOOK_RETENTION_SECS
 }
 
-/// True when `name` is a valid webhook name: `[a-z0-9][a-z0-9-]*`, at most
-/// [`MAX_WEBHOOK_NAME_LEN`] bytes.
-#[must_use]
-pub fn is_valid_webhook_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_WEBHOOK_NAME_LEN
-        && name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-/// True when `name` is a lowercase HTTP header name the host can match:
-/// RFC 9110 token characters, lowercase, at most
-/// [`MAX_WEBHOOK_HEADER_NAME_LEN`] bytes.
-#[must_use]
-pub fn is_valid_header_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_WEBHOOK_HEADER_NAME_LEN
-        && name.bytes().all(|b| {
-            b.is_ascii_lowercase()
-                || b.is_ascii_digit()
-                || matches!(
-                    b,
-                    b'!' | b'#'
-                        | b'$'
-                        | b'%'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                )
-        })
-}
+pub use bookclerk_plugin_abi::webhooks::{
+    is_valid_webhook_header_name as is_valid_header_name, is_valid_webhook_name,
+};
 
 /// Checks every `[[webhooks]]` row.
 ///

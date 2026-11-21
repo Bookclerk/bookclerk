@@ -125,6 +125,22 @@ const maxSocketAutoResponseBytes :UInt32 = 256;
 const maxSocketUrlBytes :UInt32 = 2048;
 # Most request headers, and separately subprotocols, on one `Sockets.connect`.
 const maxSocketHeaders :UInt32 = 16;
+# Most deliveries one `Webhooks.pull` returns.
+const maxWebhookPullBatch :UInt32 = 100;
+# Longest `WebhookDelivery.leaseId`, in bytes.
+const maxWebhookLeaseIdBytes :UInt32 = 128;
+# Longest `Webhooks.pull` visibility timeout, in milliseconds (12 hours).
+const maxWebhookVisibilityMs :UInt32 = 43200000;
+# Largest stored webhook request body, in bytes (1 MiB); a `[[webhooks]]`
+# row may lower its own cap but never raise it past this.
+const maxWebhookBodyBytes :UInt32 = 1048576;
+# Most request headers a `[[webhooks]]` row keeps; a delivery also carries
+# `content-type`, so it holds at most one more.
+const maxWebhookHeaders :UInt32 = 16;
+# Longest `[[webhooks]]` name, in bytes.
+const maxWebhookNameBytes :UInt32 = 32;
+# Longest kept request header value, in bytes.
+const maxWebhookHeaderValueBytes :UInt32 = 8192;
 # Largest `KvNamespace` metadata JSON text in bytes.
 const maxKvMetadataBytes :UInt32 = 1024;
 # Most entries in each list of a `NetworkGrant` (fetch hosts, TCP
@@ -607,6 +623,10 @@ struct Bindings {
   # the destination each network setting names and whether it is approved,
   # so a guest can tell an unapproved destination from an unreachable one.
   network @11 :NetworkGrant;
+  # `WEBHOOKS`: the instance's inbound webhooks, their URLs and the
+  # deliveries the host stored; null unless `[[webhooks]]` is declared and
+  # granted.
+  webhooks @12 :Webhooks;
 }
 
 # The network grant in effect for one `PluginWorker.open`. Read-only
@@ -697,6 +717,8 @@ struct Entrypoints {
   metadataFiles @13 :MetadataFiles;
   # `notifier` entrypoint.
   notifier @14 :Notifier;
+  # `[[webhooks]]` handler: called after the host stores deliveries.
+  webhookHandler @15 :WebhookHandler;
 }
 
 # Result union of `PluginWorker.open`.
@@ -1479,6 +1501,37 @@ interface SocketHandler {
   # A socket closed, by the remote side, the network, or the host.
   closed @1 (
       event :SocketClosed  # Socket, close code, and attachment.
+  ) -> (result :EmptyReply);
+}
+
+# Host-served inbound webhooks, granted through `Bindings.webhooks`.
+#
+# The host serves each `[[webhooks]]` row at a secret URL under the
+# library's public origin, checks every request against the row's body cap,
+# rate limit and signature rule, stores it and answers at once. The guest
+# takes stored deliveries with `pull` and settles them with `ack`, in the
+# manner of a Cloudflare Queues HTTP pull consumer: a pulled delivery stays
+# leased until acknowledged, retried, or its visibility timeout ends.
+interface Webhooks {
+  # The URL an outside service should call for one webhook.
+  url @0 (
+      name :Text  # `[[webhooks]]` name.
+  ) -> (result :WebhookUrlReply);
+  # Lease up to `batchSize` stored deliveries, oldest first.
+  pull @1 (
+      request :WebhookPullRequest  # Webhook, batch size, visibility timeout.
+  ) -> (result :WebhookPullReply);
+  # Acknowledge finished deliveries and offer retried ones again at once.
+  ack @2 (
+      request :WebhookAckRequest  # Webhook and lease ids.
+  ) -> (result :EmptyReply);
+}
+
+# Guest handler for inbound webhooks (`Entrypoints.webhookHandler`).
+interface WebhookHandler {
+  # The host stored deliveries for one webhook; the guest pulls them.
+  delivered @0 (
+      event :WebhookDelivered  # Webhook and how many wait.
   ) -> (result :EmptyReply);
 }
 
@@ -3871,6 +3924,96 @@ struct SocketClosed {
   clean @3 :Bool;
   # The socket's last attachment.
   attachment @4 :Data;
+}
+
+# Success payload of `Webhooks.url`.
+struct WebhookUrl {
+  # Absolute `https://` URL; empty when the library cannot be reached from
+  # the Internet or webhooks are turned off, and the plugin should use its
+  # fallback.
+  url @0 :Text $optional;
+}
+
+# Result union of `Webhooks.url`.
+struct WebhookUrlReply {
+  union {
+    # Success: the URL, or none.
+    ok @0 :WebhookUrl;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Arguments of `Webhooks.pull`.
+struct WebhookPullRequest {
+  # `[[webhooks]]` name.
+  name @0 :Text;
+  # Most deliveries to lease, 1 to `maxWebhookPullBatch`.
+  batchSize @1 :UInt32;
+  # How long leased deliveries stay hidden from the next pull, in
+  # milliseconds, at most `maxWebhookVisibilityMs`; zero means one minute.
+  visibilityTimeoutMs @2 :UInt32;
+}
+
+# One request header kept with a delivery.
+struct WebhookHeader {
+  # Lowercase header name, one the row's `headers` names or `content-type`.
+  name @0 :Text;
+  # Header value as received.
+  value @1 :Text;
+}
+
+# One stored request, leased to the guest.
+struct WebhookDelivery {
+  # Lease id for `ack`, at most `maxWebhookLeaseIdBytes`; a new one each
+  # time the delivery is pulled.
+  leaseId @0 :Text;
+  # When the host stored the request, in Unix milliseconds.
+  receivedAtUnixMs @1 :UInt64;
+  # How many times this delivery has been pulled, counting this one.
+  attempt @2 :UInt32;
+  # Kept request headers, in the order the row names them.
+  headers @3 :List(WebhookHeader);
+  # Request body as received, at most the row's `max_body_bytes`.
+  body @4 :Data;
+}
+
+# Success payload of `Webhooks.pull`.
+struct WebhookPullPage {
+  # Leased deliveries, oldest first.
+  deliveries @0 :List(WebhookDelivery);
+  # True when the host dropped deliveries for this webhook since the last
+  # pull (the waiting cap was full or a delivery expired unacknowledged):
+  # the guest should treat what it follows as incomplete.
+  missed @1 :Bool;
+}
+
+# Result union of `Webhooks.pull`.
+struct WebhookPullReply {
+  union {
+    # Success: the leased deliveries.
+    ok @0 :WebhookPullPage;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Arguments of `Webhooks.ack`.
+struct WebhookAckRequest {
+  # `[[webhooks]]` name.
+  name @0 :Text;
+  # Leases whose deliveries are done and are deleted.
+  acks @1 :List(Text);
+  # Leases whose deliveries the next pull offers again.
+  retries @2 :List(Text);
+}
+
+# Argument of `WebhookHandler.delivered`.
+struct WebhookDelivered {
+  # `[[webhooks]]` name.
+  name @0 :Text;
+  # Deliveries waiting for this webhook when the host called.
+  waiting @1 :UInt32;
 }
 
 # --- rust-generated: end ---

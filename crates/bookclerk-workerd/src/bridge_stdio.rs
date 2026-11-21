@@ -850,6 +850,7 @@ impl JobRunner for InvokeJobRunner {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
             },
         );
