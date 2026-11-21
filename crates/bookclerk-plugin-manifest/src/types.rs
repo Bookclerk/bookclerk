@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 9] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 10] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
@@ -24,6 +24,7 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 9] = [
     Entrypoint::Metadata,
     Entrypoint::Covers,
     Entrypoint::MetadataFiles,
+    Entrypoint::Ingress,
 ];
 
 /// Entrypoints the host loads into their own registry (sources,
@@ -31,10 +32,11 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 9] = [
 ///
 /// Crons are rejected beside these, and job triggers beside them stay on
 /// that registry's session instead of making the plugin an integration.
-pub const REGISTRY_ENTRYPOINTS: [Entrypoint; 3] = [
+pub const REGISTRY_ENTRYPOINTS: [Entrypoint; 4] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
+    Entrypoint::Ingress,
 ];
 
 /// Handler family an [`Entrypoint`] belongs to.
@@ -49,6 +51,7 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         Entrypoint::Storefront => PluginFamily::Source,
         Entrypoint::Storage => PluginFamily::Output,
         Entrypoint::DatabaseAdapter => PluginFamily::Database,
+        Entrypoint::Ingress => PluginFamily::Ingress,
         Entrypoint::RemoteLibrary
         | Entrypoint::Cli
         | Entrypoint::Oidc
@@ -63,7 +66,7 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
 ///
 /// Derived from the exported [`Entrypoint`]s and declared triggers (see
 /// [`PluginManifest::families`]); never written to `plugin.toml`. Wire values
-/// are lowercase (`source`, `integration`, `output`, `database`).
+/// are lowercase (`source`, `integration`, `output`, `database`, `ingress`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginFamily {
@@ -76,14 +79,18 @@ pub enum PluginFamily {
     Output,
     /// Library database backend (`DatabaseAdapter` entrypoint).
     Database,
+    /// Public address provider (`Ingress` entrypoint): a relay or a
+    /// dynamic DNS name for the library.
+    Ingress,
 }
 
 impl PluginFamily {
     /// Every family in settings-prefix priority order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Database,
         Self::Source,
         Self::Output,
+        Self::Ingress,
         Self::Integration,
     ];
 
@@ -91,7 +98,8 @@ impl PluginFamily {
     ///
     /// # Returns
     ///
-    /// One of `"source"`, `"integration"`, `"output"`, or `"database"`.
+    /// One of `"source"`, `"integration"`, `"output"`, `"database"`, or
+    /// `"ingress"`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -99,6 +107,7 @@ impl PluginFamily {
             Self::Integration => "integration",
             Self::Output => "output",
             Self::Database => "database",
+            Self::Ingress => "ingress",
         }
     }
 
@@ -1621,13 +1630,13 @@ impl PluginManifest {
     /// Handler families this plugin belongs to, in
     /// [`PluginFamily::ALL`] priority order.
     ///
-    /// A plugin joins the `Source` / `Output` / `Database` families through
+    /// A plugin joins the `Source` / `Output` / `Database` / `Ingress` families through
     /// the matching named entrypoint and the `Integration` family through
     /// event consumers, queue consumers, crons, `RemoteLibrary`, `Cli`,
     /// `Oidc`, `Metadata`, `Covers`, or `MetadataFiles`.
     ///
     /// Job triggers make a plugin an integration only when it has no
-    /// `storefront`, `storage` or `databaseAdapter` entrypoint. Beside one of
+    /// `storefront`, `storage`, `databaseAdapter` or `ingress` entrypoint. Beside one of
     /// those, jobs run on that entrypoint's session (the host's `stream_copy`
     /// job runs on the storage guest's destination session), so the plugin
     /// stays in that one family and a deployment registers it there instead
@@ -1644,6 +1653,7 @@ impl PluginManifest {
                 PluginFamily::Source => self.has_entrypoint(Entrypoint::Storefront),
                 PluginFamily::Output => self.has_entrypoint(Entrypoint::Storage),
                 PluginFamily::Database => self.has_entrypoint(Entrypoint::DatabaseAdapter),
+                PluginFamily::Ingress => self.has_entrypoint(Entrypoint::Ingress),
                 PluginFamily::Integration => {
                     self.consumes_events()
                         || self.consumes_queues()
@@ -1667,7 +1677,7 @@ impl PluginManifest {
     /// Primary handler family: the first of [`Self::families`].
     ///
     /// Picks the `config.toml` settings prefix (`database.*` > `sources.*` >
-    /// `output.*` > `integrations.*`) and the API grouping.
+    /// `output.*` > `ingress.*` > `integrations.*`) and the API grouping.
     ///
     /// # Returns
     ///

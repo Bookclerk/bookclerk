@@ -962,7 +962,7 @@
       "name": "Bindings",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 10,
+      "pointerCount": 11,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -1074,6 +1074,16 @@
             "name": "Sockets"
           },
           "offset": 9
+        },
+        {
+          "name": "origin",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Origin"
+          },
+          "offset": 10
         }
       ]
     },
@@ -4974,7 +4984,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 14,
+      "pointerCount": 15,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -5117,6 +5127,16 @@
             "name": "MetadataFiles"
           },
           "offset": 13
+        },
+        {
+          "name": "ingress",
+          "codeOrder": 14,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Ingress"
+          },
+          "offset": 14
         }
       ]
     },
@@ -7208,6 +7228,200 @@
           "discriminantValue": null,
           "type": {
             "kind": "int64"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Ingress.health$Params": {
+      "name": "Ingress.health$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "Ingress.health$Results": {
+      "name": "Ingress.health$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "IngressHealthReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Ingress.start$Params": {
+      "name": "Ingress.start$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "Ingress.start$Results": {
+      "name": "Ingress.start$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "IngressStartReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Ingress.stop$Params": {
+      "name": "Ingress.stop$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "Ingress.stop$Results": {
+      "name": "Ingress.stop$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "IngressHealth": {
+      "name": "IngressHealth",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "serving",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "detail",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "IngressHealthReply": {
+      "name": "IngressHealthReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "IngressHealth"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "IngressStartReply": {
+      "name": "IngressStartReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "IngressStarted"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "IngressStarted": {
+      "name": "IngressStarted",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "origin",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
           },
           "offset": 0
         }
@@ -10841,6 +11055,206 @@
             "name": "ColumnReference"
           },
           "offset": 0
+        }
+      ]
+    },
+    "Origin.fetch$Params": {
+      "name": "Origin.fetch$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "OriginRequest"
+          },
+          "offset": 0
+        },
+        {
+          "name": "body",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "ByteSource"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Origin.fetch$Results": {
+      "name": "Origin.fetch$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "OriginFetchReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "OriginFetchReply": {
+      "name": "OriginFetchReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "OriginResponse"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "OriginHeader": {
+      "name": "OriginHeader",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "value",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "OriginRequest": {
+      "name": "OriginRequest",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 4,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "method",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "target",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "headers",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "OriginHeader"
+            }
+          },
+          "offset": 2
+        },
+        {
+          "name": "clientAddress",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        }
+      ]
+    },
+    "OriginResponse": {
+      "name": "OriginResponse",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "status",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint16"
+          },
+          "offset": 0
+        },
+        {
+          "name": "headers",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "OriginHeader"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "body",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "ByteSource"
+          },
+          "offset": 1
         }
       ]
     },
@@ -15289,7 +15703,8 @@
         "oidc",
         "metadata",
         "covers",
-        "metadataFiles"
+        "metadataFiles",
+        "ingress"
       ]
     },
     "ExpressionKind": {
@@ -15902,6 +16317,30 @@
         }
       ]
     },
+    "Ingress": {
+      "name": "Ingress",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "start",
+          "ordinal": 0,
+          "params": "Ingress.start$Params",
+          "results": "Ingress.start$Results"
+        },
+        {
+          "name": "health",
+          "ordinal": 1,
+          "params": "Ingress.health$Params",
+          "results": "Ingress.health$Results"
+        },
+        {
+          "name": "stop",
+          "ordinal": 2,
+          "params": "Ingress.stop$Params",
+          "results": "Ingress.stop$Results"
+        }
+      ]
+    },
     "JobRunner": {
       "name": "JobRunner",
       "file": "plugin.capnp",
@@ -16013,6 +16452,18 @@
           "ordinal": 1,
           "params": "Oidc.authenticateUser$Params",
           "results": "Oidc.authenticateUser$Results"
+        }
+      ]
+    },
+    "Origin": {
+      "name": "Origin",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "fetch",
+          "ordinal": 0,
+          "params": "Origin.fetch$Params",
+          "results": "Origin.fetch$Results"
         }
       ]
     },
@@ -16349,6 +16800,11 @@
       "file": "plugin.capnp",
       "value": 64
     },
+    "maxIngressOriginBytes": {
+      "name": "maxIngressOriginBytes",
+      "file": "plugin.capnp",
+      "value": 253
+    },
     "maxKvKeyBytes": {
       "name": "maxKvKeyBytes",
       "file": "plugin.capnp",
@@ -16398,6 +16854,21 @@
       "name": "maxMetadataFileTextBytes",
       "file": "plugin.capnp",
       "value": 1024
+    },
+    "maxOriginHeaderBytes": {
+      "name": "maxOriginHeaderBytes",
+      "file": "plugin.capnp",
+      "value": 65536
+    },
+    "maxOriginHeaders": {
+      "name": "maxOriginHeaders",
+      "file": "plugin.capnp",
+      "value": 128
+    },
+    "maxOriginTargetBytes": {
+      "name": "maxOriginTargetBytes",
+      "file": "plugin.capnp",
+      "value": 8192
     },
     "maxPluginMigrationOps": {
       "name": "maxPluginMigrationOps",
