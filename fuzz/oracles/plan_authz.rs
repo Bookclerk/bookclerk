@@ -281,7 +281,6 @@ async fn run(s: &Scenario) -> usize {
         store
             .scope(plugin, "fuzz")
             .upsert_book(&NewBook {
-                uuid: None,
                 product_id: book.product_id.into(),
                 plugin_key: plugin.into(),
                 source: "fuzz".into(),

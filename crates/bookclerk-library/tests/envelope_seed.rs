@@ -132,35 +132,25 @@ async fn seed_books(store: &LibraryStore) {
     let again = NewBook::minimal("B00000", "envelope-a", "us", "Title 00000");
     store.upsert_book(&again).await.unwrap();
     let backend = store.db().get_database_backend();
-    sea_orm::ConnectionTrait::execute_raw(
-        store.db(),
-        sea_orm::Statement::from_string(
-            backend,
-            "UPDATE books SET acquire_status = CASE \
-                WHEN (CAST(substr(product_id, 2) AS INTEGER) % 10) = 0 THEN 'error' \
-                WHEN (CAST(substr(product_id, 2) AS INTEGER) % 10) = 1 THEN 'not_acquired' \
-                ELSE 'acquired' END"
-                .to_string(),
-        ),
-    )
-    .await
-    .unwrap();
     // The works index reads acquire state per edition, as an acquire job
     // records it with `set_acquire_status`; one statement here instead of
-    // 10,000 calls.
+    // 10,000 calls. Every tenth title failed, the next was never acquired
+    // and the rest were.
     let recorded = sea_orm::ConnectionTrait::execute_raw(
         store.db(),
         sea_orm::Statement::from_string(
             backend,
-            "INSERT OR IGNORE INTO edition_acquisitions \
-                (edition_id, status, storage_key, error_message, holding_id, updated_at) \
-             SELECT l.edition_id, b.acquire_status, NULL, NULL, \
-                    (SELECT h.id FROM holdings h WHERE h.listing_id = l.id \
-                       AND h.plugin_key = b.plugin_key AND h.account_id = b.account_id), \
-                    b.updated_at \
-             FROM books b JOIN store_listings l \
-               ON l.plugin_key = b.plugin_key AND l.product_id = b.product_id"
-                .to_string(),
+            format!(
+                "INSERT OR IGNORE INTO edition_acquisitions \
+                    (edition_id, status, storage_key, error_message, holding_id, updated_at) \
+                 SELECT l.edition_id, CASE \
+                    WHEN (CAST(substr(l.product_id, 2) AS INTEGER) % 10) = 0 THEN 'error' \
+                    WHEN (CAST(substr(l.product_id, 2) AS INTEGER) % 10) = 1 THEN 'not_acquired' \
+                    ELSE 'acquired' END, NULL, NULL, h.id, '{}' \
+                 FROM holdings h JOIN store_listings l ON l.id = h.listing_id \
+                 WHERE h.holder_kind = 'account'",
+                chrono::Utc::now().to_rfc3339()
+            ),
         ),
     )
     .await
@@ -170,14 +160,14 @@ async fn seed_books(store: &LibraryStore) {
         10_000,
         "every seeded title's edition records its acquire state"
     );
-    let total = store.count_books(None).await.unwrap();
+    let total = store.all_acquire_titles(None).await.unwrap().len();
     assert_eq!(total, 10_000, "re-seeding the same ids must be idempotent");
     let first = store
-        .get_book("B00000", "envelope-a")
+        .held_title("B00000", "envelope-a")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(first.acquire_status, AcquireStatus::Error);
+    assert_eq!(first.status, AcquireStatus::Error);
     assert_eq!(first.title, "Title 00000");
     eprintln!("books ready in {} ms", started.elapsed().as_millis());
 }

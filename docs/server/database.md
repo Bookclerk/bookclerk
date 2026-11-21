@@ -1020,7 +1020,7 @@ batch that lost a race answers `retry` and the title is resolved again, up
 to three times. Its contributors, credits, series and series entries follow
 in separate batches, so a scan that stops between them can leave a linked
 title without them; the next scan writes what is missing. A title that still cannot be resolved
-keeps its `books` row, is logged as a warning, and is resolved again on
+is not stored, is logged as a warning, and is resolved again on
 the next scan, so one title never stops the rest of a scan. A work takes
 its titles' description, subjects, categories and cover where it has none
 yet, and an episode stored before its show is linked to the show once the

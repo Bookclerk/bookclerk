@@ -34,7 +34,7 @@ pub mod library_link;
 pub mod master_key;
 pub mod master_key_recovery;
 pub mod migrations;
-/// Public library DTOs and status enums (`BookRecord`, `AcquireStatus`, prefs) re-exported from this crate.
+/// Public library DTOs and status enums (`AcquireStatus`, prefs) re-exported from this crate.
 mod models;
 mod named_atomic;
 pub mod operator_token;
@@ -131,24 +131,23 @@ pub use models::{
     is_podcast_parent, is_valid_queue_name, job_backoff_run_after, normalize_theme,
     plugin_scheduled_dedup_key, portal_prefs_key, push_queue_wisher, queue_name_or_bus,
     subscription_matches_event, user_prefs_key, wake_grants_from_subscriptions, AccountLinkRecord,
-    AccountRecord, AcquireStatus, AcquireStatusCounts, BookRecord, BranchRequestTarget,
-    ClaimTicketRecord, DomainEventRecord, EmbeddingRecord, EnqueueJobSpec, EnqueueOutcome,
-    EventCatalogSubscription, EventDeliveryFence, EventDeliveryMetrics, EventDeliveryRecord,
-    EventStreamPage, EventStreamRead, EventStreamStart, EventSubscriber,
-    EventSubscriberCatalogRecord, EventSubscriberNodeRecord, EventWakeGrant, GlobalQueueEntry,
-    JobClaimCursor, JobClaimPage, JobFence, JobKind, JobPayload, JobRecord, JobResourceClass,
-    JobState, JobTempPath, JobTrigger, ListeningProgressRecord, OidcClientRecord,
-    OperatorSessionRecord, PendingWakeProgress, PortalIdentity, PortalSessionKind,
-    PortalSessionRecord, PublishDomainEventOutcome, PublishDomainEventSpec, QueueWisher,
-    RequestStatus, SecurityAuditEvent, StoredPasskey, TasteHolder, TasteTitle, TitleRequestRecord,
-    TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord, UserListeningHint,
-    UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserSsoPicture, UserStatus,
-    UserTitleState, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
-    EDITION_ACQUIRE_CHANGED, EVENT_DELIVERY_DEFAULT_RETENTION_SECS, EVENT_DELIVERY_MAX_ATTEMPTS,
-    EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, HOST_CONSUMER_PREFIX,
-    INGEST_BATCH_FINISHED, JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN,
-    MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
-    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
+    AccountRecord, AcquireStatus, AcquireStatusCounts, BranchRequestTarget, ClaimTicketRecord,
+    DomainEventRecord, EmbeddingRecord, EnqueueJobSpec, EnqueueOutcome, EventCatalogSubscription,
+    EventDeliveryFence, EventDeliveryMetrics, EventDeliveryRecord, EventStreamPage,
+    EventStreamRead, EventStreamStart, EventSubscriber, EventSubscriberCatalogRecord,
+    EventSubscriberNodeRecord, EventWakeGrant, GlobalQueueEntry, JobClaimCursor, JobClaimPage,
+    JobFence, JobKind, JobPayload, JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger,
+    ListeningProgressRecord, OidcClientRecord, OperatorSessionRecord, PendingWakeProgress,
+    PortalIdentity, PortalSessionKind, PortalSessionRecord, PublishDomainEventOutcome,
+    PublishDomainEventSpec, QueueWisher, RequestStatus, SecurityAuditEvent, StoredPasskey,
+    TasteHolder, TasteTitle, TitleRequestRecord, TitleRequestSourceRecord, UserIntegrationHint,
+    UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras, UserRecord, UserRole,
+    UserSsoPicture, UserStatus, UserTitleState, WishlistPurchaseHint, WishlistStoreEdition,
+    WorkRecord, CORE_EVENTS_QUEUE, EDITION_ACQUIRE_CHANGED, EVENT_DELIVERY_DEFAULT_RETENTION_SECS,
+    EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS,
+    HOST_CONSUMER_PREFIX, INGEST_BATCH_FINISHED, JOB_PAYLOAD_VERSION, LISTENING_SYNCED,
+    MAX_QUEUE_NAME_LEN, MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY,
+    QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
 };
 pub use named_atomic::{NamedAtomicBackend, NamedAtomicRunner};
 pub use operator_token::{
@@ -243,7 +242,6 @@ pub use store::{
     player_catalog::{PlayerFacet, PlayerItem},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
-    prefer_enrichment_source,
     retention::{
         RecordPruneStep, AUDIT_RETENTION_DAYS, CONFIGURATION_CHANGE_RETENTION_DAYS,
         STORAGE_SCAN_STALE_DAYS, TOKEN_HISTORY_DAYS, UPLOAD_HISTORY_DAYS,
@@ -251,22 +249,20 @@ pub use store::{
     scan_state::{
         plan_pass, PassStart, QualityCheckState, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL,
     },
-    search_feed::ListingRef,
     set_dispatch_chunk_for_test,
     user_title_state::{FieldEdit, UserStateEdit},
     work_split::{
         parse_work_split_request, SplitOutcome, WorkSplitBody, WorkSplitRequest,
         MAX_SPLIT_EXPRESSIONS, MAX_SPLIT_EXPRESSION_ID_BYTES,
     },
-    AcquireTitle, AcquireTitlePage, AcquiredTitleKey, AcquiredTitleKeyPage, AudioStream, BookPage,
-    CandidateRef, CatalogEnrichmentFields, ChangedObject, CopyState, DestinationFeed,
-    DiscoverSubject, EditionAcquisition, EditionAsin, EditionCopy, EditionEnrichment, EditionFile,
-    EnrichCandidate, EnrichCandidatePage, FeedState, FileOwner, FileProbe, FileRole,
-    HeldIdentifiers, HoldingSelection, LibraryStore, LostCopies, NewBook, NewListeningProgress,
-    NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection, ProbedAudioFile, QueueRank,
-    SavedFilterRecord, ScannedTitle, SeedScope, SeenObject, StoreCallHit, StoredCandidate,
-    StoredDiscoverTaste, StoredFeed, StoredQueueRank, TitleHolding, UserBookFields, WishWork,
-    ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    AcquireTitle, AcquireTitlePage, AcquiredTitleKey, AcquiredTitleKeyPage, AudioStream,
+    CandidateRef, ChangedObject, CopyState, DestinationFeed, DiscoverSubject, EditionAcquisition,
+    EditionAsin, EditionCopy, EditionEnrichment, EditionFile, EnrichCandidate, EnrichCandidatePage,
+    FeedState, FileOwner, FileProbe, FileRole, HeldIdentifiers, HoldingSelection, LibraryStore,
+    LostCopies, NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource,
+    NodeHoldingSelection, ProbedAudioFile, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope,
+    SeenObject, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank,
+    TitleHolding, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER,
     COPY_RETRY_BASE_DELAY, COPY_RETRY_MAX_DELAY, HOLDING_REMOVED, MAX_COPY_ATTEMPTS,
     MAX_QUEUE_REASONS, OBJECT_TOMBSTONE_DAYS,
 };

@@ -451,9 +451,22 @@ mod tests {
             seed.asin = None;
             seed.isbn = isbn.map(str::to_string);
             seed.authors = Some("Ann Author, Bob Other".into());
-            uuids.push(store.upsert_book(&seed).await.unwrap().uuid);
+            uuids.push(store.upsert_book(&seed).await.unwrap().holding_id);
         }
         (store, uuids)
+    }
+
+    /// The enricher's view of the edition `holding` holds, after a run.
+    async fn filled(store: &LibraryStore, holding: &str) -> EnrichCandidate {
+        let edition = store.edition_of_holding(holding).await.unwrap().unwrap();
+        store
+            .enrich_candidates_page(None, 200)
+            .await
+            .unwrap()
+            .candidates
+            .into_iter()
+            .find(|candidate| candidate.edition_id == edition)
+            .expect("a held edition is a candidate")
     }
 
     #[tokio::test]
@@ -467,7 +480,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 1);
-        let book = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
+        let book = filled(&store, &uuids[0]).await;
         assert_eq!(book.description.as_deref(), Some("A blurb"));
         assert_eq!(book.subjects.as_deref(), Some("Fiction; Space"));
         assert_eq!(book.language.as_deref(), Some("eng"));
@@ -503,9 +516,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 1, "only the exactly matching title is filled");
-        let filled = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
-        assert_eq!(filled.description.as_deref(), Some("A blurb"));
-        let skipped = store.get_book_by_uuid(&uuids[1]).await.unwrap().unwrap();
+        let matched = filled(&store, &uuids[0]).await;
+        assert_eq!(matched.description.as_deref(), Some("A blurb"));
+        let skipped = filled(&store, &uuids[1]).await;
         assert_eq!(skipped.description, None);
         assert_eq!(
             skipped.enrich_source, None,
@@ -592,7 +605,7 @@ mod tests {
     async fn the_work_gets_the_fill_even_when_another_provider_failed() {
         let (store, uuids) = store_with(&[("p1", "Dune", Some("9780441172719"))]).await;
         let work_id = store
-            .work_id_for_book(&uuids[0])
+            .work_of_holding(&uuids[0])
             .await
             .unwrap()
             .expect("upsert resolves a work");
@@ -621,11 +634,10 @@ mod tests {
         let (store, uuids) = store_with(&[
             ("p1", "Full", Some("9780441172719")),
             ("p2", "Legacy", Some("9780553293357")),
-            ("p3", "  ", None),
         ])
         .await;
         // Every field filled by someone else, and a legacy Open Library mark.
-        let full = store.edition_of_book(&uuids[0]).await.unwrap().unwrap();
+        let full = store.edition_of_holding(&uuids[0]).await.unwrap().unwrap();
         store
             .enrich_edition(
                 &full,
@@ -641,7 +653,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let legacy = store.edition_of_book(&uuids[1]).await.unwrap().unwrap();
+        let legacy = store.edition_of_holding(&uuids[1]).await.unwrap().unwrap();
         store
             .enrich_edition(
                 &legacy,
@@ -682,7 +694,7 @@ mod tests {
                 .unwrap(),
             0
         );
-        let book = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
+        let book = filled(&store, &uuids[0]).await;
         assert_eq!(book.enrich_source, None);
     }
 
@@ -784,7 +796,7 @@ mod tests {
                 .unwrap(),
             1
         );
-        let book = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
+        let book = filled(&store, &uuids[0]).await;
         assert_eq!(book.language.as_deref(), Some("en"));
         assert_eq!(book.description, None);
         assert!(book.enrich_source.is_some(), "the title is marked");
@@ -812,7 +824,7 @@ mod tests {
                 .unwrap(),
             1
         );
-        let book = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
+        let book = filled(&store, &uuids[0]).await;
         assert_eq!(book.description.as_deref(), Some("A blurb"));
     }
 
@@ -820,7 +832,7 @@ mod tests {
     async fn a_described_work_keeps_its_own_values() {
         let (store, uuids) = store_with(&[("p1", "Dune", Some("9780441172719"))]).await;
         let work_id = store
-            .work_id_for_book(&uuids[0])
+            .work_of_holding(&uuids[0])
             .await
             .unwrap()
             .expect("upsert resolves a work");
@@ -851,10 +863,7 @@ mod tests {
             Some("https://covers.openlibrary.org/b/id/1-L.jpg"),
             "the work still takes what it lacked"
         );
-        // The work's own description was no gap, so the edition's flat row
-        // takes only what was filled.
-        let book = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
-        assert_eq!(book.description, None);
+        let book = filled(&store, &uuids[0]).await;
         assert_eq!(
             book.cover_url.as_deref(),
             Some("https://covers.openlibrary.org/b/id/1-L.jpg")

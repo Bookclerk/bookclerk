@@ -1235,7 +1235,7 @@ mod tests {
                 is_explicit,
                 ..ScannedTitle::from(NewBook::minimal(asin, "acct", "us", label))
             };
-            let records = store
+            store
                 .upsert_scanned_titles(&[
                     title("B0ADULT01", "After Dark", Some(true)),
                     title("B0CLEAN01", "Gruffalo", Some(false)),
@@ -1244,8 +1244,15 @@ mod tests {
                 .await
                 .unwrap();
             let mut ids = Vec::new();
-            for record in &records {
-                ids.push(store.work_id_for_book(&record.uuid).await.unwrap().unwrap());
+            for asin in ["B0ADULT01", "B0CLEAN01", "B0UNKNOWN"] {
+                let held = store.held_title(asin, "acct").await.unwrap().unwrap();
+                ids.push(
+                    store
+                        .work_of_holding(&held.holding_id)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                );
             }
             store.refresh_library_works(&ids).await.unwrap();
             let hide = PatronScope {

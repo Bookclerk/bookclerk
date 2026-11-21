@@ -50,7 +50,6 @@ pub(crate) async fn work_held_without_a_copy(store: &bookclerk_library::LibraryS
     let book = store
         .scope(PLUGIN, "audible")
         .upsert_book(&NewBook {
-            uuid: None,
             product_id: ASIN.into(),
             plugin_key: PLUGIN.into(),
             source: "audible".into(),
@@ -75,7 +74,11 @@ pub(crate) async fn work_held_without_a_copy(store: &bookclerk_library::LibraryS
         })
         .await
         .unwrap();
-    store.work_id_for_book(&book.uuid).await.unwrap().unwrap()
+    store
+        .work_of_holding(&book.holding_id)
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 #[tokio::test]

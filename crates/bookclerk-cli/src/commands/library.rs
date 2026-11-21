@@ -1413,14 +1413,10 @@ fn title_label(title: &AcquireTitle) -> &str {
         .unwrap_or(title.product_id.as_str())
 }
 
-/// Whether `id` matches the title's holding id, library row id, product id,
-/// ISBN, or ASIN (case-insensitive).
+/// Whether `id` matches the title's holding id, product id, ISBN, or ASIN
+/// (case-insensitive).
 fn title_id_matches(book: &AcquireTitle, id: &str) -> bool {
     id.eq_ignore_ascii_case(&book.holding_id)
-        || book
-            .book_uuid
-            .as_ref()
-            .is_some_and(|uuid| id.eq_ignore_ascii_case(uuid))
         || id.eq_ignore_ascii_case(&book.product_id)
         || book
             .isbn

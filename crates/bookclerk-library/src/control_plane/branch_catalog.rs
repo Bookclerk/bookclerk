@@ -513,7 +513,6 @@ pub fn listing_from_catalog_title(
         .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
         .map(|at| at.with_timezone(&Utc));
     let book = NewBook {
-        uuid: None,
         product_id: title.product_id.clone(),
         plugin_key: plugin_key.to_string(),
         source: title.store.clone(),
