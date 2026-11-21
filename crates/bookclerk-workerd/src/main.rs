@@ -85,6 +85,9 @@ async fn run() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    #[cfg(windows)]
+    stop_inheriting_std_handles();
+
     let root = plugin_root()?;
     let manifest = load_manifest(&root)?;
     if let Some(message) = manifest.unimplemented_surface() {
@@ -285,7 +288,82 @@ fn spawn_workerd_process(cmd: &mut tokio::process::Command, spawn_bin: &Path) ->
     let mut child = bookclerk_sandbox::with_fd_spawn_lock(|| cmd.spawn())
         .with_context(|| format!("spawn {}", spawn_bin.display()))?;
     drop(child.stdin.take());
+    // On an error return `kill_on_drop` stops the unbound child.
+    #[cfg(windows)]
+    bind_to_launcher_lifetime(&mut child)?;
     Ok(child)
+}
+
+/// Kill-on-close Jobs that end each `workerd.exe` when this launcher exits.
+///
+/// The launcher never closes them, so the kernel does it when the process
+/// ends by any route, including `TerminateProcess` from the host or a test,
+/// which skips every destructor and `kill_on_drop`. Linux and macOS jails
+/// bound the tree with the session cgroup or process group instead.
+#[cfg(windows)]
+static WORKERD_JOBS: std::sync::Mutex<Vec<bookclerk_sandbox::SessionJob>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Ties `child` to this launcher's lifetime with its own kill-on-close Job.
+///
+/// Without it a killed launcher left `workerd.exe` running, holding whatever
+/// handles it inherited, so a reader waiting for end of file never got one.
+/// The Job is nested inside the jail's Job when there is one; it adds no
+/// limits, only kill-on-close. The child runs briefly before it is assigned,
+/// which only matters if the launcher dies in that window.
+///
+/// # Errors
+///
+/// Returns an error when the Job cannot be created or the child cannot be
+/// assigned to it; the caller then drops (and so kills) the child.
+#[cfg(windows)]
+fn bind_to_launcher_lifetime(child: &mut Child) -> Result<()> {
+    // A workerd that already exited has nothing to bind; the caller reports
+    // its exit status and stderr instead of a Job error.
+    let Some(process) = child.raw_handle() else {
+        return Ok(());
+    };
+    let job = bookclerk_sandbox::SessionJob::create(&bookclerk_sandbox::ResourceLimits::default())
+        .context("create the kill-on-close Job for workerd")?;
+    if let Err(err) = job.assign(process) {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return Ok(());
+        }
+        return Err(err).context("assign workerd to its kill-on-close Job");
+    }
+    WORKERD_JOBS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("workerd Job registry lock poisoned"))?
+        .push(job);
+    Ok(())
+}
+
+/// Stops `workerd.exe` from inheriting this launcher's standard handles.
+///
+/// Rust's spawn on Windows passes every inheritable handle to the child. The
+/// launcher's stdin and stdout are the host's RPC link and stderr is the host's
+/// log pipe; `workerd.exe` gets its own pipes and must hold none of these, or
+/// the host would not see end of file while it runs.
+///
+/// A handle that cannot be changed is logged and left as it is: the Job from
+/// [`bind_to_launcher_lifetime`] still ends `workerd.exe` with the launcher.
+#[cfg(windows)]
+fn stop_inheriting_std_handles() {
+    use std::os::windows::io::AsRawHandle;
+    let handles = [
+        ("stdin", std::io::stdin().as_raw_handle()),
+        ("stdout", std::io::stdout().as_raw_handle()),
+        ("stderr", std::io::stderr().as_raw_handle()),
+    ];
+    for (name, handle) in handles {
+        // A process started without that handle has a null (or invalid) one.
+        if handle.is_null() || handle.addr() == usize::MAX {
+            continue;
+        }
+        if let Err(err) = bookclerk_workerd::inherited_link::stop_inheriting(handle) {
+            warn!(handle = name, error = %err, "could not stop workerd inheriting a standard handle");
+        }
+    }
 }
 
 /// Materializes config, spawns workerd, mediates host stdio ↔ bridge HTTP, then kills the child.
