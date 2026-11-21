@@ -2096,9 +2096,7 @@ class StorefrontEntrypoint(NamedEntrypoint):
         """
         return None
 
-    async def qualityOffers(
-        self, _params: abi.QualityOffersParams
-    ) -> abi.QualityOffersResult:
+    async def qualityOffers(self, _params: abi.QualityOffersParams) -> abi.QualityOffersResult:
         """Audio quality one account would download for each title.
 
         One answer per title id in order (``found`` false when the store
