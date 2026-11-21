@@ -7898,7 +7898,7 @@ mod tests {
         );
         // The store's markers are recorded as the edition's chapters, as
         // track boundaries measured on the delivered part.
-        let edition = store.edition_of_book(&uuid).await.unwrap().unwrap();
+        let edition = store.edition_of_holding(&uuid).await.unwrap().unwrap();
         let chapters = store.edition_chapters(&edition).await.unwrap().unwrap();
         assert_eq!(
             chapters.source_kind,
