@@ -181,12 +181,24 @@ async fn changes(patron: &Patron, topics: &[LiveTopic], marks: &mut Watermarks) 
             .await
         {
             let mut newest = marks.progress_ms;
+            // Only the books the patron's scope shows them; a failed read
+            // sends nothing rather than every row.
+            let shown = super::listening::editions_in_scope(
+                &patron.library,
+                patron.scope.as_ref(),
+                rows.iter().map(|p| p.edition_id.clone()).collect(),
+            )
+            .await
+            .unwrap_or_default();
             for progress in rows.into_iter().rev() {
                 let at = progress.updated_at.timestamp_millis();
                 if at <= marks.progress_ms {
                     continue;
                 }
                 newest = newest.max(at);
+                if !shown.contains(&progress.edition_id) {
+                    continue;
+                }
                 let data = progress_wire(patron.user_id(), progress);
                 frames.push(event_frame(
                     "user_item_progress_updated",

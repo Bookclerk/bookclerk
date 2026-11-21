@@ -280,6 +280,76 @@ async fn a_persons_page_lists_every_book_marking_that_persons() {
     );
 }
 
+/// A scoped person's pages list only the books their patron scope shows
+/// them, and always the ones on their own store accounts, under every
+/// profile: a clerk signed in with their card never learns of the rest.
+#[tokio::test]
+async fn a_persons_pages_follow_their_patron_scope_under_every_profile() {
+    use crate::control_plane::{set_patron_scope, PatronScope, RuleEffect, ScopeField, ScopeRule};
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let riley = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap()
+            .id;
+        let sam = store
+            .create_user(UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap()
+            .id;
+        let mut works = hold(&store, riley, "riley-acct", &["B0RILEY001".into()]).await;
+        let mut other = book("sam-acct", "B0SAM00001");
+        other.authors = Some("Bea Writer".into());
+        store
+            .upsert_account(PLUGIN, "sam-acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let rec = store.upsert_book(&other).await.unwrap();
+        works.push(store.work_id_for_book(&rec.uuid).await.unwrap().unwrap());
+        store.refresh_library_works(&works).await.unwrap();
+        let no_ann = PatronScope {
+            rules: vec![ScopeRule {
+                field: ScopeField::Author,
+                value: "Ann Author".into(),
+                effect: RuleEffect::Exclude,
+            }],
+            explicit: Default::default(),
+        };
+        for person in [riley, sam] {
+            set_patron_scope(&store, person, Some(no_ann.clone()))
+                .await
+                .unwrap();
+        }
+        let books = |works: Vec<WindowWork>| -> Vec<String> {
+            let mut ids: Vec<String> = works
+                .iter()
+                .flat_map(|w| &w.editions)
+                .map(|e| e.edition.product_id.clone())
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(
+            books(read_person(&store, sam).await),
+            ["B0SAM00001"],
+            "{name}: Ann Author's book is outside Sam's scope"
+        );
+        assert_eq!(
+            books(read_person(&store, riley).await),
+            ["B0RILEY001", "B0SAM00001"],
+            "{name}: Riley's own book passes whatever the scope says"
+        );
+        assert!(
+            read_person(&store, 9999).await.is_empty(),
+            "{name}: a person the library does not have learns of nothing"
+        );
+    }
+}
+
 /// More books than one read takes are paged out with a cursor that moves
 /// forward, each page within the frame budget, under every profile.
 #[tokio::test]

@@ -1441,6 +1441,33 @@ impl LibraryStore {
             .is_some())
     }
 
+    /// Whether an edition is inside a patron scope: no scope admits every
+    /// edition, and a scope admits one whose work passes
+    /// [`Self::work_in_scope`]. An edition that belongs to no work is
+    /// outside every scope, so a scoped patron never learns of it.
+    ///
+    /// # Arguments
+    ///
+    /// * `edition_id` - The edition (`editions.id`).
+    /// * `scope` - The patron's filter, `None` when nothing is hidden.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails; callers fail closed.
+    pub async fn edition_in_scope(
+        &self,
+        edition_id: &str,
+        scope: Option<&WorkScope>,
+    ) -> Result<bool> {
+        let Some(scope) = scope else {
+            return Ok(true);
+        };
+        match self.work_of_edition(edition_id).await? {
+            Some(work_id) => self.work_in_scope(&work_id, scope).await,
+            None => Ok(false),
+        }
+    }
+
     /// One page of the values a facet has across the held works, by key.
     ///
     /// # Arguments
