@@ -165,7 +165,7 @@ impl LibraryCollections {
             )));
         }
         let mut names: Vec<String> = Vec::new();
-        let mut out = Vec::with_capacity(self.collections.len());
+        let mut out = Vec::new();
         for collection in self.collections {
             let name = collection.name.trim().to_string();
             if name.is_empty() || name.len() > MAX_COLLECTION_NAME_BYTES || name.contains('\0') {
