@@ -50,11 +50,15 @@ pub enum CopyState {
     /// The copy failed [`MAX_COPY_ATTEMPTS`] times in a row and is no
     /// longer retried on its own.
     Failed,
+    /// The destination's file disappeared outside Bookclerk and
+    /// `output.missing_files` is `mark_missing`: the copy is left alone
+    /// until an acquire of the title writes it again.
+    Missing,
 }
 
 impl CopyState {
     /// Every state, in stored order (the `edition_copies.state` CHECK list).
-    pub const ALL: [Self; 3] = [Self::Stored, Self::Pending, Self::Failed];
+    pub const ALL: [Self; 4] = [Self::Stored, Self::Pending, Self::Failed, Self::Missing];
 
     /// The stored spelling.
     #[must_use]
@@ -63,6 +67,7 @@ impl CopyState {
             Self::Stored => "stored",
             Self::Pending => "pending",
             Self::Failed => "failed",
+            Self::Missing => "missing",
         }
     }
 
@@ -96,12 +101,13 @@ pub struct EditionCopy {
 
 impl EditionCopy {
     /// Whether an acquire at `now` should write this copy: a pending copy
-    /// whose delay has passed. A stored copy needs nothing, a failed one
-    /// waits for the operator, and a pending one waits out its delay.
+    /// whose delay has passed. A stored copy needs nothing, a failed or
+    /// missing one waits for an acquire of its title, and a pending one
+    /// waits out its delay.
     #[must_use]
     pub fn wants_attempt(&self, now: DateTime<Utc>) -> bool {
         match self.state {
-            CopyState::Stored | CopyState::Failed => false,
+            CopyState::Stored | CopyState::Failed | CopyState::Missing => false,
             CopyState::Pending => self.next_attempt_at.is_none_or(|due| due <= now),
         }
     }
@@ -451,6 +457,7 @@ mod tests {
         };
         assert!(!copy(CopyState::Stored, None).wants_attempt(now));
         assert!(!copy(CopyState::Failed, None).wants_attempt(now));
+        assert!(!copy(CopyState::Missing, None).wants_attempt(now));
         assert!(copy(CopyState::Pending, None).wants_attempt(now));
         assert!(copy(CopyState::Pending, Some(now)).wants_attempt(now));
         assert!(

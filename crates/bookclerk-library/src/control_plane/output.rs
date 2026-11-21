@@ -18,8 +18,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use bookclerk_config::{
-    BadBookAction, ChapterJsonMode, FileTimestampMode, LameConfig, MultiDestinationMode,
-    NamingProfile, OutputConfig, OutputCopy, OutputFormat, PathSanitizationMode, ReplacementRule,
+    BadBookAction, ChapterJsonMode, FileTimestampMode, LameConfig, MissingFileAction,
+    MultiDestinationMode, NamingProfile, OutputConfig, OutputCopy, OutputFormat,
+    PathSanitizationMode, ReplacementRule,
 };
 
 use super::documents::{
@@ -84,6 +85,7 @@ pub const OUTPUT_SETTING_KEYS: &[&str] = &[
     "output.chapter_layout",
     "output.overwrite_existing",
     "output.multi_destination",
+    "output.missing_files",
     "output.bad_book_action",
     "output.split_mp3_max_mb",
     "output.minimum_file_duration_minutes",
@@ -193,6 +195,11 @@ pub struct OutputSettingsV1 {
     pub overwrite_existing: bool,
     /// Policy when only some enabled destinations have a title.
     pub multi_destination: MultiDestinationMode,
+    /// What happens to a stored copy whose file disappears from its
+    /// destination outside Bookclerk. Absent in documents written before
+    /// the setting existed, which read as the default.
+    #[serde(default)]
+    pub missing_files: MissingFileAction,
     /// Operator action when a title fails to acquire.
     pub bad_book_action: BadBookAction,
     /// Max MP3 part size in MiB for `split_mp3_by_size`.
@@ -500,6 +507,7 @@ impl OutputSettingsV1 {
             chapter_layout: config.chapter_layout.trim().to_ascii_lowercase(),
             overwrite_existing: config.overwrite_existing,
             multi_destination: config.multi_destination,
+            missing_files: config.missing_files,
             bad_book_action: config.bad_book_action,
             split_mp3_max_mb: config.split_mp3_max_mb,
             minimum_file_duration_minutes: config.minimum_file_duration_minutes,
@@ -551,6 +559,7 @@ impl OutputSettingsV1 {
         config.chapter_layout = self.chapter_layout.clone();
         config.overwrite_existing = self.overwrite_existing;
         config.multi_destination = self.multi_destination;
+        config.missing_files = self.missing_files;
         config.bad_book_action = self.bad_book_action;
         config.split_mp3_max_mb = self.split_mp3_max_mb;
         config.minimum_file_duration_minutes = self.minimum_file_duration_minutes;
@@ -727,6 +736,7 @@ impl OutputSettingsV1 {
             "output.chapter_layout" => self.chapter_layout.clone(),
             "output.overwrite_existing" => self.overwrite_existing.to_string(),
             "output.multi_destination" => enum_name(&self.multi_destination),
+            "output.missing_files" => self.missing_files.as_str().to_owned(),
             "output.bad_book_action" => enum_name(&self.bad_book_action),
             "output.split_mp3_max_mb" => self.split_mp3_max_mb.to_string(),
             "output.minimum_file_duration_minutes" => {
@@ -848,6 +858,11 @@ impl OutputSettingsV1 {
                         ))
                     }
                 };
+            }
+            "output.missing_files" => {
+                self.missing_files = MissingFileAction::parse(v).ok_or_else(|| {
+                    invalid("output.missing_files must be mark_missing or restore")
+                })?;
             }
             "output.bad_book_action" => {
                 self.bad_book_action = match v.to_ascii_lowercase().as_str() {
@@ -1337,6 +1352,13 @@ mod tests {
             body.get("output.multi_destination").as_deref(),
             Some("refetch_all")
         );
+        assert_eq!(
+            body.get("output.missing_files").as_deref(),
+            Some("mark_missing")
+        );
+        body.set("output.missing_files", "Restore").unwrap();
+        assert_eq!(body.get("output.missing_files").as_deref(), Some("restore"));
+        assert!(body.clone().set("output.missing_files", "ignore").is_err());
         body.set("output.bad_book_action", "Abort").unwrap();
         assert_eq!(body.get("output.bad_book_action").as_deref(), Some("abort"));
         assert!(body.clone().set("output.file_template", "<title>").is_err());
