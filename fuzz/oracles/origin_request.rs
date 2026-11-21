@@ -113,6 +113,8 @@ fn request_ok(request: &OriginRequest) -> Option<Option<IpAddr>> {
 }
 
 /// Checks one request head's JSON against the restated rules.
+// Oracle: a failed expectation is the finding the fuzzer reports.
+#[allow(clippy::expect_used)]
 fn check_request_json(json: &[u8]) {
     let decoded = decode_origin_request_frame(json);
     let Ok(request) = serde_json::from_slice::<OriginRequest>(json) else {
@@ -156,6 +158,8 @@ fn check_request_json(json: &[u8]) {
 }
 
 /// Checks a framed request body against the restated split rules.
+// Oracle: a failed expectation is the finding the fuzzer reports.
+#[allow(clippy::expect_used)]
 fn check_frame(buf: &[u8]) {
     let split = split_origin_frame(buf);
     let Some(prefix) = buf.get(..4) else {
