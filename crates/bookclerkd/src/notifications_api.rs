@@ -976,8 +976,10 @@ pub(crate) struct DeliveryQuery {
     destination_id: Option<String>,
     /// `next_cursor` of the previous page.
     cursor: Option<String>,
-    /// Page size (default 50); a value outside 1 to 200 is clamped to that
-    /// range.
+    /// Page size (default 50): a whole number, where 0 is read as 1 and
+    /// anything past 200 as 200; a negative or non-numeric value is refused
+    /// with a plain-text 400. A page may hold fewer rows than asked when the
+    /// library's database returns fewer per read.
     limit: Option<u64>,
 }
 
@@ -1046,7 +1048,8 @@ impl From<DeliveryRecord> for DeliveryJson {
 pub(crate) struct DeliveryPage {
     /// Newest first.
     deliveries: Vec<DeliveryJson>,
-    /// Pass as `cursor` for the next page; absent on the last page.
+    /// Pass as `cursor` for the next page; `null` on the last page, where
+    /// paging stops.
     #[schema(example = "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0yMVQxMDowMDowMCswMDowMCIsImlkIjoiOWU4ZCJ9")]
     next_cursor: Option<String>,
 }
@@ -1153,12 +1156,13 @@ pub(crate) struct PatronSettings {
 /// Reads the caller's notification settings: the types they can receive
 /// beyond the inbox, what they chose, and their destinations.
 ///
-/// Access: any signed-in library user, for their own settings; the
-/// operator token alone has none.
+/// Access: any signed-in library user, for their own settings, or an
+/// operator session acting as a library user; a plain operator session or
+/// the operator token has none.
 #[utoipa::path(
     get,
     path = "/api/me/notifications",
-    security(("portalSession" = [])),
+    security(("portalSession" = []), ("operatorSession" = [])),
     responses(
         (status = 200, description = "The settings.", body = PatronSettings),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
@@ -1251,12 +1255,13 @@ pub(crate) struct ChoiceBody {
 
 /// Sets what the caller gets for one patron type, replacing the defaults.
 ///
-/// Access: any signed-in library user, for their own settings; the
-/// operator token alone has none.
+/// Access: any signed-in library user, for their own settings, or an
+/// operator session acting as a library user; a plain operator session or
+/// the operator token has none.
 #[utoipa::path(
     put,
     path = "/api/me/notifications/choices/{type}",
-    security(("portalSession" = [])),
+    security(("portalSession" = []), ("operatorSession" = [])),
     params(("type" = String, Path, description = "Notification type id.")),
     request_body = ChoiceBody,
     responses(
@@ -1297,12 +1302,13 @@ pub(crate) async fn put_my_choice(
 
 /// Drops the caller's choice for one type, so the defaults apply again.
 ///
-/// Access: any signed-in library user, for their own settings; the
-/// operator token alone has none.
+/// Access: any signed-in library user, for their own settings, or an
+/// operator session acting as a library user; a plain operator session or
+/// the operator token has none.
 #[utoipa::path(
     delete,
     path = "/api/me/notifications/choices/{type}",
-    security(("portalSession" = [])),
+    security(("portalSession" = []), ("operatorSession" = [])),
     params(("type" = String, Path, description = "Notification type id.")),
     responses(
         (status = 204, description = "The defaults apply again."),
@@ -1369,12 +1375,13 @@ pub(crate) fn personal_address(
 /// (`Notifier.validateDestination`); the host checks its answer again
 /// against the declared fields before saving it.
 ///
-/// Access: any signed-in library user, for their own settings; the
-/// operator token alone has none.
+/// Access: any signed-in library user, for their own settings, or an
+/// operator session acting as a library user; a plain operator session or
+/// the operator token has none.
 #[utoipa::path(
     post,
     path = "/api/me/notifications/destinations",
-    security(("portalSession" = [])),
+    security(("portalSession" = []), ("operatorSession" = [])),
     request_body = NewPersonalBody,
     responses(
         (status = 201, description = "The destination.", body = DestinationJson),
@@ -1528,12 +1535,13 @@ fn notifier_label_fits(label: &str) -> bool {
 
 /// Deletes one of the caller's destinations.
 ///
-/// Access: any signed-in library user, for their own settings; the
-/// operator token alone has none.
+/// Access: any signed-in library user, for their own settings, or an
+/// operator session acting as a library user; a plain operator session or
+/// the operator token has none.
 #[utoipa::path(
     delete,
     path = "/api/me/notifications/destinations/{id}",
-    security(("portalSession" = [])),
+    security(("portalSession" = []), ("operatorSession" = [])),
     params(("id" = String, Path, description = "Destination id.")),
     responses(
         (status = 204, description = "The destination is gone."),
@@ -1568,12 +1576,13 @@ pub(crate) async fn delete_my_destination(
 /// Resumes one of the caller's destinations that repeated failures paused,
 /// and clears its failure count.
 ///
-/// Access: any signed-in library user, for their own settings; the
-/// operator token alone has none.
+/// Access: any signed-in library user, for their own settings, or an
+/// operator session acting as a library user; a plain operator session or
+/// the operator token has none.
 #[utoipa::path(
     post,
     path = "/api/me/notifications/destinations/{id}/resume",
-    security(("portalSession" = [])),
+    security(("portalSession" = []), ("operatorSession" = [])),
     params(("id" = String, Path, description = "Destination id.")),
     responses(
         (status = 200, description = "The destination.", body = DestinationJson),
@@ -1622,8 +1631,10 @@ pub(crate) async fn post_my_destination_resume(
 pub(crate) struct InboxQuery {
     /// `next_cursor` of the previous page.
     cursor: Option<String>,
-    /// Page size (default 50); a value outside 1 to 200 is clamped to that
-    /// range.
+    /// Page size (default 50): a whole number, where 0 is read as 1 and
+    /// anything past 200 as 200; a negative or non-numeric value is refused
+    /// with a plain-text 400. A page may hold fewer rows than asked when the
+    /// library's database returns fewer per read.
     limit: Option<u64>,
 }
 
@@ -1698,19 +1709,21 @@ pub(crate) struct InboxPage {
     /// Unread entries in the whole inbox.
     #[schema(example = 3)]
     unread: u64,
-    /// Pass as `cursor` for the next page; absent on the last page.
+    /// Pass as `cursor` for the next page; `null` on the last page, where
+    /// paging stops.
     #[schema(example = "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0yMVQxMDowMDowMCswMDowMCIsImlkIjoiMWIyYyJ9")]
     next_cursor: Option<String>,
 }
 
 /// Pages the caller's inbox, newest first.
 ///
-/// Access: any signed-in library user, for their own settings; the
-/// operator token alone has none.
+/// Access: any signed-in library user, for their own settings, or an
+/// operator session acting as a library user; a plain operator session or
+/// the operator token has none.
 #[utoipa::path(
     get,
     path = "/api/me/notifications/inbox",
-    security(("portalSession" = [])),
+    security(("portalSession" = []), ("operatorSession" = [])),
     params(InboxQuery),
     responses(
         (status = 200, description = "One page of the inbox.", body = InboxPage),
@@ -1777,12 +1790,13 @@ pub(crate) struct ReadMarked {
 
 /// Marks one inbox entry, or all of them, read.
 ///
-/// Access: any signed-in library user, for their own settings; the
-/// operator token alone has none.
+/// Access: any signed-in library user, for their own settings, or an
+/// operator session acting as a library user; a plain operator session or
+/// the operator token has none.
 #[utoipa::path(
     post,
     path = "/api/me/notifications/inbox/read",
-    security(("portalSession" = [])),
+    security(("portalSession" = []), ("operatorSession" = [])),
     request_body = ReadBody,
     responses(
         (status = 200, description = "What was marked.", body = ReadMarked),

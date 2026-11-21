@@ -160,6 +160,23 @@ pub async fn run_notify_send(
             .await?;
         return Err(JobFailedForGood(reason).into());
     }
+    // A delivery whose attempts already reached the limit (its final
+    // failure write did not land) is finished without another send.
+    if work.attempts >= MAX_SEND_ATTEMPTS {
+        return fail(
+            state,
+            &work,
+            &format!("gave up after {} attempts", work.attempts),
+            FailedAttempt::AlreadyCounted,
+            fence,
+        )
+        .await;
+    }
+    // Cancellation may have arrived while the delivery was read; no send
+    // starts after it.
+    if job_cancelled(ctx, &library).await {
+        anyhow::bail!("cancelled");
+    }
     let reply = notifier.notify_send(params).await;
     let outcome = match &reply {
         Ok(answer) => classify_send_reply(answer),

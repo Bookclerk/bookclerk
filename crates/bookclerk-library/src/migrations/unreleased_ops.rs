@@ -2358,6 +2358,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_notify_inbox_user ON notify_inbox(user_id, created_at)",
     ),
+    // Deleting a notification finds its inbox rows by this column.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_notify_inbox_notification ON notify_inbox(notification_id)",
+    ),
 ];
 
 #[cfg(test)]

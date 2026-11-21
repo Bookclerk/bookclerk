@@ -276,14 +276,30 @@ impl NewNotification {
     }
 }
 
-/// A plain-text body from labelled fields: one `name: value` line each.
+/// A plain-text body from labelled fields: one `name: value` line each,
+/// cut at a character boundary (ending in `…`) when it would pass
+/// `maxNotificationTextBytes`, so a raise within the field limits is never
+/// refused for its rendered body; the fields themselves are kept whole.
 #[must_use]
 pub fn fields_text(fields: &[NotificationField]) -> String {
-    fields
+    let text = fields
         .iter()
         .map(|f| format!("{}: {}", f.name, f.value))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    let max =
+        usize::try_from(bookclerk_plugin_abi::MAX_NOTIFICATION_TEXT_BYTES).unwrap_or(usize::MAX);
+    if text.len() <= max {
+        return text;
+    }
+    let ellipsis = '\u{2026}';
+    let mut end = max.saturating_sub(ellipsis.len_utf8());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut cut = text[..end].to_owned();
+    cut.push(ellipsis);
+    cut
 }
 
 /// The link a notifier is sent: the library's public origin and the path.
@@ -603,6 +619,23 @@ mod tests {
         ];
         assert_eq!(fields_text(&fields), "a: 1\nb: 2");
         assert_eq!(fields_text(&[]), "");
+    }
+
+    #[test]
+    fn a_long_rendering_is_cut_within_the_text_cap() {
+        // Sixteen full fields render past the cap; the body is cut at a
+        // character boundary and ends in an ellipsis.
+        let fields: Vec<NotificationField> = (b'A'..=b'P')
+            .map(|c| NotificationField {
+                name: char::from(c).to_string(),
+                value: "\u{e9}".repeat(512),
+            })
+            .collect();
+        let max = usize::try_from(bookclerk_plugin_abi::MAX_NOTIFICATION_TEXT_BYTES).unwrap();
+        let text = fields_text(&fields);
+        assert!(text.len() <= max, "{}", text.len());
+        assert!(text.ends_with('\u{2026}'));
+        assert!(text.starts_with("A: \u{e9}"));
     }
 
     #[test]

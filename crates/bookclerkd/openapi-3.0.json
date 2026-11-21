@@ -16639,7 +16639,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size (default 50); a value outside 1 to 200 is clamped to that\nrange.",
+            "description": "Page size (default 50): a whole number, where 0 is read as 1 and\nanything past 200 as 200; a negative or non-numeric value is refused\nwith a plain-text 400. A page may hold fewer rows than asked when the\nlibrary's database returns fewer per read.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -16799,7 +16799,7 @@
           "Notifications"
         ],
         "summary": "Reads the caller's notification settings: the types they can receive\nbeyond the inbox, what they chose, and their destinations.",
-        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
         "operationId": "get_my_settings",
         "responses": {
           "200": {
@@ -16916,6 +16916,9 @@
         "security": [
           {
             "portalSession": []
+          },
+          {
+            "operatorSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -16927,7 +16930,7 @@
           "Notifications"
         ],
         "summary": "Sets what the caller gets for one patron type, replacing the defaults.",
-        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
         "operationId": "put_my_choice",
         "parameters": [
           {
@@ -17112,6 +17115,9 @@
         "security": [
           {
             "portalSession": []
+          },
+          {
+            "operatorSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -17121,7 +17127,7 @@
           "Notifications"
         ],
         "summary": "Drops the caller's choice for one type, so the defaults apply again.",
-        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
         "operationId": "delete_my_choice",
         "parameters": [
           {
@@ -17242,6 +17248,9 @@
         "security": [
           {
             "portalSession": []
+          },
+          {
+            "operatorSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -17253,7 +17262,7 @@
           "Notifications"
         ],
         "summary": "Adds a personal destination for the caller.",
-        "description": "The notifier normalises and checks the address first\n(`Notifier.validateDestination`); the host checks its answer again\nagainst the declared fields before saving it.\n\nAccess: any signed-in library user, for their own settings; the\noperator token alone has none.",
+        "description": "The notifier normalises and checks the address first\n(`Notifier.validateDestination`); the host checks its answer again\nagainst the declared fields before saving it.\n\nAccess: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
         "operationId": "post_my_destination",
         "requestBody": {
           "content": {
@@ -17447,6 +17456,9 @@
         "security": [
           {
             "portalSession": []
+          },
+          {
+            "operatorSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -17458,7 +17470,7 @@
           "Notifications"
         ],
         "summary": "Deletes one of the caller's destinations.",
-        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
         "operationId": "delete_my_destination",
         "parameters": [
           {
@@ -17592,6 +17604,9 @@
         "security": [
           {
             "portalSession": []
+          },
+          {
+            "operatorSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -17603,7 +17618,7 @@
           "Notifications"
         ],
         "summary": "Resumes one of the caller's destinations that repeated failures paused,\nand clears its failure count.",
-        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
         "operationId": "post_my_destination_resume",
         "parameters": [
           {
@@ -17744,6 +17759,9 @@
         "security": [
           {
             "portalSession": []
+          },
+          {
+            "operatorSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -17755,7 +17773,7 @@
           "Notifications"
         ],
         "summary": "Pages the caller's inbox, newest first.",
-        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
         "operationId": "get_my_inbox",
         "parameters": [
           {
@@ -17770,7 +17788,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size (default 50); a value outside 1 to 200 is clamped to that\nrange.",
+            "description": "Page size (default 50): a whole number, where 0 is read as 1 and\nanything past 200 as 200; a negative or non-numeric value is refused\nwith a plain-text 400. A page may hold fewer rows than asked when the\nlibrary's database returns fewer per read.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -17913,6 +17931,9 @@
         "security": [
           {
             "portalSession": []
+          },
+          {
+            "operatorSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -17924,7 +17945,7 @@
           "Notifications"
         ],
         "summary": "Marks one inbox entry, or all of them, read.",
-        "description": "Access: any signed-in library user, for their own settings; the\noperator token alone has none.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
         "operationId": "post_my_inbox_read",
         "requestBody": {
           "content": {
@@ -18097,6 +18118,9 @@
         "security": [
           {
             "portalSession": []
+          },
+          {
+            "operatorSession": []
           }
         ],
         "x-bookclerk-access": "The operator, or any signed-in user."
@@ -46945,7 +46969,7 @@
           },
           "next_cursor": {
             "type": "string",
-            "description": "Pass as `cursor` for the next page; absent on the last page.",
+            "description": "Pass as `cursor` for the next page; `null` on the last page, where\npaging stops.",
             "example": "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0yMVQxMDowMDowMCswMDowMCIsImlkIjoiOWU4ZCJ9",
             "nullable": true
           }
@@ -48830,7 +48854,7 @@
           },
           "next_cursor": {
             "type": "string",
-            "description": "Pass as `cursor` for the next page; absent on the last page.",
+            "description": "Pass as `cursor` for the next page; `null` on the last page, where\npaging stops.",
             "example": "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0yMVQxMDowMDowMCswMDowMCIsImlkIjoiMWIyYyJ9",
             "nullable": true
           }

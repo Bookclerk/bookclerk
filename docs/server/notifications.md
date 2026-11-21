@@ -65,7 +65,8 @@ type with `POST /api/me/notifications/destinations`, and keeps at most 32
 addresses. The address is a flat object
 of strings, checked against the notifier's declared address fields and
 then by the notifier itself, which may normalise it. The notifier must be
-running to check it (`409` otherwise).
+running to check it (`409` otherwise). The stored address must fit the
+library database's cell limit, or it is refused with `400`.
 
 For each patron type, a patron's notifications go to:
 
@@ -117,6 +118,8 @@ optionally for one destination.
   instance has one session per store account it works for); more answer
   `rate_limited`, and refused raises count too.
 - A type has at most 32 routes, offers or chosen destinations.
+- A raised notification's plain-text body is its fields, one `name: value`
+  line each, cut with `…` at 16 KiB; the fields themselves are kept whole.
 - Notifications, their delivery log and inbox rows are deleted after 30
   days by the record retention pass (see
   [Jobs and scheduling](../internals/jobs.md)).

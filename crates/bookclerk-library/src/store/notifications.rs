@@ -91,7 +91,12 @@ impl NotifyCursor {
             return Err(invalid());
         }
         let cursor: Self = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-        if cursor.created_at.len() > 128 || cursor.id.len() > 128 {
+        // SQL-v1 refuses U+0000 in a bound text value.
+        if cursor.created_at.len() > 128
+            || cursor.id.len() > 128
+            || cursor.created_at.contains('\0')
+            || cursor.id.contains('\0')
+        {
             return Err(invalid());
         }
         Ok(cursor)
@@ -1056,6 +1061,17 @@ impl LibraryStore {
                     "a personal destination belongs to a patron".into(),
                 ));
             }
+        }
+        // A stored address must read back on every database: refuse one
+        // past the advertised cell limit instead of storing a row that later
+        // reads fail on.
+        let cell_cap = self.db_capabilities().max_cell_bytes;
+        if cell_cap != 0 && new.address_json.len() > usize::try_from(cell_cap).unwrap_or(usize::MAX)
+        {
+            return Err(LibraryError::Invalid(format!(
+                "the address is {} bytes; this library stores at most {cell_cap}",
+                new.address_json.len()
+            )));
         }
         let id = uuid::Uuid::new_v4().to_string();
         let now = super::now_str();

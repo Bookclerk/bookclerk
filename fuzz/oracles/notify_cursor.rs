@@ -9,7 +9,8 @@
 //! untyped reading of the JSON: a token is accepted exactly when it is at
 //! most 512 bytes of unpadded base64url whose bytes are one JSON object
 //! with exactly the keys `created_at` and `id`, each written once, each a
-//! string of at most 128 bytes. An accepted token yields those strings and
+//! string of at most 128 bytes with no U+0000 (which SQL-v1 cannot bind).
+//! An accepted token yields those strings and
 //! its re-encoding decodes to the same cursor; a refused one is `Invalid`.
 
 use bookclerk_library::{LibraryError, NotifyCursor};
@@ -74,7 +75,9 @@ fn expected(token: &str) -> Option<(String, String)> {
         return None;
     }
     let field = |key: &str| match fields.get(key) {
-        Some(Value::String(s)) if s.len() <= MAX_FIELD_BYTES => Some(s.clone()),
+        Some(Value::String(s)) if s.len() <= MAX_FIELD_BYTES && !s.contains('\0') => {
+            Some(s.clone())
+        }
         _ => None,
     };
     Some((field("created_at")?, field("id")?))
