@@ -52,10 +52,57 @@ pub trait IngressHost: Send + Sync {
     async fn stopped(&self, plugin_instance_id: &str);
 }
 
+/// The calls an [`IngressGuest`] makes on its guest; [`PluginSession`] in
+/// the host, a double in tests.
+#[async_trait]
+pub(crate) trait IngressSession: Send + Sync {
+    /// `Ingress.start`.
+    async fn start(&self) -> Result<IngressStarted, String>;
+    /// `Ingress.health`.
+    async fn health(&self) -> Result<IngressHealth, String>;
+    /// `Ingress.stop`.
+    async fn stop(&self) -> Result<(), String>;
+    /// Whether the guest process still runs.
+    fn running(&self) -> bool;
+    /// Hands the guest a socket event from its broker.
+    async fn deliver(&self, event: SocketEvent) -> Result<SocketMessageOk, String>;
+}
+
+#[async_trait]
+impl IngressSession for PluginSession {
+    async fn start(&self) -> Result<IngressStarted, String> {
+        self.ingress(|ingress| async move { ingress.start().await })
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    async fn health(&self) -> Result<IngressHealth, String> {
+        self.ingress(|ingress| async move { ingress.health().await })
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    async fn stop(&self) -> Result<(), String> {
+        self.ingress(|ingress| async move { ingress.stop().await })
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    fn running(&self) -> bool {
+        self.guest_running()
+    }
+
+    async fn deliver(&self, event: SocketEvent) -> Result<SocketMessageOk, String> {
+        self.deliver_socket_event(event)
+            .await
+            .map_err(|err| err.to_string())
+    }
+}
+
 /// One running ingress guest.
 pub(crate) struct IngressGuest {
     /// The guest's session.
-    session: Arc<PluginSession>,
+    session: Arc<dyn IngressSession>,
     /// The deployment instance it serves.
     plugin_instance_id: String,
     /// The periodic health check; aborted when the guest stops.
@@ -64,17 +111,12 @@ pub(crate) struct IngressGuest {
 
 impl IngressGuest {
     /// Wraps a spawned, opened session.
-    pub(crate) fn new(session: Arc<PluginSession>, plugin_instance_id: &str) -> Self {
+    pub(crate) fn new(session: Arc<dyn IngressSession>, plugin_instance_id: &str) -> Self {
         Self {
             session,
             plugin_instance_id: plugin_instance_id.to_string(),
             health: std::sync::Mutex::new(None),
         }
-    }
-
-    /// The guest's session.
-    pub(crate) fn session(&self) -> &Arc<PluginSession> {
-        &self.session
     }
 
     /// Asks the guest to bring the address up.
@@ -83,10 +125,7 @@ impl IngressGuest {
     ///
     /// Returns the guest's failure as text.
     pub(crate) async fn start(&self) -> Result<IngressStarted, String> {
-        self.session
-            .ingress(|ingress| async move { ingress.start().await })
-            .await
-            .map_err(|err| err.to_string())
+        self.session.start().await
     }
 
     /// Asks the guest whether it is serving.
@@ -95,10 +134,7 @@ impl IngressGuest {
     ///
     /// Returns the guest's failure as text.
     pub(crate) async fn health(&self) -> Result<IngressHealth, String> {
-        self.session
-            .ingress(|ingress| async move { ingress.health().await })
-            .await
-            .map_err(|err| err.to_string())
+        self.session.health().await
     }
 
     /// Asks the guest to take the address down, stops the health check and
@@ -113,12 +149,8 @@ impl IngressGuest {
         {
             task.abort();
         }
-        if self.session.guest_running() {
-            if let Err(err) = self
-                .session
-                .ingress(|ingress| async move { ingress.stop().await })
-                .await
-            {
+        if self.session.running() {
+            if let Err(err) = self.session.stop().await {
                 tracing::warn!(
                     plugin_instance_id = %self.plugin_instance_id,
                     error = %err,
@@ -173,9 +205,10 @@ impl SocketSink for IngressGuest {
         &self,
         event: SocketEvent,
     ) -> std::result::Result<SocketMessageOk, String> {
-        self.session
-            .deliver_socket_event(event)
-            .await
-            .map_err(|err| err.to_string())
+        self.session.deliver(event).await
     }
 }
+
+#[cfg(test)]
+#[path = "ingress_tests.rs"]
+mod tests;

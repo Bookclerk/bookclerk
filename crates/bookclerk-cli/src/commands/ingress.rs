@@ -65,42 +65,130 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let url = format!("{}/api/config/ingress", daemon_cmd::daemon_base_url(config));
     let token = daemon_cmd::operator_bearer(config).await?;
-    let change = match command {
-        IngressCommand::Status => None,
-        IngressCommand::Activate { plugin } => Some(json!({ "activate": plugin })),
-        IngressCommand::Deactivate => Some(json!({ "deactivate": true })),
-        IngressCommand::Exposure { exposure } => Some(json!({ "exposure": exposure.as_str() })),
-        IngressCommand::AcceptOrigin => Some(json!({ "accept_reported_origin": true })),
-    };
-    let status = match change {
+    let status = match change_body(&command) {
         None => daemon_cmd::get_json_async(&url, token.as_deref()).await?,
         Some(body) => daemon_cmd::post_json_async(&url, body, token.as_deref()).await?,
     };
     emit(format, &status, || print_status(&status))
 }
 
+/// The `POST /api/config/ingress` body for `command`; `None` for a read.
+fn change_body(command: &IngressCommand) -> Option<Value> {
+    match command {
+        IngressCommand::Status => None,
+        IngressCommand::Activate { plugin } => Some(json!({ "activate": plugin })),
+        IngressCommand::Deactivate => Some(json!({ "deactivate": true })),
+        IngressCommand::Exposure { exposure } => Some(json!({ "exposure": exposure.as_str() })),
+        IngressCommand::AcceptOrigin => Some(json!({ "accept_reported_origin": true })),
+    }
+}
+
 /// Prints the status in the text format.
 fn print_status(v: &Value) {
+    for line in status_lines(v) {
+        println!("{line}");
+    }
+}
+
+/// The status as text lines.
+fn status_lines(v: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
     let text = |key: &str| v[key].as_str().unwrap_or("-").to_string();
     match v["active_instance"].as_str() {
-        Some(id) => println!(
+        Some(id) => lines.push(format!(
             "ingress: on ({} instance {id})",
             v["plugin_key"].as_str().unwrap_or("unknown plugin")
-        ),
-        None => println!("ingress: off"),
+        )),
+        None => lines.push("ingress: off".into()),
     }
-    println!("exposure: {}", text("exposure"));
-    println!("origin: {}", text("origin"));
+    lines.push(format!("exposure: {}", text("exposure")));
+    lines.push(format!("origin: {}", text("origin")));
     if let Some(reported) = v["reported_origin"].as_str() {
-        println!("reported origin: {reported} (bookclerk ingress accept-origin to adopt it)");
+        lines.push(format!(
+            "reported origin: {reported} (bookclerk ingress accept-origin to adopt it)"
+        ));
     }
     let overridden = if v["operator_override"].as_bool() == Some(true) {
         " (integrations.public_origin)"
     } else {
         ""
     };
-    println!("serving as: {}{overridden}", text("public_origin"));
+    lines.push(format!("serving as: {}{overridden}", text("public_origin")));
     if let Some(blocked) = v["blocked"].as_str() {
-        println!("blocked: {blocked}");
+        lines.push(format!("blocked: {blocked}"));
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_verb_sends_one_change() {
+        assert_eq!(change_body(&IngressCommand::Status), None);
+        assert_eq!(
+            change_body(&IngressCommand::Activate {
+                plugin: "relay".into()
+            }),
+            Some(json!({ "activate": "relay" }))
+        );
+        assert_eq!(
+            change_body(&IngressCommand::Deactivate),
+            Some(json!({ "deactivate": true }))
+        );
+        for (exposure, spelling) in [
+            (Exposure::Branches, "branches"),
+            (Exposure::Library, "library"),
+        ] {
+            assert_eq!(
+                change_body(&IngressCommand::Exposure { exposure }),
+                Some(json!({ "exposure": spelling }))
+            );
+        }
+        assert_eq!(
+            change_body(&IngressCommand::AcceptOrigin),
+            Some(json!({ "accept_reported_origin": true }))
+        );
+    }
+
+    #[test]
+    fn the_status_reads_as_text() {
+        let on = json!({
+            "active_instance": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+            "plugin_key": "relay",
+            "exposure": "branches",
+            "origin": "https://a.example",
+            "reported_origin": "https://b.example",
+            "public_origin": "https://a.example",
+            "operator_override": false,
+            "blocked": null,
+        });
+        let lines = status_lines(&on);
+        assert_eq!(
+            lines[0],
+            "ingress: on (relay instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b)"
+        );
+        assert!(lines.contains(&"exposure: branches".to_string()));
+        assert!(lines
+            .iter()
+            .any(|line| line.starts_with("reported origin: https://b.example")));
+        assert!(lines.contains(&"serving as: https://a.example".to_string()));
+        print_status(&on);
+
+        let off = json!({
+            "active_instance": null,
+            "exposure": "library",
+            "operator_override": true,
+            "public_origin": "https://mine.example",
+            "blocked": "no Owner account exists yet",
+        });
+        let lines = status_lines(&off);
+        assert_eq!(lines[0], "ingress: off");
+        assert!(lines.contains(&"origin: -".to_string()));
+        assert!(lines.contains(
+            &"serving as: https://mine.example (integrations.public_origin)".to_string()
+        ));
+        assert!(lines.contains(&"blocked: no Owner account exists yet".to_string()));
     }
 }

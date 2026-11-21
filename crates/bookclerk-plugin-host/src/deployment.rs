@@ -939,7 +939,7 @@ impl LiveDeploymentRuntime {
     /// True when an ingress guest runs for `plugin_instance_id` but the
     /// daemon no longer admits it (another instance became active, or
     /// ingress was turned off); that guest is stopped.
-    async fn ingress_withdrawn(&self, plugin_instance_id: &str) -> bool {
+    pub(crate) async fn ingress_withdrawn(&self, plugin_instance_id: &str) -> bool {
         let running = self
             .ingress
             .lock()
@@ -1667,36 +1667,21 @@ async fn spawn_ingress(
         };
     }
     let guest = Arc::new(crate::ingress::IngressGuest::new(
-        Arc::clone(&session),
+        Arc::clone(&session) as Arc<dyn crate::ingress::IngressSession>,
         instance,
     ));
     if let Some(broker) = &broker {
         let sink: Arc<dyn crate::SocketSink> = guest.clone();
         broker.set_sink(Arc::downgrade(&sink));
     }
-    match guest.health().await {
-        Ok(_) => {}
-        Err(detail) => return SpawnHealth::HealthFailed { detail },
+    if let Err(health) = serve_ingress(runtime, &host, guest, instance).await {
+        return health;
     }
-    let started = match guest.start().await {
-        Ok(started) => started,
-        Err(detail) => return SpawnHealth::HealthFailed { detail },
-    };
-    if let Err(detail) = host.started(instance, started).await {
-        guest.stop(Some(&host)).await;
-        return SpawnHealth::HealthFailed { detail };
-    }
-    guest.watch_health(runtime.ingress_health_interval);
-    runtime
-        .ingress
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(instance.to_string(), Arc::clone(&guest));
     runtime
         .remember(
             instance,
             TrackedGuest {
-                process: GuestProcess::Resident(Arc::clone(guest.session())),
+                process: GuestProcess::Resident(session),
                 root: request.plugin_root.clone(),
                 config: opened_config,
                 secrets: opened_secrets,
@@ -1704,6 +1689,40 @@ async fn spawn_ingress(
         )
         .await;
     SpawnHealth::Healthy
+}
+
+/// Brings a spawned ingress guest up: health, then `start`, then the
+/// daemon's acceptance of the origin it reports. A refused origin stops the
+/// guest. On success the guest is watched and tracked as the instance's
+/// ingress.
+///
+/// # Errors
+///
+/// The deployment observation for the step that failed.
+pub(crate) async fn serve_ingress(
+    runtime: &LiveDeploymentRuntime,
+    host: &Arc<dyn crate::IngressHost>,
+    guest: Arc<crate::ingress::IngressGuest>,
+    instance: &str,
+) -> std::result::Result<(), SpawnHealth> {
+    if let Err(detail) = guest.health().await {
+        return Err(SpawnHealth::HealthFailed { detail });
+    }
+    let started = guest
+        .start()
+        .await
+        .map_err(|detail| SpawnHealth::HealthFailed { detail })?;
+    if let Err(detail) = host.started(instance, started).await {
+        guest.stop(Some(host)).await;
+        return Err(SpawnHealth::HealthFailed { detail });
+    }
+    guest.watch_health(runtime.ingress_health_interval);
+    runtime
+        .ingress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(instance.to_string(), guest);
+    Ok(())
 }
 
 /// Everything a woken on-demand integration needs to start again exactly as

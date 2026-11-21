@@ -466,3 +466,53 @@ async fn the_operator_turns_ingress_on_only_once_an_owner_exists() {
     assert_eq!(status.active_instance, None);
     assert_eq!(status.exposure, IngressExposure::Library);
 }
+
+#[tokio::test]
+async fn the_operator_accepts_a_new_name_and_the_daemon_serves_it() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, ingress, instance) = active_library(&files).await;
+    let id = instance.to_string();
+    let report = |origin: &str| IngressStarted {
+        origin: origin.into(),
+    };
+    ingress
+        .started(&id, report("https://a.example"))
+        .await
+        .unwrap();
+    ingress
+        .started(&id, report("https://b.example"))
+        .await
+        .unwrap();
+    let axum::Json(pending) = get_ingress(axum::extract::State(Arc::clone(&state)))
+        .await
+        .unwrap();
+    assert_eq!(
+        pending.reported_origin.as_deref(),
+        Some("https://b.example")
+    );
+    assert_eq!(pending.public_origin.as_deref(), Some("https://a.example"));
+    assert!(!pending.operator_override);
+
+    let accepted = change(
+        &state,
+        IngressChange {
+            accept_reported_origin: true,
+            ..IngressChange::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted.origin.as_deref(), Some("https://b.example"));
+    assert_eq!(accepted.reported_origin, None);
+    assert_eq!(accepted.public_origin.as_deref(), Some("https://b.example"));
+
+    // The operator's own `public_origin` wins and says so.
+    state.config.write().await.integrations.public_origin = Some("https://mine.example".into());
+    let unchanged = change(&state, IngressChange::default()).await.unwrap();
+    assert!(unchanged.operator_override);
+    assert_eq!(
+        unchanged.public_origin.as_deref(),
+        Some("https://mine.example")
+    );
+}
