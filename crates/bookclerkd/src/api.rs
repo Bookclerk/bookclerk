@@ -107,6 +107,11 @@ pub struct AppState {
     /// is bound at startup and outlives config reloads, so a reload that
     /// turns auth off is checked against it as well as the new config.
     pub node_api_tls_bound: OnceLock<std::net::SocketAddr>,
+    /// Set once when the host runs inside the desktop window
+    /// (`crate::embedded`), which binds no socket: every request then comes
+    /// from the person at this computer, and playback keeps their listening
+    /// state as the library's Owner (see `crate::playback`).
+    pub in_window: OnceLock<()>,
     /// Counts database swaps: bumped after [`Self::library`] is replaced so
     /// the library-link supervisor restarts its host clients on the new
     /// store.
@@ -8016,6 +8021,7 @@ tcp = {tcp}
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         })
@@ -8445,6 +8451,7 @@ tcp = {tcp}
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });
@@ -8548,6 +8555,7 @@ tcp = {tcp}
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });
@@ -8709,6 +8717,7 @@ tcp = {tcp}
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
+            in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
         });

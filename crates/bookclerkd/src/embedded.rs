@@ -78,7 +78,11 @@ pub use bookclerk_window_policy::{
 use tower_service::Service as _;
 
 use crate::api::AppState;
+
+pub(crate) mod track;
 use crate::{init_logging, start_host, HostMode, HostParts};
+pub use bookclerk_media::{PcmHeader, PcmStream};
+pub use track::TrackError;
 
 /// Largest response body the window receives. Larger answers (none of the
 /// web app's routes produce one) become `502 Bad Gateway`.
@@ -182,6 +186,8 @@ impl EmbeddedHost {
     /// The embedded host, signed in as nobody until [`Self::open_session`].
     pub(crate) fn from_host(host: HostParts, node_id: Option<String>) -> Self {
         let HostParts { state, app, .. } = host;
+        // Only ever set here, before any request is served.
+        let _ = state.in_window.set(());
         Self {
             state,
             app,
@@ -306,20 +312,10 @@ impl EmbeddedHost {
         } else {
             None
         };
-        let auth = self.state.auth_snapshot().await;
-        let (enabled, token) = (auth.enabled, auth.token.clone());
-        drop(auth);
-        let cookies = self.jar_now().cookie_header();
-        let operator = enabled && cookies.is_none() && self.needs_owner().await;
-        let credential = match (&cookies, enabled, operator) {
-            (_, false, _) => Credential::None,
-            (Some(cookies), true, _) => Credential::Cookies(cookies),
-            (None, true, true) => Credential::Operator(&token),
-            (None, true, false) => Credential::None,
-        };
+        let (enabled, credential) = self.credential_now().await;
         let post = request.method() == Method::POST;
         let path = request.uri().path().to_owned();
-        let (response, set_cookies) = serve(self.app.clone(), credential, request).await;
+        let (response, set_cookies) = serve(self.app.clone(), credential.borrow(), request).await;
         let ok = response.status().is_success();
         if post && ok && SIGN_IN_START_PATHS.contains(&path.as_str()) {
             if let Some(ttl) = sign_in_ttl(response.body()) {
@@ -333,6 +329,28 @@ impl EmbeddedHost {
             self.absorb(&set_cookies).await;
         }
         response
+    }
+
+    /// What the window presents now: the jar's cookies when it holds a
+    /// session, the operator token while the library has no Owner, and
+    /// nothing otherwise (or when operator auth is off).
+    ///
+    /// # Returns
+    ///
+    /// Whether operator auth is on, and the credential.
+    async fn credential_now(&self) -> (bool, OwnedCredential) {
+        let auth = self.state.auth_snapshot().await;
+        let (enabled, token) = (auth.enabled, auth.token.clone());
+        drop(auth);
+        if !enabled {
+            return (false, OwnedCredential::None);
+        }
+        let credential = match self.jar_now().cookie_header() {
+            Some(cookies) => OwnedCredential::Cookies(cookies),
+            None if self.needs_owner().await => OwnedCredential::Operator(token),
+            None => OwnedCredential::None,
+        };
+        (true, credential)
     }
 
     /// Whether the library has no active Owner yet, so the window acts as
@@ -493,10 +511,53 @@ impl EmbeddedHost {
         crate::live::operator_feed(Arc::clone(&self.state), send).await;
     }
 
+    /// Opens a play session's track for the window's own player, decoded
+    /// to PCM by a confined media worker from `start_ms`. The bytes are
+    /// read through the session's stream route,
+    /// so its checks apply to every block.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The track's stream path, as the session listed it.
+    /// * `start_ms` - Where to start, in milliseconds into the track.
+    ///
+    /// # Errors
+    ///
+    /// A [`TrackError`] when the path is not a session's track, the route
+    /// refuses it, or the worker cannot decode it.
+    pub async fn open_track(&self, path: &str, start_ms: u64) -> Result<PcmStream, TrackError> {
+        let (_, credential) = self.credential_now().await;
+        track::open_track(self.app.clone(), credential, path, start_ms).await
+    }
+
     /// Stops the integration watchers before the process exits, as
     /// `bookclerkd` does on shutdown.
     pub async fn shutdown(&self) {
         self.state.integrations.read().await.stop_all().await;
+    }
+}
+
+/// A [`Credential`] the embedded host owns, so a track's reads can keep
+/// presenting the one chosen when the track was opened. It has no `Debug`:
+/// it holds the operator token or session cookies.
+#[derive(Clone)]
+pub(crate) enum OwnedCredential {
+    /// See [`Credential::None`].
+    None,
+    /// See [`Credential::Operator`].
+    Operator(String),
+    /// See [`Credential::Cookies`].
+    Cookies(String),
+}
+
+impl OwnedCredential {
+    /// The borrowed form [`serve`] takes.
+    pub(crate) fn borrow(&self) -> Credential<'_> {
+        match self {
+            Self::None => Credential::None,
+            Self::Operator(token) => Credential::Operator(token),
+            Self::Cookies(cookies) => Credential::Cookies(cookies),
+        }
     }
 }
 

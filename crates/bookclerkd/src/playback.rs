@@ -148,16 +148,36 @@ fn write_failed(route: &str, err: &LibraryError) -> PlaybackError {
 
 /// The signed-in library user, or the 403 a session without one gets.
 ///
+/// In the desktop window ([`AppState::in_window`]) the listener is the
+/// patron the window is signed in as, whoever the request acts as: while
+/// that patron is elevated to the operator, or impersonating someone from
+/// the elevation, their own listening state stays theirs
+/// (`elevated_from_user_id`). Before the library has an Owner the window
+/// is the operator token and has nothing to play as. A daemon with a
+/// listener plays as the caller, so impersonation there plays as the
+/// person impersonated, as every other per-person route does.
+///
 /// # Errors
 ///
-/// A 403 for the operator token or a session linked to no library user.
+/// A 403 for the operator token, an operator session nobody elevated
+/// from (in the window), or a session linked to no library user.
 async fn listener(state: &AppState, headers: &HeaderMap) -> Result<i64, PlaybackError> {
-    caller_user_id(state, headers).await.ok_or_else(|| {
+    let no_user = || {
         refuse(
             StatusCode::FORBIDDEN,
             "this session has no library user to keep listening state for",
         )
-    })
+    };
+    if state.in_window.get().is_some() {
+        // The window plays as its own patron even while elevated or
+        // impersonating: the listening state belongs to the person at
+        // this computer, who started the elevation.
+        let auth = state.auth_snapshot().await;
+        if let Some(op) = crate::auth::resolve_operator_session(state, &auth, headers).await {
+            return op.elevated_from_user_id.ok_or_else(no_user);
+        }
+    }
+    caller_user_id(state, headers).await.ok_or_else(no_user)
 }
 
 /// The edition `id` when it exists and the caller's patron scope shows

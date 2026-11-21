@@ -256,6 +256,14 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-media"
+# The media_pcm_wire oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_pcm_wire/**",
+    "fuzz/oracles/media_pcm_wire.rs",
+]
+
+[[test_input]]
 package = "bookclerk-resolve"
 paths = ["fuzz/corpus/library_resolve/**"]
 
@@ -439,6 +447,8 @@ build = [
     "bookclerk-plugin-destination-local",
     "bookclerk-jail",
     "bookclerk-workerd",
+    # The desktop window's player test decodes through the PCM worker.
+    "bookclerk-media-worker",
 ]
 ensure_workerd = true
 
