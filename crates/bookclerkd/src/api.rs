@@ -6105,8 +6105,8 @@ struct CatalogSearchQuery {
     path = "/api/discover/recommendations",
     responses(
         (status = 200, description = "The caller's stored Discover feed.", body = bookclerk_discover::DiscoverFeed),
-        (status = 401, description = "The caller has no portal identity.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 401, description = "The caller has no portal identity, or their session ended.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
+        (status = 500, description = "The lookup failed, or the caller's scope could not be read (no feed is shown unfiltered).", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
 async fn discover_recommendations(
@@ -6179,6 +6179,19 @@ async fn discover_recommendations(
     };
     if feed.shelf_kinds.is_empty() {
         feed.shelf_kinds = bookclerk_discover::shelf_kind_catalog();
+    }
+    // A patron sees only cards inside their scope; the feed is shared by
+    // everyone with the same taste subject, so it is filtered per answer.
+    if let Some(scope) = crate::library_works::caller_scope(
+        &state,
+        &library,
+        &headers,
+        "GET /api/discover/recommendations",
+    )
+    .await
+    .map_err(|(status, Json(body))| ErrorResponse::from((status, body.error)))?
+    {
+        feed.retain_in_scope(&scope);
     }
     let files = crate::profile::files_dir(&state).await;
     for shelf in &mut feed.shelves {
@@ -6594,6 +6607,9 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
 }
 
 /// Runs a multi-store catalog search with a 15s wall budget and empty-query short circuit.
+///
+/// A patron only gets hits inside their scope: each hit's authors,
+/// narrators, series, genres and explicit flag are checked against it.
 #[utoipa::path(
     get,
     path = "/api/discover/search",
@@ -6601,6 +6617,8 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
     responses(
         (status = 200, description = "A page of catalog results.", body = bookclerk_discover::CatalogSearchPage),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("catalog query must be 256 bytes or fewer")),
+        (status = 401, description = "The caller's session ended.", body = String, content_type = "text/plain", example = json!("sign in again")),
+        (status = 500, description = "The caller's scope could not be read; no results are shown unfiltered.", body = String, content_type = "text/plain", example = json!("the library could not be read")),
         (status = 504, description = "The stores did not answer within the search budget.", body = String, content_type = "text/plain", example = json!("catalog search timed out")),
     ),
 )]
@@ -6662,6 +6680,12 @@ async fn discover_catalog_search(
         max_length_minutes: q.max_length_minutes.filter(|n| *n > 0),
     };
     let library = state.library_snapshot().await;
+    // Read before the search, so a patron whose scope cannot be read gets
+    // no results rather than unfiltered ones.
+    let scope =
+        crate::library_works::caller_scope(&state, &library, &headers, "GET /api/discover/search")
+            .await
+            .map_err(|(status, Json(body))| (status, body.error))?;
     let sources = state.sources.read().await;
     let page = timeout(
         CATALOG_SEARCH_TIMEOUT,
@@ -6697,6 +6721,9 @@ async fn discover_catalog_search(
     })?
     .map_err(internal_err)?;
     let mut page = page;
+    if let Some(scope) = &scope {
+        page.retain_in_scope(scope);
+    }
     // The PluginKey each hit's storefront pools its listings under, read
     // before the registry lock is released.
     let plugin_keys: std::collections::HashMap<String, String> = page

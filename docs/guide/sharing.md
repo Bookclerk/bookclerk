@@ -73,8 +73,14 @@ To set scopes:
    default** returns them to the default.
 
 A scope applies to the Library page: the list, search, filter menus, book
-pages and covers. Discover, the wishlist, downloads and library cards do
-not apply it yet.
+pages and covers. It also applies to **Discover**: its shelves and its
+store search show a patron only titles inside their scope. Those titles
+are judged by what the store says about them (authors, narrators,
+series, genres and the explicit mark), because the library doesn't hold
+them. A title can't carry a library tag or a collection, so a scope that
+only includes certain tags or collections shows no store titles at all.
+A person's own wishlist, downloads and library cards don't apply the
+scope yet.
 
 From the command line, `bookclerk users scope get` and
 `bookclerk users scope set` do the same (see the

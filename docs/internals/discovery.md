@@ -701,6 +701,16 @@ still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 | Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `POST /api/discover/refresh`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
 | GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
 
+A patron's scope ([ADR](../adr/patron-scopes.md)) filters the feed and
+catalog search on each answer, after the stored feed is read or the
+stores have answered. The page index can't judge titles the library
+doesn't hold, so each card or hit is checked by its own metadata
+(`WorkScope::admits_unheld`): authors, narrators, series, genres and the
+store's explicit flag (`is_explicit`, merged across stores so that one
+explicit mark wins). Shelves left empty are dropped. A search page keeps
+its cursor, so it can come back short while more pages follow. When the
+scope can't be read, the answer is refused, never sent unfiltered.
+
 Wishlists are **store-agnostic**. Every wish names the library work it is
 for: adding one resolves its ASIN, ISBN, title and authors the way a scan
 resolves a listing. A book the library does not hold gets a catalog work and
