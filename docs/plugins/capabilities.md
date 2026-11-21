@@ -157,8 +157,9 @@ network = "fetch"            # or "tcp"
 - A `fetch` value is an `http://` or `https://` URL; a bare `host[:port]`
   means `https://`. A `tcp` value is `host:port`, `[v6]:port`, a bare
   host with `default_port`, or a URL of any scheme. A value with a user
-  name or password, a percent-encoded or wildcard host, or no usable port
-  names no destination.
+  name or password, a percent-encoded or wildcard host, a host name past
+  DNS limits (253 bytes, labels of 1-63), or no usable port names no
+  destination.
 - Saving a value grants nothing. The host derives the one destination it
   names, and the [consent form](#approving-in-settings) lists it with the
   setting as its source. The plugin reaches it only once the operator

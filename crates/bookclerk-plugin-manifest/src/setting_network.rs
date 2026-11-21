@@ -356,12 +356,19 @@ fn parse_port(text: &str) -> Result<u16, SettingDestinationError> {
     text.parse().map_err(|_| SettingDestinationError::Port)
 }
 
+/// Longest host name DNS carries, in bytes (RFC 1035 section 2.3.4, without
+/// the root label).
+const MAX_HOST_NAME_BYTES: usize = 253;
+
+/// Longest DNS label, in bytes (RFC 1035 section 2.3.4).
+const MAX_HOST_LABEL_BYTES: usize = 63;
+
 /// A canonical IP literal or IDNA-normalized name; never a wildcard.
 ///
 /// # Errors
 ///
 /// [`SettingDestinationError::Host`] for an empty, wildcard, zone-scoped or
-/// otherwise invalid host.
+/// otherwise invalid host, or a name past DNS length limits.
 fn normalize_host(host: &str) -> Result<String, SettingDestinationError> {
     let host = host.trim_end_matches('.');
     if host.is_empty() || host.contains('*') || host.contains('%') {
@@ -376,6 +383,16 @@ fn normalize_host(host: &str) -> Result<String, SettingDestinationError> {
     if !name
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(SettingDestinationError::Host);
+    }
+    // DNS limits: at most 253 bytes, every label 1-63 bytes. This also keeps
+    // the display form (scheme and port added) within a setting value's
+    // length, so a destination always re-derives from what it shows.
+    if name.len() > MAX_HOST_NAME_BYTES
+        || name
+            .split('.')
+            .any(|label| label.is_empty() || label.len() > MAX_HOST_LABEL_BYTES)
     {
         return Err(SettingDestinationError::Host);
     }
@@ -522,5 +539,26 @@ mod tests {
             fetch(&long).unwrap_err(),
             SettingDestinationError::Malformed
         );
+    }
+
+    #[test]
+    fn names_past_dns_limits_are_refused() {
+        // Short enough as a value, but the display form would not be.
+        let host = ["a".repeat(60).as_str(); 17].join(".");
+        assert_eq!(
+            fetch(&format!("{}:29555", &host[..1012])).unwrap_err(),
+            SettingDestinationError::Host
+        );
+        assert_eq!(
+            fetch(&format!("https://{}.example", "a".repeat(64))).unwrap_err(),
+            SettingDestinationError::Host
+        );
+        assert_eq!(
+            fetch("https://a..example").unwrap_err(),
+            SettingDestinationError::Host
+        );
+        let longest = ["a".repeat(63).as_str(); 4].join(".");
+        assert_eq!(longest.len(), 255);
+        assert!(fetch(&format!("https://{}", &longest[..253])).is_ok());
     }
 }

@@ -151,8 +151,8 @@ only that. The others check:
   every rule answers the same without it, and it labels only its own host
   and port.
 - **`setting_destination`**: an accepted value derives one destination
-  with a port and a host free of wildcards, percent signs and whitespace,
-  never from a value with credentials. Deriving its display form gives it
+  with a port and a host free of wildcards, percent signs and whitespace
+  (a name within DNS limits), never from a value with credentials. Deriving its display form gives it
   back, its grant entries are already normalized (the `domains` entry
   names exactly its port), and its scope agrees with an independent
   reading of the host. The shared oracle is
