@@ -88,6 +88,31 @@ impl ArchiveFormat {
         }
     }
 
+    /// Recognises a plugin archive from its first bytes.
+    ///
+    /// The bytes decide, never the file name or the target: a package built
+    /// on one platform for another still extracts, and a mislabelled file is
+    /// refused rather than handed to the wrong parser.
+    ///
+    /// # Arguments
+    ///
+    /// * `head` - the archive's leading bytes; four are enough.
+    ///
+    /// # Returns
+    ///
+    /// [`ArchiveFormat::TarGz`] for a gzip stream, [`ArchiveFormat::Zip`]
+    /// for a zip local-file or empty-archive header, `None` for anything else.
+    #[must_use]
+    pub fn sniff(head: &[u8]) -> Option<Self> {
+        if head.starts_with(&[0x1f, 0x8b]) {
+            Some(Self::TarGz)
+        } else if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") {
+            Some(Self::Zip)
+        } else {
+            None
+        }
+    }
+
     /// File extension without dot (for example `m4b` or `mp3`).
     #[must_use]
     pub fn extension(self) -> &'static str {
@@ -142,6 +167,24 @@ mod tests {
         );
         assert!(uses_zip("windows-x64"));
         assert!(!uses_zip("linux-x64-gnu"));
+    }
+
+    #[test]
+    fn sniffs_the_format_from_the_bytes() {
+        assert_eq!(
+            ArchiveFormat::sniff(&[0x1f, 0x8b, 8, 0]),
+            Some(ArchiveFormat::TarGz)
+        );
+        assert_eq!(
+            ArchiveFormat::sniff(b"PK\x03\x04"),
+            Some(ArchiveFormat::Zip)
+        );
+        assert_eq!(
+            ArchiveFormat::sniff(b"PK\x05\x06"),
+            Some(ArchiveFormat::Zip)
+        );
+        assert_eq!(ArchiveFormat::sniff(b"ustar"), None);
+        assert_eq!(ArchiveFormat::sniff(b""), None);
     }
 
     #[test]
