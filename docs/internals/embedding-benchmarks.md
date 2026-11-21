@@ -172,7 +172,40 @@ the kept tokens still embeds, from those pieces.
 A plain static distillation of multilingual-e5-small (model2vec, with no
 further training) scored 0.14 on Open Library, against 0.45 for
 potion-retrieval-32M. Good static models need an extra training pass per
-language, so trimming an existing model is the cheaper route.
+language; the next section measures that pass.
+
+## Trained static models
+
+A static model can be trained per language so that the average of its
+token vectors matches a transformer's output (tokenlearn, the method
+behind the potion models). Five such models were trained on one consumer
+GPU (8 GB): 1 million passages each, the teacher run in 16-bit floats,
+outputs reduced to 256 dimensions. Each was then trimmed to the tokens it
+saw in training and stored as 8-bit integers.
+
+| Model | Open Library English P@10 | Wikipedia English | Wikipedia German | English to German | int8 size |
+| --- | --- | --- | --- | --- | --- |
+| potion-retrieval-32M (published) | 0.451 | 0.419 | 0.163 | 0.245 | 32 MB |
+| potion-base-32M (published) | 0.384 | 0.336 | 0.140 | 0.183 | 32 MB |
+| English, bge-base teacher | 0.379 | 0.368 | 0.208 | 0.215 | 18 MB |
+| English, multilingual-e5-small teacher | 0.270 | 0.236 | 0.142 | 0.176 | 46 MB |
+| German, multilingual-e5-small teacher | 0.143 | 0.184 | 0.237 | 0.160 | 42 MB |
+| German, arctic-embed-m-v2.0 teacher | 0.199 | 0.255 | 0.217 | 0.239 | 42 MB |
+| German, bge-m3 teacher | 0.290 | 0.285 | 0.202 | 0.256 | 42 MB |
+| multilingual-e5-small, trimmed (transformer) | 0.327 | 0.417 | 0.358 | 0.341 | 48 MB |
+| arctic-embed-m-v2.0, trimmed (transformer) | 0.459 | 0.482 | 0.398 | 0.421 | 154 MB |
+
+- The English bge-base run reproduces potion-base-32M (0.379 against
+  0.384), so the method was applied correctly.
+- Training for German lifts German P@10 from 0.163 (potion-retrieval) to
+  at most 0.237, which is about 60% of the transformers' 0.36 to 0.40.
+- A larger teacher does not close the gap: bge-m3 (568M parameters) gives
+  the best cross-language scores of the static models but a lower German
+  score than the e5-small student.
+- Trimming and 8-bit storage cost less than 0.005 P@10, and every static
+  model embeds a text in about 0.1 ms on one core.
+- Each run took 1.2 to 5 hours, so building models per language in CI is
+  feasible; the quality is what limits them.
 
 ## What the results suggest
 
@@ -181,6 +214,9 @@ language, so trimming an existing model is the cheaper route.
 - For a multilingual library, multilingual-e5-small trimmed to the
   library's languages fits a small VPS, and arctic-embed-m-v2.0 trimmed
   the same way fits too and scores higher, at about 2.7 times the CPU.
+- Static models trained per language match potion's speed but not a
+  transformer's accuracy outside English. Shelves rank vectors computed
+  ahead of time, so their speed matters mostly for request-time work.
 - Descriptions are the main signal. A text sample can be added later as a
   background pass: at 8 chunks a book, 1,000 books take about 10 minutes
   with trimmed e5-small on a small VPS.
