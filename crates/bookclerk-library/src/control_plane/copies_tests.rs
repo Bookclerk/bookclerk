@@ -219,8 +219,12 @@ async fn a_patron_scope_decides_the_copies_a_person_may_take_under_every_profile
         let name = profile.name();
         let store = memory(profile).await.into_store();
         let riley = library_with_a_copy(&store).await;
-        let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
-        let work = store.work_id_for_book(&record.uuid).await.unwrap().unwrap();
+        let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
+        let work = store
+            .work_of_holding(&record.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         store.refresh_library_works(&[work]).await.unwrap();
         let sam = store
             .create_user(UserRole::Member, Some("Sam"), None)

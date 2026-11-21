@@ -314,7 +314,13 @@ async fn a_persons_pages_follow_their_patron_scope_under_every_profile() {
             .await
             .unwrap();
         let rec = store.upsert_book(&other).await.unwrap();
-        works.push(store.work_id_for_book(&rec.uuid).await.unwrap().unwrap());
+        works.push(
+            store
+                .work_of_holding(&rec.holding_id)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
         store.refresh_library_works(&works).await.unwrap();
         let no_ann = PatronScope {
             rules: vec![ScopeRule {
