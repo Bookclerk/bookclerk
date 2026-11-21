@@ -87,7 +87,7 @@ boundary extends it.
 | `instance_config` | A plugin instance's settings, table rows included: the `settings` object of `PUT /api/config/plugin-instances/{id}/config` and the row text of `bookclerk plugins config set` | `bookclerk-library::control_plane::PluginInstanceConfigV1::validate`, `parse_setting_text` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
-| `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
+| `branch_request` | An interlibrary request, the body of `POST /api/branch-requests`, and a request that the library download a book it holds, the body of `POST /api/download-requests` | `bookclerk-library::control_plane::parse_branch_request`, `parse_download_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
 | `upload_manifest` | What a patron sends to start and fill an upload: the body of `POST /api/uploads` and the `Upload-Offset` header of each `PATCH /api/uploads/{id}/files/{member_no}` | `bookclerk-library::control_plane::parse_upload_manifest`, `parse_upload_offset` |
 | `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
@@ -744,7 +744,10 @@ only that. The others check:
   a string), where the trimmed `work_id` is 1 to 64 ASCII letters, digits
   and `-`, and a trimmed `node_id` is 1 to 58 lowercase ASCII letters,
   digits, `.`, `_` and `-`. The parser then returns those trimmed ids,
-  and otherwise refuses it as `Invalid`. The shared oracle is
+  and otherwise refuses it as `Invalid`. The download request parser reads
+  the same bytes: it accepts exactly the bodies the branch request parser
+  accepts that have no `node_id` key at all, with the same trimmed work
+  id, and refuses the rest as `Invalid`. The shared oracle is
   `fuzz/oracles/branch_request.rs`, replayed from `bookclerk-library`.
 - **`title_meta_fill`**: the first byte declares `detailByProductId` and
   `detailByIsbn` for four fake stores; the rest is the query body, read as

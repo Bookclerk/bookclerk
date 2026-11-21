@@ -186,8 +186,13 @@ The list also shows books the library doesn't have yet but one of its
 branches does, marked **On a branch of** *library*. Choose **Request** to
 ask the library to fetch one from its branch, as you could on the library
 itself. The request shows with your other requests there, and the book
-joins the library's list once the branch sends it. If the library's
-administrator hasn't allowed you to request books, the button says so.
+joins the library's list once the branch sends it.
+
+A book on one of the library's store accounts that the library hasn't
+downloaded yet has a **Request** button too. Choose it to have the
+library download the book on that account; once the library has its copy,
+your server can use it like any other. If the library's administrator
+hasn't allowed you to request books, the button says so.
 
 A server that is already a branch of a library shows your books there
 through that link, so it can't also hold a card for it.

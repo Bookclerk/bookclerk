@@ -20279,7 +20279,8 @@
         "tags": [
           "Configuration"
         ],
-        "summary": "`POST /api/config/clerk/request`: asks a library this install holds a\ncard for to fetch a book from one of its branches, with the card.",
+        "summary": "`POST /api/config/clerk/request`: asks a library this install holds a\ncard for, with the card, to get a copy of a book: from one of its\nbranches (`from` `branch`) or by downloading it on one of its own store\naccounts (`from` `library`).",
+        "description": "Only an active Owner of this install, or its operator, may send it: the\nrequest goes out with this install's library card.",
         "operationId": "post_clerk_request",
         "requestBody": {
           "content": {
@@ -20293,7 +20294,7 @@
         },
         "responses": {
           "200": {
-            "description": "The library took the request; it shows there with the person's other requests.",
+            "description": "The library took the request; it shows there with the person's other requests, or as a download in its jobs.",
             "content": {
               "application/json": {
                 "schema": {
@@ -20303,7 +20304,7 @@
             }
           },
           "400": {
-            "description": "The work or node id is malformed (`invalid_request`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The work or node id is malformed, or a node id was given with `from` `library` (`invalid_request`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -20372,7 +20373,7 @@
             }
           },
           "404": {
-            "description": "This install holds no active card for that library (`not_found`), or no branch of the library lists the work now (`not_listed`).",
+            "description": "This install holds no active card for that library (`not_found`), or no branch of the library lists the work now, or none of its store accounts holds it (`not_listed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -20381,6 +20382,20 @@
                 "example": {
                   "detail": "no branch of that library lists this book now",
                   "error": "not_listed"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The library already has a copy of the work (`already_there`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "the library already has a copy; it shows here after the next refresh",
+                  "error": "already_there"
                 }
               }
             }
@@ -28958,6 +28973,240 @@
           },
           "503": {
             "description": "The job queue is full; try again later. When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again; sent only with `session_check_unavailable`."
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "the job queue is full"
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/download-requests": {
+      "post": {
+        "tags": [
+          "Wishlist"
+        ],
+        "summary": "Asks this library to download a book it holds but has no copy of.",
+        "description": "The work must be on one of the library's store accounts, with no\nedition of it downloaded yet. The library downloads the first such\nedition (in edition id order) on the account that holds it, counted\nagainst that account's pace. Asking again while that download waits\nor runs returns it. A library card (a clerk) may ask, as may any\nsigned-in patron whose member controls allow requesting books.",
+        "operationId": "create_download_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The download was queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadRequestQueued"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The work id is malformed. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "invalid work_id"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's member controls turn requesting books off. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "this library's administrator hasn't allowed you to ask for books"
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No store account of this library holds the work.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b on this library's store accounts not found"
+              }
+            }
+          },
+          "409": {
+            "description": "The library already has a copy, or no node can run the download.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "this library already has a copy of work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `work_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is full or admission is paused; try again later. When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -48786,7 +49035,8 @@
         "description": "`POST /api/config/clerk/request` body.",
         "required": [
           "library_id",
-          "work_id"
+          "work_id",
+          "from"
         ],
         "properties": {
           "library_id": {
@@ -48799,14 +49049,30 @@
             "description": "The library's own work id: 1 to 64 ASCII letters, digits and `-`.",
             "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
           },
+          "from": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClerkRequestFrom"
+              }
+            ],
+            "description": "Where the copy comes from: the edition's `request.from` in the\nwindow books."
+          },
           "node_id": {
             "type": "string",
-            "description": "The library's branch to ask, from the work's `available_through`\nthere; absent asks the first branch that lists it.",
+            "description": "The library's branch to ask, from the work's `available_through`\nthere; absent asks the first branch that lists it. Only with\n`from` `branch`.",
             "example": "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e",
             "nullable": true
           }
         },
         "additionalProperties": false
+      },
+      "ClerkRequestFrom": {
+        "type": "string",
+        "description": "Where a clerk's request asks the library to get a copy from.",
+        "enum": [
+          "branch",
+          "library"
+        ]
       },
       "ClerkRequestSent": {
         "type": "object",
@@ -50637,6 +50903,47 @@
             "type": "string",
             "description": "Audit identity of the last writer.",
             "example": "operator"
+          }
+        }
+      },
+      "DownloadRequestBody": {
+        "type": "object",
+        "description": "`POST /api/download-requests` body: the work to download.",
+        "required": [
+          "work_id"
+        ],
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "description": "This library's work id, as its window books and search name it.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DownloadRequestQueued": {
+        "type": "object",
+        "description": "`POST /api/download-requests` answer.",
+        "required": [
+          "job_id",
+          "edition_id",
+          "already_queued"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "The acquire job, as `/api/jobs` lists it.",
+            "example": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "edition_id": {
+            "type": "string",
+            "description": "The edition being downloaded.",
+            "example": "5c2e8f1a-9b3d-4e7f-a1c2-d3e4f5a6b7c8"
+          },
+          "already_queued": {
+            "type": "boolean",
+            "description": "`true` when a download of that edition was already waiting or\nrunning; `job_id` is that download.",
+            "example": false
           }
         }
       },
@@ -67826,10 +68133,28 @@
             "description": "True when this install's person holds it there through a store\naccount of their own; false for a book only other people there\nhold.",
             "example": true
           },
-          "requestable_work": {
-            "type": "string",
-            "description": "The library's own work id to ask it for this edition with\n(`POST /api/config/clerk/request`): set when this install holds a\ncard for the library, the library holds no copy, and one of its\nbranches lists it. Absent otherwise.",
-            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b",
+          "request": {
+            "description": "How to ask the library for a copy of this edition\n(`POST /api/config/clerk/request`): set when this install holds a\ncard for the library and the library holds no copy, while one of\nits branches lists it (`from` is `branch`) or one of its own store\naccounts holds it (`from` is `library`). Absent otherwise.",
+            "type": "object",
+            "required": [
+              "work_id",
+              "from"
+            ],
+            "properties": {
+              "work_id": {
+                "type": "string",
+                "description": "The library's own work id to ask for.",
+                "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+              },
+              "from": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ClerkRequestFrom"
+                  }
+                ],
+                "description": "Where the copy would come from."
+              }
+            },
             "nullable": true
           }
         }
@@ -67859,6 +68184,29 @@
               "$ref": "#/components/schemas/WindowEditionView"
             },
             "description": "The editions, in library then store order; the first names the entry."
+          }
+        }
+      },
+      "WindowRequestView": {
+        "type": "object",
+        "description": "How a clerk asks a library for a copy of one edition in [`WindowBooks`].",
+        "required": [
+          "work_id",
+          "from"
+        ],
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "description": "The library's own work id to ask for.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+          },
+          "from": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClerkRequestFrom"
+              }
+            ],
+            "description": "Where the copy would come from."
           }
         }
       },
