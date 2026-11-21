@@ -1,0 +1,5 @@
+xychart-beta horizontal
+  title "Peak RAM on a small VPS (MB)"
+  x-axis [e5-small, e5-small-trimmed, arctic, arctic-trimmed]
+  y-axis "MB" 0 --> 800
+  bar [471, 155, 707, 286]

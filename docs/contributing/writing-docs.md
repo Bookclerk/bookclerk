@@ -141,7 +141,13 @@ flowchart TB
 ````
 
 - Use a flowchart (`flowchart`), state diagram (`stateDiagram-v2`),
-  sequence, class or ER diagram. The site shows any other type as code.
+  sequence, class or ER diagram, or an XY chart (`xychart-beta`) for
+  numbers. The site shows any other type as code.
+- In an XY chart, write axis labels without quotes or spaces
+  (`x-axis [e5-small, arctic-m-v2]`): the site's renderer prints the
+  quotes. Use one `bar` or `line` series where you can, `horizontal` when
+  the labels are long, and put the same numbers in a table beside it so
+  they can be read exactly.
 - Leave out `style`, `classDef` and `click` lines: the site colors the
   diagram itself, and a diagram that sets its own colors is shown as code.
 - Lay out anything wider than four or five boxes top to bottom
