@@ -687,15 +687,22 @@ impl CoverService {
                     Ok((bytes, policy)) => {
                         let input_bytes = bytes.len();
                         let process_started = std::time::Instant::now();
-                        let stored = self.store(&**backend, &dir, &key, bytes, policy).await;
+                        let processed = backend.process(bytes).await;
+                        let process_time = process_started.elapsed();
+                        let write_started = std::time::Instant::now();
+                        let stored = match processed {
+                            Ok(set) => Ok(self.keep(&dir, &key, set, policy).await),
+                            Err(failure) => Err(failure),
+                        };
                         // The split a slow cover response can't show: time
                         // waiting for another request's fetch of the same
-                        // cover, the download, and the media worker
-                        // (including its queue).
+                        // cover, the download, the media worker (including
+                        // its queue), and the cache write.
                         tracing::debug!(
                             wait_ms = millis(waited),
                             fetch_ms = millis(fetch_time),
-                            process_ms = millis(process_started.elapsed()),
+                            process_ms = millis(process_time),
+                            write_ms = millis(write_started.elapsed()),
                             input_bytes,
                             ok = stored.is_ok(),
                             "cover fetched and processed"
@@ -1016,10 +1023,29 @@ impl CoverService {
         policy: UpstreamPolicy,
     ) -> Result<CoverSet, CoverFailure> {
         let set = backend.process(bytes).await?;
+        Ok(self.keep(dir, key, set, policy).await)
+    }
+
+    /// Writes processed images as the entry for `key`, unless upstream said
+    /// `no-store`, replacing any older copy, and indexes it. With
+    /// `no-store`, any older copy is deleted instead. A failed write is
+    /// logged and not returned, so the request still gets its image.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Cover cache directory.
+    /// * `key` - Cache key of the cover's URL.
+    /// * `set` - The processed images.
+    /// * `policy` - Upstream's caching headers for this download.
+    ///
+    /// # Returns
+    ///
+    /// `set`, whether or not it was written.
+    async fn keep(&self, dir: &Path, key: &str, set: CoverSet, policy: UpstreamPolicy) -> CoverSet {
         let fresh_for = match policy.storage {
             Storage::DoNotStore => {
                 self.forget(dir, key).await;
-                return Ok(set);
+                return set;
             }
             Storage::Store { fresh_for } => fresh_for,
         };
@@ -1065,7 +1091,7 @@ impl CoverService {
             // Still serve this request; the next one tries the write again.
             Err(err) => tracing::warn!(error = %err, "could not cache a cover"),
         }
-        Ok(set)
+        set
     }
 
     /// The retention limits in force on this node.

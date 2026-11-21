@@ -335,8 +335,8 @@ at once.
 
 Each cover a request downloads logs a DEBUG line, `cover fetched and
 processed`, with `wait_ms` (waiting for another request's download of the
-same cover), `fetch_ms` (the download) and `process_ms` (the media worker,
-including its queue). That way a slow cover response in a diagnostics
+same cover), `fetch_ms` (the download), `process_ms` (the media worker,
+including its queue) and `write_ms` (writing it to the cover cache). That way a slow cover response in a diagnostics
 report shows where its time went. A background batch logs `cover prefetch
 batch done` with its counts and times.
 
