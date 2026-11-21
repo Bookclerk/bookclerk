@@ -77,7 +77,6 @@ async fn a_branch_reads_its_librarys_books_whether_or_not_it_keeps_copies() {
         .unwrap();
     a.scope(plugin, "audible")
         .upsert_book(&NewBook {
-            uuid: None,
             product_id: ASIN.into(),
             plugin_key: plugin.into(),
             source: "audible".into(),

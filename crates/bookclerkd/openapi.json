@@ -28410,7 +28410,7 @@
             }
           },
           "401": {
-            "description": "The caller has no portal identity.",
+            "description": "The caller has no portal identity, or their session ended.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -28457,7 +28457,7 @@
             }
           },
           "500": {
-            "description": "The lookup failed.",
+            "description": "The lookup failed, or the caller's scope could not be read (no feed is shown unfiltered).",
             "content": {
               "text/plain": {
                 "schema": {
@@ -28919,6 +28919,7 @@
           "Discover"
         ],
         "summary": "Runs a multi-store catalog search with a 15s wall budget and empty-query short circuit.",
+        "description": "A patron only gets hits inside their scope: each hit's authors,\nnarrators, series, genres and explicit flag are checked against it.",
         "operationId": "discover_catalog_search",
         "parameters": [
           {
@@ -29139,17 +29140,13 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller's session ended.",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "type": "string"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "sign in again"
               }
             }
           },
@@ -29186,6 +29183,17 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "500": {
+            "description": "The caller's scope could not be read; no results are shown unfiltered.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "the library could not be read"
               }
             }
           },
@@ -50282,6 +50290,14 @@
             "description": "When `Some(true)`, the edition is marked abridged by the storefront.",
             "example": false
           },
+          "is_explicit": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "When `Some(true)`, a storefront marks the edition explicit (adult)\ncontent; `None` when none said.",
+            "example": false
+          },
           "rating_overall": {
             "type": [
               "number",
@@ -63725,6 +63741,14 @@
             "description": "BCP-47 / storefront language code (`en`, `de`, …) when known.",
             "example": "en"
           },
+          "is_explicit": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "When `Some(true)`, a storefront marks the edition explicit (adult)\ncontent; `None` when none said (a wishlist entry says nothing).",
+            "example": false
+          },
           "wishers": {
             "type": "array",
             "items": {
@@ -66105,32 +66129,32 @@
           },
           "books": {
             "type": "integer",
-            "description": "Total title rows in the library.",
+            "description": "Held works in the library (the works page index).",
             "example": 412,
             "minimum": 0
           },
           "acquired": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles whose `acquire_status` is `acquired`.",
+            "description": "Held works whose furthest acquire state is `acquired`.",
             "example": 380
           },
           "pending": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles still needing acquire (`not_acquired`).",
+            "description": "Held works still needing acquire (`not_acquired`).",
             "example": 27
           },
           "error": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles stuck in `error` after a failed acquire.",
+            "description": "Held works stuck in `error` after a failed acquire.",
             "example": 1
           },
           "in_progress": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles currently `queued` or `downloading`.",
+            "description": "Held works currently `queued` or `downloading`.",
             "example": 4
           },
           "listen": {

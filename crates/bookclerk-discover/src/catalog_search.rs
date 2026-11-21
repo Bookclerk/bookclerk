@@ -135,6 +135,11 @@ pub struct CatalogSearchHit {
     #[serde(default)]
     #[schema(example = false)]
     pub is_abridged: Option<bool>,
+    /// When `Some(true)`, a storefront marks the edition explicit (adult)
+    /// content; `None` when none said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = false)]
+    pub is_explicit: Option<bool>,
     /// Aggregate listener rating on the storefront's scale when known.
     #[serde(default)]
     #[schema(example = 4.5)]
@@ -594,6 +599,7 @@ pub async fn catalog_search_page(
                         rating_overall: hit.rating_overall,
                         rating_count: hit.rating_count,
                         is_abridged: hit.is_abridged,
+                        is_explicit: hit.is_explicit,
                         store_rank,
                         work_id: None,
                         expression_id: None,
@@ -924,6 +930,7 @@ fn candidate_to_hit(work_key: String, c: StorefrontCandidate, region: &str) -> C
         genres: c.categories,
         language: c.language,
         is_abridged: c.is_abridged,
+        is_explicit: c.is_explicit,
         rating_overall: c.rating_overall,
         rating_count: c.rating_count,
         price_cents: c.price_cents,
@@ -1390,6 +1397,7 @@ pub(crate) mod tests {
             rating_overall: None,
             rating_count: None,
             is_abridged: None,
+            is_explicit: None,
             store_rank: Some(0),
             work_id: None,
             expression_id: None,
@@ -1645,6 +1653,7 @@ pub(crate) mod tests {
                     rating_overall: None,
                     rating_count: None,
                     is_abridged: None,
+                    is_explicit: None,
                     store_rank: None,
                     work_id: None,
                     expression_id: None,

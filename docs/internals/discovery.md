@@ -359,9 +359,8 @@ Per [Open Library API guidelines](https://openlibrary.org/developers/api):
   work only takes the fields it lacks
 - Editions already enriched are skipped (the edition's `enrich_source`
   `metadata:<provider>`, or the legacy `openlibrary`) — provenance cache.
-  Until the `books` table is retired, the edition's `books` rows are
-  written first, each taking only the fields it lacks; then the work,
-  expression and cover; and the edition is marked last. A failure before
+  The work, expression and cover are written first, each taking only the
+  fields it lacks, and the edition is marked last. A failure before
   the mark keeps whatever was already written and leaves the edition
   unmarked, so a later run asks again while any of its gaps is still open
 - For bulk data, use [monthly dumps](https://openlibrary.org/data), not the API
@@ -708,6 +707,16 @@ still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 | CLI | `bookclerk discover recommend` (prints shelves), `embed`, `sync-listening`, `wishlist …` |
 | Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `POST /api/discover/refresh`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
 | GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
+
+A patron's scope ([ADR](../adr/patron-scopes.md)) filters the feed and
+catalog search on each answer, after the stored feed is read or the
+stores have answered. The page index can't judge titles the library
+doesn't hold, so each card or hit is checked by its own metadata
+(`WorkScope::admits_unheld`): authors, narrators, series, genres and the
+store's explicit flag (`is_explicit`, merged across stores so that one
+explicit mark wins). Shelves left empty are dropped. A search page keeps
+its cursor, so it can come back short while more pages follow. When the
+scope can't be read, the answer is refused, never sent unfiltered.
 
 Wishlists are **store-agnostic**. Every wish names the library work it is
 for: adding one resolves its ASIN, ISBN, title and authors the way a scan

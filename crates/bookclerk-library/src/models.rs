@@ -16,25 +16,25 @@ pub enum AcquireStatus {
     Downloading,
     /// Primary audio artifact is stored and library status is liberated.
     Acquired,
-    /// Last acquire attempt failed; see `error_message` on the book row.
+    /// Last acquire attempt failed; see the edition's `error_message`.
     Error,
 }
 
-/// `books` row counts per [`AcquireStatus`], read in one grouped query
-/// (see `LibraryStore::count_books_by_status`).
+/// Held work counts per [`AcquireStatus`], read in one grouped query
+/// (see `LibraryStore::count_works_by_status`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AcquireStatusCounts {
-    /// Every row, including any with a status this build does not know.
+    /// Every work, including any with a status this build does not know.
     pub total: i64,
-    /// Rows in [`AcquireStatus::NotAcquired`].
+    /// Works in [`AcquireStatus::NotAcquired`].
     pub not_acquired: i64,
-    /// Rows in [`AcquireStatus::Queued`].
+    /// Works in [`AcquireStatus::Queued`].
     pub queued: i64,
-    /// Rows in [`AcquireStatus::Downloading`].
+    /// Works in [`AcquireStatus::Downloading`].
     pub downloading: i64,
-    /// Rows in [`AcquireStatus::Acquired`].
+    /// Works in [`AcquireStatus::Acquired`].
     pub acquired: i64,
-    /// Rows in [`AcquireStatus::Error`].
+    /// Works in [`AcquireStatus::Error`].
     pub error: i64,
 }
 
@@ -576,150 +576,6 @@ pub struct AccountLinkRecord {
     pub source: String,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: DateTime<Utc>,
-}
-
-/// Book / library item (one ownership row per store product per account).
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct BookRecord {
-    /// Surrogate primary key assigned by the database.
-    #[schema(example = 412)]
-    pub id: i64,
-    /// Stable UUID for this row (API / foreign-key identity).
-    #[schema(example = "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31")]
-    pub uuid: String,
-    /// Provenance-qualified PluginKey that owns the account.
-    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
-    pub plugin_key: String,
-    /// Display alias of the owning plugin (`audible`, `libro`, …).
-    #[schema(example = "libro")]
-    pub source: String,
-    /// Store or operator account id this row belongs to.
-    #[schema(example = "reader@example.com")]
-    pub account_id: String,
-    /// Storefront product id (ASIN, ISBN, UUID, …).
-    #[schema(example = "9780441478125")]
-    pub product_id: String,
-    /// Audible ASIN when known (`None` for Libro-only rows without enrichment).
-    #[schema(example = "B002V0QK4C")]
-    pub asin: Option<String>,
-    /// ISBN-13 when known (Libro always; Audible when the API provides it).
-    #[schema(example = "9780441478125")]
-    pub isbn: Option<String>,
-    /// Store marketplace / locale code (for example `us`, `uk`).
-    #[schema(example = "us")]
-    pub marketplace: String,
-    /// Display title of the work or edition.
-    #[schema(example = "The Left Hand of Darkness")]
-    pub title: String,
-    /// Comma-separated or JSON author list from the storefront.
-    #[schema(example = "Ursula K. Le Guin")]
-    pub authors: Option<String>,
-    /// Comma-separated or JSON narrator list when present.
-    #[schema(example = "George Guidall")]
-    pub narrators: Option<String>,
-    /// Series name when the title belongs to a series.
-    #[schema(example = "Hainish Cycle")]
-    pub series: Option<String>,
-    /// Position within the series (storefront string form).
-    #[schema(example = "4")]
-    pub series_index: Option<String>,
-    /// Audible series / podcast-parent ASIN (`Series.AudibleSeriesId`).
-    #[schema(example = "B07ZRJZ4PW")]
-    pub series_asin: Option<String>,
-    /// Download/acquire pipeline state (`not_acquired`, `queued`, …).
-    pub acquire_status: AcquireStatus,
-    /// Object-storage key for the primary audio artifact, if acquired.
-    #[schema(
-        example = "Ursula K. Le Guin/The Left Hand of Darkness/The Left Hand of Darkness.m4b"
-    )]
-    pub storage_key: Option<String>,
-    /// Last acquire/convert failure message for operators.
-    #[schema(example = "download failed: HTTP 403 from the store")]
-    pub error_message: Option<String>,
-    /// RFC 3339 purchase time from the storefront, when known.
-    #[schema(example = "2026-03-14T18:02:11Z")]
-    pub purchased_at: Option<DateTime<Utc>>,
-    /// Operator or storefront tags (serialized string).
-    #[schema(example = "book club, sci-fi")]
-    pub tags: Option<String>,
-    /// Overall user rating from the storefront, if any.
-    #[schema(example = 4.5)]
-    pub rating_overall: Option<f32>,
-    /// Narration/performance rating from the storefront, if any.
-    #[schema(example = 4.7)]
-    pub rating_performance: Option<f32>,
-    /// Story rating from the storefront, if any.
-    #[schema(example = 4.3)]
-    pub rating_story: Option<f32>,
-    /// Whether the listener marked the title finished (0/1 or bool).
-    #[schema(example = false)]
-    pub is_finished: bool,
-    /// Companion PDF acquire state (`not_acquired`, `acquired`, …).
-    pub pdf_status: AcquireStatus,
-    /// Object-storage key for the companion PDF, if present.
-    #[schema(
-        example = "Ursula K. Le Guin/The Left Hand of Darkness/The Left Hand of Darkness.pdf"
-    )]
-    pub pdf_storage_key: Option<String>,
-    /// Publisher name from metadata enrichment or the storefront.
-    #[schema(example = "Blackstone Publishing")]
-    pub publisher: Option<String>,
-    /// Runtime in whole minutes when the storefront reports it.
-    #[schema(example = 560)]
-    pub length_minutes: Option<i64>,
-    /// Whether the edition is abridged (0/1 or bool).
-    #[schema(example = false)]
-    pub is_abridged: bool,
-    /// Title kind: `book`, `episode`, `podcast`, ….
-    #[schema(example = "book")]
-    pub content_kind: String,
-    /// Storefront category / genre path list (serialized).
-    #[schema(example = "Science Fiction & Fantasy > Science Fiction")]
-    pub categories: Option<String>,
-    /// Optional subtitle from bibliographic metadata.
-    #[schema(example = "A Hainish Novel")]
-    pub subtitle: Option<String>,
-    /// Publication date string from the storefront or enrichment.
-    #[schema(example = "2005-06-21T00:00:00Z")]
-    pub published_at: Option<DateTime<Utc>>,
-    /// Blurb / synopsis text (may contain HTML).
-    #[schema(
-        example = "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
-    )]
-    pub description: Option<String>,
-    /// BCP-47 or storefront language code when known.
-    #[schema(example = "en")]
-    pub language: Option<String>,
-    /// HTTPS URL for cover art when known.
-    #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
-    pub cover_url: Option<String>,
-    /// Same-origin path of this cover's processed images, set by the daemon
-    /// when `cover_url` is an `https` URL; never stored. Append `/128`
-    /// (thumbnail), `/360` (card) or `/full`, so a client can show covers
-    /// without loading `cover_url` from another site.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(
-        example = "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
-    )]
-    pub cover_path: Option<String>,
-    /// Subject / topic tags (often from Open Library; `;`- or `,`-separated).
-    #[schema(example = "Androgyny; Interplanetary voyages; Fiction")]
-    pub subjects: Option<String>,
-    /// Plugin or catalog that last enriched bibliographic fields.
-    #[schema(example = "openlibrary")]
-    pub enrich_source: Option<String>,
-    /// 0–1 confidence score for the last enrichment pass.
-    #[schema(example = 0.92)]
-    pub enrich_confidence: Option<f64>,
-    /// RFC 3339 time of the last enrichment write.
-    #[schema(example = "2026-10-29T10:13:05Z")]
-    pub enrich_updated_at: Option<DateTime<Utc>>,
-    /// RFC 3339 timestamp when the row was inserted.
-    #[schema(example = "2026-10-29T10:12:00Z")]
-    pub created_at: DateTime<Utc>,
-    /// RFC 3339 timestamp when the row was last modified.
-    #[schema(example = "2026-10-29T10:14:22Z")]
-    pub updated_at: DateTime<Utc>,
 }
 
 /// Canonical work spanning one or more ownership rows / editions.
@@ -2251,38 +2107,6 @@ pub fn job_backoff_run_after(attempt_count: i64, now: DateTime<Utc>) -> DateTime
     let exp = u32::try_from(attempt_count.saturating_sub(1).clamp(0, 8)).unwrap_or(0);
     let secs = 5u64.saturating_mul(2u64.saturating_pow(exp)).min(15 * 60);
     now + chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
-}
-
-impl BookRecord {
-    /// Public stable id used for CLI / API / acquire lookups.
-    #[must_use]
-    pub fn title_id(&self) -> &str {
-        &self.uuid
-    }
-
-    /// Naming / display fallback: ASIN, else ISBN, else source product id.
-    #[must_use]
-    pub fn asin_or_isbn(&self) -> &str {
-        self.asin
-            .as_deref()
-            .or(self.isbn.as_deref())
-            .unwrap_or(self.product_id.as_str())
-    }
-
-    /// Source-native id for download / fetch APIs (`product_id`).
-    ///
-    /// Always the owning store's id (Audible ASIN or Libro ISBN), never an
-    /// enrichment ASIN copied onto a non-Audible row.
-    #[must_use]
-    pub fn download_product_id(&self) -> &str {
-        self.product_id.as_str()
-    }
-
-    /// Audible ASIN for Audible license / catalog APIs when one is known.
-    #[must_use]
-    pub fn audible_asin(&self) -> Option<&str> {
-        self.asin.as_deref()
-    }
 }
 
 /// Where one event stream read starts.

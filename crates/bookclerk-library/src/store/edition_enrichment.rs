@@ -5,9 +5,7 @@
 //! what a held edition lacks: its work's description, subjects and cover,
 //! its expression's language and its own cover. The edition records who
 //! filled it (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), so
-//! the next run skips it. While the flat `books` table exists, the same
-//! fields are also written to the edition's `books` rows, which the
-//! library readers still read.
+//! the next run skips it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,11 +14,10 @@ use sea_orm::{QueryOrder, QuerySelect};
 
 use super::{now_str, LibraryStore};
 use crate::entities::{
-    books, edition_identifiers, editions, expressions, holdings, store_listings, works,
+    edition_identifiers, editions, expressions, holdings, store_listings, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::library_model::{find_chunked, find_chunked_paged};
-use crate::CatalogEnrichmentFields;
 use crate::WorkEnrichment;
 
 /// One held edition, with what an enricher needs to look it up and the
@@ -295,8 +292,7 @@ impl LibraryStore {
     /// The work takes the description, subjects and cover it lacks (a work
     /// another edition already described keeps its own values), the
     /// expression the language it lacks, and the edition the cover it
-    /// lacks. The edition's `books` rows take the same fields while that
-    /// table exists. The edition's provenance is written last, so a write
+    /// lacks. The edition's provenance is written last, so a write
     /// that fails before it leaves the edition unmarked and the next run
     /// tries again.
     ///
@@ -320,24 +316,6 @@ impl LibraryStore {
                 edition_id,
             ));
         };
-        // The flat rows of the edition's listings first, while `books`
-        // exists: each takes only what it lacks itself. Writing them before
-        // the model means a failure here leaves the work's gaps open, so the
-        // next run offers the same values again.
-        for row in self.flat_rows_of_edition(edition_id).await? {
-            let fields = CatalogEnrichmentFields {
-                description: lacking(row.description.as_deref(), fill.description.as_ref()),
-                language: lacking(row.language.as_deref(), fill.language.as_ref()),
-                cover_url: lacking(row.cover_url.as_deref(), fill.cover_url.as_ref()),
-                subjects: lacking(row.subjects.as_deref(), fill.subjects.as_ref()),
-                categories: lacking(row.categories.as_deref(), fill.categories.as_ref()),
-                enrich_source: Some(fill.source.clone()),
-                enrich_confidence: Some(fill.confidence),
-                enrich_updated_at: Some(chrono::Utc::now()),
-            };
-            self.update_catalog_enrichment(&row.uuid, &fields).await?;
-        }
-
         let expression = expressions::Entity::find_by_id(edition.expression_id.clone())
             .one(self.db())
             .await
@@ -420,62 +398,6 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)?;
         Ok(())
     }
-
-    /// The UUIDs of the flat `books` rows whose listing sells edition
-    /// `edition_id`, in order, for writers that still keep those rows
-    /// current until the table is retired.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    pub async fn edition_book_uuids(&self, edition_id: &str) -> Result<Vec<String>> {
-        Ok(self
-            .flat_rows_of_edition(edition_id)
-            .await?
-            .into_iter()
-            .map(|b| b.uuid)
-            .collect())
-    }
-
-    /// The flat `books` rows whose listing sells edition `edition_id`, in
-    /// uuid order.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    async fn flat_rows_of_edition(&self, edition_id: &str) -> Result<Vec<books::Model>> {
-        // An edition may have more listings than one read returns.
-        let listings = find_chunked_paged::<store_listings::Entity, _>(
-            self,
-            &[edition_id.to_string()],
-            |part| {
-                store_listings::Entity::find()
-                    .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
-                    .order_by_asc(store_listings::Column::Id)
-            },
-        )
-        .await?;
-        let product_ids: Vec<String> = listings.iter().map(|l| l.product_id.clone()).collect();
-        let rows = find_chunked_paged::<books::Entity, _>(self, &product_ids, |part| {
-            books::Entity::find()
-                .filter(books::Column::ProductId.is_in(part.to_vec()))
-                .order_by_asc(books::Column::Id)
-        })
-        .await?;
-        let mut matched: Vec<books::Model> = rows
-            .into_iter()
-            .filter(|b| {
-                listings.iter().any(|l| {
-                    l.plugin_key == b.plugin_key
-                        && l.product_id == bookclerk_resolve::stored_product_id(&b.product_id)
-                        && l.marketplace == bookclerk_resolve::stored_marketplace(&b.marketplace)
-                })
-            })
-            .collect();
-        matched.sort_by(|a, b| a.uuid.cmp(&b.uuid));
-        matched.dedup_by(|a, b| a.uuid == b.uuid);
-        Ok(matched)
-    }
 }
 
 #[cfg(test)]
@@ -514,7 +436,6 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let mut uuids = Vec::new();
             for account in ["acct", "other"] {
                 let mut book = NewBook::minimal("9780441172719", account, "us", "Dune");
                 book.plugin_key = "libro".into();
@@ -522,7 +443,7 @@ mod tests {
                 book.asin = None;
                 book.isbn = Some("9780441172719".into());
                 book.authors = Some("Frank Herbert".into());
-                uuids.push(store.upsert_book(&book).await.unwrap().uuid);
+                store.upsert_book(&book).await.unwrap();
             }
             let mut unheld = NewBook::minimal("9780553293357", "gone", "us", "Foundation");
             unheld.plugin_key = "libro".into();
@@ -570,16 +491,6 @@ mod tests {
                 Some("metadata:openlibrary"),
                 "{name}"
             );
-            // Both accounts' flat rows take the fill while `books` exists.
-            for uuid in &uuids {
-                let row = store.get_book_by_uuid(uuid).await.unwrap().unwrap();
-                assert_eq!(row.description.as_deref(), Some("Spice"), "{name}");
-                assert_eq!(
-                    row.enrich_source.as_deref(),
-                    Some("metadata:openlibrary"),
-                    "{name}"
-                );
-            }
 
             // A later enricher only takes what is still missing.
             store
@@ -599,13 +510,6 @@ mod tests {
             assert_eq!(again.description.as_deref(), Some("Spice"), "{name}");
             assert_eq!(again.language.as_deref(), Some("en"), "{name}");
             assert_eq!(again.enrich_source.as_deref(), Some("audible"), "{name}");
-            // The flat rows keep their own values too.
-            for uuid in &uuids {
-                let row = store.get_book_by_uuid(uuid).await.unwrap().unwrap();
-                assert_eq!(row.description.as_deref(), Some("Spice"), "{name}");
-                assert_eq!(row.language.as_deref(), Some("en"), "{name}");
-                assert_eq!(row.enrich_source.as_deref(), Some("audible"), "{name}");
-            }
 
             assert!(matches!(
                 store
@@ -683,7 +587,7 @@ mod tests {
             );
             assert_eq!(
                 store
-                    .edition_book_uuids(&after[0].edition_id)
+                    .held_titles_of_edition(&after[0].edition_id)
                     .await
                     .unwrap()
                     .len(),

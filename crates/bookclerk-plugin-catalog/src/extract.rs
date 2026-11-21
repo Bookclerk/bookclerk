@@ -53,6 +53,31 @@ pub fn sha256_bytes(data: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Reads which format a plugin archive is in from its first bytes.
+///
+/// # Arguments
+///
+/// * `archive` - the downloaded or local archive.
+///
+/// # Returns
+///
+/// The format [`ArchiveFormat::sniff`] recognises.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or is neither a gzip tar
+/// nor a zip archive.
+pub fn detect_archive_format(archive: &Path) -> Result<ArchiveFormat> {
+    let mut head = Vec::with_capacity(4);
+    File::open(archive)?.take(4).read_to_end(&mut head)?;
+    ArchiveFormat::sniff(&head).ok_or_else(|| {
+        CatalogError::message(format!(
+            "{} is neither a .tar.gz nor a .zip archive",
+            archive.display()
+        ))
+    })
+}
+
 /// Extract an archive into `dest`, refusing path traversal and oversized output.
 ///
 /// # Errors
@@ -533,6 +558,29 @@ mod tests {
         assert!(safe_join(Path::new("/tmp/out"), Path::new("../evil")).is_err());
         assert!(safe_join(Path::new("/tmp/out"), Path::new("/etc/passwd")).is_err());
         assert!(safe_join(Path::new("/tmp/out"), Path::new("ok/file")).is_ok());
+    }
+
+    #[test]
+    fn the_format_is_read_from_the_bytes_and_anything_else_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let named_zip = dir.path().join("plugin.zip");
+        std::fs::write(&named_zip, [0x1f, 0x8b, 8, 0, 0]).unwrap();
+        assert_eq!(
+            detect_archive_format(&named_zip).unwrap(),
+            ArchiveFormat::TarGz,
+            "a gzip stream is a tar.gz whatever its name"
+        );
+        let named_tgz = dir.path().join("plugin.tar.gz");
+        std::fs::write(&named_tgz, b"PK\x03\x04rest").unwrap();
+        assert_eq!(
+            detect_archive_format(&named_tgz).unwrap(),
+            ArchiveFormat::Zip
+        );
+        let text = dir.path().join("plugin.txt");
+        std::fs::write(&text, b"plugin").unwrap();
+        let err = detect_archive_format(&text).unwrap_err().to_string();
+        assert!(err.contains("neither a .tar.gz nor a .zip"), "{err}");
+        assert!(detect_archive_format(&dir.path().join("missing")).is_err());
     }
 
     #[test]

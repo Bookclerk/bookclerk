@@ -75,13 +75,14 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
     // Sam cannot sign in: no password was set.
     assert!(!sam.has_password);
 
-    let books = store.list_books(Some("sam@example.com")).await.unwrap();
+    let books = store
+        .all_acquire_titles(Some("sam@example.com"))
+        .await
+        .unwrap();
     assert_eq!(books.len(), 10);
-    assert!(books
-        .iter()
-        .all(|b| b.acquire_status == AcquireStatus::Acquired
-            && keys.get(b.source.as_str()) == Some(&b.plugin_key)
-            && b.narrators.is_some()));
+    assert!(books.iter().all(|b| b.status == AcquireStatus::Acquired
+        && keys.get(b.source.as_str()) == Some(&b.plugin_key)
+        && b.narrators.is_some()));
     // Every storefront the demo ships has titles in the library.
     let sources: BTreeSet<&str> = books.iter().map(|b| b.source.as_str()).collect();
     assert_eq!(sources, keys.keys().copied().collect());
@@ -122,7 +123,7 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
     );
     assert_eq!(
         store
-            .list_books(Some("sam@example.com"))
+            .all_acquire_titles(Some("sam@example.com"))
             .await
             .unwrap()
             .len(),
@@ -150,7 +151,10 @@ async fn leaves_out_the_titles_of_a_storefront_that_is_not_enrolled() {
         panic!("a fresh library should be seeded");
     };
     assert_eq!((report.books, report.branch_titles), (7, 2));
-    let books = store.list_books(Some("sam@example.com")).await.unwrap();
+    let books = store
+        .all_acquire_titles(Some("sam@example.com"))
+        .await
+        .unwrap();
     assert!(books.iter().all(|b| b.source != "audible"));
 }
 
@@ -324,24 +328,43 @@ async fn writes_the_store_record_when_there_is_one() {
     };
     assert_eq!((report.books, report.branch_titles), (10, 4));
 
-    let books = store.list_books(Some("sam@example.com")).await.unwrap();
+    let books = store
+        .all_acquire_titles(Some("sam@example.com"))
+        .await
+        .unwrap();
     let phm = books
         .iter()
         .find(|b| b.title == "Project Hail Mary")
         .unwrap();
     assert_eq!(phm.product_id, "B08G9PRS1K");
     assert_eq!(phm.asin.as_deref(), Some("B08G9PRS1K"));
+    let db = store.db();
+    let listing = |id: String| async move {
+        store_listings::Entity::find_by_id(id)
+            .one(db)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    let phm_listing = listing(phm.listing_id.clone()).await;
     assert_eq!(
-        phm.cover_url.as_deref(),
+        phm_listing.cover_url.as_deref(),
         Some("https://m.media-amazon.com/images/I/phm.jpg")
     );
-    assert_eq!(phm.description.as_deref(), Some("A lone astronaut."));
+    assert_eq!(
+        phm_listing.description.as_deref(),
+        Some("A lone astronaut.")
+    );
     assert!(phm.published_at.is_some());
     // Titles without a record keep their sample fields.
-    assert!(books
-        .iter()
-        .filter(|b| b.title != "Project Hail Mary")
-        .all(|b| b.product_id.starts_with("demo-") && b.cover_url.is_none()));
+    for b in books.iter().filter(|b| b.title != "Project Hail Mary") {
+        assert!(b.product_id.starts_with("demo-"), "{}", b.title);
+        assert!(
+            listing(b.listing_id.clone()).await.cover_url.is_none(),
+            "{}",
+            b.title
+        );
+    }
 
     // The record's store text is on the listing, and its cover is the
     // edition's own, for a held book and for a branch's title alike.

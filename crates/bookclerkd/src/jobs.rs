@@ -490,7 +490,13 @@ async fn queue_copy_retries_on(state: Arc<AppState>, deployed: &[String]) -> any
     // find it complete.
     let mut titles = Vec::with_capacity(due.len());
     for edition in &due {
-        titles.extend(library.books_of_edition(edition).await?);
+        titles.extend(
+            library
+                .held_titles_of_edition(edition)
+                .await?
+                .into_iter()
+                .map(|title| title.holding_id),
+        );
     }
     if titles.is_empty() {
         return Ok(0);
@@ -1815,11 +1821,6 @@ async fn without_missing_copies(
 /// account when `None`) that `title` names (every title when `None`) and
 /// that pass `wanted`, in title order.
 ///
-/// Only titles with a flat `books` row are considered: the acquire status
-/// writes are still keyed by that row until `books` is retired (book model
-/// step 6, PR 4g), so a holding without one could not record what it
-/// acquired.
-///
 /// One title is a lookup by its ids
 /// ([`bookclerk_library::LibraryStore::acquire_titles_named`]); otherwise
 /// the holdings are read in keyset pages
@@ -1873,8 +1874,8 @@ pub(crate) struct LackingCopies<'a> {
     pub(crate) honor_delay: bool,
 }
 
-/// The titles of one page an acquire run visits: those with a flat `books`
-/// row that `wanted` keeps, and, with `lacking`, acquired titles a
+/// The titles of one page an acquire run visits: those `wanted` keeps, and,
+/// with `lacking`, acquired titles a
 /// destination whose filter takes them has no stored copy of
 /// ([`titles_lacking_copies`]). Page order is kept.
 ///
@@ -1887,10 +1888,6 @@ async fn select_candidates(
     wanted: &impl Fn(&AcquireTitle) -> bool,
     lacking: Option<&LackingCopies<'_>>,
 ) -> bookclerk_library::Result<Vec<AcquireTitle>> {
-    let titles: Vec<AcquireTitle> = titles
-        .into_iter()
-        .filter(|t| t.book_uuid.is_some())
-        .collect();
     let revisit = match lacking {
         Some(lacking) => {
             let acquired: Vec<&AcquireTitle> = titles
@@ -2638,9 +2635,12 @@ mod tests {
         let jobs = store.list_jobs(10).await.unwrap();
         assert_eq!(jobs.len(), 2);
         assert!(jobs.iter().all(|job| job.kind == JobKind::Acquire));
-        let mut queued: Vec<_> = jobs.iter().map(|job| job.payload.title.clone()).collect();
+        let mut queued: Vec<_> = jobs
+            .iter()
+            .filter_map(|job| job.payload.title.clone())
+            .collect();
         queued.sort();
-        let mut expected = vec![book.book_uuid.clone(), sibling.book_uuid.clone()];
+        let mut expected = vec![book.holding_id.clone(), sibling.holding_id.clone()];
         expected.sort();
         assert_eq!(queued, expected);
         // The queued acquire carries the retry: the next pass adds nothing.
@@ -2746,45 +2746,6 @@ mod tests {
         .await
         .unwrap();
         assert!(pending.is_empty());
-    }
-
-    /// A holding without a flat row is not a candidate: its status could
-    /// not be recorded until `books` is retired.
-    #[tokio::test]
-    async fn acquire_candidates_skip_a_holding_without_a_books_row() {
-        use sea_orm::ConnectionTrait as _;
-        let store = test_store().await;
-        store
-            .upsert_account("audible", "user-1", "us", None, true, "audible")
-            .await
-            .unwrap();
-        store
-            .upsert_book(&NewBook::minimal("B00TEST", "user-1", "us", "Test"))
-            .await
-            .unwrap();
-        assert_eq!(
-            acquire_candidates(&store, None, None, |_| true, None)
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        store
-            .db()
-            .execute_unprepared("DELETE FROM books")
-            .await
-            .unwrap();
-        assert!(store
-            .acquire_title("audible", "user-1", "us", "B00TEST")
-            .await
-            .unwrap()
-            .is_some());
-        for title in [None, Some("B00TEST")] {
-            assert!(acquire_candidates(&store, None, title, |_| true, None)
-                .await
-                .unwrap()
-                .is_empty());
-        }
     }
 
     #[tokio::test]

@@ -55,7 +55,8 @@ LOCK_NONE = "none"
 VIEWPORTS = ("desktop", "phone")
 
 #: A baseline's path inside a set: ``<viewport>/<story-id>--<theme>.png``.
-#: Story ids are Storybook's kebab-case ids (letters, digits, single dashes).
+#: Story ids are Storybook's kebab-case ids (letters, digits, single dashes);
+#: a Worker page uses ``<worker>--<page>`` in their place (ui/visual/workers.spec.ts).
 BASELINE_PATH = re.compile(
     r"(desktop|phone)/([a-z0-9]+(?:-{1,2}[a-z0-9]+)*)--(light|dark)\.png",
     re.ASCII,
@@ -70,9 +71,10 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 #: Largest whole set, in bytes.
 MAX_SET_BYTES = 200 * 1024 * 1024
 
-#: Largest image side, in pixels. Full-page stories at the phone viewport
-#: stay far below this.
-MAX_SIDE = 8192
+#: Largest image side, in pixels: Chromium's own screenshot limit. The
+#: longest full-page website screenshots at the phone viewport are about
+#: half of it.
+MAX_SIDE = 16384
 
 #: The eight bytes every PNG file starts with.
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"

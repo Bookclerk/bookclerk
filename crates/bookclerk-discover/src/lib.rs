@@ -30,6 +30,7 @@ mod precompute;
 mod purchase;
 mod recommend;
 mod request_queue;
+mod scope_filter;
 mod shelves;
 mod stored_feed;
 mod stored_taste;

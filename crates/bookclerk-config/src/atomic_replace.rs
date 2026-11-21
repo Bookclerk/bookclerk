@@ -19,7 +19,8 @@ use std::path::Path;
 /// Replace `to` with `from`, both in the same directory. `to` may already
 /// exist; on Windows this goes through `MoveFileExW` with
 /// `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH` (see the module
-/// docs). The moved file keeps its own permissions, so a `0600` staging file
+/// docs), retrying briefly while another replace of `to` settles. The moved
+/// file keeps its own permissions, so a `0600` staging file
 /// lands as a `0600` target.
 ///
 /// # Errors
@@ -57,17 +58,44 @@ fn replace_file_windows(from: &Path, to: &Path) -> std::io::Result<()> {
     }
     let src = wide(from);
     let dst = wide(to);
-    // SAFETY: `src` and `dst` are NUL-terminated wide paths that outlive the call.
-    let ok = unsafe {
-        MoveFileExW(
-            src.as_ptr(),
-            dst.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if ok == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+    let mut attempt = 0u32;
+    loop {
+        // SAFETY: `src` and `dst` are NUL-terminated wide paths that outlive the call.
+        let ok = unsafe {
+            MoveFileExW(
+                src.as_ptr(),
+                dst.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if ok != 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        attempt += 1;
+        if attempt >= REPLACE_ATTEMPTS || !replace_is_transient(&err) {
+            return Err(err);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(u64::from(attempt) * 10));
     }
+}
+
+/// How many times [`replace_file_windows`] tries before giving up: about
+/// half a second of backoff in all.
+#[cfg(windows)]
+const REPLACE_ATTEMPTS: u32 = 10;
+
+/// Whether a failed `MoveFileExW` is worth retrying.
+///
+/// Windows refuses to replace a file while another rename onto it is still
+/// settling, or while a reader holds it open without delete sharing, with
+/// access-denied or a sharing violation. Both clear on their own; Unix renames
+/// never see them.
+#[cfg(windows)]
+fn replace_is_transient(err: &std::io::Error) -> bool {
+    /// `ERROR_ACCESS_DENIED`.
+    const ACCESS_DENIED: i32 = 5;
+    /// `ERROR_SHARING_VIOLATION`.
+    const SHARING_VIOLATION: i32 = 32;
+    matches!(err.raw_os_error(), Some(ACCESS_DENIED | SHARING_VIOLATION))
 }

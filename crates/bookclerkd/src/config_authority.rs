@@ -3914,7 +3914,7 @@ mod tests {
             "sandbox": { "network": network },
             "artifacts": [{
                 "target": bookclerk_plugin_host::host_bookclerk_target(),
-                "url": format!("file://{}", archive.display()),
+                "url": url::Url::from_file_path(&archive).unwrap().to_string(),
                 "archive_sha256": "ab".repeat(32),
                 "executable": exe_name
             }]
@@ -3930,7 +3930,11 @@ mod tests {
         let encoded = format!("{package_name}%2Farchive.tar.gz");
         packages
             .keys()
-            .find(|key| key.contains(&needle) || key.contains(&encoded))
+            .find(|key| {
+                // A Windows archive path names the package with `\`.
+                let key = key.replace('\\', "/").replace("%5C", "%2F");
+                key.contains(&needle) || key.contains(&encoded)
+            })
             .cloned()
             .unwrap_or_else(|| panic!("package key for {package_name} missing from {packages:?}"))
     }
