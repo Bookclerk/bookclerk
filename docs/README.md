@@ -77,7 +77,7 @@ others go deeper.
 - [Build from source and use the CLI](contributing/build-from-source.md): build the binaries and drive Bookclerk from the command line
 - [Dev Container](contributing/devcontainer.md): a ready-made build environment
 - [Web UI development](contributing/ui/README.md): the React app, the tray, brand assets, and the UI library reference (generated)
-- [Visual and accessibility testing](contributing/ui/visual-testing.md): Storybook stories, axe-core checks and screenshot baselines in CI
+- [Visual and accessibility testing](contributing/ui/visual-testing.md): Storybook stories, website and collector pages, axe-core checks and screenshot baselines in CI
 - [Continuous integration](contributing/ci.md): the planner, the jobs and `CI Gate`
 - [Fuzzing](contributing/fuzzing.md): fuzz targets in CI and crash triage
 - [Repository automation](contributing/automation.md): dependency updates, advisories, docs publishing and Worker deploys

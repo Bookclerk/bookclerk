@@ -3,8 +3,9 @@
 // `site_audit`). See docs/contributing/automation.md#website-checks.
 //
 // It serves tools/site/dist through the real Worker under `wrangler dev`
-// (audit/entry.ts, with docs read from this checkout's docs/ through a local
-// server instead of the docs repository, so nothing leaves the machine), then:
+// (serve.ts: audit/entry.ts, with docs read from this checkout's docs/
+// through a local server instead of the docs repository, so nothing leaves
+// the machine), then:
 //
 //   Lighthouse  every page, mobile and desktop; pages that answer 200 must
 //               reach the PAGE thresholds, the 404 and docs-unavailable pages
@@ -21,22 +22,17 @@
 // finds an installed Chrome. Reports (Lighthouse HTML and JSON, summary.md)
 // go to --out (default audit/report). Exits 1 when any page misses.
 
-import { spawn } from "node:child_process";
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -47,6 +43,12 @@ import desktopConfig from "lighthouse/core/config/desktop-config.js";
 import { chromium } from "playwright-core";
 import type { AxeResults, RunOptions } from "axe-core";
 import { auditCatalog } from "./catalog.ts";
+import { AUDIT_PAGES } from "./pages.ts";
+import { serveSite } from "./serve.ts";
+import type { ServedSite } from "./serve.ts";
+
+export { UNAVAILABLE_KEY } from "./pages.ts";
+export { docsFile } from "./serve.ts";
 
 /** Minimum Lighthouse category scores (0-100) by category id, and optionally `cls`, the largest layout shift allowed. */
 export type Limits = Readonly<Record<string, number>>;
@@ -83,13 +85,6 @@ interface LighthouseRun {
 
 /** This directory (tools/site/audit). */
 const HERE = dirname(fileURLToPath(import.meta.url));
-/** The site package (tools/site). */
-const SITE = join(HERE, "..");
-/** This checkout's docs, served in place of the docs repository. */
-const DOCS_DIR = join(SITE, "..", "..", "docs");
-
-/** Docs key the local docs server fails, to render the docs-unavailable page. */
-export const UNAVAILABLE_KEY = "audit-docs-unavailable";
 
 /**
  * Minimum Lighthouse category scores (0-100) and the largest cumulative
@@ -108,18 +103,12 @@ export const ERROR_PAGE: Limits = { accessibility: 100 };
 
 /**
  * Pages audited: a name, the path, the status it must answer with and its
- * thresholds.
+ * thresholds (PAGE for pages that answer 200, ERROR_PAGE otherwise).
  */
-export const PAGES: readonly AuditPage[] = [
-  { name: "home", path: "/", status: 200, limits: PAGE },
-  { name: "download", path: "/download", status: 200, limits: PAGE },
-  { name: "privacy", path: "/privacy", status: 200, limits: PAGE },
-  { name: "security", path: "/security", status: 200, limits: PAGE },
-  { name: "docs", path: "/docs/guide/getting-started", status: 200, limits: PAGE },
-  { name: "docs-ci", path: "/docs/contributing/ci", status: 200, limits: PAGE },
-  { name: "docs-unavailable", path: `/docs/${UNAVAILABLE_KEY}`, status: 503, limits: ERROR_PAGE },
-  { name: "not-found", path: "/audit-no-such-page", status: 404, limits: ERROR_PAGE },
-];
+export const PAGES: readonly AuditPage[] = AUDIT_PAGES.map((p) => ({
+  ...p,
+  limits: p.status === 200 ? PAGE : ERROR_PAGE,
+}));
 
 /** axe-core rule tags checked. */
 export const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa", "best-practice"];
@@ -147,151 +136,6 @@ export function lighthouseMisses(lhr: LighthouseScores, limits: Limits): string[
     if (pct === null || pct < limit) misses.push(`${key} ${pct ?? "missing"} < ${limit}`);
   }
   return misses;
-}
-
-/**
- * Maps a docs repository path (`<ref>/<key>.md`) to a file under docs/.
- *
- * @param docsDir - The docs directory.
- * @param pathname - The request path, `/<ref>/<key>.md`.
- * @returns The file, or null when the path is malformed or
- *   leaves docsDir.
- */
-export function docsFile(docsDir: string, pathname: string): string | null {
-  const key = /^\/[^/]+\/(.+\.md)$/.exec(decodeURIComponent(pathname))?.[1];
-  if (key === undefined) return null;
-  const root = resolve(docsDir);
-  const file = resolve(root, key);
-  if (relative(root, file).startsWith("..") || !file.startsWith(root + sep)) return null;
-  return file;
-}
-
-/**
- * Starts the local docs server: `/<ref>/<key>.md` answers docs/<key>.md for
- * any ref, UNAVAILABLE_KEY answers 503, anything else 404.
- *
- * @returns Its origin and a stop function.
- */
-function serveDocs(): Promise<{ origin: string; close: () => void }> {
-  const server = createServer((req, res) => {
-    const path = new URL(req.url ?? "/", "http://localhost").pathname;
-    if (path.endsWith(`/${UNAVAILABLE_KEY}.md`)) {
-      res.writeHead(503).end();
-      return;
-    }
-    const file = docsFile(DOCS_DIR, path);
-    if (
-      file === null ||
-      !existsSync(file) ||
-      !realpathSync(file).startsWith(realpathSync(DOCS_DIR) + sep)
-    ) {
-      res.writeHead(404).end();
-      return;
-    }
-    res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8" }).end(readFileSync(file));
-  });
-  return new Promise((done) => {
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as AddressInfo;
-      done({ origin: `http://127.0.0.1:${port}`, close: () => server.close() });
-    });
-  });
-}
-
-/**
- * Finds a free TCP port on 127.0.0.1.
- *
- * @returns The port.
- */
-function freePort(): Promise<number> {
-  return new Promise((done, fail) => {
-    const probe = createNetServer();
-    probe.on("error", fail);
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address() as AddressInfo;
-      probe.close(() => done(port));
-    });
-  });
-}
-
-/**
- * Writes the audit Worker's wrangler config: ../wrangler.toml with the audit
- * entry point, so the assets and routing cannot drift from the deployed site.
- * The audit-only `/__audit/` routes (audit/entry.ts) also run the Worker first.
- *
- * @returns The config file.
- * @throws {Error} When ../wrangler.toml no longer has the lines replaced.
- */
-function writeWranglerConfig(): string {
-  const base = readFileSync(join(SITE, "wrangler.toml"), "utf8");
-  const replacements: [RegExp, string][] = [
-    [/^name = .*$/m, 'name = "bookclerk-site-audit"'],
-    [/^main = .*$/m, 'main = "entry.ts"'],
-    [/^directory = .*$/m, 'directory = "../dist"'],
-    [/^run_worker_first = \[/m, 'run_worker_first = ["/__audit/*", '],
-  ];
-  let config = base;
-  for (const [pattern, line] of replacements) {
-    if (!pattern.test(config))
-      throw new Error(`tools/site/wrangler.toml has no line matching ${pattern}`);
-    config = config.replace(pattern, line);
-  }
-  const file = join(HERE, "wrangler.generated.toml");
-  writeFileSync(file, config);
-  return file;
-}
-
-/**
- * Starts `wrangler dev` on the audit Worker and waits until it serves `/`.
- *
- * @param docsOrigin - The local docs server.
- * @param logFile - Where wrangler's output goes.
- * @returns The site origin and a stop function.
- * @throws {Error} When wrangler exits or does not serve within two minutes.
- */
-async function serveSite(
-  docsOrigin: string,
-  logFile: string,
-): Promise<{ origin: string; stop: () => void }> {
-  const config = writeWranglerConfig();
-  const port = await freePort();
-  const inspector = await freePort();
-  const wrangler = join(SITE, "node_modules", ".bin", "wrangler");
-  const args = [
-    "dev",
-    "--config",
-    config,
-    "--ip",
-    "127.0.0.1",
-    "--port",
-    String(port),
-    "--inspector-port",
-    String(inspector),
-  ];
-  args.push("--var", `AUDIT_DOCS_ORIGIN:${docsOrigin}`);
-  const child = spawn(wrangler, args, {
-    cwd: HERE,
-    env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "true" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  child.stdout.on("data", (chunk) => appendFileSync(logFile, chunk));
-  child.stderr.on("data", (chunk) => appendFileSync(logFile, chunk));
-  let exited: number | null = null;
-  child.on("exit", (code) => (exited = code ?? -1));
-  const origin = `http://127.0.0.1:${port}`;
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    if (exited !== null) throw new Error(`wrangler dev exited with ${exited}; see ${logFile}`);
-    try {
-      const res = await fetch(`${origin}/`);
-      if (res.ok) return { origin, stop: () => child.kill("SIGTERM") };
-    } catch {
-      // Not listening yet.
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  child.kill("SIGTERM");
-  throw new Error(`wrangler dev did not serve / within two minutes; see ${logFile}`);
 }
 
 /** The part of chrome-launcher this audit uses, so a test can stand in for it. */
@@ -562,11 +406,7 @@ async function main(): Promise<number> {
   const out = resolve(values.out);
   mkdirSync(out, { recursive: true });
   const chromePath = values.chrome ?? findChrome();
-  if (!existsSync(join(SITE, "dist", "index.html")))
-    throw new Error("tools/site/dist is missing: run `npm run build` first");
-
-  const docs = await serveDocs();
-  let site: { stop: () => void } | null = null;
+  let site: ServedSite | null = null;
   let chrome: AuditChrome | null = null;
   const failures: string[] = [];
   const rows = [
@@ -574,7 +414,7 @@ async function main(): Promise<number> {
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
   ];
   try {
-    const served = await serveSite(docs.origin, join(out, "wrangler.log"));
+    const served = await serveSite({ logFile: join(out, "wrangler.log") });
     site = served;
     for (const page of PAGES) {
       const res = await fetch(served.origin + page.path);
@@ -617,7 +457,6 @@ async function main(): Promise<number> {
   } finally {
     if (chrome !== null) await stopChrome(chrome);
     site?.stop();
-    docs.close();
   }
 
   const summary = [
