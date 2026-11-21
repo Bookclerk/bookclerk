@@ -500,6 +500,10 @@ pub fn check_run_output(model: &AiModel, input: &AiInput, reply: &AiRunOk) -> Re
 }
 
 /// Checks text-embedding output for `texts` input texts.
+///
+/// # Errors
+///
+/// The first rule the output breaks.
 fn check_text_embeddings_output(
     model: &AiModel,
     texts: usize,
@@ -544,6 +548,10 @@ fn check_text_embeddings_output(
 
 /// Reads one unpacked Cap'n Proto message with a traversal limit sized to
 /// the input, so a message cannot make the reader walk more than it holds.
+///
+/// # Errors
+///
+/// Returns the Cap'n Proto error the reader reports.
 fn read_message(
     bytes: &[u8],
 ) -> capnp::Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
