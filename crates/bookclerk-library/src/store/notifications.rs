@@ -33,7 +33,7 @@ use crate::models::{
 use crate::notifications::{
     severity_reaches, DeliveryRecord, DeliveryState, Destination, DestinationKind, FailedAttempt,
     FailureEffect, InboxEntry, NewDestination, NewNotification, PatronChoice, PatronOffer,
-    PendingDelivery, Route, Routed, SendWork, StalledSend, StoredNotification,
+    PendingDelivery, Route, Routed, SendWork, StallOutcome, StalledSend, StoredNotification,
     MAX_DESTINATION_LABEL_BYTES, MAX_ROUTES_PER_TYPE, NOTIFICATION_RETENTION_DAYS,
     PAUSE_AFTER_FAILURES,
 };
@@ -745,10 +745,12 @@ impl LibraryStore {
         Ok(batch::rows_affected(&reply, 0))
     }
 
-    /// Pending deliveries whose send job is still pending although it has
-    /// been ready to run since before `ready_before`: nothing claimed it,
-    /// because its notifier instance is deployed but not running. Read
-    /// from the oldest jobs first, at most `limit` jobs per call.
+    /// Send jobs still pending although they have been ready to run since
+    /// before `ready_before`: nothing claimed them, because their notifier
+    /// instance is deployed but not running. Each comes with its pending
+    /// delivery, if it still has one. Read from the oldest jobs first, at
+    /// most `limit` jobs per call; a job without a delivery is listed too,
+    /// so cancelling it keeps such jobs from filling every page.
     ///
     /// # Errors
     ///
@@ -758,7 +760,7 @@ impl LibraryStore {
         ready_before: DateTime<Utc>,
         limit: u64,
     ) -> Result<Vec<StalledSend>> {
-        let stalled: Vec<String> = jobs::Entity::find()
+        let stalled: Vec<jobs::Model> = jobs::Entity::find()
             .filter(jobs::Column::Kind.eq(JobKind::NotifySend.as_str()))
             .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
             .order_by_asc(jobs::Column::RunAfter)
@@ -772,33 +774,139 @@ impl LibraryStore {
                 DateTime::parse_from_rfc3339(&job.run_after)
                     .is_ok_and(|ready| ready.with_timezone(&Utc) < ready_before)
             })
-            .map(|job| job.id)
             .collect();
         if stalled.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(
-            super::library_model::find_chunked::<notify_deliveries::Entity, _>(
-                self,
-                &stalled,
-                |chunk| {
-                    notify_deliveries::Entity::find()
-                        .filter(notify_deliveries::Column::JobId.is_in(chunk.to_vec()))
-                        .filter(
-                            notify_deliveries::Column::State.eq(DeliveryState::Pending.as_str()),
-                        )
-                },
-            )
-            .await?
+        let ids: Vec<String> = stalled.iter().map(|job| job.id.clone()).collect();
+        let deliveries: BTreeMap<String, String> = super::library_model::find_chunked::<
+            notify_deliveries::Entity,
+            _,
+        >(self, &ids, |chunk| {
+            notify_deliveries::Entity::find()
+                .filter(notify_deliveries::Column::JobId.is_in(chunk.to_vec()))
+                .filter(notify_deliveries::Column::State.eq(DeliveryState::Pending.as_str()))
+        })
+        .await?
+        .into_iter()
+        .filter_map(|row| row.job_id.map(|job_id| (job_id, row.id)))
+        .collect();
+        Ok(stalled
             .into_iter()
-            .filter_map(|row| {
-                row.job_id.map(|job_id| StalledSend {
-                    delivery_id: row.id,
-                    job_id,
-                })
+            .map(|job| StalledSend {
+                delivery_id: deliveries.get(&job.id).cloned(),
+                job_id: job.id,
+                run_after: job.run_after,
+                lease_generation: job.lease_generation,
             })
-            .collect(),
-        )
+            .collect())
+    }
+
+    /// Cancels one stalled send job and fails its pending delivery in a
+    /// single atomic write, so a claim racing the sweep either wins (and
+    /// nothing changes) or loses (and the failure is counted toward the
+    /// destination's pause), and the cancel never lands without the count.
+    ///
+    /// # Returns
+    ///
+    /// What happened; [`StallOutcome::NotStalled`] when the job was
+    /// claimed, retried or ended since it was read.
+    ///
+    /// # Errors
+    ///
+    /// An error when the batch fails.
+    pub async fn fail_stalled_notify_send(
+        &self,
+        stalled: &StalledSend,
+        reason: &str,
+    ) -> Result<StallOutcome> {
+        let reason = sanitize_reason(reason);
+        let now = super::now_str();
+        let mut statements = vec![batch::exec(
+            "UPDATE jobs SET state = 'cancelled', cancel_requested = 1, \
+             error_kind = 'notify_stalled', error_message = ?, lease_owner = NULL, \
+             lease_expires_at = NULL, finished_at = ?, updated_at = ? \
+             WHERE id = ? AND state = 'pending' AND run_after = ? AND lease_generation = ?",
+            vec![
+                batch::text(&reason),
+                batch::text(&now),
+                batch::text(&now),
+                batch::text(&stalled.job_id),
+                batch::text(&stalled.run_after),
+                batch::int(stalled.lease_generation),
+            ],
+        )];
+        // Each delivery write applies only when this batch's own cancel
+        // took (the job now carries this commit's stamp).
+        let gate = "EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = 'cancelled' \
+                    AND error_kind = 'notify_stalled' AND updated_at = ?)";
+        if let Some(delivery_id) = &stalled.delivery_id {
+            statements.push(batch::exec(
+                &format!(
+                    "UPDATE notify_destinations SET failure_count = failure_count + 1, \
+                     updated_at = ? WHERE id IN (SELECT destination_id FROM \
+                     notify_deliveries WHERE id = ? AND state = 'pending') AND {gate}"
+                ),
+                vec![
+                    batch::text(&now),
+                    batch::text(delivery_id),
+                    batch::text(&stalled.job_id),
+                    batch::text(&now),
+                ],
+            ));
+            statements.push(batch::exec(
+                &format!(
+                    "UPDATE notify_destinations SET paused_at = ?, paused_reason = ? \
+                     WHERE paused_at IS NULL AND failure_count >= ? AND id IN \
+                     (SELECT destination_id FROM notify_deliveries \
+                     WHERE id = ? AND state = 'pending') AND {gate}"
+                ),
+                vec![
+                    batch::text(&now),
+                    batch::text(&reason),
+                    batch::int(PAUSE_AFTER_FAILURES),
+                    batch::text(delivery_id),
+                    batch::text(&stalled.job_id),
+                    batch::text(&now),
+                ],
+            ));
+            statements.push(batch::exec(
+                &format!(
+                    "UPDATE notify_deliveries SET state = 'failed', attempts = attempts + 1, \
+                     reason = ?, updated_at = ? WHERE id = ? AND state = 'pending' AND {gate}"
+                ),
+                vec![
+                    batch::text(&reason),
+                    batch::text(&now),
+                    batch::text(delivery_id),
+                    batch::text(&stalled.job_id),
+                    batch::text(&now),
+                ],
+            ));
+        }
+        statements.push(crate::control_plane::bump_if_stamped(
+            crate::control_plane::LiveTopic::Jobs,
+            &now,
+        )?);
+        let reply = self
+            .execute_host_batch(batch::request(
+                &format!("notify-stalled-{}-{}", stalled.job_id, uuid::Uuid::new_v4()),
+                statements,
+            ))
+            .await?;
+        if batch::rows_affected(&reply, 0) != 1 {
+            return Ok(StallOutcome::NotStalled);
+        }
+        if stalled.delivery_id.is_some() && batch::rows_affected(&reply, 3) == 1 {
+            return Ok(StallOutcome::Failed(
+                if batch::rows_affected(&reply, 2) == 1 {
+                    FailureEffect::Paused
+                } else {
+                    FailureEffect::Counted
+                },
+            ));
+        }
+        Ok(StallOutcome::Cancelled)
     }
 
     /// Drops a pending delivery no send job is linked to when a send job

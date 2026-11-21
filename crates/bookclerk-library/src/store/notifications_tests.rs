@@ -1045,6 +1045,73 @@ async fn a_test_goes_to_one_destination_whatever_the_routes_under_every_profile(
 }
 
 #[tokio::test]
+async fn a_stalled_send_is_cancelled_and_failed_in_one_write_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let ops = channel(&store, "slack-1", "Ops").await;
+        store
+            .set_notify_routes(
+                "test",
+                &[Route {
+                    destination_id: ops.clone(),
+                    min_severity: NotificationSeverity::Info,
+                }],
+            )
+            .await
+            .unwrap();
+        let routed = store
+            .route_notification(&operational("test", NotificationSeverity::Info), LIMITS)
+            .await
+            .unwrap();
+        let delivery = routed.deliveries[0].id.clone();
+        let later = chrono::Utc::now() + chrono::Duration::minutes(1);
+        let stalled = store.stalled_notify_sends(later, 10).await.unwrap();
+        assert_eq!(stalled.len(), 1, "{name}");
+        assert_eq!(
+            stalled[0].delivery_id.as_deref(),
+            Some(delivery.as_str()),
+            "{name}"
+        );
+        let outcome = store
+            .fail_stalled_notify_send(&stalled[0], "not running")
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            crate::notifications::StallOutcome::Failed(
+                crate::notifications::FailureEffect::Counted
+            ),
+            "{name}"
+        );
+        let work = store.notify_send_work(&delivery).await.unwrap().unwrap();
+        assert_eq!(
+            work.state,
+            crate::notifications::DeliveryState::Failed,
+            "{name}"
+        );
+        assert_eq!(work.destination.map(|d| d.failure_count), Some(1), "{name}");
+        // A second try finds the job no longer pending.
+        assert_eq!(
+            store
+                .fail_stalled_notify_send(&stalled[0], "not running")
+                .await
+                .unwrap(),
+            crate::notifications::StallOutcome::NotStalled,
+            "{name}"
+        );
+        assert!(
+            store
+                .stalled_notify_sends(later, 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_address_past_the_cell_limit_is_refused_under_every_profile() {
     for profile in Profile::ALL {
         let name = profile.name();

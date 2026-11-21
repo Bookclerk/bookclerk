@@ -21,9 +21,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::notifications::{
-    link_for, DeliveryState, FailedAttempt, FailureEffect, SendWork, MAX_SEND_ATTEMPTS,
+    link_for, DeliveryState, FailedAttempt, FailureEffect, SendWork, StallOutcome,
+    MAX_SEND_ATTEMPTS,
 };
-use bookclerk_library::{JobPayload, JobState, NotifyQueueLimits};
+use bookclerk_library::{JobPayload, NotifyQueueLimits};
 use bookclerk_plugin_abi::notifications::{check_send_params, classify_send_reply, SendOutcome};
 use bookclerk_plugin_abi::{NotifyDestination, NotifySendParams};
 use tracing::{info, warn};
@@ -369,34 +370,21 @@ async fn fail_stalled_sends(
         .stalled_notify_sends(ready_before, NOTIFY_SWEEP_BATCH)
         .await?
     {
-        // Cancelling races a claim: only a job that really was cancelled
-        // here leaves its delivery to fail; a claimed one sends.
-        let cancelled = match library.request_job_cancel(&stalled.job_id).await {
-            Ok(job) => job.is_some_and(|job| job.state == JobState::Cancelled),
-            Err(err) => {
-                warn!(job = %stalled.job_id, error = %err, "could not cancel a stalled send");
-                false
-            }
-        };
-        if !cancelled {
-            continue;
-        }
+        // One write cancels the job and fails its delivery; a claim that
+        // got there first leaves both alone.
         match library
-            .record_notify_failed(
-                &stalled.delivery_id,
-                STALLED_REASON,
-                FailedAttempt::New,
-                None,
-            )
+            .fail_stalled_notify_send(&stalled, STALLED_REASON)
             .await
         {
-            Ok(Some(FailureEffect::Paused)) => warn!(
-                delivery = %stalled.delivery_id,
+            Ok(StallOutcome::Failed(FailureEffect::Paused)) => warn!(
+                job = %stalled.job_id,
                 "notification destination paused after repeated failures"
             ),
-            Ok(_) => {}
+            Ok(StallOutcome::Failed(FailureEffect::Counted))
+            | Ok(StallOutcome::Cancelled)
+            | Ok(StallOutcome::NotStalled) => {}
             Err(err) => {
-                warn!(delivery = %stalled.delivery_id, error = %err, "could not fail a stalled send");
+                warn!(job = %stalled.job_id, error = %err, "could not fail a stalled send");
             }
         }
     }
@@ -652,6 +640,61 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_job_without_a_delivery_is_cancelled_and_a_raced_one_is_left_alone() {
+        let (state, _fake, _) = daemon(Vec::new()).await;
+        let library = state.library_snapshot().await;
+        let later = chrono::Utc::now() + chrono::Duration::minutes(1);
+        // A job whose delivery already finished is still cancelled, so such
+        // jobs cannot fill every page ahead of ones that have a delivery.
+        let orphan = routed_under(&library, 1_000)
+            .await
+            .notify_delivery
+            .expect("delivery");
+        assert!(library
+            .record_notify_dropped(&orphan, "gone", None)
+            .await
+            .unwrap());
+        let live = routed_under(&library, 1_000)
+            .await
+            .notify_delivery
+            .expect("delivery");
+        let stalled = library.stalled_notify_sends(later, 10).await.unwrap();
+        assert_eq!(stalled.len(), 2);
+        assert_eq!(
+            stalled.iter().filter(|s| s.delivery_id.is_none()).count(),
+            1,
+            "the finished delivery's job is listed without it"
+        );
+        // A job claimed or retried after it was read is not touched.
+        let mut raced = stalled
+            .iter()
+            .find(|s| s.delivery_id.as_deref() == Some(live.as_str()))
+            .expect("live job")
+            .clone();
+        raced.run_after = chrono::Utc::now().to_rfc3339();
+        assert_eq!(
+            library
+                .fail_stalled_notify_send(&raced, STALLED_REASON)
+                .await
+                .unwrap(),
+            StallOutcome::NotStalled
+        );
+        let work = library.notify_send_work(&live).await.unwrap().unwrap();
+        assert_eq!(work.state, DeliveryState::Pending);
+        // The sweep cancels both and fails only the live delivery.
+        fail_stalled_sends(&library, later).await.expect("pass");
+        assert!(library
+            .stalled_notify_sends(later, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let work = library.notify_send_work(&live).await.unwrap().unwrap();
+        assert_eq!(work.state, DeliveryState::Failed);
+        let work = library.notify_send_work(&orphan).await.unwrap().unwrap();
+        assert_eq!(work.state, DeliveryState::Dropped);
     }
 
     #[tokio::test]

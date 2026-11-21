@@ -341,14 +341,31 @@ pub struct PendingDelivery {
     pub plugin_instance_id: String,
 }
 
-/// A delivery whose send job has been ready to run for a long time and
-/// nothing claimed it: its notifier instance is deployed but not running.
+/// A send job that has been ready to run for a long time and that nothing
+/// claimed: its notifier instance is deployed but not running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StalledSend {
-    /// Delivery-log row id.
-    pub delivery_id: String,
     /// The pending send job nothing claimed.
     pub job_id: String,
+    /// When the job became ready to run, as stored: the write that fails
+    /// it matches this, so a job retried in the meantime is left alone.
+    pub run_after: String,
+    /// The job's lease generation when it was read, matched the same way.
+    pub lease_generation: i64,
+    /// Its pending delivery; `None` when the delivery is gone or already
+    /// finished, and the job only needs cancelling.
+    pub delivery_id: Option<String>,
+}
+
+/// What failing one [`StalledSend`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StallOutcome {
+    /// The job was claimed, retried or ended meanwhile; nothing changed.
+    NotStalled,
+    /// The job was cancelled; it had no pending delivery to fail.
+    Cancelled,
+    /// The job was cancelled and its delivery failed, in one write.
+    Failed(FailureEffect),
 }
 
 /// What the router did with a notification.
