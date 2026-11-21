@@ -188,6 +188,9 @@ Workerd egress is matched by the shared `EgressPolicy` and
   CDN hosts (`cdn.jsdelivr.net`, `pypi.org`, `files.pythonhosted.org`) in
   the consent grant. Materializing uses the same set and doesn't widen
   beyond it.
+  The Pyodide runtime itself needs no grant: the host ships a pinned copy
+  beside `workerd` and the isolate loads it from disk (see
+  [The Pyodide bundle](../contributing/packaging.md#the-pyodide-bundle)).
 
 ### Workerd limits
 
