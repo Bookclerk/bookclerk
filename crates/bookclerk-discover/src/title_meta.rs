@@ -713,7 +713,7 @@ const SAMPLE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// `detailByProductId` by their own product ids, then the stores that
 /// declared `detailByIsbn` by the title's ISBN. The first catalog record
 /// with a `sample_url` wins; a store that fails is skipped, and the calls
-/// together stop after [`SAMPLE_LOOKUP_TIMEOUT`]. Answers, misses included,
+/// together stop after ten seconds. Answers, misses included,
 /// are cached for six hours.
 ///
 /// # Arguments

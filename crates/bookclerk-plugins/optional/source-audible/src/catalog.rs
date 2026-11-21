@@ -741,7 +741,7 @@ const DETAIL_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
 /// # Returns
 ///
 /// `None` when `product_id` is not an ASIN, or no marketplace tried within
-/// [`DETAIL_BUDGET`] knows it.
+/// eight seconds knows it.
 ///
 /// # Errors
 ///
