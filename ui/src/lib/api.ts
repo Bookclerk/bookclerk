@@ -118,11 +118,21 @@ export type Entitlement = "purchase" | "plus" | "loan" | "free";
 export type WorkSort = "title" | "author" | "series" | "purchased" | "added" | "length";
 
 /**
- * What `facet` and `value` filter works by: a value list of the page index,
- * the caller's own tags, or their progress (`finished` / `not_finished`).
+ * What `facet` and `value` filter works by: a value list of the page index
+ * (`library_tag` is a library tag everyone sees), the caller's own tags
+ * (`tag`), or their progress (`finished` / `not_finished`).
  */
 export type WorkFacet =
-  "author" | "narrator" | "series" | "genre" | "publisher" | "source" | "tag" | "progress";
+  | "author"
+  | "narrator"
+  | "series"
+  | "genre"
+  | "publisher"
+  | "source"
+  | "tag"
+  | "library_tag"
+  | "collection"
+  | "progress";
 
 /** One value of a facet, from `GET /api/library/works/facets/{facet}`. */
 export interface FacetValue {
@@ -1442,7 +1452,7 @@ export interface ListedUser {
 }
 
 /** The book field a patron scope rule matches one value of. */
-export type ScopeField = "genre" | "series" | "author" | "narrator";
+export type ScopeField = "genre" | "series" | "author" | "narrator" | "tag" | "collection";
 
 /** Whether a patron scope rule lets matching books in or keeps them out. */
 export type RuleEffect = "include" | "exclude";
@@ -3852,6 +3862,95 @@ export async function putWorkState(id: string, edit: WorkStateEdit): Promise<Wor
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edit),
+  });
+  return parseJson(res);
+}
+
+/** One collection: a name and the storage key prefixes whose files belong to it. */
+export interface LibraryCollection {
+  /** The name people see and scope rules match. */
+  name: string;
+  /** Folders relative to a destination's root, each ending in `/`. */
+  prefixes: string[];
+}
+
+/** The library's collections. */
+export interface LibraryCollections {
+  /** The collections, in the order shown. */
+  collections: LibraryCollection[];
+}
+
+/**
+ * Reads the library's collections (operator, Owner or Administrator).
+ *
+ * @returns The collections.
+ */
+export async function getCollections(): Promise<LibraryCollections> {
+  const res = await fetch("/api/library/collections", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the library's collections; the Library is re-indexed after.
+ *
+ * @param collections - The new collections.
+ * @returns The collections as saved (names trimmed, prefixes ending in `/`).
+ */
+export async function putCollections(collections: LibraryCollections): Promise<LibraryCollections> {
+  const res = await fetch("/api/library/collections", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collections),
+  });
+  return parseJson(res);
+}
+
+/** Where a library tag came from. */
+export type WorkTagSource = "admin" | "sidecar";
+
+/** One library tag on a work. */
+export interface WorkTag {
+  /** The tag as written. */
+  value: string;
+  /** Set in Bookclerk (`admin`) or read from a sidecar file. */
+  source: WorkTagSource;
+}
+
+/** A work's library tags as `GET /api/library/works/{id}/tags` reports them. */
+export interface WorkTags {
+  /** The work. */
+  work_id: string;
+  /** Every tag, by key. */
+  tags: WorkTag[];
+}
+
+/**
+ * Reads a work's library tags (operator, Owner or Administrator).
+ *
+ * @param id - A top-level work.
+ * @returns The tags.
+ */
+export async function getWorkTags(id: string): Promise<WorkTags> {
+  const res = await fetch(`/api/library/works/${encodeURIComponent(id)}/tags`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the tags set in Bookclerk on a work; sidecar tags stay.
+ *
+ * @param id - A top-level work.
+ * @param tags - The tags to set (`[]` removes them).
+ * @returns The tags afterwards.
+ */
+export async function putWorkTags(id: string, tags: string[]): Promise<WorkTags> {
+  const res = await fetch(`/api/library/works/${encodeURIComponent(id)}/tags`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tags }),
   });
   return parseJson(res);
 }

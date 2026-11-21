@@ -370,7 +370,8 @@ case, hyphens and spaces, and read `O` as `0` and `I` or `L` as `1`.
 - Attempts are limited to 10 a minute per report ID with the
   `LOOKUP_LIMIT` rate-limiting binding, so no IP address is involved.
 - `GET /lookup` is the public form, with no script and the dashboard's
-  security headers.
+  security headers. The dashboard's sign-in page links to it, under the
+  sign-in card, for a sender who lands there by mistake.
 
 For deletion the Worker's B2 key needs `deleteFiles`, besides the
 `listFiles` that `/report` already uses. Without it a delete answers `502`

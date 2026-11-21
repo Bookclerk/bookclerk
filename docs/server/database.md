@@ -899,8 +899,8 @@ library holds as works, expressions and editions:
   when `library_index_builds` has no row for the current layout; see
   [Library index](../internals/jobs.md#library-index).
 - `library_work_facets`: the page index's filter values, one row per
-  author, narrator, series, genre, publisher or source a held top-level
-  work has, keyed by the lower-cased value. Written with the work's
+  author, narrator, series, genre, publisher, source or library tag a
+  held top-level work has, keyed by the lower-cased value. Written with the work's
   `library_work_rows` row and fenced by its refresh stamp; an unheld work
   has none. A refresh's facets can span several batches, so the row's
   `facets_ready` is 0 until the last of them is written, and a patron
@@ -913,6 +913,20 @@ library holds as works, expressions and editions:
 - `user_work_tags`: one user's tags on a work, one row per tag, written
   in the same batch as `user_title_state.tags` so the library page can
   filter by a tag.
+- `work_tags`: library tags on a top-level work, which everyone sees, one
+  row per tag and source (`admin` for tags set in Bookclerk, `sidecar`
+  for tags read from a metadata file), keyed by the lower-cased tag.
+  Replacing the `admin` tags (`PUT /api/library/works/{id}/tags`) leaves
+  the sidecar ones, and refreshes the work's page index row so the
+  Library filter (facet `library_tag`) and patron scopes see the change
+  at once. A split copies them to the new work.
+
+The library's collections are not a table: they live in the
+`core.collections` configuration document (names and storage key
+prefixes). The page index stores each work's collections as facet
+`collection`, read from its editions' files (`edition_files`), so a
+change to the document drops the finished index build and the next
+rebuild recomputes every work.
 
 Per-person rows point at works instead of copying a title:
 `listening_progress` (one row per listener and work, with the edition when

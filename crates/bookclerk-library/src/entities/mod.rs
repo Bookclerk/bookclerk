@@ -125,4 +125,5 @@ pub mod webauthn_credentials;
 pub mod window_book_parts;
 pub mod window_books;
 pub mod work_identifiers;
+pub mod work_tags;
 pub mod works;

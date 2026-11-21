@@ -8093,6 +8093,7 @@ pub(crate) mod work_batch;
 pub(crate) mod work_detail;
 pub(crate) mod work_search;
 pub(crate) mod work_split;
+pub(crate) mod work_tags;
 pub(crate) mod write_batches;
 pub use acquire_title::{AcquireTitle, AcquireTitlePage};
 pub use destination_objects::{
