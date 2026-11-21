@@ -1795,7 +1795,10 @@ returns the current position and no changes. A feed drained from a queue
 treats a call's cursor as the receipt for the pages up to it: their
 messages are deleted then, and pages handed out after it are offered again,
 so a retried cursor gets those changes once more. Such a feed has one
-reader, so the host calls it from one place. A page with `complete` false
+reader, so the host calls it from one place: the destination's sync pass,
+every five minutes, on the one node holding the destination's sync lease.
+It records each page before it sends that page's cursor back, and probes
+(`head`) a changed key whose entry carries no size or signature. A page with `complete` false
 means the guest may have missed changes since the cursor (a watcher
 restarted, a queue dropped messages), and the host backs it with a full
 listing. A change kind added after an SDK was built reads as `changed`. A scheduled listing stays the backstop either way.

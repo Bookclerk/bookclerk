@@ -501,7 +501,9 @@ the extra copies of each book (`copies`, see
 [Keeping several copies](output.md#keeping-several-copies)), Widevine
 and CDM provider, naming profile and templates, sidecars, cover
 and chapter options, LAME settings, timestamps, path sanitization and
-replacement rules, file name length, and the multi-destination policy.
+replacement rules, file name length, the multi-destination policy, and
+what happens when a stored file disappears (`missing_files`, see
+[Noticing changes made outside Bookclerk](output.md#noticing-changes-made-outside-bookclerk)).
 
 It follows the same rules as `core.events`:
 

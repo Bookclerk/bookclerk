@@ -2282,6 +2282,31 @@ export interface PluginSettingsGroup {
   placement?: PluginPlacementView;
   /** Nodes whose deployment of the instance is `present`. */
   present_on?: string[];
+  /** How a storage destination follows outside changes; absent until its first sync pass. */
+  storage_sync?: StorageSyncView;
+}
+
+/**
+ * How a destination notices changes made outside Bookclerk: its change feed
+ * and its scheduled listings.
+ */
+export interface StorageSyncView {
+  /** `off` (listings alone), `healthy`, `gap` (a listing runs at once) or `failing`. */
+  feed_state: "off" | "healthy" | "gap" | "failing";
+  /** The last feed failure. */
+  feed_error?: string;
+  /** RFC 3339 time the feed was last read. */
+  feed_checked_at?: string;
+  /** RFC 3339 time the last listing finished. */
+  listed_at?: string;
+  /** RFC 3339 time the next scheduled listing is due. */
+  next_listing_at?: string;
+  /** True while a listing is in progress. */
+  listing_in_progress: boolean;
+  /** Why the last listing failed or its removals were held back. */
+  listing_error?: string;
+  /** Files the destination held after the last listing or feed page. */
+  objects: number;
 }
 
 /**

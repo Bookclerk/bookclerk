@@ -46232,6 +46232,15 @@
           }
         }
       },
+      "MissingFileAction": {
+        "type": "string",
+        "description": "What happens to a stored copy whose file disappears from its destination\noutside Bookclerk (noticed by the destination's change feed or listing).",
+        "enum": [
+          "mark_missing",
+          "restore"
+        ],
+        "example": "mark_missing"
+      },
       "MultiDestinationMode": {
         "type": "string",
         "description": "Behavior when some output destinations already have a title and others do not.",
@@ -48082,6 +48091,10 @@
           "multi_destination": {
             "$ref": "#/components/schemas/MultiDestinationMode",
             "description": "Policy when only some enabled destinations have a title."
+          },
+          "missing_files": {
+            "$ref": "#/components/schemas/MissingFileAction",
+            "description": "What happens to a stored copy whose file disappears from its\ndestination outside Bookclerk. Absent in documents written before\nthe setting existed, which read as the default."
           },
           "bad_book_action": {
             "$ref": "#/components/schemas/BadBookAction",
@@ -50532,6 +50545,17 @@
                 "type": "null"
               }
             ]
+          },
+          "storage_sync": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StorageSyncView",
+                "description": "How outside changes at this destination are followed; absent until\na storage instance's first sync pass."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -50826,6 +50850,17 @@
               {
                 "$ref": "#/components/schemas/PlacementView",
                 "description": "Scheduler placement; absent when the instance is hand-managed (the\nEnabled switch applies only then)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "storage_sync": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StorageSyncView",
+                "description": "How outside changes at this destination are followed; absent for\nother plugins and before a destination's first sync pass."
               },
               {
                 "type": "null"
@@ -54381,6 +54416,83 @@
           }
         ],
         "description": "A fresh second factor for a shared branch consent. `Debug` prints no code."
+      },
+      "StorageFeedState": {
+        "type": "string",
+        "description": "The state of a destination's change feed, as the API reports it.",
+        "enum": [
+          "off",
+          "healthy",
+          "gap",
+          "failing"
+        ]
+      },
+      "StorageSyncView": {
+        "type": "object",
+        "description": "How a destination notices changes made outside Bookclerk: its change\nfeed's state and its listings (storage destinations ADR, decision 5).",
+        "required": [
+          "feed_state",
+          "listing_in_progress",
+          "objects"
+        ],
+        "properties": {
+          "feed_state": {
+            "$ref": "#/components/schemas/StorageFeedState",
+            "description": "The change feed's state: `off` (no feed; listings alone), `healthy`,\n`gap` (the feed may have missed changes; a listing runs at once) or\n`failing` (reading the feed failed; listings cover it)."
+          },
+          "feed_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last feed failure.",
+            "example": "the notification queue refused the request: access denied"
+          },
+          "feed_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 time the feed was last read.",
+            "example": "2026-11-20T21:00:00Z"
+          },
+          "listed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 time the last listing finished.",
+            "example": "2026-11-20T18:00:00Z"
+          },
+          "next_listing_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 time the next scheduled listing is due.",
+            "example": "2026-11-21T00:00:00Z"
+          },
+          "listing_in_progress": {
+            "type": "boolean",
+            "description": "True while a listing is in progress (it continues on the next\npass).",
+            "example": false
+          },
+          "listing_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last listing failed or its removals were held back.",
+            "example": "the listing missed 412 of 1832 known files; removals were not applied"
+          },
+          "objects": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Files the destination held after the last listing or feed page.",
+            "example": 1832,
+            "minimum": 0
+          }
+        }
       },
       "StoreEdition": {
         "type": "object",
