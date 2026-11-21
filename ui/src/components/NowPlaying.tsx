@@ -226,6 +226,7 @@ export function NowPlayingView({
                       <span className="shrink-0 text-sm font-semibold tabular-nums text-ink-soft">
                         {formatClock(bookmark.position_ms)}
                       </span>
+                      {bookmark.title ? <span className="sr-only">,</span> : null}
                       <span className="truncate text-sm text-ink/75">{bookmark.title}</span>
                     </button>
                     <button

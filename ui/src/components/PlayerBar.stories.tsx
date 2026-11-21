@@ -2,9 +2,10 @@
  * Stories for {@link PlayerBarView}, the player bar along the bottom of the
  * app (and of the desktop window), in each state that looks different.
  *
- * The bar spans the story's width as it spans the app's, so the `desktop`
- * screenshot shows the book, transport buttons, clock and menus on one row
- * over the timeline, and the `phone` one the narrow bar without the menus.
+ * The bar fills the story's width (inside the frame's padding) as it fills
+ * the app's, so the `desktop` screenshot shows the book, transport
+ * buttons, clock and menus on one row over the timeline, and the `phone`
+ * one the narrow bar without the menus.
  */
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { PlayerState } from "@/lib/player";
