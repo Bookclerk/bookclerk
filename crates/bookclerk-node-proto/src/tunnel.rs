@@ -10,8 +10,8 @@
 //! - [`normalize_tunnel_path`]: the path the router will match, after the
 //!   router's own trailing-slash normalization, so the policy and the router
 //!   always judge the same path.
-//! - [`tunnel_refusal`]: operator-only paths (the tray handoff, operator
-//!   elevation and first-Owner bootstrap) are refused whatever is exposed;
+//! - [`tunnel_refusal`]: operator-only paths (the operator-token sign-in,
+//!   the tray handoff, operator elevation and first-Owner bootstrap) are refused whatever is exposed;
 //!   with [`TunnelExposure::Branches`] only what branches and clerks need is
 //!   served: the node API, the clerk and copy routes, sign-in, OIDC and the
 //!   web app's pages, never the rest of `/api/` or the legacy control routes.
@@ -45,10 +45,11 @@ impl TunnelRefusal {
     }
 }
 
-/// Paths no tunnel request reaches: the loopback tray handoff, operator
-/// elevation and the operator's first-Owner bootstrap. Each also covers the
-/// paths below it.
-pub const OPERATOR_ONLY_PATHS: [&str; 5] = [
+/// Paths no tunnel request reaches: the operator-token sign-in, the loopback
+/// tray handoff, operator elevation and the operator's first-Owner
+/// bootstrap. Each also covers the paths below it.
+pub const OPERATOR_ONLY_PATHS: [&str; 6] = [
+    "/api/auth/login",
     "/api/auth/tray-handoff",
     "/api/auth/elevate",
     "/api/auth/passkeys/elevate",
@@ -63,7 +64,7 @@ pub const BRANCH_API_PATHS: [&str; 13] = [
     "/api/clerk",
     "/api/copies",
     "/api/auth/signin",
-    "/api/auth/login",
+    "/api/auth/password",
     "/api/auth/logout",
     "/api/auth/me",
     "/api/auth/passkeys/login",
@@ -150,6 +151,7 @@ mod tests {
     fn operator_paths_are_refused_whatever_is_exposed() {
         for exposure in [TunnelExposure::Branches, TunnelExposure::Library] {
             for path in [
+                "/api/auth/login",
                 "/api/auth/tray-handoff",
                 "/api/auth/tray-handoff/prepare",
                 "/api/auth/elevate",
@@ -178,6 +180,7 @@ mod tests {
             "/api/clerk/v1/token",
             "/api/copies/v1/x/files/0",
             "/api/auth/signin",
+            "/api/auth/password",
             "/api/auth/passkeys/login/begin",
             "/api/auth/branch-consent/step-up",
             "/oidc/authorize",

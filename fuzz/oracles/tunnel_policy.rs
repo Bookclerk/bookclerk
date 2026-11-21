@@ -104,13 +104,23 @@ pub fn check(data: &[u8]) -> Verdict {
         TunnelExposure::Library
     };
     let path = normalize_tunnel_path(raw);
-    assert!(path.starts_with('/'), "normalized path {path:?} lost its slash");
+    assert!(
+        path.starts_with('/'),
+        "normalized path {path:?} lost its slash"
+    );
     assert!(
         path == "/" || !path.ends_with('/'),
         "normalized path {path:?} keeps a trailing slash"
     );
-    assert!(!path.starts_with("//"), "normalized path {path:?} keeps two leading slashes");
-    assert_eq!(normalize_tunnel_path(&path), path, "normalizing is not idempotent");
+    assert!(
+        !path.starts_with("//"),
+        "normalized path {path:?} keeps two leading slashes"
+    );
+    assert_eq!(
+        normalize_tunnel_path(&path),
+        path,
+        "normalizing is not idempotent"
+    );
     let verdict = match tunnel_refusal(&path, exposure) {
         None => Verdict::Served,
         Some(TunnelRefusal::OperatorOnly) => Verdict::OperatorOnly,
@@ -126,6 +136,10 @@ pub fn check(data: &[u8]) -> Verdict {
         tunnel_refusal(&path, other) == Some(TunnelRefusal::OperatorOnly),
         "operator-only answer for {path:?} depends on the exposure"
     );
-    assert_eq!(verdict, expected(&path, exposure), "policy disagrees for {path:?}");
+    assert_eq!(
+        verdict,
+        expected(&path, exposure),
+        "policy disagrees for {path:?}"
+    );
     verdict
 }
