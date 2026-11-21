@@ -118,3 +118,4 @@ Build and agent conventions for this repository live in
 - [What needs the operator](adr/owner-and-operator.md): the rule for which actions need elevation, and the switches an Owner sets on each Administrator
 - [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins
 - [Notifications](adr/notifications.md): the host routes events into send jobs, notifier plugins send them, and account mail carries reset and recovery
+- [Model plugins and the AI binding](adr/ai-models.md): models run in jailed plugins behind an `ai` entrypoint, and every caller reaches them through one `AI` binding

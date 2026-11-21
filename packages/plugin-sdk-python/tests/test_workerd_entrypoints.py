@@ -9,6 +9,7 @@ from unittest import mock
 from bookclerk_plugin_sdk import workerd as workerd_module
 from bookclerk_plugin_sdk.workerd import (
     AdapterDatabaseSession,
+    AiEntrypoint,
     BookclerkEntrypoint,
     CliEntrypoint,
     CoverEntrypoint,
@@ -501,6 +502,99 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record, {"present": ["title"], "title": "Nested"})
         self.assertEqual(echo.seen["list"], [b"x"])
         self.assertIsInstance(echo.seen["bytes"], bytes)
+
+    async def test_ai_defaults_and_dispatch(self) -> None:
+        """AiEntrypoint is healthy, lists nothing, refuses run, and dispatches overrides."""
+        from bookclerk_plugin_sdk.workerd import pack_embedding_vectors, unpack_embedding_vectors
+
+        models = AiEntrypoint()
+        self.assertEqual(await models.health(), {"ok": True, "detail": ""})
+        self.assertEqual(await models.models(), {"models": []})
+        with self.assertRaises(PluginError) as ctx:
+            await models.run({"model": "tiny", "input": {}})
+        self.assertEqual(ctx.exception.code, "unsupported")
+
+        class Tiny(AiEntrypoint):
+            async def run(self, params: dict) -> dict:
+                texts = params["input"]["textEmbeddings"]["texts"]
+                vectors = pack_embedding_vectors([[float(len(t["text"])), 0.5] for t in texts])
+                return {
+                    "output": {
+                        "textEmbeddings": {
+                            "dimensions": 2,
+                            "vectors": vectors,
+                            "revision": "r1",
+                            "fallbacks": [],
+                        }
+                    }
+                }
+
+        ran = await Tiny().bookclerkInvoke(
+            {},
+            "run",
+            {
+                "model": "tiny",
+                "input": {"textEmbeddings": {"texts": [{"text": "abc", "role": "document"}]}},
+            },
+        )
+        out = ran["output"]["textEmbeddings"]
+        self.assertEqual(unpack_embedding_vectors(out["vectors"], 2), [[3.0, 0.5]])
+        with self.assertRaises(PluginError):
+            pack_embedding_vectors([[1.0, 2.0], [3.0]])
+        with self.assertRaises(PluginError):
+            unpack_embedding_vectors(b"\x00" * 6, 2)
+
+    async def test_ai_binding_wraps_the_granted_stub(self) -> None:
+        """``env.AI`` forwards runs in the adapter's shape and refuses a run without a model."""
+        from bookclerk_plugin_sdk.workerd import AiBinding
+
+        class _AiStub:
+            def __init__(self) -> None:
+                self.calls: list[tuple] = []
+
+            async def run(self, model: str, request: dict) -> dict:
+                self.calls.append((model, request))
+                return {
+                    "shape": [1, 2],
+                    "data": [[0.5, -1]],
+                    "model": "@embedder/tiny",
+                    "revision": "r1",
+                    "fallbacks": [0],
+                }
+
+        stub = _AiStub()
+        seen: list = []
+
+        class Tagger(AiEntrypoint):
+            async def run(self, params: dict) -> dict:
+                ai = self.env.AI
+                assert isinstance(ai, AiBinding)
+                seen.append(await ai.run("@library/text-embeddings", text="a query", role="query"))
+                for bad in ({"model": "", "text": "a"}, {"model": "@embedder/tiny", "text": 3}):
+                    try:
+                        await ai.run(bad["model"], text=bad["text"])
+                    except PluginError as err:
+                        seen.append(err.code)
+                return {}
+
+        await Tagger().bookclerkInvoke({"ai": stub}, "run", {"model": "tiny", "input": {}})
+        self.assertEqual(
+            seen,
+            [
+                {
+                    "shape": [1, 2],
+                    "data": [[0.5, -1.0]],
+                    "model": "@embedder/tiny",
+                    "revision": "r1",
+                    "fallbacks": [0],
+                },
+                "invalid_params",
+                "invalid_params",
+            ],
+        )
+        self.assertEqual(
+            stub.calls, [("@library/text-embeddings", {"text": ["a query"], "role": "query"})]
+        )
 
     async def test_notifier_defaults_and_dispatch(self) -> None:
         """NotifierEntrypoint is healthy, refuses send, echoes addresses, and dispatches overrides."""

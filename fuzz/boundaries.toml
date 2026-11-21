@@ -154,6 +154,20 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.ai_run_reply]
+crate = "bookclerk-plugin-abi"
+boundary = "A model plugin's AiModels.run reply (vector count, length, finite values, revision and fallback indexes against the run it answers) and its AiModels.models listing"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.ai_run]
+crate = "bookclerk-plugin-abi"
+boundary = "A plugin's AI.run: the /ai/run JSON body and the Cap'n Proto run, their model name and the input for one task"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.event_read]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds"

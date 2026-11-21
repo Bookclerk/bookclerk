@@ -189,6 +189,8 @@ struct Identity {
     supports_metadata: bool,
     /// Whether the guest exports `covers`.
     supports_covers: bool,
+    /// Whether the guest exports `ai`.
+    supports_ai: bool,
     /// Whether the guest offers credential login.
     supports_credential_login: bool,
     /// Whether the guest scans a remote library.
@@ -212,6 +214,7 @@ impl Identity {
             cron_schedules: guest.cron_schedules(),
             supports_metadata: guest.supports_metadata(),
             supports_covers: guest.supports_covers(),
+            supports_ai: guest.supports_ai(),
             supports_credential_login: guest.supports_credential_login(),
             supports_library_scan: guest.supports_library_scan(),
             supports_listening_sync: guest.supports_listening_sync(),
@@ -570,6 +573,26 @@ impl Integration for OnDemandIntegration {
         guest.fetch_covers(params).await
     }
 
+    fn supports_ai(&self) -> bool {
+        self.identity.supports_ai
+    }
+
+    async fn ai_models(
+        &self,
+    ) -> std::result::Result<bookclerk_plugin_abi::AiModelList, bookclerk_plugin_abi::PluginError>
+    {
+        let (guest, _busy) = self.awake().await.map_err(wake_failure)?;
+        guest.ai_models().await
+    }
+
+    async fn ai_run(
+        &self,
+        params: bookclerk_plugin_abi::AiRunParams,
+    ) -> std::result::Result<bookclerk_plugin_abi::AiRunOk, bookclerk_plugin_abi::PluginError> {
+        let (guest, _busy) = self.awake().await.map_err(wake_failure)?;
+        guest.ai_run(params).await
+    }
+
     async fn diagnose(&self) -> bookclerk_integrations::Result<Vec<String>> {
         let (guest, _busy) = self.awake().await?;
         guest.diagnose().await
@@ -608,6 +631,14 @@ impl Integration for OnDemandIntegration {
             }
         }
     }
+}
+
+/// What a model caller is answered when the sleeping model plugin cannot be
+/// started.
+fn wake_failure(
+    err: bookclerk_integrations::IntegrationError,
+) -> bookclerk_plugin_abi::PluginError {
+    bookclerk_plugin_abi::PluginError::unavailable(format!("model plugin did not start: {err}"))
 }
 
 #[cfg(test)]

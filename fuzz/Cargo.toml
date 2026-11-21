@@ -180,6 +180,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ai_run_reply"
+path = "fuzz_targets/ai_run_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ai_run"
+path = "fuzz_targets/ai_run.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "event_read"
 path = "fuzz_targets/event_read.rs"
 test = false

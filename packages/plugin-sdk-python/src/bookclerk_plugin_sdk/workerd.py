@@ -9,7 +9,7 @@ The default export is a module-level ``Default`` class extending
 :class:`BookclerkEntrypoint` with optional ``event(batch)`` / ``job(job)``
 triggers. Named entrypoints from ``plugin.toml`` ``entrypoints`` are module-level
 classes named after the wire name (``Storefront``, ``Storage``, ``RemoteLibrary``,
-``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``, ``MetadataFiles``, ``Notifier``) extending the matching ``*Entrypoint``
+``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``, ``MetadataFiles``, ``Notifier``, ``Ai``) extending the matching ``*Entrypoint``
 base. The launcher's adapter isolate reaches them only through the
 ``bookclerk*`` dispatch methods; authors neither call nor override those.
 
@@ -25,8 +25,9 @@ import asyncio
 import base64
 import inspect
 import json
+import struct
 import time
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
@@ -141,8 +142,12 @@ __all__ = [
     "MetadataFilesEntrypoint",
     "MetadataEntrypoint",
     "NamedEntrypoint",
+    "AiBinding",
+    "AiEntrypoint",
     "NotifierEntrypoint",
     "NotifyBinding",
+    "pack_embedding_vectors",
+    "unpack_embedding_vectors",
     "OidcEntrypoint",
     "PluginError",
     "QueueBatch",
@@ -535,6 +540,9 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
     notify = _get(ctx, "notify")
     if notify is not None:
         granted["NOTIFY"] = transport_notify(notify)
+    ai = _get(ctx, "ai")
+    if ai is not None:
+        granted["AI"] = transport_ai(ai)
     databases = _get(ctx, "databases")
     if databases is not None:
         for entry in databases:
@@ -1000,6 +1008,115 @@ def transport_queue(stub: Any) -> QueueBinding:
         The author-facing binding.
     """
     return QueueBinding(stub)
+
+
+def pack_embedding_vectors(vectors: Sequence[Sequence[float]]) -> bytes:
+    """Pack embedding vectors into the wire form of ``AiTextEmbeddingsOutput["vectors"]``.
+
+    Args:
+        vectors: One vector per input text, all of one length.
+
+    Returns:
+        Little-endian 32-bit floats, concatenated.
+
+    Raises:
+        PluginError: ``internal`` when the vectors differ in length.
+    """
+    width = len(vectors[0]) if vectors else 0
+    out = bytearray()
+    for vector in vectors:
+        if len(vector) != width:
+            raise PluginError("internal", "embedding vectors differ in length")
+        out += struct.pack(f"<{width}f", *vector)
+    return bytes(out)
+
+
+def unpack_embedding_vectors(data: bytes, dimensions: int) -> list[list[float]]:
+    """Split the wire form of ``AiTextEmbeddingsOutput["vectors"]`` into vectors.
+
+    Args:
+        data: Little-endian 32-bit floats, concatenated.
+        dimensions: Numbers per vector.
+
+    Returns:
+        One vector per ``dimensions`` numbers.
+
+    Raises:
+        PluginError: ``internal`` when the bytes are not whole vectors.
+    """
+    width = dimensions * 4
+    if dimensions < 1 or len(data) % width != 0:
+        raise PluginError("internal", "embedding bytes are not whole vectors")
+    return [
+        list(struct.unpack_from(f"<{dimensions}f", data, at)) for at in range(0, len(data), width)
+    ]
+
+
+class AiBinding:
+    """``AI`` binding, present when ``plugin.toml`` lists tasks under ``[ai].calls``.
+
+    The host routes each run to the deployed plugin that serves the model.
+    The adapter isolate owns the ai grant; this wrapper converts Python
+    values into the JS values the adapter stub expects.
+    """
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    async def run(
+        self,
+        model: str,
+        *,
+        text: str | list[str],
+        role: abi.AiTextRole = "document",
+    ) -> dict[str, Any]:
+        """Run one text-embedding model on one input (``env.AI.run``).
+
+        Args:
+            model: ``@<plugin id>/<model id>``, or a task alias such as
+                ``@library/text-embeddings`` for the model the library chose.
+            text: One text or a batch (at most ``MAX_AI_EMBED_TEXTS``), none empty.
+            role: ``document`` for stored content, ``query`` for a search
+                query matched against documents.
+
+        Returns:
+            ``{"shape": [texts, dimensions], "data": [[...], ...], "model":
+            ..., "revision": ..., "fallbacks": [...]}``. Vectors are
+            comparable only when their model and revision match.
+
+        Raises:
+            PluginError: ``invalid_params`` for a malformed run, ``not_found``
+                when nothing deployed serves the model, ``forbidden`` for a
+                task that is not granted, ``rate_limited`` past the plugin's
+                budget, ``deadline_exceeded`` or ``unavailable`` when the
+                model plugin cannot answer.
+        """
+        if not isinstance(model, str) or not model:
+            raise PluginError("invalid_params", "run requires a model name")
+        texts = [text] if isinstance(text, str) else text
+        if not isinstance(texts, list) or any(not isinstance(t, str) for t in texts):
+            raise PluginError("invalid_params", "run requires text as a string or strings")
+        reply = py(await self._stub.run(model, js({"text": texts, "role": role}))) or {}
+        shape = [int(n) for n in (_get(reply, "shape") or [0, 0])]
+        return {
+            "shape": shape,
+            "data": [[float(n) for n in row] for row in (_get(reply, "data") or [])],
+            "model": str(_get(reply, "model", model)),
+            "revision": str(_get(reply, "revision", "")),
+            "fallbacks": [int(n) for n in (_get(reply, "fallbacks") or [])],
+        }
+
+
+def transport_ai(stub: Any) -> AiBinding:
+    """Wrap the adapter's granted ai stub as an :class:`AiBinding`.
+
+    Args:
+        stub: ``AiBinding``-shaped JS stub from the granted context.
+
+    Returns:
+        The author-facing binding.
+    """
+    return AiBinding(stub)
 
 
 class NotifyBinding:
@@ -2450,6 +2567,41 @@ class MetadataFilesEntrypoint(NamedEntrypoint):
         Everything else in the file is kept; a ``str`` is written as UTF-8.
         """
         raise _unsupported("render")
+
+
+class AiEntrypoint(NamedEntrypoint):
+    """``ai`` entrypoint: serves models to the host and to plugins with the grant.
+
+    ``[ai].serves`` in ``plugin.toml`` declares the tasks. The host checks
+    every listing and every reply, so a wrong vector count or length fails
+    the run.
+    """
+
+    bookclerk_methods = ("health", "models", "run")
+
+    async def health(self) -> abi.HealthOk:
+        """Liveness / readiness probe (``HealthOk``)."""
+        return {"ok": True, "detail": ""}
+
+    async def models(self) -> abi.AiModelList:
+        """The models served now (``AiModelList``).
+
+        Must be cheap: do not load a model here. Change a model's
+        ``revision`` whenever its weights, tokenizer or loaded language packs
+        change, because outputs are comparable only within one revision.
+        """
+        return {"models": []}
+
+    async def run(self, _params: abi.AiRunParams) -> abi.AiRunOk:
+        """Run one model on one input (``AiRunOk``).
+
+        Raise ``not_found`` for a model this plugin does not serve and
+        ``invalid_params`` for an input of another task. For text embeddings
+        return one vector per text, in input order
+        (:func:`pack_embedding_vectors`), with the model's listed
+        ``dimensions`` and ``revision``; leave ``model`` unset.
+        """
+        raise _unsupported("run")
 
 
 class NotifierEntrypoint(NamedEntrypoint):

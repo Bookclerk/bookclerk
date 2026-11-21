@@ -174,6 +174,13 @@ async fn first_call(id: &str, session: &PluginSession) -> Option<Duration> {
         )
         .await;
         settle_first_call(id, started, outcome)
+    } else if session.has_entrypoint(Entrypoint::Ai) {
+        let outcome = tokio::time::timeout(
+            RPC_TIMEOUT,
+            session.ai(|stub| async move { stub.health().await }),
+        )
+        .await;
+        settle_first_call(id, started, outcome)
     } else {
         None
     }

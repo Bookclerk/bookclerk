@@ -208,6 +208,17 @@ pub const QUEUE_CONSUMER_BINDING_PREFIX: &str = "queue_consumer:";
 /// `scheduled(controller)` trigger.
 pub const CRON_BINDING_PREFIX: &str = "cron:";
 
+/// Grant `bindings` entry prefix for one `[ai].calls` task
+/// (`ai:<task>`, such as `ai:textEmbeddings`): the plugin may run models of
+/// that task through its `AI` binding.
+pub const AI_TASK_BINDING_PREFIX: &str = "ai:";
+
+/// Grant token for running models of `task` through the `AI` binding.
+#[must_use]
+pub fn ai_task_grant(task: bookclerk_plugin_sdk::AiTask) -> String {
+    format!("{AI_TASK_BINDING_PREFIX}{}", task.wire_name())
+}
+
 /// Grant token for firing the normalized cron schedule `cron`.
 #[must_use]
 pub fn cron_grant(cron: &str) -> String {
@@ -255,6 +266,8 @@ fn manifest_token_kind(binding: &str) -> Option<&'static str> {
         Some("queue producer")
     } else if binding.starts_with(QUEUE_CONSUMER_BINDING_PREFIX) {
         Some("queue consumer")
+    } else if binding.starts_with(AI_TASK_BINDING_PREFIX) {
+        Some("model task")
     } else {
         None
     }
@@ -424,7 +437,7 @@ pub struct PluginGrant {
     pub plugin_id: String,
     /// Approved named entrypoints (wire names: `storefront`, `storage`,
     /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`,
-    /// `metadataFiles`, `notifier`).
+    /// `metadataFiles`, `notifier`, `ai`).
     #[serde(default)]
     pub entrypoints: BTreeSet<String>,
     /// Approved event types the plugin may publish through its events binding.
@@ -592,6 +605,13 @@ impl PluginGrant {
     #[must_use]
     pub fn allows_queue_producer(&self, binding: &str) -> bool {
         grant_has_binding(self, &queue_producer_grant(binding))
+    }
+
+    /// True when this grant authorizes running models of `task` through
+    /// the `AI` binding.
+    #[must_use]
+    pub fn allows_ai_task(&self, task: bookclerk_plugin_sdk::AiTask) -> bool {
+        grant_has_binding(self, &ai_task_grant(task))
     }
 
     /// True when this grant authorizes handling `job_type`.
@@ -1065,6 +1085,9 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
     for cron in &manifest.triggers.crons {
         bindings.insert(cron_grant(cron.as_str()));
     }
+    for task in &manifest.ai.calls {
+        bindings.insert(ai_task_grant(*task));
+    }
     let flags = manifest
         .workerd
         .as_ref()
@@ -1375,6 +1398,18 @@ pub fn consent_summary(grant: &PluginGrant) -> Vec<String> {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(", ")
+        ));
+    }
+    let tasks: Vec<&str> = grant
+        .bindings
+        .iter()
+        .filter_map(|b| b.strip_prefix(AI_TASK_BINDING_PREFIX))
+        .collect();
+    if !tasks.is_empty() {
+        lines.push(format!(
+            "Can run the library's models on text it chooses ({}); the text goes to the model \
+             plugin that serves the task",
+            tasks.join(", ")
         ));
     }
     let databases = granted_database_bindings(grant);
@@ -6097,6 +6132,57 @@ queue = "jobs"
                 "{token}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn model_task_grants_follow_the_manifest() {
+        let calls = |tables: &str| {
+            PluginManifest::parse(&format!(
+                r#"
+api_version = 3
+id = "demo"
+runtime = "native"
+command = "./demo"
+entrypoints = ["cli"]
+
+[capabilities.network]
+mode = "deny"
+{tables}
+"#
+            ))
+            .unwrap()
+        };
+        let task = bookclerk_plugin_sdk::AiTask::TextEmbeddings;
+        assert_eq!(ai_task_grant(task), "ai:textEmbeddings");
+
+        let baseline = consent_request_alias(&calls("[ai]\ncalls = [\"textEmbeddings\"]\n"));
+        assert!(baseline.bindings.contains("ai:textEmbeddings"));
+        let approved = validate_approved_grant(&baseline, &baseline).expect("declared token");
+        assert!(effective_grant(&approved, &baseline).allows_ai_task(task));
+        let summary = consent_summary(&approved).join("\n");
+        assert!(
+            summary.contains("Can run the library's models on text it chooses (textEmbeddings)"),
+            "{summary}"
+        );
+
+        // Narrowing drops the token; the task is then not granted.
+        let mut narrowed = baseline.clone();
+        narrowed.bindings.remove("ai:textEmbeddings");
+        let narrowed = validate_approved_grant(&narrowed, &baseline).expect("narrow");
+        assert!(!effective_grant(&narrowed, &baseline).allows_ai_task(task));
+
+        // A plugin that declares no task cannot be granted one.
+        let plain = consent_request_alias(&calls(""));
+        assert!(!plain.allows_ai_task(task));
+        let mut widened = plain.clone();
+        widened.bindings.insert(ai_task_grant(task));
+        let err = validate_approved_grant(&widened, &plain)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("grant model task `ai:textEmbeddings` is not declared"),
+            "{err}"
+        );
     }
 
     #[test]

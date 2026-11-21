@@ -359,6 +359,35 @@ title = "Library sync failed"
 At most 64 types. See [Raising notifications](abi.md#raising-notifications)
 for the binding.
 
+### `[ai]` (models)
+
+`[ai]` says which model tasks a plugin serves and which it calls.
+
+```toml
+# A model plugin
+entrypoints = ["ai"]
+
+[ai]
+serves = ["textEmbeddings"]
+```
+
+```toml
+# Any plugin that wants vectors
+[ai]
+calls = ["textEmbeddings"]
+```
+
+- `serves`: the tasks of the models the plugin serves on its
+  [`ai` entrypoint](abi.md#model-plugins). Required, and not empty, with
+  that entrypoint; every other plugin must leave it out. A model plugin
+  may not use the id `library`, which names task aliases.
+- `calls`: the tasks the plugin runs through
+  [`env.AI`](abi.md#calling-models). Listing one asks the operator for the
+  grant `ai:<task>` and gives the plugin the `AI` binding, so no other
+  binding may be named `AI`.
+
+The only task is `textEmbeddings`. No task may repeat in a list.
+
 ### `command` (native)
 
 `command` may be absolute, or relative to the manifest folder. An absolute

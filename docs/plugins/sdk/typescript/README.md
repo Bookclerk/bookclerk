@@ -49,6 +49,7 @@ extending its base:
 | `entrypoints = ["covers"]` | `Covers` | `CoverEntrypoint` |
 | `entrypoints = ["metadataFiles"]` | `MetadataFiles` | `MetadataFilesEntrypoint` |
 | `entrypoints = ["notifier"]` | `Notifier` | `NotifierEntrypoint` |
+| `entrypoints = ["ai"]` | `Ai` | `AiEntrypoint` |
 
 ```ts
 import {

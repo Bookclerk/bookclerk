@@ -218,15 +218,10 @@ json_logs = true
 
 # Recommendations / embeddings / request queue (see docs/internals/discovery.md).
 # Storefront candidates (Libro related + Audible catalog) are the primary
-# discovery path; local embeddings score those unowned hits.
+# discovery path; text vectors score those unowned hits. The text-embedding
+# model is a plugin (see docs/plugins/ai-models.md); without one, vectors
+# are a hash of the words.
 [discovery]
-# ONNX MiniLM scoring is off by default; shelves rank with local-hash-v1.
-# Turning it on needs a host built with the `onnx-embeddings` feature.
-embeddings_enabled = false
-# Model id used when embeddings are on; runtime falls back to local-hash-v1
-# if ONNX cannot load.
-embedding_model = "all-minilm-l6-v2-q"
-embed_intra_threads = 1
 storefront_candidates = true
 storefront_seed_limit = 8
 storefront_max_remote_calls = 32

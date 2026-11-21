@@ -179,18 +179,6 @@ pub struct LibraryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DiscoveryConfig {
-    /// Load the ONNX MiniLM model to score storefront candidates.
-    ///
-    /// Off by default: the shelves rank with the built-in local-hash
-    /// embedder. The ONNX path stays for opt-in experiments until
-    /// AI-assisted recommendations are designed, and needs a host built with
-    /// the `onnx-embeddings` feature; without it, this warns and uses
-    /// local-hash.
-    pub embeddings_enabled: bool,
-    /// Model id (`all-minilm-l6-v2-q` preferred; runtime may fall back to `local-hash-v1`).
-    pub embedding_model: String,
-    /// ONNX intra-op threads (keep at 1 on small VPSes).
-    pub embed_intra_threads: usize,
     /// Reserved for a future WorldCat provider (requires API key).
     pub worldcat_enabled: bool,
     /// Expand recommendations from storefront catalogs (unowned titles).
@@ -211,9 +199,6 @@ pub struct DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
-            embeddings_enabled: false,
-            embedding_model: String::from("all-minilm-l6-v2-q"),
-            embed_intra_threads: 1,
             worldcat_enabled: false,
             storefront_candidates: true,
             storefront_seed_limit: 8,
@@ -960,21 +945,6 @@ impl Config {
         if let Ok(v) = std::env::var("BOOKCLERK_ENRICH_MIN_CONFIDENCE") {
             if let Ok(n) = v.parse::<u8>() {
                 self.library.enrich_min_confidence = n.min(100);
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED") {
-            self.discovery.embeddings_enabled =
-                parse_bool(&v).unwrap_or(self.discovery.embeddings_enabled);
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_EMBEDDING_MODEL") {
-            let trimmed = v.trim();
-            if !trimmed.is_empty() {
-                self.discovery.embedding_model = trimmed.to_string();
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_EMBED_INTRA_THREADS") {
-            if let Ok(n) = v.parse::<usize>() {
-                self.discovery.embed_intra_threads = n.max(1);
             }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_STOREFRONT_CANDIDATES") {

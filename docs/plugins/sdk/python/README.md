@@ -41,8 +41,8 @@ matching name extending its base: `Storefront(StorefrontEntrypoint)`,
 `Storage(StorageEntrypoint)`, `RemoteLibrary(RemoteLibraryEntrypoint)`,
 `DatabaseAdapter(DatabaseAdapterEntrypoint)`, `Cli(CliEntrypoint)`,
 `Oidc(OidcEntrypoint)`, `Metadata(MetadataEntrypoint)`,
-`Covers(CoverEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)` and
-`Notifier(NotifierEntrypoint)`.
+`Covers(CoverEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)`,
+`Notifier(NotifierEntrypoint)` and `Ai(AiEntrypoint)`.
 
 ```python
 from bookclerk_plugin_sdk.workerd import (

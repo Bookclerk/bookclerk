@@ -27,13 +27,10 @@ pub const CANDIDATES_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
 /// # Arguments
 ///
 /// * `cfg` - Live configuration.
-/// * `use_onnx` - Whether ranking may load the ONNX embedder.
-/// * `similarity` - Whether embedding similarity scores candidates (local-hash
-///   unless `use_onnx`).
+/// * `similarity` - Whether embedding similarity scores candidates.
 /// * `embedding_model` - Model id the owned works were embedded with.
 pub(crate) fn discover_options(
     cfg: &bookclerk_config::Config,
-    use_onnx: bool,
     similarity: bool,
     embedding_model: String,
 ) -> bookclerk_discover::RecommendOptions {
@@ -50,8 +47,6 @@ pub(crate) fn discover_options(
         storefront_max_remote_calls: cfg.discovery.storefront_max_remote_calls,
         exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
         disabled_shelves: Vec::new(),
-        models_dir: use_onnx.then(|| cfg.paths().models_dir.clone()),
-        embed_intra_threads: cfg.discovery.embed_intra_threads,
         embeddings_enabled: similarity,
     }
 }
@@ -175,7 +170,6 @@ pub async fn run_discover_candidates(
     let opts = discover_options(
         &cfg,
         false,
-        false,
         String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1),
     );
     let report = if opts.fetch_storefront_candidates {
@@ -278,7 +272,6 @@ pub async fn run_discover_feed(
         return Ok(format!("subject={} removed", subject.key()));
     }
     let has_books = library.count_books(None).await? > 0;
-    let use_onnx = has_books && cfg.discovery.embeddings_enabled;
     // One embedder at a time, as the request-queue ranking job does.
     let _gate = state
         .discover_gate
@@ -286,23 +279,16 @@ pub async fn run_discover_feed(
         .acquire_owned()
         .await
         .map_err(|_| anyhow::anyhow!("discover gate closed"))?;
-    // Owned works are embedded with local-hash, or with ONNX MiniLM when
-    // `discovery.embeddings_enabled` opts into it; without ONNX this opens the
-    // local-hash embedder straight away.
+    // Owned works are embedded with the local-hash stand-in.
     let model_id = if has_books {
-        let models_dir = cfg.paths().models_dir.clone();
-        let threads = cfg.discovery.embed_intra_threads;
-        let mut embedder = tokio::task::spawn_blocking(move || {
-            bookclerk_discover::open_embedder(&models_dir, threads, use_onnx)
-        })
-        .await??;
+        let mut embedder = bookclerk_discover::open_embedder();
         let model_id = embedder.model_id().to_string();
         let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await;
         model_id
     } else {
         String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1)
     };
-    let opts = discover_options(&cfg, use_onnx, has_books, model_id);
+    let opts = discover_options(&cfg, has_books, model_id);
     let sources = state.sources.read().await.clone();
     // A candidate fetch that finishes while this ranking runs folds its
     // follow-up ranking into this job (the dedup key covers running jobs),

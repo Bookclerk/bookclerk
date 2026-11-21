@@ -40,7 +40,10 @@ const {
   CoverEntrypoint,
   MAX_BATCH_KEYS,
   MetadataFilesEntrypoint,
+  AiEntrypoint,
   NotifierEntrypoint,
+  packEmbeddingVectors,
+  unpackEmbeddingVectors,
   PluginError,
   StorageEntrypoint,
   StorefrontEntrypoint,
@@ -426,6 +429,53 @@ class MetadataFiles extends MetadataFilesEntrypoint {
   }
 }
 
+class Ai extends AiEntrypoint {
+  async models() {
+    if (this.env.CONFIG?.aiBroken) return {};
+    return {
+      models: [
+        {
+          modelId: "tiny",
+          task: "textEmbeddings",
+          revision: "r1",
+          dimensions: 2,
+          maxTokens: 512,
+          languages: ["en"],
+        },
+      ],
+    };
+  }
+  async run(params) {
+    const texts = params.input.textEmbeddings.texts;
+    if (params.model !== "tiny") throw new PluginError("not_found", "no such model");
+    if (texts[0].text === "call") {
+      // `env.AI` round-trips through the adapter's ai grant.
+      calls.aiRun = await this.env.AI.run("@library/text-embeddings", {
+        text: "a query",
+        role: "query",
+      });
+      calls.aiRefused = await this.env.AI.run("@nobody/none", { text: ["a"] }).catch(
+        (err) => err.code,
+      );
+      calls.aiUnnamed = await this.env.AI.run("", { text: "a" }).catch((err) => err.code);
+      calls.aiNoText = await this.env.AI.run("@embedder/tiny", {}).catch((err) => err.code);
+    }
+    if (texts[0].text === "no bytes") return { output: { textEmbeddings: { dimensions: 2 } } };
+    return {
+      output: {
+        textEmbeddings: {
+          dimensions: 2,
+          vectors: packEmbeddingVectors(
+            texts.map((t) => [t.text.length, t.role === "query" ? 1 : 0]),
+          ),
+          revision: "r1",
+          fallbacks: [],
+        },
+      },
+    };
+  }
+}
+
 class Notifier extends NotifierEntrypoint {
   async send(params) {
     const { message, destination } = params;
@@ -610,6 +660,21 @@ const granted = {
       body: init.body,
     });
     if (u.pathname === "/progress") return new Response(null, { status: 200 });
+    if (u.pathname === "/ai/run") {
+      const body = JSON.parse(init.body);
+      (this.aiRuns ??= []).push({ auth: init.headers?.Authorization, body });
+      if (body.model === "@nobody/none") {
+        return Response.json(
+          { error: { code: "not_found", message: "no deployed plugin serves it" } },
+          { status: 404 },
+        );
+      }
+      const vectors = Buffer.from(packEmbeddingVectors([[0.5, -1]])).toString("base64");
+      return Response.json({
+        model: "@embedder/tiny",
+        output: { textEmbeddings: { dimensions: 2, vectors, revision: "r1", fallbacks: [0] } },
+      });
+    }
     if (u.pathname === "/notify/raise") {
       const body = JSON.parse(init.body);
       (this.raises ??= []).push({ auth: init.headers?.Authorization, body });
@@ -753,6 +818,7 @@ const env = {
   PLUGIN_COVERS: new Covers({}, {}),
   PLUGIN_METADATA_FILES: new MetadataFiles({}, {}),
   PLUGIN_NOTIFIER: new Notifier({}, {}),
+  PLUGIN_AI: new Ai({}, {}),
   GRANTED: granted,
   BRIDGE_TOKEN: "t",
 };
@@ -1908,6 +1974,88 @@ const jobParams = (commandType) => ({
     W.MetadataProviderChaptersResultsCodec,
   );
   assert.equal(missing.value.found, false);
+}
+
+// --- AiModels -------------------------------------------------------------
+
+{
+  const health = decodeReply(
+    await invoke("AiModels", "health", W.AiModelsHealthParamsCodec, {}),
+    W.AiModelsHealthResultsCodec,
+  );
+  assert.deepEqual(health, { kind: "ok", value: { ok: true, detail: "" } });
+
+  const listed = decodeReply(
+    await invoke("AiModels", "models", W.AiModelsModelsParamsCodec, {}),
+    W.AiModelsModelsResultsCodec,
+  );
+  assert.equal(listed.kind, "ok");
+  assert.deepEqual(listed.value.models, [
+    {
+      modelId: "tiny",
+      task: "textEmbeddings",
+      revision: "r1",
+      dimensions: 2,
+      maxTokens: 512,
+      languages: ["en"],
+    },
+  ]);
+
+  const run = async (model, texts, ctx = contextJson) =>
+    decodeReply(
+      await invoke(
+        "AiModels",
+        "run",
+        W.AiModelsRunParamsCodec,
+        {
+          params: {
+            model,
+            input: { textEmbeddings: { texts: texts.map((text) => ({ text, role: "document" })) } },
+          },
+        },
+        { ctx },
+      ),
+      W.AiModelsRunResultsCodec,
+    );
+  const ran = await run("tiny", ["ab", "abcd"]);
+  assert.equal(ran.kind, "ok");
+  const out = ran.value.output.textEmbeddings;
+  assert.equal(out.dimensions, 2);
+  assert.equal(out.revision, "r1");
+  assert.deepEqual(unpackEmbeddingVectors(out.vectors, 2), [
+    [2, 0],
+    [4, 0],
+  ]);
+  const missing = await run("other", ["a"]);
+  assert.equal(missing.kind, "err");
+  assert.equal(missing.value.code, "not_found");
+  const noBytes = await run("tiny", ["no bytes"]);
+  assert.equal(noBytes.kind, "err", "an answer without vector bytes is the plugin's bug");
+  assert.equal(noBytes.value.code, "internal");
+
+  // The ai grant token becomes `env.AI`; the author never sees it.
+  const aiCtx = JSON.stringify({ ...JSON.parse(contextJson), aiToken: "atok" });
+  const called = await run("tiny", ["call"], aiCtx);
+  assert.equal(called.kind, "ok");
+  assert.deepEqual(calls.aiRun, {
+    shape: [1, 2],
+    data: [[0.5, -1]],
+    model: "@embedder/tiny",
+    revision: "r1",
+    fallbacks: [0],
+  });
+  assert.equal(calls.aiRefused, "not_found", "host refusals reach the author typed");
+  assert.equal(calls.aiUnnamed, "invalid_params", "a run without a model never leaves");
+  assert.equal(calls.aiNoText, "invalid_params", "a run without text never leaves");
+  assert.equal(granted.aiRuns.length, 2);
+  assert.ok(granted.aiRuns.every((r) => r.auth === "Bearer atok"));
+  assert.deepEqual(granted.aiRuns[0].body, {
+    model: "@library/text-embeddings",
+    input: { textEmbeddings: { texts: [{ text: "a query", role: "query" }] } },
+  });
+
+  assert.throws(() => packEmbeddingVectors([[1, 2], [3]]), /differ in length/);
+  assert.throws(() => unpackEmbeddingVectors(new Uint8Array(6), 2), /whole vectors/);
 }
 
 // --- Notifier -------------------------------------------------------------

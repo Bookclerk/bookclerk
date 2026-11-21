@@ -26,7 +26,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_plugin_abi::{
-    require_plugin_migration_registration, GuestSqlPolicy, PluginError, Result as AbiResult,
+    require_plugin_migration_registration, AiModels, AiModelsClient, GuestSqlPolicy, PluginError,
+    Result as AbiResult,
 };
 use bookclerk_plugin_abi::{
     serve_plugin_stdio, Bindings, ByteRange, ContentSource, ContentSourceClient, CopyResult,
@@ -182,6 +183,7 @@ impl WorkerdRoot {
             kv: BTreeMap::new(),
             sockets: BTreeMap::new(),
             notify_token: None,
+            ai_token: None,
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -224,6 +226,7 @@ impl WorkerdRoot {
                 .filter(|_| self.capabilities.sockets)
                 .map(Arc::from),
             notify: bindings.notify.map(Arc::from),
+            ai: bindings.ai.map(Arc::from),
         };
         let opened = client.open(&invocation, host_bindings).await?;
         Ok(native_entrypoints(opened, &allowed))
@@ -371,6 +374,29 @@ impl WorkerdRoot {
             }
             None => (None, None),
         };
+        // An ai-only grant token for the `AI` binding: the adapter isolate
+        // runs models through `/ai/run` with it and installs `env.AI` on
+        // the author's `env`.
+        let (ai_token, ai_grant) = match bindings.ai {
+            Some(runner) => {
+                let token = format!("{:032x}", rand::random::<u128>());
+                self.table.borrow_mut().insert(
+                    token.clone(),
+                    GrantedSlot::ai_only(
+                        Rc::from(runner),
+                        grant_expiry(invocation.deadline_unix_ms),
+                    ),
+                );
+                (
+                    Some(token.clone()),
+                    Some(RevokeGrant {
+                        table: Rc::clone(&self.table),
+                        grant: token,
+                    }),
+                )
+            }
+            None => (None, None),
+        };
         let ctx = BridgeContext {
             invocation,
             config: bindings.config,
@@ -381,6 +407,7 @@ impl WorkerdRoot {
             kv,
             sockets,
             notify_token,
+            ai_token,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
@@ -390,6 +417,7 @@ impl WorkerdRoot {
             _kv: kv_grants,
             _sockets: sockets_grant,
             _notify: notify_grant,
+            _ai: ai_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
             Some(Rc::clone(&grants) as Rc<dyn std::any::Any>);
@@ -438,6 +466,9 @@ impl WorkerdRoot {
         if self.exports(Entrypoint::Notifier) {
             exported.notifier = Some(Box::new(NotifierClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::Ai) {
+            exported.ai = Some(Box::new(AiModelsClient::new(invoke.typed())));
+        }
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
         }
@@ -479,6 +510,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         socket_handler,
         metadata_files,
         notifier,
+        ai,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -526,6 +558,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         notifier: notifier
             .filter(|_| allow(Entrypoint::Notifier.wire_name()))
             .map(|c| Box::new(c) as Box<dyn Notifier>),
+        ai: ai
+            .filter(|_| allow(Entrypoint::Ai.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn AiModels>),
     }
 }
 
@@ -579,6 +614,10 @@ struct BridgeContext {
     /// `[[notifications.types]]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     notify_token: Option<String>,
+    /// Ai-only bearer for `/ai/run`, when the manifest declares
+    /// `[ai].calls` and the operator approved it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ai_token: Option<String>,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -600,6 +639,7 @@ struct OpenGrants {
     _kv: Vec<RevokeGrant>,
     _sockets: Option<RevokeGrant>,
     _notify: Option<RevokeGrant>,
+    _ai: Option<RevokeGrant>,
 }
 
 /// Grant expiry for an `open`: the invocation deadline when it has one,
@@ -846,6 +886,7 @@ impl JobRunner for InvokeJobRunner {
                 kv: None,
                 sockets: None,
                 notify: None,
+                ai: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -993,6 +1034,7 @@ mod tests {
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
             sockets: BTreeMap::from([("SOCKETS".to_string(), "stok".to_string())]),
             notify_token: None,
+            ai_token: None,
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,

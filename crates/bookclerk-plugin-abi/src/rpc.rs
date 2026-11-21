@@ -59,8 +59,9 @@ use crate::limits::{
     MAX_STREAM_WINDOW_BYTES,
 };
 use crate::plugin_capnp::{
-    adapter_database_session as adapter_database_session_capnp, adapter_session_reply, bindings,
-    byte_source, cancellation, content_source as content_source_capnp, copy_reply,
+    adapter_database_session as adapter_database_session_capnp, adapter_session_reply,
+    ai_models as ai_models_capnp, ai_runner as ai_runner_capnp, bindings, byte_source,
+    cancellation, content_source as content_source_capnp, copy_reply,
     cover_fetcher as cover_fetcher_capnp, database as database_capnp, describe_reply,
     destination as dest_iface, domain_event, empty_reply, entrypoints, entrypoints_reply,
     event_batch_reply, event_consumer as event_consumer_capnp,
@@ -80,12 +81,12 @@ use crate::plugin_capnp::{
 #[cfg(feature = "host")]
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
 use crate::roles::{
-    AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
-    CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding,
-    NamedQueueBinding, NeverCancel, NotificationRaiser, Notifier, Oidc, PluginCli, PluginWorker,
-    ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler,
-    Source,
+    AdapterDatabaseSession, AiModels, AiRunner, BindingValues, Bindings, ByteRange, Cancellation,
+    ContentSource, CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher,
+    GuestDatabase, JobController, JobRunner, KvNamespace, MetadataFiles, MetadataProvider,
+    NamedKvBinding, NamedQueueBinding, NeverCancel, NotificationRaiser, Notifier, Oidc, PluginCli,
+    PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
+    ScheduledHandler, Source,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
@@ -2044,6 +2045,11 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
     } else {
         None
     };
+    let ai: Option<Box<dyn AiRunner>> = if b.has_ai() {
+        Some(Box::new(AiRunnerClient::new(b.get_ai()?)))
+    } else {
+        None
+    };
     Ok(Bindings {
         config,
         secrets,
@@ -2056,6 +2062,7 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
         kv,
         sockets,
         notify,
+        ai,
     })
 }
 
@@ -2136,6 +2143,11 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
     }
     if let Some(x) = eps.notifier {
         b.set_notifier(capnp_rpc::new_client(NotifierServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.ai {
+        b.set_ai(capnp_rpc::new_client(AiModelsServer {
             inner: Arc::from(x),
         }));
     }
@@ -3152,6 +3164,66 @@ impl notification_raiser_capnp::Server for NotificationRaiserServer {
     }
 }
 
+/// Serves a guest's [`AiModels`] as the Cap'n Proto `AiModels`.
+struct AiModelsServer {
+    /// The guest implementation every method forwards to.
+    inner: Arc<dyn AiModels>,
+}
+
+impl ai_models_capnp::Server for AiModelsServer {
+    async fn health(
+        self: Rc<Self>,
+        _params: ai_models_capnp::HealthParams,
+        mut results: ai_models_capnp::HealthResults,
+    ) -> capnp::Result<()> {
+        write_health_reply(results.get().init_result(), self.inner.health().await);
+        Ok(())
+    }
+
+    async fn models(
+        self: Rc<Self>,
+        _params: ai_models_capnp::ModelsParams,
+        mut results: ai_models_capnp::ModelsResults,
+    ) -> capnp::Result<()> {
+        let outcome = self.inner.models().await;
+        crate::generated::write_ai_models_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn run(
+        self: Rc<Self>,
+        params: ai_models_capnp::RunParams,
+        mut results: ai_models_capnp::RunResults,
+    ) -> capnp::Result<()> {
+        let params = crate::generated::read_ai_run_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.run(params).await;
+        crate::generated::write_ai_run_reply(results.get().init_result(), &outcome)
+    }
+}
+
+/// Host-side server for the [`AiRunner`] handed to a guest on
+/// `Bindings.ai`. Every run is checked
+/// ([`crate::ai::check_binding_run_params`]) before the host's model
+/// router sees it.
+struct AiRunnerServer {
+    /// The host router entry every run forwards to.
+    inner: Arc<dyn AiRunner>,
+}
+
+impl ai_runner_capnp::Server for AiRunnerServer {
+    async fn run(
+        self: Rc<Self>,
+        params: ai_runner_capnp::RunParams,
+        mut results: ai_runner_capnp::RunResults,
+    ) -> capnp::Result<()> {
+        let params = crate::generated::read_ai_run_params(params.get()?.get_params()?)?;
+        let outcome = match crate::ai::check_binding_run_params(&params) {
+            Ok(_) => self.inner.run(params).await,
+            Err(err) => Err(err.into()),
+        };
+        crate::generated::write_ai_run_reply(results.get().init_result(), &outcome)
+    }
+}
+
 /// Serves a guest's [`CoverFetcher`] as the Cap'n Proto `CoverFetcher`.
 struct CoverFetcherServer {
     /// The guest implementation every method forwards to.
@@ -4047,6 +4119,9 @@ pub struct HostBindings {
     /// `NOTIFY` raiser; `None` unless the manifest declares
     /// `[[notifications.types]]`.
     pub notify: Option<Arc<dyn NotificationRaiser>>,
+    /// `AI` model runner; `None` unless the manifest declares `[ai] calls`
+    /// and the operator approved it.
+    pub ai: Option<Arc<dyn AiRunner>>,
 }
 
 impl HostBindings {
@@ -4063,6 +4138,7 @@ impl HostBindings {
             kv: Vec::new(),
             sockets: None,
             notify: None,
+            ai: None,
         }
     }
 }
@@ -4107,6 +4183,8 @@ pub struct OpenedEntrypoints {
     pub metadata_files: Option<MetadataFilesClient>,
     /// `notifier` entrypoint.
     pub notifier: Option<NotifierClient>,
+    /// `ai` entrypoint.
+    pub ai: Option<AiModelsClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -4252,6 +4330,10 @@ impl PluginClient {
                         inner: notify,
                     }));
             }
+            if let Some(ai) = bindings.ai {
+                b.reborrow()
+                    .set_ai(capnp_rpc::new_client(AiRunnerServer { inner: ai }));
+            }
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -4370,6 +4452,11 @@ impl PluginClient {
             },
             notifier: if eps.has_notifier() {
                 Some(NotifierClient::new(eps.get_notifier()?))
+            } else {
+                None
+            },
+            ai: if eps.has_ai() {
+                Some(AiModelsClient::new(eps.get_ai()?))
             } else {
                 None
             },
@@ -4871,6 +4958,102 @@ impl NotificationRaiser for NotificationRaiserClient {
             .map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         crate::generated::read_notify_raise_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+}
+
+/// Cap'n Proto client for [`AiModels`].
+///
+/// The client checks each listing before the caller sees it
+/// ([`crate::ai::check_models`]) and each run before it leaves
+/// ([`crate::ai::check_entrypoint_run_params`]): a malformed listing is an
+/// `internal` error. A run's reply comes back as the plugin said it; the
+/// caller, which knows the model's listing, checks it with
+/// [`crate::ai::check_run_output`].
+#[derive(Clone)]
+pub struct AiModelsClient {
+    /// The guest's `AiModels` capability.
+    client: ai_models_capnp::Client,
+}
+
+impl AiModelsClient {
+    /// Wraps an `AiModels` capability client (any transport that yields
+    /// one, including the bookclerk-workerd `/invoke` hook).
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - The guest's `AiModels` capability.
+    ///
+    /// # Returns
+    ///
+    /// The typed client.
+    #[must_use]
+    pub fn new(client: ai_models_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl AiModels for AiModelsClient {
+    async fn health(&self) -> Result<HealthOk> {
+        let req = self.client.health_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_health_reply(reply_result!(reply))
+    }
+
+    async fn models(&self) -> Result<crate::AiModelList> {
+        let req = self.client.models_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let list =
+            crate::generated::read_ai_models_reply(reply_result!(reply)).map_err(from_capnp)??;
+        crate::ai::check_models(&list)
+            .map_err(|err| PluginError::internal(format!("models: {err}")))?;
+        Ok(list)
+    }
+
+    async fn run(&self, params: crate::AiRunParams) -> Result<crate::AiRunOk> {
+        crate::ai::check_entrypoint_run_params(&params)?;
+        let mut req = self.client.run_request();
+        crate::generated::write_ai_run_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_ai_run_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+}
+
+/// Guest-side client for the host `AI` binding ([`AiRunner`]). Runs are
+/// checked before they leave, so a plugin learns of a malformed run
+/// without a round trip; the host checks again.
+#[derive(Clone)]
+pub struct AiRunnerClient {
+    /// The host's `AiRunner` capability.
+    client: ai_runner_capnp::Client,
+}
+
+impl AiRunnerClient {
+    /// Wraps an `AiRunner` capability client.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - The host's `AiRunner` capability.
+    ///
+    /// # Returns
+    ///
+    /// The typed client.
+    #[must_use]
+    pub fn new(client: ai_runner_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl AiRunner for AiRunnerClient {
+    async fn run(&self, params: crate::AiRunParams) -> Result<crate::AiRunOk> {
+        crate::ai::check_binding_run_params(&params)?;
+        let mut req = self.client.run_request();
+        crate::generated::write_ai_run_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_ai_run_reply(reply_result!(reply)).map_err(from_capnp)?
     }
 }
 
@@ -9379,6 +9562,7 @@ mod tests {
                             kv: Vec::new(),
                             sockets: None,
                             notify: None,
+                            ai: None,
                         },
                     )
                     .await

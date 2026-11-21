@@ -89,6 +89,9 @@ type MetadataFilesCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataFiles>
 /// Typed call against the opened `notifier` entrypoint.
 type NotifierCall = EntrypointCall<dyn bookclerk_plugin_sdk::Notifier>;
 
+/// Typed call against the opened `ai` entrypoint.
+type AiCall = EntrypointCall<dyn bookclerk_plugin_sdk::AiModels>;
+
 /// Typed call against the opened `socketHandler` entrypoint.
 type SocketHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::SocketHandler>;
 
@@ -206,6 +209,11 @@ enum Work {
     Notifier {
         /// Typed call; replies through the sender it captured.
         call: NotifierCall,
+    },
+    /// One typed `ai` method on the opened primary entrypoints.
+    Ai {
+        /// Typed call; replies through the sender it captured.
+        call: AiCall,
     },
     /// One socket event for the opened `socketHandler` entrypoint.
     SocketHandler {
@@ -605,6 +613,12 @@ pub struct SessionServices {
     /// the covering grant has the `sockets` token; `None` never exposes
     /// `SOCKETS`.
     pub sockets: Option<crate::SocketBroker>,
+    /// The node's model router, behind the `AI` binding.
+    ///
+    /// The session hands it out only when the manifest lists tasks under
+    /// `[ai].calls` and the covering grant has the token of at least one;
+    /// `None` never exposes `AI`.
+    pub ai: Option<Arc<bookclerk_integrations::AiRouter>>,
 }
 
 impl SessionServices {
@@ -618,6 +632,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            ai: None,
         }
     }
 
@@ -631,6 +646,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            ai: None,
         }
     }
 
@@ -647,6 +663,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            ai: None,
         }
     }
 }
@@ -856,6 +873,9 @@ impl PluginSession {
         // `SOCKETS` needs the deployment's broker, a `[sockets]` declaration
         // and the `sockets` grant token.
         let sockets = crate::socket_broker::granted(services.sockets, &manifest, &grant);
+        // `AI` needs the node's model router, tasks under `[ai].calls` and
+        // their `ai:<task>` grant tokens.
+        let ai = crate::ai_binding::GrantedAi::granted(services.ai, &manifest, &grant);
         let spawn_config = spawned.spawn_config.clone();
         #[cfg(windows)]
         let package_sid = spawned.package_sid.clone();
@@ -952,6 +972,7 @@ impl PluginSession {
                         queues,
                         kv,
                         sockets,
+                        ai,
                     },
                     rx,
                     ready_tx,
@@ -1432,6 +1453,25 @@ impl PluginSession {
     {
         self.entrypoint_call(call, |call| Work::Notifier { call })
             .await
+    }
+
+    /// One typed `ai` method on the opened primary entrypoints.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `ai` or the
+    /// method fails.
+    pub async fn ai<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::AiModels>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.entrypoint_call(call, |call| Work::Ai { call }).await
     }
 
     /// Hands one socket event to the guest's `socketHandler` entrypoint.
@@ -2425,6 +2465,8 @@ struct PrimaryState {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker; `None` unless `[sockets]` is declared and granted.
     sockets: Option<crate::SocketBroker>,
+    /// `AI` runner; `None` unless `[ai].calls` is declared and granted.
+    ai: Option<Arc<crate::ai_binding::GrantedAi>>,
 }
 
 /// Host-served bindings every `open` of one session receives: the `EVENTS`
@@ -2438,6 +2480,8 @@ struct BindingHooks {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker.
     sockets: Option<crate::SocketBroker>,
+    /// `AI` runner.
+    ai: Option<Arc<crate::ai_binding::GrantedAi>>,
 }
 
 impl PrimaryState {
@@ -2449,7 +2493,15 @@ impl PrimaryState {
             queues: hooks.queues,
             kv: hooks.kv,
             sockets: hooks.sockets,
+            ai: hooks.ai,
         }
+    }
+
+    /// The `AI` binding, when model tasks are granted.
+    fn ai_binding(&self) -> Option<Arc<dyn bookclerk_plugin_abi::AiRunner>> {
+        self.ai
+            .clone()
+            .map(|ai| ai as Arc<dyn bookclerk_plugin_abi::AiRunner>)
     }
 
     /// The `SOCKETS` binding, when the broker is granted.
@@ -2527,6 +2579,7 @@ async fn primary_entrypoints<'a>(
                     queues: primary.queues_for(&invocation),
                     kv: primary.kv_bindings(),
                     sockets: primary.sockets_binding(),
+                    ai: primary.ai_binding(),
                     ..HostBindings::from_values(want.clone())
                 },
             )
@@ -3487,6 +3540,22 @@ fn vat_thread(
                             let _ = with_session(&session_cancel, &mut child, &mut guest, open)
                                 .await;
                         }
+                        Work::Ai { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "ai",
+                                |eps| {
+                                    eps.ai.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::AiModels>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
                         Work::SocketHandler { call } => {
                             let open = run_entrypoint_call(
                                 &client,
@@ -4265,8 +4334,9 @@ async fn run_stream_copy(
                 // The stream-copy job never needs a pushed socket; the
                 // broker hands sockets only to a deployment's own open.
                 sockets: None,
-                // Nor does it raise notifications.
+                // Nor does it raise notifications or run models.
                 notify: None,
+                ai: None,
             },
         )
         .await

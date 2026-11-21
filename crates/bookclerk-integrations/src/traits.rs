@@ -14,8 +14,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_abi::{
-    DomainEvent, EventResult, MetadataChapters, MetadataChaptersParams, MetadataLookupParams,
-    MetadataRecord, MetadataSearchParams, QueueBatch, QueueResult,
+    AiModelList, AiRunOk, AiRunParams, DomainEvent, EventResult, MetadataChapters,
+    MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataSearchParams, QueueBatch,
+    QueueResult,
 };
 
 use crate::brand::Brand;
@@ -357,6 +358,44 @@ pub trait Integration: Send + Sync {
     ) -> Result<Vec<FetchedCover>> {
         Err(IntegrationError::message(format!(
             "integration `{}` does not fetch covers",
+            self.id()
+        )))
+    }
+
+    /// Whether this integration exports the `ai` entrypoint (serves models).
+    ///
+    /// Default: `false`.
+    fn supports_ai(&self) -> bool {
+        false
+    }
+
+    /// The models this integration serves now (`AiModels.models`), already
+    /// checked and limited to the tasks its manifest declares.
+    ///
+    /// Errors keep the plugin's code, so the model router can tell a
+    /// missing model from a plugin that is down.
+    ///
+    /// Default: unsupported.
+    async fn ai_models(
+        &self,
+    ) -> std::result::Result<AiModelList, bookclerk_plugin_abi::PluginError> {
+        Err(bookclerk_plugin_abi::PluginError::unsupported(format!(
+            "integration `{}` does not serve models",
+            self.id()
+        )))
+    }
+
+    /// Runs one of this integration's models (`AiModels.run`);
+    /// `params.model` is the plugin's own model id. The reply is as the
+    /// plugin sent it: the model router checks it against the listing.
+    ///
+    /// Default: unsupported.
+    async fn ai_run(
+        &self,
+        _params: AiRunParams,
+    ) -> std::result::Result<AiRunOk, bookclerk_plugin_abi::PluginError> {
+        Err(bookclerk_plugin_abi::PluginError::unsupported(format!(
+            "integration `{}` does not serve models",
             self.id()
         )))
     }

@@ -541,6 +541,50 @@ function bindingMessage(manifest) {
   }
   console.log("ok notifier and notification types reject unknown keys and type NOTIFY");
 }
+
+// [ai]: the host parses it with deny_unknown_fields and a typed task enum;
+// the SDK checks reject the same input.
+{
+  const serving = (table, extra = {}) => ({
+    ...bindingBase,
+    entrypoints: ["ai"],
+    ai: table,
+    ...extra,
+  });
+  const calling = (table) => ({ ...bindingBase, ai: table });
+  const cases = [
+    [serving({ serves: ["textEmbeddings"] }), ""],
+    [calling({ calls: ["textEmbeddings"] }), ""],
+    [
+      calling({ calls: ["textEmbeddings"], extra: 1 }),
+      "plugin.toml: `[ai]` has unknown key `extra`",
+    ],
+    [serving({ serves: ["speech"] }), "plugin.toml: `[ai].serves` names unknown task `speech`"],
+    [calling({ calls: ["speech"] }), "plugin.toml: `[ai].calls` names unknown task `speech`"],
+    [
+      serving({ serves: ["textEmbeddings"] }, { id: "library" }),
+      "plugin.toml: a plugin with the `ai` entrypoint cannot have the id `library`, which names task aliases",
+    ],
+  ];
+  for (const [manifest, want] of cases) {
+    const got = bindingMessage(manifest);
+    if (got !== want) {
+      console.error("FAIL ai key check", JSON.stringify({ got, want }));
+      process.exit(1);
+    }
+  }
+  const { renderEnvTypes } = await import("../dist/tools/types.js");
+  const types = renderEnvTypes(calling({ calls: ["textEmbeddings"] }));
+  if (!types.includes("AI: AiBinding;") || !types.includes("AiBinding")) {
+    console.error("FAIL ai calls env: missing the AI AiBinding property or import");
+    process.exit(1);
+  }
+  if (renderEnvTypes(serving({ serves: ["textEmbeddings"] })).includes("AI:")) {
+    console.error("FAIL a plugin that calls no model got an AI binding");
+    process.exit(1);
+  }
+  console.log("ok [ai] rejects unknown keys and tasks and types AI");
+}
 // [capabilities.network.own_user_agent]: outbound, 1-32 hosts that are not `*`,
 // and a one-line reason.
 {
@@ -785,6 +829,11 @@ console.log("ok materialize rejects disk-only python even with both flags");
   const files = healthInterfaces(["metadataFiles", "covers"]);
   if (JSON.stringify(files) !== JSON.stringify(["CoverFetcher", "MetadataFiles"])) {
     console.error("FAIL smoke probes metadataFiles health", files);
+    process.exit(1);
+  }
+  const models = healthInterfaces(["ai"]);
+  if (JSON.stringify(models) !== JSON.stringify(["AiModels"])) {
+    console.error("FAIL smoke probes ai health", models);
     process.exit(1);
   }
   const notifier = healthInterfaces(["notifier"]);

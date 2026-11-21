@@ -235,6 +235,7 @@ export const NAV: NavSpec[] = [
       "adr/desktop-window-identity",
       "adr/ingress-plugins",
       "adr/notifications",
+      "adr/ai-models",
     ],
   },
 ];

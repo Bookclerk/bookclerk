@@ -9,6 +9,7 @@
 
 import type { DatabaseBinding } from "./db-execute.js";
 import type {
+  AiTextRole,
   EventReadPage,
   NotificationAlertAction,
   NotificationField,
@@ -196,6 +197,61 @@ export interface EventPublisherBinding {
    *   consumer, `invalid_cursor` for a cursor the host did not issue.
    */
   read(options?: EventReadOptions): Promise<EventReadPage>;
+}
+
+/** Input of a text-embedding model on {@link AiBinding.run}. */
+export interface AiTextEmbeddingsRequest {
+  /** One text or a batch (at most `MAX_AI_EMBED_TEXTS`), none empty. */
+  text: string | string[];
+  /**
+   * What the texts are: `document` (the default) for stored content, `query`
+   * for a search query matched against documents. Some models embed the two
+   * differently.
+   */
+  role?: AiTextRole;
+}
+
+/** Output of a text-embedding model on {@link AiBinding.run}. */
+export interface AiTextEmbeddingsResponse {
+  /** `[number of texts, numbers per vector]`. */
+  shape: [number, number];
+  /** One vector per input text, in input order. */
+  data: number[][];
+  /** Full name of the model that ran, also when an alias was asked for. */
+  model: string;
+  /**
+   * Revision of the model that made the vectors. Vectors are comparable only
+   * when their model and revision match, so store both beside each vector.
+   */
+  revision: string;
+  /**
+   * Indexes of the texts the tokenizer could not cover with the loaded
+   * language packs; their vectors are worth recomputing once a pack is added.
+   */
+  fallbacks: number[];
+}
+
+/**
+ * `AI` binding, present when `plugin.toml` lists tasks under `[ai].calls` and
+ * the operator approved them. The host routes each run to the deployed plugin
+ * that serves the model; the shape follows the `AI` binding of Cloudflare
+ * Workers.
+ */
+export interface AiBinding {
+  /**
+   * Run one model on one input.
+   *
+   * @param model - `@<plugin id>/<model id>`, or a task alias such as
+   *   `@library/text-embeddings` for the model the library chose.
+   * @param input - The input of the model's task.
+   * @returns The model's output.
+   * @throws PluginError `invalid_params` for a malformed run, `not_found` when
+   *   nothing deployed serves the model, `forbidden` for a task that is not
+   *   granted, `rate_limited` past the plugin's budget (work over many items
+   *   belongs in a job), `deadline_exceeded` or `unavailable` when the model
+   *   plugin cannot answer.
+   */
+  run(model: string, input: AiTextEmbeddingsRequest): Promise<AiTextEmbeddingsResponse>;
 }
 
 /** One notification a plugin raises through {@link NotifyBinding.raise}. */
@@ -498,6 +554,8 @@ export interface BookclerkEnv {
   SOCKETS?: SocketsBinding;
   /** `[[notifications.types]]` raiser. */
   NOTIFY?: NotifyBinding;
+  /** `[ai].calls` model runner. */
+  AI?: AiBinding;
   /** `[oauth]` loopback helper; surface reserved. */
   OAUTH?: unknown;
   /**

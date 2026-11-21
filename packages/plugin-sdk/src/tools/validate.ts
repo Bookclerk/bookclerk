@@ -33,7 +33,7 @@ export type Manifest = {
   /**
    * Named entrypoints the guest exports (`storefront`, `storage`,
    * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`,
-   * `metadataFiles`, `notifier`). Triggers for the
+   * `metadataFiles`, `notifier`, `ai`). Triggers for the
    * default entrypoint live under `[triggers]` / `[[events.consumers]]`.
    */
   entrypoints?: string[];
@@ -78,6 +78,16 @@ export type Manifest = {
   notifications?: {
     /** One row per type (`[[notifications.types]]`). */
     types?: NotificationTypeToml[];
+  };
+  /**
+   * `[ai]` — model tasks the plugin serves on its `ai` entrypoint and the
+   * tasks it calls through `env.AI`.
+   */
+  ai?: {
+    /** Tasks the plugin's models perform; required with the `ai` entrypoint. */
+    serves?: string[];
+    /** Tasks the plugin runs through `env.AI`; declaring any asks for the binding. */
+    calls?: string[];
   };
   /** Workerd isolate settings (required when `runtime = "workerd"`). */
   workerd?: {
@@ -1080,6 +1090,59 @@ function validateNotificationTypes(m: Manifest): void {
   });
 }
 
+/** Model tasks `[ai].serves` and `[ai].calls` may name. */
+export const AI_TASK_NAMES = ["textEmbeddings"] as const;
+
+/** Plugin id that names task aliases (`@library/text-embeddings`). */
+const AI_ALIAS_NAMESPACE = "library";
+
+/**
+ * Checks `[ai]` against the entrypoints, with the host's rules and messages
+ * (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When a plugin with the `ai` entrypoint serves no task or
+ *   another plugin serves one, for unknown keys or tasks, a task named twice,
+ *   or a model plugin whose id is `library`.
+ */
+function validateAi(m: Manifest): void {
+  const exported = ((m.entrypoints ?? []) as readonly string[]).includes("ai");
+  const table = m.ai ?? {};
+  for (const key of Object.keys(table)) {
+    if (key !== "serves" && key !== "calls") {
+      throw new Error(`plugin.toml: \`[ai]\` has unknown key \`${key}\``);
+    }
+  }
+  const serves = table.serves ?? [];
+  const calls = table.calls ?? [];
+  if (exported && serves.length === 0) {
+    throw new Error("plugin.toml: `[ai].serves` is required for a plugin with the `ai` entrypoint");
+  }
+  if (!exported && serves.length > 0) {
+    throw new Error("plugin.toml: `[ai].serves` needs the `ai` entrypoint");
+  }
+  if (exported && m.id === AI_ALIAS_NAMESPACE) {
+    throw new Error(
+      `plugin.toml: a plugin with the \`ai\` entrypoint cannot have the id \`${AI_ALIAS_NAMESPACE}\`, which names task aliases`,
+    );
+  }
+  for (const [list, tasks] of [
+    ["serves", serves],
+    ["calls", calls],
+  ] as const) {
+    const seen = new Set<string>();
+    for (const task of tasks) {
+      if (!(AI_TASK_NAMES as readonly string[]).includes(task)) {
+        throw new Error(`plugin.toml: \`[ai].${list}\` names unknown task \`${task}\``);
+      }
+      if (seen.has(task)) {
+        throw new Error(`plugin.toml: \`[ai].${list}\` names the task \`${task}\` twice`);
+      }
+      seen.add(task);
+    }
+  }
+}
+
 /** Entrypoint wire names accepted in `entrypoints`. */
 export const ENTRYPOINT_NAMES = [
   "storefront",
@@ -1092,6 +1155,7 @@ export const ENTRYPOINT_NAMES = [
   "covers",
   "metadataFiles",
   "notifier",
+  "ai",
 ] as const;
 
 const LOGO_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"] as const;
@@ -1245,6 +1309,7 @@ export function validateManifest(m: Manifest): void {
   validateMetadataFiles(m);
   validateNotifier(m);
   validateNotificationTypes(m);
+  validateAi(m);
   validateSurface(m);
   validateSettings(m);
   validateOwnUserAgent(m);
@@ -1606,6 +1671,7 @@ function validateSurface(m: Manifest): void {
   if (m.oauth) named.push(["oauth", m.oauth.binding || "OAUTH", 0]);
   if (m.sockets) named.push(["sockets", m.sockets.binding || "SOCKETS", 0]);
   if ((m.notifications?.types ?? []).length > 0) named.push(["notifications", "NOTIFY", 0]);
+  if ((m.ai?.calls ?? []).length > 0) named.push(["ai", "AI", 0]);
   for (const [index, kv] of (m.kv_namespaces ?? []).entries()) {
     named.push(["kv_namespaces", kv.binding || "KV", index]);
   }
