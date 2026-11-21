@@ -652,7 +652,9 @@ mod tests {
     use bookclerk_config::Config;
     use bookclerk_library::{JobKind, LibraryStore};
 
-    use super::{acquire, resolve_account, resolve_pin, scan, AcquireArgs, ScanArgs};
+    use super::{
+        acquire, convert, resolve_account, resolve_pin, scan, AcquireArgs, ConvertArgs, ScanArgs,
+    };
 
     /// An in-memory library with the test accounts.
     async fn store() -> LibraryStore {
@@ -786,6 +788,60 @@ mod tests {
                 (Some("a1".into()), Some("B0TWO".into()), true),
             ]
         );
+    }
+
+    /// A convert queues one acquire job per title carrying the copy, and
+    /// refuses no titles and `original` copies before queuing anything.
+    #[tokio::test]
+    async fn a_convert_queues_jobs_that_carry_the_copy() {
+        let store = store().await;
+        let copy = bookclerk_config::OutputCopy::parse("mp3:64k-mono").unwrap();
+        let original = bookclerk_config::OutputCopy::parse("original:original").unwrap();
+        let titles = ["B0ONE".to_string()];
+        for (titles, copy, said) in [
+            (&[][..], &copy, "name the books"),
+            (&titles[..], &original, "new encoding"),
+        ] {
+            let err = convert(
+                &store,
+                &Config::default(),
+                ConvertArgs {
+                    titles,
+                    account: None,
+                    copy,
+                    force: false,
+                    wait: false,
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(said), "{err}");
+        }
+        assert!(pending(&store, JobKind::Acquire).await.is_empty());
+
+        let queued = convert(
+            &store,
+            &Config::default(),
+            ConvertArgs {
+                titles: &titles,
+                account: Some("Riley"),
+                copy: &copy,
+                force: true,
+                wait: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!queued, "only queued");
+        let jobs = store.list_jobs(10).await.unwrap();
+        let [job] = jobs.as_slice() else {
+            panic!("one job: {jobs:?}");
+        };
+        assert_eq!(job.kind, JobKind::Acquire);
+        assert_eq!(job.payload.convert.as_ref(), Some(&copy));
+        assert_eq!(job.payload.account.as_deref(), Some("a1"));
+        assert!(job.payload.force);
     }
 
     /// Pins and account names resolve to one target or fail.

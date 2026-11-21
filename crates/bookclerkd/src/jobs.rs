@@ -1533,6 +1533,32 @@ pub async fn run_convert(
     )
     .await?;
     destinations.set_filters(&filters);
+    convert_titles(state, &destinations, title, account, copy, force, ctx).await
+}
+
+/// Adds `copy` to each stored edition `title` names, through
+/// `destinations` ([`run_convert`] without building them).
+///
+/// # Returns
+///
+/// How many copies were made, matched and failed.
+///
+/// # Errors
+///
+/// Returns an error when the title names nothing stored, a read fails, the
+/// job's lease fence is lost, or every title fails.
+async fn convert_titles(
+    state: &AppState,
+    destinations: &bookclerk_acquire::AcquireDestinations,
+    title: &str,
+    account: Option<&str>,
+    copy: &bookclerk_config::OutputCopy,
+    force: bool,
+    ctx: Option<&JobExecCtx>,
+) -> anyhow::Result<String> {
+    let cfg = state.config.read().await.clone();
+    let paths = cfg.paths();
+    let library = state.library.read().await.clone();
     let options = destinations.primary_destination().options.clone();
     let targets = acquire_candidates(
         &library,
@@ -1586,7 +1612,7 @@ pub async fn run_convert(
             library_copies: bookclerk_acquire::LibraryCopySource::default(),
             destination_keys: bookclerk_acquire::DestinationKeys::default(),
         };
-        match bookclerk_acquire::convert_copy(&library, &destinations, req, copy).await {
+        match bookclerk_acquire::convert_copy(&library, destinations, req, copy).await {
             Ok(result) if result.matched_existing => {
                 info!(asin = %book.asin_or_isbn(), %copy, key = %result.storage_key, "the copy exists already");
                 matched += 1;
@@ -3147,3 +3173,7 @@ mod tests {
         assert!(err.to_string().contains("plugin grant store"), "{err}");
     }
 }
+
+#[cfg(test)]
+#[path = "jobs_convert_tests.rs"]
+mod convert_tests;

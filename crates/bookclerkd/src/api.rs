@@ -5169,7 +5169,7 @@ async fn trigger_acquire(
         (status = 500, description = "The jobs could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
     ),
 )]
-async fn trigger_convert(
+pub(crate) async fn trigger_convert(
     State(state): State<Arc<AppState>>,
     requester: Option<axum::Extension<ScanRequester>>,
     Json(body): Json<ConvertRequestBody>,
