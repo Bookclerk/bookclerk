@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use bookclerk_config::{DestinationId, FileTimestampMode, MultiDestinationMode};
-use bookclerk_enrich::{asin_identifier, chapter_info_from_layout, MetadataProviders};
+use bookclerk_enrich::{
+    asin_identifier, chapter_info_from_layout, MetadataProviders, ProvidedChapters,
+};
 use bookclerk_library::{AcquireStatus, CopyState, FileOwner, FileProbe, LibraryStore};
 use bookclerk_media::{
     align_chapter_starts_async, bookclerk_tool_tag, encode_to_mp3, encode_to_opus, fixup_audiobook,
@@ -22,6 +24,7 @@ use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::chapter_claims::{record_chapter_claims, ChapterEvidence};
 use crate::cue::{
     apply_start_map_to_chapter_tree, chapters_from_catalog_info_for_plain_audio,
     rebase_chapter_tree_for_plain_audio, write_cue, FlatChapter,
@@ -2714,9 +2717,20 @@ async fn store_plain_fetch(
     let want_opus = req.options.wants_opus();
     let multi = plain.parts.len() > 1;
     let audible_overlay_possible = plain_source_has_audible_asin(library, req).await;
+    let title = resolve_title(library, req).await;
+    let edition_id = title.as_ref().map(|t| t.edition_id.clone());
+    let mut evidence = ChapterEvidence {
+        plugin_key: title.map(|t| t.plugin_key).unwrap_or_default(),
+        listing: (!plain.chapters.is_empty()).then(|| (plain.chapters.clone(), plain.chapter_kind)),
+        runtime_ms: parts_runtime_ms(&plain.parts),
+        ..ChapterEvidence::default()
+    };
 
     // No-op output: keep store-delivered bytes (no remux/transcode).
     if req.options.is_noop_output() {
+        if let Some(edition_id) = edition_id.as_deref() {
+            record_chapter_claims(library, edition_id, &evidence).await;
+        }
         if multi {
             return store_plain_parts(library, destinations, req, work_dir, plain, library_pdf)
                 .await;
@@ -2746,6 +2760,7 @@ async fn store_plain_fetch(
                 m4b_path: None,
                 cover_path: plain.cover_path,
                 chapters: plain.chapters,
+                chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: plain.pdf_url,
             },
             library_pdf,
@@ -2757,6 +2772,9 @@ async fn store_plain_fetch(
     // When an Audible ASIN enrichment is available, package first so we can embed /
     // split by the literary chapter tree instead of track-boundary placeholders.
     if multi && req.options.wants_split_by_chapter() && !audible_overlay_possible {
+        if let Some(edition_id) = edition_id.as_deref() {
+            record_chapter_claims(library, edition_id, &evidence).await;
+        }
         let plain = if reencodes_mp3(req) {
             encode_plain_parts(req, work_dir, plain).await?
         } else {
@@ -2820,10 +2838,14 @@ async fn store_plain_fetch(
         })
         .await?;
         if chapters.is_empty() {
+            if multi {
+                evidence.part_names = Some(packaged_chapters.clone());
+            }
             chapters = packaged_chapters;
         }
         outcome.output
     };
+    evidence.runtime_ms = probe_audio_duration_ms(&acquired_path).or(evidence.runtime_ms);
 
     // Store track markers (Chirp/Libro) are not literary chapters. When the row
     // has an enriched Audible ASIN, overlay Audible's chapter tree and shift
@@ -2839,7 +2861,8 @@ async fn store_plain_fetch(
             Some((duration, found)) if duration == plain_duration => found,
             _ => overlay_audible_chapters_for_plain(library, req, plain_duration).await,
         };
-        if let Some((overlaid, tree)) = overlay {
+        if let Some((overlaid, tree, found)) = overlay {
+            evidence.provider = Some(found);
             let audible_asin = resolve_title(library, req)
                 .await
                 .and_then(|t| t.asin.clone());
@@ -2865,6 +2888,7 @@ async fn store_plain_fetch(
                 start_map.insert(*old, *new);
             }
             plain_chapter_tree = Some(apply_start_map_to_chapter_tree(&tree, &start_map));
+            evidence.processed.clone_from(&plain_chapter_tree);
             chapters = aligned;
             replace_chapters = true;
         }
@@ -3125,6 +3149,10 @@ async fn store_plain_fetch(
             error = %err,
             "failed to clean acquire cache dir"
         );
+    }
+
+    if let Some(edition_id) = edition_id.as_deref() {
+        record_chapter_claims(library, edition_id, &evidence).await;
     }
 
     Ok(AcquireResult {
@@ -4094,7 +4122,7 @@ async fn overlay_audible_chapters_for_plain(
     library: &LibraryStore,
     req: &AcquireRequest,
     plain_audio_duration_ms: Option<u64>,
-) -> Option<(Vec<(String, u64)>, Value)> {
+) -> Option<(Vec<(String, u64)>, Value, ProvidedChapters)> {
     let title = resolve_title(library, req).await?;
     let audible_asin = title.asin.clone()?;
     let region = title_region(&title).to_string();
@@ -4134,8 +4162,19 @@ async fn overlay_audible_chapters_for_plain(
         None
     } else {
         let tree = rebase_chapter_tree_for_plain_audio(&info, plain_audio_duration_ms);
-        Some((chapters, tree))
+        Some((chapters, tree, found))
     }
+}
+
+/// The summed length of the delivered parts in milliseconds, when the store
+/// gave every part's length.
+fn parts_runtime_ms(parts: &[bookclerk_source::PlainAudioPart]) -> Option<u64> {
+    parts
+        .iter()
+        .try_fold(0u64, |sum, part| {
+            Some(sum.saturating_add(part.duration_ms?))
+        })
+        .filter(|ms| *ms > 0)
 }
 
 /// The running time of the plain audio at `path` in milliseconds: read
@@ -5200,6 +5239,7 @@ mod tests {
                 m4b_path: None,
                 cover_path: None,
                 chapters: Vec::new(),
+                chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: None,
             })
         }
@@ -5459,7 +5499,8 @@ mod tests {
                 }],
                 m4b_path: None,
                 cover_path: None,
-                chapters: Vec::new(),
+                chapters: vec![("Crash".into(), 0)],
+                chapter_kind: bookclerk_source::ChapterKind::Tracks,
                 pdf_url: self.pdf_url.clone(),
             })
         }
@@ -5877,6 +5918,7 @@ mod tests {
                 m4b_path: None,
                 cover_path: Some(cover),
                 chapters: Vec::new(),
+                chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: Some("https://store.example/twin.pdf".into()),
             }
         };
@@ -6564,6 +6606,7 @@ mod tests {
                 m4b_path,
                 cover_path: Some(cover),
                 chapters: self.chapters.clone(),
+                chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: self.pdf_url.clone(),
             })
         }
@@ -7304,6 +7347,7 @@ mod tests {
             m4b_path: None,
             cover_path: None,
             chapters: Vec::new(),
+            chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
         };
         let err = store_copies(&store, &copies, &req, tmp.path(), fetch, None)
@@ -7373,6 +7417,7 @@ mod tests {
             m4b_path: Some(m4b),
             cover_path: None,
             chapters: Vec::new(),
+            chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: Some(serve_http_body_loop(b"%PDF-1.4 companion".to_vec(), hits.clone()).await),
         };
 
@@ -7422,6 +7467,7 @@ mod tests {
             m4b_path: Some(m4b),
             cover_path: None,
             chapters: Vec::new(),
+            chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: Some(url),
         };
         store_copies(&store, &copies, &req, &work_dir, fetch, None)
@@ -7524,6 +7570,7 @@ mod tests {
             m4b_path: None,
             cover_path: None,
             chapters: Vec::new(),
+            chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
         };
 
@@ -7668,6 +7715,7 @@ mod tests {
             m4b_path: None,
             cover_path: None,
             chapters: Vec::new(),
+            chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
         };
 
@@ -7848,6 +7896,19 @@ mod tests {
                 .unwrap(),
             Some(output_copy("original:original"))
         );
+        // The store's markers are recorded as the edition's chapters, as
+        // track boundaries measured on the delivered part.
+        let edition = store.edition_of_book(&uuid).await.unwrap().unwrap();
+        let chapters = store.edition_chapters(&edition).await.unwrap().unwrap();
+        assert_eq!(
+            chapters.source_kind,
+            bookclerk_library::ChapterSourceKind::Listing
+        );
+        assert_eq!(chapters.runtime_ms, Some(1_000));
+        assert_eq!(chapters.list.chapters()[0].title, "Crash");
+        let claims = store.chapter_claims(&edition).await.unwrap();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].quality, bookclerk_library::ClaimQuality::Tracks);
     }
 
     /// The copies `store` records for `uuid`'s edition, as

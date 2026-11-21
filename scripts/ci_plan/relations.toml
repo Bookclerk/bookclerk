@@ -124,6 +124,8 @@ paths = [
     "fuzz/oracles/work_split_request.rs",
     "fuzz/corpus/playback_request/**",
     "fuzz/oracles/playback_request.rs",
+    "fuzz/corpus/chapter_request/**",
+    "fuzz/oracles/chapter_request.rs",
     "fuzz/corpus/work_tags_request/**",
     "fuzz/oracles/work_tags_request.rs",
     "fuzz/corpus/collections_request/**",

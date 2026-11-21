@@ -204,6 +204,9 @@ pub struct PlainFetch {
     pub cover_path: Option<PathBuf>,
     /// Chapter titles paired with start offsets in milliseconds.
     pub chapters: Vec<(String, u64)>,
+    /// What `chapters` marks: literary chapters, track boundaries, or
+    /// unknown.
+    pub chapter_kind: ChapterKind,
     /// Companion PDF download URL when the store exposes one.
     pub pdf_url: Option<String>,
 }
@@ -751,7 +754,7 @@ impl Default for CatalogSearchOpts {
     }
 }
 
-pub use bookclerk_plugin_abi::PriceLookup;
+pub use bookclerk_plugin_abi::{ChapterKind, PriceLookup};
 
 /// Options for the host's `ContentSource::purchase_hint`.
 #[derive(Debug, Clone, Default)]

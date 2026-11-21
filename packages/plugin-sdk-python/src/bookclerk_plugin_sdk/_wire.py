@@ -3078,6 +3078,7 @@ def _write_plain_fetch(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(2, v["pdfUrl"])
     if v.get("refreshedCredentials") is not None:
         s.set_data(3, v["refreshedCredentials"])
+    s.set_u16(1, _ord(A.CHAPTER_KINDS, v["chapterKind"], "ChapterKind"))
 
 
 def _read_plain_fetch(s: _StructReader, caps: _CapTable) -> Any:
@@ -3085,6 +3086,7 @@ def _read_plain_fetch(s: _StructReader, caps: _CapTable) -> Any:
         "mediaKind": _from_ord(A.MEDIA_KINDS, s.get_u16(0), "MediaKind"),
         "files": [_fetched_file_codec.read(item, caps) for item in s.get_struct_list(0, 2, 3)],
         "chapters": [_chapter_marker_codec.read(item, caps) for item in s.get_struct_list(1, 1, 1)],
+        "chapterKind": _from_ord(A.CHAPTER_KINDS, s.get_u16(1), "ChapterKind"),
     }
     pdf_url = s.get_text(2)
     if not (pdf_url == ""):

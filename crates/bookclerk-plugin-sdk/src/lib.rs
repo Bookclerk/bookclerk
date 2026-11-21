@@ -83,7 +83,7 @@ pub use pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHA
 pub use protocol::{
     methods, Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogCapabilities,
     CatalogDetail, CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort,
-    ChapterMarker, CliArg, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams,
+    ChapterKind, ChapterMarker, CliArg, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams,
     CliInvokeResult, CliSchema, ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole,
     EventPollResult, ExpandCandidatesParams, Explicitness, ExpressionKind, ExternalUser,
     FetchOptions, FetchTitleParams, FetchedFile, FetchedFileRole, Identifier, IdentifierScheme,

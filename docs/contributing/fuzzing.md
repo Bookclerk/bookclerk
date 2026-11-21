@@ -92,6 +92,7 @@ boundary extends it.
 | `upload_manifest` | What a patron sends to start and fill an upload: the body of `POST /api/uploads` and the `Upload-Offset` header of each `PATCH /api/uploads/{id}/files/{member_no}` | `bookclerk-library::control_plane::parse_upload_manifest`, `parse_upload_offset` |
 | `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
+| `chapter_request` | An Administrator's chapter list for an edition or the claim to pin, the bodies of `PUT /api/library/editions/{id}/chapters` and `PUT /api/library/editions/{id}/chapters/pin` | `bookclerk-library::parse_chapter_edit_request`, `parse_chapter_pin_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
 | `player_request` | What a player app sends the `/player` API: the bodies of `POST /player/login`, session syncs, offline sessions, progress changes and bookmarks, card tokens (`Authorization: Bearer` or `?token=`), list and detail queries, author, series and file ids in paths, and the browser sign-in's queries | `bookclerk-player-api::request`, `ids`, `oauth` |
@@ -807,6 +808,24 @@ only that. The others check:
   order with trimmed values, and otherwise refuses the body as `Invalid`.
   The shared oracle is `fuzz/oracles/patron_scope_request.rs`, replayed
   from `bookclerk-library`.
+- **`chapter_request`**: an input's first byte picks the route (even:
+  edit, odd: pin) and the rest is the body, read as an untyped JSON value
+  with no key written twice anywhere. An edit is accepted exactly when it
+  is one object holding only `chapters`, an array of at most 2,000
+  objects each with a string `title`, a whole-number `start_ms`,
+  optionally a 32-bit `depth` and no other key, where every title is 1
+  to 512 bytes with no control character and no leading or trailing
+  white space, every start is at most sixty days of milliseconds and no
+  earlier than the one before, and the first depth is 0 and each later
+  one at most one deeper than the one before and at most 7; the parser
+  then returns exactly those chapters. A pin is accepted exactly when it
+  is one object with a `source_kind` naming one of the seven kinds and
+  optionally a `source_id`, a string (or `null`, read as empty) of at
+  most 256 bytes with no control character. Anything else is refused as
+  `Invalid`. The routes refuse a body over the parsers' length limits
+  (`413`) and one not sent as JSON (`415`) before parsing it. The shared
+  oracle is `fuzz/oracles/chapter_request.rs`, replayed from
+  `bookclerk-library`.
 - **`work_split_request`**: reads the body as an untyped JSON value. It
   is accepted exactly when it is one object with no repeated keys and
   exactly the key `expression_ids`, an array of strings each 1 to 64 bytes

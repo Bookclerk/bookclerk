@@ -52,6 +52,7 @@ var IDENTIFIER_SCHEMES = ["isbn", "asin", "openLibraryEdition", "openLibraryWork
 var CREDIT_ROLES = ["author", "narrator", "translator", "editor", "illustrator", "publisher", "host", "cast", "adaptor"];
 var CREDIT_LEVELS = ["roleDefault", "work", "expression", "edition"];
 var FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"];
+var CHAPTER_KINDS = ["unknown", "chapters", "tracks"];
 var CATALOG_SORTS = ["relevance", "popularity", "rating", "title", "author"];
 var CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"];
 var PRICE_LOOKUPS = ["unspecified", "product", "isbn", "asin", "title"];
@@ -3302,12 +3303,14 @@ var PlainFetchCodec = {
     if (v.refreshedCredentials !== void 0) {
       s.setData(3, v.refreshedCredentials ?? EMPTY_BYTES);
     }
+    s.setUint16(1, ord(CHAPTER_KINDS, v.chapterKind ?? CHAPTER_KINDS[0], "ChapterKind"));
   },
   read(s, caps) {
     const out = {
       mediaKind: fromOrd(MEDIA_KINDS, s.getUint16(0), "MediaKind"),
       files: s.getStructList(0, 2, 3).map((item) => FetchedFileCodec.read(item, caps)),
-      chapters: s.getStructList(1, 1, 1).map((item) => ChapterMarkerCodec.read(item, caps))
+      chapters: s.getStructList(1, 1, 1).map((item) => ChapterMarkerCodec.read(item, caps)),
+      chapterKind: fromOrd(CHAPTER_KINDS, s.getUint16(1), "ChapterKind")
     };
     const pdfUrlValue = s.getText(2);
     if (!(pdfUrlValue === "")) {

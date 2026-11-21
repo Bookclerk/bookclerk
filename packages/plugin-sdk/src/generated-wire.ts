@@ -6092,12 +6092,14 @@ export const PlainFetchCodec: StructCodec<T.PlainFetch> = {
     if (v.refreshedCredentials !== undefined) {
       s.setData(3, v.refreshedCredentials ?? EMPTY_BYTES);
     }
+    s.setUint16(1, ord(A.CHAPTER_KINDS, v.chapterKind ?? A.CHAPTER_KINDS[0]!, "ChapterKind"));
   },
   read(s, caps) {
     const out: T.PlainFetch = {
       mediaKind: fromOrd(A.MEDIA_KINDS, s.getUint16(0), "MediaKind"),
       files: s.getStructList(0, 2, 3).map((item) => FetchedFileCodec.read(item, caps)),
       chapters: s.getStructList(1, 1, 1).map((item) => ChapterMarkerCodec.read(item, caps)),
+      chapterKind: fromOrd(A.CHAPTER_KINDS, s.getUint16(1), "ChapterKind"),
     };
     const pdfUrlValue = s.getText(2);
     if (!(pdfUrlValue === "")) {

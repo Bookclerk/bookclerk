@@ -497,6 +497,13 @@ input_from = "any signed-in patron"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.chapter_request]
+crate = "bookclerk-library"
+boundary = "An Administrator's chapter list for an edition, or the claim to pin, from PUT /api/library/editions/{id}/chapters and PUT /api/library/editions/{id}/chapters/pin"
+input_from = "Administrator, Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.player_request]
 crate = "bookclerk-player-api"
 boundary = "What a player app sends the /player API: sign-in bodies, card tokens, list and detail queries, ids in paths, session, progress and bookmark bodies, and the browser sign-in's queries"

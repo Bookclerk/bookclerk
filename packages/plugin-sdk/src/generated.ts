@@ -28,6 +28,7 @@ import type {
   CreditRole,
   CreditLevel,
   FetchedFileRole,
+  ChapterKind,
   CatalogSort,
   CatalogField,
   PriceLookup,
@@ -61,6 +62,7 @@ export type {
   CreditRole,
   CreditLevel,
   FetchedFileRole,
+  ChapterKind,
   CatalogSort,
   CatalogField,
   PriceLookup,
@@ -2742,6 +2744,11 @@ export interface PlainFetch {
    * Omitted when absent (wire zero value).
    */
   refreshedCredentials?: Uint8Array;
+  /**
+   * What `chapters` marks. The host ranks literary chapters above track
+   * boundaries when it decides an edition's chapters.
+   */
+  chapterKind: ChapterKind;
 }
 
 /** Result union of `ContentSource.fetchTitle`. */

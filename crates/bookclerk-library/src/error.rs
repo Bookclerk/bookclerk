@@ -76,11 +76,13 @@ pub enum EntityKind {
     SavedFilter,
     /// A claim ticket.
     ClaimTicket,
+    /// One source's metadata claim about a library subject.
+    MetadataClaim,
 }
 
 impl EntityKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::Account,
         Self::Book,
         Self::Work,
@@ -115,6 +117,7 @@ impl EntityKind {
         Self::Job,
         Self::SavedFilter,
         Self::ClaimTicket,
+        Self::MetadataClaim,
     ];
 
     /// The phrase an error message names this kind with.
@@ -155,6 +158,7 @@ impl EntityKind {
             Self::Job => "job",
             Self::SavedFilter => "saved filter",
             Self::ClaimTicket => "claim ticket",
+            Self::MetadataClaim => "metadata claim",
         }
     }
 }

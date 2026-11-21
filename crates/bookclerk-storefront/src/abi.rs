@@ -99,6 +99,7 @@ impl From<PlainFetch> for abi::PlainFetch {
                 .into_iter()
                 .map(|(title, start_ms)| abi::ChapterMarker { title, start_ms })
                 .collect(),
+            chapter_kind: plain.chapter_kind,
             pdf_url: plain.pdf_url,
             // A guest that refreshed the account's credentials sets them on
             // the ABI value it answers with.
@@ -161,6 +162,7 @@ impl TryFrom<abi::PlainFetch> for PlainFetch {
                 .into_iter()
                 .map(|marker| (marker.title, marker.start_ms))
                 .collect(),
+            chapter_kind: plain.chapter_kind,
             pdf_url: plain.pdf_url,
         })
     }
@@ -826,6 +828,7 @@ mod tests {
             m4b_path: None,
             cover_path: Some(PathBuf::from("/tmp/cover.jpg")),
             chapters: vec![("Ch 1".into(), 0), ("Ch 2".into(), 5000)],
+            chapter_kind: abi::ChapterKind::Tracks,
             pdf_url: Some("https://cdn.example/book.pdf".into()),
         };
         let wire: abi::PlainFetch = plain.clone().into();
@@ -839,6 +842,7 @@ mod tests {
         assert_eq!(abi::validate_plain_fetch(&wire, &media), Ok(()));
         let back = PlainFetch::try_from(wire).unwrap();
         assert_eq!(back.chapters, plain.chapters);
+        assert_eq!(back.chapter_kind, abi::ChapterKind::Tracks);
         assert_eq!(back.m4b_path, None);
         assert_eq!(back.cover_path, plain.cover_path);
         assert_eq!(back.parts[0].path, plain.parts[0].path);
@@ -857,6 +861,7 @@ mod tests {
             m4b_path: Some(PathBuf::from("/tmp/book.m4b")),
             cover_path: None,
             chapters: Vec::new(),
+            chapter_kind: abi::ChapterKind::Unknown,
             pdf_url: None,
         };
         let wire: abi::PlainFetch = plain.into();
