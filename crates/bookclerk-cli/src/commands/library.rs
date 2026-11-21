@@ -4,7 +4,11 @@ use bookclerk_acquire::{
     convert_book, match_storage_to_library, AcquireRequest, ConvertRequest, MatchStorageOptions,
 };
 use bookclerk_config::{AudioQuality, Config};
-use bookclerk_library::{AcquireStatus, AcquireTitle, LibraryStore};
+use bookclerk_library::control_plane::{
+    library_collections, set_library_collections, ConfigActor, LibraryCollection,
+    LibraryCollections,
+};
+use bookclerk_library::{AcquireStatus, AcquireTitle, LibraryStore, WorkTagSource};
 use bookclerk_plugin_host::HostControlPlane;
 use bookclerk_search::WorkSearchIndex;
 use bookclerk_source::{source_scope, DownloadOptions, FetchOptions};
@@ -280,6 +284,68 @@ pub enum LibraryCommand {
         #[command(subcommand)]
         /// Nested saved-filter list/save/delete action.
         command: FilterCommand,
+    },
+    /// Read or set a work's library tags, which everyone sees, the Library
+    /// filters by, and a patron scope can include or exclude.
+    Tags {
+        #[command(subcommand)]
+        /// Nested get/set action.
+        command: TagsCommand,
+    },
+    /// Read or set the library's collections: named parts of the library,
+    /// each defined by storage key prefixes, which the Library filters by
+    /// and a patron scope can include or exclude.
+    Collections {
+        #[command(subcommand)]
+        /// Nested get/set action.
+        command: CollectionsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// Nested `library collections` actions.
+pub(crate) enum CollectionsCommand {
+    /// Print each collection with its prefixes.
+    Get,
+    /// Replace every collection. The page index is rebuilt by a running
+    /// daemon's next heartbeat.
+    Set {
+        /// A collection as `NAME=PREFIX[,PREFIX…]` (`Kids=kids/,children/`),
+        /// repeatable. With none, every collection is removed.
+        #[arg(long = "collection", value_name = "NAME=PREFIXES")]
+        collections: Vec<String>,
+    },
+}
+
+/// Parses `NAME=PREFIX[,PREFIX…]` into a collection (validated on write).
+fn parse_collection_arg(arg: &str) -> anyhow::Result<LibraryCollection> {
+    let Some((name, prefixes)) = arg.split_once('=') else {
+        anyhow::bail!("a collection is NAME=PREFIX[,PREFIX…], such as Kids=kids/");
+    };
+    Ok(LibraryCollection {
+        name: name.to_string(),
+        prefixes: prefixes.split(',').map(str::to_string).collect(),
+    })
+}
+
+#[derive(Debug, Subcommand)]
+/// Nested `library tags` actions.
+pub(crate) enum TagsCommand {
+    /// Print a work's library tags, one per line, with where each came from.
+    Get {
+        /// The work id (a top-level work, as `GET /api/library/works`
+        /// lists it).
+        work: String,
+    },
+    /// Replace the tags set in Bookclerk on a work; tags read from a
+    /// sidecar file stay.
+    Set {
+        /// The work id.
+        work: String,
+        /// A tag to set (repeatable). With none, the work's tags set in
+        /// Bookclerk are removed.
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
     },
 }
 
@@ -765,6 +831,41 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 Ok(())
             }
         },
+        LibraryCommand::Collections { command } => {
+            let collections = match command {
+                CollectionsCommand::Get => library_collections(&store).await?,
+                CollectionsCommand::Set { collections } => {
+                    let collections = LibraryCollections {
+                        collections: collections
+                            .iter()
+                            .map(|arg| parse_collection_arg(arg))
+                            .collect::<anyhow::Result<_>>()?,
+                    };
+                    let actor = ConfigActor::Operator { id: "cli".into() };
+                    set_library_collections(&store, &actor, collections)
+                        .await?
+                        .body
+                }
+            };
+            for collection in collections.collections {
+                println!("{}\t{}", collection.name, collection.prefixes.join(","));
+            }
+            Ok(())
+        }
+        LibraryCommand::Tags { command } => {
+            let tags = match command {
+                TagsCommand::Get { work } => store.work_tags(&work).await?,
+                TagsCommand::Set { work, tags } => store.set_work_tags(&work, &tags).await?,
+            };
+            for tag in tags {
+                let source = match tag.source {
+                    WorkTagSource::Admin => "set here",
+                    WorkTagSource::Sidecar => "from a sidecar",
+                };
+                println!("{}\t{source}", tag.value);
+            }
+            Ok(())
+        }
         LibraryCommand::List { account, status } => {
             let titles = library_titles(&store, account.as_deref()).await?;
             for line in list_lines(&titles, status.as_deref()) {

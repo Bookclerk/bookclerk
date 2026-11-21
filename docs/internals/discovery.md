@@ -209,7 +209,11 @@ title, authors and kind), so it gets a work, an expression, an edition and a
 listing row. The listing has **no holding**, so the library does not own
 it, and a later scan of the same product finds the same listing and only
 adds its holding. Work identity always comes from that resolution, never
-from comparing display text.
+from comparing display text. Two stores' listings share an expression only
+when kind, language, abridgement and narrators are known and equal on both,
+so the resolver compares languages by their ISO 639-1 code (one store's
+"English" and another's `eng` or `en-US` are one language), and the Audible
+catalog reports abridgement from each product's format type.
 
 The store's own text for the listing is stored on the row as parsed
 columns: subtitle, authors and narrators as the store prints them, series,
@@ -540,10 +544,12 @@ title is **not** in the household library.
   present, else ASIN, else soft title+author; ASIN-keyed and ISBN-keyed rows
   for the same work are merged (ISBN is **not** universal across Chirp / GA /
   Audible public search)
-- **Per-source snapshots:** `POST /api/wishlist` first resolves live prices
-  and further stores (server-side purchase hints), then asks each store about
-  every edition the wish names (`catalog_detail`, at most eight editions at
-  once) and records the store's answer in the
+- **Per-source snapshots:** `POST /api/wishlist` resolves live prices
+  and further stores (server-side purchase hints) while it asks each store
+  about every edition the wish names (`catalog_detail`, at most eight
+  editions at once), so a slow price lookup never costs the wish its
+  editions. Editions that only the price lookup found are asked about with
+  the time left. It records the store's answer in the
   [shared listing pool](#shared-listing-pool), with any member price a
   purchase hint quoted. It then persists the editions, HTML description and
   purchase hints into `title_request_sources` (one row per `source` +
@@ -565,7 +571,10 @@ title is **not** in the household library.
   declares `catalog.detailByProductId` (Libro.fm, GraphicAudio) for its own
   product (two at most), then the stores that declare `catalog.detailByIsbn`
   (Libro.fm) for the ISBN, three lookups and 3.5 s at most. No plugin id is
-  named. After multi-store
+  named. `POST /api/discover/title-meta/batch` answers every title within
+  6 s: a title still being looked up then answers with what it has and is
+  flagged in the response's `incomplete` list, so the page shows it but
+  does not cache it, and the log names the lookup it was waiting on. After multi-store
   search ranks a page, Discover asks the same stores to fill lean rows, by
   ISBN or by their own product id (bounded timeout), so list cards get
   genres/runtime without N+1 product fetches inside each store’s
@@ -767,9 +776,10 @@ loads with `no_purchase_hints=true`; the GUI:
    together, and each new group of eight does the same as it is added.
 3. **Batches** those lookups into `POST /api/discover/purchase-hints/batch`
    and `POST /api/discover/title-meta/batch` (24 titles at most per
-   request). Lookups asked within 60 ms share a batch, only one batch of
-   each kind is in flight at a time (lookups asked meanwhile go out
-   together in the next one), and a title already waiting is not asked
+   request). Lookups asked within 60 ms share a batch, at most two
+   batches of each kind are in flight at a time (lookups asked meanwhile
+   go out together in the next one, and a group larger than one batch
+   sends its parts at once), and a title already waiting is not asked
    twice.
 4. Lets **covers go first**: each batch waits until the covers on screen
    have loaded, for at most 2 seconds, so on a small machine covers never
@@ -814,7 +824,12 @@ expression as the card's own store editions. Titles are never compared, and
 the store's own pick is not used. Placing the records shares the batch's
 deadline; when it fails or runs out, only records that carry the card's
 ISBN or ASIN price it, and the answer is marked `incomplete` and not
-cached, so the card asks again. An exact ISBN or ASIN answer is the card's edition
+cached, so the card asks again. Placement keeps running after the
+deadline (at most two batches' placements at once), so the card's next
+ask finds the records in the pool. The batch logs one line per store
+counting the records it returned, kept and dropped, and why each dropped
+record was dropped (card not pooled, record not pooled, another
+recording). An exact ISBN or ASIN answer is the card's edition
 and is kept as is. A store that answers a title search with one bare hint
 and no records (a guest from before records) is kept only when the hint's
 title and authors match the card's, as before. The single-title route
@@ -831,8 +846,10 @@ but an ASIN is checked as that Audible product. A price for a product the
 pool never listed stays, and so does every price when the pool knows none
 of the card's editions.
 
-The check shares the route's deadline (the batch's 10 seconds, or the
-wishlist's enrichment budget). When the pool read fails or runs out of time,
+The batch route checks all of its cards in one pool read with its own
+1.5 second budget after the batch answers, so a batch that used its whole
+10 seconds is still checked; the wishlist's check shares its enrichment
+budget. When the pool read fails or runs out of time,
 the prices stay unchecked: a Discover answer is marked `incomplete`, so the
 page shows it but asks again later, and a new wish is saved with the
 resolved prices.

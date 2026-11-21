@@ -115,6 +115,13 @@ pub struct UploadPayload {
     /// Best-effort Linux distro id when detectable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distro: Option<String>,
+    /// The source commit this build was made from (or `"unknown"`).
+    pub build_commit: String,
+    /// The CPU and memory limits of the process's cgroup when it has any
+    /// (a container or a systemd slice), so a slow report from a small
+    /// node says so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits: Option<crate::platform::NodeLimits>,
     /// `rustc` release baked in at build time (or `"unknown"`).
     pub rustc_release: String,
     /// `rustc` channel baked in at build time (or `"unknown"`).
@@ -409,7 +416,7 @@ impl DiagnosticsHandle {
             .into_iter()
             .filter(|(k, _)| !LOG_RECORD_FIELDS.contains(&k.as_str()))
             .collect();
-        fields.extend(span_fields);
+        fields.extend(without_repeated_span_fields(&fields, span_fields));
 
         let buffered = BufferedEvent {
             ts_unix_ms: unix_now_ms(),
@@ -584,6 +591,10 @@ impl DiagnosticsHandle {
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             distro: crate::platform::detect_distro(),
+            build_commit: option_env!("BOOKCLERK_BUILD_COMMIT")
+                .unwrap_or("unknown")
+                .to_string(),
+            limits: crate::platform::node_limits(),
             rustc_release: option_env!("BOOKCLERK_RUSTC_RELEASE")
                 .unwrap_or("unknown")
                 .to_string(),
@@ -762,6 +773,33 @@ impl DiagnosticsLayer {
     }
 }
 
+/// Drops each `span.field` pair whose value the event already records under
+/// the bare `field` name, so a request's slow-response line does not carry
+/// `method` and `http.request.method` with the same value.
+///
+/// # Arguments
+///
+/// * `event_fields` - The event's own `(field, value)` pairs.
+/// * `span_fields` - `(span.field, value)` pairs from its spans.
+///
+/// # Returns
+///
+/// The span pairs that add something.
+fn without_repeated_span_fields(
+    event_fields: &[(String, String)],
+    span_fields: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    span_fields
+        .into_iter()
+        .filter(|(key, value)| {
+            let bare = key
+                .rsplit_once('.')
+                .map_or(key.as_str(), |(_, field)| field);
+            !event_fields.iter().any(|(k, v)| k == bare && v == value)
+        })
+        .collect()
+}
+
 /// Redacted fields a span was created or later recorded with, kept in the
 /// span's extensions so events inside it can carry them.
 #[derive(Default)]
@@ -906,6 +944,27 @@ pub fn push_test_event(handle: &DiagnosticsHandle, level: &str, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn span_fields_the_event_repeats_are_dropped() {
+        let event = vec![
+            ("method".to_string(), "GET".to_string()),
+            ("route".to_string(), "/api/x".to_string()),
+        ];
+        let spans = vec![
+            ("http.request.method".to_string(), "GET".to_string()),
+            ("http.request.route".to_string(), "/api/x".to_string()),
+            ("http.request.path".to_string(), "/api/x/1".to_string()),
+            ("job.route".to_string(), "/other".to_string()),
+        ];
+        assert_eq!(
+            without_repeated_span_fields(&event, spans),
+            vec![
+                ("http.request.path".to_string(), "/api/x/1".to_string()),
+                ("job.route".to_string(), "/other".to_string()),
+            ]
+        );
+    }
 
     #[test]
     fn ring_buffer_caps_capacity() {

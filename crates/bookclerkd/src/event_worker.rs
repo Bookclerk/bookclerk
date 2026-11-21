@@ -646,9 +646,11 @@ pub(crate) async fn dispatch_pending(
         let n = library
             .dispatch_event_deliveries(&event.id, &subs, &op)
             .await?;
+        // A queue message carries no event type; its queue says what it is.
         info!(
             event_id = %event.id,
             event_type = %event.event_type,
+            queue = %event.queue_name,
             deliveries = n,
             "dispatched domain event"
         );

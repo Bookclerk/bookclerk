@@ -65,6 +65,7 @@ boundary extends it.
 | `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
+| `relayed_log_line` | A jailed helper's or guest's stderr line, which the host relays into its own log at the level the line names (never above WARN) | `bookclerk-config::parse_relayed_line` |
 | `diagnostics_submit_reply` | The diagnostics collector's reply to an uploaded report, whose `report_id` and `access_code` join the install's report history | `bookclerk-config::parse_submit_reply` |
 | `diagnostics_lookup_reply` | The diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue and pull request links | `bookclerk-config::parse_lookup_reply`, `parse_delete_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
@@ -91,6 +92,8 @@ boundary extends it.
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
+| `work_tags_request` | An Administrator's library tags for a work, the body of `PUT /api/library/works/{id}/tags` | `bookclerk-library::parse_work_tags_request` |
+| `collections_request` | An Administrator's collections for the library, the body of `PUT /api/library/collections` and the stored `core.collections` document | `bookclerk-library::control_plane::parse_collections_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `pace_request` | A person's pace for one of their store accounts, the body of `POST /api/portal/sources/{source}/connections/{account_id}/pace` | `bookclerk-library::pacing::parse_pace_request` |
 | `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta` and each entry of its batch route) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
@@ -267,6 +270,14 @@ only that. The others check:
   digits whose number, read digit by digit with overflow detection, lies in
   the key's documented range, and the parser returns that number. The
   shared oracle is `fuzz/oracles/cache_settings.rs`, replayed from
+  `bookclerk-config`.
+- **`relayed_log_line`**: the parsed text is always a trimmed suffix of
+  the line, and the level is never above WARN. A level other than INFO
+  comes only from a line whose first word (or second word, after a
+  timestamp-shaped first word) is exactly `TRACE`, `DEBUG`, `INFO`, `WARN`
+  or `ERROR`, read independently token by token; `ERROR` becomes WARN, and
+  the prefix is removed. Any other line comes back whole, trimmed, at INFO.
+  The shared oracle is `fuzz/oracles/relayed_log_line.rs`, replayed from
   `bookclerk-config`.
 - **`diagnostics_submit_reply`**: a reply longer than 4096 bytes is
   refused. Otherwise it is accepted exactly when, read independently as a
@@ -792,6 +803,24 @@ only that. The others check:
   parsers refuse.
   The shared oracle is `fuzz/oracles/playback_request.rs`, replayed from
   `bookclerk-library`.
+- **`work_tags_request`**: reads the body as an untyped JSON value. It is
+  accepted exactly when it is one object with no repeated keys and exactly
+  the key `tags`, an array of strings each at most 256 bytes once trimmed,
+  with at most 32 distinct non-blank values ignoring case. The parser then
+  returns those values trimmed, in the order sent with the first spelling
+  kept, and otherwise refuses it as `Invalid`. The shared oracle is
+  `fuzz/oracles/work_tags_request.rs`, replayed from `bookclerk-library`.
+- **`collections_request`**: reads the body as an untyped JSON value. It
+  is accepted exactly when it is one object with no repeated keys at any
+  level and exactly the key `collections`, an array of at most 32 objects
+  with exactly `name` and `prefixes`. Each name, trimmed, is 1 to 64 bytes
+  with no NUL and no two match ignoring case; each collection has 1 to 8
+  prefixes, each trimmed, non-empty, not starting with `/`, with no NUL,
+  and at most 256 bytes once a closing `/` is added; and the result comes
+  to at most 8 KiB as compact JSON. The parser then returns the trimmed
+  names and normalized prefixes (repeats dropped) in the order sent, and
+  otherwise refuses it as `Invalid`. The shared oracle is
+  `fuzz/oracles/collections_request.rs`, replayed from `bookclerk-library`.
 - **`sharing_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and no keys
   besides `library_id`, `share_books`, `include_branches`,

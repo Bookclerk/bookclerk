@@ -483,6 +483,20 @@ input_from = "any signed-in patron"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.work_tags_request]
+crate = "bookclerk-library"
+boundary = "An Administrator's library tags for a work, from PUT /api/library/works/{id}/tags"
+input_from = "Administrator, Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.collections_request]
+crate = "bookclerk-library"
+boundary = "An Administrator's collections for the library, from PUT /api/library/collections and the stored core.collections document"
+input_from = "Administrator, Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.connections_request]
 crate = "bookclerk-library"
 boundary = "A branch Owner's store connections to add to one library, or one to disconnect, from POST /api/config/join/connections and POST /api/config/join/connections/disconnect"
@@ -562,5 +576,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-library"
 boundary = "Scan and acquire requests a Member sends (over HTTP or through their Host), authorized against the store accounts linked to them"
 input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.relayed_log_line]
+crate = "bookclerk-config"
+boundary = "Stderr lines from jailed helpers and plugin guests that the host relays into its log"
+input_from = "guest"
+# The host parses each line in its own process before logging it.
 side = "host"
 artifacts = ["bookclerk"]

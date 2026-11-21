@@ -122,6 +122,10 @@ paths = [
     "fuzz/oracles/work_split_request.rs",
     "fuzz/corpus/playback_request/**",
     "fuzz/oracles/playback_request.rs",
+    "fuzz/corpus/work_tags_request/**",
+    "fuzz/oracles/work_tags_request.rs",
+    "fuzz/corpus/collections_request/**",
+    "fuzz/oracles/collections_request.rs",
     "fuzz/corpus/sharing_request/**",
     "fuzz/oracles/sharing_request.rs",
     "fuzz/corpus/connections_request/**",
@@ -209,6 +213,8 @@ paths = [
     "fuzz/oracles/diagnostics_submit_reply.rs",
     "fuzz/corpus/diagnostics_lookup_reply/**",
     "fuzz/oracles/diagnostics_lookup_reply.rs",
+    "fuzz/corpus/relayed_log_line/**",
+    "fuzz/oracles/relayed_log_line.rs",
 ]
 
 [[test_input]]
@@ -664,3 +670,8 @@ reason = "package-name string in install-path test data, not a launched executab
 package = "bookclerk-plugin-e2e"
 reference = "bookclerk-jail"
 reason = "PluginSession::spawn_with launches bookclerk-jail; the native_gateway smoke already builds that binary, and this crate is excluded from rust_test"
+
+[[reviewed]]
+package = "bookclerk-config"
+reference = ".git"
+reason = "build.rs reads the checkout's commit for diagnostics reports (rerun-if-changed on .git/HEAD); no test reads it"

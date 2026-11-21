@@ -89,6 +89,38 @@ fn two_stores_of_one_narration_share_work_and_expression() {
     assert_ne!(a.listing.edition_id, b.listing.edition_id);
 }
 
+/// Audible spells English `english`, Libro.fm `eng` and Chirp `en-US`; all
+/// three are one recording's language, so they share one expression.
+#[test]
+fn store_spellings_of_one_language_share_the_expression() {
+    let mut c = MemoryCatalog::default();
+    let mut audible = dune("audible", "B001");
+    audible.language = Some("English".into());
+    let a = record(&mut c, &audible, "a1");
+    let mut libro = dune("libro", "9780000000001");
+    libro.language = Some("eng".into());
+    let b = record(&mut c, &libro, "l1");
+    let mut chirp = dune("chirp", "C1");
+    chirp.language = Some("en-US".into());
+    let d = record(&mut c, &chirp, "c1");
+    assert!(a.new_expression.is_some());
+    assert!(b.new_expression.is_none(), "eng is English");
+    assert!(d.new_expression.is_none(), "en-US is English");
+    assert_eq!(
+        Listing::from_draft(&audible).unwrap().language.as_deref(),
+        Some("en")
+    );
+}
+
+#[test]
+fn another_language_still_makes_a_new_expression() {
+    let mut c = MemoryCatalog::default();
+    record(&mut c, &dune("audible", "B001"), "a1");
+    let mut other = dune("libro", "L1");
+    other.language = Some("spa".into());
+    assert!(record(&mut c, &other, "l1").new_expression.is_some());
+}
+
 #[test]
 fn unknown_language_makes_a_new_expression() {
     let mut c = MemoryCatalog::default();

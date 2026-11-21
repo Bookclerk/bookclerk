@@ -432,6 +432,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "work_tags_request"
+path = "fuzz_targets/work_tags_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "collections_request"
+path = "fuzz_targets/collections_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "job_cap_request"
 path = "fuzz_targets/job_cap_request.rs"
 test = false
@@ -588,6 +602,13 @@ bench = false
 [[bin]]
 name = "title_meta_fill"
 path = "fuzz_targets/title_meta_fill.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relayed_log_line"
+path = "fuzz_targets/relayed_log_line.rs"
 test = false
 doc = false
 bench = false
