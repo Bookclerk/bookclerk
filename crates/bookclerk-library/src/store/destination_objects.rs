@@ -771,7 +771,10 @@ impl LibraryStore {
                         // The edition is released before its copy turns
                         // missing: if either write fails, the copy is still
                         // stored and the next pass retries both.
-                        if self.release_unstored_edition(&edition, destination).await? {
+                        if self
+                            .release_unstored_edition(&edition, Some(destination))
+                            .await?
+                        {
                             lost.not_acquired += 1;
                         }
                         row.state = Set(CopyState::Missing.as_str().to_owned());
@@ -789,7 +792,10 @@ impl LibraryStore {
                 // other stored copy since the check above. Whichever of the
                 // two checks last sees no stored copy left and releases it.
                 if let Some(edition) = release_after {
-                    if self.release_unstored_edition(&edition, destination).await? {
+                    if self
+                        .release_unstored_edition(&edition, Some(destination))
+                        .await?
+                    {
                         lost.not_acquired += 1;
                     }
                 }
@@ -824,29 +830,35 @@ impl LibraryStore {
         editions.dedup();
         let mut released = 0;
         for edition in editions {
-            if self.release_unstored_edition(&edition, destination).await? {
+            // No destination is set aside here: a copy at `destination`
+            // stored again since it was read (a forced acquire) keeps the
+            // edition acquired.
+            if self.release_unstored_edition(&edition, None).await? {
                 released += 1;
             }
         }
         Ok(released)
     }
 
-    /// Marks `edition_id` not acquired when no destination but `losing`
-    /// holds a stored copy of it: the title whose acquire recorded it (its
+    /// Marks `edition_id` not acquired when no destination (other than
+    /// `losing`, when given) holds a stored copy of it: the title whose acquire recorded it (its
     /// `edition_acquisitions.holding_id`) turns not acquired.
     ///
     /// # Returns
     ///
     /// True when the edition was acquired and now is not.
-    async fn release_unstored_edition(&self, edition_id: &str, losing: &str) -> Result<bool> {
+    async fn release_unstored_edition(
+        &self,
+        edition_id: &str,
+        losing: Option<&str>,
+    ) -> Result<bool> {
         let edition = edition_id.to_owned();
         let copies = self
             .copies_of_editions(std::slice::from_ref(&edition))
             .await?;
-        if copies
-            .iter()
-            .any(|copy| copy.state == CopyState::Stored && copy.destination != losing)
-        {
+        if copies.iter().any(|copy| {
+            copy.state == CopyState::Stored && Some(copy.destination.as_str()) != losing
+        }) {
             return Ok(false);
         }
         let Some(acquisition) = self.edition_acquisition(edition_id).await? else {

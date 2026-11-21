@@ -564,6 +564,51 @@ async fn the_first_listing_finds_a_copy_whose_file_was_already_gone() {
     );
 }
 
+/// A pass releases an edition whose copies all turned missing while it
+/// stayed acquired (its release failed, or the node stopped before it).
+#[tokio::test]
+async fn a_later_pass_releases_an_edition_left_acquired() {
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let store = test_store().await;
+    let dir = tempfile::tempdir().unwrap();
+    let local = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+    put(&local, "B/Other.m4b").await;
+    let edition = stored_edition(&store, "local", "A/Gone.m4b").await;
+    store
+        .set_acquire_status(
+            "B00TEST",
+            "user-1",
+            bookclerk_library::AcquireStatus::Acquired,
+            Some("A/Gone.m4b"),
+            None,
+        )
+        .await
+        .unwrap();
+    bookclerk_library::entities::edition_copies::Entity::update_many()
+        .col_expr(
+            bookclerk_library::entities::edition_copies::Column::State,
+            sea_orm::sea_query::Expr::value(CopyState::Missing.as_str()),
+        )
+        .filter(bookclerk_library::entities::edition_copies::Column::EditionId.eq(edition.clone()))
+        .exec(store.db())
+        .await
+        .unwrap();
+
+    let report = sync_destination(&store, "local", &local, MissingFileAction::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(report.not_acquired, 1, "{report:?}");
+    assert_eq!(
+        store
+            .edition_acquisition(&edition)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        bookclerk_library::AcquireStatus::NotAcquired
+    );
+}
+
 /// The removal guard counts what was known before the listing, so files
 /// the listing adds do not dilute the share it missed.
 #[tokio::test]

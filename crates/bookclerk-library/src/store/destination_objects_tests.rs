@@ -535,6 +535,23 @@ async fn a_failed_release_is_retried_on_a_later_pass() {
         };
         assert_eq!(status().await, crate::AcquireStatus::Acquired);
 
+        // A copy stored again at the swept destination keeps the edition.
+        store
+            .set_copy_stored(&edition, "e", "A/One.m4b")
+            .await
+            .unwrap();
+        assert_eq!(store.release_missing_editions("d").await.unwrap(), 0);
+        assert_eq!(status().await, crate::AcquireStatus::Acquired);
+        edition_copies::Entity::update_many()
+            .col_expr(
+                edition_copies::Column::State,
+                Expr::value(CopyState::Missing.as_str()),
+            )
+            .filter(edition_copies::Column::Destination.eq("e"))
+            .exec(store.db())
+            .await
+            .unwrap();
+
         assert_eq!(store.release_missing_editions("e").await.unwrap(), 1);
         assert_eq!(
             status().await,
