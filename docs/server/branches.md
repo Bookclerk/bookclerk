@@ -143,6 +143,10 @@ On the command line, this prints one invite once:
 bookclerk nodes invite --user riley --ttl 24h
 ```
 
+An Administrator whose **Invite branches** switch an Owner turned off is
+refused (`403`); see
+[Sharing](../guide/sharing.md#limit-what-an-administrator-may-do).
+
 An invite looks like
 `<public_origin>/enroll#bcn1.<link_id>.<secret>[.<spki_pin>]`. It is a
 single-use secret:
@@ -762,6 +766,8 @@ It runs as the user who owns this node:
 - An Owner or Administrator scanning every account gets one job per
   scan-enabled account, spread over every shared node and host trusted with
   each.
+  An Administrator whose **Scan and acquire library-wide** switch is off
+  counts as anyone else.
 - Anyone else scans only their own accounts. A named account that isn't
   theirs is refused (403).
 - A node trusted with nothing (no owner, a disabled owner, or revoked) is

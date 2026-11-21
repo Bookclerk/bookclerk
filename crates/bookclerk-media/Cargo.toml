@@ -41,11 +41,19 @@ symphonia = { version = "0.6", default-features = false, features = [
     "mp1",
     "mp2",
     "mp3",
+    "ogg",
     "pcm",
+    "vorbis",
     "wav",
 ] }
 mp3lame-encoder = "0.3"
 fdk-aac = "0.8"
+# libopus through its safe bindings (opusic-sys underneath, bundled build):
+# the Opus decoder behind Ogg Opus input and the encoder for Opus output.
+opusic-c = { version = "1.6", default-features = false, features = ["bundled"] }
+# Vorbis comment and picture writing for Ogg Opus output; M4B stays on
+# mp4ameta (chapters) and MP3 on id3.
+lofty = "0.25"
 
 [dev-dependencies]
 # The faststart layout is written by the remuxer, so the tests that cover

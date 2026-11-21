@@ -38,8 +38,9 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
 - [`bookclerk libraries`](#bookclerk-libraries): Owner libraries this install hosts for, and consent to their plugins
 - [`bookclerk nodes`](#bookclerk-nodes): Library nodes: liveness, capacity, budgets, and placement labels
-- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes and member controls
+- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes, member controls and Administrator switches
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
+- [`bookclerk media`](#bookclerk-media): What this build's media worker reads and writes
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
 - [`bookclerk version`](#bookclerk-version): Print version information
@@ -1950,7 +1951,7 @@ Arguments:
 
 ## `bookclerk users`
 
-The library's people: patron scopes and member controls
+The library's people: patron scopes, member controls and Administrator switches
 
 ```text
 bookclerk users [OPTIONS] <COMMAND>
@@ -1960,6 +1961,7 @@ Commands:
 
 - [`bookclerk users scope`](#bookclerk-users-scope): Read or set which part of the library a patron sees
 - [`bookclerk users controls`](#bookclerk-users-controls): Read or set what a patron may do: link store accounts, download, edit metadata, upload, request books, see prices
+- [`bookclerk users admin-controls`](#bookclerk-users-admin-controls): Read or set what an Administrator may do: manage members, set patron limits, library-wide scan and acquire, run the job queue, fix the catalog, invite branches, approve requests
 
 ### `bookclerk users scope`
 
@@ -2057,6 +2059,54 @@ Options:
 - `--deny <CONTROL>`: Turn a control off. Repeatable
 - `--follow-default <CONTROL>`: Make the patron follow the library's default for a control again. Repeatable; `all` names every control
 
+### `bookclerk users admin-controls`
+
+Read or set what an Administrator may do: manage members, set patron limits, library-wide scan and acquire, run the job queue, fix the catalog, invite branches, approve requests
+
+```text
+bookclerk users admin-controls [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users admin-controls get`](#bookclerk-users-admin-controls-get): Print an Administrator's switches, or the library's default
+- [`bookclerk users admin-controls set`](#bookclerk-users-admin-controls-set): Change switches of an Administrator, or of the library's default. Switches not named keep their value
+
+#### `bookclerk users admin-controls get`
+
+Print an Administrator's switches, or the library's default
+
+```text
+bookclerk users admin-controls get [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: The library's default, which Administrators follow unless a switch is set for them alone
+
+#### `bookclerk users admin-controls set`
+
+Change switches of an Administrator, or of the library's default. Switches not named keep their value
+
+```text
+bookclerk users admin-controls set [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: Change the library's default instead of one Administrator's
+- `--allow <SWITCH>`: Turn a switch on (`manage_members`, `set_patron_limits`, `library_scan`, `run_jobs`, `fix_catalog`, `invite_branches`, `approve_requests`). Repeatable
+- `--deny <SWITCH>`: Turn a switch off. Repeatable
+- `--follow-default <SWITCH>`: Make the Administrator follow the library's default for a switch again. Repeatable; `all` names every switch
+
 ## `bookclerk queues`
 
 Plugin-owned queues on the outbox: counters, consumers, messages
@@ -2089,6 +2139,26 @@ bookclerk queues inspect [OPTIONS] <NAME>
 Arguments:
 
 - `<NAME>`: Queue name (`core.events` is the domain-event bus)
+
+## `bookclerk media`
+
+What this build's media worker reads and writes
+
+```text
+bookclerk media [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk media capabilities`](#bookclerk-media-capabilities): List the audio codecs, file types and output formats this build's media worker handles (the daemon's `GET /api/status/media`)
+
+### `bookclerk media capabilities`
+
+List the audio codecs, file types and output formats this build's media worker handles (the daemon's `GET /api/status/media`)
+
+```text
+bookclerk media capabilities [OPTIONS]
+```
 
 ## `bookclerk login`
 

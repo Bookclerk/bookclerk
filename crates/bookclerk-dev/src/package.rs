@@ -509,7 +509,30 @@ fn copy_pinned_workerd(root: &Path, bundle: &Path) -> Result<()> {
             let _ = fs::copy(&src, &stamp_dest);
         }
     }
+    copy_pyodide_bundle(&workerd, bundle)?;
     eprintln!("copied pinned workerd -> {}", dest.display());
+    Ok(())
+}
+
+/// Copies the pinned Pyodide bundle beside `workerd` into the platform
+/// bundle's own Pyodide directory, where the launcher points Python isolates.
+///
+/// # Errors
+///
+/// When the bundle is missing beside `workerd` or cannot be copied.
+fn copy_pyodide_bundle(workerd: &Path, bundle: &Path) -> Result<()> {
+    let src_dir = bookclerk_workerd::pyodide_bundle_dir(workerd)
+        .with_context(|| format!("locate the Pyodide bundle beside {}", workerd.display()))?;
+    let src = src_dir.join(bookclerk_workerd::PYODIDE_BUNDLE_FILE);
+    let dest_dir = bookclerk_sandbox::require_under_root(
+        &bundle.join(bookclerk_workerd::PYODIDE_BUNDLE_DIR),
+        bundle,
+    )
+    .with_context(|| format!("validate Pyodide dest under {}", bundle.display()))?;
+    fs::create_dir_all(&dest_dir).with_context(|| format!("create {}", dest_dir.display()))?;
+    let dest = dest_dir.join(bookclerk_workerd::PYODIDE_BUNDLE_FILE);
+    fs::copy(&src, &dest)
+        .with_context(|| format!("copy {} -> {}", src.display(), dest.display()))?;
     Ok(())
 }
 

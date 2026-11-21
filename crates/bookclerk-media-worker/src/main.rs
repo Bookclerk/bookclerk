@@ -1,7 +1,8 @@
 //! Runs exactly one media job inside a jail derived from that job; as
 //! `bookclerk-media-worker covers`, serves cover images (see the `covers`
 //! module); as `bookclerk-media-worker tags`, reads embedded tags (see the
-//! `tags` module).
+//! `tags` module); as `bookclerk-media-worker pcm`, decodes one file to PCM
+//! for a player (see the `pcm` module).
 //!
 //! The process reads a JSON [`MediaJob`] on stdin, confines itself to the paths
 //! the job declared, runs it, and writes a JSON [`MediaJobReply`] to stdout.
@@ -30,6 +31,7 @@
 )]
 
 mod covers;
+mod pcm;
 mod tags;
 
 use std::io::{Read, Write};
@@ -50,6 +52,12 @@ fn main() -> ExitCode {
         .is_some_and(|arg| arg == tags::ARG)
     {
         return tags::main();
+    }
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == pcm::ARG)
+    {
+        return pcm::main();
     }
     let job = match read_job() {
         Ok(job) => job,

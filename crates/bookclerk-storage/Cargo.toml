@@ -70,5 +70,13 @@ bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
+# The sparse-file test marks its file sparse so NTFS allocates no space.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+] }
+
 [lints]
 workspace = true

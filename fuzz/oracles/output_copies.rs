@@ -14,13 +14,14 @@
 //!
 //! - the list is accepted exactly when the oracle accepts it: an array of
 //!   at most 8 objects, each with exactly `format` and `quality` and no key
-//!   repeated; a `format` one of `m4b`, `mp3`, `mp3_chapters` or
-//!   `original` as written; a `quality` that, trimmed and in any ASCII
-//!   case, is `original`, a bitrate the MP3 encoder writes (64, 96, 128,
+//!   repeated; a `format` one of `m4b`, `mp3`, `mp3_chapters`,
+//!   `original` or `opus` as written; a `quality` that, trimmed and in any
+//!   ASCII case, is `original`, a bitrate (16, 24, 32, 48, 64, 96, 128,
 //!   160, 192, 256 or 320 kbit/s, no leading zero) or `v0`..`v9`, either
 //!   optionally followed by `-mono`, at most 16 bytes; `original` for M4B
-//!   and as-delivered copies and not `original` for MP3 copies; no copy
-//!   given twice and none the main output's copy;
+//!   and as-delivered copies; for MP3 copies a VBR level or one of the MP3
+//!   encoder's rates (64 to 320); for Opus copies one of the Opus targets
+//!   (16 to 128); no copy given twice and none the main output's copy;
 //! - an accepted list holds the oracle's copies in order, in canonical
 //!   form, and survives a JSON round trip.
 
@@ -36,12 +37,19 @@ pub const MAX_INPUT_BYTES: usize = 8 * 1024;
 
 /// The main output's copy the selector byte picks, as `format:quality`;
 /// `None` is an output format the acquire pipeline refuses.
-const MAINS: [Option<(&str, &str)>; 4] = [
+const MAINS: [Option<(&str, &str)>; 5] = [
     Some(("m4b", "original")),
     Some(("mp3", "v2")),
     Some(("mp3_chapters", "64k-mono")),
+    Some(("opus", "64k")),
     None,
 ];
+
+/// The MP3 encoder's constant rates, in kbit/s.
+const MP3_RATES: [u32; 7] = [64, 96, 128, 160, 192, 256, 320];
+
+/// The Opus targets, in kbit/s.
+const OPUS_RATES: [u32; 7] = [16, 24, 32, 48, 64, 96, 128];
 
 /// One copy as the oracle reads it: format name, canonical quality.
 type OracleCopy = (String, String);
@@ -120,7 +128,7 @@ fn oracle_quality(raw: &str) -> Option<String> {
                 && digits.iter().all(u8::is_ascii_digit)
                 && rate[..rate.len() - 1]
                     .parse::<u32>()
-                    .is_ok_and(|kbps| [64, 96, 128, 160, 192, 256, 320].contains(&kbps))
+                    .is_ok_and(|kbps| MP3_RATES.contains(&kbps) || OPUS_RATES.contains(&kbps))
         }
         _ => false,
     };
@@ -153,12 +161,19 @@ fn oracle_read(main: Option<(&str, &str)>, body: &[u8]) -> Option<Vec<OracleCopy
             return None;
         }
         let format = item.get("format")?.as_str()?;
-        if !["m4b", "mp3", "mp3_chapters", "original"].contains(&format) {
+        if !["m4b", "mp3", "mp3_chapters", "original", "opus"].contains(&format) {
             return None;
         }
         let quality = oracle_quality(item.get("quality")?.as_str()?)?;
-        let encoded = format == "mp3" || format == "mp3_chapters";
-        if encoded == (quality == "original") {
+        let rate = quality.strip_suffix("-mono").unwrap_or(&quality);
+        let kbps = rate.strip_suffix('k').and_then(|k| k.parse::<u32>().ok());
+        let vbr = rate.starts_with('v');
+        let fits = match format {
+            "mp3" | "mp3_chapters" => vbr || kbps.is_some_and(|k| MP3_RATES.contains(&k)),
+            "opus" => kbps.is_some_and(|k| OPUS_RATES.contains(&k)),
+            _ => quality == "original",
+        };
+        if !fits {
             return None;
         }
         let copy = (format.to_string(), quality);

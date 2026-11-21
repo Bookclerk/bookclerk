@@ -407,7 +407,15 @@ export default function App() {
     administersNodes: session.administers_nodes,
   };
 
-  let page = <LibraryPage onLogout={onLogout} canAcquire={canAcquire} nav={nav} role={role} />;
+  let page = (
+    <LibraryPage
+      onLogout={onLogout}
+      canAcquire={canAcquire}
+      nav={nav}
+      role={role}
+      elevated={session.elevated}
+    />
+  );
 
   if (view === "accounts") {
     page = <AccountsPage onLogout={onLogout} nav={nav} role={role} />;

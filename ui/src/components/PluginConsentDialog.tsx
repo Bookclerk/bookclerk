@@ -627,8 +627,8 @@ export function PluginConsentDialog({
           >
             <p className="text-xs text-ink/55">
               {isWorkerd
-                ? "Fetch hosts are the isolate allowlist. You may add destinations the author omitted. TCP connect() is a separate grant. Undeclared public redirects never include loopback, RFC1918, or metadata."
-                : "Native guests cannot declare fetch domains. Outbound TCP uses the Bookclerk socket proxy (same policy as workerd connect()). Ambient AF_INET is denied by the nested jail."}
+                ? "The plugin's sandbox has no network of its own: every connection goes through Bookclerk, which checks it against this grant. Fetch hosts are the isolate allowlist, and you may add destinations the author omitted. TCP connect() is a separate grant. Undeclared public redirects never include loopback, private networks, or cloud metadata. Fetch hosts are checked by name, not port, so code that escaped the isolate could reach a listed host on any port."
+                : "Native guests cannot declare fetch domains. The guest's sandbox has no network of its own: outbound TCP goes through Bookclerk's socket proxy, with the same policy as workerd connect()."}
             </p>
             <select
               className="w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"

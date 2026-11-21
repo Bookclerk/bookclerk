@@ -103,8 +103,9 @@ pub use output::{
     MultiDestinationMode, OutputConfig,
 };
 pub use output_copy::{
-    copies_to_make, mp3_cbr_kbps, validate_copies, CopyError, CopyFormat, CopyQuality, OutputCopy,
-    MAX_EXTRA_COPIES, MAX_QUALITY_BYTES, MP3_CBR_KBPS,
+    copies_to_make, mp3_cbr_kbps, validate_copies, CopyError, CopyFormat, CopyQuality,
+    OpusSettings, OutputCopy, MAX_EXTRA_COPIES, MAX_QUALITY_BYTES, MP3_CBR_KBPS, OPUS_KBPS,
+    OPUS_MAIN_KBPS,
 };
 pub use overrides::{
     apply_config_updates, apply_config_updates_from_path, apply_setting_overrides,

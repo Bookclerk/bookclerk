@@ -14,6 +14,7 @@
     clippy::expect_used
 )]
 
+mod admin_controls;
 mod api;
 mod auth;
 mod branch_requests;
@@ -42,6 +43,7 @@ mod library_overrides;
 mod library_works;
 mod live;
 mod maintenance;
+mod media_capabilities;
 mod node_api;
 mod node_queue;
 mod oidc;
@@ -621,6 +623,7 @@ async fn assemble_host(
         tray_handoff: Mutex::new(None),
         deployment_runtime: std::sync::OnceLock::new(),
         node_api_tls_bound: std::sync::OnceLock::new(),
+        in_window: std::sync::OnceLock::new(),
         library_swaps: tokio::sync::watch::Sender::new(0),
         covers: Arc::new(open_cover_service(&paths.cache_dir)),
     });

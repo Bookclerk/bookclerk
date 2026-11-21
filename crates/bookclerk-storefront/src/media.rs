@@ -58,6 +58,7 @@ pub fn extension_from_content_type(content_type: &str) -> Option<&'static str> {
                 "m4a" | "mp4" => return Some(".m4a"),
                 "flac" => return Some(".flac"),
                 "ogg" | "oga" => return Some(".ogg"),
+                "opus" => return Some(".opus"),
                 "aac" => return Some(".aac"),
                 _ => {}
             }

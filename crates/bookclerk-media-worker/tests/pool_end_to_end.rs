@@ -608,3 +608,64 @@ async fn pool_reads_back_the_tags_fixup_wrote() {
         .expect("worker still serving");
     assert_eq!(again.container, bookclerk_tags::Container::Mp4);
 }
+
+/// A player's PCM comes from the confined worker, which opens no file:
+/// a whole M4B decodes, and a stream opened at a later position starts
+/// there and holds the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pool_streams_pcm_for_a_player_from_a_confined_worker() {
+    let _serial = begin_windows_confined_pool_test().await;
+    let cache = tempfile::tempdir().expect("tempdir");
+    let input = cache.path().join("book.m4b");
+    make_audiobook(&input, 3);
+    let size = std::fs::metadata(&input).expect("size").len();
+    let pool = confined_pool(1, supported_confinement());
+    assert!(pool.is_isolated(), "pool should have found the worker");
+
+    let frames = |start_ms: u64| {
+        let pool = &pool;
+        let input = input.clone();
+        async move {
+            let mut stream = pool
+                .open_pcm(size, start_ms, LocalFile(input))
+                .await
+                .expect("open pcm");
+            let header = stream.header();
+            let mut samples = 0usize;
+            while let Some(chunk) = stream.next_chunk().await {
+                samples += chunk.expect("chunk").len();
+            }
+            (header, samples / usize::from(header.channels))
+        }
+    };
+    let (whole, all) = frames(0).await;
+    assert_eq!(whole.sample_rate, 44_100);
+    assert_eq!(whole.channels, 1);
+    assert_eq!(whole.start_ms, 0);
+    assert!(
+        whole
+            .duration_ms
+            .is_some_and(|ms| (2_900..=3_100).contains(&ms)),
+        "{whole:?}"
+    );
+    assert!(
+        (44_100 * 3 - 4_096..=44_100 * 3 + 4_096).contains(&all),
+        "{all}"
+    );
+
+    let (later, rest) = frames(2_000).await;
+    assert!((1_950..=2_000).contains(&later.start_ms), "{later:?}");
+    let expected = (3_000 - usize::try_from(later.start_ms).expect("fits")) * 441 / 10;
+    assert!(rest.abs_diff(expected) <= 4_096, "{rest} vs {expected}");
+
+    let junk = cache.path().join("junk.bin");
+    std::fs::write(&junk, vec![9u8; 2048]).expect("write");
+    let err = pool
+        .open_pcm(2048, 0, LocalFile(junk))
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(err, bookclerk_media::MediaError::Native(_)),
+        "{err:?}"
+    );
+}

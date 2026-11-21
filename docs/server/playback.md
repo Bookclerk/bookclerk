@@ -7,10 +7,10 @@ calls and the rules behind them. The decisions are in the
 [Web API](api/README.md) reference with example requests and responses.
 
 > [!NOTE]
-> The web app's player uses this core (see
-> [Listen in the web app](../guide/listening.md)). The desktop player and
-> the app-compatible `/player` API are being built on it and are not in
-> this release.
+> The web app's player and the desktop window's player use this core
+> (see [Listen in the web app](../guide/listening.md)). The
+> app-compatible `/player` API is being built on it and is not in this
+> release.
 
 ## What is stored
 
@@ -89,6 +89,34 @@ of its tracks.
   so reports that overlap all count.
 - **Cross-site requests** are refused like every other cookie-signed
   write: `POST`, `PUT` and `DELETE` need the app's own `Origin`.
+
+## The desktop window
+
+The desktop window's custom scheme carries no `Range` requests, so its
+page can't stream a track to an `<audio>` element. The window has its own
+player instead, and the web app's player drives it in place of an audio
+element:
+
+1. The page opens the session and reports progress through the same
+   routes as in a browser.
+2. To play a track, the page hands its `path` to the window. The host
+   reads the track through that same stream route, in process, one
+   `Range` request per block, so each block gets the same checks: an
+   open session, this server, the patron scope and the files.
+3. A confined media worker decodes the blocks (see
+   [Audio for the desktop player](media.md#audio-for-the-desktop-player)).
+   The window changes the speed (0.5× to 3×) without changing the pitch,
+   converts the sample rate, and plays through the system's default
+   output device.
+4. The system's media controls show the book and its position and send
+   their buttons back to the page: MPRIS on Linux, the media overlay on
+   Windows and Now Playing on macOS.
+
+The window listens as the patron it is signed in as. While that patron
+is elevated to the operator, or impersonating someone from the
+elevation, the window still keeps their own listening state, because it
+is the person at the computer who is listening. Before the library has
+an Owner the window is the operator and has nothing to play as.
 
 ## Events and live updates
 

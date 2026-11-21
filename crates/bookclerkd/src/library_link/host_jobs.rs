@@ -1604,6 +1604,7 @@ fn content_type(key: &str) -> Option<String> {
             "m4b" | "m4a" | "mp4" => "audio/mp4",
             "mp3" => "audio/mpeg",
             "flac" => "audio/flac",
+            "ogg" | "oga" | "opus" => "audio/ogg",
             "pdf" => "application/pdf",
             "jpg" | "jpeg" => "image/jpeg",
             "png" => "image/png",
