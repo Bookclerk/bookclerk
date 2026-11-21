@@ -359,10 +359,17 @@ async fn intake_batches_start_complete() {
             key: "inbox/Drop/a.mp3".into(),
             signature: Some("etag-1".into()),
         });
-        let batch = create_intake_batch(store, owner.id, "node-a", "drop-1", &[member])
-            .await
-            .unwrap()
-            .unwrap();
+        let batch = create_intake_batch(
+            store,
+            &IngestBatchId::new(),
+            owner.id,
+            "node-a",
+            "drop-1",
+            &[member],
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(batch.source, IngestSource::Intake, "{name}");
         assert_eq!(batch.intake_instance.as_deref(), Some("drop-1"), "{name}");
         let members = batch_members(store, &batch.id).await.unwrap();
@@ -379,9 +386,16 @@ async fn intake_batches_start_complete() {
         // Intake bytes never count against the upload quota.
         assert_eq!(staged_bytes(store, owner.id).await.unwrap(), 0, "{name}");
         assert_eq!(
-            create_intake_batch(store, owner.id, "node-a", "", &[spec("b.mp3", 1)])
-                .await
-                .unwrap(),
+            create_intake_batch(
+                store,
+                &IngestBatchId::new(),
+                owner.id,
+                "node-a",
+                "",
+                &[spec("b.mp3", 1)],
+            )
+            .await
+            .unwrap(),
             Err(CreateRefusal::BadReference { member_no: 0 }),
             "{name}"
         );

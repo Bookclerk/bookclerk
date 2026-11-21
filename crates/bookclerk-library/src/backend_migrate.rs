@@ -34,19 +34,19 @@ use crate::entities::{
     configuration_documents, contributors, copy_grants, credits, domain_events,
     edition_acquisitions, edition_chapters, edition_copies, edition_files, edition_identifiers,
     editions, embeddings, encrypted_secrets, event_deliveries, event_outbox_stats, expressions,
-    holdings, ignored_titles, ingest_batches, ingest_members, job_secret_handoffs, job_temp_paths,
-    jobs, library_identity, library_links, link_imports, link_requests, listening_progress,
-    listing_offers, metadata_claims, node_credentials, node_enrollment_links, node_upload_sessions,
-    nodes, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
-    patron_controls, patron_scope_keys, patron_scopes, pending_joins, playback_progress,
-    playback_sessions, player_card_tokens, player_cards, player_passwords, plugin_artifacts,
-    plugin_cron_cursors, plugin_deployments, plugin_installs, plugin_instances, plugin_kv,
-    plugin_placements, plugin_schemas, plugin_versions, portal_identities, portal_sessions,
-    remote_plugin_consents, resolution_conflicts, resolution_overrides, saved_filters,
-    security_audit_events, series, series_entries, store_listings, title_request_sources,
-    title_requests, user_invites, user_preferences, user_title_state, user_work_tags, users,
-    webauthn_challenges, webauthn_credentials, window_book_parts, window_books, work_identifiers,
-    work_tags, works,
+    holdings, ignored_titles, ingest_batches, ingest_members, intake_items, job_secret_handoffs,
+    job_temp_paths, jobs, library_identity, library_links, link_imports, link_requests,
+    listening_progress, listing_offers, metadata_claims, node_credentials, node_enrollment_links,
+    node_upload_sessions, nodes, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
+    oidc_rp_states, operator_sessions, patron_controls, patron_scope_keys, patron_scopes,
+    pending_joins, playback_progress, playback_sessions, player_card_tokens, player_cards,
+    player_passwords, plugin_artifacts, plugin_cron_cursors, plugin_deployments, plugin_installs,
+    plugin_instances, plugin_kv, plugin_placements, plugin_schemas, plugin_versions,
+    portal_identities, portal_sessions, remote_plugin_consents, resolution_conflicts,
+    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
+    store_listings, title_request_sources, title_requests, user_invites, user_preferences,
+    user_title_state, user_work_tags, users, webauthn_challenges, webauthn_credentials,
+    window_book_parts, window_books, work_identifiers, work_tags, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -253,6 +253,8 @@ macro_rules! copied_entities {
         $each!(plugin_versions);
         $each!(plugin_installs);
         $each!(plugin_instances);
+        // Drop folder items, so `leave` folders are not added again.
+        $each!(intake_items);
         $each!(plugin_deployments);
         $each!(plugin_placements);
         $each!(plugin_cron_cursors);

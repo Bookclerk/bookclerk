@@ -258,6 +258,74 @@ pub enum InstancesCommand {
         /// Nested get/set/clear action.
         command: FilterCommand,
     },
+    /// Show or change whether a storage instance is a drop folder: a folder
+    /// Bookclerk watches and adds whatever lands there to the library.
+    Intake {
+        #[command(subcommand)]
+        /// Nested get/set/clear action.
+        command: IntakeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// `plugins instances intake` subcommands.
+pub enum IntakeCommand {
+    /// Show whether a storage instance is a drop folder, and its settings.
+    Get {
+        /// Plugin alias, PluginKey, or plugin instance id of the storage
+        /// instance.
+        instance: String,
+    },
+    /// Make a storage instance a drop folder, or change a drop folder's
+    /// settings. Options left out keep their current value (or the
+    /// default, for a new drop folder). Turning a destination into a drop
+    /// folder needs the instance undeployed on every node.
+    Set {
+        /// Plugin alias, PluginKey, or plugin instance id of the storage
+        /// instance.
+        instance: String,
+        /// User id of the patron who holds every book the folder adds.
+        #[arg(long, value_name = "USER_ID", conflicts_with = "subfolder")]
+        patron: Option<i64>,
+        /// Each top-level folder is named after a patron's username and
+        /// holds that patron's books.
+        #[arg(long)]
+        subfolder: bool,
+        /// Seconds an item must stay unchanged before it is added (5 to
+        /// 86400; default 60).
+        #[arg(long, value_name = "SECONDS")]
+        settle_seconds: Option<u32>,
+        /// Seconds between two full listings of the folder (30 to 86400;
+        /// default 300).
+        #[arg(long, value_name = "SECONDS")]
+        scan_interval_seconds: Option<u32>,
+        /// What happens to an item once it is added: `move` (to
+        /// `_imported/`, the default), `delete` or `leave`.
+        #[arg(long, value_name = "ACTION")]
+        after_ingest: Option<String>,
+        /// Extra file name pattern to ignore, with `*` and `?` (repeatable;
+        /// replaces the current list).
+        #[arg(long, value_name = "PATTERN", conflicts_with = "clear_ignore")]
+        ignore: Vec<String>,
+        /// Remove every extra ignore pattern (the built-in list still
+        /// applies).
+        #[arg(long)]
+        clear_ignore: bool,
+        /// With `--after-ingest move`, delete `_imported` day folders older
+        /// than this many days (1 to 3650).
+        #[arg(long, value_name = "DAYS", conflicts_with = "no_prune")]
+        prune_imported_days: Option<u16>,
+        /// Keep `_imported` day folders: turn pruning off.
+        #[arg(long)]
+        no_prune: bool,
+    },
+    /// Make a drop folder a destination again. Needs the instance
+    /// undeployed on every node.
+    Clear {
+        /// Plugin alias, PluginKey, or plugin instance id of the storage
+        /// instance.
+        instance: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2453,6 +2521,7 @@ async fn run_instances(
             })
         }
         InstancesCommand::Filter { command } => run_filter(store, command, format).await,
+        InstancesCommand::Intake { command } => run_intake(store, command, format).await,
         InstancesCommand::Delete { instance } => {
             let id = PluginInstanceId::parse(&instance)?;
             delete_plugin_instance(store, &cli_actor(), &id).await?;
@@ -2464,6 +2533,117 @@ async fn run_instances(
                 },
             )
         }
+    }
+}
+
+/// `plugins instances intake` actions.
+async fn run_intake(
+    store: &LibraryStore,
+    command: IntakeCommand,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    use bookclerk_config::{AfterIngest, IntakeAttribution, IntakeSettings};
+    use bookclerk_library::control_plane::{
+        intake_settings, load_intake_role, set_intake, set_intake_at,
+    };
+    let (instance, settings) = match command {
+        IntakeCommand::Get { instance } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let settings = intake_settings(store, instance.id.as_str()).await?;
+            (instance, settings)
+        }
+        IntakeCommand::Set {
+            instance,
+            patron,
+            subfolder,
+            settle_seconds,
+            scan_interval_seconds,
+            after_ingest,
+            ignore,
+            clear_ignore,
+            prune_imported_days,
+            no_prune,
+        } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let read = load_intake_role(store, instance.id.as_str()).await?;
+            // The edit applies only to the revision it was made from.
+            let revision = read.as_ref().map_or(0, |document| document.revision);
+            let current = read.and_then(|document| document.body.intake);
+            let mut settings = current.unwrap_or(IntakeSettings {
+                patron: None,
+                ..IntakeSettings::for_patron(1)
+            });
+            if subfolder {
+                settings.attribute_to = IntakeAttribution::Subfolder;
+                settings.patron = None;
+            }
+            if let Some(patron) = patron {
+                settings.attribute_to = IntakeAttribution::Owner;
+                settings.patron = Some(patron);
+            }
+            if let Some(seconds) = settle_seconds {
+                settings.settle_seconds = seconds;
+            }
+            if let Some(seconds) = scan_interval_seconds {
+                settings.scan_interval_seconds = seconds;
+            }
+            if let Some(action) = after_ingest {
+                settings.after_ingest = AfterIngest::parse(action.trim()).ok_or_else(|| {
+                    anyhow::anyhow!("--after-ingest is move, delete or leave, not `{action}`")
+                })?;
+            }
+            if clear_ignore {
+                settings.ignore.clear();
+            } else if !ignore.is_empty() {
+                settings.ignore = ignore;
+            }
+            if no_prune {
+                settings.prune_imported_days = None;
+            } else if prune_imported_days.is_some() {
+                settings.prune_imported_days = prune_imported_days;
+            }
+            let stored = set_intake_at(
+                store,
+                &cli_actor(),
+                &instance.id,
+                Some(settings),
+                Some(revision),
+            )
+            .await?;
+            (instance, stored.body.intake)
+        }
+        IntakeCommand::Clear { instance } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let stored = set_intake(store, &cli_actor(), &instance.id, None).await?;
+            (instance, stored.body.intake)
+        }
+    };
+    emit(
+        format,
+        &json!({ "plugin_instance_id": instance.id.to_string(), "intake": settings }),
+        || print_intake(&instance.id, settings.as_ref()),
+    )
+}
+
+/// Prints whether a storage instance is a drop folder, and its settings.
+fn print_intake(instance: &PluginInstanceId, settings: Option<&bookclerk_config::IntakeSettings>) {
+    let Some(settings) = settings else {
+        println!("storage instance {instance} is a destination, not a drop folder");
+        return;
+    };
+    println!("storage instance {instance} is a drop folder:");
+    match settings.patron {
+        Some(patron) => println!("  books held by:  user {patron}"),
+        None => println!("  books held by:  the patron named by each top-level folder"),
+    }
+    println!("  settle:         {} s", settings.settle_seconds);
+    println!("  listing every:  {} s", settings.scan_interval_seconds);
+    println!("  after ingest:   {}", settings.after_ingest.as_str());
+    if let Some(days) = settings.prune_imported_days {
+        println!("  prune imported: after {days} days");
+    }
+    if !settings.ignore.is_empty() {
+        println!("  also ignore:    {}", settings.ignore.join(", "));
     }
 }
 
@@ -3117,6 +3297,142 @@ mod filter_tests {
             .await
             .unwrap()
             .takes_everything());
+    }
+
+    #[tokio::test]
+    async fn a_drop_folder_is_set_changed_shown_and_cleared() {
+        use super::{run_intake, IntakeCommand};
+        use bookclerk_config::{AfterIngest, IntakeAttribution};
+        use bookclerk_library::control_plane::intake_settings;
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let instance = create_plugin_instance(&store, &cli_actor(), "local", "Drop")
+            .await
+            .unwrap();
+        let reader = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Reader"), None)
+            .await
+            .unwrap()
+            .id;
+        let id = instance.id.to_string();
+        let set = |patron, subfolder, after: Option<&str>| IntakeCommand::Set {
+            instance: id.clone(),
+            patron,
+            subfolder,
+            settle_seconds: Some(30),
+            scan_interval_seconds: Some(600),
+            after_ingest: after.map(str::to_string),
+            ignore: vec!["*.nfo".into()],
+            clear_ignore: false,
+            prune_imported_days: Some(14),
+            no_prune: false,
+        };
+        run_intake(&store, set(Some(reader), false, None), OutputFormat::Text)
+            .await
+            .unwrap();
+        let stored = intake_settings(&store, &id).await.unwrap().unwrap();
+        assert_eq!(stored.patron, Some(reader));
+        assert_eq!(stored.settle_seconds, 30);
+        assert_eq!(stored.scan_interval_seconds, 600);
+        assert_eq!(stored.ignore, ["*.nfo"]);
+        assert_eq!(stored.prune_imported_days, Some(14));
+
+        run_intake(&store, set(None, true, Some("leave")), OutputFormat::Json)
+            .await
+            .unwrap_err();
+        // `leave` with pruning is refused; nothing changed.
+        assert_eq!(intake_settings(&store, &id).await.unwrap().unwrap(), stored);
+        run_intake(
+            &store,
+            IntakeCommand::Set {
+                instance: id.clone(),
+                patron: None,
+                subfolder: true,
+                settle_seconds: None,
+                scan_interval_seconds: None,
+                after_ingest: Some("delete".into()),
+                ignore: Vec::new(),
+                clear_ignore: false,
+                prune_imported_days: None,
+                no_prune: false,
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap_err();
+        assert!(run_intake(
+            &store,
+            set(None, false, Some("sideways")),
+            OutputFormat::Text
+        )
+        .await
+        .is_err());
+        run_intake(&store, set(None, true, Some("move")), OutputFormat::Text)
+            .await
+            .unwrap();
+        let moved = intake_settings(&store, &id).await.unwrap().unwrap();
+        assert_eq!(moved.attribute_to, IntakeAttribution::Subfolder);
+        assert_eq!(moved.patron, None);
+        assert_eq!(moved.after_ingest, AfterIngest::Move);
+
+        // The last extra pattern and pruning can be turned off, and `leave`
+        // set in the same command.
+        run_intake(
+            &store,
+            IntakeCommand::Set {
+                instance: id.clone(),
+                patron: None,
+                subfolder: false,
+                settle_seconds: None,
+                scan_interval_seconds: None,
+                after_ingest: Some("leave".into()),
+                ignore: Vec::new(),
+                clear_ignore: true,
+                prune_imported_days: None,
+                no_prune: true,
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        let cleared = intake_settings(&store, &id).await.unwrap().unwrap();
+        assert!(cleared.ignore.is_empty());
+        assert_eq!(cleared.prune_imported_days, None);
+        assert_eq!(cleared.after_ingest, AfterIngest::Leave);
+
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            run_intake(
+                &store,
+                IntakeCommand::Get {
+                    instance: id.clone(),
+                },
+                format,
+            )
+            .await
+            .unwrap();
+        }
+        run_intake(
+            &store,
+            IntakeCommand::Clear {
+                instance: id.clone(),
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        assert!(intake_settings(&store, &id).await.unwrap().is_none());
+        run_intake(
+            &store,
+            IntakeCommand::Get {
+                instance: id.clone(),
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
     }
 }
 

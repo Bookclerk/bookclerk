@@ -1645,7 +1645,19 @@ impl StorageBackend for S3Backend {
         if let Some(span) = span {
             req = req.range(s3_range_header(span));
         }
+        // The bytes must come from the object the probe describes: a
+        // replacement between the two requests would otherwise be read
+        // under the old object's identity.
+        if let Some(version_id) = probe.version_id.as_deref() {
+            req = req.version_id(version_id);
+        }
+        if let Some(etag) = probe.etag.as_deref() {
+            req = req.if_match(etag);
+        }
         let out = req.send().await.map_err(|err| {
+            if refused_precondition(&format!("{err:?}")) {
+                return StorageError::Conflict(format!("{key}: changed while it was opened"));
+            }
             let msg = err.to_string();
             if msg.contains("NoSuchKey") || msg.contains("404") || msg.contains("NotFound") {
                 StorageError::NotFound(key.into())

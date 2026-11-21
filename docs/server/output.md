@@ -24,7 +24,9 @@ files.
 | Cloudflare R2 | `r2` (optional) | Sealed R2 keys | No, until `bookclerk plugins deploy r2` |
 
 Any other plugin with a `storage` entrypoint is a destination too, and an
-acquire writes to it like the built-in ones:
+acquire writes to it like the built-in ones. The exception is a storage
+instance made a [drop folder](drop-folders.md): Bookclerk reads books from
+it and never writes acquired books into it.
 
 - Each deployed plugin instance is its own destination, named by its
   plugin instance id. That id is what upload records and `edition_files`

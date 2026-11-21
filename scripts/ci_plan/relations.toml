@@ -211,6 +211,8 @@ paths = [
     "fuzz/oracles/cache_settings.rs",
     "fuzz/corpus/destination_filter/**",
     "fuzz/oracles/destination_filter.rs",
+    "fuzz/corpus/intake_settings/**",
+    "fuzz/oracles/intake_settings.rs",
     "fuzz/corpus/destination_id/**",
     "fuzz/oracles/destination_id.rs",
     "fuzz/corpus/output_copies/**",
@@ -245,6 +247,14 @@ paths = [
     "fuzz/oracles/s3_event.rs",
     "fuzz/corpus/r2_event/**",
     "fuzz/oracles/r2_event.rs",
+]
+
+[[test_input]]
+package = "bookclerk-intake"
+# The intake_items oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/intake_items/**",
+    "fuzz/oracles/intake_items.rs",
 ]
 
 [[test_input]]

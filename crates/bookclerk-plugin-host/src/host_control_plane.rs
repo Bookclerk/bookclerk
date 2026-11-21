@@ -342,6 +342,7 @@ impl HostControlPlane {
             let prepared =
                 prepare_open_for_instance(&self.store, &files_dir, plugin, &row.instance.id)
                     .await?;
+            let role = crate::host::storage_role(&self.store, row.instance.id.as_str()).await?;
             let spawned = crate::host::spawn_deployed_storage(
                 plugin,
                 &self.config,
@@ -350,7 +351,7 @@ impl HostControlPlane {
             )
             .await?;
             registry
-                .publish_spawned(row.instance.id.as_str(), spawned)
+                .publish_spawned(row.instance.id.as_str(), spawned, role)
                 .map_err(crate::PluginError::message)?;
         }
         Ok(registry)
