@@ -777,6 +777,63 @@ impl From<plugin_capnp::FetchedFileRole> for FetchedFileRole {
     }
 }
 
+/// What a storefront's chapter markers mark (`PlainFetch.chapterKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChapterKind {
+    /// The storefront does not say.
+    #[default]
+    Unknown,
+    /// Literary chapters: what a listener would call the book's chapters.
+    Chapters,
+    /// Track or part boundaries: where the store cut its files, which need
+    /// not fall on a chapter.
+    Tracks,
+}
+
+impl ChapterKind {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Chapters => "chapters",
+            Self::Tracks => "tracks",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "unknown" => Some(Self::Unknown),
+            "chapters" => Some(Self::Chapters),
+            "tracks" => Some(Self::Tracks),
+            _ => None,
+        }
+    }
+}
+
+impl From<ChapterKind> for plugin_capnp::ChapterKind {
+    fn from(value: ChapterKind) -> Self {
+        match value {
+            ChapterKind::Unknown => Self::Unknown,
+            ChapterKind::Chapters => Self::Chapters,
+            ChapterKind::Tracks => Self::Tracks,
+        }
+    }
+}
+
+impl From<plugin_capnp::ChapterKind> for ChapterKind {
+    fn from(value: plugin_capnp::ChapterKind) -> Self {
+        match value {
+            plugin_capnp::ChapterKind::Unknown => Self::Unknown,
+            plugin_capnp::ChapterKind::Chapters => Self::Chapters,
+            plugin_capnp::ChapterKind::Tracks => Self::Tracks,
+        }
+    }
+}
+
 /// Catalog search ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1041,6 +1098,63 @@ impl From<plugin_capnp::Abridgement> for Abridgement {
     }
 }
 
+/// Whether an edition is marked as explicit (adult) content. A patron scope
+/// can hide explicit editions; `unknown` and `clean` editions stay visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Explicitness {
+    /// The storefront or file did not say.
+    #[default]
+    Unknown,
+    /// Marked as not explicit.
+    Clean,
+    /// Marked as explicit (adult) content.
+    Explicit,
+}
+
+impl Explicitness {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Clean => "clean",
+            Self::Explicit => "explicit",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "unknown" => Some(Self::Unknown),
+            "clean" => Some(Self::Clean),
+            "explicit" => Some(Self::Explicit),
+            _ => None,
+        }
+    }
+}
+
+impl From<Explicitness> for plugin_capnp::Explicitness {
+    fn from(value: Explicitness) -> Self {
+        match value {
+            Explicitness::Unknown => Self::Unknown,
+            Explicitness::Clean => Self::Clean,
+            Explicitness::Explicit => Self::Explicit,
+        }
+    }
+}
+
+impl From<plugin_capnp::Explicitness> for Explicitness {
+    fn from(value: plugin_capnp::Explicitness) -> Self {
+        match value {
+            plugin_capnp::Explicitness::Unknown => Self::Unknown,
+            plugin_capnp::Explicitness::Clean => Self::Clean,
+            plugin_capnp::Explicitness::Explicit => Self::Explicit,
+        }
+    }
+}
+
 /// A field of a `MetadataFileRecord`. Dialects declare in the manifest which
 /// fields their format carries; a parsed record lists the ones its file
 /// states, and a render request lists the ones to write.
@@ -1078,6 +1192,8 @@ pub enum MetadataField {
     Chapters,
     /// `MetadataFileRecord.durationMs`.
     Duration,
+    /// `MetadataFileRecord.explicitness`.
+    Explicitness,
 }
 
 impl MetadataField {
@@ -1100,6 +1216,7 @@ impl MetadataField {
             Self::Series => "series",
             Self::Chapters => "chapters",
             Self::Duration => "duration",
+            Self::Explicitness => "explicitness",
         }
     }
 
@@ -1122,6 +1239,7 @@ impl MetadataField {
             "series" => Some(Self::Series),
             "chapters" => Some(Self::Chapters),
             "duration" => Some(Self::Duration),
+            "explicitness" => Some(Self::Explicitness),
             _ => None,
         }
     }
@@ -1145,6 +1263,7 @@ impl From<MetadataField> for plugin_capnp::MetadataField {
             MetadataField::Series => Self::Series,
             MetadataField::Chapters => Self::Chapters,
             MetadataField::Duration => Self::Duration,
+            MetadataField::Explicitness => Self::Explicitness,
         }
     }
 }
@@ -1167,6 +1286,7 @@ impl From<plugin_capnp::MetadataField> for MetadataField {
             plugin_capnp::MetadataField::Series => Self::Series,
             plugin_capnp::MetadataField::Chapters => Self::Chapters,
             plugin_capnp::MetadataField::Duration => Self::Duration,
+            plugin_capnp::MetadataField::Explicitness => Self::Explicitness,
         }
     }
 }
@@ -1993,6 +2113,9 @@ pub struct ScanBook {
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub categories: Option<String>,
+    /// Whether the storefront marks the edition explicit (adult) content.
+    #[serde(default)]
+    pub explicitness: Explicitness,
 }
 
 /// One page of an account's scan pass, the result of `ContentSource.scan`.
@@ -2192,6 +2315,10 @@ pub struct PlainFetch {
         with = "crate::json_bytes::opt_b64"
     )]
     pub refreshed_credentials: Option<Vec<u8>>,
+    /// What `chapters` marks. The host ranks literary chapters above track
+    /// boundaries when it decides an edition's chapters.
+    #[serde(default)]
+    pub chapter_kind: ChapterKind,
 }
 
 /// Success payload of `ContentSource.listAccounts`.
@@ -2461,6 +2588,9 @@ pub struct CatalogHit {
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank_hint: Option<u32>,
+    /// Whether the storefront marks the edition explicit (adult) content.
+    #[serde(default)]
+    pub explicitness: Explicitness,
 }
 
 /// Success payload of the catalog list methods.
@@ -3329,6 +3459,10 @@ pub struct MetadataFileRecord {
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Whether the edition is explicit (adult) content; `unknown` when the
+    /// file does not say.
+    #[serde(default)]
+    pub explicitness: Explicitness,
 }
 
 /// Params of `MetadataFiles.parse`.
@@ -4950,6 +5084,7 @@ pub fn write_scan_book(
     if let Some(value) = &v.categories {
         b.set_categories(value);
     }
+    b.set_explicitness(v.explicitness.into());
     Ok(())
 }
 
@@ -4991,6 +5126,7 @@ pub fn read_scan_book(r: plugin_capnp::scan_book::Reader<'_>) -> capnp::Result<S
         published_at: opt_text(r.get_published_at()?)?,
         purchased_at: opt_text(r.get_purchased_at()?)?,
         categories: opt_text(r.get_categories()?)?,
+        explicitness: r.get_explicitness()?.into(),
     })
 }
 
@@ -5266,6 +5402,7 @@ pub fn write_plain_fetch(
     if let Some(value) = &v.refreshed_credentials {
         b.set_refreshed_credentials(value);
     }
+    b.set_chapter_kind(v.chapter_kind.into());
     Ok(())
 }
 
@@ -5289,6 +5426,7 @@ pub fn read_plain_fetch(r: plugin_capnp::plain_fetch::Reader<'_>) -> capnp::Resu
             .collect::<capnp::Result<Vec<_>>>()?,
         pdf_url: opt_text(r.get_pdf_url()?)?,
         refreshed_credentials: opt_data(r.get_refreshed_credentials()?),
+        chapter_kind: r.get_chapter_kind()?.into(),
     })
 }
 
@@ -5713,6 +5851,7 @@ pub fn write_catalog_hit(
     if let Some(value) = v.rank_hint {
         b.set_rank_hint(value);
     }
+    b.set_explicitness(v.explicitness.into());
     Ok(())
 }
 
@@ -5761,6 +5900,7 @@ pub fn read_catalog_hit(r: plugin_capnp::catalog_hit::Reader<'_>) -> capnp::Resu
             .collect::<capnp::Result<Vec<_>>>()?,
         parent_product_id: opt_text(r.get_parent_product_id()?)?,
         rank_hint: opt_num(r.get_rank_hint()),
+        explicitness: r.get_explicitness()?.into(),
     })
 }
 
@@ -7968,6 +8108,7 @@ pub fn write_metadata_file_record(
     if let Some(value) = v.duration_ms {
         b.set_duration_ms(value);
     }
+    b.set_explicitness(v.explicitness.into());
     Ok(())
 }
 
@@ -8021,6 +8162,7 @@ pub fn read_metadata_file_record(
             .map(|item| read_metadata_chapter(item))
             .collect::<capnp::Result<Vec<_>>>()?,
         duration_ms: opt_num(r.get_duration_ms()),
+        explicitness: r.get_explicitness()?.into(),
     })
 }
 

@@ -310,6 +310,12 @@ FETCHED_FILE_ROLES: tuple[str, ...] = ("unspecified", "part", "whole", "cover")
 Ordinal-ordered ``FetchedFileRole`` wire names (index = Cap'n Proto ordinal).
 """
 
+CHAPTER_KINDS: tuple[str, ...] = ("unknown", "chapters", "tracks")
+"""What a storefront's chapter markers mark (`PlainFetch.chapterKind`).
+
+Ordinal-ordered ``ChapterKind`` wire names (index = Cap'n Proto ordinal).
+"""
+
 CATALOG_SORTS: tuple[str, ...] = ("relevance", "popularity", "rating", "title", "author")
 """Catalog search ordering.
 
@@ -334,7 +340,14 @@ ABRIDGEMENTS: tuple[str, ...] = ("unknown", "unabridged", "abridged")
 Ordinal-ordered ``Abridgement`` wire names (index = Cap'n Proto ordinal).
 """
 
-METADATA_FIELDS: tuple[str, ...] = ("title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration")
+EXPLICITNESSS: tuple[str, ...] = ("unknown", "clean", "explicit")
+"""Whether an edition is marked as explicit (adult) content. A patron scope
+can hide explicit editions; `unknown` and `clean` editions stay visible.
+
+Ordinal-ordered ``Explicitness`` wire names (index = Cap'n Proto ordinal).
+"""
+
+METADATA_FIELDS: tuple[str, ...] = ("title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration", "explicitness")
 """A field of a `MetadataFileRecord`. Dialects declare in the manifest which
 fields their format carries; a parsed record lists the ones its file
 states, and a render request lists the ones to write.
@@ -479,10 +492,12 @@ __all__ = [
     "CREDIT_ROLES",
     "CREDIT_LEVELS",
     "FETCHED_FILE_ROLES",
+    "CHAPTER_KINDS",
     "CATALOG_SORTS",
     "CATALOG_FIELDS",
     "PRICE_LOOKUPS",
     "ABRIDGEMENTS",
+    "EXPLICITNESSS",
     "METADATA_FIELDS",
     "NOTIFICATION_SEVERITYS",
     "NOTIFICATION_AUDIENCES",

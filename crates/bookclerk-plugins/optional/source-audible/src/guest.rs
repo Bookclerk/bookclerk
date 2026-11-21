@@ -684,6 +684,7 @@ pub async fn guest_fetch_title(
             .into_iter()
             .map(|(title, start_ms)| bookclerk_plugin_sdk::ChapterMarker { title, start_ms })
             .collect(),
+        chapter_kind: bookclerk_plugin_sdk::ChapterKind::Chapters,
         pdf_url: downloaded.pdf_url,
         refreshed_credentials: refreshed.hand_back(credentials),
     })

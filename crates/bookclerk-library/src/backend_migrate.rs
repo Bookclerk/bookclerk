@@ -29,15 +29,16 @@ use crate::control_plane::{load_artifact_blob, put_artifact_blob};
 use crate::entities::{
     account_credential_revisions, account_downloads, account_links, account_pace,
     account_scan_state, account_shares, accounts, admin_controls, bookclerk_receipts, bookmarks,
-    books, catalog_listing_optouts, catalog_lookups, claim_tickets, clerk_links,
-    configuration_audit, configuration_changes, configuration_documents, contributors, copy_grants,
-    credits, domain_events, edition_acquisitions, edition_copies, edition_files,
-    edition_identifiers, editions, embeddings, encrypted_secrets, event_deliveries,
-    event_outbox_stats, expressions, holdings, ignored_titles, ingest_batches, ingest_members,
-    job_secret_handoffs, job_temp_paths, jobs, library_identity, library_links, link_imports,
-    link_requests, listening_progress, listing_offers, node_credentials, node_enrollment_links,
-    node_upload_sessions, nodes, notifications, notify_deliveries, notify_destinations,
-    notify_inbox, notify_patron_offers, notify_patron_prefs, notify_patron_targets, notify_routes,
+    books, catalog_listing_optouts, catalog_lookups, chapter_list_entries, chapter_lists,
+    claim_tickets, clerk_links, configuration_audit, configuration_changes,
+    configuration_documents, contributors, copy_grants, credits, domain_events,
+    edition_acquisitions, edition_chapters, edition_copies, edition_files, edition_identifiers,
+    editions, embeddings, encrypted_secrets, event_deliveries, event_outbox_stats, expressions,
+    holdings, ignored_titles, ingest_batches, ingest_members, job_secret_handoffs, job_temp_paths,
+    jobs, library_identity, library_links, link_imports, link_requests, listening_progress,
+    listing_offers, metadata_claims, node_credentials, node_enrollment_links, node_upload_sessions,
+    nodes, notifications, notify_deliveries, notify_destinations, notify_inbox,
+    notify_patron_offers, notify_patron_prefs, notify_patron_targets, notify_routes,
     oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
     patron_controls, patron_scope_keys, patron_scopes, pending_joins, playback_progress,
     playback_sessions, player_card_tokens, player_cards, player_passwords, plugin_artifacts,
@@ -211,6 +212,11 @@ macro_rules! copied_entities {
         $each!(edition_files);
         $each!(edition_acquisitions);
         $each!(edition_copies);
+        // A list before the claims and the resolution that name it.
+        $each!(chapter_lists);
+        $each!(chapter_list_entries);
+        $each!(metadata_claims);
+        $each!(edition_chapters);
         $each!(ignored_titles);
         $each!(saved_filters);
         $each!(claim_tickets);
@@ -824,6 +830,7 @@ mod tests {
                 value: "Kids".into(),
                 effect: RuleEffect::Include,
             }],
+            ..Default::default()
         };
         let default_scope = set_default_patron_scope(&source, &actor, kids.clone())
             .await

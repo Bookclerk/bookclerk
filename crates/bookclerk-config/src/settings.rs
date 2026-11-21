@@ -101,8 +101,9 @@ pub struct AuthConfig {
     /// Where this install keeps the library's data-encryption key
     /// (`[auth].key_store`). Unset means the host's default: the OS keychain
     /// for the desktop app, the `master.key` file for the daemon and CLI.
-    /// Set, it is required: a keychain that can't be reached is an error
-    /// rather than a fallback to the file.
+    /// Set to `keychain`, it is required: a keychain that can't be reached
+    /// is an error rather than a fallback to the file. `systemd-creds`
+    /// always falls back to the file when the key can't be sealed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_store: Option<KeyStoreKind>,
     /// Optional upstream OIDC/OAuth identity broker (`[auth.oidc]`).
@@ -112,7 +113,7 @@ pub struct AuthConfig {
 
 /// Where an install keeps the library's data-encryption key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum KeyStoreKind {
     /// `{files_dir}/master.key` holds the key itself (`BCK1`, or `BCK2`
     /// under the auth password).
@@ -120,15 +121,20 @@ pub enum KeyStoreKind {
     /// The OS keychain (Keychain Services, Credential Manager or Secret
     /// Service) holds the key; `master.key` only names the item (`BCK3`).
     Keychain,
+    /// `systemd-creds` seals the key to this machine (its TPM where there
+    /// is one) and the daemon's user, or the service unit hands it in;
+    /// `master.key` only names the item (`BCK4`). For headless Linux.
+    SystemdCreds,
 }
 
 impl KeyStoreKind {
-    /// The setting's spelling: `file` or `keychain`.
+    /// The setting's spelling: `file`, `keychain` or `systemd-creds`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::File => "file",
             Self::Keychain => "keychain",
+            Self::SystemdCreds => "systemd-creds",
         }
     }
 }
@@ -140,8 +146,9 @@ impl std::str::FromStr for KeyStoreKind {
         match s.trim() {
             "file" => Ok(Self::File),
             "keychain" => Ok(Self::Keychain),
+            "systemd-creds" => Ok(Self::SystemdCreds),
             other => Err(format!(
-                "unknown key store `{other}` (expected `file` or `keychain`)"
+                "unknown key store `{other}` (expected `file`, `keychain` or `systemd-creds`)"
             )),
         }
     }

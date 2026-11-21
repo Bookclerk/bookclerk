@@ -88,6 +88,7 @@ use zeroize::Zeroizing;
 use super::api::{link_json, shared_link_json};
 use crate::api::AppState;
 use crate::auth::UserCaller;
+use crate::clerk_link::requests::ClerkRequestFrom;
 use crate::node_api::branch::no_store;
 use crate::node_api::branch::require_branch_admin;
 
@@ -1797,13 +1798,23 @@ pub struct WindowEditionView {
     /// hold.
     #[schema(example = true)]
     pub yours: bool,
-    /// The library's own work id to ask it for this edition with
+    /// How to ask the library for a copy of this edition
     /// (`POST /api/config/clerk/request`): set when this install holds a
-    /// card for the library, the library holds no copy, and one of its
-    /// branches lists it. Absent otherwise.
+    /// card for the library and the library holds no copy, while one of
+    /// its branches lists it (`from` is `branch`) or one of its own store
+    /// accounts holds it (`from` is `library`). Absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<WindowRequestView>,
+}
+
+/// How a clerk asks a library for a copy of one edition in [`WindowBooks`].
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct WindowRequestView {
+    /// The library's own work id to ask for.
     #[schema(example = "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b")]
-    pub requestable_work: Option<String>,
+    pub work_id: String,
+    /// Where the copy would come from.
+    pub from: ClerkRequestFrom,
 }
 
 /// One work in [`WindowBooks`]: every edition its libraries hold for the person.
@@ -1886,11 +1897,22 @@ pub async fn get_join_window(
                 .into_iter()
                 .map(|held| {
                     let edition = held.edition;
-                    let requestable_work = (edition.availability
-                        == bookclerk_node_proto::Availability::Reachable
-                        && carded.contains(held.parent_library_id.as_str())
-                        && !held.work_ref.starts_with("edition-"))
-                    .then_some(held.work_ref);
+                    // A work the library knows by edition only cannot be
+                    // asked for by work.
+                    let askable = carded.contains(held.parent_library_id.as_str())
+                        && !held.work_ref.starts_with("edition-");
+                    let from = match edition.availability {
+                        bookclerk_node_proto::Availability::Reachable => {
+                            Some(ClerkRequestFrom::Branch)
+                        }
+                        bookclerk_node_proto::Availability::Owned => {
+                            held.copy.is_none().then_some(ClerkRequestFrom::Library)
+                        }
+                    };
+                    let request = from.filter(|_| askable).map(|from| WindowRequestView {
+                        work_id: held.work_ref.clone(),
+                        from,
+                    });
                     let meta = edition.metadata;
                     WindowEditionView {
                         library_id: held.parent_library_id,
@@ -1914,7 +1936,7 @@ pub async fn get_join_window(
                         series_index: meta.series_index,
                         length_minutes: meta.length_minutes,
                         yours: held.yours,
-                        requestable_work,
+                        request,
                     }
                 })
                 .collect(),

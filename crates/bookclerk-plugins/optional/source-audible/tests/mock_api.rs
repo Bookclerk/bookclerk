@@ -169,7 +169,8 @@ async fn scan_account_returns_one_row_per_library_title() {
 #[tokio::test]
 async fn scan_rows_carry_structured_records() {
     use bookclerk_plugin_sdk::{
-        Abridgement, CreditRole, ExpressionKind, IdentifierScheme, MediaKind, WorkKind,
+        Abridgement, CreditRole, Explicitness, ExpressionKind, IdentifierScheme, MediaKind,
+        WorkKind,
     };
 
     let server = MockServer::start().await;
@@ -182,6 +183,7 @@ async fn scan_rows_carry_structured_records() {
     book["authors"] = serde_json::json!([{"name": "Brandon Sanderson"}, {"name": " "}]);
     book["isbn"] = serde_json::json!("9781427209955");
     book["is_abridged"] = serde_json::json!(false);
+    book["is_adult_product"] = serde_json::json!(true);
     book["language"] = serde_json::json!("english");
     book["series"] = serde_json::json!([
         {"asin": "B0SERIES1", "title": "Mistborn", "sequence": "1"},
@@ -208,6 +210,7 @@ async fn scan_rows_carry_structured_records() {
     assert_eq!(episode.media_kind, MediaKind::Audio);
     assert_eq!(episode.parent_product_id.as_deref(), Some("B0SHOW"));
     assert_eq!(episode.abridgement, Abridgement::Unknown);
+    assert_eq!(episode.explicitness, Explicitness::Unknown);
 
     let book = &rows[1];
     assert_eq!(book.work_kind, WorkKind::Book);
@@ -215,6 +218,7 @@ async fn scan_rows_carry_structured_records() {
     assert_eq!(book.media_kind, MediaKind::Audio);
     assert_eq!(book.parent_product_id, None);
     assert_eq!(book.abridgement, Abridgement::Unabridged);
+    assert_eq!(book.explicitness, Explicitness::Explicit);
     assert_eq!(book.language.as_deref(), Some("english"));
     let authors: Vec<&str> = book
         .credits

@@ -12,7 +12,7 @@
  *
  * A key the file holds is a field it states, even when its value is
  * `null` or empty. `abridged: false` reads as unabridged, as Audiobookshelf
- * treats it. Rendering keeps every key it does not own, in place, and
+ * treats it, and `explicit: false` as clean. Rendering keeps every key it does not own, in place, and
  * writes the file with two-space indentation as Audiobookshelf does.
  */
 
@@ -113,12 +113,13 @@ function readChapters(value: unknown): MetadataChapter[] {
 }
 
 /**
- * Reads `abridged`, a boolean or the strings `"true"` and `"false"`.
+ * Reads a flag (`abridged`, `explicit`): a boolean or the strings `"true"`
+ * and `"false"`.
  *
  * @param value - The file's value.
  * @returns The flag, or `undefined` for anything else.
  */
-function readAbridged(value: unknown): boolean | undefined {
+function readFlag(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (value === "true") return true;
   if (value === "false") return false;
@@ -151,7 +152,8 @@ export function parseAbsJson(bytes: Uint8Array): MetadataFileRecord {
   }
   if (has("genres")) out.labels("genres", get("genres"));
   if (has("tags")) out.labels("tags", get("tags"));
-  if (has("abridged")) out.abridged(readAbridged(get("abridged")));
+  if (has("abridged")) out.abridged(readFlag(get("abridged")));
+  if (has("explicit")) out.explicit(readFlag(get("explicit")));
   if (has("isbn")) out.identifier("isbn", get("isbn"));
   if (has("asin")) out.identifier("asin", get("asin"));
   if (has("authors")) out.credits("author", get("authors"));
@@ -325,6 +327,13 @@ export function renderAbsJson(
           file,
           "abridged",
           record.abridgement === "unknown" ? undefined : record.abridgement === "abridged",
+        );
+        break;
+      case "explicitness":
+        put(
+          file,
+          "explicit",
+          record.explicitness === "unknown" ? undefined : record.explicitness === "explicit",
         );
         break;
       case "identifiers":

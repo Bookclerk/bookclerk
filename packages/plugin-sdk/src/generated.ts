@@ -28,10 +28,12 @@ import type {
   CreditRole,
   CreditLevel,
   FetchedFileRole,
+  ChapterKind,
   CatalogSort,
   CatalogField,
   PriceLookup,
   Abridgement,
+  Explicitness,
   MetadataField,
   NotificationSeverity,
   NotificationAudience,
@@ -60,10 +62,12 @@ export type {
   CreditRole,
   CreditLevel,
   FetchedFileRole,
+  ChapterKind,
   CatalogSort,
   CatalogField,
   PriceLookup,
   Abridgement,
+  Explicitness,
   MetadataField,
   NotificationSeverity,
   NotificationAudience,
@@ -2559,6 +2563,8 @@ export interface ScanBook {
    * Omitted when absent (wire zero value).
    */
   categories?: string;
+  /** Whether the storefront marks the edition explicit (adult) content. */
+  explicitness: Explicitness;
 }
 
 /**
@@ -2738,6 +2744,11 @@ export interface PlainFetch {
    * Omitted when absent (wire zero value).
    */
   refreshedCredentials?: Uint8Array;
+  /**
+   * What `chapters` marks. The host ranks literary chapters above track
+   * boundaries when it decides an edition's chapters.
+   */
+  chapterKind: ChapterKind;
 }
 
 /** Result union of `ContentSource.fetchTitle`. */
@@ -3011,6 +3022,8 @@ export interface CatalogHit {
    * Omitted when absent (wire zero value).
    */
   rankHint?: number;
+  /** Whether the storefront marks the edition explicit (adult) content. */
+  explicitness: Explicitness;
 }
 
 /** Success payload of the catalog list methods. */
@@ -3882,6 +3895,11 @@ export interface MetadataFileRecord {
    * Omitted when absent (wire zero value).
    */
   durationMs?: number;
+  /**
+   * Whether the edition is explicit (adult) content; `unknown` when the
+   * file does not say.
+   */
+  explicitness: Explicitness;
 }
 
 /** Params of `MetadataFiles.parse`. */

@@ -52,11 +52,13 @@ var IDENTIFIER_SCHEMES = ["isbn", "asin", "openLibraryEdition", "openLibraryWork
 var CREDIT_ROLES = ["author", "narrator", "translator", "editor", "illustrator", "publisher", "host", "cast", "adaptor"];
 var CREDIT_LEVELS = ["roleDefault", "work", "expression", "edition"];
 var FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"];
+var CHAPTER_KINDS = ["unknown", "chapters", "tracks"];
 var CATALOG_SORTS = ["relevance", "popularity", "rating", "title", "author"];
 var CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"];
 var PRICE_LOOKUPS = ["unspecified", "product", "isbn", "asin", "title"];
 var ABRIDGEMENTS = ["unknown", "unabridged", "abridged"];
-var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"];
+var EXPLICITNESSS = ["unknown", "clean", "explicit"];
+var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration", "explicitness"];
 var NOTIFICATION_SEVERITYS = ["info", "warning", "critical"];
 var NOTIFICATION_ALERT_ACTIONS = ["none", "trigger", "resolve"];
 var NOTIFY_DESTINATION_KINDS = ["channel", "personal"];
@@ -2957,7 +2959,7 @@ var SeriesEntryCodec = {
   }
 };
 var ScanBookCodec = {
-  dataWords: 2,
+  dataWords: 3,
   pointerCount: 14,
   write(s, v, caps) {
     s.setText(0, v.accountId ?? "");
@@ -3015,6 +3017,7 @@ var ScanBookCodec = {
     if (v.categories !== void 0) {
       s.setText(13, v.categories ?? "");
     }
+    s.setUint16(8, ord(EXPLICITNESSS, v.explicitness ?? EXPLICITNESSS[0], "Explicitness"));
   },
   read(s, caps) {
     const out = {
@@ -3027,7 +3030,8 @@ var ScanBookCodec = {
       identifiers: s.getStructList(6, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
       credits: s.getStructList(7, 1, 1).map((item) => CreditCodec.read(item, caps)),
       seriesEntries: s.getStructList(8, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
-      abridgement: fromOrd(ABRIDGEMENTS, s.getUint16(7), "Abridgement")
+      abridgement: fromOrd(ABRIDGEMENTS, s.getUint16(7), "Abridgement"),
+      explicitness: fromOrd(EXPLICITNESSS, s.getUint16(8), "Explicitness")
     };
     const marketplaceValue = s.getText(3);
     if (!(marketplaceValue === "")) {
@@ -3074,7 +3078,7 @@ var ScanPageCodec = {
   write(s, v, caps) {
     {
       const list = v.books ?? [];
-      const items = s.initStructList(0, list.length, 2, 14);
+      const items = s.initStructList(0, list.length, 3, 14);
       for (let i = 0; i < items.length; i++) {
         ScanBookCodec.write(items[i], list[i], caps);
       }
@@ -3090,7 +3094,7 @@ var ScanPageCodec = {
   },
   read(s, caps) {
     const out = {
-      books: s.getStructList(0, 2, 14).map((item) => ScanBookCodec.read(item, caps)),
+      books: s.getStructList(0, 3, 14).map((item) => ScanBookCodec.read(item, caps)),
       removed: s.getTextList(1),
       nextCursor: s.getText(2),
       syncToken: s.getText(3),
@@ -3299,12 +3303,14 @@ var PlainFetchCodec = {
     if (v.refreshedCredentials !== void 0) {
       s.setData(3, v.refreshedCredentials ?? EMPTY_BYTES);
     }
+    s.setUint16(1, ord(CHAPTER_KINDS, v.chapterKind ?? CHAPTER_KINDS[0], "ChapterKind"));
   },
   read(s, caps) {
     const out = {
       mediaKind: fromOrd(MEDIA_KINDS, s.getUint16(0), "MediaKind"),
       files: s.getStructList(0, 2, 3).map((item) => FetchedFileCodec.read(item, caps)),
-      chapters: s.getStructList(1, 1, 1).map((item) => ChapterMarkerCodec.read(item, caps))
+      chapters: s.getStructList(1, 1, 1).map((item) => ChapterMarkerCodec.read(item, caps)),
+      chapterKind: fromOrd(CHAPTER_KINDS, s.getUint16(1), "ChapterKind")
     };
     const pdfUrlValue = s.getText(2);
     if (!(pdfUrlValue === "")) {
@@ -3695,6 +3701,7 @@ var CatalogHitCodec = {
     if (v.rankHint !== void 0) {
       s.setUint32(10, v.rankHint ?? 0);
     }
+    s.setUint16(22, ord(EXPLICITNESSS, v.explicitness ?? EXPLICITNESSS[0], "Explicitness"));
   },
   read(s, caps) {
     const out = {
@@ -3707,7 +3714,8 @@ var CatalogHitCodec = {
       mediaKind: fromOrd(MEDIA_KINDS, s.getUint16(19), "MediaKind"),
       identifiers: s.getStructList(13, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
       credits: s.getStructList(14, 1, 1).map((item) => CreditCodec.read(item, caps)),
-      seriesEntries: s.getStructList(15, 0, 3).map((item) => SeriesEntryCodec.read(item, caps))
+      seriesEntries: s.getStructList(15, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
+      explicitness: fromOrd(EXPLICITNESSS, s.getUint16(22), "Explicitness")
     };
     const urlValue = s.getText(2);
     if (!(urlValue === "")) {
@@ -5150,6 +5158,7 @@ var MetadataFileRecordCodec = {
     if (v.durationMs !== void 0) {
       s.setUint64(1, BigInt(v.durationMs ?? 0));
     }
+    s.setUint16(2, ord(EXPLICITNESSS, v.explicitness ?? EXPLICITNESSS[0], "Explicitness"));
   },
   read(s, caps) {
     const out = {
@@ -5162,7 +5171,8 @@ var MetadataFileRecordCodec = {
       credits: s.getStructList(10, 1, 1).map((item) => CreditCodec.read(item, caps)),
       creditRoles: s.getUint16List(11).map((v) => fromOrd(CREDIT_ROLES, v, "CreditRole")),
       seriesEntries: s.getStructList(12, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
-      chapters: s.getStructList(13, 3, 1).map((item) => MetadataChapterCodec.read(item, caps))
+      chapters: s.getStructList(13, 3, 1).map((item) => MetadataChapterCodec.read(item, caps)),
+      explicitness: fromOrd(EXPLICITNESSS, s.getUint16(2), "Explicitness")
     };
     const titleValue = s.getText(1);
     if (!(titleValue === "")) {

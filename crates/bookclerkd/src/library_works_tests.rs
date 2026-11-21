@@ -1071,6 +1071,7 @@ async fn a_scoped_member_sees_only_their_scope_on_every_library_screen() {
                 value: "J. R. R. Tolkien".into(),
                 effect: RuleEffect::Include,
             }],
+            ..PatronScope::default()
         }),
     )
     .await

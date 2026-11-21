@@ -54,6 +54,11 @@ only** books with that value or **hides** them:
 - Values match without case, so `kids` matches `Kids`.
 - A scope holds up to 16 rules, fewer when their values are long.
 
+A scope can also **hide books marked explicit**: books a store (such as
+Audible) or a metadata file marks as explicit content. Books with no mark
+stay visible, since not every store says. Out of the box explicit books
+are shown.
+
 Books a person holds through their own store accounts are always visible
 to them, whatever their scope says.
 
@@ -63,7 +68,8 @@ To set scopes:
 2. With no one selected, edit **Default patron scope**. Everyone without a
    scope of their own sees this; out of the box it has no rules.
 3. To give one person their own, select them, choose **Own scope** under
-   **What this patron sees**, add rules, and save. **Follow the library's
+   **What this patron sees**, add rules (and tick **Hide books marked
+   explicit** if you want), and save. **Follow the library's
    default** returns them to the default.
 
 A scope applies to the Library page: the list, search, filter menus, book
@@ -172,7 +178,7 @@ all are on out of the box. Owners are never limited.
 | Set patron limits | Changing a Member's scope or member controls, the library's defaults for them, and library tags |
 | Scan and acquire library-wide | Scanning or acquiring with every store account. They still reach the accounts linked to them. |
 | Run the job queue | Cancelling jobs, retrying, cancelling or resuming event deliveries, and starting a listening sync |
-| Fix the catalog | Pinning a listing to an edition, removing a pin, and splitting a work. The conflicts list stays readable. |
+| Fix the catalog | Pinning a listing to an edition, removing a pin, splitting a work, and editing or pinning an edition's chapters. The conflicts list and chapter claims stay readable. |
 | Invite branches | Creating invites that let a new branch join the library |
 | Approve interlibrary requests | Answering requests from other libraries |
 

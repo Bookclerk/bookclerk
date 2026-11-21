@@ -80,11 +80,13 @@ pub enum EntityKind {
     NotifyDestination,
     /// A notification (in an inbox or the delivery log).
     Notification,
+    /// One source's metadata claim about a library subject.
+    MetadataClaim,
 }
 
 impl EntityKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 37] = [
         Self::Account,
         Self::Book,
         Self::Work,
@@ -121,6 +123,7 @@ impl EntityKind {
         Self::ClaimTicket,
         Self::NotifyDestination,
         Self::Notification,
+        Self::MetadataClaim,
     ];
 
     /// The phrase an error message names this kind with.
@@ -163,6 +166,7 @@ impl EntityKind {
             Self::ClaimTicket => "claim ticket",
             Self::NotifyDestination => "notification destination",
             Self::Notification => "notification",
+            Self::MetadataClaim => "metadata claim",
         }
     }
 }

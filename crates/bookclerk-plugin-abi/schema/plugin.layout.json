@@ -1675,6 +1675,16 @@
             "kind": "uint32"
           },
           "offset": 10
+        },
+        {
+          "name": "explicitness",
+          "codeOrder": 26,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Explicitness"
+          },
+          "offset": 22
         }
       ]
     },
@@ -9515,6 +9525,16 @@
             "kind": "uint64"
           },
           "offset": 1
+        },
+        {
+          "name": "explicitness",
+          "codeOrder": 17,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Explicitness"
+          },
+          "offset": 2
         }
       ]
     },
@@ -12064,6 +12084,16 @@
             "kind": "data"
           },
           "offset": 3
+        },
+        {
+          "name": "chapterKind",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ChapterKind"
+          },
+          "offset": 1
         }
       ]
     },
@@ -14355,7 +14385,7 @@
     "ScanBook": {
       "name": "ScanBook",
       "file": "plugin.capnp",
-      "dataWords": 2,
+      "dataWords": 3,
       "pointerCount": 14,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -14546,6 +14576,16 @@
             "kind": "text"
           },
           "offset": 13
+        },
+        {
+          "name": "explicitness",
+          "codeOrder": 19,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Explicitness"
+          },
+          "offset": 8
         }
       ]
     },
@@ -16400,6 +16440,15 @@
         "author"
       ]
     },
+    "ChapterKind": {
+      "name": "ChapterKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unknown",
+        "chapters",
+        "tracks"
+      ]
+    },
     "CliArgKind": {
       "name": "CliArgKind",
       "file": "plugin.capnp",
@@ -16482,6 +16531,15 @@
         "ingress"
       ]
     },
+    "Explicitness": {
+      "name": "Explicitness",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unknown",
+        "clean",
+        "explicit"
+      ]
+    },
     "ExpressionKind": {
       "name": "ExpressionKind",
       "file": "plugin.capnp",
@@ -16561,7 +16619,8 @@
         "credits",
         "series",
         "chapters",
-        "duration"
+        "duration",
+        "explicitness"
       ]
     },
     "NotificationAlertAction": {

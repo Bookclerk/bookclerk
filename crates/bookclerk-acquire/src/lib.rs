@@ -12,6 +12,7 @@
     clippy::cast_sign_loss
 )]
 
+mod chapter_claims;
 mod convert;
 mod cue;
 mod destinations;

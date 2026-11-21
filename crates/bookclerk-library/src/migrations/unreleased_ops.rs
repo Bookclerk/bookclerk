@@ -487,6 +487,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         rating_overall REAL,
         rating_count INTEGER,
         is_abridged INTEGER,
+        is_explicit INTEGER,
         observed_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -1864,13 +1865,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // The page index's filter values: one row per value a held top-level
     // work has under a facet (author, narrator, series, genre, publisher,
-    // source, library tag, collection). `key` is the lower-cased value the filter matches; `value`
+    // source, library tag, collection, explicit). `key` is the lower-cased value the filter matches; `value`
     // is how it is shown. Written with the work's `library_work_rows` row
     // and fenced by its `refreshed_at`; an unheld work has none.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS library_work_facets (
         work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source', 'tag', 'collection')),
+        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source', 'tag', 'collection', 'explicit')),
         key TEXT NOT NULL,
         value TEXT NOT NULL,
         PRIMARY KEY (work_id, facet, key)
@@ -2362,6 +2363,77 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_notify_inbox_notification ON notify_inbox(notification_id)",
     ),
+    // A chapter list, stored once and named by the SHA-256 of its
+    // canonical encoding (`store::chapters`). The row is written in the
+    // last batch of a list's write, after every entry, so a list with a
+    // row here is complete; `chapter_count` says how many entries it has.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS chapter_lists (
+        digest TEXT PRIMARY KEY NOT NULL,
+        chapter_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )",
+    ),
+    // One chapter of a stored list, in pre-order: a chapter at `depth`
+    // n + 1 is nested under the nearest earlier chapter at `depth` n.
+    // `start_ms` is milliseconds from the start of the edition's timeline.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS chapter_list_entries (
+        digest TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        start_ms INTEGER NOT NULL,
+        depth INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        PRIMARY KEY (digest, position)
+    )",
+    ),
+    // One source's value for one field of one subject
+    // (`docs/adr/metadata-claims-and-file-sync.md`, decision 1). Chapters
+    // of an edition are the first field. There is one current claim per
+    // subject, field, source and language; `revision` is the subject's
+    // claim counter when the claim last changed, never a clock, and
+    // decides which edit is newest. `quality` places a machine source in
+    // the field's ranking (how a provider found the edition, whether a
+    // store's markers are chapters or tracks). `runtime_ms` is the length
+    // of the timeline the value was measured on, `input_digest` the value
+    // a processed claim was derived from. An Administrator pins at most
+    // one claim per subject and field (`pinned_at`).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS metadata_claims (
+        subject_kind TEXT NOT NULL CHECK (subject_kind IN ('edition')),
+        subject_id TEXT NOT NULL,
+        field TEXT NOT NULL CHECK (field IN ('chapters')),
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('person', 'outside_edit', 'processed', 'provider', 'listing', 'file', 'part_names')),
+        source_id TEXT NOT NULL DEFAULT '',
+        locale TEXT NOT NULL DEFAULT '',
+        quality TEXT NOT NULL DEFAULT '' CHECK (quality IN ('', 'strong_accurate', 'strong_estimated', 'weak', 'chapters', 'tracks', 'unknown')),
+        value_digest TEXT NOT NULL,
+        runtime_ms INTEGER,
+        input_digest TEXT,
+        revision INTEGER NOT NULL,
+        pinned_at TEXT,
+        pinned_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (subject_kind, subject_id, field, source_kind, source_id, locale)
+    )",
+    ),
+    // Where an edition's chapters resolved to: the winning claim's list
+    // (`digest`, a `chapter_lists` row), its source and the timeline it was
+    // measured on. `revision` is the highest claim revision the resolver
+    // read, so a resolution computed from older claims never overwrites a
+    // newer one. No row means the edition has no chapters.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS edition_chapters (
+        edition_id TEXT PRIMARY KEY NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        digest TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('person', 'outside_edit', 'processed', 'provider', 'listing', 'file', 'part_names')),
+        source_id TEXT NOT NULL DEFAULT '',
+        runtime_ms INTEGER,
+        revision INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
     // Passwords a patron makes in Account settings for one player app
     // that has only a username and password box (`docs/adr/player-api.md`).
     // Each is generated by the host with at least 100 bits of entropy and
@@ -2526,6 +2598,21 @@ mod tests {
             "playback_sessions",
             "client_kind",
             crate::PlayerKind::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "metadata_claims",
+            "source_kind",
+            crate::ChapterSourceKind::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "edition_chapters",
+            "source_kind",
+            crate::ChapterSourceKind::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "metadata_claims",
+            "quality",
+            crate::ClaimQuality::ALL.iter().map(|k| k.as_str()),
         );
     }
 
