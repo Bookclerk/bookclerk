@@ -381,58 +381,115 @@ pub async fn retain_card_recording(
     query: &PurchaseHintsQuery,
     response: &mut PurchaseHintsResponse,
 ) -> Result<()> {
+    retain_card_recordings(
+        library,
+        registry,
+        std::slice::from_ref(query),
+        std::slice::from_mut(response),
+    )
+    .await
+}
+
+/// [`retain_card_recording`] for a batch of cards, with one pool read.
+///
+/// A batch route checks every card's hints at once: the pool is read once
+/// for all the cards' editions and hints together, instead of once per card
+/// one after another.
+///
+/// # Arguments
+///
+/// * `library` - The library whose listing pool is read.
+/// * `registry` - Storefronts, to name each hint's store by its PluginKey.
+/// * `queries` - The cards' lookups, in batch order.
+/// * `responses` - Their resolved hints, in the same order, filtered in
+///   place; a response without a query (or a query without a response) is
+///   left alone.
+///
+/// # Errors
+///
+/// Returns the library read error; no response is changed then.
+pub async fn retain_card_recordings(
+    library: &bookclerk_library::LibraryStore,
+    registry: &SourceRegistry,
+    queries: &[PurchaseHintsQuery],
+    responses: &mut [PurchaseHintsResponse],
+) -> Result<()> {
     let key_of = |source: &str| -> Option<String> {
         registry.get(source).map(|s| s.plugin_key().to_string())
     };
-    let card: Vec<(String, String)> = card_editions(query)
-        .into_iter()
-        .filter_map(|(source, product)| Some((key_of(&source)?, product)))
-        .collect();
-    if card.is_empty() {
-        return Ok(());
-    }
-    let hints: Vec<Option<(String, String)>> = response
-        .hints
+    let cards: Vec<Vec<(String, String)>> = queries
         .iter()
-        .map(|h| Some((key_of(&h.source)?, h.product_id.clone())))
-        .collect();
-    let mut pairs = card.clone();
-    pairs.extend(hints.iter().flatten().cloned());
-    let expressions = library.listing_expressions(&pairs).await?;
-    let card_expressions: std::collections::BTreeSet<&String> = card
-        .iter()
-        .filter_map(|pair| expressions.get(pair))
-        .flatten()
-        .collect();
-    if card_expressions.is_empty() {
-        return Ok(());
-    }
-    let keep: Vec<bool> = hints
-        .iter()
-        .map(|pair| {
-            pair.as_ref()
-                .and_then(|pair| expressions.get(pair))
-                .is_none_or(|own| own.iter().any(|x| card_expressions.contains(x)))
+        .map(|query| {
+            card_editions(query)
+                .into_iter()
+                .filter_map(|(source, product)| Some((key_of(&source)?, product)))
+                .collect()
         })
         .collect();
-    if keep.iter().all(|k| *k) {
+    let hints: Vec<Vec<Option<(String, String)>>> = responses
+        .iter()
+        .map(|response| {
+            response
+                .hints
+                .iter()
+                .map(|h| Some((key_of(&h.source)?, h.product_id.clone())))
+                .collect()
+        })
+        .collect();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for (card, card_hints) in cards.iter().zip(&hints) {
+        if card.is_empty() {
+            continue;
+        }
+        pairs.extend(card.iter().cloned());
+        pairs.extend(card_hints.iter().flatten().cloned());
+    }
+    if pairs.is_empty() {
         return Ok(());
     }
-    let mut kept = keep.into_iter();
-    response.hints.retain(|hint| {
-        let keep = kept.next().unwrap_or(true);
-        if !keep {
-            tracing::debug!(
-                source = %hint.source,
-                product_id = %hint.product_id,
-                "dropping purchase hint for another recording than the card's"
-            );
+    pairs.sort();
+    pairs.dedup();
+    let expressions = library.listing_expressions(&pairs).await?;
+    for ((query, card), (response, card_hints)) in queries
+        .iter()
+        .zip(&cards)
+        .zip(responses.iter_mut().zip(&hints))
+    {
+        let card_expressions: std::collections::BTreeSet<&String> = card
+            .iter()
+            .filter_map(|pair| expressions.get(pair))
+            .flatten()
+            .collect();
+        if card_expressions.is_empty() {
+            continue;
         }
-        keep
-    });
-    let preferred = preferred_source_set(&query.preferred_sources);
-    response.best = best_purchase_hint_preferring(&response.hints, &preferred)
-        .map(|h| best_hint_for_caller(h, &preferred));
+        let keep: Vec<bool> = card_hints
+            .iter()
+            .map(|pair| {
+                pair.as_ref()
+                    .and_then(|pair| expressions.get(pair))
+                    .is_none_or(|own| own.iter().any(|x| card_expressions.contains(x)))
+            })
+            .collect();
+        if keep.iter().all(|k| *k) {
+            continue;
+        }
+        let mut kept = keep.into_iter();
+        response.hints.retain(|hint| {
+            let keep = kept.next().unwrap_or(true);
+            if !keep {
+                tracing::debug!(
+                    source = %hint.source,
+                    product_id = %hint.product_id,
+                    "dropping purchase hint for another recording than the card's"
+                );
+            }
+            keep
+        });
+        let preferred = preferred_source_set(&query.preferred_sources);
+        response.best = best_purchase_hint_preferring(&response.hints, &preferred)
+            .map(|h| best_hint_for_caller(h, &preferred));
+    }
     Ok(())
 }
 
@@ -707,17 +764,35 @@ pub async fn resolve_purchase_hints_batch(
 
     // Title-search records go to the listing pool, which says which
     // recording each one is, within what is left of the batch's time.
+    // The placement runs as its own task: when the deadline cuts the wait
+    // short, the writes still finish, so the next ask for these cards reads
+    // records the pool already holds instead of writing them all again.
     let placed = match library {
         Some(library) => {
-            let place = place_records(library, registry, queries, &pending, &regions, &stores);
+            let place = spawn_placement(library, registry, queries, &pending, &regions, &stores);
             match tokio::time::timeout_at(deadline, place).await {
-                Ok(Ok(placed)) => Some(placed),
+                Ok(Ok(Ok(placed))) => Some(placed),
+                Ok(Ok(Err(err))) => {
+                    tracing::debug!(
+                        cards = pending.len(),
+                        error = %err,
+                        "purchase-hint records not placed"
+                    );
+                    None
+                }
                 Ok(Err(err)) => {
-                    tracing::debug!(error = %err, "purchase-hint records not placed");
+                    tracing::debug!(
+                        cards = pending.len(),
+                        error = %err,
+                        "purchase-hint placement task failed"
+                    );
                     None
                 }
                 Err(_) => {
-                    tracing::debug!("purchase-hint records not placed before the deadline");
+                    tracing::debug!(
+                        cards = pending.len(),
+                        "purchase-hint records not placed before the deadline; placement continues in the background"
+                    );
                     None
                 }
             }
@@ -730,6 +805,7 @@ pub async fn resolve_purchase_hints_batch(
     let mut unplaced: Vec<bool> = vec![false; queries.len()];
 
     for store in &stores {
+        let mut tally = DropTally::default();
         for ((&i, query_opts), answer) in pending.iter().zip(&store.opts).zip(&store.answers) {
             // `None` is no proof the store lacks the title: a guest that
             // ran out of its own time budget answers `None` for every title
@@ -742,10 +818,13 @@ pub async fn resolve_purchase_hints_batch(
                 unplaced[i] = true;
             }
             let pool = placed.as_ref().map(|p| p.view(i, &store.plugin_key));
-            for hint in evaluate_answer(&store.id, &queries[i], query_opts, answer, pool) {
+            for hint in
+                evaluate_answer(&store.id, &queries[i], query_opts, answer, pool, &mut tally)
+            {
                 merge_or_push(&mut hints[i], hint);
             }
         }
+        tally.log(&store.id);
     }
 
     for &i in &pending {
@@ -821,25 +900,99 @@ impl Placement {
 }
 
 impl PoolView<'_> {
-    /// Whether the pool placed `product_id` (from this view's store) in
-    /// the card's recording. `false` when the pool knows the card's
-    /// recording or the product not.
+    /// Where the pool placed `product_id` (from this view's store) relative
+    /// to the card's recordings.
     ///
     /// # Arguments
     ///
     /// * `product_id` - The store's product id for the record.
-    fn same_recording(&self, product_id: &str) -> bool {
+    fn placement(&self, product_id: &str) -> RecordPlacement {
         let Some(card) = self.card else {
-            return false;
+            return RecordPlacement::CardNotPooled;
         };
-        self.expressions
+        match self
+            .expressions
             .get(&(self.plugin_key.to_string(), product_id.to_string()))
-            .is_some_and(|own| own.iter().any(|x| card.contains(x)))
+        {
+            None => RecordPlacement::RecordNotPooled,
+            Some(own) if own.iter().any(|x| card.contains(x)) => RecordPlacement::SameRecording,
+            Some(_) => RecordPlacement::OtherRecording,
+        }
     }
 }
 
+/// Where the pool placed one title-search record, relative to its card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordPlacement {
+    /// The pool placed the record in one of the card's recordings.
+    SameRecording,
+    /// The pool knows none of the card's own editions, so it cannot say.
+    CardNotPooled,
+    /// The pool holds no placement for the record's product.
+    RecordNotPooled,
+    /// The pool placed the record only in other recordings than the card's.
+    OtherRecording,
+}
+
+/// What one store's title-search records came to across a batch, logged
+/// once per store instead of once per card, so a burst of drops says why.
+#[derive(Debug, Default)]
+struct DropTally {
+    /// Records the store returned.
+    returned: usize,
+    /// Records kept for their card.
+    kept: usize,
+    /// Cards that lost at least one record.
+    cards_with_drops: usize,
+    /// Records dropped because the pool knows none of the card's editions.
+    card_not_pooled: usize,
+    /// Records dropped because the pool holds no placement for them.
+    record_not_pooled: usize,
+    /// Records dropped because the pool placed them in another recording.
+    other_recording: usize,
+    /// Records dropped because the pool could not be read in time.
+    pool_unread: usize,
+}
+
+impl DropTally {
+    /// Logs the tally under `store` when any record was dropped.
+    fn log(&self, store: &str) {
+        if self.kept == self.returned {
+            return;
+        }
+        tracing::debug!(
+            source = %store,
+            returned = self.returned,
+            kept = self.kept,
+            cards = self.cards_with_drops,
+            card_not_pooled = self.card_not_pooled,
+            record_not_pooled = self.record_not_pooled,
+            other_recording = self.other_recording,
+            pool_unread = self.pool_unread,
+            "dropped title-search records that are not the card's recording"
+        );
+    }
+}
+
+/// Most placements running at once in the background. A placement whose
+/// request already answered keeps writing; more requests than this wait
+/// for a slot, so a burst of slow batches cannot pile up pool writes on a
+/// small node.
+const MAX_PLACEMENTS: usize = 2;
+
+/// The slots [`spawn_placement`] takes.
+fn placement_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(MAX_PLACEMENTS))
+}
+
 /// Stores every title-search record of a batch in the listing pool and
-/// reads which recording each record and each card's own editions are.
+/// reads which recording each record and each card's own editions are, as
+/// a task of its own.
+///
+/// Everything the task needs is copied out first, so it outlives the
+/// request: when the caller stops waiting at its deadline, the writes still
+/// finish and the next batch for the same cards finds them pooled.
 ///
 /// # Arguments
 ///
@@ -850,17 +1003,18 @@ impl PoolView<'_> {
 /// * `regions` - Each query's marketplace, by index.
 /// * `stores` - What each store answered.
 ///
-/// # Errors
+/// # Returns
 ///
-/// Returns the library error from storing the records or reading the pool.
-async fn place_records(
+/// The task; it answers the library error from storing the records or
+/// reading the pool.
+fn spawn_placement(
     library: &bookclerk_library::LibraryStore,
     registry: &SourceRegistry,
     queries: &[PurchaseHintsQuery],
     pending: &[usize],
     regions: &[String],
     stores: &[StoreAnswers],
-) -> Result<Placement> {
+) -> tokio::task::JoinHandle<Result<Placement>> {
     let now = chrono::Utc::now();
     let mut listings = Vec::new();
     let mut pairs: Vec<(String, String)> = Vec::new();
@@ -878,10 +1032,6 @@ async fn place_records(
             }
         }
     }
-    if listings.is_empty() {
-        return Ok(Placement::default());
-    }
-    library.record_catalog_listings(&listings).await?;
     let key_of = |source: &str| registry.get(source).map(|s| s.plugin_key().to_string());
     let card_pairs: Vec<(usize, Vec<(String, String)>)> = pending
         .iter()
@@ -894,23 +1044,33 @@ async fn place_records(
             (i, own)
         })
         .collect();
-    pairs.extend(card_pairs.iter().flat_map(|(_, own)| own.iter().cloned()));
-    pairs.sort();
-    pairs.dedup();
-    let expressions = library.listing_expressions(&pairs).await?;
-    let cards = card_pairs
-        .into_iter()
-        .filter_map(|(i, own)| {
-            let recordings: BTreeSet<String> = own
-                .iter()
-                .filter_map(|pair| expressions.get(pair))
-                .flatten()
-                .cloned()
-                .collect();
-            (!recordings.is_empty()).then_some((i, recordings))
-        })
-        .collect();
-    Ok(Placement { cards, expressions })
+    let library = library.clone();
+    tokio::spawn(async move {
+        if listings.is_empty() {
+            return Ok(Placement::default());
+        }
+        // A closed semaphore never happens (it is never closed); placing
+        // without a slot is then still correct, only unthrottled.
+        let _slot = placement_slots().acquire().await.ok();
+        library.record_catalog_listings(&listings).await?;
+        pairs.extend(card_pairs.iter().flat_map(|(_, own)| own.iter().cloned()));
+        pairs.sort();
+        pairs.dedup();
+        let expressions = library.listing_expressions(&pairs).await?;
+        let cards = card_pairs
+            .into_iter()
+            .filter_map(|(i, own)| {
+                let recordings: BTreeSet<String> = own
+                    .iter()
+                    .filter_map(|pair| expressions.get(pair))
+                    .flatten()
+                    .cloned()
+                    .collect();
+                (!recordings.is_empty()).then_some((i, recordings))
+            })
+            .collect();
+        Ok(Placement { cards, expressions })
+    })
 }
 
 /// Whether a record carries the card's own ISBN or ASIN.
@@ -973,24 +1133,42 @@ fn evaluate_answer(
     opts: &PurchaseHintOpts,
     answer: &PricedAnswer,
     pool: Option<PoolView<'_>>,
+    tally: &mut DropTally,
 ) -> Vec<PurchaseHint> {
     if !answer.records.is_empty() {
-        let kept: Vec<PurchaseHint> = answer
-            .records
-            .iter()
-            .filter(|priced| {
-                record_names_card(&priced.record, query)
-                    || pool.is_some_and(|pool| pool.same_recording(&priced.record.product_id))
-            })
-            .map(|priced| PurchaseHint::from_source_hint(store, priced.hint.clone()))
-            .collect();
+        let mut kept = Vec::new();
+        for priced in &answer.records {
+            let keep = if record_names_card(&priced.record, query) {
+                true
+            } else {
+                match pool.map(|pool| pool.placement(&priced.record.product_id)) {
+                    Some(RecordPlacement::SameRecording) => true,
+                    Some(RecordPlacement::CardNotPooled) => {
+                        tally.card_not_pooled += 1;
+                        false
+                    }
+                    Some(RecordPlacement::RecordNotPooled) => {
+                        tally.record_not_pooled += 1;
+                        false
+                    }
+                    Some(RecordPlacement::OtherRecording) => {
+                        tally.other_recording += 1;
+                        false
+                    }
+                    None => {
+                        tally.pool_unread += 1;
+                        false
+                    }
+                }
+            };
+            tally.returned += 1;
+            if keep {
+                tally.kept += 1;
+                kept.push(PurchaseHint::from_source_hint(store, priced.hint.clone()));
+            }
+        }
         if kept.len() < answer.records.len() {
-            tracing::debug!(
-                source = %store,
-                kept = kept.len(),
-                returned = answer.records.len(),
-                "dropping title-search records for another recording than the card's"
-            );
+            tally.cards_with_drops += 1;
         }
         return kept;
     }
@@ -1932,7 +2110,7 @@ mod tests {
             .collect();
         assert_eq!(kept, vec!["L1", "unlisted"]);
         assert_eq!(
-            response.best.map(|b| b.product_id),
+            response.best.as_ref().map(|b| b.product_id.clone()),
             Some(String::from("unlisted"))
         );
 
@@ -1974,6 +2152,40 @@ mod tests {
             .map(|h| h.product_id.as_str())
             .collect();
         assert!(!kept.contains(&"L1"), "kept {kept:?}");
+
+        // The batch form checks all three cards with one pool read and
+        // keeps exactly what the one-card checks kept.
+        let queries = vec![query.clone(), unknown.clone(), by_asin.clone()];
+        let mut batch = vec![
+            PurchaseHintsResponse {
+                hints: vec![
+                    priced("libro", "L1", 2_000),
+                    priced("chirp", "G1", 1_499),
+                    priced("chirp", "unlisted", 1_800),
+                ],
+                best: None,
+                incomplete: false,
+            },
+            PurchaseHintsResponse {
+                hints: vec![priced("chirp", "G1", 1_499), priced("libro", "L1", 2_000)],
+                best: None,
+                incomplete: false,
+            },
+            PurchaseHintsResponse {
+                hints: vec![priced("libro", "L1", 2_000), priced("chirp", "G1", 1_499)],
+                best: None,
+                incomplete: false,
+            },
+        ];
+        retain_card_recordings(&library, &registry, &queries, &mut batch)
+            .await
+            .unwrap();
+        let products = |r: &PurchaseHintsResponse| -> Vec<String> {
+            r.hints.iter().map(|h| h.product_id.clone()).collect()
+        };
+        assert_eq!(products(&batch[0]), products(&response));
+        assert_eq!(products(&batch[1]), products(&all));
+        assert_eq!(products(&batch[2]), products(&priced_both));
     }
 
     /// A Sunlit Man listing `product` of `kind`, credited like the
@@ -2019,6 +2231,97 @@ mod tests {
                 ..SourcePurchaseHint::default()
             },
         }
+    }
+
+    /// Every reason a title-search record is dropped is counted, and the
+    /// store's tally is logged once.
+    #[test]
+    fn dropped_records_are_tallied_by_reason() {
+        use bookclerk_source::records::ExpressionKind;
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log buf").extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let query = PurchaseHintsQuery {
+            title: "The Sunlit Man".into(),
+            ..PurchaseHintsQuery::default()
+        };
+        let answer = PricedAnswer {
+            hint: None,
+            records: vec![
+                sunlit_record("SAME", ExpressionKind::Narration, None, 100),
+                sunlit_record("OTHER", ExpressionKind::Dramatisation, None, 100),
+                sunlit_record("UNPLACED", ExpressionKind::Narration, None, 100),
+            ],
+        };
+        let mut placement = Placement::default();
+        placement
+            .cards
+            .insert(0, BTreeSet::from([String::from("expr-narration")]));
+        for (product, expression) in [("SAME", "expr-narration"), ("OTHER", "expr-drama")] {
+            placement.expressions.insert(
+                (String::from("store-a"), String::from(product)),
+                BTreeSet::from([String::from(expression)]),
+            );
+        }
+        let opts = PurchaseHintOpts::default();
+        let mut tally = DropTally::default();
+        let kept = evaluate_answer(
+            "store-a",
+            &query,
+            &opts,
+            &answer,
+            Some(placement.view(0, "store-a")),
+            &mut tally,
+        );
+        let kept: Vec<&str> = kept.iter().map(|h| h.product_id.as_str()).collect();
+        assert_eq!(kept, vec!["SAME"]);
+        assert_eq!((tally.other_recording, tally.record_not_pooled), (1, 1));
+
+        // A card the pool knows nothing of, and a pool that was not read.
+        let unknown_card = evaluate_answer(
+            "store-a",
+            &query,
+            &opts,
+            &answer,
+            Some(placement.view(1, "store-a")),
+            &mut tally,
+        );
+        assert!(unknown_card.is_empty());
+        assert_eq!(tally.card_not_pooled, 3);
+        let unread = evaluate_answer("store-a", &query, &opts, &answer, None, &mut tally);
+        assert!(unread.is_empty());
+        assert_eq!(tally.pool_unread, 3);
+
+        tally.returned = 9;
+        tally.kept = 1;
+        tally.cards_with_drops = 3;
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&bytes);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || Buf(Arc::clone(&sink)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            tally.log("store-a");
+            DropTally::default().log("store-quiet");
+        });
+        let text = String::from_utf8(bytes.lock().expect("log buf").clone()).expect("utf-8 log");
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.contains("card_not_pooled=3"), "{text}");
+        assert!(text.contains("pool_unread=3"), "{text}");
     }
 
     /// A title search's records price a card only with the recording the

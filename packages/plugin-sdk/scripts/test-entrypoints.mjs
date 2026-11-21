@@ -827,4 +827,146 @@ for (const [label, mod] of [
   await adapter.shutdown();
 }
 
+// --- ORIGIN binding and the granted /origin/fetch framing ---------------
+
+{
+  const origin = await import(join(dist, "origin.js"));
+  const enc = new TextEncoder();
+  const streamOf = (...chunks) =>
+    new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+  const readAll = async (stream) => new Uint8Array(await new Response(stream).arrayBuffer());
+
+  // The binding sends the origin-form target and drops connection and
+  // forwarding headers; the client address comes only from the options.
+  let seen;
+  const binding = origin.originBinding({
+    async fetch(head, body) {
+      seen = { head, body: body ? new TextDecoder().decode(await readAll(body)) : null };
+      return {
+        ok: {
+          status: 201,
+          headers: [
+            { name: "set-cookie", value: "a=1" },
+            { name: "set-cookie", value: "b=2" },
+          ],
+          body: streamOf(enc.encode("done")),
+        },
+      };
+    },
+  });
+  const resp = await binding.fetch(
+    new Request("https://lib.example/api/status?x=1", {
+      method: "POST",
+      headers: {
+        "content-type": "text/plain",
+        host: "evil.example",
+        "x-forwarded-for": "1.2.3.4",
+        connection: "keep-alive",
+      },
+      body: "hello",
+    }),
+    { clientAddress: "203.0.113.9" },
+  );
+  assert.equal(seen.head.method, "POST");
+  assert.equal(seen.head.target, "/api/status?x=1");
+  assert.equal(seen.head.clientAddress, "203.0.113.9");
+  assert.deepEqual(
+    seen.head.headers.map((h) => h.name),
+    ["content-type"],
+    "host, forwarding and connection headers are dropped",
+  );
+  assert.equal(seen.body, "hello");
+  assert.equal(resp.status, 201);
+  assert.deepEqual(resp.headers.getSetCookie(), ["a=1", "b=2"]);
+  assert.equal(await resp.text(), "done");
+
+  // A transport failure surfaces as the typed PluginError.
+  const refusing = origin.originBinding({
+    fetch: async () => ({ err: { code: "unavailable", message: "not now" } }),
+  });
+  await assert.rejects(
+    () => refusing.fetch(new Request("https://lib.example/")),
+    (err) => err instanceof PluginError && err.wireCode === "unavailable",
+  );
+
+  // The granted call frames the head ahead of the body and reads the framed
+  // response head back, however the reply is chunked.
+  const head = { status: 200, headers: [{ name: "x-a", value: "1" }] };
+  const reply = new Uint8Array([...origin.encodeOriginFrame(head), ...enc.encode("world")]);
+  const granted = {
+    async fetch(url, init) {
+      assert.equal(url, "http://granted/origin/fetch");
+      assert.equal(init.headers.Authorization, "Bearer otok");
+      const sent = await readAll(init.body);
+      const len = new DataView(sent.buffer).getUint32(0, false);
+      const request = JSON.parse(new TextDecoder().decode(sent.subarray(4, 4 + len)));
+      assert.equal(request.target, "/x");
+      assert.equal(new TextDecoder().decode(sent.subarray(4 + len)), "ping");
+      // Split mid-prefix and mid-head.
+      return new Response(streamOf(reply.slice(0, 2), reply.slice(2, 9), reply.slice(9)), {
+        status: 200,
+      });
+    },
+  };
+  const ok = await origin.grantedOriginFetch(
+    granted,
+    { Authorization: "Bearer otok" },
+    { method: "PUT", target: "/x", headers: [] },
+    streamOf(enc.encode("pi"), enc.encode("ng")),
+  );
+  assert.equal(ok.ok.status, 200);
+  assert.deepEqual(ok.ok.headers, head.headers);
+  assert.equal(new TextDecoder().decode(await readAll(ok.ok.body)), "world");
+
+  // A plugin error from the host keeps its code.
+  const refused = await origin.grantedOriginFetch(
+    {
+      fetch: async () =>
+        new Response(JSON.stringify({ error: { code: "invalid_params", message: "bad" } }), {
+          status: 400,
+        }),
+    },
+    {},
+    { method: "GET", target: "/", headers: [] },
+    null,
+  );
+  assert.deepEqual(refused, { err: { code: "invalid_params", message: "bad" } });
+
+  // A reply that ends inside its head, or claims an oversized head, is internal.
+  const truncated = await origin.grantedOriginFetch(
+    { fetch: async () => new Response(streamOf(reply.slice(0, 6)), { status: 200 }) },
+    {},
+    { method: "GET", target: "/", headers: [] },
+    null,
+  );
+  assert.equal(truncated.err.code, "internal");
+  const oversized = await origin.grantedOriginFetch(
+    {
+      fetch: async () =>
+        new Response(streamOf(new Uint8Array([0xff, 0xff, 0xff, 0xff])), { status: 200 }),
+    },
+    {},
+    { method: "GET", target: "/", headers: [] },
+    null,
+  );
+  assert.equal(oversized.err.code, "internal");
+  // A channel that cannot be reached is unavailable.
+  const unreachable = await origin.grantedOriginFetch(
+    {
+      fetch: async () => {
+        throw new Error("down");
+      },
+    },
+    {},
+    { method: "GET", target: "/", headers: [] },
+    null,
+  );
+  assert.equal(unreachable.err.code, "unavailable");
+}
+
 console.log("v3 entrypoint translation ok");

@@ -82,8 +82,9 @@ pub enum ConfigActor {
     /// the user's stored role and status.
     LibraryOwner(VerifiedLibraryOwner),
     /// An active portal Owner or Administrator. Writes the library's
-    /// patron defaults only: the default scope (`core.patron_scope`) and
-    /// the default member controls (`core.member_controls`). Built by
+    /// patron defaults only: the default scope (`core.patron_scope`), the
+    /// default member controls (`core.member_controls`) and the
+    /// collections scopes match (`core.collections`). Built by
     /// [`super::verify_patron_administrator`], which reads the user's
     /// stored role and status.
     PatronAdministrator(VerifiedPatronAdministrator),
@@ -183,7 +184,8 @@ impl ConfigActor {
                 key.scope_type == LIBRARY_SCOPE_TYPE
                     && key.scope_id == LIBRARY_SCOPE_ID
                     && (key.namespace == super::PATRON_SCOPE_NAMESPACE
-                        || key.namespace == super::MEMBER_CONTROLS_NAMESPACE)
+                        || key.namespace == super::MEMBER_CONTROLS_NAMESPACE
+                        || key.namespace == super::COLLECTIONS_NAMESPACE)
             }
             Self::Administrator { .. } | Self::Member { .. } | Self::Scheduler => false,
         }

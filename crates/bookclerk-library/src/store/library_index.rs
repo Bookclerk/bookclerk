@@ -20,10 +20,10 @@
 //! and the show's row counts the episodes' editions and holdings.
 //!
 //! The same refresh writes the work's filter values (`library_work_facets`:
-//! authors, narrators, series, genres, publishers and sources), fenced by
-//! the row's stamp, so a page can filter by one value without joining the
-//! model. Tags and progress are per person and filter through
-//! `user_work_tags` and `user_title_state` instead.
+//! authors, narrators, series, genres, publishers, sources, library tags
+//! and collections), fenced by the row's stamp, so a page can filter by one value
+//! without joining the model. A person's own tags and progress filter
+//! through `user_work_tags` and `user_title_state` instead.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -125,17 +125,24 @@ pub enum WorkFacet {
     Publisher,
     /// Storefront plugins the work is held through.
     Source,
+    /// Library tags (`work_tags`): set by an Administrator or read from a
+    /// sidecar, the same for everyone.
+    Tag,
+    /// Collections (`core.collections`) one of the work's files is in.
+    Collection,
 }
 
 impl WorkFacet {
     /// Every facet, in the order a work's values are written.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Author,
         Self::Narrator,
         Self::Series,
         Self::Genre,
         Self::Publisher,
         Self::Source,
+        Self::Tag,
+        Self::Collection,
     ];
 
     /// The stored `facet` value.
@@ -148,6 +155,8 @@ impl WorkFacet {
             Self::Genre => "genre",
             Self::Publisher => "publisher",
             Self::Source => "source",
+            Self::Tag => "tag",
+            Self::Collection => "collection",
         }
     }
 }
@@ -466,6 +475,12 @@ pub(crate) struct WorkRowInputs {
     pub series: Option<(String, Option<String>)>,
     /// Acquire rows of the editions.
     pub acquisitions: Vec<edition_acquisitions::Model>,
+    /// The work's library tags as written (`work_tags.value`), every
+    /// source, in key order.
+    pub tags: Vec<String>,
+    /// The collections one of the work's edition files is in, in the
+    /// collections' order.
+    pub collections: Vec<String>,
 }
 
 /// Derives a work's page index row; `None` when the work is gone (the row
@@ -732,6 +747,13 @@ pub(crate) fn build_work_facets(
             values.push((WorkFacet::Source, listing.plugin_key.as_str()));
         }
     }
+    values.extend(inputs.tags.iter().map(|t| (WorkFacet::Tag, t.as_str())));
+    values.extend(
+        inputs
+            .collections
+            .iter()
+            .map(|c| (WorkFacet::Collection, c.as_str())),
+    );
     let mut seen: HashSet<(WorkFacet, String)> = HashSet::new();
     let mut out = Vec::new();
     for (facet, value) in values {
@@ -1131,6 +1153,27 @@ impl LibraryStore {
                 .map_err(LibraryError::Orm)?
                 .is_some(),
         )
+    }
+
+    /// Drops the finished build of [`LIBRARY_INDEX_LAYOUT`], so the next
+    /// heartbeat queues a rebuild of every row: for a change, such as the
+    /// library's collections, that the rows' derivation reads but no
+    /// work's events carry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a batch error when the write fails.
+    pub async fn drop_library_index_build(&self) -> Result<()> {
+        let operation_id = format!("library-index-drop-{}", Uuid::new_v4());
+        self.execute_host_batch(batch::request(
+            &operation_id,
+            vec![batch::exec(
+                "DELETE FROM library_index_builds WHERE layout = ?",
+                vec![batch::int(LIBRARY_INDEX_LAYOUT)],
+            )],
+        ))
+        .await?;
+        Ok(())
     }
 
     /// Records a finished build of [`LIBRARY_INDEX_LAYOUT`].
@@ -1926,6 +1969,8 @@ mod tests {
                 acquisition("e1", AcquireStatus::Error),
                 acquisition("e2", AcquireStatus::Queued),
             ],
+            tags: Vec::new(),
+            collections: Vec::new(),
         };
         let row = build_work_row(&inputs, "now").unwrap();
         assert_eq!(row.sort_title, "dispossessed");

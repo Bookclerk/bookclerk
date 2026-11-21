@@ -1672,3 +1672,282 @@ async fn a_title_a_scan_dropped_is_not_listed() {
         .unwrap();
     assert_eq!(listed(read_all(&store, BRANCH).await), vec!["B0KEPT0001"]);
 }
+
+/// Every page of `person`'s books, as a clerk reads them, checked against
+/// the frame rules and budget as it goes.
+async fn read_person(store: &LibraryStore, person: i64) -> Vec<WindowWork> {
+    let mut after = WindowCursor::start();
+    let mut works = Vec::new();
+    for _ in 0..1000 {
+        let (page, next) = person_books_page(store, person, &after).await.unwrap();
+        assert_eq!(window_page_problem(&after, &page, next.as_ref()), None);
+        assert!(serde_json::to_vec(&page).unwrap().len() <= MAX_FRAME_BYTES / 2);
+        works.extend(page);
+        match next {
+            Some(next) => after = next,
+            None => return works,
+        }
+    }
+    panic!("paging never ended");
+}
+
+/// Drops the account holdings of `asin`, leaving its edition and work in
+/// the library (as for a book the library only knows from its pool).
+async fn drop_holdings_of(store: &LibraryStore, asin: &str) {
+    use sea_orm::QueryFilter as _;
+    let listings: Vec<String> = store_listings::Entity::find()
+        .all(store.db())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|l| l.product_id.ends_with(asin))
+        .map(|l| l.id)
+        .collect();
+    holdings::Entity::delete_many()
+        .filter(holdings::Column::ListingId.is_in(listings))
+        .exec(store.db())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_clerks_pages_end_with_the_books_only_branches_hold() {
+    use crate::control_plane::{ask_branches, pending_questions, record_answers, AnswersRecorded};
+    use bookclerk_node_proto::LookupAnswer;
+
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let store = crate::test_support::sqlite::memory(profile)
+            .await
+            .into_store();
+        let riley = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap()
+            .id;
+        let branch = "branch-b";
+        add_branch(&store, branch, riley).await;
+        let works = hold(
+            &store,
+            riley,
+            "riley-acct",
+            &["B0HELD0001".into(), "B0BRANCH01".into()],
+        )
+        .await;
+        drop_holdings_of(&store, "B0BRANCH01").await;
+
+        // Before any branch lists anything, the pages end with the library's
+        // own books.
+        let own = read_person(&store, riley).await;
+        assert_eq!(own.len(), 1, "{name}");
+        assert_eq!(own[0].work, works[0], "{name}");
+
+        // The branch lists both: the one the library holds stays its own,
+        // the other is offered as only a branch holds it.
+        ask_branches(&store, &works).await.unwrap();
+        pending_questions(&store, branch).await.unwrap().unwrap();
+        let answer = |work: &str, asin: &str| LookupAnswer {
+            work: work.into(),
+            editions: vec![LookupEdition {
+                store: "audible".into(),
+                marketplace: "us".into(),
+                product_id: asin.into(),
+                availability: Availability::Owned,
+                formats: vec![LookupFormat::Audio],
+                metadata: CatalogMetadata {
+                    title: format!("Branch {asin}"),
+                    authors: Some("Ann Author".into()),
+                    asin: Some(asin.into()),
+                    ..CatalogMetadata::default()
+                },
+            }],
+        };
+        let answers = [
+            answer(&works[0], "B0HELD0001"),
+            answer(&works[1], "B0BRANCH01"),
+        ];
+        match record_answers(&store, branch, &answers, &[]).await.unwrap() {
+            AnswersRecorded::Recorded(report) => assert_eq!(report.listings, 2, "{name}"),
+            other => panic!("{name}: expected the answers recorded: {other:?}"),
+        }
+        // A second branch lists the same book: it still goes on the page once.
+        let other = "branch-c";
+        add_branch(&store, other, riley).await;
+        ask_branches(&store, &works).await.unwrap();
+        pending_questions(&store, other).await.unwrap().unwrap();
+        match record_answers(&store, other, &answers[1..], &[])
+            .await
+            .unwrap()
+        {
+            AnswersRecorded::Recorded(report) => assert_eq!(report.listings, 1, "{name}"),
+            other => panic!("{name}: expected the answer recorded: {other:?}"),
+        }
+
+        let all = read_person(&store, riley).await;
+        let editions: Vec<(&str, &str, Availability, bool, bool)> = all
+            .iter()
+            .flat_map(|w| {
+                w.editions.iter().map(move |e| {
+                    (
+                        w.work.as_str(),
+                        e.edition.product_id.as_str(),
+                        e.edition.availability,
+                        e.yours,
+                        e.edition.formats.is_empty(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            editions,
+            vec![
+                (
+                    works[0].as_str(),
+                    "B0HELD0001",
+                    Availability::Owned,
+                    true,
+                    true
+                ),
+                (
+                    works[1].as_str(),
+                    "B0BRANCH01",
+                    Availability::Reachable,
+                    false,
+                    true
+                ),
+            ],
+            "{name}"
+        );
+        let reachable = &all[1].editions[0].edition;
+        assert_eq!(reachable.metadata.title, "Branch B0BRANCH01", "{name}");
+        assert_eq!(reachable.metadata.authors.as_deref(), Some("Ann Author"));
+        // The page names no branch.
+        let text = serde_json::to_string(&all).unwrap();
+        assert!(!text.contains(branch), "{name}: {text}");
+        assert!(!text.contains(other), "{name}: {text}");
+
+        // A branch reading the same library sees only the library's own.
+        let as_branch = read_all(&store, branch).await;
+        assert!(
+            as_branch
+                .iter()
+                .flat_map(|w| &w.editions)
+                .all(|e| e.edition.availability == Availability::Owned),
+            "{name}"
+        );
+
+        // One edition at a time still pages through every branch book.
+        let mut after = WindowCursor::start();
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            let (page, next) = person_books_page_by(&store, riley, &after, 1, BranchBooks::Include)
+                .await
+                .unwrap();
+            assert_eq!(window_page_problem(&after, &page, next.as_ref()), None);
+            seen.extend(page.into_iter().map(|w| w.work));
+            match next {
+                Some(next) => after = next,
+                None => break,
+            }
+        }
+        assert_eq!(seen, works, "{name}");
+
+        // A branch no longer trusted takes its books off the pages.
+        node_credentials::Entity::update_many()
+            .col_expr(
+                node_credentials::Column::RevokedAt,
+                sea_orm::sea_query::Expr::value(Utc::now().to_rfc3339()),
+            )
+            .exec(store.db())
+            .await
+            .unwrap();
+        let after_revoke = read_person(&store, riley).await;
+        assert_eq!(after_revoke.len(), 1, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn the_window_keeps_a_book_only_a_branch_holds_with_its_work() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let reader = store_in(dir.path()).await;
+    link(&reader, "lib").await;
+    let mut listed = edition("B0BRANCH01", "Branch Book");
+    listed.availability = Availability::Reachable;
+    listed.formats.clear();
+    let work = |work: &str, edition: WindowEdition| WindowWork {
+        work: work.into(),
+        identifiers: vec![asin(&edition.edition.product_id)],
+        editions: vec![edition],
+    };
+    let reachable = WindowEdition {
+        edition: listed.clone(),
+        yours: false,
+        copy: None,
+    };
+    let stamp = window_read_stamp();
+    record_window_page(&reader, "lib", &stamp, &[work("work-7", reachable.clone())])
+        .await
+        .unwrap();
+    finish_window_read(&reader, "lib", &stamp).await.unwrap();
+    let view = window_view(&reader).await.unwrap();
+    assert_eq!(view.len(), 1);
+    let held = &view[0].editions[0];
+    assert_eq!(held.edition.availability, Availability::Reachable);
+    assert_eq!(held.work_ref, "work-7");
+
+    // Held on an account on another page of the same read wins.
+    let stamp = window_read_stamp();
+    let mut owned = listed.clone();
+    owned.availability = Availability::Owned;
+    record_window_page(
+        &reader,
+        "lib",
+        &stamp,
+        &[work(
+            "work-7",
+            WindowEdition {
+                edition: owned,
+                yours: false,
+                copy: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
+    record_window_page(&reader, "lib", &stamp, &[work("work-7", reachable.clone())])
+        .await
+        .unwrap();
+    finish_window_read(&reader, "lib", &stamp).await.unwrap();
+    let view = window_view(&reader).await.unwrap();
+    assert_eq!(
+        view[0].editions[0].edition.availability,
+        Availability::Owned
+    );
+
+    // So it does when both reports sit on one page, under two works: the
+    // later branch report keeps the held one's formats and copy.
+    let stamp = window_read_stamp();
+    let mut owned = listed;
+    owned.availability = Availability::Owned;
+    owned.formats = vec![LookupFormat::Audio];
+    let held = WindowEdition {
+        edition: owned,
+        yours: true,
+        copy: None,
+    };
+    record_window_page(
+        &reader,
+        "lib",
+        &stamp,
+        &[work("work-7", held), work("work-8", reachable)],
+    )
+    .await
+    .unwrap();
+    finish_window_read(&reader, "lib", &stamp).await.unwrap();
+    let view = window_view(&reader).await.unwrap();
+    let kept = &view[0].editions[0];
+    assert_eq!(kept.edition.availability, Availability::Owned);
+    assert_eq!(kept.edition.formats, vec![LookupFormat::Audio]);
+    assert!(kept.yours);
+}

@@ -93,6 +93,8 @@ paths = [
     "fuzz/oracles/socket_request.rs",
     "fuzz/corpus/storage_reply/**",
     "fuzz/oracles/storage_reply.rs",
+    "fuzz/corpus/origin_request/**",
+    "fuzz/oracles/origin_request.rs",
 ]
 
 # The guest SQL authorizer oracle is shared by the fuzz target and the
@@ -122,6 +124,10 @@ paths = [
     "fuzz/oracles/work_split_request.rs",
     "fuzz/corpus/playback_request/**",
     "fuzz/oracles/playback_request.rs",
+    "fuzz/corpus/work_tags_request/**",
+    "fuzz/oracles/work_tags_request.rs",
+    "fuzz/corpus/collections_request/**",
+    "fuzz/oracles/collections_request.rs",
     "fuzz/corpus/sharing_request/**",
     "fuzz/oracles/sharing_request.rs",
     "fuzz/corpus/connections_request/**",
@@ -209,6 +215,8 @@ paths = [
     "fuzz/oracles/diagnostics_submit_reply.rs",
     "fuzz/corpus/diagnostics_lookup_reply/**",
     "fuzz/oracles/diagnostics_lookup_reply.rs",
+    "fuzz/corpus/relayed_log_line/**",
+    "fuzz/oracles/relayed_log_line.rs",
 ]
 
 [[test_input]]
@@ -227,10 +235,12 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-storage"
-# The S3 notification oracle is shared with the replay test through `#[path]`.
+# The S3 and R2 notification oracles are shared with the replay test through `#[path]`.
 paths = [
     "fuzz/corpus/s3_event/**",
     "fuzz/oracles/s3_event.rs",
+    "fuzz/corpus/r2_event/**",
+    "fuzz/oracles/r2_event.rs",
 ]
 
 [[test_input]]
@@ -664,3 +674,8 @@ reason = "package-name string in install-path test data, not a launched executab
 package = "bookclerk-plugin-e2e"
 reference = "bookclerk-jail"
 reason = "PluginSession::spawn_with launches bookclerk-jail; the native_gateway smoke already builds that binary, and this crate is excluded from rust_test"
+
+[[reviewed]]
+package = "bookclerk-config"
+reference = ".git"
+reason = "build.rs reads the checkout's commit for diagnostics reports (rerun-if-changed on .git/HEAD); no test reads it"

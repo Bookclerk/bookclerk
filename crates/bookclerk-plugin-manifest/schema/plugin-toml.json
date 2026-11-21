@@ -36,7 +36,7 @@
       "description": "Named capabilities this plugin exports from PluginWorker.open.",
       "items": {
         "type": "string",
-        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier"]
+        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress"]
       }
     },
     "media": {
@@ -116,6 +116,19 @@
           "type": "array",
           "maxItems": 64,
           "items": { "$ref": "#/$defs/NotificationType" }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "description": "How an ingress plugin serves the library publicly. Required for a plugin exporting the ingress entrypoint; forbidden for every other plugin.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["relay", "direct"],
+          "description": "relay: the provider relays each request to the plugin, which hands it to the library through ORIGIN. direct: the public address points at the daemon; the plugin only keeps it current."
         }
       }
     },
@@ -255,6 +268,14 @@
       },
       "then": { "required": ["notifier"] },
       "else": { "properties": { "notifier": false } }
+    },
+    {
+      "if": {
+        "properties": { "entrypoints": { "contains": { "const": "ingress" } } },
+        "required": ["entrypoints"]
+      },
+      "then": { "required": ["ingress"] },
+      "else": { "properties": { "ingress": false } }
     }
   ],
   "$defs": {

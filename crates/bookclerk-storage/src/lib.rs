@@ -33,9 +33,14 @@ mod local;
 #[cfg(feature = "watch")]
 mod local_watch;
 mod placement;
+pub mod r2_events;
+#[cfg(feature = "s3")]
+mod r2_queue;
 #[cfg(feature = "s3")]
 mod s3;
 pub mod s3_events;
+#[cfg(feature = "s3")]
+pub mod s3_guest;
 #[cfg(all(feature = "s3", any(unix, windows)))]
 mod s3_http;
 #[cfg(feature = "s3")]
@@ -58,6 +63,8 @@ pub use intent::{
 };
 pub use local::LocalFsBackend;
 pub use placement::node_placement_id;
+#[cfg(feature = "s3")]
+pub use r2_queue::{CloudflareAccountId, CloudflareApiToken, CloudflareQueueId};
 #[cfg(feature = "s3")]
 pub use s3::{S3Backend, S3Credentials, S3Settings};
 #[cfg(feature = "s3")]

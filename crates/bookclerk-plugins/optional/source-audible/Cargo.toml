@@ -50,6 +50,7 @@ uuid.workspace = true
 [dev-dependencies]
 # `fixtures` writes the synthetic aaxc-shaped MP4s the decrypt tests parse.
 bookclerk-mp4 = { workspace = true, features = ["fixtures"] }
+rand.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 url.workspace = true

@@ -316,7 +316,78 @@ impl S3Backend {
         let client = crate::s3_queue::SqsQueue::new(&self.sdk, queue)?;
         let feed = crate::s3_queue::QueueFeed::open(
             Box::new(client),
+            crate::s3_queue::s3_message_parser(&self.bucket, &self.prefix),
             &id,
+            &self.bucket,
+            &self.prefix,
+            state_dir,
+        )?;
+        self.queue = Some(std::sync::Arc::new(feed));
+        Ok(self)
+    }
+
+    /// Serves `changes` from an R2 bucket's event notifications, pulled
+    /// from a Cloudflare Queue.
+    ///
+    /// The bucket's event notification rule must send object-create and
+    /// object-delete events to `queue`, HTTP pull must be on for it, and
+    /// nothing else may consume it. Like the SQS feed, the feed keeps the
+    /// lease ids it has handed out in `state_dir` (the guest's `HOME`) until
+    /// the host's next call says it has read them.
+    ///
+    /// # Arguments
+    ///
+    /// * `account` - the Cloudflare account the bucket and queue belong to.
+    /// * `queue` - the queue's id.
+    /// * `token` - an API token with Queues read and write on the account.
+    /// * `state_dir` - where the feed keeps its state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the queue client cannot be built or
+    /// `state_dir` cannot be created.
+    pub fn with_cloudflare_queue(
+        self,
+        account: &crate::r2_queue::CloudflareAccountId,
+        queue: &crate::r2_queue::CloudflareQueueId,
+        token: crate::r2_queue::CloudflareApiToken,
+        state_dir: &Path,
+    ) -> Result<Self> {
+        self.with_cloudflare_queue_at(crate::r2_queue::API_BASE, account, queue, token, state_dir)
+    }
+
+    /// [`Self::with_cloudflare_queue`] against the Cloudflare API at
+    /// `api_base`, so tests can point it at a local server.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::with_cloudflare_queue`].
+    pub(crate) fn with_cloudflare_queue_at(
+        mut self,
+        api_base: &str,
+        account: &crate::r2_queue::CloudflareAccountId,
+        queue: &crate::r2_queue::CloudflareQueueId,
+        token: crate::r2_queue::CloudflareApiToken,
+        state_dir: &Path,
+    ) -> Result<Self> {
+        let client = crate::r2_queue::CloudflareQueue::new(api_base, account, queue, token)?;
+        let scope_account = account.as_str().to_string();
+        let bucket = self.bucket.clone();
+        let prefix = self.prefix.clone();
+        let parse: crate::s3_queue::MessageParser = Box::new(move |body| {
+            crate::r2_events::parse_r2_event(
+                body,
+                crate::r2_events::R2EventScope {
+                    account: &scope_account,
+                    bucket: &bucket,
+                    prefix: &prefix,
+                },
+            )
+        });
+        let feed = crate::s3_queue::QueueFeed::open(
+            Box::new(client),
+            parse,
+            &format!("cloudflare:{}:{}", account.as_str(), queue.as_str()),
             &self.bucket,
             &self.prefix,
             state_dir,
@@ -872,6 +943,21 @@ impl S3Backend {
     /// size, [`StorageError::Integrity`] when the source has no ETag or
     /// changed during an unconditioned copy, [`StorageError::Conflict`] when
     /// a conditioned copy is refused, and S3 errors otherwise.
+    /// Copies `from` to `to` and returns the bytes copied, read from the
+    /// same probe the copy pins its source ETag to, so the size reported is
+    /// the size of the object actually copied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source cannot be probed or the copy fails.
+    pub(crate) async fn copy_sized(&self, from: &str, to: &str) -> Result<u64> {
+        let probe = self.probe(from).await?;
+        if from != to {
+            self.copy_probed(from, to, &probe, None).await?;
+        }
+        Ok(probe.size)
+    }
+
     async fn copy_probed(
         &self,
         from: &str,
@@ -2221,7 +2307,7 @@ fn meta_get(map: Option<&std::collections::HashMap<String, String>>, key: &str) 
 
 #[cfg(test)]
 #[path = "s3_protocol.rs"]
-mod s3_protocol;
+pub(crate) mod s3_protocol;
 
 #[cfg(test)]
 mod tests {

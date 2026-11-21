@@ -272,6 +272,8 @@ function stored(id: string, overrides: Record<string, unknown> = {}): StoredRepo
       os: "linux",
       arch: "x86_64",
       distro: "Debian 13",
+      build_commit: "0123456789abcdef0123456789abcdef01234567",
+      limits: { cpu_millis: 250, memory_bytes: 1_073_741_824, cpus: 2 },
       rustc_release: "1.91.0",
       rustc_channel: "stable",
       events: [
@@ -572,7 +574,10 @@ describe("routing", () => {
     assert.equal(home.status, 200);
     assert.match(home.headers.get("content-security-policy") ?? "", /default-src 'none'/);
     assert.equal(home.headers.get("cache-control"), "no-store");
-    assert.match(await home.text(), /Sign in with GitHub/);
+    const homePage = await home.text();
+    assert.match(homePage, /Sign in with GitHub/);
+    assert.match(homePage, /Looking for a report you sent\?/);
+    assert.match(homePage, /<a class="button outline" href="\/lookup">/);
     for (const p of ["/dash", "/reports", "/issues", `/reports/${ID1}`]) {
       const res = await call(env, new Request(ORIGIN + p));
       assert.equal(res.status, 303, p);
@@ -1065,6 +1070,8 @@ describe("pages", () => {
     ).text();
     assert.match(report, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(report, /\[REDACTED\]/);
+    assert.match(report, /0\.9\.0-rc\.2 <span class="fine">\(0123456789ab\)<\/span>/);
+    assert.match(report, /<dt>Node limits<\/dt><dd>0\.25 CPU, 1 GiB, 2 visible CPUs<\/dd>/);
     assert.match(
       report,
       /<div class="copy-tools" hidden><button type="button" class="log-copy" data-copy="shown">Copy shown<\/button><button type="button" class="log-copy" data-copy="all">Copy all<\/button>/,

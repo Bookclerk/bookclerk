@@ -87,6 +87,8 @@ export const FACET_OPTIONS: { value: WorkFacet | "all"; label: string }[] = [
   { value: "narrator", label: "Narrator" },
   { value: "publisher", label: "Publisher" },
   { value: "source", label: "Store" },
+  { value: "library_tag", label: "Library tags" },
+  { value: "collection", label: "Collection" },
   { value: "tag", label: "My tags" },
   { value: "progress", label: "My progress" },
 ];

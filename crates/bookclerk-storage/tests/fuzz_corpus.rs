@@ -1,15 +1,19 @@
-//! Replays the checked-in `s3_event` fuzz corpus in PR CI (no libFuzzer
-//! required), so a notification message that once broke the parser stays
-//! fixed (`docs/adr/untrusted-input-fuzzing.md`).
+//! Replays the checked-in `s3_event` and `r2_event` fuzz corpora in PR CI
+//! (no libFuzzer required), so a notification message or queue reply that
+//! once broke a parser stays fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing.
 #![allow(clippy::missing_panics_doc, clippy::expect_used, clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
 
+use bookclerk_storage::r2_events::{parse_pull_reply, parse_r2_event, R2EventScope};
 use bookclerk_storage::s3_events::{parse_event_message, EventParseError, EventScope};
 
 #[path = "../../../fuzz/oracles/s3_event.rs"]
 mod s3_event_oracle;
+
+#[path = "../../../fuzz/oracles/r2_event.rs"]
+mod r2_event_oracle;
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
 /// confined to that directory.
@@ -78,4 +82,60 @@ fn named_seeds_keep_their_meaning() {
     );
     assert_eq!(parse_seed("test_event"), Ok(Vec::new()));
     assert_eq!(parse_seed("bad_escape"), Err(EventParseError::BadKey));
+}
+
+/// Reads one `r2_event` seed: its event changes' keys (even first byte) or
+/// the lease ids of its pull reply (odd first byte), or the error text.
+fn read_r2_seed(name: &str) -> Result<Vec<String>, String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/r2_event")
+        .join(name);
+    let data = std::fs::read(&path).expect("read seed");
+    let (&selector, rest) = data.split_first().expect("non-empty seed");
+    let scope = R2EventScope {
+        account: "3f4b7e3dcab231cbfdaa90a6a28bd548",
+        bucket: "books",
+        prefix: if selector & 2 == 0 { "" } else { "library/" },
+    };
+    if selector % 2 == 0 {
+        parse_r2_event(rest, scope)
+            .map(|events| events.into_iter().map(|event| event.change.key).collect())
+            .map_err(|err| err.to_string())
+    } else {
+        parse_pull_reply(rest)
+            .map(|messages| messages.into_iter().map(|m| m.lease_id).collect())
+            .map_err(|err| err.to_string())
+    }
+}
+
+#[test]
+fn fuzz_corpus_r2_event_holds_the_oracle() {
+    let mut accepted = 0;
+    for path in corpus_files("r2_event") {
+        let data = std::fs::read(&path).expect("read");
+        r2_event_oracle::check(&data);
+        let name = path.file_name().and_then(|n| n.to_str()).expect("name");
+        if read_r2_seed(name).is_ok_and(|found| !found.is_empty()) {
+            accepted += 1;
+        }
+    }
+    assert!(
+        accepted >= 5,
+        "the seeds must reach the oracle's comparison, {accepted} did"
+    );
+}
+
+#[test]
+fn named_r2_seeds_keep_their_meaning() {
+    assert_eq!(read_r2_seed("put_object"), Ok(vec!["a b.m4b".to_string()]));
+    assert_eq!(read_r2_seed("other_account"), Ok(Vec::new()));
+    assert_eq!(read_r2_seed("outside_prefix_long_key"), Ok(Vec::new()));
+    assert!(read_r2_seed("bad_key_nul").is_err());
+    assert!(read_r2_seed("event_as_array").is_err());
+    assert_eq!(
+        read_r2_seed("pull_base64_and_text"),
+        Ok(vec!["l1".to_string(), "l2".to_string()])
+    );
+    assert!(read_r2_seed("pull_refused").is_err());
+    assert!(read_r2_seed("pull_as_array").is_err());
 }

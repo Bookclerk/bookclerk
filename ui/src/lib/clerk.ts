@@ -180,6 +180,55 @@ export function signOutClerkCard(libraryId: string): Promise<ClerkSignedOut> {
   });
 }
 
+/** `POST /api/config/clerk/request`. */
+export interface ClerkRequestSent {
+  /** The library that took the request. */
+  library_id: string;
+}
+
+/**
+ * Asks a library this install holds a card for to fetch a book from one of
+ * its branches. The library decides, as for a request from the person's
+ * browser there, and the request then shows with their other requests on
+ * the library.
+ *
+ * @param libraryId - The library id.
+ * @param workId - The library's own work id (`requestable_work`).
+ * @returns The library that took the request.
+ */
+export function requestFromLibrary(libraryId: string, workId: string): Promise<ClerkRequestSent> {
+  return request("/api/config/clerk/request", {
+    method: "POST",
+    body: { library_id: libraryId, work_id: workId },
+  });
+}
+
+/**
+ * What to tell the person when a request to a library failed.
+ *
+ * @param err - The error `requestFromLibrary` threw.
+ * @returns A sentence for the person.
+ */
+export function clerkRequestFailure(err: unknown): string {
+  const code = err instanceof ApiError ? err.code : undefined;
+  switch (code) {
+    case "not_allowed":
+      return "The library's administrator hasn't allowed you to ask its branches for books.";
+    case "not_listed":
+      return "No branch of that library lists this book now.";
+    case "card_refused":
+      return "The library no longer accepts this server's library card. Sign in to it again.";
+    case "library_busy":
+      return "The library is busy. Try again later.";
+    case "not_found":
+      return "This server no longer holds a library card for that library.";
+    case "unreachable":
+      return "The library couldn't be reached. Try again later.";
+    default:
+      return "The library couldn't take the request.";
+  }
+}
+
 /**
  * Reads the `/clerk/callback` query.
  *
