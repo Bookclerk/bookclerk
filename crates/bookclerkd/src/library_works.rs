@@ -914,7 +914,7 @@ where
 /// A 400 for a query that does not parse or a cursor of another query or
 /// other filters, a 503 before the node's works index is first built, a
 /// 500 when the index or the library cannot be read.
-async fn search_page(
+pub(crate) async fn search_page(
     state: &AppState,
     library: &bookclerk_library::LibraryStore,
     q: &str,
@@ -1482,12 +1482,59 @@ pub(crate) async fn get_edition_cover(
             ))),
         )
     };
-    let storage_key = library
-        .edition_acquisition(&id)
+    let bytes = match edition_cover_bytes(&state, &library, &id).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Err(no_cover()),
+        Err(CoverReadError::Library(err)) => return Err(read_failed(ROUTE, &err)),
+        Err(CoverReadError::Storage) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage::new("the cover could not be read")),
+            ))
+        }
+    };
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "image/jpeg")],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Why [`edition_cover_bytes`] could not answer.
+#[derive(Debug)]
+pub(crate) enum CoverReadError {
+    /// The library could not be read.
+    Library(bookclerk_library::LibraryError),
+    /// A destination holds the cover but could not read it (logged).
+    Storage,
+}
+
+/// The JPEG cover written beside an edition's acquired file on one of this
+/// node's destinations, with no scope check (the caller's job).
+///
+/// # Returns
+///
+/// `None` when the edition is not acquired or no destination here holds
+/// its cover.
+///
+/// # Errors
+///
+/// [`CoverReadError`] when the library or a destination holding the cover
+/// cannot be read.
+pub(crate) async fn edition_cover_bytes(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    id: &str,
+) -> Result<Option<axum::body::Bytes>, CoverReadError> {
+    let Some(storage_key) = library
+        .edition_acquisition(id)
         .await
-        .map_err(|err| read_failed(ROUTE, &err))?
+        .map_err(CoverReadError::Library)?
         .and_then(|acquisition| acquisition.storage_key)
-        .ok_or_else(no_cover)?;
+    else {
+        return Ok(None);
+    };
     // Read from a destination that recorded the cover first, then from the
     // rest: the destination the acquisition wrote first need not lead the
     // deployed list once more instances are added.
@@ -1499,7 +1546,7 @@ pub(crate) async fn get_edition_cover(
         let holds = library
             .edition_file(destination.id.as_str(), &cover_key)
             .await
-            .map_err(|err| read_failed(ROUTE, &err))?
+            .map_err(CoverReadError::Library)?
             .is_some();
         if holds {
             recorded.push(destination);
@@ -1519,24 +1566,15 @@ pub(crate) async fn get_edition_cover(
             Err(err) => {
                 tracing::error!(
                     error = %err,
-                    route = ROUTE,
+                    edition_id = %id,
                     destination = %destination.id,
                     "edition cover read failed"
                 );
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorMessage::new("the cover could not be read")),
-                ));
+                return Err(CoverReadError::Storage);
             }
         }
     }
-    let bytes = found.ok_or_else(no_cover)?;
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "image/jpeg")],
-        bytes,
-    )
-        .into_response())
+    Ok(found)
 }
 
 #[cfg(test)]
