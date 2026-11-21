@@ -1502,14 +1502,27 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
          (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
         "DELETE FROM listening_progress WHERE identity_id IN \
          (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
-        "DELETE FROM user_preferences WHERE identity_id IN \
-         (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
     ];
     for prefix in identity_deletes {
         let mut params = vec![j_i64(user_id)];
         params.extend(allow_p.clone());
         statements.push(sql(&format!("{prefix}{allow}"), params));
     }
+
+    // Preferences keyed by one of the user's identities or by the user's
+    // own subject key, in one statement so the plan stays within the
+    // smallest adapter's `maxStatements`.
+    let subject = format!("user:{user_id}");
+    let mut prefs_p = vec![j_i64(user_id), j_str(&subject)];
+    prefs_p.extend(allow_p.clone());
+    statements.push(sql(
+        &format!(
+            "DELETE FROM user_preferences WHERE (identity_id IN \
+             (SELECT id FROM portal_identities WHERE user_id = ?) OR subject_key = ?) \
+             AND {allow}"
+        ),
+        prefs_p,
+    ));
 
     let mut elevated_p = vec![j_i64(user_id)];
     elevated_p.extend(allow_p.clone());
@@ -1586,13 +1599,6 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         ident_p,
     ));
 
-    let subject = format!("user:{user_id}");
-    let mut prefs_p = vec![j_str(&subject)];
-    prefs_p.extend(allow_p.clone());
-    statements.push(sql(
-        &format!("DELETE FROM user_preferences WHERE subject_key = ? AND {allow}"),
-        prefs_p,
-    ));
     for table in [
         "discover_candidates",
         "discover_feeds",
