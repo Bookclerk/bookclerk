@@ -55,6 +55,13 @@ This vendored tree is identical to the pinned upstream revision except:
 9. `api::paginator::page_at` fetches one library page from a continuation
    token and returns the next one, so the storefront plugin can answer a
    paged host scan one page per call instead of walking the whole library.
+10. `downloader::stream_to_file` checks a `206`'s `Content-Range` against
+    the resume offset (with the Bookclerk plugin SDK's
+    `resume::parse_content_range`) and discards the partial with
+    `DownloadError::RangeMismatch` when it starts elsewhere; ends a body
+    that stops arriving for `READ_TIMEOUT` with `DownloadError::Stalled`
+    (partial kept); and `DownloadError::is_transient` tells the storefront
+    plugin which failures another attempt resumes.
 
 Re-vendor when bumping the `audible-rs` git rev in the workspace
 `Cargo.toml`, then re-apply these patches.

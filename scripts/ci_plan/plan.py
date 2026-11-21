@@ -336,6 +336,17 @@ OS_LEG_JOBS: dict[str, tuple[str, ...]] = {
     "macos": ("confinement", "native-gateway", "tray"),
 }
 
+# Jobs that run another job's checks on more OSes and only report: their
+# result never reaches CI Gate, so a failure shows in the run without
+# keeping a pull request out of `main`. ``test-os`` runs the ``test`` job's
+# whole `rust_test` suite on Windows and macOS while the failures that suite
+# finds there are fixed, before it is required
+# (docs/contributing/ci.md#full-suite-on-windows-and-macos). Such a job runs
+# when its owning job does, outside pull request runs.
+REPORT_JOBS: dict[str, tuple[str, ...]] = {
+    "test-os": ("test",),
+}
+
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
 # ``python_sdk`` is not one: its tests launch the ``bookclerk-db-testkit``
 # executable (a ``check_input`` in relations.toml), which the check builds.

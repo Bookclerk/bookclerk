@@ -37,6 +37,10 @@ bookclerk-acquire.workspace = true
 bookclerk-library.workspace = true
 bookclerk-media.workspace = true
 bookclerk-cover.workspace = true
+# Upload ingest: archive caps, resolver drafts and tag evidence.
+bookclerk-archive.workspace = true
+bookclerk-resolve.workspace = true
+bookclerk-tags.workspace = true
 bookclerk-search.workspace = true
 bookclerk-source.workspace = true
 bookclerk-storage.workspace = true
@@ -102,6 +106,7 @@ libc = "0.2"
 
 [dev-dependencies]
 async-trait.workspace = true
+bookclerk-keystore.workspace = true
 bytes.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
 # Tagged audio fixtures for the upload manifest's probe test.

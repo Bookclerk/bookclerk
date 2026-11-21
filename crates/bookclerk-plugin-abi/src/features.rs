@@ -29,6 +29,10 @@ pub const FEATURE_STORAGE_CONDITIONAL_WRITE: &str =
 /// Guest implements [`super::Destination::changes`].
 pub const FEATURE_STORAGE_CHANGES: &str = crate::plugin_capnp::FEATURE_STORAGE_CHANGES;
 
+/// Guest implements [`super::Destination::translate_keys`].
+pub const FEATURE_STORAGE_TRANSLATE_KEYS: &str =
+    crate::plugin_capnp::FEATURE_STORAGE_TRANSLATE_KEYS;
+
 /// Every optional storage operation a host offers a storage guest, beside
 /// [`FEATURE_STORAGE_COPY`]. Each one the guest accepts replaces the host's
 /// fallback for that operation.
@@ -39,6 +43,7 @@ pub const STORAGE_OPERATION_FEATURES: &[&str] = &[
     FEATURE_STORAGE_HEAD_MANY,
     FEATURE_STORAGE_CONDITIONAL_WRITE,
     FEATURE_STORAGE_CHANGES,
+    FEATURE_STORAGE_TRANSLATE_KEYS,
 ];
 
 /// Known RPC feature names.

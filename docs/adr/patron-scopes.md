@@ -88,14 +88,15 @@ explicit flags will be incomplete at first.
 ### Member controls
 
 Beside the rules, six switches say what a Member may do. Each is on out
-of the box.
+of the box except Upload, which stays off until an Administrator turns it
+on.
 
 | Control | Turning it off stops |
 | --- | --- |
 | Link store accounts | Connecting a store account, signing in to one again, and bringing accounts from another library. Accounts already connected keep working, and an Administrator can still remove them. |
 | Download | Taking copies of the library's files: downloads to a branch or clerk, an app's offline downloads, and library-card sync. Listening by streaming is not a copy and stays allowed ([playback ADR](playback.md)) |
 | Edit metadata | Changing book metadata. Patrons can't change metadata yet, so this switch is stored but does not restrict anything until they can. |
-| Upload | Adding books by upload. Patrons can't upload yet, so this switch is stored but does not restrict anything until they can. |
+| Upload | Adding books by uploading files, folders or archives ([uploads](uploads-and-ingest.md)). Off by default. |
 | Request books | Asking a branch for a book it listed (interlibrary requests) |
 | See prices | Prices and store links in Discover, catalog search and the Wishlist; the library drops them from its answers, so the patron's browser never receives them, and the app builds no store links of its own |
 
@@ -116,6 +117,19 @@ Owners are never limited.
 store accounts here". Like that rule it is checked again inside each
 account's import batch, so turning it off stops a join that is still
 adding accounts.
+
+### Administrator switches
+
+An Owner or the operator also keeps control over what an Administrator
+may do, with seven switches: manage members, set patron limits,
+library-wide scan and acquire, run the job queue, fix the catalog,
+invite branches, and approve interlibrary requests. Each has a library
+default (the `core.admin_controls` configuration document) and a
+per-Administrator override in the same shape as the member controls. All
+are on by default, an Administrator can read but never change their own,
+and Owners are never limited. A route a switch guards answers `403` when
+it is off; with library-wide scan off, an Administrator scans and
+acquires like a Member, with only their own accounts.
 
 ### One authority per linked person
 

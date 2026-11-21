@@ -77,21 +77,20 @@ From the command line, `bookclerk users scope get` and
 ## Limit what a patron may do
 
 Six switches, the **member controls**, say what a Member may do. All are
-on out of the box.
+on out of the box except **Upload**, which is off until you turn it on.
 
 | Control | Turning it off stops |
 | --- | --- |
 | Link store accounts | Connecting a store, signing in to one again, and bringing connections from another library. Connections already here keep working. |
 | Download | Taking copies of the library's files to a branch or a clerk app. Listening in the web app stays allowed |
 | Edit metadata | Changing a book's details |
-| Upload | Adding books by uploading files |
+| Upload | Adding books by uploading files, folders or ZIP and tar archives |
 | Request books | Asking a branch for a book it listed |
 | See prices and store links | Prices and store links in Discover and the wishlist |
 
 > [!NOTE]
-> Members can't edit metadata or upload books in Bookclerk yet, so those
-> two switches change nothing today. They are kept so the setting is
-> ready when it applies.
+> Members can't edit metadata in Bookclerk yet, so that switch changes
+> nothing today. It is kept so the setting is ready when it applies.
 
 With **See prices and store links** off, Discover, catalog search and
 the wishlist still show which stores carry a book, but no price and no
@@ -113,6 +112,41 @@ only an Owner or the operator can change their controls. Owners may
 always do everything. From the command line,
 `bookclerk users controls get` and `bookclerk users controls set` do the
 same.
+
+## Limit what an Administrator may do
+
+Seven switches, the **Administrator switches**, say what an
+Administrator may do. Only an Owner or the operator can change them, and
+all are on out of the box. Owners are never limited.
+
+| Switch | Turning it off stops |
+| --- | --- |
+| Manage members | Inviting, adding, changing, resetting the password of, or removing Members. An Administrator can still change their own profile. |
+| Set patron limits | Changing a Member's scope or member controls, and the library's defaults for them |
+| Scan and acquire library-wide | Scanning or acquiring with every store account. They still reach the accounts linked to them. |
+| Run the job queue | Cancelling jobs, retrying, cancelling or resuming event deliveries, and starting a listening sync |
+| Fix the catalog | Pinning a listing to an edition, removing a pin, and splitting a work. The conflicts list stays readable. |
+| Invite branches | Creating invites that let a new branch join the library |
+| Approve interlibrary requests | Answering requests from other libraries |
+
+> [!NOTE]
+> Nothing asks an Administrator to approve an interlibrary request yet, so
+> that switch changes nothing today. It is kept so the setting is ready
+> when it applies.
+
+To set them:
+
+1. Sign in as an Owner and open **Settings → User Management**.
+2. With no one selected, switch **Default Administrator switches**. Every
+   Administrator follows these unless a switch is set for them alone.
+3. To change one Administrator, select them and pick **Allowed** or
+   **Off** for a switch under **Administrator switches**. **Default**
+   makes that switch follow the library's default again.
+
+An Administrator sees their own switches but can't change them. From the
+command line, `bookclerk users admin-controls get` and
+`bookclerk users admin-controls set` do the same (see the
+[CLI reference](../server/cli-reference.md)).
 
 ## Audiobookshelf
 

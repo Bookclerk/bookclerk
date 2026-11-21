@@ -457,6 +457,22 @@ fn replace_files(files: &[NewFile<'_>], marker: &Path) -> Result<(), JoinError> 
     Ok(())
 }
 
+/// Whether `path` may still hold `bytes`: after a failed join, a `master.key`
+/// the rollback could not restore still names the new key, so its keychain
+/// item must stay. Only a file that is missing or reads back different
+/// counts as not published; a file that can't be read keeps the item.
+///
+/// # Arguments
+///
+/// * `path` - the `master.key` path.
+/// * `bytes` - what the join wrote there.
+fn still_published(path: &Path, bytes: &[u8]) -> bool {
+    match std::fs::read(path) {
+        Ok(on_disk) => on_disk == bytes,
+        Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
 /// The only host a shared branch bootstrap may name as its D1 API origin.
 const D1_API_HOST: &str = "api.cloudflare.com";
 
@@ -876,47 +892,67 @@ pub fn apply_shared_branch_bootstrap(
     let identity = encode_node_identity_file(&bootstrap.node_id, &bootstrap.library_id)
         .map_err(|err| record("node identity", &err))?;
     let password = password.map(str::trim).filter(|p| !p.is_empty());
-    let master_key = bookclerk_library::encode_master_key_file(bootstrap.dek.expose(), password)
+    // Puts the key in this install's store first (the keychain item, when
+    // that is the store), so `master.key` is either the envelope or the
+    // pointer to it. A join that fails before publishing deletes the new
+    // item again; the old `master.key` still names the old key.
+    let master_key = bookclerk_library::store_master_key(bootstrap.dek.expose(), password)
         .map_err(|err| record("master.key", &err))?;
-    // `0700`, as for a minted key; done before any target changes.
-    bookclerk_library::prepare_master_key_dir(files_dir)
-        .map_err(|err| record("master.key", &err))?;
-    let config_text = cfg
-        .to_toml_string()
-        .map_err(|err| record("config.toml", &err))?;
-    let mut files = Vec::with_capacity(4);
-    if let Some(text) = &url {
-        // Recorded in the caller's form, as the other targets are, so the
-        // next start's `shared_branch_join_targets` names the same path; only the
-        // config holds the absolute one.
+    let publish = || -> Result<(), JoinError> {
+        // `0700`, as for a minted key; done before any target changes.
+        bookclerk_library::prepare_master_key_dir(files_dir)
+            .map_err(|err| record("master.key", &err))?;
+        let config_text = cfg
+            .to_toml_string()
+            .map_err(|err| record("config.toml", &err))?;
+        let mut files = Vec::with_capacity(4);
+        if let Some(text) = &url {
+            // Recorded in the caller's form, as the other targets are, so the
+            // next start's `shared_branch_join_targets` names the same path; only the
+            // config holds the absolute one.
+            files.push(NewFile {
+                what: "database URL file",
+                target: files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE),
+                bytes: text.as_bytes(),
+                private: true,
+            });
+        }
         files.push(NewFile {
-            what: "database URL file",
-            target: files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE),
-            bytes: text.as_bytes(),
+            what: "node identity",
+            target: node_identity_path(files_dir),
+            bytes: &identity,
             private: true,
         });
+        files.push(NewFile {
+            what: "master.key",
+            target: bookclerk_library::master_key_path(files_dir),
+            bytes: master_key.bytes(),
+            private: true,
+        });
+        // As `Config::write_toml_file` writes it: not a secret file of its own.
+        files.push(NewFile {
+            what: "config.toml",
+            target: config_file.to_path_buf(),
+            bytes: config_text.as_bytes(),
+            private: false,
+        });
+        replace_files(&files, &files_dir.join(SHARED_BRANCH_JOIN_MARKER))
+    };
+    if let Err(err) = publish() {
+        let key_path = bookclerk_library::master_key_path(files_dir);
+        if still_published(&key_path, master_key.bytes()) {
+            // The rollback could not put the old master.key back, so the new
+            // pointer still names the item: keep it, or the key is lost.
+            tracing::warn!(
+                path = %key_path.display(),
+                "kept the new key because master.key still names it after a failed join"
+            );
+        } else {
+            master_key.discard();
+        }
+        return Err(err);
     }
-    files.push(NewFile {
-        what: "node identity",
-        target: node_identity_path(files_dir),
-        bytes: &identity,
-        private: true,
-    });
-    files.push(NewFile {
-        what: "master.key",
-        target: bookclerk_library::master_key_path(files_dir),
-        bytes: &master_key,
-        private: true,
-    });
-    // As `Config::write_toml_file` writes it: not a secret file of its own.
-    files.push(NewFile {
-        what: "config.toml",
-        target: config_file.to_path_buf(),
-        bytes: config_text.as_bytes(),
-        private: false,
-    });
-    replace_files(&files, &files_dir.join(SHARED_BRANCH_JOIN_MARKER))?;
-    if password.is_none() {
+    if password.is_none() && !master_key.in_keychain() {
         bookclerk_library::warn_unwrapped_master_key(&bookclerk_library::master_key_path(
             files_dir,
         ));
@@ -1312,6 +1348,21 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, ["config.toml", "master.key", "node-identity.json"]);
+    }
+
+    #[test]
+    fn a_key_left_published_by_a_failed_rollback_is_kept() {
+        let files = tempfile::tempdir().unwrap();
+        let key = bookclerk_library::master_key_path(files.path());
+        assert!(!still_published(&key, b"new pointer"), "nothing written");
+        std::fs::write(&key, b"old pointer").unwrap();
+        assert!(!still_published(&key, b"new pointer"), "restored");
+        std::fs::write(&key, b"new pointer").unwrap();
+        assert!(still_published(&key, b"new pointer"), "rollback failed");
+        // A master.key that can't be read might still name the item.
+        std::fs::remove_file(&key).unwrap();
+        std::fs::create_dir(&key).unwrap();
+        assert!(still_published(&key, b"new pointer"), "unreadable");
     }
 
     #[test]

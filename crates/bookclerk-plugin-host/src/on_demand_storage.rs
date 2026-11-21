@@ -458,6 +458,19 @@ impl StorageBackend for OnDemandStorage {
         guest.backend().head_many(keys).await
     }
 
+    /// Wakes the guest only when it translates keys itself; otherwise each
+    /// host key is stored as written.
+    async fn translate_keys(
+        &self,
+        keys: &[bookclerk_storage::key_syntax::HostKey],
+    ) -> bookclerk_storage::Result<Vec<String>> {
+        if !self.identity.capabilities.translate_keys {
+            return Ok(keys.iter().map(|key| key.as_str().to_string()).collect());
+        }
+        let (guest, _busy) = self.awake().await?;
+        guest.backend().translate_keys(keys).await
+    }
+
     async fn put_stream_conditional(
         &self,
         key: &str,

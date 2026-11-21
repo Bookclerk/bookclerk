@@ -31,6 +31,10 @@ import type {
   PriceLookup,
   Abridgement,
   MetadataField,
+  NotificationSeverity,
+  NotificationAudience,
+  NotificationAlertAction,
+  NotifyDestinationKind,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -57,6 +61,10 @@ export type {
   PriceLookup,
   Abridgement,
   MetadataField,
+  NotificationSeverity,
+  NotificationAudience,
+  NotificationAlertAction,
+  NotifyDestinationKind,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -346,6 +354,16 @@ export interface HeadManyResult {
   objects: HeadOk[];
 }
 
+/** Success payload of `Destination.translateKeys`. */
+export interface TranslateKeysResult {
+  /**
+   * One translated key per requested host key, in request order: the key
+   * the guest stores that host key under. Each is a relative key with no
+   * empty, `.` or `..` segment.
+   */
+  keys: string[];
+}
+
 /** Argument of `Destination.changes`. Fields are only ever appended. */
 export interface ChangesRequest {
   /**
@@ -554,6 +572,12 @@ export interface Bindings {
    * Null when the guest does not export this capability.
    */
   sockets?: Sockets | null;
+  /**
+   * `NOTIFY`: raises the notification types the plugin declares in
+   * `[[notifications.types]]`; null when it declares none.
+   * Null when the guest does not export this capability.
+   */
+  notify?: NotificationRaiser | null;
 }
 
 /**
@@ -632,6 +656,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   metadataFiles?: MetadataFiles | null;
+  /**
+   * `notifier` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  notifier?: Notifier | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -984,6 +1013,11 @@ export type HeadManyReply =
   | { kind: "ok"; value: HeadManyResult } // Success: one probe per key.
   | { kind: "err"; value: PluginError }; // Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
 
+/** Result union of `Destination.translateKeys`. */
+export type TranslateKeysReply =
+  | { kind: "ok"; value: TranslateKeysResult } // Success: one translated key per host key.
+  | { kind: "err"; value: PluginError }; // Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
 /** Result union of `Destination.changes`. */
 export type ChangesReply =
   | { kind: "ok"; value: ChangesPage } // Success: one page of changes.
@@ -1180,6 +1214,17 @@ export interface Destination {
    * @returns {@link ChangesReply}
    */
   changes(request: ChangesRequest): Promise<ChangesReply>;
+  /**
+   * Translate up to `maxBatchKeys` host keys into the keys the guest stores
+   * them under (requires `storage.translateKeys`). A host key is `/`-joined
+   * segments, none empty, `.`, `..` or holding `\` or a control character.
+   * The same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param keys - Host keys to translate.
+   * @returns {@link TranslateKeysReply}
+   */
+  translateKeys(keys: string[]): Promise<TranslateKeysReply>;
 }
 
 /** Read-only byte source for job inputs (not a storefront). */
@@ -1761,6 +1806,56 @@ export interface MetadataFiles {
    * @returns {@link MetadataFileRenderReply}
    */
   render(params: MetadataFileRenderParams): Promise<MetadataFileRenderReply>;
+}
+
+/**
+ * `notifier` entrypoint: delivers one host-rendered message to one
+ * destination (an email address, a chat webhook, a push subscription). The
+ * host decides what is worth a notification, who gets it and which instance
+ * carries it; the plugin only sends. Each send is one claimed `notify.send`
+ * job, so the host owns retries: a reply of `rate_limited`, `unavailable`,
+ * `deadline_exceeded` or `cancelled` is retried (`rate_limited` honouring
+ * `details.retryAfterMs`), any other error is a permanent failure for that
+ * destination.
+ */
+export interface Notifier {
+  /**
+   * Liveness / readiness probe: credentials and reachability.
+   *
+   * @returns {@link HealthReply}
+   */
+  health(): Promise<HealthReply>;
+  /**
+   * Deliver one message to one destination.
+   *
+   * @param params - Message and destination.
+   * @returns {@link NotifySendReply}
+   */
+  send(params: NotifySendParams): Promise<NotifySendReply>;
+  /**
+   * Normalise and check a personal destination's address before the host
+   * saves it.
+   *
+   * @param params - Address document to check.
+   * @returns {@link NotifyValidateReply}
+   */
+  validateDestination(params: NotifyValidateParams): Promise<NotifyValidateReply>;
+}
+
+/**
+ * `NOTIFY` binding: raises a notification type the plugin declared in
+ * `[[notifications.types]]`. The host router applies the administrators'
+ * routing and each patron's preferences; the raising plugin never learns
+ * where the notification went.
+ */
+export interface NotificationRaiser {
+  /**
+   * Raise one notification.
+   *
+   * @param params - Declared type, fields and optional patron.
+   * @returns {@link NotifyRaiseReply}
+   */
+  raise(params: NotifyRaiseParams): Promise<NotifyRaiseReply>;
 }
 
 /**
@@ -3726,6 +3821,183 @@ export interface MetadataFileRendered {
 /** Result union of `MetadataFiles.render`. */
 export type MetadataFileRenderReply =
   | { kind: "ok"; value: MetadataFileRendered } // Success: the new file.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One labelled value shown with a notification. */
+export interface NotificationField {
+  /** Label; at most `maxNotificationTitleBytes`. */
+  name: string;
+  /** Value; at most `maxNotificationFieldBytes`. */
+  value: string;
+}
+
+/**
+ * A message the host rendered for one notification. Every link is built
+ * from the library's public origin, never from a request.
+ */
+export interface NotificationMessage {
+  /**
+   * Host-assigned id, the same on every destination's copy; plugins use it
+   * as an idempotency key where the service takes one.
+   */
+  notificationId: string;
+  /** Notification type id (`job_failed`, `<plugin>:sync_failed`). */
+  notificationType: string;
+  /** How urgent it is. */
+  severity: NotificationSeverity;
+  /** Short title; at most `maxNotificationTitleBytes`. */
+  title: string;
+  /** Plain-text body; at most `maxNotificationTextBytes`. */
+  text: string;
+  /**
+   * Markdown body for chat services; at most `maxNotificationTextBytes`.
+   * Omitted when absent (wire zero value).
+   */
+  markdown?: string;
+  /**
+   * Minimal HTML body for email; at most `maxNotificationHtmlBytes`.
+   * Omitted when absent (wire zero value).
+   */
+  html?: string;
+  /**
+   * Absolute `https` (or loopback `http`) link into the library.
+   * Omitted when absent (wire zero value).
+   */
+  link?: string;
+  /** Labelled values, at most `maxNotificationFields`. */
+  fields: NotificationField[];
+  /**
+   * Messages with one group key may be threaded or collapsed together.
+   * Omitted when absent (wire zero value).
+   */
+  groupKey?: string;
+  /** Alert lifecycle step; `none` for a one-off message. */
+  alertAction: NotificationAlertAction;
+  /**
+   * Alert this message opens or closes; required unless `alertAction` is
+   * `none`.
+   * Omitted when absent (wire zero value).
+   */
+  alertKey?: string;
+  /**
+   * True when the body carries a secret (an account-mail link): the plugin
+   * and SDKs must never log it.
+   */
+  sensitive: boolean;
+}
+
+/** Where a `Notifier.send` goes. */
+export interface NotifyDestination {
+  /** Channel or personal destination. */
+  kind: NotifyDestinationKind;
+  /** Host id of the destination, stable across sends. */
+  destinationId: string;
+  /**
+   * Personal address as a JSON object of the fields the manifest's
+   * `[[notifier.address_fields]]` declare; empty for a channel. At most
+   * `maxNotifierAddressBytes`. May hold secrets; never logged.
+   */
+  addressJson: string;
+}
+
+/** Params of `Notifier.send`. */
+export interface NotifySendParams {
+  /** What to send. */
+  message: NotificationMessage;
+  /** Where to send it. */
+  destination: NotifyDestination;
+}
+
+/** Success payload of `Notifier.send`. */
+export interface NotifySent {
+  /**
+   * The service's id for the delivered message, when it gives one.
+   * Omitted when absent (wire zero value).
+   */
+  providerId?: string;
+}
+
+/** Result union of `Notifier.send`. */
+export type NotifySendReply =
+  | { kind: "ok"; value: NotifySent } // Delivered.
+  | { kind: "err"; value: PluginError }; // Typed failure; `rate_limited`, `unavailable`, `deadline_exceeded` and `cancelled` are retried.
+
+/** Params of `Notifier.validateDestination`. */
+export interface NotifyValidateParams {
+  /**
+   * Address document as the patron entered it; at most
+   * `maxNotifierAddressBytes`.
+   */
+  addressJson: string;
+}
+
+/** Success payload of `Notifier.validateDestination`. */
+export interface NotifyValidated {
+  /**
+   * Normalised address document the host saves; at most
+   * `maxNotifierAddressBytes`.
+   */
+  addressJson: string;
+  /**
+   * Short label shown to the patron (`a***@example.com`); never a secret.
+   * Omitted when absent (wire zero value).
+   */
+  label?: string;
+}
+
+/**
+ * Result union of `Notifier.validateDestination`. An address the plugin
+ * refuses is `invalid_params`.
+ */
+export type NotifyValidateReply =
+  | { kind: "ok"; value: NotifyValidated } // Accepted, normalised address.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Params of `NotificationRaiser.raise`. */
+export interface NotifyRaiseParams {
+  /**
+   * Type id from the plugin's `[[notifications.types]]` (without the plugin
+   * prefix the host adds).
+   */
+  notificationType: string;
+  /** Labelled values, at most `maxNotificationFields`. */
+  fields: NotificationField[];
+  /**
+   * Patron the notification is for; required for a patron-audience type
+   * and must be inside the invocation's account scope; empty otherwise.
+   * Omitted when absent (wire zero value).
+   */
+  patronId?: string;
+  /**
+   * Path inside the library the notification links to (starts with `/`);
+   * the host prefixes the public origin.
+   * Omitted when absent (wire zero value).
+   */
+  linkPath?: string;
+  /**
+   * Messages with one group key may be threaded or collapsed together.
+   * Omitted when absent (wire zero value).
+   */
+  groupKey?: string;
+  /** Alert lifecycle step; `none` for a one-off notification. */
+  alertAction: NotificationAlertAction;
+  /**
+   * Alert this raise opens or closes; required unless `alertAction` is
+   * `none`.
+   * Omitted when absent (wire zero value).
+   */
+  alertKey?: string;
+}
+
+/** Success payload of `NotificationRaiser.raise`. */
+export interface NotifyRaised {
+  /** Host-assigned notification id. */
+  notificationId: string;
+}
+
+/** Result union of `NotificationRaiser.raise`. */
+export type NotifyRaiseReply =
+  | { kind: "ok"; value: NotifyRaised } // Accepted by the router.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** One WebSocket message. */

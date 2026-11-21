@@ -4,13 +4,16 @@
 //! own list of formats: the acquire pipeline takes a library's copy from
 //! another store only when an output that re-encodes or repackages audio
 //! can read it. The answers follow the crate's decode front: the
-//! Symphonia features this crate enables, and FDK for every AAC profile.
+//! Symphonia features this crate enables, FDK for every AAC profile and
+//! libopus for Opus. The daemon serves the same report at
+//! `GET /api/status/media` and the CLI prints it with
+//! `bookclerk media capabilities`.
 
 use bookclerk_tags::AudioCodec;
 
 /// Media types of whole files the worker opens: MP4 (`.m4a`/`.m4b`, AAC
-/// or ALAC), MPEG audio layers I–III, FLAC, ADTS AAC, WAV, AIFF and Core
-/// Audio Format. The container is still sniffed from the bytes when the
+/// or ALAC), MPEG audio layers I–III, FLAC, ADTS AAC, WAV, AIFF, Core
+/// Audio Format and Ogg (Opus or Vorbis). The container is still sniffed from the bytes when the
 /// file is opened; this list only says which kinds are worth sending.
 pub const READABLE_CONTENT_TYPES: &[&str] = &[
     "audio/mp4",
@@ -20,10 +23,16 @@ pub const READABLE_CONTENT_TYPES: &[&str] = &[
     "audio/wav",
     "audio/aiff",
     "audio/x-caf",
+    "audio/ogg",
+    "audio/opus",
 ];
 
 /// What the worker produces from decoded audio.
-pub const OUTPUT_ENCODINGS: &[OutputEncoding] = &[OutputEncoding::AacLcM4b, OutputEncoding::Mp3];
+pub const OUTPUT_ENCODINGS: &[OutputEncoding] = &[
+    OutputEncoding::AacLcM4b,
+    OutputEncoding::Mp3,
+    OutputEncoding::Opus,
+];
 
 /// One encoding the worker can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +41,31 @@ pub enum OutputEncoding {
     AacLcM4b,
     /// MP3, through LAME.
     Mp3,
+    /// Opus in an Ogg file, through libopus.
+    Opus,
+}
+
+impl OutputEncoding {
+    /// The output format id that selects this encoding (`m4b`, `mp3`,
+    /// `opus`), as copy formats spell it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::AacLcM4b => "m4b",
+            Self::Mp3 => "mp3",
+            Self::Opus => "opus",
+        }
+    }
+
+    /// True for an encoding settings pages offer only under their advanced
+    /// options: one that fewer players open than M4B and MP3.
+    #[must_use]
+    pub fn is_advanced(self) -> bool {
+        match self {
+            Self::AacLcM4b | Self::Mp3 => false,
+            Self::Opus => true,
+        }
+    }
 }
 
 /// The codecs, containers and output encodings this build handles.
@@ -48,12 +82,13 @@ pub struct Capabilities {
 /// Every [`AudioCodec`] the tag reader names, so [`capabilities`] can list
 /// the decodable ones. [`decodes`] matches exhaustively, so a new codec
 /// fails to compile there until it is decided.
-const ALL_CODECS: [AudioCodec; 7] = [
+const ALL_CODECS: [AudioCodec; 8] = [
     AudioCodec::Aac,
     AudioCodec::Alac,
     AudioCodec::Flac,
     AudioCodec::Mp3,
     AudioCodec::Opus,
+    AudioCodec::Vorbis,
     AudioCodec::Eac3,
     AudioCodec::Ac4,
 ];
@@ -61,12 +96,18 @@ const ALL_CODECS: [AudioCodec; 7] = [
 /// True when the worker decodes audio encoded as `codec`.
 ///
 /// AAC covers every profile (LC, HE, HE v2, xHE). MP3 covers MPEG audio
-/// layers I and II too, which the tag reader reports as MP3.
+/// layers I and II too, which the tag reader reports as MP3. Opus covers
+/// mono and stereo streams; surround Opus (several streams) fails to open.
 #[must_use]
 pub fn decodes(codec: AudioCodec) -> bool {
     match codec {
-        AudioCodec::Aac | AudioCodec::Alac | AudioCodec::Flac | AudioCodec::Mp3 => true,
-        AudioCodec::Opus | AudioCodec::Eac3 | AudioCodec::Ac4 => false,
+        AudioCodec::Aac
+        | AudioCodec::Alac
+        | AudioCodec::Flac
+        | AudioCodec::Mp3
+        | AudioCodec::Opus
+        | AudioCodec::Vorbis => true,
+        AudioCodec::Eac3 | AudioCodec::Ac4 => false,
     }
 }
 
@@ -103,17 +144,24 @@ mod tests {
                 AudioCodec::Aac,
                 AudioCodec::Alac,
                 AudioCodec::Flac,
-                AudioCodec::Mp3
+                AudioCodec::Mp3,
+                AudioCodec::Opus,
+                AudioCodec::Vorbis
             ]
         );
         assert_eq!(report.encodes, OUTPUT_ENCODINGS);
+        let names: Vec<_> = report.encodes.iter().map(|e| e.name()).collect();
+        assert_eq!(names, ["m4b", "mp3", "opus"]);
+        assert!(OutputEncoding::Opus.is_advanced());
+        assert!(!OutputEncoding::Mp3.is_advanced());
     }
 
     #[test]
     fn content_types_compare_by_essence() {
         assert!(reads_content_type("audio/flac"));
         assert!(reads_content_type("Audio/MP4; codecs=mp4a.40.2"));
-        assert!(!reads_content_type("audio/ogg"));
+        assert!(reads_content_type("audio/ogg"));
+        assert!(!reads_content_type("audio/x-matroska"));
         assert!(!reads_content_type(""));
     }
 }

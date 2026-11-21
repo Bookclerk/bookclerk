@@ -1,7 +1,7 @@
 //! What the desktop window's custom scheme lets a page reach.
 //!
 //! The desktop window runs the host in-process and hands every request its
-//! webview makes on the app scheme to the router, adding the operator token
+//! webview makes on the app scheme to the router, adding its own credential
 //! itself (`bookclerkd::embedded`). That makes the scheme handler an
 //! authorization boundary over bytes the host did not produce: the method,
 //! headers and path a page sent, and the URLs the window is asked to open.
@@ -14,7 +14,9 @@
 //!   the live socket, before routing.
 //! - [`rewrite_request_headers`]: the headers the router sees. The page's
 //!   credentials, origins and forwarding headers are dropped; `Host`,
-//!   `Origin` ([`EMBEDDED_ORIGIN`]) and the operator token are set.
+//!   `Origin` ([`EMBEDDED_ORIGIN`]) and the window's own [`Credential`] are
+//!   set: the patron session from this OS user's profile, or the operator
+//!   token before the library has an Owner.
 //! - [`classify_navigation`]: the window stays on the app's pages, except
 //!   for a library's sign-in while one started from the window is open: a
 //!   join (this install becomes a branch) or a library card (this install
@@ -298,23 +300,39 @@ pub fn sign_in_ttl(body: &[u8]) -> Option<Duration> {
     Some(Duration::from_secs(secs))
 }
 
+/// The credential the window presents for a request: the page never holds
+/// one, so the embedded host chooses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Credential<'a> {
+    /// No credential: operator auth is off, or nobody is signed in yet and
+    /// the page should show the sign-in screen.
+    None,
+    /// The operator's bearer token: the library has no Owner yet (first
+    /// run, or a computer that is only a clerk of another library).
+    Operator(&'a str),
+    /// The `Cookie` header the window's own session jar holds: the patron
+    /// this OS user's profile names, and an elevated operator session when
+    /// that patron elevated.
+    Cookies(&'a str),
+}
+
 /// The headers the router sees for an embedded request: the page's own,
 /// less credentials, origins and forwarding headers, plus `Host`, `Origin`
-/// ([`EMBEDDED_ORIGIN`]) and, when operator auth is on, the operator's bearer
-/// token.
+/// ([`EMBEDDED_ORIGIN`]) and the window's own credential.
 ///
 /// # Arguments
 ///
 /// * `page` - The headers the webview sent.
-/// * `bearer` - The operator token, or `None` when operator auth is off.
+/// * `credential` - What the window presents: nothing, the operator's
+///   bearer token, or its session jar's `Cookie` header.
 ///
 /// # Returns
 ///
-/// The rewritten headers. A token that is not a valid header value is left
-/// out, so the request goes unauthenticated (fail closed); the caller can
-/// tell from the missing `Authorization`.
+/// The rewritten headers. A token or cookie text that is not a valid header
+/// value is left out, so the request goes unauthenticated (fail closed);
+/// the caller can tell from the missing `Authorization` or `Cookie`.
 #[must_use]
-pub fn rewrite_request_headers(page: &HeaderMap, bearer: Option<&str>) -> HeaderMap {
+pub fn rewrite_request_headers(page: &HeaderMap, credential: Credential<'_>) -> HeaderMap {
     let mut headers = page.clone();
     for name in &DROPPED_REQUEST_HEADERS {
         headers.remove(name);
@@ -329,11 +347,14 @@ pub fn rewrite_request_headers(page: &HeaderMap, bearer: Option<&str>) -> Header
     }
     headers.insert(header::HOST, HeaderValue::from_static(EMBEDDED_HOST));
     headers.insert(header::ORIGIN, HeaderValue::from_static(EMBEDDED_ORIGIN));
-    if let Some(token) = bearer {
-        if let Ok(mut value) = HeaderValue::from_str(&format!("Bearer {token}")) {
-            value.set_sensitive(true);
-            headers.insert(header::AUTHORIZATION, value);
-        }
+    let (name, text) = match credential {
+        Credential::None => return headers,
+        Credential::Operator(token) => (header::AUTHORIZATION, format!("Bearer {token}")),
+        Credential::Cookies(cookies) => (header::COOKIE, cookies.to_owned()),
+    };
+    if let Ok(mut value) = HeaderValue::from_str(&text) {
+        value.set_sensitive(true);
+        headers.insert(name, value);
     }
     headers
 }
@@ -417,7 +438,7 @@ mod tests {
             ("host", "evil.example"),
             ("accept", "application/json"),
         ]);
-        let seen = rewrite_request_headers(&page, Some("op-token"));
+        let seen = rewrite_request_headers(&page, Credential::Operator("op-token"));
         let mut lines: Vec<String> = seen
             .iter()
             .map(|(name, value)| format!("{name}={}", value.to_str().unwrap()))
@@ -433,10 +454,31 @@ mod tests {
             ]
         );
         assert!(seen.get(header::AUTHORIZATION).unwrap().is_sensitive());
-        let off = rewrite_request_headers(&page, None);
+        let off = rewrite_request_headers(&page, Credential::None);
         assert!(off.get(header::AUTHORIZATION).is_none());
-        let bad = rewrite_request_headers(&page, Some("line\nbreak"));
+        assert!(off.get(header::COOKIE).is_none());
+        let bad = rewrite_request_headers(&page, Credential::Operator("line\nbreak"));
         assert!(bad.get(header::AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn the_rewrite_sends_the_jar_cookies_instead_of_the_page_cookies() {
+        let page = headers(&[
+            ("cookie", "bookclerk_portal_session=stolen"),
+            ("authorization", "Bearer page"),
+        ]);
+        let jar = "bookclerk_portal_session=mine; bookclerk_operator_session=elevated";
+        let seen = rewrite_request_headers(&page, Credential::Cookies(jar));
+        let cookies: Vec<&str> = seen
+            .get_all(header::COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(cookies, [jar]);
+        assert!(seen.get(header::COOKIE).unwrap().is_sensitive());
+        assert!(seen.get(header::AUTHORIZATION).is_none());
+        let bad = rewrite_request_headers(&page, Credential::Cookies("a=b\r\nx: y"));
+        assert!(bad.get(header::COOKIE).is_none());
     }
 
     #[test]

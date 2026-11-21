@@ -22,6 +22,8 @@ import {
   MetadataFilesHealthResultsCodec,
   MetadataProviderHealthParamsCodec,
   MetadataProviderHealthResultsCodec,
+  NotifierHealthParamsCodec,
+  NotifierHealthResultsCodec,
   RemoteLibraryHealthParamsCodec,
   RemoteLibraryHealthResultsCodec,
   decodeMessage,
@@ -42,7 +44,12 @@ import {
 
 /** Cap'n interfaces whose `health` method the smoke probes. */
 export type HealthInterface =
-  "ContentSource" | "RemoteLibrary" | "MetadataProvider" | "CoverFetcher" | "MetadataFiles";
+  | "ContentSource"
+  | "RemoteLibrary"
+  | "MetadataProvider"
+  | "CoverFetcher"
+  | "MetadataFiles"
+  | "Notifier";
 
 /** `health` params / results codecs per probed interface. */
 const HEALTH_CODECS: Readonly<
@@ -73,6 +80,10 @@ const HEALTH_CODECS: Readonly<
   MetadataFiles: {
     params: MetadataFilesHealthParamsCodec,
     results: MetadataFilesHealthResultsCodec,
+  },
+  Notifier: {
+    params: NotifierHealthParamsCodec,
+    results: NotifierHealthResultsCodec,
   },
 });
 
@@ -146,6 +157,7 @@ const HEALTH_ENTRYPOINTS: readonly (readonly [string, HealthInterface])[] = [
   ["metadata", "MetadataProvider"],
   ["covers", "CoverFetcher"],
   ["metadataFiles", "MetadataFiles"],
+  ["notifier", "Notifier"],
 ];
 
 /**

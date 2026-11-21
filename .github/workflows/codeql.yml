@@ -74,11 +74,12 @@ jobs:
 
   analyze:
     name: Analyze (${{ matrix.language }})
-    # Pull request runs take turns: Rust in one slot, every other language in
-    # another, so they leave runners for the merge queue
+    # Pull request runs take turns in four slots: Rust in two, every other
+    # language in two more, each run in the pair its run id's parity picks,
+    # so they leave runners for the merge queue
     # (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && format('codeql-pr-slot-{0}', matrix.language == 'rust' && 'rust' || 'other') || format('codeql-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.language) }}
+      group: ${{ github.event_name == 'pull_request' && format('codeql-pr-slot-{0}-{1}', matrix.language == 'rust' && 'rust' || 'other', (endsWith(format('{0}', github.run_id), '0') || endsWith(format('{0}', github.run_id), '2') || endsWith(format('{0}', github.run_id), '4') || endsWith(format('{0}', github.run_id), '6') || endsWith(format('{0}', github.run_id), '8')) && 'even' || 'odd') || format('codeql-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.language) }}
       queue: max
     needs: languages
     runs-on: ubuntu-latest

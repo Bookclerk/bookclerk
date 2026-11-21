@@ -72,28 +72,22 @@ pub async fn convert_book(
     title: &AcquireTitle,
     req: &ConvertRequest,
 ) -> Result<String> {
-    let title_id = acquiring_title(title)?;
-    let key = title
-        .storage_key
-        .as_ref()
-        .ok_or_else(|| AcquireError::Other(anyhow::anyhow!("{title_id}: no storage_key")))?;
+    let holding_id = acquiring_title(title)?;
+    let key = title.storage_key.as_ref().ok_or_else(|| {
+        AcquireError::Other(anyhow::anyhow!("{}: no storage_key", title.product_id))
+    })?;
     let ext = key.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     if !matches!(ext.as_str(), "m4b" | "m4a") {
         return Err(AcquireError::Other(anyhow::anyhow!(
-            "{title_id}: not an m4b/m4a file ({ext})",
+            "{}: not an m4b/m4a file ({ext})",
+            title.product_id
         )));
     }
 
     let mp3_key = swap_audio_extension(key, "mp3");
     if !req.force && storage.exists(&mp3_key).await? {
         library
-            .set_acquire_status(
-                title_id,
-                &title.account_id,
-                AcquireStatus::Acquired,
-                Some(&mp3_key),
-                None,
-            )
+            .set_holding_acquire_status(holding_id, AcquireStatus::Acquired, Some(&mp3_key), None)
             .await?;
         return Ok(mp3_key);
     }
@@ -131,21 +125,21 @@ pub async fn convert_book(
     .await
 }
 
-/// The library UUID of `title` when it is the title that acquired its
+/// The account holding of `title` when it is the title that acquired its
 /// edition: the one whose status write moves the edition's key.
 ///
 /// # Errors
 ///
-/// Returns [`AcquireError::Other`] when `title` has no library row or
-/// another title acquired the edition.
+/// Returns [`AcquireError::Other`] when another title acquired the
+/// edition.
 fn acquiring_title(title: &AcquireTitle) -> Result<&str> {
-    match title.book_uuid.as_deref() {
-        Some(uuid) if title.acquired_here() => Ok(uuid),
-        _ => Err(AcquireError::Other(anyhow::anyhow!(
-            "{}: another title acquired this edition; convert that title",
-            title.product_id
-        ))),
+    if title.acquired_here() {
+        return Ok(&title.holding_id);
     }
+    Err(AcquireError::Other(anyhow::anyhow!(
+        "{}: another title acquired this edition; convert that title",
+        title.product_id
+    )))
 }
 
 /// Streams conversion scratch under `work_dir` using `encode` for the output file.
@@ -162,7 +156,7 @@ where
     F: FnOnce(PathBuf, PathBuf, u64) -> Fut,
     Fut: std::future::Future<Output = std::result::Result<(), String>>,
 {
-    let title_id = acquiring_title(title)?;
+    let holding_id = acquiring_title(title)?;
     let key = title.storage_key.as_deref().unwrap_or("");
     let ext = key.rsplit('.').next().unwrap_or("bin");
     let file_id = title.asin_or_isbn();
@@ -285,13 +279,7 @@ where
         };
         storage.put_file(mp3_key, &output, meta).await?;
         library
-            .set_acquire_status(
-                title_id,
-                &title.account_id,
-                AcquireStatus::Acquired,
-                Some(mp3_key),
-                None,
-            )
+            .set_holding_acquire_status(holding_id, AcquireStatus::Acquired, Some(mp3_key), None)
             .await?;
         if mp3_key != key {
             let _ = storage.delete(key).await;

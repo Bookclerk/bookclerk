@@ -3187,6 +3187,512 @@
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
+    "/api/users/default-admin-controls": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Reads the library's default Administrator switches.",
+        "operationId": "get_default_admin_controls",
+        "responses": {
+          "200": {
+            "description": "The default switches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultAdminControlsJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or Administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "forbidden"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The switches could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "patch": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Changes the named default Administrator switches; the others keep\ntheir stored value. Every Administrator follows the change at once,\nexcept in the switches set for them alone. Only an Owner or the\noperator may.",
+        "operationId": "patch_default_admin_controls",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchDefaultAdminControls"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The default switches after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultAdminControlsJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body names a switch that does not exist. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unknown field `fly`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or the operator. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "only an Owner can change what Administrators may do"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The default kept changing underneath the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "core.admin_controls kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `changes` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The switches could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/users/{id}/admin-controls": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Reads what an Administrator may do: the library's default, their own\noverrides, and what applies. An Administrator may read their own.",
+        "operationId": "get_user_admin_controls",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user's switches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserAdminControlsJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner, and not the Administrator asking about themselves.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "only an Owner can change what Administrators may do"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 4 not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The switches could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "patch": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Changes the named switches for one Administrator; every switch it does\nnot name keeps what it had. Only an Owner or the operator\nmay, and switches stored for someone who is not an Administrator apply\nonly if their role changes to Administrator.",
+        "operationId": "patch_user_admin_controls",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchUserAdminControls"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The user's switches after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserAdminControlsJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body names a switch that does not exist. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unknown field `fly`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or the operator. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "only an Owner can change what Administrators may do"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 4 not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The switches kept changing underneath the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `changes` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The switches could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
     "/api/users/{id}/claim-ticket": {
       "post": {
         "tags": [
@@ -4533,6 +5039,123 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
+      }
+    },
+    "/api/status/media": {
+      "get": {
+        "tags": [
+          "Status"
+        ],
+        "summary": "Returns the audio codecs, file types and output encodings this build's\nmedia worker handles.",
+        "operationId": "media_capabilities",
+        "responses": {
+          "200": {
+            "description": "What the media worker reads and writes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaCapabilitiesJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -29532,6 +30155,1417 @@
         "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
       }
     },
+    "/api/uploads": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Lists the caller's uploads, newest first.",
+        "operationId": "list_uploads",
+        "responses": {
+          "200": {
+            "description": "The caller's uploads.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The sign-in is linked to no patron. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/ErrorMessage"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ErrorJson"
+                            }
+                          ]
+                        },
+                        {
+                          "$ref": "#/components/schemas/ErrorJson"
+                        }
+                      ]
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this sign-in is not linked to a patron who can hold books"
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The uploads could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the upload could not be read or written"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      },
+      "post": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Starts an upload from a manifest of the files to come.",
+        "description": "The caller must be allowed to upload (the `upload` member control). The\noperator's uploads are held by the library's first active Owner. Paths\nare relative (`Folder/File.m4b`), at most 10,000 files, each within\n`uploads.max_file_bytes`, all within the caller's staging quota.",
+        "operationId": "create_upload",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadManifest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The upload is open for bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The manifest is malformed, names no file or too many, or a path is refused or clashes. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "file 1 has the same path as an earlier file"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not upload. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/ErrorMessage"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ErrorJson"
+                            }
+                          ]
+                        },
+                        {
+                          "$ref": "#/components/schemas/ErrorJson"
+                        }
+                      ]
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "uploads are not allowed for this person"
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "A file passes the per-file limit or the upload passes the staging quota.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "file 0 is larger than the per-file limit"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not JSON. As `text/plain`, when the request did not declare a JSON body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "send the manifest as application/json"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `files` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The upload could not be created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the upload could not be read or written"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          },
+          "507": {
+            "description": "The disk would drop below its free-space floor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "this server is low on disk space"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/uploads/review": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Lists uploaded books stored under a new local edition because nothing\nstrong identified them, for an Administrator to check and, when they\nare a known edition, pin.",
+        "operationId": "list_upload_review",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "path",
+            "description": "The `next_cursor` of the previous page.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of books to review.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The cursor is not one this route made.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid page cursor"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/ErrorMessage"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ErrorJson"
+                            }
+                          ]
+                        },
+                        {
+                          "$ref": "#/components/schemas/ErrorJson"
+                        }
+                      ]
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can review uploads"
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The list could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the upload could not be read or written"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/uploads/{id}": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Reads one of the caller's uploads with every file: how many bytes each\nhas received (where to resume) and, once ingested, what became of it.",
+        "operationId": "get_upload",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Upload id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The upload and its files.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such upload of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "no such upload"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The upload could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the upload could not be read or written"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      },
+      "delete": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Cancels an upload that has not started ingesting and drops its bytes.",
+        "operationId": "delete_upload",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Upload id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The upload is cancelled."
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such upload of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "no such upload"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The upload is already ingesting or finished.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the upload is already ingesting or finished"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The upload could not be cancelled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the upload could not be read or written"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/uploads/{id}/files/{member_no}": {
+      "patch": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Sends bytes of one file, from the offset in the `Upload-Offset` header.",
+        "description": "The body is `application/offset+octet-stream`. A request that breaks\noff keeps the bytes that arrived; read the upload (or the answer's\n`received`) and resume from there. Bytes past the file's declared size\nare refused.",
+        "operationId": "patch_upload_file",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Upload id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "member_no",
+            "in": "path",
+            "description": "The file's number in the manifest.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "Upload-Offset",
+            "in": "header",
+            "description": "Bytes of the file already received.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/offset+octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/BinaryBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The bytes were stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReceivedJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The Upload-Offset header is missing or malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "send the Upload-Offset header"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such upload of the caller's, or no such file in it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "no such upload"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The offset is not where the file stands, another request is sending this file, or the upload no longer takes bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the file has 1024 bytes; resume from there"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The bytes run past the file's declared size.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the bytes run past the file's declared size"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/offset+octet-stream.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "send the bytes as application/offset+octet-stream"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The bytes could not be stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the upload could not be read or written"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          },
+          "507": {
+            "description": "The disk would drop below its free-space floor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "this server is low on disk space"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/uploads/{id}/commit": {
+      "post": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Commits an upload whose files have all arrived: queues its ingest job.",
+        "operationId": "commit_upload",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Upload id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The ingest job is queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such upload of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "no such upload"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Files are still missing bytes, or the upload is not open.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "2 files are still missing bytes"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The upload could not be committed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the upload could not be read or written"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is full; try again later. When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again; sent only with `session_check_unavailable`."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "the job queue is full"
+                    }
+                  },
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
     "/.well-known/openid-configuration": {
       "get": {
         "tags": [
@@ -34960,6 +36994,16 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Content-Range",
+            "in": "header",
+            "description": "For a file sent in parts: `bytes <first>-<last>/<size>`, the part this body is, each its own request in order; or `bytes */<size>` with an empty body, which asks for the offset the owner needs next (to resume). A file sent whole carries no range.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
           }
         ],
         "requestBody": {
@@ -34974,15 +37018,28 @@
         },
         "responses": {
           "200": {
-            "description": "The file was stored (`received`).",
+            "description": "The file was stored (`received`), or a part that is not the file's last was taken, or a status query was answered, with the offset the owner needs next (`partial`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
-                "example": {
-                  "job_completed": false,
-                  "status": "received"
+                "examples": {
+                  "partial": {
+                    "summary": "Send the file from this offset.",
+                    "value": {
+                      "job_completed": false,
+                      "offset": 67108864,
+                      "status": "partial"
+                    }
+                  },
+                  "received": {
+                    "summary": "The whole file was stored.",
+                    "value": {
+                      "job_completed": false,
+                      "status": "received"
+                    }
+                  }
                 }
               }
             }
@@ -35057,7 +37114,7 @@
             }
           },
           "422": {
-            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
+            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a `Content-Range` that is not exactly a part of the declared file (`invalid_range`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -35077,6 +37134,14 @@
                     "value": {
                       "job_completed": false,
                       "reason": "destinations_changed",
+                      "status": "refused"
+                    }
+                  },
+                  "invalid_range": {
+                    "summary": "The range is not a part of the declared file.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "invalid_range",
                       "status": "refused"
                     }
                   },
@@ -35109,15 +37174,29 @@
             }
           },
           "503": {
-            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`).",
+            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`). With reason `resume`, a part did not start where the open file stands, or broke part way: send the file from `offset` (0 when no write is open here).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
-                "example": {
-                  "job_completed": false,
-                  "status": "unavailable"
+                "examples": {
+                  "resume": {
+                    "summary": "Send the file from this offset.",
+                    "value": {
+                      "job_completed": false,
+                      "offset": 67108864,
+                      "reason": "resume",
+                      "status": "unavailable"
+                    }
+                  },
+                  "unavailable": {
+                    "summary": "Retry the request.",
+                    "value": {
+                      "job_completed": false,
+                      "status": "unavailable"
+                    }
+                  }
                 }
               }
             }
@@ -36783,6 +38862,169 @@
         ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
+    },
+    "/api/portal/sources/{source}/connections/{account_id}/pace": {
+      "post": {
+        "tags": [
+          "Accounts"
+        ],
+        "summary": "Changes how fast Bookclerk downloads from one of the caller's store\naccounts when it starts the downloads itself, and returns the result.",
+        "description": "The body sets `mode` (`default`, `custom` or `unlimited`); a custom pace\ncarries `downloads_per_day` (1 to 10000) and/or `min_gap_seconds` (0 to\n86400). `clear_cooldown: true` also ends a cool-down the store asked\nfor. Downloads a person starts are never held, whatever the pace.",
+        "operationId": "portal_set_connection_pace",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "path",
+            "description": "Source plugin id or PluginKey.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Store account id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaceRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The pace was stored; the account's pace as it now stands.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaceView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body breaks a rule, or the account is not linked to this identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "invalid": {
+                    "summary": "A custom pace with no values.",
+                    "value": {
+                      "error": "invalid input: pace body: a custom pace needs downloads_per_day or min_gap_seconds"
+                    }
+                  },
+                  "not_linked": {
+                    "summary": "No link between this identity and the account.",
+                    "value": {
+                      "error": "account not linked to this identity"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the portal session expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "No portal session cookie.",
+                    "value": {
+                      "error": "not signed in"
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "The cookie names a session that is gone.",
+                    "value": {
+                      "error": "session expired"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is longer than 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "the body is at most 4096 bytes"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare an `application/json` body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "not_json": {
+                    "summary": "No JSON Content-Type.",
+                    "value": {
+                      "error": "the body must be sent as application/json"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
     }
   },
   "components": {
@@ -36981,6 +39223,106 @@
           }
         },
         "additionalProperties": false
+      },
+      "AdminControlOverrides": {
+        "type": "object",
+        "description": "One Administrator's overrides: a value for some switches, and the\nlibrary's default for the rest (an absent or `null` field).",
+        "properties": {
+          "manage_members": {
+            "type": "boolean",
+            "description": "Overrides [`AdminControls::manage_members`].",
+            "example": null,
+            "nullable": true
+          },
+          "set_patron_limits": {
+            "type": "boolean",
+            "description": "Overrides [`AdminControls::set_patron_limits`].",
+            "example": null,
+            "nullable": true
+          },
+          "library_scan": {
+            "type": "boolean",
+            "description": "Overrides [`AdminControls::library_scan`].",
+            "example": false,
+            "nullable": true
+          },
+          "run_jobs": {
+            "type": "boolean",
+            "description": "Overrides [`AdminControls::run_jobs`].",
+            "example": null,
+            "nullable": true
+          },
+          "fix_catalog": {
+            "type": "boolean",
+            "description": "Overrides [`AdminControls::fix_catalog`].",
+            "example": null,
+            "nullable": true
+          },
+          "invite_branches": {
+            "type": "boolean",
+            "description": "Overrides [`AdminControls::invite_branches`].",
+            "example": null,
+            "nullable": true
+          },
+          "approve_requests": {
+            "type": "boolean",
+            "description": "Overrides [`AdminControls::approve_requests`].",
+            "example": null,
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "AdminControls": {
+        "type": "object",
+        "description": "A value for each switch: the library's default, or what applies to one\nAdministrator.",
+        "properties": {
+          "manage_members": {
+            "type": "boolean",
+            "description": "May manage Members ([`AdminControl::ManageMembers`]).",
+            "example": true
+          },
+          "set_patron_limits": {
+            "type": "boolean",
+            "description": "May set patron limits ([`AdminControl::SetPatronLimits`]).",
+            "example": true
+          },
+          "library_scan": {
+            "type": "boolean",
+            "description": "May scan and acquire library-wide ([`AdminControl::LibraryScan`]).",
+            "example": false
+          },
+          "run_jobs": {
+            "type": "boolean",
+            "description": "May run the job queue ([`AdminControl::RunJobs`]).",
+            "example": true
+          },
+          "fix_catalog": {
+            "type": "boolean",
+            "description": "May fix the catalog ([`AdminControl::FixCatalog`]).",
+            "example": true
+          },
+          "invite_branches": {
+            "type": "boolean",
+            "description": "May invite branches ([`AdminControl::InviteBranches`]).",
+            "example": true
+          },
+          "approve_requests": {
+            "type": "boolean",
+            "description": "May approve interlibrary requests ([`AdminControl::ApproveRequests`]).",
+            "example": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "AdminSwitchChoice": {
+        "type": "string",
+        "description": "What a change does to one switch of one Administrator.",
+        "enum": [
+          "on",
+          "off",
+          "default"
+        ]
       },
       "ApiError": {
         "type": "object",
@@ -39329,7 +41671,8 @@
           "source",
           "plugin_key",
           "connection_status",
-          "source_enabled"
+          "source_enabled",
+          "pace"
         ],
         "properties": {
           "account_id": {
@@ -39395,6 +41738,14 @@
               }
             },
             "nullable": true
+          },
+          "pace": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PaceView"
+              }
+            ],
+            "description": "How fast Bookclerk downloads from this account when it starts the\ndownloads itself."
           }
         }
       },
@@ -39666,14 +42017,15 @@
           "m4b",
           "mp3",
           "mp3_chapters",
-          "original"
+          "original",
+          "opus"
         ]
       },
       "CopyQuality": {
         "type": "string",
-        "description": "A copy's quality: `original`, a constant bitrate the MP3 encoder writes (`64k`, `96k`, `128k`, `160k`, `192k`, `256k` or `320k`), or a LAME VBR quality `v0` to `v9`; the last two may end in `-mono`.",
+        "description": "A copy's quality: `original`, a bitrate (for MP3 a constant rate the encoder writes: `64k`, `96k`, `128k`, `160k`, `192k`, `256k` or `320k`; for Opus a target: `16k`, `24k`, `32k`, `48k`, `64k`, `96k` or `128k`), or a LAME VBR quality `v0` to `v9` (MP3 only); the last two may end in `-mono`.",
         "example": "64k-mono",
-        "pattern": "^(original|((64|96|128|160|192|256|320)k|v[0-9])(-mono)?)$"
+        "pattern": "^(original|((16|24|32|48|64|96|128|160|192|256|320)k|v[0-9])(-mono)?)$"
       },
       "CreatePluginInstance": {
         "type": "object",
@@ -39895,6 +42247,23 @@
           }
         }
       },
+      "DefaultAdminControlsJson": {
+        "type": "object",
+        "description": "The library's default Administrator switches as the switch routes\nreport them.",
+        "required": [
+          "controls"
+        ],
+        "properties": {
+          "controls": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminControls"
+              }
+            ],
+            "description": "The switches every Administrator follows unless set for them alone."
+          }
+        }
+      },
       "DefaultControlsJson": {
         "type": "object",
         "description": "The library's default member controls as the control routes report\nthem.",
@@ -39928,6 +42297,55 @@
             "description": "The scope patrons without their own follow."
           }
         }
+      },
+      "DefaultSwitchChanges": {
+        "type": "object",
+        "description": "Changes to some of the library's default switches: a new value for\neach named switch; an absent switch keeps its stored value.",
+        "properties": {
+          "manage_members": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::ManageMembers`].",
+            "example": null,
+            "nullable": true
+          },
+          "set_patron_limits": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::SetPatronLimits`].",
+            "example": null,
+            "nullable": true
+          },
+          "library_scan": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::LibraryScan`].",
+            "example": false,
+            "nullable": true
+          },
+          "run_jobs": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::RunJobs`].",
+            "example": null,
+            "nullable": true
+          },
+          "fix_catalog": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::FixCatalog`].",
+            "example": null,
+            "nullable": true
+          },
+          "invite_branches": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::InviteBranches`].",
+            "example": null,
+            "nullable": true
+          },
+          "approve_requests": {
+            "type": "boolean",
+            "description": "New default for [`AdminControl::ApproveRequests`].",
+            "example": null,
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "DeliveryBacklog": {
         "type": "object",
@@ -40987,7 +43405,8 @@
           "purchase",
           "plus",
           "loan",
-          "free"
+          "free",
+          "own"
         ]
       },
       "ErrorAnswer": {
@@ -41559,6 +43978,28 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "A patron who uploaded the book.",
+            "required": [
+              "user_id",
+              "kind"
+            ],
+            "properties": {
+              "user_id": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The person's user id.",
+                "example": 3
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "patron"
+                ]
+              }
+            }
           }
         ],
         "description": "Who holds a listing."
@@ -42048,6 +44489,7 @@
           "search_index_rebuild",
           "library_index_rebuild",
           "branch_request",
+          "ingest_batch",
           "invalid"
         ]
       },
@@ -42940,6 +45382,35 @@
           }
         }
       },
+      "ManifestFile": {
+        "type": "object",
+        "description": "One file of a `POST /api/uploads` manifest, as sent.",
+        "required": [
+          "path",
+          "size"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Relative path, folders kept (`Book/01 Chapter.mp3`); `\\` reads as\n`/`. Refused when absolute, when it climbs out with `..`, or when it\nis too long or too deep.",
+            "example": "The Hobbit/01 Chapter One.mp3"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size in bytes.",
+            "example": 52428800,
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Lower-case hex SHA-256 of the file, checked before it is stored.",
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "MeResponse": {
         "type": "object",
         "description": "JSON body for `GET /me`.",
@@ -42963,6 +45434,66 @@
             "description": "Optional display label from the identity row.",
             "example": "Dana Reader",
             "nullable": true
+          }
+        }
+      },
+      "MediaCapabilitiesJson": {
+        "type": "object",
+        "description": "The codecs, containers and encodings this build's media worker handles.",
+        "required": [
+          "decodes",
+          "reads",
+          "encodes"
+        ],
+        "properties": {
+          "decodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Audio codecs the worker decodes (`aac`, `alac`, `flac`, `mp3`,\n`opus`, `vorbis`).",
+            "example": [
+              "aac",
+              "alac",
+              "flac",
+              "mp3",
+              "opus",
+              "vorbis"
+            ]
+          },
+          "reads": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Media types of files the worker opens, compared without case or\nparameters.",
+            "example": [
+              "audio/mp4",
+              "audio/mpeg",
+              "audio/flac",
+              "audio/ogg"
+            ]
+          },
+          "encodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutputEncodingJson"
+            },
+            "description": "Encodings the worker writes.",
+            "example": [
+              {
+                "advanced": false,
+                "name": "m4b"
+              },
+              {
+                "advanced": false,
+                "name": "mp3"
+              },
+              {
+                "advanced": true,
+                "name": "opus"
+              }
+            ]
           }
         }
       },
@@ -42996,8 +45527,8 @@
           },
           "upload": {
             "type": "boolean",
-            "description": "May upload books ([`MemberControl::Upload`]).",
-            "example": true
+            "description": "May upload books ([`MemberControl::Upload`]); off unless set.",
+            "example": false
           },
           "request_books": {
             "type": "boolean",
@@ -43060,6 +45591,15 @@
             "example": true
           }
         }
+      },
+      "MissingFileAction": {
+        "type": "string",
+        "description": "What happens to a stored copy whose file disappears from its destination\noutside Bookclerk (noticed by the destination's change feed or listing).",
+        "enum": [
+          "mark_missing",
+          "restore"
+        ],
+        "example": "mark_missing"
       },
       "MultiDestinationMode": {
         "type": "string",
@@ -44889,9 +47429,29 @@
         ],
         "description": "Body of `GET /api/config/domains/core.output` and of a `PUT` that was\napplied: the revision metadata and the `[output]` document."
       },
+      "OutputEncodingJson": {
+        "type": "object",
+        "description": "One encoding the media worker writes.",
+        "required": [
+          "name",
+          "advanced"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The output format id that selects it (`m4b`, `mp3` or `opus`).",
+            "example": "opus"
+          },
+          "advanced": {
+            "type": "boolean",
+            "description": "True when settings offer it only under their advanced options,\nbecause fewer players open it than M4B and MP3.",
+            "example": true
+          }
+        }
+      },
       "OutputFormat": {
         "type": "string",
-        "description": "Post-download output formatting. Default is enriched M4B (tags + chapters).\n`split_mp3_by_size` and `opus` parse but are not implemented yet: the\nacquire pipeline rejects a job that selects either before downloading.",
+        "description": "Post-download output formatting. Default is enriched M4B (tags + chapters).\n`split_mp3_by_size` parses but is not implemented yet: the acquire\npipeline rejects a job that selects it before downloading.",
         "enum": [
           "enriched_m4b",
           "single_mp3",
@@ -45070,6 +47630,14 @@
             ],
             "description": "Policy when only some enabled destinations have a title."
           },
+          "missing_files": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MissingFileAction"
+              }
+            ],
+            "description": "What happens to a stored copy whose file disappears from its\ndestination outside Bookclerk. Absent in documents written before\nthe setting existed, which read as the default."
+          },
           "bad_book_action": {
             "allOf": [
               {
@@ -45188,6 +47756,90 @@
             "description": "Max length per path segment (`0` disables truncation).",
             "example": 255,
             "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "OverrideSwitchChanges": {
+        "type": "object",
+        "description": "Changes to some of one Administrator's overrides: `on` or `off` for\nthem alone, or `default` to follow the library's default again; an\nabsent switch keeps what it had.",
+        "properties": {
+          "manage_members": {
+            "description": "Change to [`AdminControl::ManageMembers`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "set_patron_limits": {
+            "description": "Change to [`AdminControl::SetPatronLimits`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "library_scan": {
+            "description": "Change to [`AdminControl::LibraryScan`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "run_jobs": {
+            "description": "Change to [`AdminControl::RunJobs`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "fix_catalog": {
+            "description": "Change to [`AdminControl::FixCatalog`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "invite_branches": {
+            "description": "Change to [`AdminControl::InviteBranches`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
+          },
+          "approve_requests": {
+            "description": "Change to [`AdminControl::ApproveRequests`].",
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "default",
+              null
+            ],
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -45336,6 +47988,137 @@
             "example": [
               "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
             ]
+          }
+        }
+      },
+      "PaceModeSchema": {
+        "type": "string",
+        "description": "The `mode` of a [`PaceRequestBody`], for the API reference.",
+        "enum": [
+          "default",
+          "custom",
+          "unlimited"
+        ]
+      },
+      "PaceRequestBody": {
+        "type": "object",
+        "description": "Request body of the pace route, for the API reference (the route reads\nthe raw bytes with `bookclerk_library::pacing::parse_pace_request`).",
+        "properties": {
+          "mode": {
+            "description": "`default`, `custom` or `unlimited`. Leave it out to only end the\ncool-down (then `clear_cooldown` must be `true`) and keep the stored\npace.",
+            "type": "string",
+            "enum": [
+              "default",
+              "custom",
+              "unlimited",
+              null
+            ],
+            "nullable": true
+          },
+          "downloads_per_day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Custom downloads per rolling 24 hours; `custom` only.",
+            "example": 20,
+            "maximum": 10000,
+            "minimum": 1,
+            "nullable": true
+          },
+          "min_gap_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Custom seconds between downloads; `custom` only.",
+            "example": 60,
+            "maximum": 86400,
+            "minimum": 0,
+            "nullable": true
+          },
+          "clear_cooldown": {
+            "type": "boolean",
+            "description": "Also end a cool-down the store asked for.",
+            "example": false,
+            "nullable": true
+          }
+        }
+      },
+      "PaceView": {
+        "type": "object",
+        "description": "How fast Bookclerk downloads from one store account when it starts the\ndownloads itself, for the Accounts page.",
+        "required": [
+          "mode",
+          "min_gap_seconds",
+          "downloads_last_day"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "description": "`default` (the store's pace), `custom` or `unlimited`.",
+            "example": "default"
+          },
+          "downloads_per_day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Downloads allowed in any rolling 24 hours now in force; `null` for\nno daily budget.",
+            "example": 100,
+            "minimum": 0,
+            "nullable": true
+          },
+          "min_gap_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds between two downloads now in force.",
+            "example": 30,
+            "minimum": 0
+          },
+          "store_downloads_per_day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The store's declared daily budget; `null` when it declares none or\nits plugin is not deployed here.",
+            "example": 100,
+            "minimum": 0,
+            "nullable": true
+          },
+          "store_min_gap_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The store's declared gap in seconds; `null` when its plugin is not\ndeployed here.",
+            "example": 30,
+            "minimum": 0,
+            "nullable": true
+          },
+          "custom_downloads_per_day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Custom daily budget the operator set, when `mode` is `custom`.",
+            "example": null,
+            "minimum": 0,
+            "nullable": true
+          },
+          "custom_min_gap_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Custom gap the operator set, when `mode` is `custom`.",
+            "example": null,
+            "minimum": 0,
+            "nullable": true
+          },
+          "downloads_last_day": {
+            "type": "integer",
+            "description": "Downloads from this account in the last 24 hours, by hand or not.",
+            "example": 12,
+            "minimum": 0
+          },
+          "cooldown_until": {
+            "type": "string",
+            "description": "End of the cool-down the store asked for (RFC 3339), when one is\nrunning.",
+            "example": null,
+            "nullable": true
+          },
+          "next_automatic_at": {
+            "type": "string",
+            "description": "When the next automatic download may start (RFC 3339); `null` when\none may start now.",
+            "example": null,
+            "nullable": true
           }
         }
       },
@@ -45560,6 +48343,24 @@
           }
         }
       },
+      "PatchDefaultAdminControls": {
+        "type": "object",
+        "description": "`PATCH /api/users/default-admin-controls` body.",
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DefaultSwitchChanges"
+              }
+            ],
+            "description": "The default switches to change and their new values. Switches it\ndoes not name keep their stored value, so two Owners editing\ndifferent switches do not undo each other."
+          }
+        },
+        "additionalProperties": false
+      },
       "PatchPreferencesBody": {
         "type": "object",
         "description": "Partial preferences update; omitted fields keep their stored values.",
@@ -45665,6 +48466,24 @@
             "nullable": true
           }
         }
+      },
+      "PatchUserAdminControls": {
+        "type": "object",
+        "description": "`PATCH /api/users/{id}/admin-controls` body.",
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OverrideSwitchChanges"
+              }
+            ],
+            "description": "The switches to change for this Administrator: `on` or `off` sets\nthe switch for them alone, `default` follows the library's default\nagain. Switches it does not name keep what they had, so two Owners\nediting different switches do not undo each other."
+          }
+        },
+        "additionalProperties": false
       },
       "PatchUserRequest": {
         "type": "object",
@@ -47788,6 +50607,68 @@
               }
             },
             "nullable": true
+          },
+          "storage_sync": {
+            "description": "How outside changes at this destination are followed; absent until\na storage instance's first sync pass.",
+            "type": "object",
+            "required": [
+              "feed_state",
+              "listing_in_progress",
+              "objects"
+            ],
+            "properties": {
+              "feed_state": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/StorageFeedState"
+                  }
+                ],
+                "description": "The change feed's state: `off` (no feed; listings alone), `healthy`,\n`gap` (the feed may have missed changes; a listing runs at once) or\n`failing` (reading the feed failed; listings cover it)."
+              },
+              "feed_error": {
+                "type": "string",
+                "description": "The last feed failure.",
+                "example": "the notification queue refused the request: access denied",
+                "nullable": true
+              },
+              "feed_checked_at": {
+                "type": "string",
+                "description": "RFC 3339 time the feed was last read.",
+                "example": "2026-11-20T21:00:00Z",
+                "nullable": true
+              },
+              "listed_at": {
+                "type": "string",
+                "description": "RFC 3339 time the last listing finished.",
+                "example": "2026-11-20T18:00:00Z",
+                "nullable": true
+              },
+              "next_listing_at": {
+                "type": "string",
+                "description": "RFC 3339 time the next scheduled listing is due.",
+                "example": "2026-11-21T00:00:00Z",
+                "nullable": true
+              },
+              "listing_in_progress": {
+                "type": "boolean",
+                "description": "True while a listing is in progress (it continues on the next\npass).",
+                "example": false
+              },
+              "listing_error": {
+                "type": "string",
+                "description": "Why the last listing failed or its removals were held back.",
+                "example": "the listing missed 412 of 1832 known files; removals were not applied",
+                "nullable": true
+              },
+              "objects": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Files the destination held after the last listing or feed page.",
+                "example": 1832,
+                "minimum": 0
+              }
+            },
+            "nullable": true
           }
         }
       },
@@ -48176,6 +51057,68 @@
                 "type": "string",
                 "description": "RFC 3339 time of the last intent write.",
                 "example": "2026-10-28T19:05:00Z"
+              }
+            },
+            "nullable": true
+          },
+          "storage_sync": {
+            "description": "How outside changes at this destination are followed; absent for\nother plugins and before a destination's first sync pass.",
+            "type": "object",
+            "required": [
+              "feed_state",
+              "listing_in_progress",
+              "objects"
+            ],
+            "properties": {
+              "feed_state": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/StorageFeedState"
+                  }
+                ],
+                "description": "The change feed's state: `off` (no feed; listings alone), `healthy`,\n`gap` (the feed may have missed changes; a listing runs at once) or\n`failing` (reading the feed failed; listings cover it)."
+              },
+              "feed_error": {
+                "type": "string",
+                "description": "The last feed failure.",
+                "example": "the notification queue refused the request: access denied",
+                "nullable": true
+              },
+              "feed_checked_at": {
+                "type": "string",
+                "description": "RFC 3339 time the feed was last read.",
+                "example": "2026-11-20T21:00:00Z",
+                "nullable": true
+              },
+              "listed_at": {
+                "type": "string",
+                "description": "RFC 3339 time the last listing finished.",
+                "example": "2026-11-20T18:00:00Z",
+                "nullable": true
+              },
+              "next_listing_at": {
+                "type": "string",
+                "description": "RFC 3339 time the next scheduled listing is due.",
+                "example": "2026-11-21T00:00:00Z",
+                "nullable": true
+              },
+              "listing_in_progress": {
+                "type": "boolean",
+                "description": "True while a listing is in progress (it continues on the next\npass).",
+                "example": false
+              },
+              "listing_error": {
+                "type": "string",
+                "description": "Why the last listing failed or its removals were held back.",
+                "example": "the listing missed 412 of 1832 known files; removals were not applied",
+                "nullable": true
+              },
+              "objects": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Files the destination held after the last listing or feed page.",
+                "example": 1832,
+                "minimum": 0
               }
             },
             "nullable": true
@@ -49677,6 +52620,36 @@
           }
         }
       },
+      "ReceivedJson": {
+        "type": "object",
+        "description": "Where a file's bytes stand after a `PATCH`.",
+        "required": [
+          "memberNo",
+          "received",
+          "complete"
+        ],
+        "properties": {
+          "memberNo": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The file's number.",
+            "example": 0,
+            "minimum": 0
+          },
+          "received": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes received; send the next `PATCH` from here.",
+            "example": 67108864,
+            "minimum": 0
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "True once every byte has arrived.",
+            "example": false
+          }
+        }
+      },
       "Recommendation": {
         "type": "object",
         "description": "One ranked recommendation (typically an unowned storefront title).",
@@ -50329,6 +53302,69 @@
             "type": "string",
             "description": "Payload-root digest of the tree it unpacks to.",
             "example": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a"
+          }
+        }
+      },
+      "ReviewItemJson": {
+        "type": "object",
+        "description": "One stored book to review.",
+        "required": [
+          "upload_id",
+          "member_no",
+          "path",
+          "user_id"
+        ],
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "description": "The upload.",
+            "example": "4f3c2b1a0e9d8c7b6a5f4e3d2c1b0a99"
+          },
+          "member_no": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The file's number in it.",
+            "example": 0,
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "The file's path in the upload.",
+            "example": "Unknown/track01.mp3"
+          },
+          "edition_id": {
+            "type": "string",
+            "description": "The local edition it was stored under.",
+            "example": "6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b",
+            "nullable": true
+          },
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The patron who uploaded it.",
+            "example": 3
+          }
+        }
+      },
+      "ReviewPage": {
+        "type": "object",
+        "description": "One page of books to review.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewItemJson"
+            },
+            "description": "The books, oldest upload first."
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Pass as `cursor` for the next page; absent when this page is empty.",
+            "example": "4f3c2b1a0e9d8c7b6a5f4e3d2c1b0a99:0",
+            "nullable": true
           }
         }
       },
@@ -51519,6 +54555,77 @@
           }
         ],
         "description": "A fresh second factor for a shared branch consent. `Debug` prints no code."
+      },
+      "StorageFeedState": {
+        "type": "string",
+        "description": "The state of a destination's change feed, as the API reports it.",
+        "enum": [
+          "off",
+          "healthy",
+          "gap",
+          "failing"
+        ]
+      },
+      "StorageSyncView": {
+        "type": "object",
+        "description": "How a destination notices changes made outside Bookclerk: its change\nfeed's state and its listings (storage destinations ADR, decision 5).",
+        "required": [
+          "feed_state",
+          "listing_in_progress",
+          "objects"
+        ],
+        "properties": {
+          "feed_state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StorageFeedState"
+              }
+            ],
+            "description": "The change feed's state: `off` (no feed; listings alone), `healthy`,\n`gap` (the feed may have missed changes; a listing runs at once) or\n`failing` (reading the feed failed; listings cover it)."
+          },
+          "feed_error": {
+            "type": "string",
+            "description": "The last feed failure.",
+            "example": "the notification queue refused the request: access denied",
+            "nullable": true
+          },
+          "feed_checked_at": {
+            "type": "string",
+            "description": "RFC 3339 time the feed was last read.",
+            "example": "2026-11-20T21:00:00Z",
+            "nullable": true
+          },
+          "listed_at": {
+            "type": "string",
+            "description": "RFC 3339 time the last listing finished.",
+            "example": "2026-11-20T18:00:00Z",
+            "nullable": true
+          },
+          "next_listing_at": {
+            "type": "string",
+            "description": "RFC 3339 time the next scheduled listing is due.",
+            "example": "2026-11-21T00:00:00Z",
+            "nullable": true
+          },
+          "listing_in_progress": {
+            "type": "boolean",
+            "description": "True while a listing is in progress (it continues on the next\npass).",
+            "example": false
+          },
+          "listing_error": {
+            "type": "string",
+            "description": "Why the last listing failed or its removals were held back.",
+            "example": "the listing missed 412 of 1832 known files; removals were not applied",
+            "nullable": true
+          },
+          "objects": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Files the destination held after the last listing or feed page.",
+            "example": 1832,
+            "minimum": 0
+          }
+        }
       },
       "StoreEdition": {
         "type": "object",
@@ -52877,13 +55984,21 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
+            "description": "Stable outcome: `received`, `partial` (a part that is not the\nfile's last was taken), `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
             "example": "received"
           },
           "reason": {
             "type": "string",
-            "description": "Why, for `refused`.",
+            "description": "Why, for `refused`, and `resume` for an `unavailable` part that\ndoes not continue the open file at [`Self::offset`].",
             "example": "size_mismatch",
+            "nullable": true
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "For `partial`, and an `unavailable` part with reason `resume`: the\noffset of the next byte of the file the owner needs.",
+            "example": 67108864,
+            "minimum": 0,
             "nullable": true
           },
           "job_completed": {
@@ -52910,6 +56025,231 @@
           }
         },
         "additionalProperties": false
+      },
+      "UploadJson": {
+        "type": "object",
+        "description": "One upload.",
+        "required": [
+          "id",
+          "state",
+          "source",
+          "fileCount",
+          "declaredBytes",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The upload id (32 hex digits).",
+            "example": "4f3c2b1a0e9d8c7b6a5f4e3d2c1b0a99"
+          },
+          "state": {
+            "type": "string",
+            "description": "`open` (taking bytes), `committed` (queued), `running`, `done`,\n`failed` or `cancelled`.",
+            "example": "open"
+          },
+          "source": {
+            "type": "string",
+            "description": "`upload`, or `intake` for a batch a drop folder made.",
+            "example": "upload"
+          },
+          "fileCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Files the manifest named.",
+            "example": 2,
+            "minimum": 0
+          },
+          "declaredBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes the manifest declared.",
+            "example": 734068736,
+            "minimum": 0
+          },
+          "jobId": {
+            "type": "string",
+            "description": "The ingest job, once committed.",
+            "example": null,
+            "nullable": true
+          },
+          "detail": {
+            "type": "string",
+            "description": "Why the upload failed.",
+            "example": null,
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "When it was created (RFC 3339).",
+            "example": "2026-11-20T09:00:00Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "description": "Its last activity (RFC 3339).",
+            "example": "2026-11-20T09:05:00Z"
+          },
+          "finishedAt": {
+            "type": "string",
+            "description": "When it finished (RFC 3339).",
+            "example": null,
+            "nullable": true
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UploadMemberJson"
+            },
+            "description": "Its files; left out of lists.",
+            "nullable": true
+          }
+        }
+      },
+      "UploadList": {
+        "type": "object",
+        "description": "The caller's uploads, newest first.",
+        "required": [
+          "uploads"
+        ],
+        "properties": {
+          "uploads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UploadJson"
+            },
+            "description": "At most 50 uploads, without their files."
+          }
+        }
+      },
+      "UploadManifest": {
+        "type": "object",
+        "description": "`POST /api/uploads` body: the files of one batch.",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManifestFile"
+            },
+            "description": "Every file of the batch, in the order their numbers follow."
+          }
+        },
+        "additionalProperties": false
+      },
+      "UploadMemberJson": {
+        "type": "object",
+        "description": "One file of an upload.",
+        "required": [
+          "memberNo",
+          "path",
+          "size",
+          "received",
+          "outcome"
+        ],
+        "properties": {
+          "memberNo": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its number in the upload; manifest files are numbered from 0 in\norder, an archive's entries after every earlier file.",
+            "example": 0,
+            "minimum": 0
+          },
+          "parentNo": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The archive it was expanded from.",
+            "example": null,
+            "minimum": 0,
+            "nullable": true
+          },
+          "path": {
+            "type": "string",
+            "description": "Its path in the upload (for a refused archive entry, its cleaned\nname).",
+            "example": "Dune/01 Dune.m4b"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its size in bytes.",
+            "example": 734003200,
+            "minimum": 0
+          },
+          "received": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes received so far; resume a `PATCH` here.",
+            "example": 734003200,
+            "minimum": 0
+          },
+          "outcome": {
+            "type": "string",
+            "description": "What became of it: `pending`, `expanded` (an archive), `matched`,\n`needs_review`, `duplicate`, `refused` or `failed`.",
+            "example": "matched"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it was refused or failed, as a stable code.",
+            "example": null,
+            "nullable": true
+          },
+          "editionId": {
+            "type": "string",
+            "description": "The edition it was stored under.",
+            "example": "6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b",
+            "nullable": true
+          }
+        }
+      },
+      "UserAdminControlsJson": {
+        "type": "object",
+        "description": "An Administrator's switches as the switch routes report them.",
+        "required": [
+          "user_id",
+          "defaults",
+          "overrides",
+          "effective",
+          "applies"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The user (`users.id`).",
+            "example": 4
+          },
+          "defaults": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminControls"
+              }
+            ],
+            "description": "The library's default for every Administrator."
+          },
+          "overrides": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminControlOverrides"
+              }
+            ],
+            "description": "The switches set for this Administrator alone; the others follow\nthe default."
+          },
+          "effective": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminControls"
+              }
+            ],
+            "description": "What applies to the user now: everything for an Owner, nothing for\na disabled user or a Member, and the default with the\noverrides applied for an Administrator."
+          },
+          "applies": {
+            "type": "boolean",
+            "description": "Whether the switches limit the user's role: true only for an\nAdministrator.",
+            "example": true
+          }
+        }
       },
       "UserChangeConflict": {
         "type": "object",

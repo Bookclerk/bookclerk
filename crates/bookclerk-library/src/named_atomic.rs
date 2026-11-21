@@ -362,22 +362,19 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
 
     async fn set_acquire_status(
         &self,
-        book_uuid: &str,
-        title: Option<&crate::TitleHolding>,
+        holding: &crate::TitleHolding,
+        book_uuid: Option<&str>,
         status: AcquireStatus,
         storage_key: Option<&str>,
         error_message: Option<&str>,
-        event: Option<PublishDomainEventSpec>,
+        event: PublishDomainEventSpec,
     ) -> Result<()> {
-        let event = match event {
-            Some(spec) => crate::prepare_publish_domain_event(spec)?,
-            None => PublishDomainEventSpec::default(),
-        };
+        let event = crate::prepare_publish_domain_event(event)?;
         let result = self
             .call(DbAtomicParams::SetAcquireStatus {
-                book_uuid: book_uuid.to_string(),
-                edition_id: title.map(|t| t.edition_id.clone()),
-                holding_id: title.map(|t| t.holding_id.clone()),
+                holding_id: holding.holding_id.clone(),
+                edition_id: holding.edition_id.clone(),
+                book_uuid: book_uuid.map(str::to_string),
                 status: status.as_str().to_string(),
                 storage_key: storage_key.map(str::to_string),
                 error_message: error_message.map(str::to_string),
@@ -393,7 +390,10 @@ impl<R: NamedAtomicRunner> AtomicTxnBackend for NamedAtomicBackend<R> {
                 ordering_key: event.ordering_key,
             })
             .await?;
-        unit_from_atomic(result, LibraryError::not_found(EntityKind::Book, book_uuid))
+        unit_from_atomic(
+            result,
+            LibraryError::not_found(EntityKind::Book, holding.holding_id.as_str()),
+        )
     }
 
     async fn dispatch_event_deliveries(

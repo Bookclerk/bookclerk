@@ -200,7 +200,7 @@ stateDiagram-v2
 | Kind | Dedup key | Resource class | Handler |
 | --- | --- | --- | --- |
 | `scan` | `scan:account={id\|all}`, then `:instance={id}` when pinned | `network` | `run_scan` |
-| `acquire` | `acquire:title={id\|all}:account={id\|all}`, then `:force=1`, `:pdf=1` and `:instance={id}` when set | `network` | `run_acquire` |
+| `acquire` | `acquire:title={id\|all}:account={id\|all}`, then `:force=1`, `:pdf=1`, `:paced=1` and `:instance={id}` when set | `network` | `run_acquire` |
 | `listen_sync` | `listen_sync` | `network` | `run_listen_sync` |
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
 | `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobRunner` stream-copy (`run_plugin_copy`) |
@@ -212,6 +212,7 @@ stateDiagram-v2
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
 | `library_index_rebuild` | `library_index_rebuild` | `network` | `run_library_index_rebuild` (no network; rewrites every row of the library's page index) |
 | `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
+| `ingest_batch` | `ingest_batch:batch={id}` | `network` | `run_ingest_batch` on the node that holds the upload's bytes (pinned by `payload.node_id`; never handed to a branch) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
 ticker claims a due fire with a compare-and-swap on the instance's
@@ -234,6 +235,16 @@ consumes `wishlist_changed`, `listening_synced`, `book_acquired`,
 `holding_added` and `holding_removed` and admits jobs with a 30 s `run_after`) queue them. See
 [Precomputed shelves](discovery.md#precomputed-shelves) and
 [Taste events](discovery.md#taste-events).
+
+`ingest_batch` stores one upload (or one drop-folder intake batch): it
+checks each file against the manifest, expands archives in the media
+worker, groups files into books, resolves each through a patron-held
+`core.import` listing and writes it to every destination. The upload
+routes queue it on commit with `payload.ingest_batch`, and a storage
+intake queues it with `uploads::queue_intake_batch`, which copies each
+object from the named storage instance first. Its end publishes
+`ingest_batch_finished` in the same write as the batch's final state; see
+[Uploads](../server/uploads.md).
 
 `branch_request` is an interlibrary request: a user of this library asks
 a branch for a book it listed. The job is pinned to the branch's node
@@ -544,10 +555,103 @@ remote rescan). Acquire retries skip titles already `acquired`, except when
 not `acquired`, or `pdf_storage_key` is missing/empty). Those rows stay in
 the job target list so a later acquire can resume the PDF-only side effect.
 A companion PDF that exceeds the remaining scratch budget is soft-failed
-(`pdf_status=error`) so the audio acquire can succeed. Dedicated
+(`pdf_status=error`) so the audio acquire can succeed; a store that
+answers the resumed PDF with `rateLimited` fails the title instead, so the
+job records the account's cool-down (see [Download pacing](#download-pacing)).
+Dedicated
 `acquire --pdf` still fails the job when the PDF cannot be stored; that
 path always unregisters its `acquire-pdf` scratch reservation, including
 on fetch/quota errors.
+
+## Download pacing
+
+Stores throttle an account that downloads too much, usually without
+publishing the limit, so the host paces the downloads it starts itself
+(`bookclerk_library::pacing`, `run_acquire`). The pace is per store
+account, keyed `(plugin_key, account_id)` like accounts themselves, so it
+holds across plugin instances and every node of the cluster.
+
+- **Limits.** A storefront declares a daily budget, counted over any
+  rolling 24 hours, and a minimum gap between downloads in its manifest
+  ([`[acquire]`](../plugins/manifest.md#acquire-download-pace)). The
+  person an account is linked to may override them on the **Accounts**
+  page (`POST /api/portal/sources/{source}/connections/{account_id}/pace`,
+  whose body is at most 4096 bytes), and an operator with `bookclerk library set-pace`: the store's pace, a
+  custom budget and gap, or no limit. The override is stored in
+  `account_pace`.
+- **Cool-down.** When `fetchTitle` answers `rateLimited`, the host records
+  a cool-down on the account until the store's `retryAfterMs`, or for the
+  storefront's `cooldown_seconds` (one hour when it declares none), capped
+  at a week. Automatic downloads on the account wait for it, even with no
+  limit set, until it ends or someone clears it. The Audible plugin answers
+  `rateLimited` when Audible refuses a license because it is throttling the
+  account, and declares a 24-hour cool-down.
+- **Who waits.** An acquire job whose payload has `paced` set waits for the
+  pace: scheduled auto-acquire and the acquire a branch queues for a
+  request it accepted from a library (which is how "Acquire all of this
+  branch's members' books" reaches it). A paced title that fails and is
+  retried waits for the pace again before the retry asks the store, and is
+  set aside like any other when the wait is long. A paced run tries audio not yet downloaded
+  first, then missing companion PDFs of acquired titles, then titles that
+  failed before, so a title that keeps failing or has no PDF does not spend
+  the budget of the audio behind it. An acquire a person starts in the
+  web app or CLI leaves `paced` unset: its downloads count against the
+  budget but are never held, and when the store answers `rateLimited` the
+  job records the cool-down and fails for good with the store's answer
+  (it does not go back to the queue for another attempt) instead of
+  retrying into the throttle. `paced` is part of the dedup key, so a
+  hand-started acquire is never folded into a waiting automatic one.
+- **Ledger.** Every title Bookclerk may have fetched from the store is a
+  row in `account_downloads` (start time, job, paced or not), once per
+  attempt that asked the store, at the time it started, so a retried
+  title counts each try and its retry moves the gap on. Each row's id is made once per
+  download, so a write retried after a lost answer adds no second row. That includes a title that failed
+  after its fetch (converting or storing it), since the store download
+  already happened, and a store download that a better copy from a
+  joined library then replaced, and a missing companion PDF fetched for a
+  title whose audio was already stored (`AcquireResult::store_fetches`). A
+  library copy from another store that replaced the download and then
+  failed packaging sends the acquire back to the store, and that second
+  download is a second row. A
+  copy matched in storage or taken straight from a joined library is not
+  counted, nor is a title no destination takes or one the
+  store refused with `rateLimited`. A title a Host downloaded for a
+  hand-started acquire is recorded in the same batch that commits its
+  upload on the owner (`control_plane::commit_upload`), so the two never
+  part, and once per upload however often the commit is repeated. A ledger write that fails is retried, and a paced
+  run that still cannot record a download holds that account rather than
+  download past a budget it cannot count; the job fails if rows are still
+  unwritten at its end. Backend migration copies the ledger with
+  `account_pace`, so a migrated library keeps its rolling window. Rows
+  older than two days are pruned when the account records its next
+  download.
+- **Where it runs.** A paced acquire is claimed only by a node that holds
+  the library database (`control_plane::claimant_may_run`), like a forced
+  or PDF-only one: a Host runs handed acquires without the library, so it
+  could not check the pace.
+- **Changing the pace.** Setting an account's pace or clearing its pause
+  wakes every parked paced acquire that names that account or no account
+  (`LibraryStore::wake_paced_acquires`), so it checks the new pace at once
+  instead of sleeping out the old deadline. A pace body with no `mode` and
+  `clear_cooldown: true` only clears the pause and leaves the stored
+  override as it is. A run that parks checks each held account once more
+  after parking and wakes itself if a change made while it ran lets the
+  account download sooner.
+
+A paced run checks the account's pace before each title, while it holds
+the account's cluster semaphore, so no other node downloads on the account
+between the check and the fetch. A wait of up to two minutes (a short gap)
+is slept in place, checking for cancel each second. A longer one sets that
+account's titles aside, and the run goes on with the other accounts'
+titles. At the end, a run that set titles aside is parked
+(`LibraryStore::defer_job`): it goes back to `pending` with `run_after` at
+the moment the first held account may download again and its progress
+saying why ("3 title(s) waiting for the daily download budget until
+…"). Parking does not spend an attempt and drops the storage-scan
+checkpoint, so the next claim starts fresh and skips titles already
+acquired. An auto-acquire of a large library this way drains over several
+days, and the next scheduled auto-acquire is folded into the parked job by
+its dedup key.
 
 ## Routing to a compatible node
 

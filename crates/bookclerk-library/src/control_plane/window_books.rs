@@ -101,6 +101,7 @@ fn audio_type_of_key(key: &str) -> Option<&'static str> {
         "m4b" | "m4a" | "mp4" => Some("audio/mp4"),
         "mp3" => Some("audio/mpeg"),
         "flac" => Some("audio/flac"),
+        "ogg" | "oga" | "opus" => Some("audio/ogg"),
         _ => None,
     }
 }

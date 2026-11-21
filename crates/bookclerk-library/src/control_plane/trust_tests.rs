@@ -643,6 +643,45 @@ async fn scan_planner_splits_and_scopes(owner_db: LibraryStore, host_db: Library
         .unwrap();
     assert_eq!(accounts_of(plan), vec!["a2"]);
 
+    // An Owner can turn library-wide scans off for the Administrator, who
+    // then scans only the accounts linked to them, like a Member.
+    let mut overrides = crate::control_plane::AdminControlOverrides::default();
+    overrides.set(crate::control_plane::AdminControl::LibraryScan, Some(false));
+    crate::control_plane::set_admin_control_overrides(&owner_db, admin, overrides)
+        .await
+        .unwrap();
+    assert!(plan_scan(&host_db, ScanRequester::User(admin), None, None)
+        .await
+        .unwrap()
+        .is_empty());
+    let err = plan_scan(&host_db, ScanRequester::User(admin), Some("a2"), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LibraryError::Forbidden(_)), "{err}");
+    // An account linked to them still scans, named or not.
+    add_account(&owner_db, PLUGIN, "a4", true).await;
+    link(&owner_db, admin, PLUGIN, "a4").await;
+    let plan = plan_scan(&host_db, ScanRequester::User(admin), None, None)
+        .await
+        .unwrap();
+    assert_eq!(accounts_of(plan), vec!["a4"]);
+    let plan = plan_scan(&host_db, ScanRequester::User(admin), Some("a4"), None)
+        .await
+        .unwrap();
+    assert_eq!(accounts_of(plan), vec!["a4"]);
+    // Out of the unnamed scans below again.
+    owner_db
+        .set_scan_enabled(PLUGIN, "a4", false)
+        .await
+        .unwrap();
+    crate::control_plane::set_admin_control_overrides(
+        &owner_db,
+        admin,
+        crate::control_plane::AdminControlOverrides::default(),
+    )
+    .await
+    .unwrap();
+
     // Promotion widens the plan; disabling refuses it.
     owner_db
         .set_user_role(riley, UserRole::Owner)
@@ -836,7 +875,7 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
         assert!(!trusted(refused.clone()).await, "{refused:?}");
     }
 
-    // Forced and PDF-only acquires run only where the library lives.
+    // Forced, PDF-only and paced acquires run only where the library lives.
     let forced = record(
         JobKind::Acquire,
         JobPayload {
@@ -851,6 +890,13 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
             ..acquire(Some("a1"), None)
         },
     );
+    let paced = record(
+        JobKind::Acquire,
+        JobPayload {
+            paced: true,
+            ..acquire(Some("a1"), None)
+        },
+    );
     let forced_scan = record(
         JobKind::Scan,
         JobPayload {
@@ -862,6 +908,8 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
     assert!(!claimant_may_run(Claimant::Remote, &pdf));
     assert!(claimant_may_run(Claimant::Local, &forced));
     assert!(claimant_may_run(Claimant::Local, &pdf));
+    assert!(!claimant_may_run(Claimant::Remote, &paced));
+    assert!(claimant_may_run(Claimant::Local, &paced));
     assert!(claimant_may_run(Claimant::Remote, &forced_scan));
     assert!(job_trusted(&host_db, &trust, &forced).await.unwrap());
     assert!(
@@ -1545,6 +1593,21 @@ async fn an_acquire_by_edition_picks_a_title_the_requester_may_acquire() {
             "one edition, held on two accounts"
         );
         let sams = store.edition_of_book(&only_sam).await.unwrap().unwrap();
+        // A title is picked by its account holding.
+        let holding = |uuid: String| {
+            let store = store.clone();
+            async move {
+                store
+                    .title_holding_of_book(&uuid)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .holding_id
+            }
+        };
+        let both_a1 = holding(both_a1).await;
+        let both_a2 = holding(both_a2).await;
+        let only_sam = holding(only_sam).await;
         let ids = |ids: &[&str]| ids.iter().map(|t| t.to_string()).collect::<Vec<_>>();
         let first = both_a1.clone().min(both_a2.clone());
 

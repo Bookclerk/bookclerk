@@ -68,6 +68,10 @@ and move along the timeline.
 > Buttons for the previous and next track skip 30 seconds back and
 > forward, because many headsets and cars have only those.
 
+In the desktop window the book plays through the window itself, so the
+system's media controls name Bookclerk. They don't show the cover there
+yet.
+
 ## Where your place is kept
 
 Your place is kept on the server, for you alone. The player reports it
@@ -91,9 +95,8 @@ while the connection was down.
   An M4B is a wrapper, though, and one holding another kind of audio,
   such as Apple Lossless, plays only in browsers that support that kind.
 - **There is no Play button.** The operator account is not a person in
-  the library and has nothing to play as. Sign in as yourself. The
-  desktop window does not have the player yet; open Bookclerk in a
-  browser to listen.
+  the library and has nothing to play as. Sign in as yourself. In the
+  desktop window you keep listening as yourself while you are elevated.
 
 ## Next steps
 

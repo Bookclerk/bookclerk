@@ -18,7 +18,18 @@ path = "src/main.rs"
 # development files to build (WebKitGTK 4.1 on Linux); see
 # docs/contributing/ui/README.md. Without it the binary only explains that.
 default = []
-window = ["dep:bookclerkd", "dep:tokio", "dep:tracing", "dep:tauri", "dep:tauri-build"]
+window = [
+    "dep:bookclerkd",
+    "dep:bookclerk-player-engine",
+    "dep:cpal",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:souvlaki",
+    "dep:tokio",
+    "dep:tracing",
+    "dep:tauri",
+    "dep:tauri-build",
+]
 
 [dependencies]
 anyhow.workspace = true
@@ -28,6 +39,14 @@ tokio = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 # Default features minus `compression` (the window embeds no assets: the
 # web app comes from the host over the custom scheme).
+# The window's own player: the engine, the output device (ALSA on Linux,
+# which needs libasound2-dev to build) and the system's media controls
+# (MPRIS over zbus on Linux, so no libdbus).
+bookclerk-player-engine = { path = "../bookclerk-player-engine", optional = true }
+cpal = { version = "0.18.2", optional = true }
+souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"], optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 tauri = { version = "2.12.5", default-features = false, features = ["wry", "common-controls-v6"], optional = true }
 
 [build-dependencies]

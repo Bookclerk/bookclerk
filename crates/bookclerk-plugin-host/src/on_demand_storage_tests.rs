@@ -322,6 +322,22 @@ async fn every_storage_call_wakes_a_sleeping_guest_and_reaches_it() {
                 proxy.delete("a/three.txt").await.expect("delete");
             }),
         ),
+        (
+            "translate_keys",
+            Box::pin(async {
+                let host =
+                    bookclerk_storage::key_syntax::HostKey::parse("A: B/c?.m4b").expect("host key");
+                let keys = proxy
+                    .translate_keys(std::slice::from_ref(&host))
+                    .await
+                    .expect("translate_keys");
+                let expected = bookclerk_storage::key_syntax::translate_for_filesystem(
+                    &host,
+                    bookclerk_storage::key_syntax::FilesystemRules::native(),
+                );
+                assert_eq!(keys, [expected]);
+            }),
+        ),
     ];
     let mut expected_wakes = 0;
     for (name, call) in calls {
@@ -343,6 +359,36 @@ async fn a_change_feed_read_never_wakes_a_guest_without_one() {
     wait_asleep(&proxy).await;
     assert!(!proxy.capabilities().changes);
     assert!(proxy.changes(None, 10).await.expect("changes").is_none());
+    assert!(started.lock().expect("started").is_empty());
+}
+
+#[tokio::test]
+async fn host_keys_are_kept_without_waking_a_guest_that_does_not_translate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let first = Arc::new(FakeStorage {
+        running: AtomicBool::new(true),
+        backend: LocalFsBackend::new(dir.path().to_path_buf())
+            .expect("local backend")
+            .keeping_host_keys(),
+    });
+    let started: Started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let proxy = OnDemandStorage::wrap(
+        Arc::clone(&first) as Arc<dyn AwakeStorage>,
+        "storage-instance",
+        Box::new(FakeStarter {
+            root: dir.path().to_path_buf(),
+            started: Arc::clone(&started),
+        }),
+        Duration::from_millis(30),
+    );
+    wait_asleep(&proxy).await;
+    assert!(!proxy.capabilities().translate_keys);
+    let host = bookclerk_storage::key_syntax::HostKey::parse("A: B/c?.m4b").expect("host key");
+    let keys = proxy
+        .translate_keys(std::slice::from_ref(&host))
+        .await
+        .expect("translate_keys");
+    assert_eq!(keys, ["A: B/c?.m4b"]);
     assert!(started.lock().expect("started").is_empty());
 }
 

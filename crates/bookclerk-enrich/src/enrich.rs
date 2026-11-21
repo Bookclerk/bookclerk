@@ -5,7 +5,7 @@
 //! then confidence scoring (duration / title / author), with ISBN / narrator
 //! / subtitle signals when available. No Audible account is required.
 
-use bookclerk_library::{EditionAsin, EditionEnrichment, LibraryStore, NewBook};
+use bookclerk_library::{AcquireTitle, EditionAsin, EditionEnrichment, LibraryStore, NewBook};
 use bookclerk_plugin_sdk::http::Client;
 use bookclerk_plugin_sdk::{
     CreditRole, IdentifierScheme, MediaKind, MetadataLookupParams, MetadataRecord,
@@ -262,8 +262,8 @@ pub async fn apply_enrichment_to_edition(
     matched: &ScoredMatch,
 ) -> Result<()> {
     let enrichment = &matched.enrichment;
-    for uuid in library.edition_book_uuids(edition_id).await? {
-        merge_into_book(library, &uuid, enrichment).await?;
+    for title in library.held_titles_of_edition(edition_id).await? {
+        merge_into_title(library, &title, enrichment).await?;
     }
     library
         .enrich_edition(
@@ -286,31 +286,32 @@ pub async fn apply_enrichment_to_edition(
     Ok(())
 }
 
-/// Merges a catalog match onto one flat `books` row, until that table is
-/// retired.
+/// Merges a catalog match onto one held title's listing (and the flat
+/// `books` row it still mirrors, until that table is retired).
 ///
-/// Preserves `source`, `product_id`, `uuid`, `account_id`, an existing
-/// `asin` and a store-native `length_minutes`; catalog fields win for the
-/// rest of the display metadata. A row that is gone is skipped.
+/// Preserves `source`, `product_id`, `account_id`, an existing `asin` and
+/// a store-native `length_minutes`; catalog fields win for the rest of the
+/// display metadata. A title with no flat row is skipped.
 ///
 /// # Arguments
 ///
 /// * `library` - Open library store used for reads/writes.
-/// * `book_uuid` - The row merged into.
-/// * `enrichment` - Catalog fields to merge onto the row.
+/// * `existing` - The held title merged into.
+/// * `enrichment` - Catalog fields to merge onto the title.
 ///
 /// # Errors
 ///
-/// Returns an error when a store read or write fails.
-async fn merge_into_book(
+/// Returns an error when a store write fails.
+async fn merge_into_title(
     library: &LibraryStore,
-    book_uuid: &str,
+    existing: &AcquireTitle,
     enrichment: &Enrichment,
 ) -> Result<()> {
-    let Some(existing) = library.get_book_by_uuid(book_uuid).await? else {
+    // The metadata write still goes through the flat row (book model step
+    // 6, until 4g-3); a title without one is left as before.
+    if existing.book_uuid.is_none() {
         return Ok(());
-    };
-
+    }
     let title = if enrichment.title.is_empty() {
         existing.title.clone()
     } else {
@@ -324,7 +325,7 @@ async fn merge_into_book(
         .or(existing.published_at);
 
     let book = NewBook {
-        uuid: Some(existing.uuid.clone()),
+        uuid: existing.book_uuid.clone(),
         product_id: existing.product_id.clone(),
         plugin_key: existing.plugin_key.clone(),
         source: existing.source.clone(),
@@ -346,14 +347,14 @@ async fn merge_into_book(
         series_asin: enrichment
             .series_asin
             .clone()
-            .or(existing.series_asin.clone()),
+            .or(existing.series_product_id.clone()),
         purchased_at: existing.purchased_at,
         publisher: enrichment.publisher.clone().or(existing.publisher.clone()),
         // Prefer the store-native runtime. Audible catalog length includes
         // Audible pre/post-roll that plain DRM-free files do not have.
         length_minutes: existing.length_minutes.or(enrichment.length_minutes),
         is_abridged: existing.is_abridged,
-        content_kind: existing.content_kind.clone(),
+        content_kind: existing.content_kind.to_string(),
         categories: enrichment
             .categories
             .clone()

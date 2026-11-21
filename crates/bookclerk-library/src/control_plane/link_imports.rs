@@ -103,7 +103,16 @@ pub async fn import_link_title(
     // another live edition here holds is not this copy's, so the title is
     // not marked acquired at it and no other file is claimed for it.
     let mut pdf_refused = false;
-    if let Some(owner) = store.file_owner_of_book(&record.uuid).await? {
+    // The import's account holding, which its writes are recorded under.
+    let holding = store
+        .title_holding_of_book(&record.uuid)
+        .await?
+        .map(|title| title.holding_id);
+    let owner = match holding.as_deref() {
+        Some(holding) => store.file_owner_of_holding(holding).await?,
+        None => None,
+    };
+    if let Some(owner) = owner {
         let mut files = import.files.to_vec();
         files.sort_by_key(|(_, key)| *key != import.primary_key);
         for (destination, key) in files {
@@ -126,24 +135,45 @@ pub async fn import_link_title(
             pdf_refused |= import.pdf_key == Some(key);
         }
     }
-    store
-        .set_acquire_status(
-            &record.uuid,
-            &record.account_id,
-            AcquireStatus::Acquired,
-            Some(import.primary_key),
-            None,
-        )
-        .await?;
-    if let Some(pdf_key) = import.pdf_key.filter(|_| !pdf_refused) {
-        store
-            .set_pdf_status(
-                &record.uuid,
-                &record.account_id,
-                AcquireStatus::Acquired,
-                Some(pdf_key),
-            )
-            .await?;
+    match holding.as_deref() {
+        Some(holding) => {
+            store
+                .set_holding_acquire_status(
+                    holding,
+                    AcquireStatus::Acquired,
+                    Some(import.primary_key),
+                    None,
+                )
+                .await?;
+            if let Some(pdf_key) = import.pdf_key.filter(|_| !pdf_refused) {
+                store
+                    .set_holding_pdf_status(holding, AcquireStatus::Acquired, Some(pdf_key))
+                    .await?;
+            }
+        }
+        // A title that resolved to no listing has no holding: only its
+        // flat row records the copy.
+        None => {
+            store
+                .set_acquire_status(
+                    &record.uuid,
+                    &record.account_id,
+                    AcquireStatus::Acquired,
+                    Some(import.primary_key),
+                    None,
+                )
+                .await?;
+            if let Some(pdf_key) = import.pdf_key.filter(|_| !pdf_refused) {
+                store
+                    .set_pdf_status(
+                        &record.uuid,
+                        &record.account_id,
+                        AcquireStatus::Acquired,
+                        Some(pdf_key),
+                    )
+                    .await?;
+            }
+        }
     }
     record_import(store, import.library_id, &record).await?;
     let stored = store

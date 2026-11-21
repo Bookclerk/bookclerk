@@ -1,0 +1,25 @@
+{
+ "total_count": 4,
+ "jobs": [
+  {
+   "name": "plan",
+   "status": "completed",
+   "conclusion": "success"
+  },
+  {
+   "name": "CI Gate",
+   "status": "completed",
+   "conclusion": "success"
+  },
+  {
+   "name": "unit + integration tests (windows-latest, 1/3, report only)",
+   "status": "in_progress",
+   "conclusion": null
+  },
+  {
+   "name": "unit + integration tests (macos-latest, 2/2, report only)",
+   "status": "queued",
+   "conclusion": null
+  }
+ ]
+}

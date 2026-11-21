@@ -66,7 +66,10 @@ pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> 
         syscall: LayerStatus::Unsupported("no syscall filtering on Windows".to_string()),
         network: match policy.net_policy() {
             NetPolicy::Full => LayerStatus::NotRequested,
-            NetPolicy::Deny | NetPolicy::Outbound | NetPolicy::OutboundListen => unsupported,
+            NetPolicy::Deny
+            | NetPolicy::LocalIpc
+            | NetPolicy::Outbound
+            | NetPolicy::OutboundListen => unsupported,
         },
         // Resource ceilings are applied at CreateProcess via the Job Object,
         // not during self-confine (which Windows cannot do).
