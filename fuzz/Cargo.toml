@@ -35,6 +35,8 @@ bookclerk-tags = { path = "../crates/bookclerk-tags" }
 bookclerk-archive = { path = "../crates/bookclerk-archive" }
 # media_decode drives the media worker's demux and decode path.
 bookclerk-media = { path = "../crates/bookclerk-media" }
+# media_keep_codec writes each input to a scratch file for the packager.
+tempfile = "3"
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
 bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
@@ -323,6 +325,13 @@ bench = false
 [[bin]]
 name = "media_decode"
 path = "fuzz_targets/media_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media_keep_codec"
+path = "fuzz_targets/media_keep_codec.rs"
 test = false
 doc = false
 bench = false

@@ -45,7 +45,7 @@ checks), or **minor headless polish** listed under
 | `get-license` | ✅ | `library get-license --json` (summary) / `--full` (raw API JSON) |
 | `search` | ✅ | `library search` (+ `--filter` saved quick filters) |
 | `export` | ✅ | `library export --csv\|--json\|--xlsx` |
-| `convert` | ✅ | `library convert` (m4b/m4a → mp3) |
+| `convert` | ✅ | `library convert --to FORMAT:QUALITY` adds a copy beside the stored book (also in the web app) |
 | `import-account` | ✅ | `auth import --mkb79` |
 | `login-external` | ✅ | `auth login --external` |
 | `list-accounts` | ✅ | `auth list` (`--bare`: account, name, locale, scan, auth) |
@@ -55,7 +55,7 @@ checks), or **minor headless polish** listed under
 | `version` | ✅ | `bookclerk version` |
 | `version --check` | 🚫 | Intentionally deferred (no upgrade checks in PR1) |
 | `help` | ✅ | clap |
-| Progress bar (`acquire` / `convert`) | ✅ | TTY batch progress with ETA |
+| Progress bar (`acquire` / `convert`) | ✅ | Queued jobs report progress while the CLI waits |
 | Template tag list / preview | ✅ | `config template tags` / `config template preview <asin>` |
 | Naming profiles | ✅ | `output.naming_profile` (`audiobookshelf` default, `classic`); `config template profiles` |
 
@@ -132,7 +132,7 @@ checks), or **minor headless polish** listed under
 | Clips/bookmarks export format | JSON only (classic CSV/XLSX options unused in headless path) |
 | `MoveMoovToBeginning` / `LameMatchSourceBR` toggles | Behavior covered by defaults / always-on moov_faststart |
 | Exotic naming edge cases | Rare TimeSpan masks / locale-specific number formats |
-| Per-byte download progress | Batch title progress + ETA on acquire/convert; classic also draws a byte bar mid-download |
+| Per-byte download progress | Queued acquire and convert jobs report progress; classic also draws a byte bar mid-download |
 
 ---
 

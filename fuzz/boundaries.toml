@@ -266,6 +266,13 @@ input_from = "store"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.media_keep_codec]
+crate = "bookclerk-media"
+boundary = "Audio parts the media worker copies into an M4B without re-encoding (output.keep_codec_in_m4b): MP4 sample entries and tables, Ogg and FLAC headers and packets"
+input_from = "store"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.media_pcm_wire]
 crate = "bookclerk-media"
 boundary = "PCM worker frames (requests the worker reads, replies and reply streams the host reads while a player plays)"

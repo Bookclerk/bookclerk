@@ -1574,6 +1574,11 @@ impl JobKind {
                 if payload.paced {
                     key.push_str(":paced=1");
                 }
+                // A convert makes one copy; it is other work than the
+                // download, and than a convert to another copy.
+                if let Some(copy) = payload.convert.as_ref() {
+                    key.push_str(&format!(":convert={copy}"));
+                }
                 // A pinned acquire runs only that instance's plugin, so it
                 // must not stand in for an unpinned one or another pin.
                 if let Some(instance) = payload
@@ -1889,6 +1894,15 @@ pub struct JobPayload {
     /// For [`JobKind::IngestBatch`]: the `ingest_batches.id` to run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingest_batch: Option<String>,
+    /// For [`JobKind::Acquire`]: instead of downloading, add this copy to
+    /// the title's stored edition, made from the copy the library already
+    /// holds (an administrator's convert). No store is asked, so the job is
+    /// never paced; [`Self::force`] makes the copy again when it exists.
+    ///
+    /// Run only by nodes that hold the library database, since the copy is
+    /// made from the edition's recorded files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convert: Option<bookclerk_config::OutputCopy>,
 }
 
 /// What a [`JobKind::BranchRequest`] asks its branch for: a work of this
@@ -1954,6 +1968,7 @@ impl Default for JobPayload {
             node_id: None,
             branch_request: None,
             ingest_batch: None,
+            convert: None,
         }
     }
 }
