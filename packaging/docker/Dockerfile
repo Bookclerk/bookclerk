@@ -36,8 +36,10 @@ COPY ui/ ./
 RUN npm run build
 
 FROM rust:1-trixie@sha256:931c2c0531a8b143e044f0f3914dfe802f15bb3d1955f0b657e9359327ac2ffc AS builder
+# capnproto for the plugin schema; cmake for the bundled Opus encoder that
+# bookclerk-media builds (opusic-sys).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends capnproto \
+    && apt-get install -y --no-install-recommends capnproto cmake \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
