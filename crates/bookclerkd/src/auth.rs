@@ -5999,7 +5999,6 @@ pub(crate) mod tests {
         let foreign = library
             .scope("pk", "test")
             .upsert_book(&bookclerk_library::NewBook {
-                uuid: None,
                 product_id: "theirs-book".into(),
                 plugin_key: "pk".into(),
                 source: "test".into(),
@@ -6027,7 +6026,7 @@ pub(crate) mod tests {
         let (status, body) = send(post(
             "/api/library/acquire",
             Some(&cookie),
-            serde_json::json!({ "uuid": foreign.uuid }),
+            serde_json::json!({ "uuid": foreign.holding_id }),
         ))
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -6039,7 +6038,6 @@ pub(crate) mod tests {
         let mine = library
             .scope("pk", "test")
             .upsert_book(&bookclerk_library::NewBook {
-                uuid: None,
                 product_id: "mine-book".into(),
                 plugin_key: "pk".into(),
                 source: "test".into(),
@@ -6068,15 +6066,15 @@ pub(crate) mod tests {
             let library = library.clone();
             async move {
                 library
-                    .edition_of_book(&uuid)
+                    .edition_of_holding(&uuid)
                     .await
                     .unwrap()
                     .expect("edition")
             }
         };
         let (mine_edition, foreign_edition) = (
-            edition_of(mine.uuid.clone()).await,
-            edition_of(foreign.uuid.clone()).await,
+            edition_of(mine.holding_id.clone()).await,
+            edition_of(foreign.holding_id.clone()).await,
         );
         let (status, body) = send(post(
             "/api/library/acquire",
@@ -6089,7 +6087,7 @@ pub(crate) mod tests {
         let job = library.get_job(&job_id).await.unwrap().expect("job");
         // The edition's title is named by its account holding.
         let mine_holding = library
-            .title_holding_of_book(&mine.uuid)
+            .acquire_title_of_holding(&mine.holding_id)
             .await
             .unwrap()
             .expect("holding")

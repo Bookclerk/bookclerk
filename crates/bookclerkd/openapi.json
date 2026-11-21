@@ -51848,32 +51848,32 @@
           },
           "books": {
             "type": "integer",
-            "description": "Total title rows in the library.",
+            "description": "Held works in the library (the works page index).",
             "example": 412,
             "minimum": 0
           },
           "acquired": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles whose `acquire_status` is `acquired`.",
+            "description": "Held works whose furthest acquire state is `acquired`.",
             "example": 380
           },
           "pending": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles still needing acquire (`not_acquired`).",
+            "description": "Held works still needing acquire (`not_acquired`).",
             "example": 27
           },
           "error": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles stuck in `error` after a failed acquire.",
+            "description": "Held works stuck in `error` after a failed acquire.",
             "example": 1
           },
           "in_progress": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles currently `queued` or `downloading`.",
+            "description": "Held works currently `queued` or `downloading`.",
             "example": 4
           },
           "listen": {

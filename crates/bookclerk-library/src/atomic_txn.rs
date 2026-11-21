@@ -114,8 +114,7 @@ pub trait AtomicTxnBackend: Send + Sync {
     /// the write, and publish its event, in one batch.
     ///
     /// Only the holding that acquired an edition, while it exists, changes
-    /// it; `book_uuid` names the flat `books` row mirrored until the table
-    /// is dropped (book model step 6).
+    /// it.
     ///
     /// # Errors
     ///
@@ -124,7 +123,6 @@ pub trait AtomicTxnBackend: Send + Sync {
     async fn set_acquire_status(
         &self,
         holding: &crate::TitleHolding,
-        book_uuid: Option<&str>,
         status: crate::models::AcquireStatus,
         storage_key: Option<&str>,
         error_message: Option<&str>,

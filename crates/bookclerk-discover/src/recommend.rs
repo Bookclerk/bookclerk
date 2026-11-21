@@ -2396,7 +2396,11 @@ mod tests {
             .create_user(bookclerk_library::UserRole::Owner, Some("Ada"), None)
             .await
             .unwrap();
-        let work = store.work_id_for_book(&book.uuid).await.unwrap().unwrap();
+        let work = store
+            .work_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         store
             .set_user_title_state(
                 ada.id,

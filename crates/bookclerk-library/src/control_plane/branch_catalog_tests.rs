@@ -294,7 +294,6 @@ async fn hold_for(store: &LibraryStore, member: i64, product: &str) {
     store
         .scope(PLUGIN, "audible")
         .upsert_book(&NewBook {
-            uuid: None,
             product_id: product.into(),
             plugin_key: PLUGIN.into(),
             source: "audible".into(),
@@ -871,7 +870,6 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
     let own = store
         .scope(PLUGIN, "store")
         .upsert_book(&NewBook {
-            uuid: None,
             product_id: "own".into(),
             plugin_key: PLUGIN.into(),
             source: "store".into(),
@@ -898,7 +896,7 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
         .unwrap();
     store
         .set_acquire_status(
-            &own.uuid,
+            &own.holding_id,
             "someone-else",
             crate::models::AcquireStatus::Acquired,
             Some("Author/own/own.mp3"),
@@ -1009,7 +1007,6 @@ async fn acquired_book(store: &LibraryStore, account: &str, product: &str, key: 
     let book = store
         .scope(PLUGIN, "store")
         .upsert_book(&NewBook {
-            uuid: None,
             product_id: product.into(),
             plugin_key: PLUGIN.into(),
             source: "store".into(),
@@ -1036,7 +1033,7 @@ async fn acquired_book(store: &LibraryStore, account: &str, product: &str, key: 
         .unwrap();
     store
         .set_acquire_status(
-            &book.uuid,
+            &book.holding_id,
             account,
             crate::models::AcquireStatus::Acquired,
             Some(key),
@@ -1044,7 +1041,7 @@ async fn acquired_book(store: &LibraryStore, account: &str, product: &str, key: 
         )
         .await
         .unwrap();
-    book.uuid
+    book.holding_id
 }
 
 /// A shared title of `product` whose primary audio is `primary`, with
@@ -1320,7 +1317,7 @@ async fn a_shared_titles_keys_stay_its_own() {
         })
         .await
         .unwrap()
-        .uuid;
+        .holding_id;
     assert_eq!(
         owner_of(&store, &same).await,
         store
@@ -1560,7 +1557,7 @@ async fn a_duplicate_catalog_commit_answers_committed() {
 /// its record is a stale owner's.
 async fn owner_of(store: &LibraryStore, book_uuid: &str) -> FileOwner {
     store
-        .file_owner_of_book(book_uuid)
+        .file_owner_of_holding(book_uuid)
         .await
         .unwrap()
         .unwrap_or_else(|| FileOwner::Edition(book_uuid.to_owned()))

@@ -63,7 +63,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use bookclerk_config::DestinationId;
 use bookclerk_library::control_plane::LinkImportOutcome;
-use bookclerk_library::{AcquireTitle, BookRecord, JobKind, LibraryStore, NewBook};
+use bookclerk_library::{AcquireTitle, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, OwnerCallError};
 use bookclerk_node_proto::{
     target_destinations_problem, AcquireTarget, FileCopy, PlanDestination, TargetTitle, UploadFile,
@@ -277,6 +277,8 @@ pub type LocalDestination = (DestinationId, Box<dyn StorageBackend>);
 /// kept it ([`HostGuests::import_owner_title`]).
 #[derive(Debug, Clone, Copy)]
 pub struct OwnerTitleCopy<'a> {
+    /// The owner's account holding (`holdings.id`) of the title.
+    pub holding_id: &'a str,
     /// The title as the owner sent it.
     pub book: &'a NewBook,
     /// The acquired files' keys.
@@ -506,32 +508,32 @@ impl HostGuests for GuestHost {
             pdf_key: copy.acquired.pdf_key.as_deref(),
             files: &files,
         };
-        let book_uuid = copy.book.uuid.as_deref().unwrap_or_default();
+        let owner_holding_id = copy.holding_id;
         match bookclerk_library::control_plane::import_link_title(&library, import).await {
-            Ok(LinkImportOutcome::Imported(book)) => tracing::info!(
+            Ok(LinkImportOutcome::Imported(title)) => tracing::info!(
                 library_id = %self.library_id,
-                owner_book_uuid = book_uuid,
-                book_uuid = %book.uuid,
+                owner_holding_id,
+                holding_id = %title.holding_id,
                 "imported the owner's title into this library"
             ),
             Ok(LinkImportOutcome::AccountNotHere) => tracing::info!(
                 library_id = %self.library_id,
-                owner_book_uuid = book_uuid,
+                owner_holding_id,
                 "the owner's title stays out of this library: its store account is not connected here to this install's Owner"
             ),
             Ok(LinkImportOutcome::KeyHeldElsewhere) => tracing::warn!(
                 library_id = %self.library_id,
-                owner_book_uuid = book_uuid,
+                owner_holding_id,
                 "the owner's title stays unacquired in this library: another edition here holds its file key"
             ),
             Ok(LinkImportOutcome::NoPerson) => tracing::info!(
                 library_id = %self.library_id,
-                owner_book_uuid = book_uuid,
+                owner_holding_id,
                 "the owner's title stays out of this library: this install has no single active Owner"
             ),
             Err(err) => tracing::warn!(
                 library_id = %self.library_id,
-                owner_book_uuid = book_uuid,
+                owner_holding_id,
                 error = %err,
                 "could not import the owner's title into this library"
             ),
@@ -577,24 +579,16 @@ async fn scratch_library(cfg: &bookclerk_config::Config, dir: &Path) -> anyhow::
 }
 
 /// The title an acquire target names as a library insert: the target's
-/// store and account, `uuid` as the row's id (a scratch library takes the
-/// owner's holding id; `None` lets the library assign one), and the owner's
-/// metadata. A date that does not parse as RFC 3339 is left out; it only
-/// names files.
+/// store and account, and the owner's metadata. A date that does not parse
+/// as RFC 3339 is left out; it only names files.
 #[must_use]
-pub fn scratch_book(
-    plugin_key: &str,
-    account_id: &str,
-    uuid: Option<String>,
-    title: &TargetTitle,
-) -> NewBook {
+pub fn scratch_book(plugin_key: &str, account_id: &str, title: &TargetTitle) -> NewBook {
     let at = |text: &Option<String>| {
         text.as_deref()
             .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
             .map(|at| at.with_timezone(&chrono::Utc))
     };
     NewBook {
-        uuid,
         product_id: title.product_id.clone(),
         plugin_key: plugin_key.to_string(),
         source: title.source.clone(),
@@ -619,10 +613,9 @@ pub fn scratch_book(
     }
 }
 
-/// The fields of a title an acquire request names it with: the same on
-/// the owner, which reads them from its holdings ([`AcquireTitle`]), and on
-/// a host, which reads them from its scratch library row ([`BookRecord`]),
-/// so both name the title the same way.
+/// The fields of a title an acquire request names it with, read from a
+/// holding ([`AcquireTitle`]): the owner's own, or on a host its scratch
+/// library's, so both name the title the same way.
 #[derive(Debug, Clone, Copy)]
 pub struct RequestTitle<'a> {
     /// Store product id the guest downloads.
@@ -644,22 +637,6 @@ pub struct RequestTitle<'a> {
     pub series: Option<&'a str>,
     /// Position in the series, as the store writes it.
     pub series_index: Option<&'a str>,
-}
-
-impl<'a> From<&'a BookRecord> for RequestTitle<'a> {
-    fn from(book: &'a BookRecord) -> Self {
-        Self {
-            product_id: book.download_product_id(),
-            holding_id: None,
-            source: &book.source,
-            account_id: &book.account_id,
-            title: &book.title,
-            authors: book.authors.as_deref(),
-            narrators: book.narrators.as_deref(),
-            series: book.series.as_deref(),
-            series_index: book.series_index.as_deref(),
-        }
-    }
 }
 
 impl<'a> From<&'a AcquireTitle> for RequestTitle<'a> {
@@ -781,7 +758,7 @@ async fn acquire_into(
         bookclerk_acquire::acquire_book_indexed(scratch, &destinations, request, None, source)
             .await?;
     let pdf_key = scratch
-        .get_book_by_uuid(&book.uuid)
+        .acquire_title_of_holding(&book.holding_id)
         .await?
         .filter(|row| row.pdf_status == bookclerk_library::AcquireStatus::Acquired)
         .and_then(|row| row.pdf_storage_key);
@@ -1388,16 +1365,11 @@ async fn acquire_titles<G: HostGuests>(
                     continue;
                 }
             };
-            let book = scratch_book(
-                &target.plugin_key,
-                &target.account_id,
-                Some(target.holding_id.clone()),
-                &target.title,
-            );
+            let book = scratch_book(&target.plugin_key, &target.account_id, &target.title);
             let parent = target
                 .parent
                 .as_ref()
-                .map(|parent| scratch_book(&target.plugin_key, &target.account_id, None, parent));
+                .map(|parent| scratch_book(&target.plugin_key, &target.account_id, parent));
             let outbox = work_path(job_dir, &target.holding_id)?;
             let title = HostTitle {
                 holding_id: target.holding_id,
@@ -1936,6 +1908,7 @@ async fn upload_title<G: HostGuests>(
     if host.job.job.for_node_owner && !placed.is_empty() {
         guests
             .import_owner_title(OwnerTitleCopy {
+                holding_id: &title.holding_id,
                 book: &title.book,
                 acquired,
                 files: &placed,

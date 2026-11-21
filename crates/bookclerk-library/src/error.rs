@@ -10,7 +10,7 @@ use thiserror::Error;
 pub enum EntityKind {
     /// A store account, keyed by plugin and account id.
     Account,
-    /// A library title (`books` row).
+    /// A library title: an account's holding of a store listing.
     Book,
     /// A work of the library data model.
     Work,

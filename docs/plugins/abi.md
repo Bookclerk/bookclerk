@@ -1323,13 +1323,13 @@ names, send one credit per name; split a display string such as
 `"Jane Doe, John Roe"` only when that is all the store gives.
 
 > [!NOTE]
-> Until the library stores works, expressions and editions, the host maps
-> these records onto its current flat title row: names join by role, the
-> first ISBN and ASIN fill the identifier columns, and the first series
-> entry fills the series columns. An episode with no `storeSeriesId` is
-> filed under the show named by `parentProductId`. Ebook and print scan
-> records are not stored yet, since the flat row cannot keep them out of
-> acquire, and records with an unspecified kind are never stored.
+> The host resolves each record into a listing of its work, expression and
+> edition. A record that is not a valid listing is stored from its flat
+> fields instead: names join by role, the first ISBN and ASIN fill the
+> identifiers, and the first series entry fills the series. An episode
+> with no `storeSeriesId` is filed under the show named by
+> `parentProductId`. Ebook and print scan records are not stored yet, and
+> records with an unspecified kind are never stored.
 
 ### Metadata providers
 

@@ -234,15 +234,12 @@ impl TitleWalk {
     }
 }
 
-/// True when `title` names any of `ids` (its library UUID, store product
+/// True when `title` names any of `ids` (its holding id, store product
 /// id, ISBN or ASIN, any case); an empty `ids` names every title.
 pub(crate) fn title_is_named(title: &AcquireTitle, ids: &[String]) -> bool {
     ids.is_empty()
         || ids.iter().any(|a| {
-            title
-                .book_uuid
-                .as_ref()
-                .is_some_and(|uuid| a.eq_ignore_ascii_case(uuid))
+            a.eq_ignore_ascii_case(&title.holding_id)
                 || a.eq_ignore_ascii_case(&title.product_id)
                 || title
                     .isbn
@@ -969,11 +966,11 @@ mod reconcile_integration {
         .unwrap();
         assert_eq!(summary.matched, 1);
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(book.status, AcquireStatus::Acquired);
         assert!(book.storage_key.as_deref().unwrap().contains("B00EXAMPLE1"));
     }
 
@@ -1020,7 +1017,7 @@ mod reconcile_integration {
         .unwrap();
         assert_eq!(summary.matched, 1);
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
@@ -1075,7 +1072,7 @@ mod reconcile_integration {
         .unwrap();
         assert_eq!(summary.matched, 1);
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
@@ -1123,14 +1120,11 @@ mod reconcile_integration {
             "{err}"
         );
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            book.acquire_status,
-            bookclerk_library::AcquireStatus::Acquired
-        );
+        assert_eq!(book.status, bookclerk_library::AcquireStatus::Acquired);
         assert_eq!(book.storage_key.as_deref(), Some("kept.m4b"));
     }
 
@@ -1357,7 +1351,6 @@ mod reconcile_integration {
             pdf_status: AcquireStatus::NotAcquired,
             pdf_storage_key: None,
             pdf_acquired_by: None,
-            book_uuid: Some("mine".into()),
         };
         let mut walk = TitleWalk::default();
         assert_eq!(
@@ -1371,7 +1364,6 @@ mod reconcile_integration {
         assert_eq!(title_update(&title, &walk, None), TitleUpdate::Cleared);
         let sibling = AcquireTitle {
             holding_id: "other".into(),
-            book_uuid: Some("theirs".into()),
             ..title.clone()
         };
         assert_eq!(title_update(&sibling, &walk, None), TitleUpdate::Unchanged);
@@ -1462,13 +1454,13 @@ mod reconcile_integration {
         book.authors = Some("Jane Doe".into());
         library.upsert_book(&book).await.unwrap();
         let stored = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
         // The default layout names the file after the edition's call number.
         let edition = library
-            .edition_of_book(&stored.uuid)
+            .edition_of_holding(&stored.holding_id)
             .await
             .unwrap()
             .unwrap();

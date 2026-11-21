@@ -11,12 +11,12 @@ use uuid::Uuid;
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::control_plane::{bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
-use crate::entities::{books, job_temp_paths, jobs};
+use crate::entities::{edition_acquisitions, job_temp_paths, jobs};
 use crate::error::{LibraryError, Result};
 use crate::models::{
-    job_backoff_run_after, AcquireStatus, BookRecord, EnqueueJobSpec, EnqueueOutcome,
-    JobClaimCursor, JobClaimPage, JobFence, JobKind, JobPayload, JobRecord, JobResourceClass,
-    JobState, JobTempPath, JobTrigger, JOB_PAYLOAD_VERSION,
+    job_backoff_run_after, AcquireStatus, EnqueueJobSpec, EnqueueOutcome, JobClaimCursor,
+    JobClaimPage, JobFence, JobKind, JobPayload, JobRecord, JobResourceClass, JobState,
+    JobTempPath, JobTrigger, JOB_PAYLOAD_VERSION,
 };
 
 impl LibraryStore {
@@ -1434,52 +1434,67 @@ impl LibraryStore {
         Ok(n > 0)
     }
 
-    /// Books left in `queued` / `downloading` with no running acquire job.
+    /// Edition acquire states left `queued` / `downloading` with no running
+    /// acquire job.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
-    pub async fn list_orphaned_acquire_books(&self) -> Result<Vec<BookRecord>> {
+    async fn orphaned_acquisitions(&self) -> Result<Vec<edition_acquisitions::Model>> {
         if self.has_running_acquire_job().await? {
             return Ok(Vec::new());
         }
-        let rows = books::Entity::find()
-            .filter(books::Column::AcquireStatus.is_in([
+        edition_acquisitions::Entity::find()
+            .filter(edition_acquisitions::Column::Status.is_in([
                 AcquireStatus::Queued.as_str(),
                 AcquireStatus::Downloading.as_str(),
             ]))
+            .order_by_asc(edition_acquisitions::Column::EditionId)
             .all(&self.db)
             .await
-            .map_err(LibraryError::Orm)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            out.push(super::map_book(row)?);
-        }
-        Ok(out)
+            .map_err(LibraryError::Orm)
     }
 
-    /// Mark orphaned `queued` / `downloading` books as `error` after a crash.
+    /// Mark orphaned `queued` / `downloading` edition acquire states as
+    /// `error` after a crash.
+    ///
+    /// The state is written as the holding that queued it, with its event;
+    /// a state whose holding is gone (its account was revoked since) is
+    /// written on its own, with no title for an event to name.
     ///
     /// # Returns
     ///
-    /// Number of book rows updated.
+    /// Number of edition states updated.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when a status write fails.
     pub async fn reconcile_orphaned_acquire_rows(&self) -> Result<u32> {
-        let orphans = self.list_orphaned_acquire_books().await?;
+        const REASON: &str = "orphaned_after_restart";
+        let orphans = self.orphaned_acquisitions().await?;
         let mut n = 0u32;
-        for book in orphans {
-            self.set_acquire_status(
-                &book.uuid,
-                &book.account_id,
-                AcquireStatus::Error,
-                book.storage_key.as_deref(),
-                Some("orphaned_after_restart"),
-            )
-            .await?;
-            n += 1;
+        for orphan in orphans {
+            match self
+                .set_holding_acquire_status(
+                    &orphan.holding_id,
+                    AcquireStatus::Error,
+                    orphan.storage_key.as_deref(),
+                    Some(REASON),
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(LibraryError::NotFound(_)) => {
+                    let mut row: edition_acquisitions::ActiveModel = orphan.into();
+                    row.status = Set(AcquireStatus::Error.as_str().to_string());
+                    row.error_message = Set(Some(REASON.to_string()));
+                    row.updated_at = Set(now_str());
+                    row.update(&self.db).await.map_err(LibraryError::Orm)?;
+                    bump_on(&self.db, LiveTopic::Library).await?;
+                }
+                Err(err) => return Err(err),
+            }
+            n = n.saturating_add(1);
         }
         Ok(n)
     }

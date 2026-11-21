@@ -87,7 +87,18 @@ pub fn compile_named_request(
     now: &str,
 ) -> std::result::Result<CompiledAtomic, DbErr> {
     let mut inner = plan_atomic(operation_id, params, now)?;
-    append_live_bump(&mut inner, live_topic_of(params), operation_id, now)?;
+    let edition_id = if let DbAtomicParams::SetAcquireStatus { edition_id, .. } = params {
+        Some(edition_id.as_str())
+    } else {
+        None
+    };
+    append_live_bump(
+        &mut inner,
+        live_topic_of(params),
+        edition_id,
+        operation_id,
+        now,
+    )?;
     let expected_hash = inner.expected_hash.clone().unwrap_or_default();
     // Canonical Bookclerk SQL (`?` placeholders, SQLite-shaped helpers).
     // Adapters lower placeholders and functions at execute time.
@@ -144,7 +155,13 @@ pub fn compile_claim_event_delivery(
         expires_at: receipt_expiry(now),
     };
     let mut wrapped = wrap_status_op(inner, &ctx, PayloadKind::JsonFromPlan);
-    append_live_bump(&mut wrapped, Some(LiveTopic::Deliveries), operation_id, now)?;
+    append_live_bump(
+        &mut wrapped,
+        Some(LiveTopic::Deliveries),
+        None,
+        operation_id,
+        now,
+    )?;
     Ok(compiled_from_inner(operation_id, wrapped, request_hash))
 }
 
@@ -174,12 +191,15 @@ fn live_topic_of(op: &DbAtomicParams) -> Option<LiveTopic> {
 }
 
 /// Appends `topic`'s live counter bump as the plan's last statement, after
-/// the receipt read, so no index the reply is read by moves.
+/// the receipt read, so no index the reply is read by moves. `edition_id`
+/// is the edition an acquire status write names (the library topic's
+/// probe); `None` for every other operation.
 ///
-/// The jobs, books and deliveries writes stamp `updated_at` with this
-/// attempt's `now`, so their bump is [`bump_if_stamped`]: it moves exactly
-/// when this attempt changed a row (including a sweep that ran before an
-/// `empty` outcome) and never on a replay, which writes nothing. A user
+/// The jobs and deliveries writes stamp `updated_at` with this attempt's
+/// `now`, so their bump is [`bump_if_stamped`]: it moves exactly when this
+/// attempt changed a row (including a sweep that ran before an `empty`
+/// outcome) and never on a replay, which writes nothing. An acquire status
+/// write stamps its edition's `edition_acquisitions` row the same way. A user
 /// delete leaves no row to stamp, so user operations bump when this attempt
 /// wrote an `ok` receipt (a replay finds the receipt with an older
 /// `created_at`).
@@ -190,6 +210,7 @@ fn live_topic_of(op: &DbAtomicParams) -> Option<LiveTopic> {
 fn append_live_bump(
     plan: &mut AtomicPlan,
     topic: Option<LiveTopic>,
+    edition_id: Option<&str>,
     operation_id: &str,
     now: &str,
 ) -> std::result::Result<(), DbErr> {
@@ -211,8 +232,23 @@ fn append_live_bump(
                 result_selection: DbResultSelection::Rows,
             },
         ),
-        LiveTopic::Library
-        | LiveTopic::Jobs
+        // The library topic has no stamped table of its own; an acquire
+        // status write stamps the edition's acquisition with this attempt's
+        // `now`, which a replay never writes.
+        LiveTopic::Library => bump_if_any(
+            topic,
+            TypedDbStatement {
+                sql: String::from(
+                    "SELECT 1 FROM edition_acquisitions \
+                     WHERE edition_id = ? AND updated_at = ? LIMIT 1",
+                ),
+                parameters: vec![j_str(edition_id.unwrap_or_default()), j_str(now)],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 1,
+                result_selection: DbResultSelection::Rows,
+            },
+        ),
+        LiveTopic::Jobs
         | LiveTopic::Deliveries
         | LiveTopic::Nodes
         | LiveTopic::Consents
@@ -511,7 +547,6 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
         DbAtomicParams::SetAcquireStatus {
             holding_id,
             edition_id,
-            book_uuid,
             status,
             storage_key,
             error_message,
@@ -534,7 +569,6 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             plan_set_acquire_status(
                 holding_id,
                 edition_id,
-                book_uuid.as_deref(),
                 status,
                 storage_key.as_deref(),
                 error_message.as_deref(),
@@ -2472,8 +2506,8 @@ fn plan_publish_domain_event(row: &PublishRow<'_>, now: &str) -> AtomicPlan {
     }
 }
 
-/// Write an edition's acquire state for holding `holding_id`, mirror it
-/// onto the flat `books` row and insert its event, in one batch.
+/// Write an edition's acquire state for holding `holding_id` and insert its
+/// event, in one batch.
 ///
 /// Every statement runs only while the holding still holds the edition:
 /// the holding was read before the write, and a revoke or rescan may have
@@ -2482,7 +2516,6 @@ fn plan_publish_domain_event(row: &PublishRow<'_>, now: &str) -> AtomicPlan {
 fn plan_set_acquire_status(
     holding_id: &str,
     edition_id: &str,
-    book_uuid: Option<&str>,
     status: &str,
     storage_key: Option<&str>,
     error_message: Option<&str>,
@@ -2507,20 +2540,6 @@ fn plan_set_acquire_status(
     };
     AtomicPlan {
         statements: vec![
-            sql(
-                &format!(
-                    "UPDATE books SET acquire_status = ?, storage_key = ?, error_message = ?, \
-                        updated_at = ? \
-                     WHERE uuid = ? AND {HOLDS}"
-                ),
-                with_holds(vec![
-                    j_str(status),
-                    j_opt_str(storage_key),
-                    j_opt_str(error_message),
-                    j_str(now),
-                    j_str(book_uuid.unwrap_or_default()),
-                ]),
-            ),
             sql(
                 &format!(
                     "INSERT INTO domain_events (\
@@ -2599,7 +2618,7 @@ fn plan_set_acquire_status(
                 holds().to_vec(),
             ),
         ],
-        outcome_index: 4,
+        outcome_index: 3,
         payload_index: None,
         consume_once: None,
         receipt_select_index: None,
@@ -5080,15 +5099,13 @@ mod tests {
         assert_eq!(blocked.status, atomic_status::EMPTY);
     }
 
-    /// One `SetAcquireStatus` request for title `book` of edition `ed1`,
-    /// held by holding `h-{book}`; `step` keeps each request's operation id
-    /// distinct.
+    /// One `SetAcquireStatus` request of edition `ed1` by holding
+    /// `h-{book}`; `step` keeps each request's operation id distinct.
     fn edition_status_req(step: u32, book: &str, status: &str, key: Option<&str>) -> NamedReq {
         test_req(
             DbAtomicParams::SetAcquireStatus {
                 holding_id: format!("h-{book}"),
                 edition_id: "ed1".into(),
-                book_uuid: Some(book.into()),
                 status: status.into(),
                 storage_key: key.map(str::to_string),
                 error_message: None,
@@ -5125,10 +5142,6 @@ mod tests {
         for sql in [
             "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
              VALUES ('audible', 'user-1', 'us', 'audible', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
-            "INSERT INTO books (uuid, plugin_key, source, account_id, product_id, marketplace, title, created_at, updated_at) \
-             VALUES ('b1', 'audible', 'audible', 'user-1', 'B00X', 'us', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
-            "INSERT INTO books (uuid, plugin_key, source, account_id, product_id, marketplace, title, created_at, updated_at) \
-             VALUES ('b2', 'audible', 'audible', 'user-1', 'B00Y', 'uk', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
             "INSERT INTO works (id, kind, title, created_at, updated_at) \
              VALUES ('w1', 'book', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
             "INSERT INTO expressions (id, work_id, kind, abridgement, created_at, updated_at) \
@@ -5190,21 +5203,11 @@ mod tests {
         run("b1", "queued", None);
         assert_eq!(edition_row(&conn), ("queued".into(), None, "h-b1".into()));
         // A write naming a holding that no longer exists (read before a
-        // revoke or rescan removed it) changes nothing, the flat row
-        // included, and is not found.
+        // revoke or rescan removed it) changes nothing and is not found.
         conn.execute("DELETE FROM holdings WHERE id = 'h-b1'", [])
             .unwrap();
         run_as("b1", "acquired", Some("c.m4b"), atomic_status::NOT_FOUND);
         assert_eq!(edition_row(&conn), ("queued".into(), None, "h-b1".into()));
-        assert_eq!(
-            conn.query_row(
-                "SELECT acquire_status FROM books WHERE uuid = 'b1'",
-                [],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-            "queued"
-        );
         conn.execute("DELETE FROM edition_acquisitions", [])
             .unwrap();
         run_as("b1", "acquired", Some("c.m4b"), atomic_status::NOT_FOUND);
@@ -5224,8 +5227,6 @@ mod tests {
         for sql in [
             "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
              VALUES ('audible', 'user-1', 'us', 'audible', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
-            "INSERT INTO books (uuid, plugin_key, source, account_id, product_id, marketplace, title, created_at, updated_at) \
-             VALUES ('b1', 'audible', 'audible', 'user-1', 'B00X', 'us', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
             "INSERT INTO works (id, kind, title, created_at, updated_at) \
              VALUES ('w1', 'book', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
             "INSERT INTO expressions (id, work_id, kind, abridgement, created_at, updated_at) \
@@ -5244,7 +5245,6 @@ mod tests {
                 DbAtomicParams::SetAcquireStatus {
                     holding_id: holding.into(),
                     edition_id: "ed1".into(),
-                    book_uuid: Some("b1".into()),
                     status: "acquired".into(),
                     storage_key: Some("Author/T/book.m4b".into()),
                     error_message: None,
@@ -5267,7 +5267,7 @@ mod tests {
             &plan_req(&acquire("h1", "evt-acq", "acq-1"), now).unwrap(),
         );
         assert_eq!(result.status, atomic_status::OK);
-        // The edition, the mirrored flat row and the event, in one batch.
+        // The edition and the event, in one batch.
         assert_eq!(
             edition_row(&conn),
             (
@@ -5276,14 +5276,6 @@ mod tests {
                 "h1".into()
             )
         );
-        let status: String = conn
-            .query_row(
-                "SELECT acquire_status FROM books WHERE uuid = 'b1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "acquired");
         let ordering: String = conn
             .query_row(
                 "SELECT ordering_key FROM domain_events WHERE id = 'evt-acq'",
@@ -5739,7 +5731,6 @@ mod tests {
             DbAtomicParams::SetAcquireStatus {
                 holding_id: "holding-1".into(),
                 edition_id: "edition-1".into(),
-                book_uuid: Some("book-1".into()),
                 status: "done".into(),
                 storage_key: Some("key".into()),
                 error_message: None,

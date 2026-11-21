@@ -118,11 +118,11 @@ enum Change {
     /// One listing's holders (`holding_added`, `holding_removed`).
     Listing(String),
     /// An acquire (`book_acquired`): its edition when the payload names
-    /// one, else its library title.
+    /// one, else the holding that acquired it.
     Acquired {
         /// The acquired edition.
         edition_id: Option<String>,
-        /// The acquired title's `books.uuid`.
+        /// The acquired title's account holding (`holdings.id`).
         title_id: String,
     },
 }
@@ -147,7 +147,7 @@ struct HoldingPayload {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AcquiredPayload {
-    /// The acquired title's `books.uuid`.
+    /// The acquired title's account holding (`holdings.id`).
     title_id: String,
     /// The acquired edition, when the title has one.
     #[serde(default)]
@@ -204,7 +204,7 @@ async fn changed_work(
         Change::Acquired {
             edition_id: None,
             title_id,
-        } => library.work_id_for_book(title_id).await,
+        } => library.work_of_holding(title_id).await,
     }
 }
 
@@ -531,8 +531,12 @@ mod tests {
         assert!(deliver_all(&library, node).await >= 1);
         assert_eq!(titles(&library).await, ["Evented Title"]);
 
-        let work = library.work_id_for_book(&book.uuid).await.unwrap();
-        let edition = library.edition_of_book(&book.uuid).await.unwrap().unwrap();
+        let work = library.work_of_holding(&book.holding_id).await.unwrap();
+        let edition = library
+            .edition_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         for change in [
             Change::Edition(edition.clone()),
             Change::Acquired {
@@ -541,7 +545,7 @@ mod tests {
             },
             Change::Acquired {
                 edition_id: None,
-                title_id: book.uuid.clone(),
+                title_id: book.holding_id.clone(),
             },
         ] {
             assert_eq!(

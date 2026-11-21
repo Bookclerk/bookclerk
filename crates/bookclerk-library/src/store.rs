@@ -10,37 +10,36 @@
 
 use crate::EntityKind;
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait,
     ActiveValue::{NotSet, Set},
-    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait,
-    QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, TransactionTrait,
 };
 use uuid::Uuid;
 
 use crate::atomic_txn::AtomicTxnBackend;
-use crate::control_plane::{batch, sea_probe, Bump, LiveTopic};
+use crate::control_plane::{batch, Bump, LiveTopic};
 use crate::entities::{
-    account_links, accounts, books, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
-    listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
-    operator_sessions, portal_identities, portal_sessions, saved_filters, security_audit_events,
-    title_request_sources, title_requests, user_invites, user_preferences, users,
-    webauthn_challenges, webauthn_credentials,
+    account_links, accounts, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
+    library_work_rows, listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
+    oidc_rp_states, operator_sessions, portal_identities, portal_sessions, saved_filters,
+    security_audit_events, title_request_sources, title_requests, user_invites, user_preferences,
+    users, webauthn_challenges, webauthn_credentials,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
-    user_prefs_key, AccountRecord, AcquireStatus, AcquireStatusCounts, BookRecord,
-    GlobalQueueEntry, ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher,
-    RequestStatus, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences,
-    UserRecord, UserRole, UserStatus,
+    user_prefs_key, AccountRecord, AcquireStatus, AcquireStatusCounts, GlobalQueueEntry,
+    ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher, RequestStatus,
+    StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences, UserRecord,
+    UserRole, UserStatus,
 };
 use crate::wishlist_merge::apply_merged_sources;
 use library_model::{holding_from_book, listing_from_book, WorkEnrichment};
-use write_batches::WriteBatches;
 
 /// Handle to the Bookclerk library database.
 ///
@@ -504,47 +503,9 @@ impl LibraryStore {
             }
         }
 
-        // Move books that do not already exist under `to` (same product_id).
-        let existing_keys: std::collections::HashSet<String> = books::Entity::find()
-            .filter(books::Column::PluginKey.eq(plugin_key))
-            .filter(books::Column::AccountId.eq(to))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|b| b.product_id)
-            .collect();
-
-        let from_books = books::Entity::find()
-            .filter(books::Column::PluginKey.eq(plugin_key))
-            .filter(books::Column::AccountId.eq(from))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        for book in from_books {
-            if existing_keys.contains(&book.product_id) {
-                continue;
-            }
-            let mut am: books::ActiveModel = book.into();
-            am.account_id = Set(to.to_string());
-            am.updated_at = Set(now.clone());
-            self.update_book_bumped(am).await?;
-        }
-
         self.move_account_holdings(plugin_key, from, to).await?;
 
-        // Drop duplicate product rows left on the old id, then the account.
-        let probe = books::Entity::find()
-            .filter(books::Column::PluginKey.eq(plugin_key))
-            .filter(books::Column::AccountId.eq(from));
-        self.exec_bumped(
-            books::Entity::delete_many()
-                .filter(books::Column::PluginKey.eq(plugin_key))
-                .filter(books::Column::AccountId.eq(from)),
-            LiveTopic::Library,
-            Bump::IfAny(sea_probe(&probe)?),
-        )
-        .await?;
+        // Then drop the old account row.
         accounts::Entity::delete_many()
             .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(from))
@@ -961,50 +922,6 @@ impl LibraryStore {
         self.get_user(id)
             .await?
             .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))
-    }
-
-    /// Writes a loaded title's changed columns and bumps the library topic
-    /// in one batch, and answers the row as written.
-    ///
-    /// # Errors
-    ///
-    /// Returns the write or read error, or [`LibraryError::NotFound`] when
-    /// the row is gone.
-    pub(crate) async fn update_book_bumped(&self, am: books::ActiveModel) -> Result<books::Model> {
-        let id = match &am.id {
-            sea_orm::ActiveValue::Set(id) | sea_orm::ActiveValue::Unchanged(id) => *id,
-            sea_orm::ActiveValue::NotSet => {
-                return Err(LibraryError::Other(anyhow::anyhow!(
-                    "a title update needs the row id"
-                )))
-            }
-        };
-        // A row loaded whole has every column, so the written row is known
-        // without reading it back.
-        let written = sea_orm::TryIntoModel::try_into_model(am.clone()).ok();
-        let update = books::Entity::update(am)
-            .validate()
-            .map_err(LibraryError::Orm)?;
-        let changed = self
-            .exec_bumped(update, LiveTopic::Library, Bump::Always)
-            .await?;
-        match written {
-            Some(model) if changed == 1 => Ok(model),
-            _ => self.book_model_by_id(id).await,
-        }
-    }
-
-    /// One title row by its row id.
-    ///
-    /// # Errors
-    ///
-    /// Returns the read error, or [`LibraryError::NotFound`] when it is gone.
-    pub(crate) async fn book_model_by_id(&self, id: i64) -> Result<books::Model> {
-        books::Entity::find_by_id(id)
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, id))
     }
 
     /// Writes a loaded user's changed columns and bumps the users topic in
@@ -4282,547 +4199,208 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Upsert a book from a library sync and resolve the listing it
-    /// describes into works, expressions and editions.
+    /// Records a title an account holds, as a library sync lists it: the
+    /// listing it describes, resolved into works, expressions and editions,
+    /// the account's holding of it, the listing's store text and the fields
+    /// it offers its work.
     ///
-    /// The listing is derived from the flat row ([`listing_from_book`]);
-    /// a scan that has the plugin's structured record uses
-    /// [`Self::upsert_scanned_title`] instead. A row that fails listing
-    /// validation, or whose listing cannot be resolved, is still stored,
-    /// and the listing is skipped with a warning.
+    /// The listing is derived from `book` ([`listing_from_book`]); a scan
+    /// that has the plugin's structured record uses
+    /// [`Self::upsert_scanned_title`] instead.
+    ///
+    /// # Returns
+    ///
+    /// The account's title, as acquire reads it.
     ///
     /// # Errors
     ///
-    /// Returns an error when the flat row cannot be read or written.
-    pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
-        self.upsert_book_with(book, Some(&holding_from_book(book)))
-            .await
+    /// Returns [`LibraryError::Invalid`] when `book` has no plugin key or
+    /// fails listing validation, [`LibraryError::NotFound`] when the
+    /// holding was removed again before it could be read back, or the
+    /// database error.
+    pub async fn upsert_book(&self, book: &NewBook) -> Result<AcquireTitle> {
+        let book = decoded_book(book);
+        require_plugin_key(&book)?;
+        let listing = listing_from_book(&book).map_err(|err| invalid_listing(&book, &err))?;
+        self.record_held_title(&listing, &book).await
     }
 
-    /// Updates a title's metadata: the flat row, and its listing, without
-    /// asserting that its account holds it.
+    /// Updates a title's store text and the fields it offers its work,
+    /// without asserting that its account holds it.
     ///
     /// For metadata from elsewhere (enrichment), which must not bring back
-    /// a holding a scan or a revoke removed.
+    /// a holding a scan or a revoke removed: the listing is linked as a
+    /// catalog listing when it is not stored yet.
     ///
     /// # Errors
     ///
-    /// Returns an error when the flat row cannot be read or written; a
-    /// listing that cannot be resolved is logged, not returned.
-    pub async fn update_book_metadata(&self, book: &NewBook) -> Result<BookRecord> {
-        self.upsert_book_with(book, None).await
+    /// Returns [`LibraryError::Invalid`] when `book` has no plugin key or
+    /// fails listing validation, or the database error.
+    pub async fn update_book_metadata(&self, book: &NewBook) -> Result<()> {
+        let book = decoded_book(book);
+        require_plugin_key(&book)?;
+        let listing = listing_from_book(&book).map_err(|err| invalid_listing(&book, &err))?;
+        let plan = self.record_catalog_listing(&listing).await?;
+        self.record_listing_detail(&plan.listing.id, &crate::ListingDetail::of_new_book(&book))
+            .await?;
+        self.fill_work_from_book(
+            &plan.listing.edition_id,
+            &WorkEnrichment::of_new_book(&book),
+        )
+        .await
     }
 
-    /// [`Self::upsert_book`], recording `holding` when one is given.
-    async fn upsert_book_with(
-        &self,
-        book: &NewBook,
-        holding: Option<&bookclerk_resolve::HoldingDraft>,
-    ) -> Result<BookRecord> {
-        let record = self.upsert_book_row(book).await?;
-        match listing_from_book(book) {
-            Ok(listing) => {
-                self.record_listing_after_row(&listing, holding, &record)
-                    .await;
-            }
-            Err(err) => tracing::warn!(
-                product_id = %book.product_id,
-                plugin_key = %book.plugin_key,
-                error = %err,
-                "library title not resolved into the library model"
-            ),
-        }
-        Ok(record)
-    }
-
-    /// Upsert a scanned title: the flat row, and the listing its plugin's
-    /// structured record describes (or, without one, the listing the flat
-    /// row describes).
+    /// Records a scanned title: the listing its plugin's structured record
+    /// describes (or, without one, the listing `title.book` describes), the
+    /// account's holding of it, its store text and the fields it offers
+    /// its work.
     ///
     /// The listing is filed under the book's plugin, whatever plugin key it
     /// carries.
     ///
+    /// # Returns
+    ///
+    /// The account's title, as acquire reads it.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the flat row cannot be read or written; a
-    /// listing that cannot be resolved is logged, not returned.
-    pub async fn upsert_scanned_title(&self, title: &ScannedTitle) -> Result<BookRecord> {
+    /// As [`Self::upsert_book`].
+    pub async fn upsert_scanned_title(&self, title: &ScannedTitle) -> Result<AcquireTitle> {
         let Some(listing) = &title.listing else {
             return self.upsert_book(&title.book).await;
         };
-        let record = self.upsert_book_row(&title.book).await?;
+        let book = decoded_book(&title.book);
+        require_plugin_key(&book)?;
         let mut listing = listing.clone();
-        listing.key.plugin_key.clone_from(&title.book.plugin_key);
-        self.record_listing_after_row(&listing, Some(&holding_from_book(&title.book)), &record)
-            .await;
-        Ok(record)
+        listing.key.plugin_key.clone_from(&book.plugin_key);
+        self.record_held_title(&listing, &book).await
     }
 
-    /// Upsert a page of scanned titles: the flat rows as
-    /// [`Self::upsert_scanned_title`] writes each one, read and written per
-    /// page in batches sized from the database plugin's limits, then every
-    /// title's listing resolved as one page (`record_listing_page`),
-    /// so titles the library already holds as the store describes them cost
-    /// no reads of their own.
+    /// Records a page of scanned titles as [`Self::upsert_scanned_title`]
+    /// records each one, with every title's listing resolved as one page
+    /// (`record_listing_page_with_details`), so titles the library already
+    /// holds as the store describes them cost no reads of their own.
+    ///
+    /// A title that fails listing validation or cannot be resolved is
+    /// logged and skipped, so one bad title does not stop the rest of a
+    /// scan; the next scan tries it again.
     ///
     /// # Returns
     ///
-    /// The stored flat rows, in the order of `titles`.
+    /// How many of `titles` were recorded.
     ///
     /// # Errors
     ///
-    /// Returns an error when the flat rows cannot be read or written; the
-    /// batches before the failure stay written and no listing is resolved. A listing
-    /// that cannot be resolved is logged, not returned.
-    pub async fn upsert_scanned_titles(&self, titles: &[ScannedTitle]) -> Result<Vec<BookRecord>> {
-        let books: Vec<&NewBook> = titles.iter().map(|title| &title.book).collect();
-        let records = self.upsert_book_rows(&books).await?;
-        let mut listings = Vec::with_capacity(titles.len());
+    /// Returns [`LibraryError::Invalid`] when a title has no plugin key;
+    /// nothing is written then.
+    pub async fn upsert_scanned_titles(&self, titles: &[ScannedTitle]) -> Result<usize> {
+        let mut items = Vec::with_capacity(titles.len());
         let mut details = Vec::with_capacity(titles.len());
-        for (title, record) in titles.iter().zip(&records) {
+        for title in titles {
+            let book = decoded_book(&title.book);
+            require_plugin_key(&book)?;
             let listing = match &title.listing {
                 Some(listing) => {
                     let mut listing = listing.clone();
-                    listing.key.plugin_key.clone_from(&title.book.plugin_key);
-                    Some(listing)
+                    listing.key.plugin_key.clone_from(&book.plugin_key);
+                    listing
                 }
-                None => match listing_from_book(&title.book) {
-                    Ok(listing) => Some(listing),
+                None => match listing_from_book(&book) {
+                    Ok(listing) => listing,
                     Err(err) => {
                         tracing::warn!(
-                            product_id = %title.book.product_id,
-                            plugin_key = %title.book.plugin_key,
+                            product_id = %book.product_id,
+                            plugin_key = %book.plugin_key,
                             error = %err,
                             "library title not resolved into the library model"
                         );
-                        None
+                        continue;
                     }
                 },
             };
-            if let Some(listing) = listing {
-                listings.push((
-                    listing,
-                    holding_from_book(&title.book),
-                    WorkEnrichment::of_book(record),
-                ));
-                details.push(crate::ListingDetail::of_book(record));
-            }
+            items.push((
+                listing,
+                holding_from_book(&book),
+                WorkEnrichment::of_new_book(&book),
+            ));
+            details.push(crate::ListingDetail::of_new_book(&book));
         }
-        self.record_listing_page_with_details(&listings, &details)
-            .await;
-        Ok(records)
+        Ok(self
+            .record_listing_page_with_details(&items, &details)
+            .await)
     }
 
-    /// Records a title's listing once its flat row is stored, logging a
-    /// failure rather than returning it.
+    /// Records `listing` as held by `book`'s account, with `book`'s store
+    /// text and the fields it offers its work, and reads the title back.
     ///
-    /// The flat row is already committed and is what acquire and the UI
-    /// read until the library model replaces it, so one title that cannot
-    /// be resolved (other writers kept racing it, or a stored row is
-    /// inconsistent) must not stop the rest of a scan. The next scan
-    /// resolves the listing again.
+    /// # Errors
     ///
-    /// The work the listing reaches also takes the row's description,
-    /// subjects, categories and cover where it has none yet. `holding` is
-    /// recorded when given; without one the listing is linked as a catalog
-    /// listing and no holding is added.
-    async fn record_listing_after_row(
+    /// Returns [`LibraryError::NotFound`] when the holding is gone before it
+    /// is read back, or the database error.
+    async fn record_held_title(
         &self,
         listing: &bookclerk_resolve::Listing,
-        holding: Option<&bookclerk_resolve::HoldingDraft>,
-        record: &BookRecord,
-    ) {
-        let linked = match holding {
-            Some(holding) => self.record_listing(listing, holding).await,
-            None => self.record_catalog_listing(listing).await,
-        };
-        let result = match linked {
-            Ok(plan) => {
-                let detail = crate::ListingDetail::of_book(record);
-                match self.record_listing_detail(&plan.listing.id, &detail).await {
-                    Ok(()) => {
-                        self.fill_work_from_book(
-                            &plan.listing.edition_id,
-                            &WorkEnrichment::of_book(record),
-                        )
-                        .await
-                    }
-                    Err(err) => Err(err),
-                }
-            }
-            Err(err) => Err(err),
-        };
-        if let Err(err) = result {
-            tracing::warn!(
-                product_id = %listing.key.product_id,
-                plugin_key = %listing.key.plugin_key,
-                error = %err,
-                "library title stored but not resolved into the library model; the next scan retries"
-            );
-        }
-    }
-
-    /// Insert on first sight; on `(plugin_key, account_id, product_id)`
-    /// conflict, merge fields with Audible-precedence rules
-    /// ([`merged_book_row`]). Expressed as load-then-merge over the `books`
-    /// entity so the precedence logic is explicit and portable.
-    async fn upsert_book_row(&self, book: &NewBook) -> Result<BookRecord> {
-        let book = decoded_book(book);
-        require_plugin_key(&book)?;
-        let now = now_str();
-        let existing = books::Entity::find()
-            .filter(books::Column::PluginKey.eq(book.plugin_key.as_str()))
-            .filter(books::Column::AccountId.eq(book.account_id.as_str()))
-            .filter(books::Column::ProductId.eq(book.product_id.as_str()))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        let model = if let Some(existing) = existing {
-            let merged = merged_book_row(&existing, &book, &now);
-            self.update_book_bumped(scan_update(existing, merged))
-                .await?
-        } else {
-            let mut am = books::ActiveModel::from(new_book_row(&book, &now)).reset_all();
-            am.id = NotSet;
-            let mut written = am.clone();
-            let id = self
-                .insert_bumped(books::Entity::insert(am), LiveTopic::Library)
-                .await?;
-            // Every column was set, so the new row is known without
-            // reading it back.
-            written.id = Set(id);
-            match sea_orm::TryIntoModel::try_into_model(written) {
-                Ok(model) => model,
-                Err(_) => self.book_model_by_id(id).await?,
-            }
-        };
-        map_book(model)
-    }
-
-    /// Upserts a page of flat book rows as [`Self::upsert_book_row`] stores
-    /// each one, with one keyed read of the rows already stored and the
-    /// writes sent as atomic batches sized from the database plugin's
-    /// limits.
-    ///
-    /// A title listed twice merges as row-by-row upserts would and is
-    /// written once, as its final row; both entries return that row. A
-    /// row another writer inserted between the read and the write (the
-    /// insert is ignored) is merged again on its own, so no title is lost.
-    ///
-    /// # Returns
-    ///
-    /// The stored rows, in the order of `books`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a book has no plugin key or a read or batch
-    /// fails. Batches sent before the failure stay written; each one is a
-    /// set of idempotent upserts, so the next scan writes the page again.
-    async fn upsert_book_rows(&self, books: &[&NewBook]) -> Result<Vec<BookRecord>> {
-        let books: Vec<Cow<'_, NewBook>> = books.iter().map(|book| decoded_book(book)).collect();
-        for book in &books {
-            require_plugin_key(book)?;
-        }
-        let stored = self.stored_book_rows(&books).await?;
-        self.write_book_rows(&books, stored).await
-    }
-
-    /// The write half of [`Self::upsert_book_rows`]: merges `books` over
-    /// `stored` (the rows read for them), writes each title once, and reads
-    /// the page back.
-    ///
-    /// An insert the database ignored (its key or uuid was taken after
-    /// `stored` was read) is told apart by the batch reply's affected-row
-    /// count, not by comparing rows, and that title is merged again on its
-    /// own against the row that won.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a batch or the re-read fails, or a title's
-    /// own upsert does.
-    async fn write_book_rows(
-        &self,
-        books: &[Cow<'_, NewBook>],
-        mut rows: HashMap<BookKey, books::Model>,
-    ) -> Result<Vec<BookRecord>> {
-        let now = now_str();
-        let mut inserts: HashSet<BookKey> = HashSet::new();
-        // Fold every listing of a title into its final row first, so each
-        // title is written once: an update never builds on an insert that
-        // another writer's row may have turned away.
-        let mut order: Vec<BookKey> = Vec::new();
-        let mut seen: HashSet<BookKey> = HashSet::new();
-        for book in books {
-            let key = BookKey::of(book);
-            let row = match rows.get(&key) {
-                Some(existing) => merged_book_row(existing, book, &now),
-                None => {
-                    inserts.insert(key.clone());
-                    new_book_row(book, &now)
-                }
-            };
-            if seen.insert(key.clone()) {
-                order.push(key.clone());
-            }
-            rows.insert(key, row);
-        }
-        // Each batch bumps the library topic with the rows it writes.
-        let mut batches = WriteBatches::new(self.db_capabilities(), "library title")
-            .with_trailer(crate::control_plane::bump(LiveTopic::Library))?;
-        // The titles of the statements queued in the open batch, in order.
-        let mut queued: Vec<BookKey> = Vec::new();
-        let mut ignored: HashSet<BookKey> = HashSet::new();
-        for key in order {
-            let Some(row) = rows.get(&key) else { continue };
-            let statement = if inserts.contains(&key) {
-                insert_book_statement(row)
-            } else {
-                update_book_statement(row)
-            };
-            if let Some(full) = batches.push(statement)? {
-                let sent = std::mem::take(&mut queued);
-                ignored.extend(self.run_book_batch(full, sent, &inserts).await?);
-            }
-            queued.push(key);
-        }
-        if let Some(last) = batches.finish() {
-            ignored.extend(self.run_book_batch(last, queued, &inserts).await?);
-        }
-        let written = self.stored_book_rows(books).await?;
-        let mut records = Vec::with_capacity(books.len());
-        for book in books {
-            let key = BookKey::of(book);
-            match written.get(&key) {
-                Some(row) if !ignored.contains(&key) => records.push(map_book(row.clone())?),
-                // Another writer's insert won, or the insert was refused
-                // (a uuid the plugin sent is another row's): merge alone.
-                _ => records.push(self.upsert_book_row(book).await?),
-            }
-        }
-        Ok(records)
-    }
-
-    /// The stored flat rows of `books`, by key, read in chunks of ids the
-    /// backend accepts.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    async fn stored_book_rows(
-        &self,
-        books: &[Cow<'_, NewBook>],
-    ) -> Result<HashMap<BookKey, books::Model>> {
-        let mut by_account: BTreeMap<(&str, &str), BTreeSet<String>> = BTreeMap::new();
-        for book in books {
-            by_account
-                .entry((book.plugin_key.as_str(), book.account_id.as_str()))
-                .or_default()
-                .insert(book.product_id.clone());
-        }
-        let mut rows = HashMap::new();
-        for ((plugin_key, account_id), ids) in by_account {
-            let ids: Vec<String> = ids.into_iter().collect();
-            let found = library_model::find_chunked::<books::Entity, _>(self, &ids, |part| {
-                books::Entity::find()
-                    .filter(books::Column::PluginKey.eq(plugin_key))
-                    .filter(books::Column::AccountId.eq(account_id))
-                    .filter(books::Column::ProductId.is_in(part.to_vec()))
-            })
+        book: &NewBook,
+    ) -> Result<AcquireTitle> {
+        let plan = self
+            .record_listing(listing, &holding_from_book(book))
             .await?;
-            for row in found {
-                rows.insert(
-                    BookKey {
-                        plugin_key: row.plugin_key.clone(),
-                        account_id: row.account_id.clone(),
-                        product_id: row.product_id.clone(),
-                    },
-                    row,
-                );
-            }
-        }
-        Ok(rows)
-    }
-
-    /// Sends one chunk of flat book-row writes as one atomic host batch.
-    ///
-    /// `keys` names the title of each statement before the batch's trailer,
-    /// in order; `inserts` holds the titles written as inserts.
-    ///
-    /// # Returns
-    ///
-    /// The titles whose insert the database ignored (no row affected).
-    ///
-    /// # Errors
-    ///
-    /// Returns the database error; nothing in the chunk is kept then.
-    async fn run_book_batch(
-        &self,
-        statements: Vec<bookclerk_plugin_abi::TypedDbStatement>,
-        keys: Vec<BookKey>,
-        inserts: &HashSet<BookKey>,
-    ) -> Result<Vec<BookKey>> {
-        let operation_id = format!("scanned-books-{}", Uuid::new_v4());
-        let reply = self
-            .execute_host_batch(batch::request(&operation_id, statements))
+        self.record_listing_detail(&plan.listing.id, &crate::ListingDetail::of_new_book(book))
             .await?;
-        Ok(keys
-            .into_iter()
-            .zip(&reply.statements)
-            .filter(|(key, result)| inserts.contains(key) && result.rows_affected == 0)
-            .map(|(key, _)| key)
-            .collect())
+        self.fill_work_from_book(&plan.listing.edition_id, &WorkEnrichment::of_new_book(book))
+            .await?;
+        self.acquire_title(
+            &plan.listing.key.plugin_key,
+            &book.account_id,
+            &plan.listing.key.marketplace,
+            &plan.listing.key.product_id,
+        )
+        .await?
+        .ok_or_else(|| LibraryError::not_found(EntityKind::Book, &book.product_id))
     }
-
-    /// Look up a book by its public `uuid`.
+    /// The title `account_id` holds that `title_id` names: its holding id,
+    /// the store's product id, or an ASIN or ISBN of its edition.
+    ///
+    /// Prefers a holding id match, then a product id, then an ASIN, then
+    /// an ISBN. When two plugins hold the same account id and both match
+    /// at the same priority, the lookup fails closed; pass the plugin key
+    /// through [`Self::held_title_in`] instead.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
-    pub async fn get_book_by_uuid(&self, uuid: &str) -> Result<Option<BookRecord>> {
-        books::Entity::find()
-            .filter(books::Column::Uuid.eq(uuid))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(map_book)
-            .transpose()
+    /// Returns [`LibraryError::Conflict`] when the match is ambiguous, or
+    /// the database error.
+    pub async fn held_title(
+        &self,
+        title_id: &str,
+        account_id: &str,
+    ) -> Result<Option<AcquireTitle>> {
+        self.held_title_in(None, title_id, account_id).await
     }
 
-    /// Look up a book by uuid, product_id, asin, or isbn for the given account.
-    ///
-    /// Prefer exact uuid / product_id matches, then asin, then isbn. When two
-    /// plugins own the same account id and both match at the same priority,
-    /// the lookup fails closed; pass the plugin key through
-    /// [`Self::get_book_in`] instead.
+    /// [`Self::held_title`] narrowed to one plugin key when `plugin_key` is
+    /// set.
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Conflict`] when the match is ambiguous.
-    pub async fn get_book(&self, title_id: &str, account_id: &str) -> Result<Option<BookRecord>> {
-        self.get_book_in(None, title_id, account_id).await
-    }
-
-    /// [`Self::get_book`] narrowed to one plugin key when `plugin_key` is set.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Conflict`] when the match is ambiguous.
-    pub async fn get_book_in(
+    /// Returns [`LibraryError::Conflict`] when the match is ambiguous, or
+    /// the database error.
+    pub async fn held_title_in(
         &self,
         plugin_key: Option<&str>,
         title_id: &str,
         account_id: &str,
-    ) -> Result<Option<BookRecord>> {
-        self.resolve_book_in(plugin_key, title_id, account_id)
+    ) -> Result<Option<AcquireTitle>> {
+        let mut matches: Vec<AcquireTitle> = self
+            .acquire_titles_named(Some(account_id), title_id)
             .await?
-            .map(map_book)
-            .transpose()
-    }
-
-    /// All ownership rows sharing an ISBN (cross-account / cross-store enrichment).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn find_books_by_isbn(&self, isbn: &str) -> Result<Vec<BookRecord>> {
-        books::Entity::find()
-            .filter(books::Column::Isbn.eq(isbn))
-            .order_by_asc(books::Column::Source)
-            .order_by_asc(books::Column::AccountId)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
             .into_iter()
-            .map(map_book)
-            .collect()
-    }
-
-    /// Lists books, optionally filtered to one `account_id`.
-    ///
-    /// # Arguments
-    ///
-    /// * `account_id` - Store account id.
-    ///
-    /// # Returns
-    ///
-    /// `Result<Vec<BookRecord>>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn list_books(&self, account_id: Option<&str>) -> Result<Vec<BookRecord>> {
-        let mut query = books::Entity::find().order_by_asc(books::Column::Title);
-        if let Some(account_id) = account_id {
-            query = query.filter(books::Column::AccountId.eq(account_id));
-        }
-        query
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_book)
-            .collect()
-    }
-
-    /// Count book rows (SQL `COUNT`, not a full fetch).
-    ///
-    /// A peer writer on the same SQLite file (TRUNCATE journal) can make this
-    /// read return `SQLITE_BUSY`. The read is repeated until the lock clears
-    /// or the attempt budget is spent. `account_id` is unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
-    /// than file-lock contention, and [`LibraryError::Unavailable`] when the
-    /// lock is still held after the retries.
-    pub async fn count_books(&self, account_id: Option<&str>) -> Result<i64> {
-        lock_retry::retry_read_lock(|| async {
-            let mut query = books::Entity::find();
-            if let Some(account_id) = account_id {
-                query = query.filter(books::Column::AccountId.eq(account_id));
-            }
-            let count = query
-                .count(&self.db)
-                .await
-                .map_err(LibraryError::from_db_err)?;
-            Ok(count as i64)
-        })
-        .await
-    }
-
-    /// Resolve `title_id` to the stored public book model, or error if missing.
-    async fn resolve_book(&self, title_id: &str, account_id: &str) -> Result<books::Model> {
-        self.resolve_book_in(None, title_id, account_id)
-            .await?
-            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, title_id))
-    }
-
-    /// Best match for `title_id` on `account_id`, optionally within one plugin.
-    ///
-    /// Two rows at the same match priority under different plugin keys are
-    /// ambiguous and fail closed rather than picking one.
-    async fn resolve_book_in(
-        &self,
-        plugin_key: Option<&str>,
-        title_id: &str,
-        account_id: &str,
-    ) -> Result<Option<books::Model>> {
-        let mut query = books::Entity::find()
-            .filter(books::Column::AccountId.eq(account_id))
-            .filter(
-                Condition::any()
-                    .add(books::Column::Uuid.eq(title_id))
-                    .add(books::Column::ProductId.eq(title_id))
-                    .add(books::Column::Asin.eq(title_id))
-                    .add(books::Column::Isbn.eq(title_id)),
-            );
-        if let Some(key) = plugin_key {
-            query = query.filter(books::Column::PluginKey.eq(key));
-        }
-        let mut matches = query.all(&self.db).await.map_err(LibraryError::Orm)?;
+            .filter(|title| title.account_id == account_id)
+            .filter(|title| plugin_key.is_none_or(|key| title.plugin_key == key))
+            .collect();
         matches.sort_by(|a, b| {
-            match_priority(a, title_id)
-                .cmp(&match_priority(b, title_id))
+            title_match_priority(a, title_id)
+                .cmp(&title_match_priority(b, title_id))
                 .then_with(|| a.plugin_key.cmp(&b.plugin_key))
         });
         let mut iter = matches.into_iter();
@@ -4830,7 +4408,7 @@ impl LibraryStore {
             return Ok(None);
         };
         if let Some(next) = iter.next() {
-            if match_priority(&next, title_id) == match_priority(&best, title_id)
+            if title_match_priority(&next, title_id) == title_match_priority(&best, title_id)
                 && next.plugin_key != best.plugin_key
             {
                 return Err(LibraryError::Conflict(format!(
@@ -4842,72 +4420,89 @@ impl LibraryStore {
         Ok(Some(best))
     }
 
-    /// Update user-defined fields (tags, ratings, finished) without touching scan metadata.
+    /// True when any account holds a title (SQL `EXISTS`-style read, not a
+    /// full fetch).
+    ///
+    /// A peer writer on the same SQLite file (TRUNCATE journal) can make this
+    /// read return `SQLITE_BUSY`. The read is repeated until the lock clears
+    /// or the attempt budget is spent.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
+    /// than file-lock contention, and [`LibraryError::Unavailable`] when the
+    /// lock is still held after the retries.
+    pub async fn has_held_titles(&self) -> Result<bool> {
+        lock_retry::retry_read_lock(|| async {
+            let found = crate::entities::holdings::Entity::find()
+                .filter(crate::entities::holdings::Column::HolderKind.eq("account"))
+                .limit(1)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?;
+            Ok(!found.is_empty())
+        })
+        .await
+    }
+
+    /// Records user-defined fields (tags, ratings, finished) for every
+    /// person linked to the account that holds the title, on the title's
+    /// work, without touching scan metadata.
+    ///
+    /// Each person keeps their own state, so members sharing the account
+    /// do not overwrite one another's; an account no person is linked to
+    /// records nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::NotFound`] when the account holds no title
+    /// `title_id` names, [`LibraryError::Conflict`] when the name is
+    /// ambiguous, or the database error.
     pub async fn update_user_fields(
         &self,
         title_id: &str,
         account_id: &str,
         fields: &UserBookFields,
     ) -> Result<()> {
-        let model = self.resolve_book(title_id, account_id).await?;
-        let mut am: books::ActiveModel = model.into();
-        if let Some(tags) = &fields.tags {
-            am.tags = Set(Some(tags.clone()));
-        }
-        if let Some(v) = fields.rating_overall {
-            am.rating_overall = Set(Some(f64::from(v)));
-        }
-        if let Some(v) = fields.rating_performance {
-            am.rating_performance = Set(Some(f64::from(v)));
-        }
-        if let Some(v) = fields.rating_story {
-            am.rating_story = Set(Some(f64::from(v)));
-        }
-        if let Some(v) = fields.is_finished {
-            am.is_finished = Set(i64::from(v));
-        }
-        am.updated_at = Set(now_str());
-        let book = self.update_book_bumped(am).await?;
-        // Each person linked to the account keeps the state on the work, so
-        // members sharing the account do not overwrite one another's.
+        let title = self
+            .held_title(title_id, account_id)
+            .await?
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, title_id))?;
         let users = self
-            .users_linked_to_account(&book.plugin_key, &book.account_id)
+            .users_linked_to_account(&title.plugin_key, &title.account_id)
             .await?;
-        if !users.is_empty() {
-            if let Some(work_id) = self.work_id_for_book(&book.uuid).await? {
-                for user_id in users {
-                    self.set_user_title_state(user_id, &work_id, fields).await?;
-                }
-            }
+        if users.is_empty() {
+            return Ok(());
+        }
+        let Some(work_id) = self
+            .works_of_editions(BTreeSet::from([title.edition_id.clone()]))
+            .await?
+            .remove(&title.edition_id)
+        else {
+            return Ok(());
+        };
+        for user_id in users {
+            self.set_user_title_state(user_id, &work_id, fields).await?;
         }
         Ok(())
     }
 
-    /// Updates companion PDF acquire status and optional storage key.
-    ///
-    /// The status is recorded on the title row and, when the title is linked
-    /// to an edition, on that edition's `edition_acquisitions` row too. An
-    /// edition whose PDF another existing title already acquired keeps that
-    /// title's PDF state.
+    /// Records the companion PDF state of the title `account_id` holds
+    /// that `title_id` names (see [`Self::held_title`]), as
+    /// [`Self::set_holding_pdf_status`] records it for that holding.
     ///
     /// # Arguments
     ///
-    /// * `title_id` - Product id / ASIN / ISBN used as the title key.
+    /// * `title_id` - Holding id, product id, ASIN or ISBN of the title.
     /// * `account_id` - Store account id.
-    /// * `status` - Acquire or request status value.
+    /// * `status` - The new PDF state.
     /// * `pdf_storage_key` - Object-storage key for the companion PDF.
-    ///
-    /// # Returns
-    ///
-    /// `Result<()>` — `Ok` on success.
     ///
     /// # Errors
     ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
+    /// Returns [`LibraryError::NotFound`] when the account holds no such
+    /// title, [`LibraryError::Conflict`] when the name is ambiguous, or the
+    /// database error.
     pub async fn set_pdf_status(
         &self,
         title_id: &str,
@@ -4915,25 +4510,18 @@ impl LibraryStore {
         status: AcquireStatus,
         pdf_storage_key: Option<&str>,
     ) -> Result<()> {
-        let model = self.resolve_book(title_id, account_id).await?;
-        let title = self.title_holding_of_book(&model.uuid).await?;
-        let mut am: books::ActiveModel = model.into();
-        am.pdf_status = Set(status.as_str().to_string());
-        am.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
-        am.updated_at = Set(now_str());
-        self.update_book_bumped(am).await?;
-        // The edition's PDF state, which outlives `books` (book model step 6).
-        if let Some(title) = title {
-            event_outbox::update_edition_pdf_on(
-                &self.db,
-                &title.edition_id,
-                &title.holding_id,
-                status,
-                pdf_storage_key,
-            )
-            .await?;
-        }
-        Ok(())
+        let title = self
+            .held_title(title_id, account_id)
+            .await?
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, title_id))?;
+        event_outbox::update_edition_pdf_on(
+            &self.db,
+            &title.edition_id,
+            &title.holding_id,
+            status,
+            pdf_storage_key,
+        )
+        .await
     }
 
     /// Records the companion PDF state account holding `holding_id`
@@ -4962,20 +4550,6 @@ impl LibraryStore {
             .acquire_title_of_holding(holding_id)
             .await?
             .ok_or_else(|| LibraryError::not_found(EntityKind::Book, holding_id))?;
-        if let Some(uuid) = title.book_uuid.as_deref() {
-            if let Some(model) = books::Entity::find()
-                .filter(books::Column::Uuid.eq(uuid))
-                .one(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                let mut am: books::ActiveModel = model.into();
-                am.pdf_status = Set(status.as_str().to_string());
-                am.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
-                am.updated_at = Set(now_str());
-                self.update_book_bumped(am).await?;
-            }
-        }
         event_outbox::update_edition_pdf_on(
             &self.db,
             &title.edition_id,
@@ -5085,34 +4659,29 @@ impl LibraryStore {
         account_id: &str,
     ) -> Result<Option<(String, String)>> {
         Ok(self
-            .get_book(title_id, account_id)
+            .held_title(title_id, account_id)
             .await?
-            .map(|b| (b.plugin_key, b.product_id)))
+            .map(|title| (title.plugin_key, title.product_id)))
     }
 
-    /// Updates acquire status, storage key, and optional error message.
-    ///
-    /// The title's edition records the write too (`edition_acquisitions`,
-    /// read with [`Self::edition_acquisition`]) in the same batch, and an
-    /// acquired title's `book_acquired` event names that edition. An
-    /// edition another title acquired keeps its state whatever this title
-    /// writes, while that title stays in the library.
+    /// Records the acquire state of the title `account_id` holds that
+    /// `title_id` names (see [`Self::held_title`]), as
+    /// [`Self::set_holding_acquire_status`] records it for that holding.
     ///
     /// # Arguments
     ///
-    /// * `title_id` - Product id / ASIN / ISBN used as the title key.
+    /// * `title_id` - Holding id, product id, ASIN or ISBN of the title.
     /// * `account_id` - Store account id.
     /// * `status` - Acquire or request status value.
     /// * `storage_key` - Object-storage key for the primary audio artifact.
     /// * `error_message` - Optional failure message to persist.
     ///
-    /// # Returns
-    ///
-    /// `Result<()>` — `Ok` on success.
-    ///
     /// # Errors
     ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
+    /// Returns [`LibraryError::NotFound`] when the account holds no such
+    /// title (or it stops holding the edition before the write),
+    /// [`LibraryError::Conflict`] when the name is ambiguous, or the
+    /// database error.
     pub async fn set_acquire_status(
         &self,
         title_id: &str,
@@ -5121,28 +4690,12 @@ impl LibraryStore {
         storage_key: Option<&str>,
         error_message: Option<&str>,
     ) -> Result<()> {
-        let model = self.resolve_book(title_id, account_id).await?;
-        let Some(holding) = self.title_holding_of_book(&model.uuid).await? else {
-            // A row no account holding sells (an import or fixture that never
-            // resolved a listing): only the flat row records the state, and
-            // there is no title for an event to name.
-            let mut am: books::ActiveModel = model.into();
-            am.acquire_status = Set(status.as_str().to_string());
-            am.storage_key = Set(storage_key.map(str::to_string));
-            am.error_message = Set(error_message.map(str::to_string));
-            am.updated_at = Set(now_str());
-            self.update_book_bumped(am).await?;
-            return Ok(());
-        };
-        self.write_acquire_status(event_outbox::AcquireStatusWrite {
-            holding: &holding,
-            title: event_outbox::AcquireEventTitle::of_book(&holding.holding_id, &model),
-            book_uuid: Some(&model.uuid),
-            status,
-            storage_key,
-            error_message,
-        })
-        .await
+        let title = self
+            .held_title(title_id, account_id)
+            .await?
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, title_id))?;
+        self.write_title_acquire_status(&title, status, storage_key, error_message)
+            .await
     }
 
     /// Records the acquire state account holding `holding_id`
@@ -5175,14 +4728,25 @@ impl LibraryStore {
             .acquire_title_of_holding(holding_id)
             .await?
             .ok_or_else(|| LibraryError::not_found(EntityKind::Book, holding_id))?;
+        self.write_title_acquire_status(&title, status, storage_key, error_message)
+            .await
+    }
+
+    /// Writes `title`'s acquire state through [`Self::write_acquire_status`].
+    async fn write_title_acquire_status(
+        &self,
+        title: &AcquireTitle,
+        status: AcquireStatus,
+        storage_key: Option<&str>,
+        error_message: Option<&str>,
+    ) -> Result<()> {
         let holding = TitleHolding {
             edition_id: title.edition_id.clone(),
             holding_id: title.holding_id.clone(),
         };
         self.write_acquire_status(event_outbox::AcquireStatusWrite {
             holding: &holding,
-            title: event_outbox::AcquireEventTitle::of_title(&title),
-            book_uuid: title.book_uuid.as_deref(),
+            title: event_outbox::AcquireEventTitle::of_title(title),
             status,
             storage_key,
             error_message,
@@ -5207,7 +4771,6 @@ impl LibraryStore {
             return atomic
                 .set_acquire_status(
                     write.holding,
-                    write.book_uuid,
                     write.status,
                     write.storage_key,
                     write.error_message,
@@ -5233,45 +4796,53 @@ impl LibraryStore {
 
     /// Bulk-update acquire status (classic `set-status --force`).
     ///
-    /// When `asins` is non-empty, matches against uuid, product_id, isbn, or asin.
+    /// Walks every account holding (only `account`'s when set) and writes
+    /// `status` for each title, keeping its edition's storage key. When
+    /// `asins` is non-empty, only titles whose holding id, product id, ISBN
+    /// or ASIN one of them names (ignoring ASCII case) are written.
+    ///
+    /// # Returns
+    ///
+    /// How many titles were written.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns the first read or write error; titles written before it
+    /// stay written.
     pub async fn bulk_set_acquire_status(
         &self,
         account: Option<&str>,
         asins: &[String],
         status: AcquireStatus,
     ) -> Result<u32> {
-        let books = self.list_books(account).await?;
         let mut updated = 0u32;
-        for book in books {
-            if !asins.is_empty()
-                && !asins.iter().any(|a| {
-                    a.eq_ignore_ascii_case(&book.uuid)
-                        || a.eq_ignore_ascii_case(&book.product_id)
-                        || book
-                            .isbn
-                            .as_ref()
-                            .is_some_and(|isbn| a.eq_ignore_ascii_case(isbn))
-                        || book
-                            .asin
-                            .as_ref()
-                            .is_some_and(|asin| a.eq_ignore_ascii_case(asin))
-                })
-            {
-                continue;
+        let mut after: Option<String> = None;
+        loop {
+            let page = self
+                .acquire_titles_page(account, after.as_deref(), 64)
+                .await?;
+            for title in &page.titles {
+                if account.is_some_and(|account| title.account_id != account) {
+                    continue;
+                }
+                let named = |id: &str| asins.iter().any(|a| a.eq_ignore_ascii_case(id));
+                if !asins.is_empty()
+                    && !named(&title.holding_id)
+                    && !named(&title.product_id)
+                    && !title.isbn.as_deref().is_some_and(named)
+                    && !title.asin.as_deref().is_some_and(named)
+                {
+                    continue;
+                }
+                let storage_key = title.storage_key.clone();
+                self.write_title_acquire_status(title, status, storage_key.as_deref(), None)
+                    .await?;
+                updated = updated.saturating_add(1);
             }
-            self.set_acquire_status(
-                &book.uuid,
-                &book.account_id,
-                status,
-                book.storage_key.as_deref(),
-                None,
-            )
-            .await?;
-            updated += 1;
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
         }
         Ok(updated)
     }
@@ -5378,48 +4949,21 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Counts books whose acquire status equals `status`.
-    ///
-    /// A peer writer on the same SQLite file (TRUNCATE journal) can make this
-    /// read return `SQLITE_BUSY`. The read is repeated until the lock clears
-    /// or the attempt budget is spent. `status` is unchanged.
-    ///
-    /// # Arguments
-    ///
-    /// * `status` - Acquire or request status value.
+    /// Counts the library's held works per acquire status in one grouped
+    /// read of the page index (`library_work_rows`), where each work has the
+    /// furthest state any of its editions reached.
     ///
     /// # Returns
     ///
-    /// `Result<i64>` — `Ok` on success.
+    /// The count for each [`AcquireStatus`] and the total. A row with a
+    /// status this build does not know is counted in the total only.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails for a reason other
     /// than file-lock contention, and [`LibraryError::Unavailable`] when the
     /// lock is still held after the retries.
-    pub async fn count_by_status(&self, status: AcquireStatus) -> Result<i64> {
-        lock_retry::retry_read_lock(|| async {
-            let count = books::Entity::find()
-                .filter(books::Column::AcquireStatus.eq(status.as_str()))
-                .count(&self.db)
-                .await
-                .map_err(LibraryError::from_db_err)?;
-            Ok(count as i64)
-        })
-        .await
-    }
-
-    /// Counts `books` rows per acquire status in one grouped read.
-    ///
-    /// # Returns
-    ///
-    /// The count for each [`AcquireStatus`] and the table total. A row with
-    /// a status this build does not know is counted in the total only.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the read fails.
-    pub async fn count_books_by_status(&self) -> Result<AcquireStatusCounts> {
+    pub async fn count_works_by_status(&self) -> Result<AcquireStatusCounts> {
         /// One group of the read, decoded by column name: the host database
         /// proxy does not keep the select order, so a positional tuple
         /// read could swap the columns.
@@ -5427,15 +4971,16 @@ impl LibraryStore {
         struct StatusCount {
             /// The group's `acquire_status` wire string.
             acquire_status: String,
-            /// Rows in the group.
+            /// Works in the group.
             n: i64,
         }
         lock_retry::retry_read_lock(|| async {
-            let rows = books::Entity::find()
+            let rows = library_work_rows::Entity::find()
                 .select_only()
-                .column(books::Column::AcquireStatus)
-                .column_as(books::Column::Id.count(), "n")
-                .group_by(books::Column::AcquireStatus)
+                .column(library_work_rows::Column::AcquireStatus)
+                .column_as(library_work_rows::Column::WorkId.count(), "n")
+                .filter(library_work_rows::Column::HoldingCount.gt(0))
+                .group_by(library_work_rows::Column::AcquireStatus)
                 .into_model::<StatusCount>()
                 .all(&self.db)
                 .await
@@ -5459,62 +5004,6 @@ impl LibraryStore {
             Ok(counts)
         })
         .await
-    }
-
-    /// Persist enrichment fields without touching scan / ownership columns.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn update_catalog_enrichment(
-        &self,
-        book_uuid: &str,
-        fields: &CatalogEnrichmentFields,
-    ) -> Result<()> {
-        let model = books::Entity::find()
-            .filter(books::Column::Uuid.eq(book_uuid))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, book_uuid))?;
-        let mut am: books::ActiveModel = model.into();
-        if let Some(v) = &fields.description {
-            am.description = Set(Some(v.clone()));
-        }
-        if let Some(v) = &fields.language {
-            am.language = Set(Some(v.clone()));
-        }
-        if let Some(v) = &fields.cover_url {
-            am.cover_url = Set(Some(v.clone()));
-        }
-        if let Some(v) = &fields.subjects {
-            am.subjects = Set(Some(v.clone()));
-        }
-        if let Some(v) = &fields.categories {
-            am.categories = Set(Some(v.clone()));
-        }
-        if let Some(v) = &fields.enrich_source {
-            am.enrich_source = Set(Some(v.clone()));
-        }
-        if let Some(v) = fields.enrich_confidence {
-            am.enrich_confidence = Set(Some(v));
-        }
-        if let Some(v) = fields.enrich_updated_at {
-            am.enrich_updated_at = Set(Some(v.to_rfc3339()));
-        }
-        am.updated_at = Set(now_str());
-        let updated = self.update_book_bumped(am).await?;
-        // The title's work takes the enrichment where it has none yet.
-        if let Some(edition_id) = self.edition_id_for_book(&updated).await? {
-            let fill = WorkEnrichment {
-                description: updated.description,
-                subjects: updated.subjects,
-                categories: updated.categories,
-                cover_url: updated.cover_url,
-            };
-            self.fill_work_from_book(&edition_id, &fill).await?;
-        }
-        Ok(())
     }
 
     /// Inserts or updates listening progress for a title.
@@ -6679,64 +6168,25 @@ impl LibraryStore {
     }
 }
 
-/// Match precedence for [`LibraryStore::get_book`]: uuid, product_id, asin, else.
-fn match_priority(book: &books::Model, needle: &str) -> u8 {
-    if book.uuid == needle {
+/// Match precedence for [`LibraryStore::held_title`]: holding id, product id,
+/// ASIN, else (an ISBN).
+fn title_match_priority(title: &AcquireTitle, needle: &str) -> u8 {
+    let is = |value: &str| value.eq_ignore_ascii_case(needle);
+    if is(&title.holding_id) {
         0
-    } else if book.product_id == needle {
+    } else if is(&title.product_id) {
         1
-    } else if book.asin.as_deref() == Some(needle) {
+    } else if title.asin.as_deref().is_some_and(is) {
         2
     } else {
         3
     }
 }
 
-/// Prefer an Audible ownership row with the richest metadata for enrichment.
-#[must_use]
-pub fn prefer_enrichment_source(books: &[BookRecord]) -> Option<&BookRecord> {
-    books.iter().max_by_key(|b| {
-        let mut score = 0u32;
-        // Prefer rows that already carry an Audible ASIN (ownership or enrichment).
-        if b.asin.is_some() {
-            score += 100;
-        }
-        if b.isbn.is_some() {
-            score += 10;
-        }
-        if b.authors.is_some() {
-            score += 2;
-        }
-        if b.narrators.is_some() {
-            score += 2;
-        }
-        if b.series.is_some() {
-            score += 2;
-        }
-        if b.publisher.is_some() {
-            score += 1;
-        }
-        if b.subtitle.is_some() {
-            score += 1;
-        }
-        if b.length_minutes.is_some() {
-            score += 1;
-        }
-        if b.categories.is_some() {
-            score += 1;
-        }
-        if !b.title.is_empty() {
-            score += 1;
-        }
-        score
-    })
-}
-
-/// Input for inserting / updating a book from sync.
+/// One title as a library sync (or an import) reports it: the account
+/// that holds it, the store listing it describes and the store's text.
 #[derive(Debug, Clone)]
 pub struct NewBook {
-    /// Stable UUID for this row (API / foreign-key identity).
-    pub uuid: Option<String>,
     /// Storefront product id (ASIN, ISBN, UUID, …).
     pub product_id: String,
     /// Provenance-qualified PluginKey that owns the account. Forced by the
@@ -6838,7 +6288,6 @@ impl NewBook {
     ) -> Self {
         let product_id = product_id.into();
         Self {
-            uuid: None,
             asin: Some(product_id.clone()),
             isbn: None,
             product_id,
@@ -6894,34 +6343,14 @@ pub struct UserBookFields {
     pub is_finished: Option<bool>,
 }
 
-/// Durable catalog enrichment fields (blurbs, subjects, provenance).
-#[derive(Debug, Clone, Default)]
-pub struct CatalogEnrichmentFields {
-    /// Blurb / synopsis text (may contain HTML).
-    pub description: Option<String>,
-    /// BCP-47 or storefront language code when known.
-    pub language: Option<String>,
-    /// HTTPS URL for cover art when known.
-    pub cover_url: Option<String>,
-    /// Subject / topic tags from enrichment (serialized).
-    pub subjects: Option<String>,
-    /// Storefront category / genre path list (serialized).
-    pub categories: Option<String>,
-    /// Plugin or catalog that last enriched bibliographic fields.
-    pub enrich_source: Option<String>,
-    /// 0–1 confidence score for the last enrichment pass.
-    pub enrich_confidence: Option<f64>,
-    /// RFC 3339 time of the last enrichment write.
-    pub enrich_updated_at: Option<chrono::DateTime<Utc>>,
-}
-
 /// One title a storefront scan reported.
 #[derive(Debug, Clone)]
 pub struct ScannedTitle {
-    /// The flat row the library views read.
+    /// The scan's record of the title: the account, the store text and,
+    /// without [`Self::listing`], the listing it describes.
     pub book: NewBook,
     /// The listing the plugin's structured record describes; `None` when
-    /// only the flat row is known.
+    /// only `book` is known.
     pub listing: Option<bookclerk_resolve::Listing>,
 }
 
@@ -7677,77 +7106,6 @@ fn merged_source_active(
     }
 }
 
-/// Maps a `books` row to [`BookRecord`], parsing acquire/pdf status and RFC 3339 timestamps.
-fn map_book(m: books::Model) -> Result<BookRecord> {
-    Ok(BookRecord {
-        id: m.id,
-        uuid: m.uuid,
-        plugin_key: m.plugin_key,
-        source: m.source,
-        account_id: m.account_id,
-        product_id: m.product_id,
-        asin: m.asin,
-        isbn: m.isbn,
-        marketplace: m.marketplace,
-        title: m.title,
-        authors: m.authors,
-        narrators: m.narrators,
-        series: m.series,
-        series_index: m.series_index,
-        series_asin: m.series_asin,
-        acquire_status: AcquireStatus::parse(&m.acquire_status).unwrap_or_default(),
-        storage_key: m.storage_key,
-        error_message: m.error_message,
-        purchased_at: parse_dt_opt(m.purchased_at.as_deref()),
-        tags: m.tags,
-        rating_overall: m.rating_overall.map(|v| v as f32),
-        rating_performance: m.rating_performance.map(|v| v as f32),
-        rating_story: m.rating_story.map(|v| v as f32),
-        is_finished: m.is_finished != 0,
-        pdf_status: AcquireStatus::parse(&m.pdf_status).unwrap_or_default(),
-        pdf_storage_key: m.pdf_storage_key,
-        publisher: m.publisher,
-        length_minutes: m.length_minutes,
-        is_abridged: m.is_abridged != 0,
-        content_kind: m.content_kind,
-        categories: m.categories,
-        subtitle: m.subtitle,
-        published_at: parse_dt_opt(m.published_at.as_deref()),
-        description: m.description,
-        language: m.language,
-        cover_url: m.cover_url,
-        cover_path: None,
-        subjects: m.subjects,
-        enrich_source: m.enrich_source,
-        enrich_confidence: m.enrich_confidence,
-        enrich_updated_at: parse_dt_opt(m.enrich_updated_at.as_deref()),
-        created_at: parse_dt(&m.created_at),
-        updated_at: parse_dt(&m.updated_at),
-    })
-}
-
-/// A flat book row's natural key: `UNIQUE(plugin_key, account_id, product_id)`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct BookKey {
-    /// Plugin that owns the row.
-    plugin_key: String,
-    /// Store account the title is in.
-    account_id: String,
-    /// The store's product id.
-    product_id: String,
-}
-
-impl BookKey {
-    /// The key `book` is stored under.
-    fn of(book: &NewBook) -> Self {
-        Self {
-            plugin_key: book.plugin_key.clone(),
-            account_id: book.account_id.clone(),
-            product_id: book.product_id.clone(),
-        }
-    }
-}
-
 /// `book` with HTML entities decoded, cloned only when it carries any so
 /// hot scan paths stay allocation-light.
 fn decoded_book(book: &NewBook) -> Cow<'_, NewBook> {
@@ -7764,10 +7122,10 @@ fn decoded_book(book: &NewBook) -> Cow<'_, NewBook> {
 ///
 /// # Errors
 ///
-/// Returns an error when `book.plugin_key` is empty.
+/// Returns [`LibraryError::Invalid`] when `book.plugin_key` is empty.
 fn require_plugin_key(book: &NewBook) -> Result<()> {
     if book.plugin_key.is_empty() {
-        return Err(LibraryError::Other(anyhow::anyhow!(
+        return Err(LibraryError::Invalid(format!(
             "book `{}` needs an owning plugin key",
             book.product_id
         )));
@@ -7775,218 +7133,12 @@ fn require_plugin_key(book: &NewBook) -> Result<()> {
     Ok(())
 }
 
-/// The stored row `existing` becomes when a scan lists `book` again, with
-/// Audible-precedence rules: a Libro rescan without an ASIN must not wipe
-/// Audible enrichment.
-///
-/// The incoming row is authoritative when it carries an Audible ASIN, or
-/// the stored row never had one. Acquire state, ratings, tags and
-/// enrichment are kept as stored.
-fn merged_book_row(existing: &books::Model, book: &NewBook, now: &str) -> books::Model {
-    let prefer_new = book.asin.is_some() || existing.asin.is_none();
-    let keep = |new: &Option<String>, old: &Option<String>| {
-        if prefer_new {
-            new.clone()
-        } else {
-            old.clone()
-        }
-    };
-    let coalesce_keep = |new: &Option<String>, old: &Option<String>| {
-        if prefer_new {
-            new.clone().or_else(|| old.clone())
-        } else {
-            old.clone()
-        }
-    };
-    let mut row = existing.clone();
-    row.source.clone_from(&book.source);
-    row.asin = book.asin.clone().or_else(|| existing.asin.clone());
-    row.isbn = book.isbn.clone().or_else(|| existing.isbn.clone());
-    row.marketplace.clone_from(&book.marketplace);
-    if prefer_new {
-        row.title.clone_from(&book.title);
-    }
-    row.authors = keep(&book.authors, &existing.authors);
-    row.narrators = keep(&book.narrators, &existing.narrators);
-    row.series = keep(&book.series, &existing.series);
-    row.series_index = keep(&book.series_index, &existing.series_index);
-    row.series_asin = coalesce_keep(&book.series_asin, &existing.series_asin);
-    row.purchased_at = book.purchased_at.map(|d| d.to_rfc3339());
-    row.publisher = coalesce_keep(&book.publisher, &existing.publisher);
-    if prefer_new {
-        row.length_minutes = book.length_minutes.or(existing.length_minutes);
-    }
-    row.is_abridged = i64::from(book.is_abridged);
-    row.content_kind.clone_from(&book.content_kind);
-    row.categories = coalesce_keep(&book.categories, &existing.categories);
-    row.subtitle = coalesce_keep(&book.subtitle, &existing.subtitle);
-    if prefer_new {
-        row.published_at = book
-            .published_at
-            .map(|d| d.to_rfc3339())
-            .or_else(|| existing.published_at.clone());
-    }
-    now.clone_into(&mut row.updated_at);
-    row
-}
-
-/// The update that writes a scan's merge (`merged`, from
-/// [`merged_book_row`]) over the loaded row `existing`: only the columns a
-/// scan owns are set, so acquire state, ratings, tags and enrichment that
-/// another writer changed since the row was read are left alone, as
-/// [`update_book_statement`] leaves them.
-fn scan_update(existing: books::Model, merged: books::Model) -> books::ActiveModel {
-    let mut am: books::ActiveModel = existing.into();
-    am.source = Set(merged.source);
-    am.asin = Set(merged.asin);
-    am.isbn = Set(merged.isbn);
-    am.marketplace = Set(merged.marketplace);
-    am.title = Set(merged.title);
-    am.authors = Set(merged.authors);
-    am.narrators = Set(merged.narrators);
-    am.series = Set(merged.series);
-    am.series_index = Set(merged.series_index);
-    am.series_asin = Set(merged.series_asin);
-    am.purchased_at = Set(merged.purchased_at);
-    am.publisher = Set(merged.publisher);
-    am.length_minutes = Set(merged.length_minutes);
-    am.is_abridged = Set(merged.is_abridged);
-    am.content_kind = Set(merged.content_kind);
-    am.categories = Set(merged.categories);
-    am.subtitle = Set(merged.subtitle);
-    am.published_at = Set(merged.published_at);
-    am.updated_at = Set(merged.updated_at);
-    am
-}
-
-/// The row a first sight of `book` stores; `id` is `0` until the database
-/// assigns one.
-fn new_book_row(book: &NewBook, now: &str) -> books::Model {
-    books::Model {
-        id: 0,
-        uuid: book
-            .uuid
-            .clone()
-            .unwrap_or_else(|| Uuid::new_v4().to_string()),
-        plugin_key: book.plugin_key.clone(),
-        source: book.source.clone(),
-        account_id: book.account_id.clone(),
-        product_id: book.product_id.clone(),
-        asin: book.asin.clone(),
-        isbn: book.isbn.clone(),
-        marketplace: book.marketplace.clone(),
-        title: book.title.clone(),
-        authors: book.authors.clone(),
-        narrators: book.narrators.clone(),
-        series: book.series.clone(),
-        series_index: book.series_index.clone(),
-        series_asin: book.series_asin.clone(),
-        acquire_status: AcquireStatus::NotAcquired.as_str().to_string(),
-        storage_key: None,
-        error_message: None,
-        purchased_at: book.purchased_at.map(|d| d.to_rfc3339()),
-        tags: None,
-        rating_overall: None,
-        rating_performance: None,
-        rating_story: None,
-        is_finished: 0,
-        pdf_status: AcquireStatus::NotAcquired.as_str().to_string(),
-        pdf_storage_key: None,
-        publisher: book.publisher.clone(),
-        length_minutes: book.length_minutes,
-        is_abridged: i64::from(book.is_abridged),
-        content_kind: book.content_kind.clone(),
-        categories: book.categories.clone(),
-        subtitle: book.subtitle.clone(),
-        published_at: book.published_at.map(|d| d.to_rfc3339()),
-        description: None,
-        language: None,
-        cover_url: None,
-        subjects: None,
-        enrich_source: None,
-        enrich_confidence: None,
-        enrich_updated_at: None,
-        created_at: now.to_owned(),
-        updated_at: now.to_owned(),
-    }
-}
-
-/// The statement that writes a scan's merge ([`merged_book_row`]) over the
-/// stored row with `row`'s key.
-fn update_book_statement(row: &books::Model) -> bookclerk_plugin_abi::TypedDbStatement {
-    batch::exec(
-        "UPDATE books SET source = ?, asin = ?, isbn = ?, marketplace = ?, title = ?, \
-         authors = ?, narrators = ?, series = ?, series_index = ?, series_asin = ?, \
-         purchased_at = ?, publisher = ?, length_minutes = ?, is_abridged = ?, \
-         content_kind = ?, categories = ?, subtitle = ?, published_at = ?, updated_at = ? \
-         WHERE plugin_key = ? AND account_id = ? AND product_id = ?",
-        vec![
-            batch::text(&row.source),
-            batch::text_opt(row.asin.as_deref()),
-            batch::text_opt(row.isbn.as_deref()),
-            batch::text(&row.marketplace),
-            batch::text(&row.title),
-            batch::text_opt(row.authors.as_deref()),
-            batch::text_opt(row.narrators.as_deref()),
-            batch::text_opt(row.series.as_deref()),
-            batch::text_opt(row.series_index.as_deref()),
-            batch::text_opt(row.series_asin.as_deref()),
-            batch::text_opt(row.purchased_at.as_deref()),
-            batch::text_opt(row.publisher.as_deref()),
-            batch::int_opt(row.length_minutes),
-            batch::int(row.is_abridged),
-            batch::text(&row.content_kind),
-            batch::text_opt(row.categories.as_deref()),
-            batch::text_opt(row.subtitle.as_deref()),
-            batch::text_opt(row.published_at.as_deref()),
-            batch::text(&row.updated_at),
-            batch::text(&row.plugin_key),
-            batch::text(&row.account_id),
-            batch::text(&row.product_id),
-        ],
-    )
-}
-
-/// The statement that stores a first sight ([`new_book_row`]) unless a row
-/// with its key or uuid already exists.
-fn insert_book_statement(row: &books::Model) -> bookclerk_plugin_abi::TypedDbStatement {
-    batch::exec(
-        "INSERT OR IGNORE INTO books (uuid, plugin_key, source, account_id, product_id, \
-         asin, isbn, marketplace, title, authors, narrators, series, series_index, \
-         series_asin, acquire_status, purchased_at, is_finished, pdf_status, publisher, \
-         length_minutes, is_abridged, content_kind, categories, subtitle, published_at, \
-         created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        vec![
-            batch::text(&row.uuid),
-            batch::text(&row.plugin_key),
-            batch::text(&row.source),
-            batch::text(&row.account_id),
-            batch::text(&row.product_id),
-            batch::text_opt(row.asin.as_deref()),
-            batch::text_opt(row.isbn.as_deref()),
-            batch::text(&row.marketplace),
-            batch::text(&row.title),
-            batch::text_opt(row.authors.as_deref()),
-            batch::text_opt(row.narrators.as_deref()),
-            batch::text_opt(row.series.as_deref()),
-            batch::text_opt(row.series_index.as_deref()),
-            batch::text_opt(row.series_asin.as_deref()),
-            batch::text(&row.acquire_status),
-            batch::text_opt(row.purchased_at.as_deref()),
-            batch::int(row.is_finished),
-            batch::text(&row.pdf_status),
-            batch::text_opt(row.publisher.as_deref()),
-            batch::int_opt(row.length_minutes),
-            batch::int(row.is_abridged),
-            batch::text(&row.content_kind),
-            batch::text_opt(row.categories.as_deref()),
-            batch::text_opt(row.subtitle.as_deref()),
-            batch::text_opt(row.published_at.as_deref()),
-            batch::text(&row.created_at),
-            batch::text(&row.updated_at),
-        ],
-    )
+/// The error for a title whose record fails listing validation.
+fn invalid_listing(book: &NewBook, err: &bookclerk_resolve::ListingError) -> LibraryError {
+    LibraryError::Invalid(format!(
+        "title `{}` of plugin `{}` is not a valid store listing: {err}",
+        book.product_id, book.plugin_key
+    ))
 }
 
 /// Maps a SeaORM engine failure onto a structured guest [`bookclerk_plugin_abi::PluginError`].
@@ -8083,7 +7235,6 @@ pub(crate) mod plugin_kv;
 pub(crate) mod request_queue;
 pub(crate) mod retention;
 pub(crate) mod scan_state;
-pub(crate) mod search_feed;
 pub(crate) mod storage_scan;
 pub(crate) mod taste_titles;
 pub(crate) mod user_title_state;
@@ -8113,11 +7264,9 @@ pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub use taste_titles::{apply_user_states, HeldIdentifiers};
 pub(crate) mod job_queue;
 
-mod book_lookup;
-mod books_page;
 mod lock_retry;
+mod result_cap;
 pub use acquired_keys::{AcquiredTitleKey, AcquiredTitleKeyPage, ACQUIRED_KEYS_MAX_PAGE};
-pub use books_page::{BookPage, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT};
 
 #[cfg(test)]
 mod paging_tests;

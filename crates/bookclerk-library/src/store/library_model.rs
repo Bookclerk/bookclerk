@@ -1133,7 +1133,7 @@ impl LibraryStore {
     /// The query is resolved exactly as a scanned listing would be (shared
     /// identifiers first, then the work's identifiers, then the work-level
     /// title-and-author match), but nothing is written. A query that would
-    /// make a new work, or whose work no library title resolves to, is not
+    /// make a new work, or whose work nothing in the library holds, is not
     /// owned: *Dune Messiah* is its own work beside *Dune*. A query that
     /// cannot form a valid listing (a blank title, or a field over the
     /// listing limits) matches no work, so it is not owned either.
@@ -1145,7 +1145,11 @@ impl LibraryStore {
         let Some(work_id) = self.work_for(query).await? else {
             return Ok(None);
         };
-        if self.book_uuids_for_work(&work_id).await?.is_empty() {
+        if !self
+            .held_works(std::slice::from_ref(&work_id))
+            .await?
+            .contains(&work_id)
+        {
             return Ok(None);
         }
         Ok(Some(work_id))
@@ -1458,10 +1462,11 @@ impl LibraryStore {
         &self,
         items: &[(resolve::Listing, resolve::HoldingDraft, WorkEnrichment)],
         details: &[crate::ListingDetail],
-    ) {
+    ) -> usize {
         let Some((_, first, _)) = items.first() else {
-            return;
+            return 0;
         };
+        let mut recorded = 0usize;
         let listings: Vec<&resolve::Listing> = items.iter().map(|(l, _, _)| l).collect();
         let pool = match ListingPool::load(self, &listings, &first.holder).await {
             Ok(pool) => Some(pool),
@@ -1529,17 +1534,18 @@ impl LibraryStore {
                     }
                 }
             };
-            if let Err(err) = result {
-                tracing::warn!(
+            match result {
+                Ok(()) => recorded = recorded.saturating_add(1),
+                Err(err) => tracing::warn!(
                     product_id = %listing.key.product_id,
                     plugin_key = %listing.key.plugin_key,
                     error = %err,
-                    "library title stored but not resolved into the library model; the next scan retries"
-                );
+                    "library title not resolved into the library model; the next scan retries"
+                ),
             }
         }
         if text_writes.is_empty() {
-            return;
+            return recorded;
         }
         if let Err(err) = self.record_listing_details(&text_writes).await {
             tracing::warn!(
@@ -1547,6 +1553,7 @@ impl LibraryStore {
                 "store text of a page of listings not written; the next scan retries"
             );
         }
+        recorded
     }
 
     /// The plan `listing` resolves to against `pool`, when that plan writes
@@ -2132,87 +2139,20 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// The work a library title's listing resolves to, if it has been
-    /// resolved.
-    ///
-    /// # Arguments
-    ///
-    /// * `book_uuid` - Library `books.uuid`.
+    /// The work holding `holding_id` (`holdings.id`) reaches through its
+    /// listing's edition; `None` when the holding or its listing is gone.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
-    pub async fn work_id_for_book(&self, book_uuid: &str) -> Result<Option<String>> {
+    pub async fn work_of_holding(&self, holding_id: &str) -> Result<Option<String>> {
+        let Some(edition_id) = self.edition_of_holding(holding_id).await? else {
+            return Ok(None);
+        };
         Ok(self
-            .work_ids_for_books(&[book_uuid.to_string()])
+            .works_of_editions(BTreeSet::from([edition_id.clone()]))
             .await?
-            .remove(book_uuid))
-    }
-
-    /// The works many library titles resolve to, read in a few bulk
-    /// queries rather than a chain of lookups per title.
-    ///
-    /// # Arguments
-    ///
-    /// * `book_uuids` - Library `books.uuid` values.
-    ///
-    /// # Returns
-    ///
-    /// Each resolved title's work id, keyed by title UUID; titles not yet
-    /// resolved are absent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    pub async fn work_ids_for_books(
-        &self,
-        book_uuids: &[String],
-    ) -> Result<std::collections::BTreeMap<String, String>> {
-        use crate::entities::books;
-        use std::collections::BTreeMap;
-
-        let mut books_found = Vec::new();
-        for chunk in book_uuids.chunks(self.lookup_chunk()) {
-            books_found.extend(
-                books::Entity::find()
-                    .filter(books::Column::Uuid.is_in(chunk.iter().cloned()))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?,
-            );
-        }
-        let product_ids: Vec<String> = books_found
-            .iter()
-            .map(|b| b.product_id.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let mut edition_of: BTreeMap<(String, String, String), String> = BTreeMap::new();
-        for chunk in product_ids.chunks(self.lookup_chunk()) {
-            for l in store_listings::Entity::find()
-                .filter(store_listings::Column::ProductId.is_in(chunk.iter().cloned()))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                edition_of.insert((l.plugin_key, l.marketplace, l.product_id), l.edition_id);
-            }
-        }
-        let work_of_edition = self
-            .works_of_editions(edition_of.values().cloned().collect())
-            .await?;
-        Ok(books_found
-            .into_iter()
-            .filter_map(|b| {
-                let key = (
-                    b.plugin_key,
-                    resolve::stored_marketplace(&b.marketplace),
-                    b.product_id,
-                );
-                let work = work_of_edition.get(edition_of.get(&key)?)?;
-                Some((b.uuid, work.clone()))
-            })
-            .collect())
+            .remove(&edition_id))
     }
 
     /// Each edition's work, through its expression, read in chunks that
@@ -2288,106 +2228,6 @@ impl LibraryStore {
                     },
                 ))
             })
-            .collect())
-    }
-
-    /// Library title UUIDs whose listings resolve to `work_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    pub async fn book_uuids_for_work(&self, work_id: &str) -> Result<Vec<String>> {
-        Ok(self
-            .book_uuids_for_works(&[work_id.to_string()])
-            .await?
-            .remove(work_id)
-            .unwrap_or_default())
-    }
-
-    /// The library titles (`books.uuid`) whose listings reach each of
-    /// `work_ids`, in chunked bulk reads.
-    ///
-    /// # Arguments
-    ///
-    /// * `work_ids` - Works to look up.
-    ///
-    /// # Returns
-    ///
-    /// Each work with at least one library title, mapped to its titles'
-    /// uuids in ascending order; works no title reaches are absent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    pub async fn book_uuids_for_works(
-        &self,
-        work_ids: &[String],
-    ) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
-        use crate::entities::books;
-        use std::collections::BTreeMap;
-        let work_of_expression: BTreeMap<String, String> = find_chunked(self, work_ids, |part| {
-            expressions::Entity::find()
-                .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
-        })
-        .await?
-        .into_iter()
-        .map(|x| (x.id, x.work_id))
-        .collect();
-        if work_of_expression.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let expression_ids: Vec<String> = work_of_expression.keys().cloned().collect();
-        let work_of_edition: BTreeMap<String, String> =
-            find_chunked(self, &expression_ids, |part| {
-                editions::Entity::find()
-                    .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
-            })
-            .await?
-            .into_iter()
-            .filter_map(|e| Some((e.id, work_of_expression.get(&e.expression_id)?.clone())))
-            .collect();
-        if work_of_edition.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let edition_ids: Vec<String> = work_of_edition.keys().cloned().collect();
-        let listings = find_chunked(self, &edition_ids, |part| {
-            store_listings::Entity::find()
-                .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
-        })
-        .await?;
-        let work_of_key: BTreeMap<(String, String, String), String> = listings
-            .into_iter()
-            .filter_map(|l| {
-                let work = work_of_edition.get(&l.edition_id)?.clone();
-                Some(((l.plugin_key, l.marketplace, l.product_id), work))
-            })
-            .collect();
-        let product_ids: Vec<String> = work_of_key
-            .keys()
-            .map(|(_, _, product)| product.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        {
-            for b in find_chunked(self, &product_ids, |part| {
-                books::Entity::find().filter(books::Column::ProductId.is_in(part.iter().cloned()))
-            })
-            .await?
-            {
-                let key = (
-                    b.plugin_key,
-                    resolve::stored_marketplace(&b.marketplace),
-                    b.product_id,
-                );
-                if let Some(work) = work_of_key.get(&key) {
-                    found.entry(work.clone()).or_default().insert(b.uuid);
-                }
-            }
-        }
-        Ok(found
-            .into_iter()
-            .map(|(work, uuids)| (work, uuids.into_iter().collect()))
             .collect())
     }
 
@@ -2473,24 +2313,6 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// The edition a library title's listing reaches, if it is resolved.
-    pub(crate) async fn edition_id_for_book(
-        &self,
-        book: &crate::entities::books::Model,
-    ) -> Result<Option<String>> {
-        Ok(store_listings::Entity::find()
-            .filter(store_listings::Column::PluginKey.eq(book.plugin_key.as_str()))
-            .filter(
-                store_listings::Column::Marketplace
-                    .eq(resolve::stored_marketplace(&book.marketplace).as_str()),
-            )
-            .filter(store_listings::Column::ProductId.eq(book.product_id.as_str()))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(|l| l.edition_id))
-    }
-
     /// Attaches a work-level identifier enrichment found (an OpenLibrary
     /// work id); a value another work already holds is left there.
     ///
@@ -2548,14 +2370,13 @@ pub struct WorkEnrichment {
 }
 
 impl WorkEnrichment {
-    /// The fields a library title offers its work.
+    /// The fields a scanned library title offers its work: its store
+    /// categories (a scan reports no synopsis, subjects or cover).
     #[must_use]
-    pub fn of_book(book: &crate::models::BookRecord) -> Self {
+    pub fn of_new_book(book: &crate::NewBook) -> Self {
         Self {
-            description: book.description.clone(),
-            subjects: book.subjects.clone(),
             categories: book.categories.clone(),
-            cover_url: book.cover_url.clone(),
+            ..Self::default()
         }
     }
 
@@ -2911,11 +2732,6 @@ mod store_tests {
         assert_eq!(work.title, "Project Hail Mary");
         assert_eq!(work.credits, vec![String::from("Andy Weir")]);
         assert_eq!(work.series, vec![String::from("Standalone")]);
-        assert!(store
-            .book_uuids_for_work(&work_id)
-            .await
-            .unwrap()
-            .is_empty());
         assert!(holdings::Entity::find()
             .all(&store.db)
             .await
@@ -3292,18 +3108,24 @@ mod store_tests {
         book.authors = Some("Frank Herbert".into());
         book.categories = Some("Science Fiction".into());
         let record = store.upsert_book(&book).await.unwrap();
-        let work_id = store.work_id_for_book(&record.uuid).await.unwrap().unwrap();
+        let work_id = store
+            .work_of_holding(&record.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         let work = store.get_work(&work_id).await.unwrap().unwrap();
         assert_eq!(work.categories.as_deref(), Some("Science Fiction"));
         assert!(work.description.is_none());
 
         store
-            .update_catalog_enrichment(
-                &record.uuid,
-                &crate::CatalogEnrichmentFields {
+            .enrich_edition(
+                &record.edition_id,
+                &crate::EditionEnrichment {
                     description: Some("Spice.".into()),
                     cover_url: Some("https://covers.example/dune.jpg".into()),
-                    ..crate::CatalogEnrichmentFields::default()
+                    source: "audible".into(),
+                    confidence: 0.9,
+                    ..crate::EditionEnrichment::default()
                 },
             )
             .await
@@ -3317,11 +3139,13 @@ mod store_tests {
 
         // A work that already has a value keeps it.
         store
-            .update_catalog_enrichment(
-                &record.uuid,
-                &crate::CatalogEnrichmentFields {
+            .enrich_edition(
+                &record.edition_id,
+                &crate::EditionEnrichment {
                     description: Some("Other.".into()),
-                    ..crate::CatalogEnrichmentFields::default()
+                    source: "audible".into(),
+                    confidence: 0.9,
+                    ..crate::EditionEnrichment::default()
                 },
             )
             .await
@@ -3507,11 +3331,16 @@ mod store_tests {
         let mut book = NewBook::minimal("B00X", "a1", "US", "Dune");
         book.authors = Some("Frank Herbert".into());
         let record = store.upsert_book(&book).await.unwrap();
-        let work_id = store.work_id_for_book(&record.uuid).await.unwrap().unwrap();
-        assert_eq!(
-            store.book_uuids_for_work(&work_id).await.unwrap(),
-            vec![record.uuid.clone()]
-        );
+        let work_id = store
+            .work_of_holding(&record.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .held_works(std::slice::from_ref(&work_id))
+            .await
+            .unwrap()
+            .contains(&work_id));
         store
             .set_work_enrichment(
                 &work_id,
@@ -3529,7 +3358,7 @@ mod store_tests {
         let work = store.get_work(&work_id).await.unwrap().unwrap();
         assert_eq!(work.description.as_deref(), Some("Spice."));
         assert_eq!(work.kind, "book");
-        assert!(store.work_id_for_book("missing").await.unwrap().is_none());
+        assert!(store.work_of_holding("missing").await.unwrap().is_none());
     }
 
     #[tokio::test]

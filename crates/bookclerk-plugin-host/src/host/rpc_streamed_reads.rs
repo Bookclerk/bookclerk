@@ -1,10 +1,10 @@
 //! Library reads past the inline result caps through the production
 //! `RpcDatabaseProxy` and a spawned first-party guest.
 //!
-//! The in-crate `books_page` tests drive an in-process typed executor; these
-//! tests spawn the real sqlite guest and read a page whose rows weigh far
-//! more than one scalar, which only the streamed path (`executeStreamed`,
-//! collected under `maxStreamedResultBytes`) can return whole.
+//! These tests spawn the real sqlite guest and read a page of library titles
+//! whose listing rows weigh far more than one scalar, which only the
+//! streamed path (`executeStreamed`, collected under
+//! `maxStreamedResultBytes`) can return whole.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -16,7 +16,7 @@ use super::rpc_proxy_like::{
     approve_guest, guest_config, missing_guest, stage_first_party_guest, StagedGuest,
 };
 
-/// Books on the oversized page; the page limit the UI asks for.
+/// Titles on the oversized page; the largest page the title listing reads.
 const BOOKS: u32 = 64;
 
 /// Text per wide column; six columns make each row about 48 KiB, so the
@@ -36,21 +36,21 @@ async fn open_store(staged: &StagedGuest) -> LibraryStore {
         .unwrap_or_else(|err| panic!("open library store through sqlite: {err}"))
 }
 
-/// Inserts `BOOKS` books and widens six text columns of every row to
-/// `WIDE_TEXT_BYTES`, through the same proxy the daemon writes with.
+/// Inserts `BOOKS` titles and widens six text columns of every store
+/// listing to `WIDE_TEXT_BYTES`, through the same proxy the daemon writes
+/// with.
 async fn seed_wide_books(store: &LibraryStore) {
     store
         .upsert_account("audible", "stream-account", "us", None, false, "audible")
         .await
         .unwrap_or_else(|err| panic!("upsert account: {err}"));
     for i in 0..BOOKS {
-        let mut book = NewBook::minimal(
+        let book = NewBook::minimal(
             format!("wide-{i:03}"),
             "stream-account",
             "us",
             format!("Wide {i:03}"),
         );
-        book.uuid = Some(format!("wide-uuid-{i:03}"));
         store
             .upsert_book(&book)
             .await
@@ -62,13 +62,13 @@ async fn seed_wide_books(store: &LibraryStore) {
         "authors",
         "narrators",
         "categories",
-        "subjects",
+        "subtitle",
         "publisher",
     ] {
         store
             .db()
             .execute_raw(bookclerk_db_exec::canonical_statement(
-                format!("UPDATE books SET {column} = ?"),
+                format!("UPDATE store_listings SET {column} = ?"),
                 [Value::from(wide.clone())],
             ))
             .await
@@ -90,31 +90,15 @@ async fn oversized_enriched_page_reads_whole_through_sqlite_guest() {
     seed_wide_books(&store).await;
 
     let page = store
-        .list_books_filtered_page(None, None, u64::from(BOOKS), 0)
+        .acquire_titles_page(Some("stream-account"), None, u64::from(BOOKS))
         .await
         .unwrap_or_else(|err| panic!("oversized page must stream through the guest: {err}"));
-    assert_eq!(page.total, BOOKS as usize);
-    assert_eq!(page.books.len(), BOOKS as usize);
+    assert_eq!(page.titles.len(), BOOKS as usize);
     assert!(
-        page.books
+        page.titles
             .iter()
-            .all(|book| book.title.starts_with("Wide ")),
-        "every seeded book is on the page"
+            .all(|title| title.title.starts_with("Wide ")
+                && title.authors.as_deref().map(str::len) == Some(WIDE_TEXT_BYTES)),
+        "every seeded title is on the page, whole"
     );
-
-    let keyset = store
-        .list_books_page(Some("stream-account"), None, u64::from(BOOKS))
-        .await
-        .unwrap_or_else(|err| panic!("oversized keyset page must stream through the guest: {err}"));
-    assert_eq!(keyset.len(), BOOKS as usize);
-
-    let hits = (0..BOOKS)
-        .map(|i| format!("wide-uuid-{i:03}"))
-        .collect::<Vec<_>>();
-    let by_uuid = store
-        .list_books_by_uuid_page(&hits, None, None, u64::from(BOOKS), 0)
-        .await
-        .unwrap_or_else(|err| panic!("oversized uuid page must stream through the guest: {err}"));
-    assert_eq!(by_uuid.total, BOOKS as usize);
-    assert_eq!(by_uuid.books.len(), BOOKS as usize);
 }

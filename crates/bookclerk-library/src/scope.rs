@@ -12,12 +12,12 @@ use serde_json::Value;
 
 use crate::control_plane::batch;
 use crate::error::{LibraryError, Result};
-use crate::models::{AccountRecord, BookRecord};
+use crate::models::AccountRecord;
 use crate::secrets::{
     build_sealed_record, delete_secret, forget_cached_secret, get_secret, list_secrets,
     secret_account_type, secret_kind, unseal_secret, upsert_secret, EncryptedSecretRecord,
 };
-use crate::store::{LibraryStore, NewBook, ScannedTitle};
+use crate::store::{AcquireTitle, LibraryStore, NewBook, ScannedTitle};
 
 /// Host-enforced view of [`LibraryStore`] for one content-source plugin.
 ///
@@ -145,37 +145,44 @@ impl SourceScope {
 
     // ── Books ────────────────────────────────────────────────────────────────
 
-    /// Upsert a book; `plugin_key` and `source` are forced to this plugin.
+    /// Records a title an account of this plugin holds (see
+    /// [`LibraryStore::upsert_book`]); `plugin_key` and `source` are forced
+    /// to this plugin.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
-    pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
+    /// As [`LibraryStore::upsert_book`].
+    pub async fn upsert_book(&self, book: &NewBook) -> Result<AcquireTitle> {
         let mut book = book.clone();
         book.plugin_key = self.plugin_key.clone();
         book.source = self.source_id.clone();
         self.store.upsert_book(&book).await
     }
 
-    /// Upsert a scanned title as this plugin's, and resolve its listing.
+    /// Records a scanned title as this plugin's (see
+    /// [`LibraryStore::upsert_scanned_title`]).
     ///
     /// # Errors
     ///
-    /// Returns an error when a read or write fails.
-    pub async fn upsert_scanned_title(&self, title: &ScannedTitle) -> Result<BookRecord> {
+    /// As [`LibraryStore::upsert_scanned_title`].
+    pub async fn upsert_scanned_title(&self, title: &ScannedTitle) -> Result<AcquireTitle> {
         let mut title = title.clone();
         title.book.plugin_key = self.plugin_key.clone();
         title.book.source = self.source_id.clone();
         self.store.upsert_scanned_title(&title).await
     }
 
-    /// Upsert a page of scanned titles as this plugin's, and resolve their
+    /// Records a page of scanned titles as this plugin's, resolving their
     /// listings as one page (see [`LibraryStore::upsert_scanned_titles`]).
+    ///
+    /// # Returns
+    ///
+    /// How many of `titles` were recorded.
     ///
     /// # Errors
     ///
-    /// Returns an error when a flat row cannot be read or written.
-    pub async fn upsert_scanned_titles(&self, titles: &[ScannedTitle]) -> Result<Vec<BookRecord>> {
+    /// As [`LibraryStore::upsert_scanned_titles`].
+    pub async fn upsert_scanned_titles(&self, titles: &[ScannedTitle]) -> Result<usize> {
         let titles: Vec<ScannedTitle> = titles
             .iter()
             .map(|title| {
@@ -280,14 +287,21 @@ impl SourceScope {
             .await
     }
 
-    /// Look up one of this plugin's books by uuid, product id, ASIN, or ISBN.
+    /// The title one of this plugin's accounts holds that `title_id` names
+    /// (holding id, product id, ASIN or ISBN; see
+    /// [`LibraryStore::held_title`]).
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
-    pub async fn get_book(&self, title_id: &str, account_id: &str) -> Result<Option<BookRecord>> {
+    /// Returns [`crate::LibraryError::Conflict`] when the name is
+    /// ambiguous, or the database error.
+    pub async fn held_title(
+        &self,
+        title_id: &str,
+        account_id: &str,
+    ) -> Result<Option<AcquireTitle>> {
         self.store
-            .get_book_in(Some(&self.plugin_key), title_id, account_id)
+            .held_title_in(Some(&self.plugin_key), title_id, account_id)
             .await
     }
 
@@ -852,7 +866,7 @@ mod tests {
         foreign.plugin_key = "platform:bookclerk/audible".into();
         libro.upsert_book(&foreign).await.unwrap();
 
-        let books = store.list_books(None).await.unwrap();
+        let books = store.all_acquire_titles(None).await.unwrap();
         let libro_book = books.iter().find(|b| b.product_id == "ISBN1").unwrap();
         assert_eq!(libro_book.source, "libro");
         assert_eq!(libro_book.plugin_key, "platform:bookclerk/libro");

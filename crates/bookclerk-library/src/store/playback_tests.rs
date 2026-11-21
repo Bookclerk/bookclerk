@@ -16,7 +16,13 @@ async fn hold(store: &LibraryStore, _user: i64, account: &str, asins: &[String])
     for asin in asins {
         let book = crate::NewBook::minimal(asin, account, "us", format!("Title {asin}"));
         let record = store.upsert_book(&book).await.unwrap();
-        works.push(store.work_id_for_book(&record.uuid).await.unwrap().unwrap());
+        works.push(
+            store
+                .work_of_holding(&record.holding_id)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
     }
     works
 }
@@ -37,9 +43,9 @@ async fn listener(store: &LibraryStore, asin: &str) -> (i64, String, String) {
     let work = hold(store, user, "riley-acct", &[asin.to_string()])
         .await
         .remove(0);
-    let record = store.get_book(asin, "riley-acct").await.unwrap().unwrap();
+    let record = store.held_title(asin, "riley-acct").await.unwrap().unwrap();
     let edition = store
-        .edition_of_book(&record.uuid)
+        .edition_of_holding(&record.holding_id)
         .await
         .unwrap()
         .expect("a held title has an edition");
@@ -432,8 +438,14 @@ async fn progress_pages_most_recent_first_under_every_profile() {
         hold(&store, user, "riley-acct", &asins).await;
         let mut editions = vec![first];
         for asin in &asins {
-            let record = store.get_book(asin, "riley-acct").await.unwrap().unwrap();
-            editions.push(store.edition_of_book(&record.uuid).await.unwrap().unwrap());
+            let record = store.held_title(asin, "riley-acct").await.unwrap().unwrap();
+            editions.push(
+                store
+                    .edition_of_holding(&record.holding_id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
         }
         let other = store
             .create_user(UserRole::Member, Some("Sam"), None)
@@ -602,8 +614,14 @@ async fn lists_read_whole_when_a_reply_holds_one_row() {
     hold(&store, user, "riley-acct", &asins).await;
     let mut editions = vec![first];
     for asin in &asins {
-        let record = store.get_book(asin, "riley-acct").await.unwrap().unwrap();
-        editions.push(store.edition_of_book(&record.uuid).await.unwrap().unwrap());
+        let record = store.held_title(asin, "riley-acct").await.unwrap().unwrap();
+        editions.push(
+            store
+                .edition_of_holding(&record.holding_id)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
     }
     for edition in &editions {
         store

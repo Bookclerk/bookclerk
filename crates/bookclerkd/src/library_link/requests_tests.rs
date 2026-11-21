@@ -14,8 +14,8 @@ use bookclerk_library::control_plane::{
     REQUEST_ACCEPTED, REQUEST_NOT_LISTED,
 };
 use bookclerk_library::{
-    AcquireTitle, BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind, JobState, JobTrigger,
-    LibraryStore, NewBook, UserRole,
+    AcquireTitle, EnqueueJobSpec, EnqueueOutcome, JobKind, JobState, JobTrigger, LibraryStore,
+    NewBook, UserRole,
 };
 use bookclerk_node_client::{HostClient, HostClientConfig, HostClientHandle};
 use tokio::sync::watch;
@@ -86,7 +86,6 @@ async fn start(host: &LibraryStore, link: &LibraryLink) -> (HostClientHandle, wa
 /// An Audible book with [`ASIN`] on `account_id`.
 fn audible_book(account_id: &str) -> NewBook {
     NewBook {
-        uuid: None,
         product_id: ASIN.into(),
         plugin_key: PLUGIN.into(),
         source: "audible".into(),
@@ -112,7 +111,7 @@ fn audible_book(account_id: &str) -> NewBook {
 }
 
 /// Records [`ASIN`] in `store` on `account_id`, linked to `user`.
-async fn hold(store: &LibraryStore, user: i64, account_id: &str) -> BookRecord {
+async fn hold(store: &LibraryStore, user: i64, account_id: &str) -> AcquireTitle {
     store
         .upsert_account(PLUGIN, account_id, "us", None, true, "test")
         .await
@@ -164,7 +163,11 @@ async fn a_branch_takes_its_librarys_request_for_a_members_book() {
     let a_origin = public_origin(&a_state, &format!("http://127.0.0.1:{}", a_addr.port())).await;
     let (riley, _token) = owner_account(&a, b"riley-token-v1").await;
     let a_book = hold(&a, riley, "a-store-acct").await;
-    let work = a.work_id_for_book(&a_book.uuid).await.unwrap().unwrap();
+    let work = a
+        .work_of_holding(&a_book.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     // B: a branch whose member Sam holds the same edition, not downloaded.
     let b_files = tempfile::tempdir().unwrap();
@@ -222,7 +225,7 @@ async fn a_branch_takes_its_librarys_request_for_a_members_book() {
     let entry = requested.keys().next().unwrap();
     assert_eq!((entry.0.as_str(), entry.3.as_str()), (PLUGIN, "sam-acct"));
     b.set_acquire_status(
-        &sams.uuid,
+        &sams.holding_id,
         "sam-acct",
         bookclerk_library::AcquireStatus::Acquired,
         Some("sam.m4b"),

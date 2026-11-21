@@ -277,7 +277,7 @@ pub async fn run_discover_feed(
     if forget_if_removed(&library, &subject).await? {
         return Ok(format!("subject={} removed", subject.key()));
     }
-    let has_books = library.count_books(None).await? > 0;
+    let has_books = library.has_held_titles().await?;
     let use_onnx = has_books && cfg.discovery.embeddings_enabled;
     // One embedder at a time, as the request-queue ranking job does.
     let _gate = state
@@ -595,7 +595,12 @@ mod tests {
 
     /// The uuid of the one library title stored.
     async fn book_uuid(library: &bookclerk_library::LibraryStore) -> String {
-        library.list_books(None).await.unwrap().remove(0).uuid
+        library
+            .all_acquire_titles(None)
+            .await
+            .unwrap()
+            .remove(0)
+            .holding_id
     }
 
     /// Pending Discover jobs as `(kind, subject)` pairs.
@@ -634,7 +639,7 @@ mod tests {
         let wish = |title: &str| serde_json::json!({ "title": title, "authors": "Frank Herbert" });
         let (status, owned) = post_json(&app, "/api/wishlist", wish("Dune")).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{owned}");
-        let dune_work = library.work_id_for_book(&book_uuid(&library).await).await;
+        let dune_work = library.work_of_holding(&book_uuid(&library).await).await;
         assert_eq!(
             owned["work_id"].as_str(),
             dune_work.unwrap().as_deref(),

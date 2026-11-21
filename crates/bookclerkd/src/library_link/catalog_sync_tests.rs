@@ -165,7 +165,7 @@ async fn acquired_book(
     std::fs::write(dir.join("notes.txt"), b"not part of the title").unwrap();
     store
         .set_acquire_status(
-            &book.uuid,
+            &book.holding_id,
             account_id,
             AcquireStatus::Acquired,
             Some(&primary),
@@ -179,7 +179,6 @@ async fn acquired_book(
 /// A library row.
 fn new_book(plugin: &str, source: &str, account_id: &str, product_id: &str) -> NewBook {
     NewBook {
-        uuid: None,
         product_id: product_id.into(),
         plugin_key: plugin.into(),
         source: source.into(),
@@ -304,7 +303,11 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
             .upsert_book(&new_book(plugin, "libro", "b-store-acct", "b1"))
             .await
             .unwrap();
-        let owner = b.file_owner_of_book(&b1.uuid).await.unwrap().unwrap();
+        let owner = b
+            .file_owner_of_holding(&b1.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(b
             .record_edition_file("local", &b1_key, &owner, bookclerk_library::FileRole::Audio)
             .await

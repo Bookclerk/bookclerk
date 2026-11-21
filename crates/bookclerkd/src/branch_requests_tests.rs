@@ -101,7 +101,6 @@ async fn a_listed_work_queues_one_request_for_its_branch() {
     let book = store
         .scope(PLUGIN, "audible")
         .upsert_book(&NewBook {
-            uuid: None,
             product_id: ASIN.into(),
             plugin_key: PLUGIN.into(),
             source: "audible".into(),
@@ -126,7 +125,11 @@ async fn a_listed_work_queues_one_request_for_its_branch() {
         })
         .await
         .unwrap();
-    let work = store.work_id_for_book(&book.uuid).await.unwrap().unwrap();
+    let work = store
+        .work_of_holding(&book.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     let (status, _) = send(&app, json!({"work_id": "not a work"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

@@ -138,11 +138,10 @@ impl ExportRow {
         ]
     }
 
-    /// True when `id` names this title: its holding id, flat book uuid,
-    /// product id, ISBN or ASIN (case-insensitive).
-    fn matches(&self, id: &str, book_uuid: Option<&str>) -> bool {
+    /// True when `id` names this title: its holding id, product id, ISBN
+    /// or ASIN (case-insensitive).
+    fn matches(&self, id: &str) -> bool {
         id.eq_ignore_ascii_case(&self.holding_id)
-            || book_uuid.is_some_and(|uuid| id.eq_ignore_ascii_case(uuid))
             || id.eq_ignore_ascii_case(&self.product_id)
             || self
                 .isbn
@@ -235,10 +234,8 @@ pub async fn load_rows(
             .acquire_titles_page(account, after.as_deref(), EXPORT_PAGE)
             .await?;
         rows.extend(page.titles.into_iter().filter_map(|title| {
-            let book_uuid = title.book_uuid.clone();
             let row = ExportRow::of(title);
-            (ids.is_empty() || ids.iter().any(|id| row.matches(id, book_uuid.as_deref())))
-                .then_some(row)
+            (ids.is_empty() || ids.iter().any(|id| row.matches(id))).then_some(row)
         }));
         match page.next {
             Some(next) => after = Some(next),

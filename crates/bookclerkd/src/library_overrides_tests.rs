@@ -13,7 +13,7 @@ async fn scan(library: &LibraryStore, asin: &str, title: &str) -> (String, Strin
     book.authors = Some("Frank Herbert".into());
     let saved = library.upsert_book(&book).await.expect("book");
     let work = library
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .expect("work read")
         .expect("a scanned title has a work");
@@ -227,7 +227,7 @@ async fn scan_reading(library: &LibraryStore, asin: &str, narrator: &str) -> (St
     book.narrators = Some(narrator.into());
     let saved = library.upsert_book(&book).await.expect("book");
     let work = library
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .expect("work read")
         .expect("a scanned title has a work");

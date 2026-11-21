@@ -13,7 +13,7 @@ async fn scan(library: &LibraryStore, asin: &str, title: &str, author: &str) -> 
     book.authors = Some(author.into());
     let saved = library.upsert_book(&book).await.expect("book");
     library
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .expect("work read")
         .expect("a scanned title has a work")
@@ -279,7 +279,7 @@ async fn a_filtered_search_skips_matches_the_filters_drop() {
     book.authors = Some("William Gibson".into());
     let saved = library.upsert_book(&book).await.expect("book");
     let other = library
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .expect("work read")
         .expect("a work");
@@ -510,7 +510,7 @@ async fn cover_refusal(state: &Arc<AppState>, edition: &str) -> (StatusCode, Str
 #[tokio::test]
 async fn an_edition_cover_is_a_404_unless_this_node_holds_one() {
     let files = tempfile::tempdir().expect("tempdir");
-    let (state, library, ids) = library_with_three_works(&files).await;
+    let (state, library, _) = library_with_three_works(&files).await;
     assert_eq!(
         cover_refusal(&state, "no-such-edition").await,
         (
@@ -518,15 +518,12 @@ async fn an_edition_cover_is_a_404_unless_this_node_holds_one() {
             "edition no-such-edition not found".into()
         )
     );
-    let uuids = library
-        .book_uuids_for_work(&ids[0])
-        .await
-        .expect("the scanned title");
     let edition = library
-        .edition_of_book(&uuids[0])
+        .held_title("B001", "acct")
         .await
         .expect("read")
-        .expect("edition");
+        .expect("the scanned title")
+        .edition_id;
     let no_cover = (
         StatusCode::NOT_FOUND,
         format!("edition {edition} has no cover on this node"),

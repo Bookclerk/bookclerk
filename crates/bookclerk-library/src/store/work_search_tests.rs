@@ -27,7 +27,11 @@ async fn a_held_work_reads_its_titles_people_series_and_ids() {
         book.series = Some("Dune Chronicles".into());
         book.isbn = Some("9780000000001".into());
         let saved = store.upsert_book(&book).await.unwrap();
-        let work = store.work_id_for_book(&saved.uuid).await.unwrap().unwrap();
+        let work = store
+            .work_of_holding(&saved.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
 
         let (top, doc) = store.work_search_document(&work).await.unwrap();
         assert_eq!(top, work, "{profile:?}");
@@ -60,7 +64,11 @@ async fn an_unheld_or_missing_work_has_no_document() {
         .upsert_book(&NewBook::minimal("B0GONE", "acct", "us", "Gone"))
         .await
         .unwrap();
-    let work = store.work_id_for_book(&saved.uuid).await.unwrap().unwrap();
+    let work = store
+        .work_of_holding(&saved.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
     store
         .remove_account_holdings("audible", "acct", HoldingSelection::All)
         .await
