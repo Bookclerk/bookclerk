@@ -92,13 +92,14 @@ the database (cargo reset --yes)`, rather than reshape the library. See
    ```
 
 2. Keep a copy of `master.key`, and know your `BOOKCLERK_AUTH_PASSWORD`
-   if you set one. If the key is in the OS keychain
-   (`bookclerk config master-key status` says `store=keychain`),
-   `master.key` only names the keychain item: save a recovery copy with
+   if you set one. If the key is in the OS keychain or sealed with
+   `systemd-creds` (`bookclerk config master-key status` says
+   `store=keychain` or `store=systemd-creds`), `master.key` only names
+   the item: save a recovery copy with
    `bookclerk config master-key export --out <file>` (or from Settings →
    Server Settings in the web app) instead, and restore
    it with `bookclerk config master-key import --from <file>`. Import only
-   writes a new `master.key`: if the keychain item was lost but its
+   writes a new `master.key`: if the item was lost but its
    `master.key` pointer is still there, stop every host and move that
    `master.key` aside first.
 3. Optionally, save a book list that any build can read:

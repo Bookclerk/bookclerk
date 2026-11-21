@@ -250,8 +250,11 @@ export function RecoveryCopyReminder({
         Save a recovery copy of your library key
       </h2>
       <p className="text-sm text-ink/70">
-        The key that protects this library's store sign-ins and secrets is in this computer's
-        keychain, so backups of the library folder don't include it.{" "}
+        The key that protects this library's store sign-ins and secrets is{" "}
+        {status.store === "systemd_creds"
+          ? "sealed to this computer with systemd-creds"
+          : "in this computer's keychain"}
+        , so backups of the library folder don't include it.{" "}
         {status.recovery_copy === "skipped"
           ? "You skipped saving a copy when you set up."
           : "No copy has been saved yet."}

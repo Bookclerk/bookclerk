@@ -22,10 +22,13 @@ store sign-ins, the operator token and plugin secrets.
   `bookclerk config master-key move keychain`. `master.key` then only
   names the keychain item, so a copy of the files directory doesn't carry
   the key. The desktop window does this by default.
+- On a Linux server with systemd 256 or later, seal it to the machine
+  (its TPM when it has one) with `key_store = "systemd-creds"`; see
+  [Running Bookclerk → Sealing the key with systemd-creds](operations.md#sealing-the-key-with-systemd-creds).
 
 > [!WARNING]
 > Back up the key together with the database: a copy of `master.key`, or
-> for a key in the keychain a recovery copy from
+> for a key in the keychain or sealed with `systemd-creds` a recovery copy from
 > `bookclerk config master-key export` or Settings → Server Settings.
 > Without the key, sealed values cannot be read.
 

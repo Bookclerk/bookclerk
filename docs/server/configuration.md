@@ -39,7 +39,7 @@ Classic Libation setting names work as aliases where
 | --- | --- |
 | `[library]` | Auto-acquire, scan interval, Audible matching, storage layout fix |
 | `[database]`, `[database.sqlite]`, `[database.d1]`, `[database.postgres]` | The library database plugin (`sqlite` by default, Cloudflare D1 or PostgreSQL) |
-| `[auth]` | `[auth].password` to wrap the library key (prefer `BOOKCLERK_AUTH_PASSWORD`), `[auth].key_store` (`file` or `keychain`; see [The key in the OS keychain](database.md#the-key-in-the-os-keychain)), and `[auth.oidc]` sign-in providers |
+| `[auth]` | `[auth].password` to wrap the library key (prefer `BOOKCLERK_AUTH_PASSWORD`), `[auth].key_store` (`file`, `keychain` or `systemd-creds`; see [The key in the OS keychain](database.md#the-key-in-the-os-keychain)), and `[auth.oidc]` sign-in providers |
 | `[media]` | The codec worker pool: concurrency and confinement; see [Media worker](media.md) |
 | `[uploads]` | Upload limits on this node: file size, staging quota, free-disk floor and idle pruning; see [Upload limits](#upload-limits) |
 | `[plugins]` | How external plugins are jailed; see [Isolation modes](plugins.md#isolation-modes) |

@@ -262,6 +262,12 @@ fn a_keychain_key_asks_for_a_copy_until_one_is_saved() {
     );
     assert!(!saved.needs_recovery_copy);
 
+    // A sealed credential isn't in backups of the files directory either.
+    assert!(
+        status_from(MasterKeyStore::SystemdCreds, RecoveryCopyState::Unrecorded)
+            .needs_recovery_copy
+    );
+
     // A key in a file is backed up with the files directory.
     for store in [MasterKeyStore::File, MasterKeyStore::PasswordFile] {
         assert!(!status_from(store, RecoveryCopyState::Unrecorded).needs_recovery_copy);
