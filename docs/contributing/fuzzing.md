@@ -547,8 +547,9 @@ only that. The others check:
   a `requests.finish` that passes its validator names a plain job id
   and a positive generation. A
   `window.page` that passes its validator carries at most 100 works, each
-  once, with plain identifiers, 1 to 8 distinct owned editions with a
-  title, a copy (where one is stated) with a lowercase media type, a
+  once, with plain identifiers, 1 to 8 distinct editions with a title,
+  each owned, or reachable and then neither the person's nor with a copy,
+  a copy (where one is stated) with a lowercase media type, a
   bitrate of 1 to 20000 kbit/s, a short lowercase source store and a
   plain version, and a plain next cursor (up to 64 letters, digits and `-`)
   sorting past the one asked with. A `scan.removed` or
