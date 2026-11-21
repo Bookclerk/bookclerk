@@ -380,6 +380,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn settings_at_the_written_out_cap_save_and_read_back() {
+        use bookclerk_config::{MAX_IGNORE_PATTERNS, MAX_INTAKE_CANONICAL_BYTES};
+        let store = crate::control_plane::tests::memory_store().await;
+        let reader = patron(&store).await;
+        let instance = create_plugin_instance(&store, &operator(), "local", "Drop folder")
+            .await
+            .unwrap();
+        // Quotes double when written out; take the most of them the cap
+        // allows.
+        let with_quotes = |count: usize| IntakeSettings {
+            ignore: (0..MAX_IGNORE_PATTERNS)
+                .map(|n| format!("{n:02}{}", "\"".repeat(count)))
+                .collect(),
+            ..IntakeSettings::for_patron(reader)
+        };
+        let count = (1..=126)
+            .rev()
+            .find(|count| with_quotes(*count).validate().is_ok())
+            .unwrap();
+        let largest = with_quotes(count);
+        let written = serde_json::to_string(&largest).unwrap().len();
+        assert!(
+            written > MAX_INTAKE_CANONICAL_BYTES - 200 && written <= MAX_INTAKE_CANONICAL_BYTES,
+            "{written}"
+        );
+        set_intake(&store, &operator(), &instance.id, Some(largest.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            intake_settings(&store, instance.id.as_str())
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(&largest)
+        );
+        // One more quote on every pattern is over the cap, and refused.
+        assert!(matches!(
+            set_intake(
+                &store,
+                &operator(),
+                &instance.id,
+                Some(with_quotes(count + 1))
+            )
+            .await,
+            Err(LibraryError::Invalid(_))
+        ));
+        assert_eq!(
+            intake_settings(&store, instance.id.as_str()).await.unwrap(),
+            Some(largest)
+        );
+    }
+
+    #[tokio::test]
     async fn members_and_bad_settings_are_refused() {
         let store = crate::control_plane::tests::memory_store().await;
         let instance = create_plugin_instance(&store, &operator(), "local", "Drop folder")

@@ -173,6 +173,9 @@ pub(crate) struct PassReport {
     pub unassigned: Vec<String>,
     /// Items the ingest job refused outright; they went to `_failed/`.
     pub refused: Vec<String>,
+    /// The time, unix milliseconds, against which the pass judged which
+    /// items had settled.
+    pub evaluated_ms: u64,
 }
 
 /// One drop folder as the runner works on it.
@@ -375,6 +378,7 @@ pub(crate) async fn run_pass(
     let settle_ms = u64::from(folder.settings.settle_seconds) * 1_000;
     let mut report = PassReport {
         items: listing.items.len(),
+        evaluated_ms: now_ms,
         ..PassReport::default()
     };
     let mut writes = Vec::new();
@@ -539,8 +543,9 @@ enum BatchStand {
     Pending,
     /// It never became a batch the job runs: it was not written (a crash
     /// between storing its id and creating it, or a refusal), or it was
-    /// left open when queueing failed and has now been cancelled. The
-    /// item's files were not read and are not touched; it settles again.
+    /// cancelled before the job read any of its files (left open when
+    /// queueing failed, even if the runner stopped right after cancelling
+    /// it). The item's files are not touched; it settles again.
     NeverRan,
     /// It ended this way.
     Ended(IngestOutcome),
@@ -573,6 +578,16 @@ async fn batch_stand(store: &LibraryStore, batch_id: &str) -> anyhow::Result<Bat
         });
     }
     let members = batch_members(store, &id).await?;
+    // Cancelled before the job read a file: either this runner cancelled
+    // the open batch and stopped before releasing the item, or the batch
+    // was cancelled while committed. Nothing was read, so it settles again.
+    if batch.state == IngestState::Cancelled
+        && members
+            .iter()
+            .all(|member| member.outcome == MemberOutcome::Pending)
+    {
+        return Ok(BatchStand::NeverRan);
+    }
     Ok(outcome_of(batch.state, &members).map_or(BatchStand::Pending, BatchStand::Ended))
 }
 
@@ -602,7 +617,7 @@ pub(crate) async fn finish_ended(folder: Folder<'_>, now_ms: u64) -> anyhow::Res
         })
         .collect();
     let day = day_of(now_ms);
-    let mut listing: Option<Listing> = None;
+    let mut listing = ListingCache::NotYet;
     let mut finished = 0;
     let mut first_error = None;
     for record in queued {
@@ -630,6 +645,17 @@ pub(crate) async fn finish_ended(folder: Folder<'_>, now_ms: u64) -> anyhow::Res
     }
 }
 
+/// The one listing [`finish_ended`] takes per call, or why it failed.
+enum ListingCache {
+    /// No ended item has needed the listing yet.
+    NotYet,
+    /// The folder as listed for this call.
+    Listed(Listing),
+    /// The listing failed; items that need it wait for the next call
+    /// rather than listing again.
+    Failed(String),
+}
+
 /// Finishes or releases one queued item, listing the folder into
 /// `listing` the first time a finished item needs it.
 ///
@@ -645,7 +671,7 @@ async fn finish_queued(
     folder: Folder<'_>,
     record: &IntakeItemRecord,
     batch_id: &str,
-    listing: &mut Option<Listing>,
+    listing: &mut ListingCache,
     now_ms: u64,
     day: &str,
 ) -> anyhow::Result<bool> {
@@ -665,13 +691,25 @@ async fn finish_queued(
             Ok(true)
         }
         BatchStand::Ended(outcome) => {
-            if listing.is_none() && folder.settings.after_ingest != AfterIngest::Leave {
-                *listing = Some(observe(folder.backend, folder.prefix, folder.settings).await?);
+            if matches!(listing, ListingCache::NotYet)
+                && folder.settings.after_ingest != AfterIngest::Leave
+            {
+                *listing = match observe(folder.backend, folder.prefix, folder.settings).await {
+                    Ok(listed) => ListingCache::Listed(listed),
+                    Err(err) => ListingCache::Failed(format!("{err:#}")),
+                };
             }
             let empty = Listing::default();
+            let listed = match listing {
+                ListingCache::Listed(listed) => listed,
+                ListingCache::NotYet => &empty,
+                ListingCache::Failed(reason) => {
+                    anyhow::bail!("the drop folder could not be listed: {reason}")
+                }
+            };
             finish_one(
                 folder,
-                listing.as_ref().unwrap_or(&empty),
+                listed,
                 &record.item_key,
                 batch_id,
                 record.tracked.signature,
@@ -1142,7 +1180,8 @@ pub(crate) fn spawn_intake_runner(state: Arc<AppState>) {
                 match run_pass(folder, &now_ms, Some(&QueueHandOff { state: &state })).await {
                     Ok(report) => {
                         clock.last_pass_ms = started_ms;
-                        clock.next_ready_ms = next_ready(&library, &id, &settings, now_ms()).await;
+                        clock.next_ready_ms =
+                            next_ready(&library, &id, &settings, report.evaluated_ms).await;
                         if !report.queued.is_empty() || !report.unassigned.is_empty() {
                             info!(plugin_instance_id = %id, ?report, "drop folder pass");
                         }
@@ -1156,18 +1195,20 @@ pub(crate) fn spawn_intake_runner(state: Arc<AppState>) {
     });
 }
 
-/// The earliest time still ahead of `now_ms` at which a settling item of
-/// the folder may be ready, or zero.
+/// The earliest time after `evaluated_ms` at which a settling item of the
+/// folder may be ready, or zero.
 ///
-/// A deadline already past belongs to an item the pass just looked at and
-/// could not hand off (its patron folder names nobody, or it is over the
+/// `evaluated_ms` is the time the last pass judged its items against, so a
+/// deadline that passed while that pass was still running is kept and
+/// starts a listing soon. A deadline at or before it belongs to an item
+/// the pass looked at and could not hand off (its patron folder names nobody, or it is over the
 /// member cap); it waits for the next listing on the folder's interval
 /// rather than starting a listing every tick.
 async fn next_ready(
     store: &LibraryStore,
     instance_id: &str,
     settings: &IntakeSettings,
-    now_ms: u64,
+    evaluated_ms: u64,
 ) -> u64 {
     let settle_ms = u64::from(settings.settle_seconds) * 1_000;
     load_intake_items(store, instance_id)
@@ -1177,7 +1218,7 @@ async fn next_ready(
                 .values()
                 .filter(|record| record.tracked.state == bookclerk_intake::TrackedState::Settling)
                 .map(|record| record.tracked.quiet_since_ms.saturating_add(settle_ms))
-                .filter(|ready_ms| *ready_ms > now_ms)
+                .filter(|ready_ms| *ready_ms > evaluated_ms)
                 .min()
                 .unwrap_or(0)
         })
@@ -1634,6 +1675,157 @@ mod tests {
         let again = run_pass(drop, &|| 130_000, Some(&recorder)).await.unwrap();
         assert_eq!(again.queued, ["Book.m4b"]);
         assert_ne!(recorder.batch_of("Book.m4b"), first_batch);
+    }
+
+    /// Creates the open batch, as the queue does, then fails to queue it.
+    struct OpensThenFails<'a>(&'a LibraryStore, i64);
+
+    #[async_trait]
+    impl IngestHandOff for OpensThenFails<'_> {
+        async fn submit(&self, submission: IntakeSubmission) -> Result<(), HandOffError> {
+            let specs: Vec<MemberSpec> = submission
+                .members
+                .iter()
+                .map(|member| MemberSpec {
+                    path: bookclerk_archive::EntryPath::admit(&member.path).unwrap(),
+                    size: member.size,
+                    sha256: None,
+                    intake: Some(IntakeRef {
+                        key: member.key.clone(),
+                        signature: Some(member.signature.clone()),
+                    }),
+                })
+                .collect();
+            bookclerk_library::control_plane::create_intake_batch(
+                self.0,
+                &submission.batch_id,
+                self.1,
+                "node-a",
+                &submission.plugin_instance_id,
+                &specs,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            Err(HandOffError::Unavailable(anyhow::anyhow!("queue full")))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_batch_cancelled_before_the_item_was_released_settles_again() {
+        let (store, id) = store_and_folder().await;
+        let patron = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Pat"), None)
+            .await
+            .unwrap()
+            .id;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Book.m4b", b"book");
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let settings = IntakeSettings::for_patron(patron);
+        let drop = folder(&store, &id, &backend, &settings);
+        let opens = OpensThenFails(&store, patron);
+        run_pass(drop, &|| 0, Some(&opens)).await.unwrap();
+        run_pass(drop, &|| 60_000, Some(&opens)).await.unwrap();
+        let record = load_intake_items(&store, &id).await.unwrap()["Book.m4b"].clone();
+        let batch = IngestBatchId::parse(record.batch_id.as_deref().unwrap()).unwrap();
+        // The runner cancelled the open batch, then stopped before it
+        // released the item.
+        assert!(cancel_batch(&store, &batch).await.unwrap());
+        assert_eq!(finish_ended(drop, 70_000).await.unwrap(), 1);
+        let record = load_intake_items(&store, &id).await.unwrap()["Book.m4b"].clone();
+        assert_eq!(record.tracked.state, TrackedState::Settling);
+        assert_eq!(record.batch_id, None);
+        assert!(dir.path().join("Book.m4b").is_file(), "the file stays");
+        assert!(!dir.path().join("_failed").exists(), "nothing was failed");
+    }
+
+    /// Creates each batch and runs it to a failure at once.
+    struct EndsAsFailed<'a>(OpensThenFails<'a>);
+
+    #[async_trait]
+    impl IngestHandOff for EndsAsFailed<'_> {
+        async fn submit(&self, submission: IntakeSubmission) -> Result<(), HandOffError> {
+            let id = submission.batch_id.clone();
+            let _ = self.0.submit(submission).await;
+            let store = self.0 .0;
+            assert!(
+                bookclerk_library::control_plane::mark_committed(store, &id, "job-1")
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                bookclerk_library::control_plane::start_batch(store, &id, "job-1")
+                    .await
+                    .unwrap()
+            );
+            bookclerk_library::control_plane::finish_batch(
+                store,
+                &id,
+                IngestState::Failed,
+                Some("broken"),
+            )
+            .await
+            .unwrap();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_listing_is_not_repeated_for_each_ended_item() {
+        let (store, id) = store_and_folder().await;
+        let patron = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Pat"), None)
+            .await
+            .unwrap()
+            .id;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Book.m4b", b"book");
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let settings = IntakeSettings::for_patron(patron);
+        let drop = folder(&store, &id, &backend, &settings);
+        let ends = EndsAsFailed(OpensThenFails(&store, patron));
+        run_pass(drop, &|| 0, Some(&ends)).await.unwrap();
+        assert_eq!(
+            run_pass(drop, &|| 60_000, Some(&ends))
+                .await
+                .unwrap()
+                .queued,
+            ["Book.m4b"]
+        );
+        let record = load_intake_items(&store, &id).await.unwrap()["Book.m4b"].clone();
+        let batch_id = record.batch_id.clone().unwrap();
+        // An earlier item's listing failed in this call: this one waits
+        // instead of listing the folder again.
+        let mut listing = ListingCache::Failed("earlier page broke".into());
+        let err = finish_queued(drop, &record, &batch_id, &mut listing, 70_000, "2026-11-20")
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("earlier page broke"), "{err:#}");
+        assert!(dir.path().join("Book.m4b").is_file(), "nothing moved");
+        let record = load_intake_items(&store, &id).await.unwrap()["Book.m4b"].clone();
+        assert_eq!(record.tracked.state, TrackedState::Queued);
+        // The next call lists the folder and fails the item.
+        assert_eq!(finish_ended(drop, 70_000).await.unwrap(), 1);
+        assert!(dir.path().join("_failed/Book.m4b").is_file());
+    }
+
+    #[tokio::test]
+    async fn the_next_listing_waits_only_for_deadlines_the_pass_did_not_judge() {
+        let (store, id) = store_and_folder().await;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Book.m4b", b"book");
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let settings = IntakeSettings::for_patron(5);
+        let drop = folder(&store, &id, &backend, &settings);
+        let report = run_pass(drop, &|| 1_000, None).await.unwrap();
+        assert_eq!(report.evaluated_ms, 1_000);
+        // The item's deadline, 61 s, passes while the runner is still busy
+        // (say at 70 s); it was not judged, so it still starts a listing.
+        assert_eq!(
+            next_ready(&store, &id, &settings, report.evaluated_ms).await,
+            61_000
+        );
     }
 
     #[tokio::test]
