@@ -31,6 +31,7 @@ export {
   QueueMessage,
   JobController,
   CoverEntrypoint,
+  IngressEntrypoint,
   MetadataEntrypoint,
   MetadataFilesEntrypoint,
   NamedEntrypoint,
@@ -231,3 +232,10 @@ export type {
   SocketsBinding,
   StorageBinding,
 } from "./env.js";
+export type {
+  OriginBinding,
+  OriginFetchOptions,
+  OriginTransport,
+  OriginTransportReply,
+  OriginTransportResponse,
+} from "./origin.js";

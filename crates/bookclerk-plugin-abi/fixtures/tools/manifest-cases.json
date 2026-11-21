@@ -736,6 +736,29 @@
       "name": "table setting with columns",
       "tables": "[vars]\n[[settings]]\nkey = \"mappings\"\ntype = \"table\"\ndefault = [{ library = \"main\" }]\n[[settings.columns]]\nkey = \"library\"\ntype = \"string\"\nrequired = true\n[[settings.columns]]\nkey = \"watch\"\ntype = \"bool\"\ndefault = true\n",
       "error": null
+    },
+    {
+      "name": "relay ingress plugin",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ingress\"]\n",
+      "tables": "[ingress]\nkind = \"relay\"\n",
+      "error": null
+    },
+    {
+      "name": "direct ingress plugin",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ingress\"]\n",
+      "tables": "[ingress]\nkind = \"direct\"\n",
+      "error": null
+    },
+    {
+      "name": "ingress plugin without the table",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ingress\"]\n",
+      "error": "plugin.toml: `[ingress]` is required for a plugin with the `ingress` entrypoint (set `kind` to \"relay\" or \"direct\")"
+    },
+    {
+      "name": "ingress table without the entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[ingress]\nkind = \"relay\"\n",
+      "error": "plugin.toml: `[ingress]` needs the `ingress` entrypoint"
     }
   ]
 }

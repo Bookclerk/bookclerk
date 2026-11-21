@@ -8,6 +8,7 @@
  */
 
 import type { DatabaseBinding } from "./db-execute.js";
+import type { OriginBinding } from "./origin.js";
 import type { EventReadPage, PluginEvent, PublishOk, QueueSendOk } from "./generated.js";
 
 /**
@@ -445,6 +446,11 @@ export interface BookclerkEnv {
   KV?: KvNamespaceBinding;
   /** `[sockets]` host-brokered WebSockets (default name). */
   SOCKETS?: SocketsBinding;
+  /**
+   * The library a relay `ingress` plugin serves; present only while this
+   * instance is the active ingress.
+   */
+  ORIGIN?: OriginBinding;
   /** `[oauth]` loopback helper; surface reserved. */
   OAUTH?: unknown;
   /**

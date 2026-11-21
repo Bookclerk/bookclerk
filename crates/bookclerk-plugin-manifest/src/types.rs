@@ -297,6 +297,38 @@ impl AcquireManifest {
     }
 }
 
+/// `[ingress]`: how an `ingress` plugin gives the library its public
+/// address. Required for that entrypoint and forbidden without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngressManifest {
+    /// Whether requests arrive through `ORIGIN` or straight at the daemon.
+    pub kind: IngressKind,
+}
+
+/// How public requests reach the library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IngressKind {
+    /// The provider holds the public address and relays each request to the
+    /// plugin, which hands it to the library through the `ORIGIN` binding.
+    Relay,
+    /// The public address points at the daemon itself (port mapping or
+    /// dynamic DNS); the plugin only keeps the address current and never
+    /// receives `ORIGIN`.
+    Direct,
+}
+
+impl IngressKind {
+    /// The `plugin.toml` spelling: `"relay"` or `"direct"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Relay => "relay",
+            Self::Direct => "direct",
+        }
+    }
+}
+
 /// `[metadata_files]`: the metadata file dialects a `metadataFiles` plugin
 /// implements. Required for that entrypoint and forbidden without it.
 ///
@@ -1283,6 +1315,11 @@ pub struct PluginManifest {
     /// other plugin; see [`MetadataFilesManifest`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_files: Option<MetadataFilesManifest>,
+    /// How the plugin serves the library publicly (`[ingress]`): required
+    /// for plugins that export the `ingress` entrypoint and forbidden for
+    /// every other plugin; see [`IngressManifest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress: Option<IngressManifest>,
     /// Declared network capability (consent has no Wrangler analogue).
     pub capabilities: CapabilitiesManifest,
     /// Optional CLI schema advertised to `bookclerk plugins <id>` (from
@@ -1972,6 +2009,31 @@ impl PluginManifest {
             .map_err(|err| Error::message(format!("plugin.toml: `[media]`: {err}")))
     }
 
+    /// Checks the `[ingress]` table against the plugin's entrypoints.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when an `ingress` plugin has no table or
+    /// another plugin has one.
+    fn validate_ingress(&self) -> Result<()> {
+        match (
+            self.has_entrypoint(Entrypoint::Ingress),
+            self.ingress.is_some(),
+        ) {
+            (true, false) => Err(Error::message(
+                "plugin.toml: `[ingress]` is required for a plugin with the `ingress` \
+                 entrypoint (set `kind` to \"relay\" or \"direct\")",
+            )),
+            (false, true) => Err(Error::message(
+                "plugin.toml: `[ingress]` needs the `ingress` entrypoint",
+            )),
+            (true, true) | (false, false) => Ok(()),
+        }
+    }
+
     /// Checks the `[metadata_files]` table against the plugin's entrypoints.
     ///
     /// The same rules, with the same messages, run in the TypeScript and
@@ -2119,6 +2181,7 @@ impl PluginManifest {
         self.validate_media()?;
         self.validate_acquire()?;
         self.validate_metadata_files()?;
+        self.validate_ingress()?;
         if self.credentials.is_some() && !self.has_entrypoint(Entrypoint::Storefront) {
             return Err(Error::message(
                 "plugin.toml: `credentials` needs the `storefront` entrypoint (only storefronts connect store accounts)",

@@ -30,6 +30,7 @@ const RESERVED_BINDINGS: ReadonlySet<string> = new Set([
   "KV",
   "OAUTH",
   "SOCKETS",
+  "ORIGIN",
 ]);
 
 /** One property of the generated `Env` interface. */
@@ -185,6 +186,13 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
       doc: "`[sockets]` host-brokered WebSockets; messages reach `webSocketMessage` / `webSocketClose`.",
     });
   }
+  if (m.ingress?.kind === "relay") {
+    props.push({
+      name: "ORIGIN",
+      type: "OriginBinding",
+      doc: "The library this relay `[ingress]` plugin serves (present only while it is the active ingress).",
+    });
+  }
   if (m.oauth) {
     props.push({
       name: m.oauth.binding ?? "OAUTH",
@@ -245,6 +253,7 @@ export function renderEnvTypes(m: Manifest): string {
       "DatabaseBinding",
       "EventPublisherBinding",
       "KvNamespaceBinding",
+      "OriginBinding",
       "QueueBinding",
       "SocketsBinding",
       "StorageBinding",

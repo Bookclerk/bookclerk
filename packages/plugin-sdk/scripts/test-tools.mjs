@@ -661,6 +661,25 @@ console.log("ok binding errors name the row index");
     process.exit(1);
   }
   console.log("ok [sockets] validates, formats and types as SocketsBinding");
+  const relay = renderEnvTypes({
+    ...outbound,
+    entrypoints: ["ingress"],
+    ingress: { kind: "relay" },
+  });
+  if (!relay.includes("ORIGIN: OriginBinding;") || !relay.includes("OriginBinding")) {
+    console.error("FAIL ingress env types: a relay plugin lacks the ORIGIN binding");
+    process.exit(1);
+  }
+  const direct = renderEnvTypes({
+    ...outbound,
+    entrypoints: ["ingress"],
+    ingress: { kind: "direct" },
+  });
+  if (direct.includes("ORIGIN")) {
+    console.error("FAIL ingress env types: a direct plugin got the ORIGIN binding");
+    process.exit(1);
+  }
+  console.log("ok a relay [ingress] types ORIGIN as OriginBinding");
 }
 const nameOnly = formatManifest({
   api_version: 3,

@@ -57,6 +57,7 @@ export const ENTRYPOINT_EXPORT_CLASSES: Readonly<Record<string, string>> = Objec
   metadata: "Metadata",
   covers: "Covers",
   metadataFiles: "MetadataFiles",
+  ingress: "Ingress",
 });
 
 /**
