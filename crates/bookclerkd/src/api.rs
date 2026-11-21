@@ -662,7 +662,7 @@ struct PluginConsentLimits {
     #[schema(example = 62)]
     max_extra_processes: u32,
     /// Suggested / default host bindings operators may grant.
-    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth", "sockets"]))]
+    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth", "sockets", "webhooks"]))]
     known_bindings: Vec<&'static str>,
 }
 

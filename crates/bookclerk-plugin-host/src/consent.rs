@@ -190,6 +190,7 @@ pub const KNOWN_HOST_BINDINGS: &[&str] = &[
     "work_fs",
     "oauth",
     "sockets",
+    "webhooks",
 ];
 
 /// Grant-entry prefix for named plugin database bindings (`database:<NAME>`).
@@ -1116,6 +1117,9 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
     }
     if b.sockets {
         bindings.insert("sockets".into());
+    }
+    if b.webhooks {
+        bindings.insert("webhooks".into());
     }
     for name in &b.databases {
         bindings.insert(format!("{DATABASE_BINDING_PREFIX}{name}"));
@@ -2784,6 +2788,9 @@ fn grant_binding_for_described(manifest: &PluginManifest, env_name: &str) -> Opt
         .is_some_and(|binding| env_name == binding.name_or(DEFAULT_SOCKETS_BINDING))
     {
         return Some("sockets");
+    }
+    if !manifest.webhooks.is_empty() && env_name == bookclerk_plugin_manifest::WEBHOOKS_BINDING {
+        return Some("webhooks");
     }
     if manifest
         .kv_namespaces
