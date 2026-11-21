@@ -873,15 +873,8 @@ impl LibraryStore {
         else {
             return Ok(false);
         };
-        let title_id = title.book_uuid.as_deref().unwrap_or(&title.product_id);
-        self.set_acquire_status(
-            title_id,
-            &title.account_id,
-            AcquireStatus::NotAcquired,
-            None,
-            None,
-        )
-        .await?;
+        self.set_holding_acquire_status(&title.holding_id, AcquireStatus::NotAcquired, None, None)
+            .await?;
         Ok(true)
     }
 

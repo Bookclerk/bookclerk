@@ -49,7 +49,7 @@ use super::semaphore::release_permits;
 use super::trust::{
     accounts_named, accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust,
 };
-use crate::entities::{books, edition_acquisitions, node_upload_sessions};
+use crate::entities::{edition_acquisitions, node_upload_sessions};
 use crate::error::{LibraryError, Result};
 use crate::models::{is_downloadable, AcquireStatus, JobRecord};
 use crate::models::{JobKind, JobState};
@@ -408,9 +408,7 @@ async fn job_accounts(
 /// case covers that account's titles) and its title when it names one
 /// ([`LibraryStore::acquire_titles_named`], matched as the executor
 /// matches it), and, for a Host trusted only with its owner's accounts,
-/// one of that user's. Only titles with a flat `books` row count while
-/// `books` exists (book model step 6), as for a local acquire. `None` when
-/// the node is trusted with nothing.
+/// one of that user's. `None` when the node is trusted with nothing.
 ///
 /// Without a title the holdings are read in keyset pages
 /// ([`LibraryStore::acquire_titles_page`]), so no read loads the whole
@@ -439,8 +437,7 @@ pub async fn job_titles(
     let selector = job.payload.account.as_deref().filter(|a| !a.is_empty());
     let wanted = |title: &AcquireTitle| {
         let account = (title.plugin_key.clone(), title.account_id.clone());
-        title.book_uuid.is_some()
-            && keys.contains(&title.plugin_key)
+        keys.contains(&title.plugin_key)
             && accounts
                 .as_ref()
                 .is_none_or(|accounts| accounts.contains(&account))
@@ -1727,17 +1724,6 @@ async fn commit_upload_checked(
         };
         Some(title)
     };
-    // The flat row the title still has while `books` exists (book model
-    // step 6): written alongside the edition, and what `book_acquired`
-    // names.
-    let model = match title.as_ref().and_then(|t| t.book_uuid.as_deref()) {
-        Some(uuid) => books::Entity::find()
-            .filter(books::Column::Uuid.eq(uuid))
-            .one(store.db())
-            .await
-            .map_err(LibraryError::Orm)?,
-        None => None,
-    };
     let now = stamp(Utc::now());
     let gate_sql = "EXISTS (SELECT 1 FROM node_upload_sessions \
                      WHERE upload_id = ? AND state = 'committed' AND committed_at = ?)";
@@ -1816,30 +1802,6 @@ async fn commit_upload_checked(
             ),
             binds,
         ));
-        if let Some(model) = &model {
-            let mut binds = vec![text(&session.primary_key), text(&now), text(&model.uuid)];
-            binds.extend(gate());
-            statements.push(exec(
-                &format!(
-                    "UPDATE books SET acquire_status = 'acquired', storage_key = ?, \
-                       error_message = NULL, updated_at = ? \
-                      WHERE uuid = ? AND {gate_sql}"
-                ),
-                binds,
-            ));
-            if let Some(pdf_key) = session.pdf_key.as_deref() {
-                let mut binds = vec![text(pdf_key), text(&now), text(&model.uuid)];
-                binds.extend(gate());
-                statements.push(exec(
-                    &format!(
-                        "UPDATE books SET pdf_status = 'acquired', pdf_storage_key = ?, \
-                           updated_at = ? \
-                          WHERE uuid = ? AND {gate_sql}"
-                    ),
-                    binds,
-                ));
-            }
-        }
         {
             let edition = title.edition_id.as_str();
             let holding = title.holding_id.as_str();
@@ -2025,7 +1987,10 @@ async fn commit_upload_checked(
     // Last, so no index above moves: each bump fires only when its rows
     // took this commit's stamp.
     if title.is_some() {
-        statements.push(super::bump_if_stamped(super::LiveTopic::Library, &now)?);
+        statements.push(super::bump_if_any(
+            super::LiveTopic::Library,
+            exec(&format!("SELECT 1 WHERE {gate_sql}"), gate()),
+        ));
     }
     if job_index.is_some() {
         statements.push(super::bump_if_stamped(super::LiveTopic::Jobs, &now)?);

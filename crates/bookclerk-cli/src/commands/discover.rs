@@ -307,7 +307,11 @@ mod tests {
         book.plugin_key = "libro".into();
         book.authors = Some("Frank Herbert".into());
         let book = store.upsert_book(&book).await.unwrap();
-        let dune = store.work_id_for_book(&book.uuid).await.unwrap().unwrap();
+        let dune = store
+            .work_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
 
         let author = || Some("Frank Herbert".to_string());
         let owned = store

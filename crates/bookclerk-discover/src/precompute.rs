@@ -1728,13 +1728,13 @@ mod tests {
             .unwrap();
         // Alice's listening to her own book blends in with that book.
         let alice_book = library
-            .list_books(None)
+            .all_acquire_titles(None)
             .await
             .unwrap()
             .into_iter()
             .find(|b| b.title == "Alice Book")
             .unwrap()
-            .uuid;
+            .holding_id;
         library
             .upsert_listening_progress(&listen(
                 None,
@@ -1767,9 +1767,9 @@ mod tests {
         assert_eq!(taste.wishlist.len(), 1);
     }
 
-    /// The work library title `book_uuid` resolves to.
-    async fn work_of(library: &LibraryStore, book_uuid: &str) -> String {
-        library.work_id_for_book(book_uuid).await.unwrap().unwrap()
+    /// The work the library title (holding) `holding_id` resolves to.
+    async fn work_of(library: &LibraryStore, holding_id: &str) -> String {
+        library.work_of_holding(holding_id).await.unwrap().unwrap()
     }
 
     /// A listening row on `work_id` for `(provider, external)`.
@@ -1806,12 +1806,12 @@ mod tests {
             .create_user(bookclerk_library::UserRole::Member, Some("Ben"), None)
             .await
             .unwrap();
-        let books = library.list_books(None).await.unwrap();
+        let books = library.all_acquire_titles(None).await.unwrap();
         let work_titled = |title: &str| {
             books
                 .iter()
                 .find(|b| b.title == title)
-                .map(|b| b.uuid.clone())
+                .map(|b| b.holding_id.clone())
                 .unwrap()
         };
         let alice_work = work_of(&library, &work_titled("Alice Book")).await;
@@ -1914,13 +1914,13 @@ mod tests {
         let (library, alice) = two_member_library().await;
         let opts = RecommendOptions::default();
         let bob_book = library
-            .list_books(None)
+            .all_acquire_titles(None)
             .await
             .unwrap()
             .into_iter()
             .find(|b| b.title == "Bob Book")
             .unwrap()
-            .uuid;
+            .holding_id;
         let bob_work = work_of(&library, &bob_book).await;
         let carol = library
             .upsert_portal_identity("oidc", "carol", Some("Carol"))

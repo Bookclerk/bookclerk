@@ -1388,7 +1388,7 @@ impl PassLedger<'_> {
             .mark_holdings_seen(&self.account_id, &self.pass_id, &listed)
             .await
             .map_err(pass_error)?;
-        Ok(stored.len())
+        Ok(stored)
     }
 
     /// Removes the account's holdings of `product_ids`.
