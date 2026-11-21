@@ -31,8 +31,8 @@ use bookclerk_plugin_abi::{
     EventReadRequest, ExecuteStreamLimits, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk,
     KvListOptions, KvNamespace, KvPutOk, KvPutOptions, NotificationRaiser, NotifyRaiseParams,
     NotifyRaised, ObjectMetadata, Origin, PluginEvent, ProgressSink, PublishOk, QueueProducer,
-    QueueSendMessage, QueueSendOk, Sockets, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES,
-    MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    QueueSendMessage, QueueSendOk, Sockets, Source, Webhooks, WriteOptions,
+    MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -40,6 +40,10 @@ use tokio::sync::{mpsc, oneshot};
 use crate::granted_sockets::{
     parse_socket_call, socket_reply_json, SocketCall, SocketReply, MAX_SOCKET_ROUTE_BODY_BYTES,
     SOCKET_ROUTE_OPS,
+};
+use crate::granted_webhooks::{
+    parse_webhook_call, webhook_reply_json, WebhookCall, WebhookReply,
+    MAX_WEBHOOK_ROUTE_BODY_BYTES, WEBHOOK_ROUTE_OPS,
 };
 
 use crate::granted_http::{
@@ -121,6 +125,8 @@ pub struct GrantedSlot {
     pub kv: Option<Rc<dyn KvNamespace>>,
     /// Host socket broker, when this grant is the `SOCKETS` binding.
     pub sockets: Option<Rc<dyn Sockets>>,
+    /// Host webhook store, when this grant is the `WEBHOOKS` binding.
+    pub webhooks: Option<Rc<dyn Webhooks>>,
     /// Host notification router entry, when this grant is the `NOTIFY`
     /// binding.
     pub notify: Option<Rc<dyn NotificationRaiser>>,
@@ -159,6 +165,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
         }
@@ -185,6 +192,34 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: Some(sockets),
+            webhooks: None,
+            notify: None,
+            origin: None,
+        }
+    }
+
+    /// A grant that only reaches the instance's webhook store over
+    /// `/webhooks/*` (no streams, no database, no events, no KV).
+    #[must_use]
+    pub fn webhooks_only(webhooks: Rc<dyn Webhooks>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
+            sockets: None,
+            webhooks: Some(webhooks),
             notify: None,
             origin: None,
         }
@@ -211,6 +246,7 @@ impl GrantedSlot {
             queue: None,
             kv: Some(kv),
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
         }
@@ -237,6 +273,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
         }
@@ -263,6 +300,7 @@ impl GrantedSlot {
             kv: None,
             sockets: None,
             origin: None,
+            webhooks: None,
             notify: None,
         }
     }
@@ -288,6 +326,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: Some(notify),
             origin: None,
         }
@@ -313,6 +352,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
         }
@@ -340,6 +380,7 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
         }
@@ -420,6 +461,12 @@ enum GrantedCmd {
         invocation: String,
         call: SocketCall,
         resp: oneshot::Sender<Result<SocketReply, PluginError>>,
+    },
+    /// `env.WEBHOOKS` calls through the grant.
+    Webhooks {
+        invocation: String,
+        call: WebhookCall,
+        resp: oneshot::Sender<Result<WebhookReply, PluginError>>,
     },
     /// `env.<KV>.get` / `put` / `delete` / `list` through the grant.
     Kv {
@@ -643,6 +690,13 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                         );
                     });
                 }
+                GrantedCmd::Webhooks {
+                    invocation,
+                    call,
+                    resp,
+                } => {
+                    let _ = resp.send(dispatch_webhooks(&table, invocation, call).await);
+                }
             }
         });
     }
@@ -765,6 +819,37 @@ async fn dispatch_sockets(
             SocketReply::Done
         }
         SocketCall::List => SocketReply::Listed(sockets.list().await?),
+    })
+}
+
+/// `env.WEBHOOKS` through the grant: the slot must carry the instance's
+/// webhook store. The call was checked when it was parsed; the host checks it
+/// again.
+async fn dispatch_webhooks(
+    table: &GrantedTable,
+    invocation: String,
+    call: WebhookCall,
+) -> Result<WebhookReply, PluginError> {
+    let webhooks = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| PluginError::forbidden("unknown or revoked grant"))?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err(PluginError::forbidden("grant expired"));
+        }
+        slot.webhooks
+            .clone()
+            .ok_or_else(|| PluginError::forbidden("webhooks not granted"))?
+    };
+    Ok(match call {
+        WebhookCall::Url(name) => WebhookReply::Url(webhooks.url(name).await?),
+        WebhookCall::Pull(request) => WebhookReply::Pulled(webhooks.pull(request).await?),
+        WebhookCall::Ack(request) => {
+            webhooks.ack(request).await?;
+            WebhookReply::Done
+        }
     })
 }
 
@@ -1924,6 +2009,57 @@ where
     if method == "POST" && path_only == "/origin/fetch" {
         return origin_route::serve(reader, &mut writer, headers, prefix, invocation, cmds).await;
     }
+    if method == "POST" && path_only.starts_with("/webhooks/") {
+        let op = &path_only["/webhooks/".len()..];
+        if !WEBHOOK_ROUTE_OPS.contains(&op) {
+            write_status(&mut writer, 404, "not found").await?;
+            return Ok(());
+        }
+        if declared_content_length_over_cap(&headers, MAX_WEBHOOK_ROUTE_BODY_BYTES) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let rest =
+            match read_content(&mut reader, &headers, prefix, MAX_WEBHOOK_ROUTE_BODY_BYTES).await {
+                Ok(body) => body,
+                Err(err) => {
+                    let Some((status, reason)) = body_error_response(&err) else {
+                        return Err(err);
+                    };
+                    write_status(&mut writer, status, &reason).await?;
+                    return Ok(());
+                }
+            };
+        let call = match parse_webhook_call(op, &rest) {
+            Ok(call) => call,
+            Err(err) => {
+                write_plugin_error(&mut writer, &err).await?;
+                return Ok(());
+            }
+        };
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::Webhooks {
+            invocation,
+            call,
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted webhooks call dropped")? {
+            Ok(reply) => {
+                let payload = webhook_reply_json(&reply)?;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(&payload).await?;
+                writer.flush().await?;
+            }
+            Err(err) => write_plugin_error(&mut writer, &err).await?,
+        }
+        return Ok(());
+    }
 
     write_status(&mut writer, 404, "not found").await?;
     Ok(())
@@ -2169,6 +2305,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
             },
@@ -2220,6 +2357,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
             },
@@ -2258,6 +2396,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
             },
@@ -2331,6 +2470,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
             },
@@ -2427,6 +2567,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
             },
@@ -2488,6 +2629,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
             },
@@ -2965,6 +3107,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
             },
@@ -3169,6 +3312,7 @@ mod tests {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
         }
@@ -3462,6 +3606,7 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
             },
@@ -4061,5 +4206,196 @@ Transfer-Encoding: chunked\r\n\
         async fn publish(&self, _event: PluginEvent) -> bookclerk_plugin_abi::Result<PublishOk> {
             Err(PluginError::unsupported("publish"))
         }
+    }
+
+    /// Records each `Webhooks` call the granted route reaches.
+    #[derive(Default)]
+    struct RecordingWebhooks {
+        /// One line per call, in order.
+        calls: RefCell<Vec<String>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl Webhooks for RecordingWebhooks {
+        async fn url(&self, name: String) -> bookclerk_plugin_abi::Result<Option<String>> {
+            self.calls.borrow_mut().push(format!("url {name}"));
+            Ok(Some(format!("https://lib.example.org/hooks/t/{name}")))
+        }
+        async fn pull(
+            &self,
+            request: bookclerk_plugin_abi::WebhookPullRequest,
+        ) -> bookclerk_plugin_abi::Result<bookclerk_plugin_abi::WebhookPullPage> {
+            self.calls
+                .borrow_mut()
+                .push(format!("pull {} {}", request.name, request.batch_size));
+            Ok(bookclerk_plugin_abi::WebhookPullPage::default())
+        }
+        async fn ack(
+            &self,
+            request: bookclerk_plugin_abi::WebhookAckRequest,
+        ) -> bookclerk_plugin_abi::Result<()> {
+            self.calls
+                .borrow_mut()
+                .push(format!("ack {} {}", request.name, request.acks.len()));
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn webhooks_dispatch_forwards_to_the_granted_store_only() {
+        let store = Rc::new(RecordingWebhooks::default());
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        let far = std::time::Instant::now() + Duration::from_secs(60);
+        table.borrow_mut().insert(
+            "hooks".into(),
+            GrantedSlot::webhooks_only(Rc::clone(&store) as Rc<dyn Webhooks>, far),
+        );
+        let url = dispatch_webhooks(&table, "hooks".into(), WebhookCall::Url("events".into()))
+            .await
+            .unwrap();
+        assert!(matches!(url, WebhookReply::Url(Some(_))));
+        let pulled = dispatch_webhooks(
+            &table,
+            "hooks".into(),
+            WebhookCall::Pull(bookclerk_plugin_abi::WebhookPullRequest {
+                name: "events".into(),
+                batch_size: 5,
+                visibility_timeout_ms: 0,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(pulled, WebhookReply::Pulled(_)));
+        let acked = dispatch_webhooks(
+            &table,
+            "hooks".into(),
+            WebhookCall::Ack(bookclerk_plugin_abi::WebhookAckRequest {
+                name: "events".into(),
+                acks: vec!["l1".into()],
+                retries: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(acked, WebhookReply::Done));
+        assert_eq!(
+            *store.calls.borrow(),
+            ["url events", "pull events 5", "ack events 1"]
+        );
+
+        // Another binding's grant, an unknown grant and an expired one are
+        // refused.
+        table.borrow_mut().insert(
+            "events".into(),
+            GrantedSlot::events_only(Rc::new(NoEvents) as Rc<dyn EventPublisher>, far),
+        );
+        for invocation in ["events", "missing"] {
+            let err =
+                dispatch_webhooks(&table, invocation.into(), WebhookCall::Url("events".into()))
+                    .await
+                    .unwrap_err();
+            assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Forbidden);
+        }
+        let past = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        table.borrow_mut().insert(
+            "old".into(),
+            GrantedSlot::webhooks_only(Rc::clone(&store) as Rc<dyn Webhooks>, past),
+        );
+        let err = dispatch_webhooks(&table, "old".into(), WebhookCall::Url("events".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Forbidden);
+        assert!(!table.borrow().contains_key("old"));
+    }
+
+    /// Sends one raw `/webhooks/*` request to `handle_conn`; commands are
+    /// answered by `answer`. Returns the response and whether any reached it.
+    async fn webhooks_exchange(
+        request: String,
+        answer: fn(WebhookCall) -> Result<WebhookReply, PluginError>,
+    ) -> (String, bool) {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+        let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&dispatched);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmds_rx.recv().await {
+                if let GrantedCmd::Webhooks {
+                    invocation,
+                    call,
+                    resp,
+                } = cmd
+                {
+                    assert_eq!(invocation, "grant-1");
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = resp.send(answer(call));
+                }
+            }
+        });
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+        let (mut reader, mut writer) = tokio::io::split(client);
+        writer.write_all(request.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+            .await
+            .expect("http response")
+            .unwrap();
+        drop(writer);
+        let _ = serve.await;
+        (
+            String::from_utf8_lossy(&out).into_owned(),
+            dispatched.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
+    /// `POST /webhooks/<op>` with `body` under the test grant.
+    fn webhooks_request(op: &str, body: &str) -> String {
+        format!(
+            "POST /webhooks/{op} HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn webhooks_route_answers_and_checks_calls() {
+        let (response, dispatched) =
+            webhooks_exchange(webhooks_request("url", r#"{"name":"events"}"#), |call| {
+                assert!(matches!(call, WebhookCall::Url(ref name) if name == "events"));
+                Ok(WebhookReply::Url(Some(
+                    "https://lib.example.org/hooks/t/events".into(),
+                )))
+            })
+            .await;
+        assert!(dispatched);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("lib.example.org"), "{response}");
+
+        let (response, dispatched) = webhooks_exchange(
+            webhooks_request("ack", r#"{"name":"events","acks":["l1"]}"#),
+            |_| Err(PluginError::unavailable("store down")),
+        )
+        .await;
+        assert!(dispatched);
+        assert!(response.contains("unavailable"), "{response}");
+
+        let never = |_| Ok(WebhookReply::Done);
+        let (response, dispatched) =
+            webhooks_exchange(webhooks_request("url", r#"{"name":"Bad Name"}"#), never).await;
+        assert!(!dispatched, "{response}");
+        assert!(response.contains("invalid_params"), "{response}");
+
+        let (response, dispatched) = webhooks_exchange(webhooks_request("open", "{}"), never).await;
+        assert!(!dispatched);
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+
+        let oversized = format!(
+            "POST /webhooks/pull HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n",
+            MAX_WEBHOOK_ROUTE_BODY_BYTES + 1
+        );
+        let (response, dispatched) = webhooks_exchange(oversized, never).await;
+        assert!(!dispatched);
+        assert!(response.contains("413"), "{response}");
     }
 }

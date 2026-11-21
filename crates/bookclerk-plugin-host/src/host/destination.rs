@@ -419,8 +419,9 @@ impl DestinationRegistry {
 /// `open` stay outside that lock so acquire readers are not blocked for the
 /// whole jail start.
 ///
-/// `prepared` is the deployment's resolved bindings. This function does not
-/// look up an instance by plugin key.
+/// `prepared` is the deployment's resolved bindings and `instance_id` the
+/// deployed instance, whose inbound webhooks back the guest's `WEBHOOKS`
+/// binding. This function does not look up an instance by plugin key.
 ///
 /// # Errors
 ///
@@ -429,6 +430,7 @@ pub(crate) async fn spawn_deployed_storage(
     plugin: &DiscoveredPlugin,
     config: &Config,
     store: Option<&bookclerk_library::LibraryStore>,
+    instance_id: Option<&bookclerk_library::control_plane::PluginInstanceId>,
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<SpawnedDestination> {
     let settings = DestinationSettings::from_granted_config(&prepared.granted_config);
@@ -459,7 +461,10 @@ pub(crate) async fn spawn_deployed_storage(
             prepared.spawn_config_table,
             crate::OPERATOR_ACCOUNT,
             &[],
-            crate::SessionServices::from_outbox(store),
+            crate::SessionServices {
+                webhooks: instance_id.cloned(),
+                ..crate::SessionServices::from_outbox(store)
+            },
         )
         .await?,
     );

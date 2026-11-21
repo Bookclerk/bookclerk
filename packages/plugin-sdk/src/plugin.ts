@@ -61,6 +61,7 @@ import type {
   QueueSendOptions,
   HostWebSocket,
   SocketMessageData,
+  WebhookDeliveredEvent,
 } from "./env.js";
 import { PluginError, parseLimitExceeded } from "./errors.js";
 import { ExecuteStreamFrameCodec, encodeMessage } from "./generated-wire.js";
@@ -86,6 +87,12 @@ import {
   type OriginTransport,
   type OriginTransportReply,
 } from "./origin.js";
+import {
+  webhooksBinding,
+  type WebhookOp,
+  type WebhooksTransport,
+  type WebhookTransportReply,
+} from "./webhooks.js";
 import type { ObjectChangeKind } from "./abi.js";
 import type {
   MoveManyTarget,
@@ -836,6 +843,8 @@ export interface GrantedContext {
    * instance is the active ingress.
    */
   origin?: OriginTransport;
+  /** The `WEBHOOKS` grant, when `[[webhooks]]` is declared. */
+  webhooks?: WebhooksTransport;
   /** The network grant in effect, handed to the author as `env.NETWORK`. */
   network?: NetworkGrant;
 }
@@ -967,6 +976,8 @@ export interface BridgeContext extends Omit<
   sockets?: Record<string, string>;
   /** Origin-only bearer for `/origin/fetch`; stripped before dispatch. */
   originToken?: string;
+  /** Webhooks-only bearer for `/webhooks/*`; stripped before dispatch. */
+  webhooksToken?: string;
 }
 
 /** Job-runner bridge context: the durable job id plus {@link GrantedContext}. */
@@ -1075,6 +1086,7 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     const sockets = socketsTransportOf(context);
     if (sockets) merged[sockets.name] = socketsBinding(sockets.sockets);
     if (context.origin) merged.ORIGIN = originBinding(context.origin);
+    if (context.webhooks) merged.WEBHOOKS = webhooksBinding(context.webhooks);
     if (context.network && typeof context.network === "object") {
       merged.NETWORK = Object.freeze(normalizeNetworkGrant(context.network));
     }
@@ -2015,6 +2027,15 @@ export class BookclerkEntrypoint<
   ): Promise<void> | void;
 
   /**
+   * `[[webhooks]]` handler: the host stored requests for one webhook. Pull
+   * them with `env.WEBHOOKS.pull(event.name)`. The host coalesces calls, so
+   * one call may stand for several requests; read until a pull comes back
+   * empty. Without this handler the plugin reads requests on its own
+   * schedule.
+   */
+  webhookDelivered?(event: WebhookDeliveredEvent): Promise<void> | void;
+
+  /**
    * Complete ordered plugin-owned migration sequence for one named binding.
    * The host calls this at binding initialization, before ordinary execute.
    */
@@ -2153,6 +2174,29 @@ export class BookclerkEntrypoint<
       Number(wire?.code ?? 0) || 0,
       String(wire?.reason ?? ""),
       wire?.clean === true,
+    );
+  }
+
+  /**
+   * Adapter dispatch for `WebhookHandler.delivered`. Without a
+   * `webhookDelivered` handler the call is acknowledged and ignored.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `WebhookDelivered`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkWebhookDelivered(
+    context: GrantedContext,
+    wire: Partial<WebhookDeliveredEvent>,
+  ): Promise<void> {
+    if (typeof this.webhookDelivered !== "function") return;
+    applyInvocationEnv(this, context);
+    await this.webhookDelivered(
+      Object.freeze({
+        name: String(wire?.name ?? ""),
+        waiting: Number(wire?.waiting ?? 0) || 0,
+      }),
     );
   }
 
@@ -3237,6 +3281,7 @@ export type AuthorStub = Pick<
   | "bookclerkScheduled"
   | "bookclerkSocketMessage"
   | "bookclerkSocketClosed"
+  | "bookclerkWebhookDelivered"
   | "bookclerkJob"
   | "bookclerkDatabaseMigrations"
   | "bookclerkShutdown"
@@ -4017,6 +4062,63 @@ class GrantedOrigin extends RpcTarget implements OriginTransport {
 }
 
 /**
+ * `WEBHOOKS` grant handed to the author: the adapter exchanges the
+ * webhooks-only grant token on `POST /webhooks/<op>`, so the author isolate
+ * never holds the bearer. Every failure, including a channel that cannot be
+ * reached, comes back as an `err` value rather than a throw, so its code
+ * survives the Workers RPC hop to the author isolate.
+ */
+class GrantedWebhooks extends RpcTarget implements WebhooksTransport {
+  /** Granted reverse channel that serves `POST /webhooks/<op>`. */
+  #granted: GrantedFetcher;
+  /** `Authorization` header carrying the webhooks-only grant token. */
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the webhooks grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Makes one `POST /webhooks/<op>` call on the granted channel.
+   *
+   * @param op - Operation, the path segment after `/webhooks/`.
+   * @param body - That operation's JSON fields, bytes already base64.
+   * @returns `{ ok }` with the route's reply body, or `{ err }` with the
+   *   host's code (`unavailable` when the channel cannot be reached,
+   *   `internal` for a reply that is not JSON); never throws.
+   */
+  async call(op: WebhookOp, body: Record<string, unknown>): Promise<WebhookTransportReply> {
+    let resp: Response;
+    try {
+      resp = await this.#granted.fetch(`http://granted/webhooks/${op}`, {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return { err: { code: "unavailable", message: `webhooks ${op}: ${errorMessage(err)}` } };
+    }
+    const value = (await resp.json().catch(() => null)) as
+      (Record<string, unknown> & { error?: { code?: string; message?: string } }) | null;
+    if (value && value.error) {
+      return {
+        err: { code: value.error.code || "internal", message: value.error.message || "" },
+      };
+    }
+    if (!resp.ok || !value || typeof value !== "object") {
+      return { err: { code: "internal", message: `webhooks ${op} HTTP ${resp.status}` } };
+    }
+    return { ok: value };
+  }
+}
+
+/**
  * Named `[[databases]]` binding transport handed to the author: the adapter
  * exchanges the binding's database-only grant token on `POST /db/execute`,
  * so the author isolate never holds the bearer itself. ABI failures come
@@ -4375,7 +4477,12 @@ export function wrapPluginFromNative() {
 /** Wire names of the trigger families the launcher may ask `openInvocation` about. */
 export const TRIGGER_FAMILIES: Readonly<
   Record<
-    "eventConsumer" | "queueConsumer" | "scheduledHandler" | "jobRunner" | "socketHandler",
+    | "eventConsumer"
+    | "queueConsumer"
+    | "scheduledHandler"
+    | "jobRunner"
+    | "socketHandler"
+    | "webhookHandler",
     string
   >
 > = Object.freeze({
@@ -4384,6 +4491,7 @@ export const TRIGGER_FAMILIES: Readonly<
   scheduledHandler: "scheduledHandler",
   jobRunner: "jobRunner",
   socketHandler: "socketHandler",
+  webhookHandler: "webhookHandler",
 });
 
 /**
@@ -4412,6 +4520,7 @@ export function scheduledControllerOf(
  * `eventConsumer` needs a non-empty `consumes`, `queueConsumer` needs a
  * non-empty `queueConsumers`, `scheduledHandler` needs a non-empty `crons`,
  * `socketHandler` needs `sockets` (`[sockets]` in the manifest),
+ * `webhookHandler` needs `webhooks` (`[[webhooks]]` in the manifest),
  * and `jobRunner` needs `jobs` or the `storage`
  * entrypoint (storage guests run the host `stream_copy` job). Unknown names
  * and a missing manifest fail closed.
@@ -4446,6 +4555,8 @@ export function allowedEntrypointFamilies(
       if (jobs.length > 0 || exportsStorage) out.push(name);
     } else if (name === TRIGGER_FAMILIES.socketHandler) {
       if (capabilities.sockets === true) out.push(name);
+    } else if (name === TRIGGER_FAMILIES.webhookHandler) {
+      if (capabilities.webhooks === true) out.push(name);
     } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name as EntrypointName)) {
       out.push(name);
     }
@@ -4522,8 +4633,17 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx: BridgeContext | undefined): GrantedContext {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, notifyToken, databases, queues, kv, sockets, originToken, ...rest } =
-        source;
+      const {
+        eventsToken,
+        notifyToken,
+        databases,
+        queues,
+        kv,
+        sockets,
+        originToken,
+        webhooksToken,
+        ...rest
+      } = source;
       const bound: GrantedContext = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -4579,6 +4699,11 @@ function createInvocationAdapter() {
       }
       if (typeof originToken === "string" && originToken && granted) {
         bound.origin = new GrantedOrigin(granted, { Authorization: `Bearer ${originToken}` });
+      }
+      if (typeof webhooksToken === "string" && webhooksToken && granted) {
+        bound.webhooks = new GrantedWebhooks(granted, {
+          Authorization: `Bearer ${webhooksToken}`,
+        });
       }
       return bound;
     }

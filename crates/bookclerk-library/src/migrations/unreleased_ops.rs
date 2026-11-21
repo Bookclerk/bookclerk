@@ -2348,6 +2348,71 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_player_card_tokens_session ON player_card_tokens(session_id, kind)",
     ),
+    // Inbound webhooks (docs/adr/storage-destinations.md, decision 6): one
+    // row per instance and `[[webhooks]]` name, holding the URL token
+    // sealed with the library key and its SHA-256 for the public route's
+    // lookup. `missed` is set when a request was dropped (the waiting cap
+    // was full or a request expired unacknowledged) and cleared by the next
+    // pull, which reports it.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_webhooks (
+        instance_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        token_sealed TEXT NOT NULL,
+        token_nonce TEXT NOT NULL,
+        missed INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (instance_id, name)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_webhooks_token ON plugin_webhooks(token_hash)",
+    ),
+    // Stored webhook requests waiting for their plugin. The kept headers
+    // (as JSON) followed by the body live in `plugin_webhook_chunks` rows
+    // sized from the database plugin's limits,
+    // and this row is written in the same batch as the last chunk, so a
+    // delivery is visible only once its body is complete. `visible_at_ms`
+    // is when the next pull may lease the row (0 when never leased);
+    // `lease_id` names the current lease, empty before the first pull.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_webhook_deliveries (
+        delivery_id TEXT PRIMARY KEY NOT NULL,
+        instance_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        received_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        visible_at_ms INTEGER NOT NULL DEFAULT 0,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        lease_id TEXT NOT NULL DEFAULT '',
+        headers_bytes INTEGER NOT NULL,
+        body_bytes INTEGER NOT NULL,
+        chunk_bytes INTEGER NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_plugin_webhook_deliveries_queue
+        ON plugin_webhook_deliveries(instance_id, name, received_at_ms)",
+    ),
+    // Body chunks of stored webhook requests. They carry the owner and the
+    // expiry of their delivery so a chunk set an unfinished write left
+    // behind is pruned with the expired deliveries.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_webhook_chunks (
+        delivery_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        instance_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        data BLOB NOT NULL,
+        PRIMARY KEY (delivery_id, seq)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_plugin_webhook_chunks_expiry
+        ON plugin_webhook_chunks(instance_id, name, expires_at_ms)",
+    ),
 ];
 
 #[cfg(test)]

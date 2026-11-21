@@ -41,12 +41,12 @@ use crate::entities::{
     patron_controls, patron_scope_keys, patron_scopes, pending_joins, playback_progress,
     playback_sessions, player_card_tokens, player_cards, player_passwords, plugin_artifacts,
     plugin_cron_cursors, plugin_deployments, plugin_installs, plugin_instances, plugin_kv,
-    plugin_placements, plugin_schemas, plugin_versions, portal_identities, portal_sessions,
-    remote_plugin_consents, resolution_conflicts, resolution_overrides, saved_filters,
-    security_audit_events, series, series_entries, store_listings, title_request_sources,
-    title_requests, user_invites, user_preferences, user_title_state, user_work_tags, users,
-    webauthn_challenges, webauthn_credentials, window_book_parts, window_books, work_identifiers,
-    work_tags, works,
+    plugin_placements, plugin_schemas, plugin_versions, plugin_webhooks, portal_identities,
+    portal_sessions, remote_plugin_consents, resolution_conflicts, resolution_overrides,
+    saved_filters, security_audit_events, series, series_entries, store_listings,
+    title_request_sources, title_requests, user_invites, user_preferences, user_title_state,
+    user_work_tags, users, webauthn_challenges, webauthn_credentials, window_book_parts,
+    window_books, work_identifiers, work_tags, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -57,6 +57,14 @@ use crate::store::LibraryStore;
 /// the two lists together cover the schema.
 pub const LEFT_BEHIND_TABLES: &[(&str, &str)] = &[
     ("discover_candidates", "derived: Discover jobs refetch it"),
+    (
+        "plugin_webhook_chunks",
+        "transient: bodies of stored webhook requests, which the plugins' listing fallback covers",
+    ),
+    (
+        "plugin_webhook_deliveries",
+        "transient: stored webhook requests, which the plugins' listing fallback covers",
+    ),
     ("discover_feeds", "derived: Discover jobs re-rank it"),
     ("discover_fetches", "derived: Discover jobs refetch it"),
     (
@@ -257,6 +265,7 @@ macro_rules! copied_entities {
         $each!(plugin_placements);
         $each!(plugin_cron_cursors);
         $each!(plugin_kv);
+        $each!(plugin_webhooks);
         $each!(remote_plugin_consents);
         $each!(library_links);
         $each!(clerk_links);

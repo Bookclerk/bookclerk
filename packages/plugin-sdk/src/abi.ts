@@ -175,6 +175,33 @@ export const MAX_ORIGIN_TARGET_BYTES = 8192 as const;
 /** Longest `IngressStarted.origin`, in bytes. */
 export const MAX_INGRESS_ORIGIN_BYTES = 253 as const;
 
+/** Most deliveries one `Webhooks.pull` returns. */
+export const MAX_WEBHOOK_PULL_BATCH = 100 as const;
+
+/** Longest `WebhookDelivery.leaseId`, in bytes. */
+export const MAX_WEBHOOK_LEASE_ID_BYTES = 128 as const;
+
+/** Longest `Webhooks.pull` visibility timeout, in milliseconds (12 hours). */
+export const MAX_WEBHOOK_VISIBILITY_MS = 43200000 as const;
+
+/**
+ * Largest stored webhook request body, in bytes (1 MiB); a `[[webhooks]]`
+ * row may lower its own cap but never raise it past this.
+ */
+export const MAX_WEBHOOK_BODY_BYTES = 1048576 as const;
+
+/**
+ * Most request headers a `[[webhooks]]` row keeps; a delivery also carries
+ * `content-type`, so it holds at most one more.
+ */
+export const MAX_WEBHOOK_HEADERS = 16 as const;
+
+/** Longest `[[webhooks]]` name, in bytes. */
+export const MAX_WEBHOOK_NAME_BYTES = 32 as const;
+
+/** Longest kept request header value, in bytes. */
+export const MAX_WEBHOOK_HEADER_VALUE_BYTES = 8192 as const;
+
 /** Largest `KvNamespace` metadata JSON text in bytes. */
 export const MAX_KV_METADATA_BYTES = 1024 as const;
 

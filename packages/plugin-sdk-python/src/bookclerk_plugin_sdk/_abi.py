@@ -164,6 +164,31 @@ MAX_ORIGIN_TARGET_BYTES: int = 8192
 MAX_INGRESS_ORIGIN_BYTES: int = 253
 """Longest `IngressStarted.origin`, in bytes."""
 
+MAX_WEBHOOK_PULL_BATCH: int = 100
+"""Most deliveries one `Webhooks.pull` returns."""
+
+MAX_WEBHOOK_LEASE_ID_BYTES: int = 128
+"""Longest `WebhookDelivery.leaseId`, in bytes."""
+
+MAX_WEBHOOK_VISIBILITY_MS: int = 43200000
+"""Longest `Webhooks.pull` visibility timeout, in milliseconds (12 hours)."""
+
+MAX_WEBHOOK_BODY_BYTES: int = 1048576
+"""Largest stored webhook request body, in bytes (1 MiB); a `[[webhooks]]`
+row may lower its own cap but never raise it past this.
+"""
+
+MAX_WEBHOOK_HEADERS: int = 16
+"""Most request headers a `[[webhooks]]` row keeps; a delivery also carries
+`content-type`, so it holds at most one more.
+"""
+
+MAX_WEBHOOK_NAME_BYTES: int = 32
+"""Longest `[[webhooks]]` name, in bytes."""
+
+MAX_WEBHOOK_HEADER_VALUE_BYTES: int = 8192
+"""Longest kept request header value, in bytes."""
+
 MAX_KV_METADATA_BYTES: int = 1024
 """Largest `KvNamespace` metadata JSON text in bytes."""
 
@@ -477,6 +502,13 @@ __all__ = [
     "MAX_ORIGIN_HEADER_BYTES",
     "MAX_ORIGIN_TARGET_BYTES",
     "MAX_INGRESS_ORIGIN_BYTES",
+    "MAX_WEBHOOK_PULL_BATCH",
+    "MAX_WEBHOOK_LEASE_ID_BYTES",
+    "MAX_WEBHOOK_VISIBILITY_MS",
+    "MAX_WEBHOOK_BODY_BYTES",
+    "MAX_WEBHOOK_HEADERS",
+    "MAX_WEBHOOK_NAME_BYTES",
+    "MAX_WEBHOOK_HEADER_VALUE_BYTES",
     "MAX_KV_METADATA_BYTES",
     "MAX_NETWORK_GRANT_ENTRIES",
     "MAX_PLUGIN_MIGRATION_OPS",

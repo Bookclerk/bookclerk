@@ -353,6 +353,7 @@ pub async fn delete_plugin_instance(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    super::webhooks::delete_instance_webhooks(store, id).await?;
     plugin_instances::Entity::delete_by_id(id.as_str().to_string())
         .exec(store.db())
         .await

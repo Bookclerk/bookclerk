@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `quality_offers`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `event_read`, `socket_request`, `storage_reply` and `origin_request` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `quality_offers`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `event_read`, `socket_request`, `webhook_message`, `storage_reply` and `origin_request` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -2105,6 +2105,150 @@ fn notify_raise_seeds_are_current() {
         let mut capnp = vec![1];
         capnp.extend(encode_notify_raise_params_bytes(&raise).expect("encode"));
         assert_notify_seed("notify_raise", &format!("{name}.capnp.bin"), &capnp);
+    }
+}
+
+#[path = "../../../fuzz/oracles/webhook_message.rs"]
+mod webhook_message_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/webhook_message.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_webhook_message_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("webhook_message") {
+        webhook_message_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no webhook_message seed");
+}
+
+/// Seeds for `webhook_message`: byte 0 is `0` for a Cap'n Proto
+/// `WebhookPullRequest`, `1` for a `WebhookAckRequest` and `2` for a
+/// `WebhookDelivery`. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn webhook_message_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        WebhookAckRequest, WebhookDelivery, WebhookHeader, WebhookPullRequest,
+    };
+
+    fn seed<F>(tag: u8, write: F) -> Vec<u8>
+    where
+        F: FnOnce(&mut capnp::message::Builder<capnp::message::HeapAllocator>),
+    {
+        let mut message = capnp::message::Builder::new_default();
+        write(&mut message);
+        let mut out = vec![tag];
+        out.extend(capnp::serialize::write_message_to_words(&message));
+        out
+    }
+    let pull = |request: WebhookPullRequest| {
+        seed(0, |m| {
+            bookclerk_plugin_abi::write_webhook_pull_request(m.init_root(), &request)
+                .expect("encode pull");
+        })
+    };
+    let ack = |request: WebhookAckRequest| {
+        seed(1, |m| {
+            bookclerk_plugin_abi::write_webhook_ack_request(m.init_root(), &request)
+                .expect("encode ack");
+        })
+    };
+    let delivery = |value: WebhookDelivery| {
+        seed(2, |m| {
+            bookclerk_plugin_abi::write_webhook_delivery(m.init_root(), &value)
+                .expect("encode delivery");
+        })
+    };
+    let good_pull = WebhookPullRequest {
+        name: "events".into(),
+        batch_size: 10,
+        visibility_timeout_ms: 30_000,
+    };
+    let good_ack = WebhookAckRequest {
+        name: "events".into(),
+        acks: vec!["l1".into()],
+        retries: vec!["l2".into()],
+    };
+    let good_delivery = WebhookDelivery {
+        lease_id: "l1".into(),
+        received_at_unix_ms: 1_700_000_000_000,
+        attempt: 1,
+        headers: vec![WebhookHeader {
+            name: "content-type".into(),
+            value: "application/json".into(),
+        }],
+        body: b"{}".to_vec(),
+    };
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        ("pull.bin", pull(good_pull.clone())),
+        (
+            "pull_zero_batch.bin",
+            pull(WebhookPullRequest {
+                batch_size: 0,
+                ..good_pull.clone()
+            }),
+        ),
+        (
+            "pull_long_visibility.bin",
+            pull(WebhookPullRequest {
+                visibility_timeout_ms: bookclerk_plugin_abi::MAX_WEBHOOK_VISIBILITY_MS + 1,
+                ..good_pull.clone()
+            }),
+        ),
+        (
+            "pull_bad_name.bin",
+            pull(WebhookPullRequest {
+                name: "Events".into(),
+                ..good_pull
+            }),
+        ),
+        ("ack.bin", ack(good_ack.clone())),
+        (
+            "ack_overlap.bin",
+            ack(WebhookAckRequest {
+                retries: vec!["l1".into()],
+                ..good_ack.clone()
+            }),
+        ),
+        (
+            "ack_bad_lease.bin",
+            ack(WebhookAckRequest {
+                acks: vec!["../l".into()],
+                ..good_ack
+            }),
+        ),
+        ("delivery.bin", delivery(good_delivery.clone())),
+        (
+            "delivery_control_value.bin",
+            delivery(WebhookDelivery {
+                headers: vec![WebhookHeader {
+                    name: "x-event".into(),
+                    value: "a\u{1}b".into(),
+                }],
+                ..good_delivery
+            }),
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/webhook_message");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+    }
+
+    for (name, seed) in seeds {
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
     }
 }
 

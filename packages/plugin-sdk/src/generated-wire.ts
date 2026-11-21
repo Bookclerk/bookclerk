@@ -846,6 +846,78 @@ export interface IngressStopResults {
 }
 
 /**
+ * Params envelope of `Webhooks.url`.
+ *
+ * @internal
+ */
+export interface WebhooksUrlParams {
+  name: string;
+}
+
+/**
+ * Results envelope of `Webhooks.url`.
+ *
+ * @internal
+ */
+export interface WebhooksUrlResults {
+  result: T.WebhookUrlReply;
+}
+
+/**
+ * Params envelope of `Webhooks.pull`.
+ *
+ * @internal
+ */
+export interface WebhooksPullParams {
+  request: T.WebhookPullRequest;
+}
+
+/**
+ * Results envelope of `Webhooks.pull`.
+ *
+ * @internal
+ */
+export interface WebhooksPullResults {
+  result: T.WebhookPullReply;
+}
+
+/**
+ * Params envelope of `Webhooks.ack`.
+ *
+ * @internal
+ */
+export interface WebhooksAckParams {
+  request: T.WebhookAckRequest;
+}
+
+/**
+ * Results envelope of `Webhooks.ack`.
+ *
+ * @internal
+ */
+export interface WebhooksAckResults {
+  result: T.EmptyReply;
+}
+
+/**
+ * Params envelope of `WebhookHandler.delivered`.
+ *
+ * @internal
+ */
+export interface WebhookHandlerDeliveredParams {
+  event: T.WebhookDelivered;
+}
+
+/**
+ * Results envelope of `WebhookHandler.delivered`.
+ *
+ * @internal
+ */
+export interface WebhookHandlerDeliveredResults {
+  result: T.EmptyReply;
+}
+
+/**
  * Params envelope of `ContentSource.login`.
  *
  * @internal
@@ -2739,13 +2811,13 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
 };
 
 /**
- * Wire codec for `Bindings` (0 data words, 13 pointers).
+ * Wire codec for `Bindings` (0 data words, 14 pointers).
  *
  * @internal
  */
 export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
-  pointerCount: 13,
+  pointerCount: 14,
   write(s, v, caps) {
     if (v.config != null) {
       ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
@@ -2798,6 +2870,9 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (v.origin != null) {
       s.setCap(12, caps.exportCap(v.origin));
     }
+    if (v.webhooks != null) {
+      s.setCap(13, caps.exportCap(v.webhooks));
+    }
   },
   read(s, caps) {
     const out: T.Bindings = {
@@ -2832,6 +2907,10 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     const originValue = caps.importCap(s.getCapIndex(12)) as T.Origin;
     if (!(originValue == null)) {
       out.origin = originValue;
+    }
+    const webhooksValue = caps.importCap(s.getCapIndex(13)) as T.Webhooks;
+    if (!(webhooksValue == null)) {
+      out.webhooks = webhooksValue;
     }
     return out;
   },
@@ -2907,13 +2986,13 @@ export const SettingNetworkGrantCodec: StructCodec<T.SettingNetworkGrant> = {
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 16 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 17 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 16,
+  pointerCount: 17,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -2962,6 +3041,9 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     }
     if (v.ingress != null) {
       s.setCap(15, caps.exportCap(v.ingress));
+    }
+    if (v.webhookHandler != null) {
+      s.setCap(16, caps.exportCap(v.webhookHandler));
     }
   },
   read(s, caps) {
@@ -3031,6 +3113,10 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(ingressValue == null)) {
       out.ingress = ingressValue;
     }
+    const webhookHandlerValue = caps.importCap(s.getCapIndex(16)) as T.WebhookHandler;
+    if (!(webhookHandlerValue == null)) {
+      out.webhookHandler = webhookHandlerValue;
+    }
     return out;
   },
 };
@@ -3048,7 +3134,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 16), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 17), v.value, caps);
         }
         break;
       case "err":
@@ -3065,7 +3151,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 16), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 17), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -4788,6 +4874,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
     s.setTextList(7, v.queueProducers ?? []);
     s.setTextList(8, v.crons ?? []);
     s.setBool(0, v.sockets ?? false);
+    s.setBool(1, v.webhooks ?? false);
   },
   read(s, caps) {
     return {
@@ -4801,6 +4888,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
       queueProducers: s.getTextList(7),
       crons: s.getTextList(8),
       sockets: s.getBool(0),
+      webhooks: s.getBool(1),
     };
   },
 };
@@ -10128,6 +10216,214 @@ export const IngressStartReplyCodec: StructCodec<T.IngressStartReply> = {
 };
 
 /**
+ * Wire codec for `WebhookUrl` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhookUrlCodec: StructCodec<T.WebhookUrl> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    if (v.url !== undefined) {
+      s.setText(0, v.url ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.WebhookUrl = {
+    };
+    const urlValue = s.getText(0);
+    if (!(urlValue === "")) {
+      out.url = urlValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `WebhookUrlReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhookUrlReplyCodec: StructCodec<T.WebhookUrlReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          WebhookUrlCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("WebhookUrlReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: WebhookUrlCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("WebhookUrlReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `WebhookPullRequest` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhookPullRequestCodec: StructCodec<T.WebhookPullRequest> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setUint32(0, v.batchSize ?? 0);
+    s.setUint32(1, v.visibilityTimeoutMs ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      batchSize: s.getUint32(0),
+      visibilityTimeoutMs: s.getUint32(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `WebhookHeader` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const WebhookHeaderCodec: StructCodec<T.WebhookHeader> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setText(1, v.value ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      value: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `WebhookDelivery` (2 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const WebhookDeliveryCodec: StructCodec<T.WebhookDelivery> = {
+  dataWords: 2,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.leaseId ?? "");
+    s.setUint64(0, BigInt(v.receivedAtUnixMs ?? 0));
+    s.setUint32(2, v.attempt ?? 0);
+    {
+      const list = v.headers ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        WebhookHeaderCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setData(2, v.body ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    return {
+      leaseId: s.getText(0),
+      receivedAtUnixMs: Number(s.getUint64(0)),
+      attempt: s.getUint32(2),
+      headers: s.getStructList(1, 0, 2).map((item) => WebhookHeaderCodec.read(item, caps)),
+      body: s.getData(2),
+    };
+  },
+};
+
+/**
+ * Wire codec for `WebhookPullPage` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhookPullPageCodec: StructCodec<T.WebhookPullPage> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.deliveries ?? [];
+      const items = s.initStructList(0, list.length, 2, 3);
+      for (let i = 0; i < items.length; i++) {
+        WebhookDeliveryCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setBool(0, v.missed ?? false);
+  },
+  read(s, caps) {
+    return {
+      deliveries: s.getStructList(0, 2, 3).map((item) => WebhookDeliveryCodec.read(item, caps)),
+      missed: s.getBool(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `WebhookPullReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhookPullReplyCodec: StructCodec<T.WebhookPullReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          WebhookPullPageCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("WebhookPullReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: WebhookPullPageCodec.read(s.getStruct(0, 1, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("WebhookPullReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `IngressHealth` (1 data words, 1 pointers).
  *
  * @internal
@@ -10191,6 +10487,52 @@ export const IngressHealthReplyCodec: StructCodec<T.IngressHealthReply> = {
       default:
         throw unknownUnion("IngressHealthReply", disc);
     }
+  },
+};
+
+/**
+ * Wire codec for `WebhookAckRequest` (0 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const WebhookAckRequestCodec: StructCodec<T.WebhookAckRequest> = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setTextList(1, v.acks ?? []);
+    s.setTextList(2, v.retries ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      acks: s.getTextList(1),
+      retries: s.getTextList(2),
+    };
+  },
+};
+
+/**
+ * Wire codec for `WebhookDelivered` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhookDeliveredCodec: StructCodec<T.WebhookDelivered> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setUint32(0, v.waiting ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      waiting: s.getUint32(0),
+    };
   },
 };
 
@@ -13286,6 +13628,166 @@ export const IngressStopResultsCodec: StructCodec<IngressStopResults> = {
 };
 
 /**
+ * Wire codec for the `Webhooks.url` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhooksUrlParamsCodec: StructCodec<WebhooksUrlParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Webhooks.url` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhooksUrlResultsCodec: StructCodec<WebhooksUrlResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      WebhookUrlReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: WebhookUrlReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Webhooks.pull` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhooksPullParamsCodec: StructCodec<WebhooksPullParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      WebhookPullRequestCodec.write(s.initStruct(0, 1, 1), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: WebhookPullRequestCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Webhooks.pull` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhooksPullResultsCodec: StructCodec<WebhooksPullResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      WebhookPullReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: WebhookPullReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Webhooks.ack` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhooksAckParamsCodec: StructCodec<WebhooksAckParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      WebhookAckRequestCodec.write(s.initStruct(0, 0, 3), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: WebhookAckRequestCodec.read(s.getStruct(0, 0, 3), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Webhooks.ack` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhooksAckResultsCodec: StructCodec<WebhooksAckResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `WebhookHandler.delivered` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhookHandlerDeliveredParamsCodec: StructCodec<WebhookHandlerDeliveredParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.event != null) {
+      WebhookDeliveredCodec.write(s.initStruct(0, 1, 1), v.event, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      event: WebhookDeliveredCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `WebhookHandler.delivered` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const WebhookHandlerDeliveredResultsCodec: StructCodec<WebhookHandlerDeliveredResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `ContentSource.login` params envelope (0 data words, 1 pointers).
  *
  * @internal
@@ -15630,13 +16132,13 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
       InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
     }
     if (v.bindings != null) {
-      BindingsCodec.write(s.initStruct(1, 0, 13), v.bindings, caps);
+      BindingsCodec.write(s.initStruct(1, 0, 14), v.bindings, caps);
     }
   },
   read(s, caps) {
     return {
       invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
-      bindings: BindingsCodec.read(s.getStruct(1, 0, 13), caps),
+      bindings: BindingsCodec.read(s.getStruct(1, 0, 14), caps),
     };
   },
 };

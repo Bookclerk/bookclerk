@@ -802,6 +802,84 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("list", {"prefix": "cur", "limit": 10}), stub.calls)
         self.assertIn(("get", "cursor", "arrayBuffer"), stub.calls)
 
+    async def test_webhooks_binding_pulls_and_acks(self) -> None:
+        from bookclerk_plugin_sdk.workerd import WebhooksBinding
+
+        class _WebhooksStub:
+            def __init__(self) -> None:
+                self.calls: list = []
+
+            async def call(self, op, body):
+                self.calls.append((op, body))
+                if op == "url":
+                    return {"ok": {"url": "https://lib.example.org/hooks/t/events"}}
+                if op == "pull":
+                    return {
+                        "ok": {
+                            "deliveries": [
+                                {
+                                    "leaseId": "l1",
+                                    "receivedAtUnixMs": 1_000,
+                                    "attempt": 2,
+                                    "headers": [{"name": "content-type", "value": "a/b"}],
+                                    "body": "e30=",
+                                }
+                            ],
+                            "missed": True,
+                        }
+                    }
+                if op == "ack" and "bad" in body["acks"]:
+                    return {"err": {"code": "not_found", "message": "gone"}}
+                return {"ok": {}}
+
+        stub = _WebhooksStub()
+        seen: list = []
+
+        class Default(BookclerkEntrypoint):
+            async def scheduled(self, controller) -> None:
+                hooks = self.env.WEBHOOKS
+                assert isinstance(hooks, WebhooksBinding)
+                seen.append(await hooks.url("events"))
+                page = await hooks.pull("events", batch_size=5)
+                message = page.messages[0]
+                seen.append((message.lease_id, message.attempts, message.headers, message.body))
+                seen.append((page.missed, int(message.timestamp.timestamp() * 1000)))
+                await hooks.ack("events", acks=["l1"], retries=[])
+                for bad in (
+                    lambda: hooks.pull("Events"),
+                    lambda: hooks.pull("events", batch_size=0),
+                    lambda: hooks.ack("events", acks=["x"], retries=["x"]),
+                    lambda: hooks.ack("events", acks=["no/slash"]),
+                ):
+                    try:
+                        await bad()
+                    except PluginError as err:
+                        seen.append(err.code)
+
+            async def webhook_delivered(self, name: str, waiting: int) -> None:
+                seen.append(("delivered", name, waiting))
+
+        context = {"webhooks": stub}
+        await Default().bookclerkScheduled(context, {"cron": "* * * * *"})
+        await Default().bookclerkWebhookDelivered(context, {"name": "events", "waiting": 3})
+        self.assertEqual(
+            seen,
+            [
+                "https://lib.example.org/hooks/t/events",
+                ("l1", 2, {"content-type": "a/b"}, b"{}"),
+                (True, 1_000),
+                "invalid_params",
+                "invalid_params",
+                "invalid_params",
+                "invalid_params",
+                ("delivered", "events", 3),
+            ],
+        )
+        self.assertIn(
+            ("pull", {"name": "events", "batchSize": 5, "visibilityTimeoutMs": 0}), stub.calls
+        )
+        self.assertIn(("ack", {"name": "events", "acks": ["l1"], "retries": []}), stub.calls)
+
     async def test_socket_handlers_receive_host_web_sockets(self) -> None:
         from bookclerk_plugin_sdk.workerd import HostWebSocket, SocketsBinding
 

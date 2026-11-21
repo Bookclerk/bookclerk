@@ -62,6 +62,7 @@ mod template;
 mod trust;
 mod uploads;
 mod versions;
+mod webhooks;
 mod window_books;
 /// The reply-capped library fixture, for store tests outside the control
 /// plane.
@@ -361,6 +362,12 @@ pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
     list_versions, load_active_version, load_install, load_version, AddVersion, PluginArtifact,
     PluginInstall, PluginVersion, ARTIFACT_BLOB_SCHEME,
+};
+pub use webhooks::{
+    ack_webhook_requests, delete_instance_webhooks, find_webhook, pull_webhook_requests,
+    store_webhook_request, waiting_webhook_requests, webhook_url_token, WebhookRequest,
+    WebhookStoreOutcome, WebhookTarget, WebhookUrlToken, MAX_WAITING_WEBHOOK_DELIVERIES,
+    MAX_WEBHOOK_PULL_PAGE_BYTES,
 };
 pub use window_books::{
     clear_window_books, discard_window_read, finish_window_read, person_books_page,

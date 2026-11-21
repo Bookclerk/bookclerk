@@ -183,6 +183,34 @@ A remote library whose message announced a new user returns
 `{ pollEvents: true }` from `webSocketMessage`, and the host calls
 `pollEvents` right away instead of at its next scheduled poll.
 
+## Inbound webhooks
+
+A plugin that declares `[[webhooks]]` (see
+[Inbound webhooks](../../abi.md#inbound-webhooks-webhooks)) gets
+`this.env.WEBHOOKS`, read like a pulled Workers Queue. Hand `url(name)` to
+the outside service, then pull what it sent:
+
+```ts
+export default class Plugin extends BookclerkEntrypoint<Env> {
+  async scheduled() {
+    const { messages, missed } = await this.env.WEBHOOKS.pull("events", { batchSize: 50 });
+    if (missed) await this.relist(); // requests expired unread: resynchronize
+    for (const message of messages) {
+      await this.handle(JSON.parse(new TextDecoder().decode(message.body)));
+    }
+    await this.env.WEBHOOKS.ack("events", { acks: messages.map((m) => m.leaseId) });
+  }
+
+  // Optional: called on a running plugin as soon as a request is stored.
+  async webhookDelivered({ name, waiting }: WebhookDeliveredEvent) {}
+}
+```
+
+`url` resolves to `null` when the library has no public `https` address or
+webhooks are off. Each message has `leaseId`, `timestamp` (a `Date`),
+`attempts`, `headers` (lowercase names) and `body` (`Uint8Array`); leases
+not acknowledged in time come back on a later pull.
+
 ## Network grant
 
 `this.env.NETWORK` is the grant in effect (see

@@ -1105,6 +1105,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             "test:db-value",
             "test:db-stream",
             "test:scan-page",
+            "test:webhooks",
             "test:db-adapter",
             "test:plugin-migrations",
             "test:entrypoints",

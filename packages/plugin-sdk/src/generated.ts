@@ -603,6 +603,13 @@ export interface Bindings {
    * Null when the guest does not export this capability.
    */
   origin?: Origin | null;
+  /**
+   * `WEBHOOKS`: the instance's inbound webhooks, their URLs and the
+   * deliveries the host stored; null unless `[[webhooks]]` is declared and
+   * granted.
+   * Null when the guest does not export this capability.
+   */
+  webhooks?: Webhooks | null;
 }
 
 /**
@@ -738,6 +745,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   ingress?: Ingress | null;
+  /**
+   * `[[webhooks]]` handler: called after the host stores deliveries.
+   * Null when the guest does not export this capability.
+   */
+  webhookHandler?: WebhookHandler | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -1656,6 +1668,51 @@ export interface Ingress {
 }
 
 /**
+ * Host-served inbound webhooks, granted through `Bindings.webhooks`.
+ *
+ * The host serves each `[[webhooks]]` row at a secret URL under the
+ * library's public origin, checks every request against the row's body cap,
+ * rate limit and signature rule, stores it and answers at once. The guest
+ * takes stored deliveries with `pull` and settles them with `ack`, in the
+ * manner of a Cloudflare Queues HTTP pull consumer: a pulled delivery stays
+ * leased until acknowledged, retried, or its visibility timeout ends.
+ */
+export interface Webhooks {
+  /**
+   * The URL an outside service should call for one webhook.
+   *
+   * @param name - `[[webhooks]]` name.
+   * @returns {@link WebhookUrlReply}
+   */
+  url(name: string): Promise<WebhookUrlReply>;
+  /**
+   * Lease up to `batchSize` stored deliveries, oldest first.
+   *
+   * @param request - Webhook, batch size, visibility timeout.
+   * @returns {@link WebhookPullReply}
+   */
+  pull(request: WebhookPullRequest): Promise<WebhookPullReply>;
+  /**
+   * Acknowledge finished deliveries and offer retried ones again at once.
+   *
+   * @param request - Webhook and lease ids.
+   * @returns {@link EmptyReply}
+   */
+  ack(request: WebhookAckRequest): Promise<EmptyReply>;
+}
+
+/** Guest handler for inbound webhooks (`Entrypoints.webhookHandler`). */
+export interface WebhookHandler {
+  /**
+   * The host stored deliveries for one webhook; the guest pulls them.
+   *
+   * @param event - Webhook and how many wait.
+   * @returns {@link EmptyReply}
+   */
+  delivered(event: WebhookDelivered): Promise<EmptyReply>;
+}
+
+/**
  * Storefront content source (not byte Source). Every method takes and
  * returns typed structs from the "Typed method payloads" section.
  */
@@ -2062,6 +2119,12 @@ export interface PluginCapabilities {
    * `Sockets` binding and may export a `SocketHandler` for pushed messages.
    */
   sockets: boolean;
+  /**
+   * True when the guest declared `[[webhooks]]`: it receives the host-served
+   * `Webhooks` binding and may export a `WebhookHandler` the host wakes when
+   * it stores deliveries.
+   */
+  webhooks: boolean;
 }
 
 /**
@@ -4424,6 +4487,77 @@ export type IngressStartReply =
   | { kind: "ok"; value: IngressStarted } // Success: the address is up.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
+/** Success payload of `Webhooks.url`. */
+export interface WebhookUrl {
+  /**
+   * Absolute `https://` URL; empty when the library cannot be reached from
+   * the Internet or webhooks are turned off, and the plugin should use its
+   * fallback.
+   * Omitted when absent (wire zero value).
+   */
+  url?: string;
+}
+
+/** Result union of `Webhooks.url`. */
+export type WebhookUrlReply =
+  | { kind: "ok"; value: WebhookUrl } // Success: the URL, or none.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Arguments of `Webhooks.pull`. */
+export interface WebhookPullRequest {
+  /** `[[webhooks]]` name. */
+  name: string;
+  /** Most deliveries to lease, 1 to `maxWebhookPullBatch`. */
+  batchSize: number;
+  /**
+   * How long leased deliveries stay hidden from the next pull, in
+   * milliseconds, at most `maxWebhookVisibilityMs`; zero means one minute.
+   */
+  visibilityTimeoutMs: number;
+}
+
+/** One request header kept with a delivery. */
+export interface WebhookHeader {
+  /** Lowercase header name, one the row's `headers` names or `content-type`. */
+  name: string;
+  /** Header value as received. */
+  value: string;
+}
+
+/** One stored request, leased to the guest. */
+export interface WebhookDelivery {
+  /**
+   * Lease id for `ack`, at most `maxWebhookLeaseIdBytes`; a new one each
+   * time the delivery is pulled.
+   */
+  leaseId: string;
+  /** When the host stored the request, in Unix milliseconds. */
+  receivedAtUnixMs: number;
+  /** How many times this delivery has been pulled, counting this one. */
+  attempt: number;
+  /** Kept request headers, in the order the row names them. */
+  headers: WebhookHeader[];
+  /** Request body as received, at most the row's `max_body_bytes`. */
+  body: Uint8Array;
+}
+
+/** Success payload of `Webhooks.pull`. */
+export interface WebhookPullPage {
+  /** Leased deliveries, oldest first. */
+  deliveries: WebhookDelivery[];
+  /**
+   * True when the host dropped deliveries for this webhook since the last
+   * pull (the waiting cap was full or a delivery expired unacknowledged):
+   * the guest should treat what it follows as incomplete.
+   */
+  missed: boolean;
+}
+
+/** Result union of `Webhooks.pull`. */
+export type WebhookPullReply =
+  | { kind: "ok"; value: WebhookPullPage } // Success: the leased deliveries.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
 /** Success payload of `Ingress.health`. */
 export interface IngressHealth {
   /** True when the address is serving. */
@@ -4439,6 +4573,24 @@ export interface IngressHealth {
 export type IngressHealthReply =
   | { kind: "ok"; value: IngressHealth } // Success: the provider's view of the address.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Arguments of `Webhooks.ack`. */
+export interface WebhookAckRequest {
+  /** `[[webhooks]]` name. */
+  name: string;
+  /** Leases whose deliveries are done and are deleted. */
+  acks: string[];
+  /** Leases whose deliveries the next pull offers again. */
+  retries: string[];
+}
+
+/** Argument of `WebhookHandler.delivered`. */
+export interface WebhookDelivered {
+  /** `[[webhooks]]` name. */
+  name: string;
+  /** Deliveries waiting for this webhook when the host called. */
+  waiting: number;
+}
 
 /** One typed SQL cell or bind parameter. */
 export type DbValue =

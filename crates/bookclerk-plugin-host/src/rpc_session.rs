@@ -95,6 +95,9 @@ type IngressCall = EntrypointCall<dyn bookclerk_plugin_abi::Ingress>;
 /// Typed call against the opened `socketHandler` entrypoint.
 type SocketHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::SocketHandler>;
 
+/// Typed call against the opened `webhookHandler` entrypoint.
+type WebhookHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::WebhookHandler>;
+
 /// `!Send` boxed future pinned for the vat's `LocalSet`.
 type LocalBoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
@@ -219,6 +222,11 @@ enum Work {
     SocketHandler {
         /// Typed call; replies through the sender it captured.
         call: SocketHandlerCall,
+    },
+    /// One `WebhookHandler.delivered` wake on the opened primary entrypoints.
+    WebhookHandler {
+        /// Typed call; replies through the sender it captured.
+        call: WebhookHandlerCall,
     },
     /// One typed `remoteLibrary` method on the opened primary entrypoints.
     RemoteLibrary {
@@ -621,6 +629,11 @@ pub struct SessionServices {
     /// exports `ingress` with `[ingress] kind = "relay"`; `None` never
     /// exposes `ORIGIN`.
     pub origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
+    /// The deployed instance whose inbound webhooks back the `WEBHOOKS`
+    /// binding. The session hands the binding out only when the manifest
+    /// declares `[[webhooks]]`, the covering grant has the `webhooks` token
+    /// and the library store is attached; `None` never exposes `WEBHOOKS`.
+    pub webhooks: Option<bookclerk_library::control_plane::PluginInstanceId>,
 }
 
 impl SessionServices {
@@ -635,6 +648,7 @@ impl SessionServices {
             deployed_endpoint: None,
             sockets: None,
             origin: None,
+            webhooks: None,
         }
     }
 
@@ -649,6 +663,7 @@ impl SessionServices {
             deployed_endpoint: None,
             sockets: None,
             origin: None,
+            webhooks: None,
         }
     }
 
@@ -666,6 +681,7 @@ impl SessionServices {
             deployed_endpoint: None,
             sockets: None,
             origin: None,
+            webhooks: None,
         }
     }
 }
@@ -867,6 +883,14 @@ impl PluginSession {
             .event_outbox
             .clone()
             .and_then(|store| QueueOutbox::new(store, &id, &manifest, &grant));
+        // `WEBHOOKS` needs the library, the deployed instance, a
+        // `[[webhooks]]` row and the `webhooks` grant token.
+        let webhooks = crate::webhook_binding::granted(
+            services.event_outbox.clone(),
+            services.webhooks.clone(),
+            &manifest,
+            &grant,
+        );
         // `[[kv_namespaces]]` rows live on the same library; the `plugin_kv`
         // grant token covers every row.
         let kv = services
@@ -976,6 +1000,7 @@ impl PluginSession {
                         kv,
                         sockets,
                         origin,
+                        webhooks,
                         network,
                     },
                     rx,
@@ -1478,6 +1503,26 @@ impl PluginSession {
     {
         self.entrypoint_call(call, |call| Work::Ingress { call })
             .await
+    }
+
+    /// Tells the guest's `webhookHandler` entrypoint that requests wait for
+    /// one of its webhooks.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `webhookHandler`
+    /// or its handler failed.
+    pub async fn deliver_webhook_wake(
+        &self,
+        event: bookclerk_plugin_abi::WebhookDelivered,
+    ) -> Result<()> {
+        self.entrypoint_call(
+            move |handler: Box<dyn bookclerk_plugin_abi::WebhookHandler>| async move {
+                handler.delivered(event).await
+            },
+            |call| Work::WebhookHandler { call },
+        )
+        .await
     }
 
     /// Hands one socket event to the guest's `socketHandler` entrypoint.
@@ -2473,6 +2518,8 @@ struct PrimaryState {
     sockets: Option<crate::SocketBroker>,
     /// `ORIGIN`; `None` unless this is the active relay ingress.
     origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
+    /// `WEBHOOKS` store; `None` unless `[[webhooks]]` is declared and granted.
+    webhooks: Option<crate::webhook_binding::HostWebhooks>,
     /// `NETWORK`: the grant in effect, carried by every `open`.
     network: bookclerk_plugin_abi::NetworkGrant,
 }
@@ -2490,6 +2537,8 @@ struct BindingHooks {
     sockets: Option<crate::SocketBroker>,
     /// `ORIGIN`, already filtered by [`granted_origin`].
     origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
+    /// `WEBHOOKS` store.
+    webhooks: Option<crate::webhook_binding::HostWebhooks>,
     /// `NETWORK` grant computed at spawn.
     network: bookclerk_plugin_abi::NetworkGrant,
 }
@@ -2504,6 +2553,7 @@ impl PrimaryState {
             kv: hooks.kv,
             sockets: hooks.sockets,
             origin: hooks.origin,
+            webhooks: hooks.webhooks,
             network: hooks.network,
         }
     }
@@ -2513,6 +2563,13 @@ impl PrimaryState {
         self.sockets.clone().map(|broker| {
             Arc::new(crate::BrokerSockets::new(broker)) as Arc<dyn bookclerk_plugin_abi::Sockets>
         })
+    }
+
+    /// The `WEBHOOKS` binding, when granted.
+    fn webhooks_binding(&self) -> Option<Arc<dyn bookclerk_plugin_abi::Webhooks>> {
+        self.webhooks
+            .clone()
+            .map(|hooks| Arc::new(hooks) as Arc<dyn bookclerk_plugin_abi::Webhooks>)
     }
 
     /// KV namespace bindings, when any are granted.
@@ -2619,6 +2676,7 @@ async fn primary_entrypoints<'a>(
                         .origin
                         .clone()
                         .map(|origin| origin as Arc<dyn bookclerk_plugin_abi::Origin>),
+                    webhooks: primary.webhooks_binding(),
                     ..HostBindings::from_values(want.clone())
                 },
             )
@@ -3611,6 +3669,23 @@ fn vat_thread(
                             let _ = with_session(&session_cancel, &mut child, &mut guest, open)
                                 .await;
                         }
+                        Work::WebhookHandler { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "webhookHandler",
+                                |eps| {
+                                    eps.webhook_handler.clone().map(|stub| {
+                                        Box::new(stub)
+                                            as Box<dyn bookclerk_plugin_abi::WebhookHandler>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
                         Work::RemoteLibrary { call, cancel } => {
                             tokio::select! {
                                 biased;
@@ -4373,6 +4448,7 @@ async fn run_stream_copy(
                 // The stream-copy job never needs a pushed socket; the
                 // broker hands sockets only to a deployment's own open.
                 sockets: None,
+                webhooks: None,
                 // Nor does it raise notifications.
                 notify: None,
                 // Only the active relay ingress reaches the library.

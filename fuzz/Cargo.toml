@@ -662,3 +662,24 @@ path = "fuzz_targets/relayed_log_line.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "webhook_route"
+path = "fuzz_targets/webhook_route.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webhook_request"
+path = "fuzz_targets/webhook_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webhook_message"
+path = "fuzz_targets/webhook_message.rs"
+test = false
+doc = false
+bench = false

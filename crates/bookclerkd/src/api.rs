@@ -662,7 +662,7 @@ struct PluginConsentLimits {
     #[schema(example = 62)]
     max_extra_processes: u32,
     /// Suggested / default host bindings operators may grant.
-    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth", "sockets"]))]
+    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth", "sockets", "webhooks"]))]
     known_bindings: Vec<&'static str>,
 }
 
@@ -1671,6 +1671,10 @@ pub(crate) fn documented_groups() -> Vec<DocumentedGroup> {
         Access::Public,
     ));
     out.push(DocumentedGroup::new(
+        crate::webhooks::webhook_routes(),
+        Access::Public,
+    ));
+    out.push(DocumentedGroup::new(
         OpenApiRouter::<Arc<utoipa::openapi::OpenApi>>::new()
             .routes(routes!(crate::openapi::get_openapi)),
         Access::Public,
@@ -1709,6 +1713,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     // Branch-node enrollment and socket: never behind the cookie/auth
     // layers; the transport policy runs first.
     app = app.merge(crate::node_api::node_router(state.clone()));
+    // Inbound plugin webhooks: the URL token is the credential.
+    app = app.merge(crate::webhooks::webhook_router(state.clone()));
     app = app.merge(
         OpenApiRouter::new()
             .routes(routes!(crate::openapi::get_openapi))
@@ -2658,6 +2664,7 @@ fn allowed_setting_key(key: &str) -> bool {
             | "events.concurrency"
             | "database.plugin"
             | "plugins.isolation"
+            | "plugins.webhooks"
             | "media.isolation"
             | "plugins.jail.memory_mib"
             | "plugins.jail.cpu_rate_percent"
@@ -2768,6 +2775,9 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         "plugins.isolation" | "media.isolation" => bookclerk_config::Isolation::parse(value)
             .map(|mode| mode.as_str().to_string())
             .ok_or_else(|| format!("{key} must be required, best-effort, or off")),
+        "plugins.webhooks" => bookclerk_config::WebhooksExposure::parse(value)
+            .map(|mode| mode.as_str().to_string())
+            .ok_or_else(|| format!("{key} must be auto or off")),
         "plugins.jail.memory_mib" => {
             let trimmed = value.trim();
             if trimmed.is_empty() {
@@ -2917,6 +2927,10 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings.insert(
         "plugins.isolation".into(),
         config.plugins.isolation.as_str().to_string(),
+    );
+    settings.insert(
+        "plugins.webhooks".into(),
+        config.plugins.webhooks.as_str().to_string(),
     );
     settings.insert(
         "media.isolation".into(),

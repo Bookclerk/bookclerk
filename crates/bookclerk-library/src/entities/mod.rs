@@ -100,6 +100,7 @@ pub mod plugin_kv;
 pub mod plugin_placements;
 pub mod plugin_schemas;
 pub mod plugin_versions;
+pub mod plugin_webhooks;
 pub mod portal_identities;
 pub mod portal_sessions;
 pub mod remote_plugin_consents;
