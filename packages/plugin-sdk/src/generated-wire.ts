@@ -4699,6 +4699,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
     s.setTextList(7, v.queueProducers ?? []);
     s.setTextList(8, v.crons ?? []);
     s.setBool(0, v.sockets ?? false);
+    s.setBool(1, v.webhooks ?? false);
   },
   read(s, caps) {
     return {
@@ -4712,6 +4713,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
       queueProducers: s.getTextList(7),
       crons: s.getTextList(8),
       sockets: s.getBool(0),
+      webhooks: s.getBool(1),
     };
   },
 };

@@ -1863,6 +1863,10 @@ struct PluginCapabilities {
   # True when the guest declared `[sockets]`: it receives the host-brokered
   # `Sockets` binding and may export a `SocketHandler` for pushed messages.
   sockets @9 :Bool;
+  # True when the guest declared `[[webhooks]]`: it receives the host-served
+  # `Webhooks` binding and may export a `WebhookHandler` the host wakes when
+  # it stores deliveries.
+  webhooks @10 :Bool;
 }
 
 # Catalog behaviours a storefront declares in `describe()`. Catalog search

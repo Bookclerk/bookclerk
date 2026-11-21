@@ -180,6 +180,11 @@ export type {
   SocketSendData,
   SocketsBinding,
   StorageBinding,
+  WebhookDeliveredEvent,
+  WebhookMessage,
+  WebhookPullOptions,
+  WebhookPullResult,
+  WebhooksBinding,
 } from "./env.js";
 export { InvokeError, dispatchInvoke } from "./invoke.js";
 export type {

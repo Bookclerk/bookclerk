@@ -967,6 +967,16 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       ok: okEmpty,
     }),
   },
+  WebhookHandler: {
+    delivered: spec<W.WebhookHandlerDeliveredParams, W.WebhookHandlerDeliveredResults["result"]>({
+      params: W.WebhookHandlerDeliveredParamsCodec,
+      results: W.WebhookHandlerDeliveredResultsCodec,
+      stub: "author",
+      call: (s, p, cx) =>
+        (s as AuthorStub).bookclerkWebhookDelivered(cx.host.bindContext(cx.ctx), p.event ?? {}),
+      ok: okEmpty,
+    }),
+  },
   JobRunner: {
     job: spec<W.JobRunnerJobParams, W.JobRunnerJobResults["result"]>({
       params: W.JobRunnerJobParamsCodec,

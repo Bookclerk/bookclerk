@@ -1441,6 +1441,11 @@ pub struct PluginCapabilities {
     /// `Sockets` binding and may export a `SocketHandler` for pushed messages.
     #[serde(default)]
     pub sockets: bool,
+    /// True when the guest declared `\[\[webhooks\]\]`: it receives the host-served
+    /// `Webhooks` binding and may export a `WebhookHandler` the host wakes when
+    /// it stores deliveries.
+    #[serde(default)]
+    pub webhooks: bool,
 }
 
 /// Catalog behaviours a storefront declares in `describe()`. Catalog search
@@ -3922,6 +3927,7 @@ pub fn write_plugin_capabilities(
         }
     }
     b.set_sockets(v.sockets);
+    b.set_webhooks(v.webhooks);
     Ok(())
 }
 
@@ -3952,6 +3958,7 @@ pub fn read_plugin_capabilities(
         queue_producers: read_text_list(r.get_queue_producers()?)?,
         crons: read_text_list(r.get_crons()?)?,
         sockets: r.get_sockets(),
+        webhooks: r.get_webhooks(),
     })
 }
 

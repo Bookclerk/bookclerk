@@ -2020,6 +2020,12 @@ export interface PluginCapabilities {
    * `Sockets` binding and may export a `SocketHandler` for pushed messages.
    */
   sockets: boolean;
+  /**
+   * True when the guest declared `[[webhooks]]`: it receives the host-served
+   * `Webhooks` binding and may export a `WebhookHandler` the host wakes when
+   * it stores deliveries.
+   */
+  webhooks: boolean;
 }
 
 /**

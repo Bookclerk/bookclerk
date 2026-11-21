@@ -1951,6 +1951,7 @@ impl PluginManifest {
             queue_consumers: self.queue_consumer_names(),
             queue_producers: self.queue_producer_names(),
             sockets: self.sockets.is_some(),
+            webhooks: !self.webhooks.is_empty(),
         }
     }
 

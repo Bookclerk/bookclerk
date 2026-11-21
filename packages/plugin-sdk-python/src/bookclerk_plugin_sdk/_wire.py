@@ -2067,6 +2067,7 @@ def _write_plugin_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None
     s.set_text_list(7, v["queueProducers"])
     s.set_text_list(8, v["crons"])
     s.set_bool(0, v["sockets"])
+    s.set_bool(1, v["webhooks"])
 
 
 def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
@@ -2081,6 +2082,7 @@ def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
         "queueProducers": s.get_text_list(7),
         "crons": s.get_text_list(8),
         "sockets": s.get_bool(0),
+        "webhooks": s.get_bool(1),
     }
 
 

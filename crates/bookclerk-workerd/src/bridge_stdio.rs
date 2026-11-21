@@ -38,7 +38,7 @@ use bookclerk_plugin_abi::{
     OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient, PluginClient,
     PluginDescribe, PluginMigration, PluginWorker, PutResult, QueueConsumer, QueueConsumerClient,
     ReadResult, RemoteLibrary, RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient,
-    SocketHandler, SocketHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
+    SocketHandler, SocketHandlerClient, WebhookHandler, WebhookHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
     PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
@@ -110,6 +110,8 @@ const FAMILY_SCHEDULED_HANDLER: &str = "scheduledHandler";
 const FAMILY_JOB_RUNNER: &str = "jobRunner";
 /// Wire name of the `[sockets]` push-handler family on `/open`.
 const FAMILY_SOCKET_HANDLER: &str = "socketHandler";
+/// Wire name of the `[[webhooks]]` wake-handler family on `/open`.
+const FAMILY_WEBHOOK_HANDLER: &str = "webhookHandler";
 
 impl WorkerdRoot {
     fn exports(&self, entrypoint: Entrypoint) -> bool {
@@ -140,6 +142,9 @@ impl WorkerdRoot {
         }
         if self.capabilities.sockets {
             out.push(FAMILY_SOCKET_HANDLER);
+        }
+        if self.capabilities.webhooks {
+            out.push(FAMILY_WEBHOOK_HANDLER);
         }
         for entrypoint in bookclerk_plugin_manifest::ALL_ENTRYPOINTS {
             if self.exports(entrypoint) {
@@ -181,6 +186,7 @@ impl WorkerdRoot {
             queues: BTreeMap::new(),
             kv: BTreeMap::new(),
             sockets: BTreeMap::new(),
+            webhooks_token: None,
             network: bindings.network.clone(),
             notify_token: None,
         };
@@ -223,6 +229,10 @@ impl WorkerdRoot {
             sockets: bindings
                 .sockets
                 .filter(|_| self.capabilities.sockets)
+                .map(Arc::from),
+            webhooks: bindings
+                .webhooks
+                .filter(|_| self.capabilities.webhooks)
                 .map(Arc::from),
             notify: bindings.notify.map(Arc::from),
         };
@@ -349,6 +359,31 @@ impl WorkerdRoot {
             }
             None => (BTreeMap::new(), None),
         };
+        // A webhooks-only grant token for the `WEBHOOKS` binding: the adapter
+        // isolate reaches the instance's delivery store over `/webhooks/*`
+        // and installs `env.WEBHOOKS` on the author's `env`. Deliveries
+        // belong to the instance, so revoking the token leaves them stored.
+        let (webhooks_token, webhooks_grant) =
+            match bindings.webhooks.filter(|_| self.capabilities.webhooks) {
+                Some(webhooks) => {
+                    let token = format!("{:032x}", rand::random::<u128>());
+                    self.table.borrow_mut().insert(
+                        token.clone(),
+                        GrantedSlot::webhooks_only(
+                            Rc::from(webhooks),
+                            grant_expiry(invocation.deadline_unix_ms),
+                        ),
+                    );
+                    (
+                        Some(token.clone()),
+                        Some(RevokeGrant {
+                            table: Rc::clone(&self.table),
+                            grant: token,
+                        }),
+                    )
+                }
+                None => (None, None),
+            };
         // A notify-only grant token for the `NOTIFY` binding: the adapter
         // isolate raises through `/notify/raise` with it and installs
         // `env.NOTIFY` on the author's `env`.
@@ -381,6 +416,7 @@ impl WorkerdRoot {
             queues,
             kv,
             sockets,
+            webhooks_token,
             network: bindings.network,
             notify_token,
         };
@@ -391,6 +427,7 @@ impl WorkerdRoot {
             _queues: queue_grants,
             _kv: kv_grants,
             _sockets: sockets_grant,
+            _webhooks: webhooks_grant,
             _notify: notify_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
@@ -443,6 +480,9 @@ impl WorkerdRoot {
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
         }
+        if self.capabilities.webhooks {
+            exported.webhook_handler = Some(Box::new(WebhookHandlerClient::new(invoke.typed())));
+        }
         if self.exports(Entrypoint::Covers) {
             exported.covers = Some(Box::new(InvokeCoverFetcher {
                 typed: CoverFetcherClient::new(invoke.typed(), MAX_STREAM_WINDOW_BYTES),
@@ -479,6 +519,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         metadata,
         covers,
         socket_handler,
+        webhook_handler,
         metadata_files,
         notifier,
     } = opened;
@@ -522,6 +563,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         socket_handler: socket_handler
             .filter(|_| allow(FAMILY_SOCKET_HANDLER))
             .map(|c| Box::new(c) as Box<dyn SocketHandler>),
+        webhook_handler: webhook_handler
+            .filter(|_| allow(FAMILY_WEBHOOK_HANDLER))
+            .map(|c| Box::new(c) as Box<dyn WebhookHandler>),
         metadata_files: metadata_files
             .filter(|_| allow(Entrypoint::MetadataFiles.wire_name()))
             .map(|c| Box::new(c) as Box<dyn MetadataFiles>),
@@ -577,6 +621,10 @@ struct BridgeContext {
     /// most one entry.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     sockets: BTreeMap<String, String>,
+    /// Webhooks-only bearer for `/webhooks/*`, when the manifest declares
+    /// `[[webhooks]]`; the binding is always named `WEBHOOKS`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    webhooks_token: Option<String>,
     /// `NETWORK`: the network grant in effect, which the adapter hands the
     /// author as `env.NETWORK`.
     network: bookclerk_plugin_abi::NetworkGrant,
@@ -604,6 +652,7 @@ struct OpenGrants {
     _queues: Vec<RevokeGrant>,
     _kv: Vec<RevokeGrant>,
     _sockets: Option<RevokeGrant>,
+    _webhooks: Option<RevokeGrant>,
     _notify: Option<RevokeGrant>,
 }
 
@@ -998,6 +1047,7 @@ mod tests {
             queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
             sockets: BTreeMap::from([("SOCKETS".to_string(), "stok".to_string())]),
+            webhooks_token: Some("wtok".into()),
             network: bookclerk_plugin_abi::NetworkGrant::default(),
             notify_token: None,
         };
@@ -1014,6 +1064,7 @@ mod tests {
         assert_eq!(v["queues"]["NOTIFY"], "qtok");
         assert_eq!(v["kv"]["KV"], "ktok");
         assert_eq!(v["sockets"]["SOCKETS"], "stok");
+        assert_eq!(v["webhooksToken"], "wtok");
         assert!(v.get("config").is_some());
         assert_eq!(v["network"]["outbound"], false, "{v}");
     }

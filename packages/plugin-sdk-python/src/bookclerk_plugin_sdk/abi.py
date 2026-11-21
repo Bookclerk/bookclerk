@@ -3300,6 +3300,9 @@ class PluginCapabilities(TypedDict):
             spaces.
         sockets: True when the guest declared `[sockets]`: it receives the host-brokered
             `Sockets` binding and may export a `SocketHandler` for pushed messages.
+        webhooks: True when the guest declared `[[webhooks]]`: it receives the host-
+            served `Webhooks` binding and may export a `WebhookHandler` the host wakes
+            when it stores deliveries.
     """
 
     entrypoints: list[Entrypoint]
@@ -3312,6 +3315,7 @@ class PluginCapabilities(TypedDict):
     queueProducers: list[str]
     crons: list[str]
     sockets: bool
+    webhooks: bool
 
 
 class CatalogCapabilities(TypedDict):
