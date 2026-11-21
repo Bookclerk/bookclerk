@@ -43,8 +43,8 @@ bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/opt
 bookclerk-library = { path = "../crates/bookclerk-library" }
 bookclerk-plugin-database-sqlite = { path = "../crates/bookclerk-plugins/platform/database-sqlite", features = ["host-helpers"] }
 bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
-# s3_event reads S3 notification messages (no `s3` feature: the parser has
-# no AWS client).
+# s3_event and r2_event read bucket notification messages and queue
+# replies (no `s3` feature: the parsers have no network client).
 bookclerk-storage = { path = "../crates/bookclerk-storage" }
 # window_policy drives the desktop window's custom-scheme policy.
 bookclerk-window-policy = { path = "../crates/bookclerk-window-policy" }
@@ -567,6 +567,13 @@ bench = false
 [[bin]]
 name = "s3_event"
 path = "fuzz_targets/s3_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "r2_event"
+path = "fuzz_targets/r2_event.rs"
 test = false
 doc = false
 bench = false

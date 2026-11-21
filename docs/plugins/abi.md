@@ -1864,6 +1864,16 @@ earlier. The SDKs' `translateKeys` default returns the keys unchanged. The
 the object-store rules and 1024-byte limit including its prefix (see
 [Keys each destination stores](../server/output.md#keys-each-destination-stores)).
 
+The optional `r2` destination declares the same set as `s3` and shares its
+implementation. Its `changes` feed pulls the bucket's event notifications
+from a Cloudflare Queue's HTTP pull consumer when the instance's
+`notification_queue_id` setting names one, and otherwise every page has
+`complete` false (see
+[Following changes in an R2 bucket](../server/output.md#following-changes-in-an-r2-bucket)).
+It is an ordinary storage guest: its settings and secrets reach it in
+`CONFIG` and `SECRETS`, and its network access is its declared
+`[capabilities.network]` grant.
+
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming
 overrides and credentials are `[[settings]]`. The host runs it wherever

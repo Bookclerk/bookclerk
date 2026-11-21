@@ -2,71 +2,59 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::pin::Pin;
-
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    Bindings, ByteRange, ChangesPage, ChangesRequest, CopyResult, Destination, Entrypoints,
-    ExtensibleConfig, Invocation, KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest,
-    MoveOptions, MoveResult, ObjectMetadata, PluginDescribe, PluginWorker, PutResult, ReadResult,
-    ScalarLimits, StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY,
-    FEATURE_STREAMS, PRODUCT_API_VERSION,
+    Bindings, Entrypoints, ExtensibleConfig, Invocation, PluginDescribe, PluginWorker,
+    ScalarLimits, StreamCopyHandler, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS,
+    PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{OutputS3ContextDto, PluginError, S3CredentialsDto};
-use bookclerk_storage::guest::{self, object_metadata, plugin_error as map_storage};
-use bookclerk_storage::{
-    ObjectMeta, QueueUrl, S3Backend, S3Credentials, S3Settings, StorageBackend,
-    StorageCapabilities, StorageError,
-};
-use tokio::io::AsyncRead;
+use bookclerk_storage::guest;
+use bookclerk_storage::s3_guest::ObjectStoreDestination;
+use bookclerk_storage::{QueueUrl, S3Backend, S3Credentials, S3Settings, StorageCapabilities};
 
 use crate::ID;
 
 /// Result alias matching the ABI crate.
 type Result<T> = std::result::Result<T, PluginError>;
 
-/// S3 destination capability (multipart sink for streamed puts).
-pub struct S3Destination {
-    /// In-guest S3 backend.
-    backend: S3Backend,
+/// Builds the destination from the `open` [`Bindings::config`] payload
+/// (an [`OutputS3ContextDto`] as `application/json`).
+///
+/// # Errors
+///
+/// Returns invalid_params when the payload is not an S3 context, or internal
+/// when the client cannot be constructed.
+pub async fn destination_from_config(config: &ExtensibleConfig) -> Result<ObjectStoreDestination> {
+    let parsed: OutputS3ContextDto = config
+        .json_into()
+        .map_err(|err| PluginError::invalid_params(format!("s3 destination context: {err}")))?;
+    Ok(ObjectStoreDestination::new(
+        backend_from_ctx(&parsed).await?,
+    ))
 }
 
-impl S3Destination {
-    /// Builds a destination from the `open` [`Bindings::config`] payload
-    /// (an [`OutputS3ContextDto`] as `application/json`).
-    ///
-    /// # Errors
-    ///
-    /// Returns invalid_params when the payload is not an S3 context, or internal
-    /// when the client cannot be constructed.
-    pub async fn from_config(config: &ExtensibleConfig) -> Result<Self> {
-        let parsed: OutputS3ContextDto = config
-            .json_into()
-            .map_err(|err| PluginError::invalid_params(format!("s3 destination context: {err}")))?;
-        let backend = backend_from_ctx(&parsed).await?;
-        Ok(Self { backend })
+/// [`destination_from_config`] plus credentials from `SECRETS` when `CONFIG`
+/// omits them.
+///
+/// The host keeps access keys out of `CONFIG` and the spawn config table.
+///
+/// # Errors
+///
+/// Returns invalid_params when the payload is not an S3 context, or internal
+/// when the client cannot be constructed.
+pub async fn destination_from_bindings(bindings: &Bindings) -> Result<ObjectStoreDestination> {
+    let mut parsed: OutputS3ContextDto = bindings
+        .config
+        .json_into()
+        .map_err(|err| PluginError::invalid_params(format!("s3 destination context: {err}")))?;
+    if parsed.credentials.is_none() {
+        parsed.credentials = credentials_from_secrets(&bindings.secrets);
     }
-
-    /// [`Self::from_config`] plus credentials from `SECRETS` when `CONFIG` omits them.
-    ///
-    /// The host keeps access keys out of `CONFIG` and the spawn config table.
-    ///
-    /// # Errors
-    ///
-    /// Returns invalid_params when the payload is not an S3 context, or internal
-    /// when the client cannot be constructed.
-    pub async fn from_bindings(bindings: &Bindings) -> Result<Self> {
-        let mut parsed: OutputS3ContextDto = bindings
-            .config
-            .json_into()
-            .map_err(|err| PluginError::invalid_params(format!("s3 destination context: {err}")))?;
-        if parsed.credentials.is_none() {
-            parsed.credentials = credentials_from_secrets(&bindings.secrets);
-        }
-        let backend = backend_from_ctx(&parsed).await?;
-        Ok(Self { backend })
-    }
+    Ok(ObjectStoreDestination::new(
+        backend_from_ctx(&parsed).await?,
+    ))
 }
 
 /// Access keys from the `SECRETS` binding. `CONFIG` stays free of them.
@@ -154,190 +142,6 @@ fn credentials_from_dto(dto: &S3CredentialsDto) -> S3Credentials {
     }
 }
 
-fn write_meta(options: &WriteOptions) -> Result<ObjectMeta> {
-    let sha256_hex =
-        bookclerk_storage::sha256_field_from_raw(options.sha256.as_deref()).map_err(map_storage)?;
-    Ok(ObjectMeta {
-        content_type: options.content_type.clone(),
-        content_length: options.content_length,
-        sha256_hex,
-        commit_token: options.commit_token.clone(),
-        ..Default::default()
-    })
-}
-
-fn put_sha(hex: Option<&str>) -> Option<Vec<u8>> {
-    hex.and_then(|hex| {
-        bookclerk_storage::parse_sha256_hex(hex)
-            .ok()
-            .map(|bytes| bytes.to_vec())
-    })
-}
-
-/// Destination-side staging key. Bytes never spool on the host or broker.
-fn stage_object_key(token: Option<&str>, key: &str) -> Result<String> {
-    let token = token.unwrap_or("");
-    if token.is_empty()
-        || token.contains('/')
-        || token.contains('\\')
-        || token.contains("..")
-        || token.contains('\0')
-    {
-        return Err(PluginError::invalid_params(
-            "commit_token must be a non-empty identifier without path separators",
-        ));
-    }
-    if key.is_empty() {
-        return Err(PluginError::invalid_params("object key required"));
-    }
-    Ok(format!(".bookclerk-stage/{token}/{key}"))
-}
-
-#[async_trait(?Send)]
-impl Destination for S3Destination {
-    async fn head(&self, key: &str) -> Result<Option<ObjectMetadata>> {
-        self.backend
-            .head(key)
-            .await
-            .map(|probe| probe.map(object_metadata))
-            .map_err(map_storage)
-    }
-
-    async fn list(&self, options: ListOptions) -> Result<ListPage> {
-        guest::list(&self.backend, options).await
-    }
-
-    async fn get(&self, key: &str, range: Option<ByteRange>) -> Result<ReadResult> {
-        let storage_range = range.map(|r| bookclerk_storage::ByteRange {
-            offset: r.offset,
-            length: r.length,
-        });
-        let (probe, body) = self
-            .backend
-            .get_stream(key, storage_range)
-            .await
-            .map_err(map_storage)?;
-        Ok(ReadResult {
-            meta: object_metadata(probe),
-            body,
-        })
-    }
-
-    async fn put(
-        &self,
-        key: &str,
-        body: Pin<Box<dyn AsyncRead + Send>>,
-        options: WriteOptions,
-    ) -> Result<PutResult> {
-        let condition = guest::write_condition(&options)?;
-        let dest_key = if options.stage_only {
-            stage_object_key(options.commit_token.as_deref(), key)?
-        } else {
-            key.to_string()
-        };
-        let meta = write_meta(&options)?;
-        let written = match &condition {
-            Some(condition) => {
-                self.backend
-                    .put_stream_conditional(&dest_key, body, meta, condition)
-                    .await
-                    .map_err(map_storage)?
-                    .put
-            }
-            None => self
-                .backend
-                .put_stream(&dest_key, body, meta)
-                .await
-                .map_err(map_storage)?,
-        };
-        Ok(PutResult {
-            key: key.into(),
-            bytes_written: written.bytes_written,
-            etag: options.commit_token.clone().or(written.etag),
-            sha256: put_sha(written.sha256_hex.as_deref()),
-            ..Default::default()
-        })
-    }
-
-    async fn copy(&self, from: &str, to: &str) -> Result<CopyResult> {
-        let probe = self.backend.probe(from).await.map_err(map_storage)?;
-        self.backend.copy(from, to).await.map_err(map_storage)?;
-        Ok(CopyResult {
-            bytes_copied: probe.size,
-        })
-    }
-
-    async fn delete(&self, key: &str) -> Result<()> {
-        self.backend.delete(key).await.map_err(map_storage)
-    }
-
-    async fn commit(&self, key: &str, commit_token: &str) -> Result<PutResult> {
-        let staged = stage_object_key(Some(commit_token), key)?;
-        match self.backend.probe(&staged).await {
-            Ok(probe) => {
-                self.backend.copy(&staged, key).await.map_err(map_storage)?;
-                let _ = self.backend.delete(&staged).await;
-                Ok(PutResult {
-                    key: key.into(),
-                    bytes_written: probe.size,
-                    etag: Some(commit_token.into()),
-                    sha256: put_sha(probe.meta.sha256_hex.as_deref()),
-                    ..Default::default()
-                })
-            }
-            Err(StorageError::NotFound(_)) => {
-                let probe = self.backend.probe(key).await.map_err(map_storage)?;
-                if probe.meta.commit_token.as_deref() != Some(commit_token) {
-                    return Err(PluginError::not_found(format!(
-                        "staged object missing and `{key}` is not commit {commit_token}"
-                    )));
-                }
-                Ok(PutResult {
-                    key: key.into(),
-                    bytes_written: probe.size,
-                    etag: Some(commit_token.into()),
-                    sha256: put_sha(probe.meta.sha256_hex.as_deref()),
-                    ..Default::default()
-                })
-            }
-            Err(err) => Err(map_storage(err)),
-        }
-    }
-
-    async fn move_object(&self, from: &str, to: &str, options: MoveOptions) -> Result<MoveResult> {
-        guest::move_object(&self.backend, from, to, options).await
-    }
-
-    async fn move_many(&self, request: MoveManyRequest) -> Result<MoveManyPage> {
-        guest::move_many(&self.backend, request).await
-    }
-
-    async fn delete_many(&self, keys: Vec<String>) -> Result<Vec<KeyOutcome>> {
-        guest::delete_many(&self.backend, keys).await
-    }
-
-    async fn head_many(&self, keys: Vec<String>) -> Result<Vec<Option<ObjectMetadata>>> {
-        guest::head_many(&self.backend, keys).await
-    }
-
-    async fn translate_keys(&self, keys: Vec<String>) -> Result<Vec<String>> {
-        guest::translate_keys(&self.backend, keys).await
-    }
-
-    async fn changes(&self, request: ChangesRequest) -> Result<ChangesPage> {
-        guest::changes(&self.backend, request).await
-    }
-
-    async fn abort_stage(&self, key: &str, commit_token: &str) -> Result<()> {
-        let staged = stage_object_key(Some(commit_token), key)?;
-        match self.backend.delete(&staged).await {
-            Ok(()) => Ok(()),
-            Err(StorageError::NotFound(_)) => Ok(()),
-            Err(err) => Err(map_storage(err)),
-        }
-    }
-}
-
 /// Root capability for the optional S3 destination guest.
 pub struct S3Root;
 
@@ -369,7 +173,7 @@ impl PluginWorker for S3Root {
 
     async fn open(&self, _invocation: Invocation, bindings: Bindings) -> Result<Entrypoints> {
         Ok(Entrypoints {
-            storage: Some(Box::new(S3Destination::from_bindings(&bindings).await?)),
+            storage: Some(Box::new(destination_from_bindings(&bindings).await?)),
             job_runner: Some(Box::new(StreamCopyHandler)),
             ..Entrypoints::default()
         })
@@ -407,7 +211,7 @@ mod tests {
             "region": "us-east-1",
             "notificationQueueUrl": "https://example.com/123456789012/q",
         }));
-        let err = S3Destination::from_config(&config)
+        let err = destination_from_config(&config)
             .await
             .err()
             .expect("refused");
