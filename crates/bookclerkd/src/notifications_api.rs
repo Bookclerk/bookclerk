@@ -590,6 +590,7 @@ pub(crate) struct TestSent {
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
         (status = 404, description = "No such channel.", body = ErrorMessage, example = json!({"error": "channel 8a7b6c5d not found"})),
+        (status = 409, description = "The channel is paused; resume it first.", body = ErrorMessage, example = json!({"error": "the channel is paused; resume it before testing it"})),
         (status = 500, description = "The test could not be written.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
     ),
 )]
@@ -601,6 +602,17 @@ pub(crate) async fn post_channel_test(
     administrator(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let destination = channel(&library, &id).await?;
+    if destination.paused_at.is_some() {
+        // A paused channel's deliveries are dropped, so a test would say
+        // nothing about whether it works.
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorMessage::new(
+                "the channel is paused; resume it before testing it",
+            )),
+        )
+            .into());
+    }
     let host = host_notification_type(TEST_NOTIFICATION_TYPE).ok_or_else(|| {
         store_error(
             "post_channel_test",
@@ -1366,7 +1378,7 @@ pub(crate) async fn post_my_destination(
     let label = body
         .label
         .filter(|l| !l.trim().is_empty())
-        .or(validated.label)
+        .or(validated.label.filter(|l| notifier_label_fits(l)))
         .unwrap_or_else(|| notifier_info.name.clone());
     let created = library
         .create_notify_destination(&NewDestination {
@@ -1379,6 +1391,17 @@ pub(crate) async fn post_my_destination(
         .await
         .map_err(|err| store_error("post_my_destination", err))?;
     Ok((StatusCode::CREATED, Json(created.into())))
+}
+
+/// Whether a label a notifier proposed is usable as is: one non-blank line
+/// within the label cap. One that is not gives way to the notifier's name,
+/// so a patron who sent no label is never refused over the notifier's.
+fn notifier_label_fits(label: &str) -> bool {
+    !label.trim().is_empty()
+        && label.len() <= bookclerk_library::notifications::MAX_DESTINATION_LABEL_BYTES
+        && !label
+            .chars()
+            .any(|c| c.is_control() || bookclerk_plugin_abi::notifications::is_layout_char(c))
 }
 
 /// Deletes one of the caller's destinations.

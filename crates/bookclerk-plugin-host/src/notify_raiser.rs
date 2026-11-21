@@ -265,8 +265,10 @@ impl OutboxNotificationRaiser {
 #[async_trait(?Send)]
 impl NotificationRaiser for OutboxNotificationRaiser {
     async fn raise(&self, params: NotifyRaiseParams) -> Result<NotifyRaised> {
-        let notification = self.notification(params).await?;
+        // Count the raise first, so refused raises spend the budget too and
+        // cannot drive unbounded scope lookups.
         self.admit()?;
+        let notification = self.notification(params).await?;
         let routed = self
             .outbox
             .store

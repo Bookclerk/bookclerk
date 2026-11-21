@@ -15863,6 +15863,19 @@
               }
             }
           },
+          "409": {
+            "description": "The channel is paused; resume it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the channel is paused; resume it before testing it"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The test could not be written.",
             "content": {

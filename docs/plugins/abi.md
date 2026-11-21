@@ -1657,12 +1657,12 @@ await env.NOTIFY.raise({
 
 `raise` answers the host's `notificationId`, or `invalid_params` for an
 undeclared type or a malformed raise, `forbidden` for a patron outside
-the scope, and `rate_limited` past the per-instance raise budget.
+the scope, and `rate_limited` past the per-session raise budget.
 Python authors call `env.NOTIFY.raise_(...)` with snake-case keywords.
 Native guests receive the binding as `Bindings.notify`.
 The binding is handed to the instance's entrypoint calls (not to
 stream copies). A plugin may raise at most 30 notifications a minute per
-running instance.
+session (one per store account the instance works for).
 
 ### Storage entrypoints
 

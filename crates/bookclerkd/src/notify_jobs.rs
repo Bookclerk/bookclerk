@@ -147,9 +147,10 @@ pub async fn run_notify_send(
     let params = send_params(state, &work).await;
     if let Err(err) = check_send_params(&params) {
         // A stored message or address the checks refuse cannot improve on
-        // a retry.
+        // a retry. It is the host's fault, not the destination's, so it is
+        // dropped rather than failed and never counts toward a pause.
         let reason = format!("the stored notification is not sendable: {err}");
-        library.record_notify_failed(delivery_id, &reason).await?;
+        library.record_notify_dropped(delivery_id, &reason).await?;
         return Err(JobFailedForGood(reason).into());
     }
     let reply = notifier.notify_send(params).await;

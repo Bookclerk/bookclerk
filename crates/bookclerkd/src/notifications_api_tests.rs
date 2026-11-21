@@ -246,7 +246,33 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(renamed["label"], "Ops room");
+    // Failures pause the channel; a paused channel refuses a test until
+    // it is resumed.
+    for _ in 0..bookclerk_library::notifications::PAUSE_AFTER_FAILURES {
+        let (status, sent) = call(
+            &app,
+            None,
+            "POST",
+            &format!("/api/notifications/channels/{ops}/test"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        library
+            .record_notify_failed(sent["delivery_id"].as_str().unwrap(), "refused")
+            .await
+            .expect("failed");
+    }
     let (status, _) = call(
+        &app,
+        None,
+        "POST",
+        &format!("/api/notifications/channels/{ops}/test"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, resumed) = call(
         &app,
         None,
         "POST",
@@ -255,6 +281,16 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert!(resumed["paused_at"].is_null());
+    let (status, _) = call(
+        &app,
+        None,
+        "POST",
+        &format!("/api/notifications/channels/{ops}/test"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
     let (status, _) = call(
         &app,
         None,

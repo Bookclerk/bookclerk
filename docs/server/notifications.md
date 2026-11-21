@@ -38,7 +38,7 @@ Host types have plain ids such as `test`. A plugin's types are named
 A **channel** is a library-wide destination: one notifier instance,
 whose own settings say where messages go (a Slack webhook, a PagerDuty
 service). Owners and Administrators manage channels under
-`/api/notifications/channels`, and can rename, pause, resume or delete
+`/api/notifications/channels`, and can rename, resume or delete
 one.
 
 A **route** sends one operational type to a channel, from a minimum
@@ -48,7 +48,8 @@ routes; a type with no routes goes nowhere. `GET
 instance, with the address fields each one asks patrons for.
 
 To check a channel, `POST /api/notifications/channels/{id}/test` sends it
-the host's `test` notification.
+the host's `test` notification. A paused channel answers `409`: resume it
+first.
 
 ## Offers and choices (patrons)
 
@@ -92,7 +93,8 @@ people outside its own account.
   delivery clears the count.
 - A delivery whose destination is paused or removed, or whose notifier
   instance is gone, is **dropped**, not sent. So is one whose send job was
-  cancelled.
+  cancelled, and one the host itself cannot render into a sendable
+  message; neither counts toward a pause.
 - A sweep every minute schedules any delivery left without a job, for
   example when the job queue was full.
 
@@ -101,8 +103,9 @@ optionally for one destination.
 
 ## Limits and retention
 
-- A plugin may raise at most 30 notifications a minute per running
-  instance; more answer `rate_limited`.
+- A plugin may raise at most 30 notifications a minute per session (an
+  instance has one session per store account it works for); more answer
+  `rate_limited`, and refused raises count too.
 - A type has at most 32 routes, offers or chosen destinations.
 - Notifications, their delivery log and inbox rows are deleted after 30
   days by the record retention pass (see

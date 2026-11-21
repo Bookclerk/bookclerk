@@ -287,7 +287,9 @@ pub fn fields_text(fields: &[NotificationField]) -> String {
 }
 
 /// The link a notifier is sent: the library's public origin and the path.
-/// `None` when either is missing.
+/// `None` when either is missing, or when the result is not a link a
+/// notifier may be sent (an `http://` origin that is not loopback, say), so
+/// the message goes without a link rather than not at all.
 #[must_use]
 pub fn link_for(public_origin: Option<&str>, path: Option<&str>) -> Option<String> {
     let origin = public_origin?.trim().trim_end_matches('/');
@@ -295,7 +297,10 @@ pub fn link_for(public_origin: Option<&str>, path: Option<&str>) -> Option<Strin
     if origin.is_empty() {
         return None;
     }
-    Some(format!("{origin}{path}"))
+    let link = format!("{origin}{path}");
+    bookclerk_plugin_abi::notifications::check_link(&link)
+        .is_ok()
+        .then_some(link)
 }
 
 /// Whether a route with minimum severity `min` takes a notification of
@@ -558,6 +563,12 @@ mod tests {
         assert_eq!(link_for(Some("https://books.example"), None), None);
         assert_eq!(link_for(Some("https://books.example"), Some("")), None);
         assert_eq!(link_for(Some("  "), Some("/x")), None);
+        // A plain-http LAN origin is not a link notifiers may be sent.
+        assert_eq!(link_for(Some("http://192.168.1.10:8787"), Some("/x")), None);
+        assert_eq!(
+            link_for(Some("http://127.0.0.1:8787"), Some("/x")).as_deref(),
+            Some("http://127.0.0.1:8787/x")
+        );
     }
 
     #[test]
