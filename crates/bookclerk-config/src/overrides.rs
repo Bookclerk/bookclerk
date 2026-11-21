@@ -366,6 +366,14 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "library.fix_storage_layout" => {
             config.library.fix_storage_layout = parse_bool(v).unwrap_or(false);
         }
+        "library.upgrade_quality" => {
+            config.library.upgrade_quality = parse_bool(v).unwrap_or(false);
+        }
+        "library.upgrade_daily_limit" => {
+            if let Ok(n) = v.trim().parse::<u32>() {
+                config.library.upgrade_daily_limit = n.clamp(1, crate::MAX_UPGRADE_DAILY_LIMIT);
+            }
+        }
         "library.scan_interval_minutes" => {
             if v.eq_ignore_ascii_case("true") {
                 config.library.scan_interval_minutes = 5;
@@ -594,6 +602,8 @@ mod tests {
         ("library.enrich_min_confidence", "77"),
         ("library.fix_storage_layout", "true"),
         ("library.scan_interval_minutes", "77"),
+        ("library.upgrade_quality", "true"),
+        ("library.upgrade_daily_limit", "7"),
         ("jobs.max_pending", "77"),
         ("jobs.lease_seconds", "77"),
         ("jobs.max_attempts", "7"),

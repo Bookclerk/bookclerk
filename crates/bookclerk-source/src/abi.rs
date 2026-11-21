@@ -433,3 +433,116 @@ mod tests {
         assert_eq!(rebuilt.cover_size, "1215");
     }
 }
+
+/// The stream a store's quality offer names, as the upgrade rule compares
+/// it ([`bookclerk_library::quality::is_upgrade`]).
+///
+/// # Returns
+///
+/// `None` for an answer that is not `found` or names no codec, which the
+/// host treats as "the store did not say".
+#[must_use]
+pub fn offered_stream(
+    answer: &abi::TitleQualityOffer,
+) -> Option<bookclerk_library::quality::StreamQuality> {
+    use bookclerk_tags::{AacProfile, AudioCodec};
+    if !answer.found {
+        return None;
+    }
+    let offer = &answer.offer;
+    let codec = match offer.codec {
+        abi::OfferedCodec::Unknown => return None,
+        abi::OfferedCodec::Aac => AudioCodec::Aac,
+        abi::OfferedCodec::Alac => AudioCodec::Alac,
+        abi::OfferedCodec::Flac => AudioCodec::Flac,
+        abi::OfferedCodec::Mp3 => AudioCodec::Mp3,
+        abi::OfferedCodec::Opus => AudioCodec::Opus,
+        abi::OfferedCodec::Vorbis => AudioCodec::Vorbis,
+        abi::OfferedCodec::Eac3 => AudioCodec::Eac3,
+        abi::OfferedCodec::Ac4 => AudioCodec::Ac4,
+    };
+    let aac_profile = match offer.aac_profile {
+        abi::OfferedAacProfile::Unknown => None,
+        abi::OfferedAacProfile::Lc => Some(AacProfile::Lc),
+        abi::OfferedAacProfile::He => Some(AacProfile::He),
+        abi::OfferedAacProfile::HeV2 => Some(AacProfile::HeV2),
+        abi::OfferedAacProfile::Xhe => Some(AacProfile::Xhe),
+    };
+    Some(bookclerk_library::quality::StreamQuality {
+        codec,
+        aac_profile,
+        bitrate_kbps: offer.bitrate_kbps,
+    })
+}
+
+#[cfg(test)]
+mod offered_stream_tests {
+    use super::*;
+    use bookclerk_tags::{AacProfile, AudioCodec};
+
+    #[test]
+    fn a_found_offer_reads_as_its_stream_and_others_as_unknown() {
+        let answer = abi::TitleQualityOffer {
+            found: true,
+            offer: abi::QualityOffer {
+                codec: abi::OfferedCodec::Aac,
+                aac_profile: abi::OfferedAacProfile::Xhe,
+                bitrate_kbps: Some(137),
+                sample_rate_hz: Some(44_100),
+                channels: Some(2),
+            },
+        };
+        assert_eq!(
+            offered_stream(&answer),
+            Some(bookclerk_library::quality::StreamQuality {
+                codec: AudioCodec::Aac,
+                aac_profile: Some(AacProfile::Xhe),
+                bitrate_kbps: Some(137),
+            })
+        );
+        let unfound = abi::TitleQualityOffer {
+            found: false,
+            ..answer.clone()
+        };
+        assert_eq!(offered_stream(&unfound), None);
+        let mut nameless = answer;
+        nameless.offer.codec = abi::OfferedCodec::Unknown;
+        assert_eq!(offered_stream(&nameless), None);
+        for (codec, want) in [
+            (abi::OfferedCodec::Alac, AudioCodec::Alac),
+            (abi::OfferedCodec::Flac, AudioCodec::Flac),
+            (abi::OfferedCodec::Mp3, AudioCodec::Mp3),
+            (abi::OfferedCodec::Opus, AudioCodec::Opus),
+            (abi::OfferedCodec::Vorbis, AudioCodec::Vorbis),
+            (abi::OfferedCodec::Eac3, AudioCodec::Eac3),
+            (abi::OfferedCodec::Ac4, AudioCodec::Ac4),
+        ] {
+            let answer = abi::TitleQualityOffer {
+                found: true,
+                offer: abi::QualityOffer {
+                    codec,
+                    ..abi::QualityOffer::default()
+                },
+            };
+            assert_eq!(offered_stream(&answer).map(|s| s.codec), Some(want));
+        }
+        for (profile, want) in [
+            (abi::OfferedAacProfile::Lc, AacProfile::Lc),
+            (abi::OfferedAacProfile::He, AacProfile::He),
+            (abi::OfferedAacProfile::HeV2, AacProfile::HeV2),
+        ] {
+            let answer = abi::TitleQualityOffer {
+                found: true,
+                offer: abi::QualityOffer {
+                    codec: abi::OfferedCodec::Aac,
+                    aac_profile: profile,
+                    ..abi::QualityOffer::default()
+                },
+            };
+            assert_eq!(
+                offered_stream(&answer).and_then(|s| s.aac_profile),
+                Some(want)
+            );
+        }
+    }
+}

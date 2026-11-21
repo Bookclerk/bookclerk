@@ -146,6 +146,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "quality_offers"
+path = "fuzz_targets/quality_offers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "scan_page"
 path = "fuzz_targets/scan_page.rs"
 test = false

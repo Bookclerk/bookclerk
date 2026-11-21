@@ -52,6 +52,7 @@ impl PluginWorker for LibroRoot {
                 price_by_isbn: true,
                 price_by_asin: false,
                 detail_by_product_id: true,
+                quality_offers: false,
             },
             ..PluginDescribe::default()
         })

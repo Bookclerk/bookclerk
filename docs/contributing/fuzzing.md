@@ -46,6 +46,7 @@ boundary extends it.
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
+| `quality_offers` | A storefront's `qualityOffers` reply: how many titles it answers, the stream bounds of each offer and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_quality_offers` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
@@ -382,6 +383,16 @@ only that. The others check:
   `PlainFetch` reply's refreshed credentials). An accepted
   page round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/scan_page.rs`, replayed from
+  `bookclerk-plugin-abi`.
+- **`quality_offers`**: byte 0 is how many title ids the host sent and the
+  rest is a `QualityOffersResult` message. The host accepts the reply
+  exactly when an independent check agrees: no more answers than titles
+  sent, every found offer within `MAX_OFFER_CHANNELS`,
+  `MAX_OFFER_SAMPLE_RATE_HZ` and `MAX_OFFER_BITRATE_KBPS` with an AAC
+  profile only on AAC, and refreshed credentials that are absent, empty,
+  or one JSON object within `MAX_REFRESHED_CREDENTIAL_BYTES`. An accepted
+  reply round-trips through the codec and is accepted again. The shared
+  oracle is `fuzz/oracles/quality_offers.rs`, replayed from
   `bookclerk-plugin-abi`.
 - **`plain_fetch`**: the input is a `PlainFetch` message. The host accepts
   it exactly when an independent check agrees, against a fixed declaration
