@@ -798,6 +798,39 @@ impl LibraryStore {
         Ok(lost)
     }
 
+    /// Releases every edition with a missing copy at `destination` that is
+    /// still acquired although no destination holds a stored copy of it:
+    /// the state a failed release in [`Self::lose_copies`] leaves behind,
+    /// since the copy is already missing and no later loss names it.
+    ///
+    /// # Returns
+    ///
+    /// How many editions turned not acquired.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or a write fails.
+    pub async fn release_missing_editions(&self, destination: &str) -> Result<u64> {
+        let mut editions: Vec<String> = edition_copies::Entity::find()
+            .filter(edition_copies::Column::Destination.eq(destination))
+            .filter(edition_copies::Column::State.eq(CopyState::Missing.as_str()))
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|copy| copy.edition_id)
+            .collect();
+        editions.sort();
+        editions.dedup();
+        let mut released = 0;
+        for edition in editions {
+            if self.release_unstored_edition(&edition, destination).await? {
+                released += 1;
+            }
+        }
+        Ok(released)
+    }
+
     /// Marks `edition_id` not acquired when no destination but `losing`
     /// holds a stored copy of it: the title whose acquire recorded it (its
     /// `edition_acquisitions.holding_id`) turns not acquired.

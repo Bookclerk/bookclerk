@@ -467,3 +467,80 @@ async fn a_late_write_does_not_replace_a_newer_one() {
         assert_eq!(rows[0].changed_seq, 5, "{profile:?}");
     }
 }
+
+#[tokio::test]
+async fn a_failed_release_is_retried_on_a_later_pass() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store().clone();
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_book(&crate::NewBook::minimal(
+                "B00ONE0001",
+                "user-1",
+                "us",
+                "Title",
+            ))
+            .await
+            .unwrap();
+        let edition = store
+            .acquire_titles_named(None, "B00ONE0001")
+            .await
+            .unwrap()
+            .remove(0)
+            .edition_id;
+        store
+            .set_acquire_status(
+                "B00ONE0001",
+                "user-1",
+                crate::AcquireStatus::Acquired,
+                Some("A/One.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        for destination in ["d", "e"] {
+            store
+                .set_copy_stored(&edition, destination, "A/One.m4b")
+                .await
+                .unwrap();
+        }
+        let keys = ["A/One.m4b".to_owned()];
+        store
+            .lose_copies("d", &keys, MissingFileAction::MarkMissing, Utc::now())
+            .await
+            .unwrap();
+        // e's copy turned missing but its release never ran (it failed, or
+        // the node stopped): both copies are missing and the edition is
+        // still acquired, and no later loss names either key.
+        edition_copies::Entity::update_many()
+            .col_expr(
+                edition_copies::Column::State,
+                Expr::value(CopyState::Missing.as_str()),
+            )
+            .filter(edition_copies::Column::Destination.eq("e"))
+            .exec(store.db())
+            .await
+            .unwrap();
+        let status = || async {
+            store
+                .edition_acquisition(&edition)
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+        };
+        assert_eq!(status().await, crate::AcquireStatus::Acquired);
+
+        assert_eq!(store.release_missing_editions("e").await.unwrap(), 1);
+        assert_eq!(
+            status().await,
+            crate::AcquireStatus::NotAcquired,
+            "{profile:?}"
+        );
+        assert_eq!(store.release_missing_editions("e").await.unwrap(), 0);
+    }
+}

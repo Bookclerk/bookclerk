@@ -564,29 +564,6 @@ async fn the_first_listing_finds_a_copy_whose_file_was_already_gone() {
     );
 }
 
-/// A listing that finds nothing while copies are stored there is held back,
-/// even below the guard's minimum: a wrong prefix or revoked access looks
-/// just like that.
-#[tokio::test]
-async fn an_empty_listing_leaves_stored_copies_alone() {
-    let store = test_store().await;
-    let dir = tempfile::tempdir().unwrap();
-    let local = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
-    let edition = stored_edition(&store, "local", "A/One.m4b").await;
-    let report = sync_destination(&store, "local", &local, MissingFileAction::default(), None)
-        .await
-        .unwrap();
-    assert!(report.listing_finished);
-    assert_eq!(report.held_back, 1, "{report:?}");
-    assert_eq!(report.lost_copies, 0, "{report:?}");
-    assert_eq!(
-        copy_state(&store, &edition, "local").await,
-        CopyState::Stored
-    );
-    let feed = store.destination_feed("local").await.unwrap().unwrap();
-    assert!(feed.listing_error.is_some());
-}
-
 /// The removal guard counts what was known before the listing, so files
 /// the listing adds do not dilute the share it missed.
 #[tokio::test]

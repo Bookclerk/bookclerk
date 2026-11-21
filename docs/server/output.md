@@ -519,13 +519,15 @@ copy.
 
 > [!NOTE]
 > A listing that misses more than a fifth of the files Bookclerk knew of
-> before it started (and more than 10), more than a fifth of the books it
-> has stored there, or finds nothing at all where books are stored, more
-> likely failed partway, with a wrong prefix, a missing permission or an
-> unmounted disk, than saw the files really go. Bookclerk keeps those files and copies as they were, and
-> **Settings → Plugins** shows **Listing error** on the destination, with
+> before it started (and more than 10), or more than a fifth of the books
+> it has stored there (and more than 10), more likely failed partway,
+> with a wrong prefix, a missing permission or an unmounted disk, than saw
+> the files really go. Bookclerk keeps those files and copies as they
+> were, and **Settings → Plugins** shows **Listing error** on the destination, with
 > the reason in its tooltip. A listing that fails outright shows the same.
-> Fix the cause, and the next listing applies what it finds.
+> Fix the cause, and the next listing applies what it finds. Up to 10
+> missing files always follow `output.missing_files`, so a destination
+> with only a few books never stays stuck behind the guard.
 
 **Settings → Plugins** shows each destination's state beside its name:
 **Feed healthy**, **Feed gap**, **Feed failing**, **Listing error**, **Listed** or **Not

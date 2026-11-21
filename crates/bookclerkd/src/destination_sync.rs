@@ -497,11 +497,7 @@ async fn check_unlisted_copies(
         return Ok(());
     }
     let guard = (stored.saturating_mul(REMOVAL_GUARD_PERCENT) / 100).max(REMOVAL_GUARD_MIN);
-    // A listing that found nothing at all while copies are stored there
-    // (a wrong prefix, revoked access) is not trusted even on a destination
-    // small enough to sit under the guard's minimum.
-    let empty = library.known_object_count(&feed.destination).await? == 0;
-    if missed > guard || empty {
+    if missed > guard {
         report.held_back += missed;
         feed.listing_error = Some(format!(
             "the listing missed {missed} of {stored} stored copies; they were left as they were"
@@ -548,6 +544,11 @@ async fn check_copies(
         if u64::try_from(page.len()).unwrap_or(u64::MAX) < CHECK_PAGE {
             break;
         }
+    }
+    // An edition whose release failed after its last copies turned missing
+    // is released on a later pass.
+    if missing_files == MissingFileAction::MarkMissing {
+        report.not_acquired += library.release_missing_editions(&feed.destination).await?;
     }
     // Only sequences that are complete are marked read: a listing in
     // progress may still change rows at its own sequence.
