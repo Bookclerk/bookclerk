@@ -15,10 +15,17 @@
 //!   patron id, a link path that starts with exactly one `/` and has no
 //!   space, backslash or control character, a one-line group key, and an
 //!   alert key exactly when the alert action is not `none`;
-//! - an accepted raise round-trips through the codec and is accepted again.
+//! - an accepted raise round-trips through the codec and is accepted again;
+//! - the host's patron-scope parse ([`scoped_patron_id`]) names a user
+//!   exactly when the invocation has an account and the patron id is a
+//!   canonical positive decimal that fits an `i64`, and then the user whose
+//!   decimal form is the id, for every invocation account tried (none, and
+//!   two different ones). The holder lookup that follows is a library read,
+//!   tested with the store.
 
 use bookclerk_plugin_abi::notifications::{
     check_raise_params, decode_notify_raise_params_bytes, encode_notify_raise_params_bytes,
+    scoped_patron_id,
 };
 use bookclerk_plugin_abi::{NotificationAlertAction, NotifyRaiseParams};
 
@@ -69,6 +76,22 @@ pub fn check(data: &[u8]) {
     };
     let accepted = check_raise_params(&params).is_ok();
     assert_eq!(accepted, expected(&params), "raise {params:?}");
+    let patron = params.patron_id.as_deref().unwrap_or("");
+    for (index, account) in ["", "acct-a", "acct-b"].into_iter().enumerate() {
+        let scoped = scoped_patron_id(account, patron);
+        assert_eq!(
+            scoped,
+            expected_patron(account, patron),
+            "patron {patron:?} in account {index}"
+        );
+        if let Some(id) = scoped {
+            assert_eq!(
+                id.to_string(),
+                patron,
+                "patron {patron:?} named another way"
+            );
+        }
+    }
     if accepted {
         let bytes = encode_notify_raise_params_bytes(&params)
             .unwrap_or_else(|err| panic!("encode an accepted raise: {err}"));
@@ -133,4 +156,21 @@ fn expected(params: &NotifyRaiseParams) -> bool {
         }
     };
     type_ok && fields_ok && patron_ok && path_ok && group_ok && alert_ok
+}
+
+/// The independent restatement of the scope parse: an account, then a
+/// non-empty run of ASCII digits with no leading zero whose value, summed
+/// digit by digit, stays within `i64`.
+fn expected_patron(account: &str, patron: &str) -> Option<i64> {
+    if account.is_empty() || patron.is_empty() || patron.as_bytes()[0] == b'0' {
+        return None;
+    }
+    let mut value: i64 = 0;
+    for b in patron.bytes() {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add(i64::from(b - b'0'))?;
+    }
+    Some(value)
 }
