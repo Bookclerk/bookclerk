@@ -1031,6 +1031,10 @@ pub struct BindingValues {
     /// carries host-private params instead.
     #[serde(default)]
     pub adapter: DatabaseAdapterConfig,
+    /// `NETWORK`: the network grant in effect, with each network setting's
+    /// destination and approval state. Read-only feedback for the guest.
+    #[serde(default)]
+    pub network: crate::NetworkGrant,
 }
 
 impl BindingValues {
@@ -1073,6 +1077,9 @@ pub struct Bindings {
     /// `SOCKETS`: host-brokered WebSockets; `None` unless `[sockets]` is
     /// granted.
     pub sockets: Option<Box<dyn Sockets>>,
+    /// `NETWORK`: the network grant in effect (see
+    /// [`BindingValues::network`]).
+    pub network: crate::NetworkGrant,
     /// `NOTIFY`: raises declared notification types; `None` unless the
     /// manifest declares `[[notifications.types]]`.
     pub notify: Option<Box<dyn NotificationRaiser>>,
@@ -1087,6 +1094,7 @@ impl Bindings {
             config: values.config,
             secrets: values.secrets,
             adapter: values.adapter,
+            network: values.network,
             events: None,
             databases: Vec::new(),
             cancel: Box::new(NeverCancel),
@@ -1119,6 +1127,7 @@ impl Bindings {
             config: self.config.clone(),
             secrets: self.secrets.clone(),
             adapter: self.adapter.clone(),
+            network: self.network.clone(),
         }
     }
 

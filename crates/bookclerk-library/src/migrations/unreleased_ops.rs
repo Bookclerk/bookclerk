@@ -1672,7 +1672,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // `copy_format` and `copy_quality` name the library copy
     // (`output.copies`) an acquire wrote an audio file for (`m4b` /
     // `original`, `mp3` / `64k-mono`); both are null for files that belong
-    // to no one copy (sidecars, the PDF) and for uploads.
+    // to no one copy (sidecars, the PDF) and for uploads. `codec`,
+    // `aac_profile`, `channels`, `sample_rate_hz` and `duration_ms` are what
+    // the same probe found about the audio stream; `duration_ms` is the
+    // running time a player sees (null when unknown, never 0), and a quality
+    // upgrade compares `codec`, `aac_profile` and `bitrate_kbps` with what a
+    // store offers now.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_files (
         destination TEXT NOT NULL,
@@ -1688,6 +1693,11 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         sha256 TEXT,
         copy_format TEXT CHECK (copy_format IN ('m4b', 'mp3', 'mp3_chapters', 'original')),
         copy_quality TEXT,
+        codec TEXT,
+        aac_profile TEXT CHECK (aac_profile IN ('lc', 'he', 'he_v2', 'xhe')),
+        channels INTEGER CHECK (channels > 0),
+        sample_rate_hz INTEGER CHECK (sample_rate_hz > 0),
+        duration_ms INTEGER CHECK (duration_ms > 0),
         writer TEXT NOT NULL,
         written_at TEXT NOT NULL,
         PRIMARY KEY (destination, storage_key)

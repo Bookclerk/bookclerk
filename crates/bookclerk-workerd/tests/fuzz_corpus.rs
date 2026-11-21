@@ -573,8 +573,8 @@ fn egress_bridge_vectors_are_current() {
 fn egress_bridge_script_loads_the_gate_functions() {
     let script = egress_bridge_oracle::bridge_script();
     for name in [
-        "function allowsInitial(",
-        "function allowsRedirect(",
+        "function allowsFetch(",
+        "function allowsRedirectTo(",
         "function allowsTcp(",
         "function canonicalSocketHost(",
     ] {

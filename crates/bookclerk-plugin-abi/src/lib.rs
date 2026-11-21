@@ -89,6 +89,7 @@ mod limits;
 pub mod media;
 pub mod metadata_files;
 pub mod methods;
+pub mod network_grant;
 pub mod notifications;
 pub mod package_version;
 mod plugin_migration;
@@ -279,6 +280,9 @@ pub use metadata_files::{
     encode_metadata_file_record_bytes, validate_metadata_file_record, MetadataFileDialect,
     MetadataFileError,
 };
+pub use network_grant::{
+    NetworkGrant, SettingGrantState, SettingNetworkGrant, MAX_NETWORK_GRANT_ENTRIES,
+};
 pub use roles::{
     hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,
     ByteRange, Cancellation, ContentSource, CoverFetcher, Database, Destination, Entrypoints,
@@ -313,9 +317,9 @@ pub use scan_page::{
     validate_scan_page, ScanPageError,
 };
 pub use settings_schema::{
-    is_valid_setting_key, EffectiveConfig, SettingKind, SettingSpec, SettingValueSpec,
-    SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS,
-    SETTINGS_SCHEMA_VERSION,
+    is_valid_setting_key, EffectiveConfig, SettingKind, SettingNetwork, SettingSpec,
+    SettingValueSpec, SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, MAX_TABLE_COLUMNS,
+    MAX_TABLE_ROWS, SETTINGS_SCHEMA_VERSION,
 };
 pub use storage_ops::{
     decode_storage_reply_bytes, encode_storage_reply_bytes, require_batch_len,

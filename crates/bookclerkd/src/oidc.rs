@@ -2184,6 +2184,8 @@ mod tests {
             required: false,
             description: None,
             columns: Vec::new(),
+            network: None,
+            default_port: None,
         }]);
         pin_plugin_schema(
             library,

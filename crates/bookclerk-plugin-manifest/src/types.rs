@@ -871,6 +871,9 @@ pub const DEFAULT_KV_BINDING: &str = "KV";
 pub const DEFAULT_EVENTS_BINDING: &str = "EVENTS";
 /// Binding name the host uses for operator config (`[vars]`).
 pub const CONFIG_BINDING: &str = "CONFIG";
+/// Binding name the host uses for the network grant (`env.NETWORK`); no
+/// declared binding may take it.
+pub const NETWORK_BINDING: &str = "NETWORK";
 
 /// Most `[triggers] crons` entries one manifest may declare.
 pub const MAX_CRON_TRIGGERS: usize = 8;
@@ -2604,7 +2607,8 @@ impl PluginManifest {
             if crate::egress::normalize_domain_pattern(domain).is_none() {
                 return Err(Error::message(format!(
                     "plugin.toml: capabilities.network.domains entry `{domain}` is not a valid \
-                     hostname (IDNA ToASCII failed or percent-encoded host)"
+                     hostname with an optional `:port` (IDNA ToASCII failed, percent-encoded \
+                     host, a port on `*`, or a port that is not 1-65535 in plain digits)"
                 )));
             }
         }
@@ -2684,6 +2688,12 @@ impl PluginManifest {
                          `[A-Z][A-Z0-9_]*` and at most {MAX_DATABASE_BINDING_NAME_LEN} chars"
                     )));
                 }
+                if name == NETWORK_BINDING {
+                    return Err(Error::message(
+                        "plugin.toml: [[databases]] binding `NETWORK` is reserved for the network \
+                         grant",
+                    ));
+                }
                 if !seen.insert(name) {
                     return Err(Error::message(format!(
                         "plugin.toml: [[databases]] binding `{name}` is duplicated"
@@ -2737,7 +2747,7 @@ impl PluginManifest {
                         "plugin.toml: [{table}][{index}] binding collides with another binding"
                     )));
                 }
-                if name == CONFIG_BINDING || seen.contains(name) {
+                if name == CONFIG_BINDING || name == NETWORK_BINDING || seen.contains(name) {
                     return Err(Error::message(format!(
                         "plugin.toml: [{table}][{index}] binding collides with another binding"
                     )));
@@ -4503,6 +4513,19 @@ binding = "OAUTH"
                 && !msg.contains("OAUTH")
         });
         assert!(reserved, "{}", u8::from(reserved));
+
+        // `env.NETWORK` is the host's network grant; no binding may take it.
+        let network = PluginManifest::parse(&native(
+            r#"
+[[kv_namespaces]]
+binding = "NETWORK"
+"#,
+        ))
+        .is_err_and(|err| {
+            err.to_string()
+                .contains("[kv_namespaces][0] binding collides")
+        });
+        assert!(network, "{}", u8::from(network));
 
         let pattern = PluginManifest::parse(&native(
             r#"
