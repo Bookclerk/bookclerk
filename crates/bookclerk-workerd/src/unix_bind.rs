@@ -386,4 +386,62 @@ mod tests {
         let _client = UnixStream::connect(&proc_path).expect("connect via dirfd");
         let (_server, _) = listener.accept().expect("accept");
     }
+
+    #[test]
+    fn rpc_and_egress_listeners_bind_abstract_names() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::SocketAddr;
+
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let (rpc, rpc_listener) = bind_rpc(dir.path()).expect("rpc");
+        let crate::bridge_addr::BridgeAddr::Abstract(name) = rpc else {
+            panic!("Linux binds the RPC socket abstract, got {rpc:?}");
+        };
+        let addr = SocketAddr::from_abstract_name(name.as_bytes()).expect("addr");
+        let _client = UnixStream::connect_addr(&addr).expect("connect rpc");
+        let (_server, _) = rpc_listener.accept().expect("accept rpc");
+
+        let (egress, egress_listener) = bind_egress(dir.path()).expect("egress");
+        let name = egress
+            .strip_prefix("unix-abstract:")
+            .expect("egress is a unix-abstract address");
+        let addr = SocketAddr::from_abstract_name(name.as_bytes()).expect("addr");
+        let _client = UnixStream::connect_addr(&addr).expect("connect egress");
+        let (_server, _) = egress_listener.accept().expect("accept egress");
+        assert!(
+            std::fs::read_dir(dir.path())
+                .expect("list")
+                .next()
+                .is_none(),
+            "abstract binds leave no file in the state directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_pathname_reaches_short_and_overflowing_paths() {
+        let base = tempfile::tempdir().expect("tmpdir");
+        let short = base.path().join(EGRESS_SOCK_FILE);
+        let listener = bind_pathname(&short).expect("bind short");
+        let _client = connect_pathname(&short).await.expect("connect short");
+        let (_server, _) = listener.accept().expect("accept short");
+
+        let long = base.path().join("y".repeat(120));
+        std::fs::create_dir_all(&long).expect("mkdir");
+        let sock = long.join(RPC_SOCK_FILE);
+        assert!(sock.as_os_str().len() >= sun_path_capacity());
+        let listener = bind_pathname(&sock).expect("bind long");
+        let _client = connect_pathname(&sock).await.expect("connect long");
+        let (_server, _) = listener.accept().expect("accept long");
+    }
+
+    #[tokio::test]
+    async fn connect_pathname_refuses_an_overflowing_path_without_a_parent_socket() {
+        let base = tempfile::tempdir().expect("tmpdir");
+        let long = base.path().join("z".repeat(120));
+        std::fs::create_dir_all(&long).expect("mkdir");
+        let err = connect_pathname(&long.join("missing.sock"))
+            .await
+            .expect_err("nothing listens there");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
 }
