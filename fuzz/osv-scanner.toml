@@ -20,3 +20,29 @@ INFO / unmaintained chrono 0.4.45, reached through the host crates the fuzz
 harness links. Same exception, reasoning and expiry as the root
 osv-scanner.toml entry; migration tracked in #1255.
 """
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+ignoreUntil = 2026-12-23
+reason = """
+INFO / unmaintained `zvariant` (folded into zbus 6). Reaches the fuzz harness
+through bookclerk-library -> bookclerk-keystore -> zbus 5 (the Linux Secret
+Service keyring). Same exception and expiry as the root osv-scanner.toml
+entry; tracked in #382. The fuzz harness is CI only and never shipped.
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+ignoreUntil = 2026-12-23
+reason = """
+INFO / unmaintained `zbus_names` (folded into zbus 6). Same path and exit as
+RUSTSEC-2026-0370 above; tracked in #382.
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+ignoreUntil = 2026-12-23
+reason = """
+INFO / unmaintained `zvariant_derive`, a compile-time proc-macro (folded into
+zbus 6). Same path and exit as RUSTSEC-2026-0370 above; tracked in #382.
+"""
