@@ -1541,26 +1541,7 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         impersonate_p,
     ));
 
-    // A person's notifications go with them: the deliveries of their
-    // notifications and to their personal addresses first.
-    let mut deliveries_p = vec![j_i64(user_id), j_i64(user_id)];
-    deliveries_p.extend(allow_p.clone());
-    statements.push(sql(
-        &format!(
-            "DELETE FROM notify_deliveries WHERE \
-             (notification_id IN (SELECT id FROM notifications WHERE user_id = ?) \
-              OR destination_id IN (SELECT id FROM notify_destinations WHERE user_id = ?)) \
-             AND {allow}"
-        ),
-        deliveries_p,
-    ));
-
     for table in [
-        "notify_patron_targets",
-        "notify_patron_prefs",
-        "notify_inbox",
-        "notify_destinations",
-        "notifications",
         "oidc_refresh_tokens",
         "oidc_auth_codes",
         "webauthn_credentials",
@@ -3981,68 +3962,6 @@ mod tests {
             .unwrap();
         assert_eq!((creds, chals, states), (0, 0, 0));
         let _ = keep;
-    }
-
-    #[test]
-    fn delete_user_removes_their_notifications_even_without_foreign_keys() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let _keep = seed_user(&conn, "owner", "active", "Keep");
-        let doomed = seed_user(&conn, "member", "active", "Go");
-        // The plan must not lean on ON DELETE CASCADE.
-        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
-        let t = "2020-01-01T00:00:00Z";
-        conn.execute(
-            "INSERT INTO notify_destinations (id, plugin_instance_id, kind, user_id, label, \
-             address_json, created_at, updated_at) VALUES ('d1', 'mail', 'personal', ?1, 'Mail', \
-             '{\"email\":\"x@example.com\"}', ?2, ?2)",
-            rusqlite::params![doomed, t],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO notifications (id, notification_type, audience, severity, title, \
-             body_text, user_id, created_at) VALUES ('n1', 'test', 'patron', 'info', 'Hi', 'Hi', ?1, ?2)",
-            rusqlite::params![doomed, t],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO notify_deliveries (id, notification_id, destination_id, \
-             plugin_instance_id, created_at, updated_at) VALUES ('v1', 'n1', 'd1', 'mail', ?1, ?1)",
-            [t],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO notify_inbox (user_id, notification_id, created_at) VALUES (?1, 'n1', ?2)",
-            rusqlite::params![doomed, t],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO notify_patron_prefs (user_id, notification_type, enabled, updated_at) \
-             VALUES (?1, 'test', 1, ?2)",
-            rusqlite::params![doomed, t],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO notify_patron_targets (user_id, notification_type, destination_id) \
-             VALUES (?1, 'test', 'd1')",
-            [doomed],
-        )
-        .unwrap();
-        let result = run_plan(&conn, &plan_delete_user(doomed));
-        assert_eq!(result.status, atomic_status::OK);
-        for table in [
-            "notify_destinations",
-            "notifications",
-            "notify_deliveries",
-            "notify_inbox",
-            "notify_patron_prefs",
-            "notify_patron_targets",
-        ] {
-            let n: i64 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(n, 0, "{table}");
-        }
     }
 
     #[test]
