@@ -124,6 +124,10 @@ struct Shared {
     policy: EgressPolicy,
     /// TLS settings for `wss://`.
     tls: Arc<ClientConfig>,
+    /// The host's proxy link. In production every dial is a tunnel the host
+    /// checks and dials, because the broker's jail has no IP sockets. `None`
+    /// only in unjailed tests, which dial directly.
+    tunnels: Option<Arc<bookclerk_plugin_sdk::mux::Mux>>,
     /// The host's handler.
     handler: Rc<dyn SocketHandler>,
     /// Sockets that ended but whose delivery task still runs (a message or
@@ -186,11 +190,35 @@ impl SocketBroker {
                 links: RefCell::new(HashMap::new()),
                 policy,
                 tls,
+                tunnels: None,
                 handler,
                 lingering: Cell::new(0),
                 queue_full: Cell::new(0),
             }),
         }
+    }
+}
+
+impl SocketBroker {
+    /// Sends every dial through the host's proxy link as a tunnel.
+    ///
+    /// # Arguments
+    ///
+    /// * `tunnels` - The host proxy link.
+    ///
+    /// # Returns
+    ///
+    /// Updated `Self` for chaining.
+    ///
+    /// # Panics
+    ///
+    /// Never: the shared state has no other owner until the broker serves.
+    #[must_use]
+    pub fn with_tunnels(mut self, tunnels: Arc<bookclerk_plugin_sdk::mux::Mux>) -> Self {
+        if let Some(shared) = Rc::get_mut(&mut self.shared) {
+            shared.tunnels = Some(tunnels);
+        }
+        self
     }
 }
 
@@ -444,10 +472,28 @@ async fn dial(
 ) -> Result<(Socket, Option<String>)> {
     let upgrade = upgrade_request(&shared.policy, request, target)?;
     let connect = async {
+        if let Some(tunnels) = &shared.tunnels {
+            // Same refusal text as a direct dial; the host checks again and
+            // resolves and checks every address itself.
+            if !target_granted(&shared.policy, target) {
+                return Err(PluginError::forbidden(format!(
+                    "`{}` is not on the plugin's network grant",
+                    target.host
+                )));
+            }
+            let tunnel_target = crate::egress_relay::TunnelTarget {
+                host: target.host.to_ascii_lowercase(),
+                port: target.port,
+            };
+            let stream = crate::egress_relay::open_tunnel(tunnels.as_ref(), &tunnel_target)
+                .await
+                .map_err(|err| PluginError::unavailable(format!("could not connect: {err}")))?;
+            return Ok(Box::new(stream) as Box<dyn BrokerIo>);
+        }
         let addresses = allowed_addresses(&shared.policy, target).await?;
-        connect_tcp(&addresses).await
+        Ok(Box::new(connect_tcp(&addresses).await?) as Box<dyn BrokerIo>)
     };
-    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, connect)
+    let stream = tokio::time::timeout(CONNECT_TIMEOUT, connect)
         .await
         .map_err(|_| PluginError::deadline_exceeded("timed out connecting the socket"))??;
     let handshake = async {
@@ -455,12 +501,12 @@ async fn dial(
             let name = ServerName::try_from(target.host.clone())
                 .map_err(|err| PluginError::invalid_params(format!("TLS name: {err}")))?;
             let tls = tokio_rustls::TlsConnector::from(Arc::clone(&shared.tls))
-                .connect(name, tcp)
+                .connect(name, stream)
                 .await
                 .map_err(|err| PluginError::unavailable(format!("TLS failed: {err}")))?;
             Box::new(tls)
         } else {
-            Box::new(tcp)
+            stream
         };
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_SOCKET_FRAME_BYTES as usize))
@@ -676,11 +722,17 @@ async fn deliver(task: Rc<DeliveryTask>, mut queue: mpsc::Receiver<Delivery>) {
 /// # Arguments
 ///
 /// * `policy` - The plugin's effective egress policy.
+/// * `tunnels` - The host's CONNECT link. When set, every socket is dialed
+///   through it, so the broker's own jail needs no network; `None` dials
+///   directly (diagnostic spawns only).
 ///
 /// # Errors
 ///
 /// Returns the TLS setup or link failure.
-pub async fn serve_stdio(policy: EgressPolicy) -> Result<()> {
+pub async fn serve_stdio(
+    policy: EgressPolicy,
+    tunnels: Option<Arc<bookclerk_plugin_sdk::mux::Mux>>,
+) -> Result<()> {
     let tls = default_tls()?;
     let prefix = format!("s{:08x}-", rand::random::<u32>());
     let local = tokio::task::LocalSet::new();
@@ -692,8 +744,13 @@ pub async fn serve_stdio(policy: EgressPolicy) -> Result<()> {
                 let handler: Rc<dyn SocketHandler> = Rc::new(handler);
                 // The broker lives on this thread's LocalSet; the ABI's
                 // server type takes an `Arc` and never sends it elsewhere.
+                let broker = SocketBroker::new(policy, tls, handler, &prefix);
+                let broker = match tunnels {
+                    Some(tunnels) => broker.with_tunnels(tunnels),
+                    None => broker,
+                };
                 #[allow(clippy::arc_with_non_send_sync)]
-                let broker = Arc::new(SocketBroker::new(policy, tls, handler, &prefix));
+                let broker = Arc::new(broker);
                 broker as Arc<dyn Sockets>
             },
         ))

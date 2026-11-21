@@ -11,7 +11,8 @@ use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 
 use crate::pin::{
-    binary_name, download_url, host_asset, WORKERD_RELEASE_TAG, WORKERD_VERSION_STAMP,
+    binary_name, download_url, host_asset, pyodide_bundle_url, PYODIDE_BUNDLE_DIR,
+    PYODIDE_BUNDLE_FILE, PYODIDE_BUNDLE_SHA256_HEX, WORKERD_RELEASE_TAG, WORKERD_VERSION_STAMP,
 };
 
 /// Join a single path component under `root` after canonicalize + `starts_with`.
@@ -106,9 +107,12 @@ fn replace_cache_entry(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::rename(from, to)
 }
 
-/// Ensure `dir/workerd` matches [`WORKERD_RELEASE_TAG`], downloading if needed.
+/// Ensure `dir/workerd` matches [`WORKERD_RELEASE_TAG`] and the pinned Pyodide
+/// bundle sits beside it, downloading either if needed.
 ///
-/// Returns the path to the executable. Honors `BOOKCLERK_WORKERD_BIN` when set:
+/// Returns the path to the executable. The bundle lands in
+/// [`PYODIDE_BUNDLE_DIR`] beside the returned binary (see
+/// [`ensure_pyodide_bundle`]). Honors `BOOKCLERK_WORKERD_BIN` when set:
 /// if that absolute path is a file and its sibling version stamp or `--version`
 /// output matches the pin, it is returned. Otherwise ensure installs into `dir`
 /// (the override path is not overwritten). A matching stamp without a binary is
@@ -127,6 +131,20 @@ fn replace_cache_entry(from: &Path, to: &Path) -> std::io::Result<()> {
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn ensure_workerd(dir: &Path) -> Result<PathBuf> {
+    let bin = ensure_workerd_binary(dir)?;
+    let bin_dir = bin
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("workerd binary {} has no parent", bin.display()))?;
+    ensure_pyodide_bundle(bin_dir)?;
+    Ok(bin)
+}
+
+/// The binary half of [`ensure_workerd`].
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, network or digest check fails.
+fn ensure_workerd_binary(dir: &Path) -> Result<PathBuf> {
     if let Ok(override_bin) = std::env::var("BOOKCLERK_WORKERD_BIN") {
         if !override_bin.is_empty()
             && !override_bin.contains('\0')
@@ -235,6 +253,102 @@ pub fn ensure_workerd(dir: &Path) -> Result<PathBuf> {
     );
     bookclerk_sandbox::require_spawn_executable(&dest)
         .with_context(|| format!("validate installed workerd {}", dest.display()))
+}
+
+/// Directory beside `workerd_bin` that holds the pinned Pyodide bundle, which
+/// workerd reads through `--pyodide-bundle-disk-cache-dir`.
+///
+/// # Arguments
+///
+/// * `workerd_bin` - The `workerd` executable.
+///
+/// # Returns
+///
+/// `<workerd_bin's directory>/`[`PYODIDE_BUNDLE_DIR`], or `None` for a path
+/// with no parent.
+#[must_use]
+pub fn pyodide_bundle_dir(workerd_bin: &Path) -> Option<PathBuf> {
+    workerd_bin.parent().map(|dir| dir.join(PYODIDE_BUNDLE_DIR))
+}
+
+/// True when `path` is a regular file whose bytes match `sha256_hex`.
+fn file_matches_digest(path: &Path, sha256_hex: &str) -> bool {
+    is_regular_file(path)
+        && fs::read(path)
+            .ok()
+            .is_some_and(|bytes| verify_sha256(&bytes, sha256_hex).is_ok())
+}
+
+/// Ensure `dir/`[`PYODIDE_BUNDLE_DIR`]`/`[`PYODIDE_BUNDLE_FILE`] holds the
+/// pinned Pyodide bundle, downloading and checking it when missing or wrong.
+///
+/// Python isolates load this bundle at start. The jail gives workerd no
+/// network of its own, so the bundle must already be on disk; workerd reads
+/// the directory read-only.
+///
+/// # Arguments
+///
+/// * `dir` - The directory that holds the `workerd` binary.
+///
+/// # Returns
+///
+/// Path to the bundle file.
+///
+/// # Errors
+///
+/// When the directory cannot be created, the download fails, or the bytes do
+/// not match [`PYODIDE_BUNDLE_SHA256_HEX`].
+pub fn ensure_pyodide_bundle(dir: &Path) -> Result<PathBuf> {
+    let dir = prepare_cache_dir(dir)?;
+    let bundles = join_component_under(&dir, PYODIDE_BUNDLE_DIR)?;
+    refuse_managed_leaf_symlink(&bundles)?;
+    fs::create_dir_all(&bundles).with_context(|| format!("create {}", bundles.display()))?;
+    let dest = join_component_under(&bundles, PYODIDE_BUNDLE_FILE)?;
+    refuse_managed_leaf_symlink(&dest)?;
+    if file_matches_digest(&dest, PYODIDE_BUNDLE_SHA256_HEX) {
+        return Ok(dest);
+    }
+    let url = pyodide_bundle_url();
+    eprintln!("bookclerk-workerd: fetching {url}");
+    let bytes = download(&url).with_context(|| format!("download {url}"))?;
+    install_bundle(&bundles, &dest, &bytes)?;
+    eprintln!(
+        "bookclerk-workerd: installed Pyodide bundle → {}",
+        dest.display()
+    );
+    Ok(dest)
+}
+
+/// Checks `bytes` against the pin and writes them to `dest` through a staging
+/// file in `bundles`.
+///
+/// # Errors
+///
+/// When the digest does not match or the file cannot be written.
+fn install_bundle(bundles: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
+    verify_sha256(bytes, PYODIDE_BUNDLE_SHA256_HEX).context("Pyodide bundle digest")?;
+    let tmp = staging_install_path(bundles, PYODIDE_BUNDLE_FILE);
+    let tmp = join_component_under(
+        bundles,
+        tmp.file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| anyhow::anyhow!("invalid staging name"))?,
+    )?;
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .with_context(|| format!("create exclusive {}", tmp.display()))?;
+        f.write_all(bytes)
+            .with_context(|| format!("write {}", tmp.display()))?;
+        f.sync_all().ok();
+    }
+    if let Err(err) = replace_cache_entry(&tmp, dest) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err).with_context(|| format!("install {}", dest.display()));
+    }
+    Ok(())
 }
 
 /// Preferred install directory: beside this process, else `dir` argument from callers.
@@ -497,6 +611,46 @@ mod tests {
     /// Serves one canned HTTP answer on a loopback port and returns its URL.
     fn serve_once(answer: &'static [u8]) -> String {
         serve(vec![answer])
+    }
+
+    #[test]
+    fn the_pyodide_bundle_lives_beside_workerd() {
+        let bin = Path::new("/opt/bookclerk/workerd");
+        assert_eq!(
+            pyodide_bundle_dir(bin),
+            Some(PathBuf::from("/opt/bookclerk").join(PYODIDE_BUNDLE_DIR))
+        );
+        assert!(pyodide_bundle_url().ends_with(PYODIDE_BUNDLE_FILE));
+        assert!(pyodide_bundle_url().starts_with("https://"));
+    }
+
+    #[test]
+    fn a_bundle_is_kept_only_when_its_digest_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bundle.bin");
+        fs::write(&path, b"abc").unwrap();
+        // SHA-256 of "abc".
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(file_matches_digest(&path, abc));
+        assert!(!file_matches_digest(&path, PYODIDE_BUNDLE_SHA256_HEX));
+        assert!(!file_matches_digest(&dir.path().join("missing"), abc));
+    }
+
+    #[test]
+    fn install_bundle_refuses_bytes_that_do_not_match_the_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join(PYODIDE_BUNDLE_FILE);
+        let err = install_bundle(dir.path(), &dest, b"not the bundle").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Pyodide bundle digest"),
+            "{err:#}"
+        );
+        assert!(!dest.exists());
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "no staging file left"
+        );
     }
 
     #[test]

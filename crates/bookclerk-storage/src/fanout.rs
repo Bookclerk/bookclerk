@@ -967,7 +967,10 @@ mod tests {
         let right = LocalFsBackend::new(dir.path().join("right"))
             .unwrap()
             .with_scan_placement("node-right");
-        let weird = LocalFsBackend::new(dir.path().join("a|b")).unwrap();
+        // A child whose root name holds a join character must not collide
+        // with two children. `|` is not allowed in a Windows file name.
+        let joined = if cfg!(windows) { "a;b" } else { "a|b" };
+        let weird = LocalFsBackend::new(dir.path().join(joined)).unwrap();
         left.put(
             "book.m4b",
             Bytes::from_static(b"from-left"),

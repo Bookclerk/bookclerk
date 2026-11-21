@@ -39,8 +39,8 @@ tcp = [{ host = "api.example.com", ports = [443] }]
 
 | Network `mode` | Native-behind-workerd | Workerd |
 | --- | --- | --- |
-| `deny` | Sibling guest jail `NetPolicy::Deny`; no socket proxy grants | OS jail stays `OutboundListen` for the RPC bridge; isolate `globalOutbound` → blocked |
-| `outbound` | Sibling guest jail still `Deny`; TCP via `bookclerk_plugin_sdk::connect` → multiplexed CONNECT on the inherited `fd:`/`handle:` link | Isolate `globalOutbound` → egress worker; `fetch()` and `connect()` share one `EgressPolicy` |
+| `deny` | Sibling guest jail `NetPolicy::Deny`; no socket proxy grants | OS jail `LocalIpc` (no IP socket); no host egress link; isolate `globalOutbound` → blocked |
+| `outbound` | Sibling guest jail still `Deny`; TCP via `bookclerk_plugin_sdk::connect` → multiplexed CONNECT on the inherited `fd:`/`handle:` link | Isolate `globalOutbound` → egress worker; `fetch()` and `connect()` share one `EgressPolicy`; the launcher relays each as a tunnel the host checks and dials |
 
 ### Network rules
 
@@ -160,13 +160,14 @@ Workerd egress is matched by the shared `EgressPolicy` and
   bridge itself because URL parsers differ on it. The bridge and
   `EgressPolicy` are fuzzed against each other (`egress_bridge`).
 - **Resolved addresses.** Permission is enforced against the resolved IP
-  (`public` plus explicit CIDRs in workerd `network.allow`). DNS
-  rebinding from a public hostname to a private, loopback or metadata
-  address is denied unless that CIDR is granted.
-- **TLS.** HTTPS requests verify the server certificate against the
-  browser CA list built into workerd (`tlsOptions = (trustBrowserCas =
-  true)` on the generated `internet` service). The host's own trust store
-  isn't consulted, so a guest sees the same roots on every platform.
+  (public addresses plus explicit CIDRs): the host resolves each tunnel's
+  host and checks every address before it dials. DNS rebinding from a
+  public hostname to a private, loopback or metadata address is denied
+  unless that CIDR is granted.
+- **TLS.** HTTPS requests verify the server certificate against Mozilla's
+  root list (`webpki-roots`), checked by the launcher's egress relay. The
+  host's own trust store isn't consulted, so a guest sees the same roots on
+  every platform.
 - **TCP.** `import { connect } from "cloudflare:sockets"` is forwarded to
   the egress worker's inbound CONNECT handler
   (`compatibilityFlags = ["experimental"]` plus
@@ -187,6 +188,9 @@ Workerd egress is matched by the shared `EgressPolicy` and
   CDN hosts (`cdn.jsdelivr.net`, `pypi.org`, `files.pythonhosted.org`) in
   the consent grant. Materializing uses the same set and doesn't widen
   beyond it.
+  The Pyodide runtime itself needs no grant: the host ships a pinned copy
+  beside `workerd` and the isolate loads it from disk (see
+  [The Pyodide bundle](../contributing/packaging.md#the-pyodide-bundle)).
 
 ### Workerd limits
 

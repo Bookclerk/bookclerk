@@ -204,7 +204,7 @@ impl LocalFsBackend {
 
     /// The change signature of the file at `path` whose metadata is `meta`.
     async fn signature_at(&self, path: &Path, meta: &std::fs::Metadata) -> Option<String> {
-        file_signature(meta, self.fs_kind(path).await)
+        signature_of(path, meta, self.fs_kind(path).await).await
     }
 
     /// Overrides the host placement reported for scan adoption.
@@ -340,8 +340,34 @@ fn modified_ms(meta: &std::fs::Metadata) -> Option<u64> {
     u64::try_from(since.as_millis()).ok()
 }
 
+/// [`file_signature`] for the file at `path`, adding its file index on a
+/// local Windows disk.
+///
+/// Windows stamps file times from a clock that can tick only every few
+/// milliseconds, so two same-size writes in one tick would otherwise get one
+/// signature and an `ifMatch` check could not tell them apart. Each write
+/// publishes a new file by rename, which gets a new index, as a new inode
+/// does on Unix.
+async fn signature_of(path: &Path, meta: &std::fs::Metadata, kind: FsKind) -> Option<String> {
+    #[cfg(windows)]
+    if kind.is_local() {
+        let path = path.to_path_buf();
+        let index = tokio::task::spawn_blocking(move || fs_kind::file_index(&path))
+            .await
+            .ok()
+            .flatten();
+        if let Some(index) = index {
+            return file_signature(meta, kind).map(|base| format!("{index:x}-{base}"));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+    file_signature(meta, kind)
+}
+
 /// A file's change signature, also used as its etag: size and modification
-/// time, plus inode and status-change time on a local Unix disk. Reading the
+/// time, plus inode and status-change time on a local Unix disk (and the
+/// file index on a local Windows disk, see [`signature_of`]). Reading the
 /// file leaves it unchanged; writing, replacing, renaming onto it or touching
 /// it changes it. `None` when the platform reports no modification time.
 ///
@@ -1158,7 +1184,7 @@ impl LocalFsBackend {
             Some(WriteCondition::IfMatch(expected)) => {
                 let _held = self.check_then_write.lock().await;
                 let current = match metadata_if_present(path).await? {
-                    Some(meta) => file_signature(&meta, kind),
+                    Some(meta) => signature_of(path, &meta, kind).await,
                     None => None,
                 };
                 if current.as_deref() != Some(expected.as_str()) {
@@ -1871,6 +1897,9 @@ mod tests {
             .unwrap();
         let src = dir.path().join("huge.m4b");
         let file = std::fs::File::create(&src).unwrap();
+        // NTFS allocates the whole length unless the file is marked sparse.
+        #[cfg(windows)]
+        mark_sparse(&file);
         file.set_len(crate::bounded::MAX_SUPPORTED_OBJECT_BYTES + 1)
             .unwrap();
         let err = backend.copy("huge.m4b", "dest.m4b").await.unwrap_err();
@@ -1880,6 +1909,38 @@ mod tests {
         );
         assert_eq!(backend.get("dest.m4b").await.unwrap().as_ref(), b"keeper");
         assert!(src.metadata().unwrap().len() > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES);
+    }
+
+    /// Marks `file` sparse so extending it allocates no disk space, as a
+    /// length change does on Unix file systems.
+    #[cfg(windows)]
+    // One DeviceIoControl on a handle `file` owns; the SAFETY note covers it.
+    #[allow(unsafe_code)]
+    fn mark_sparse(file: &std::fs::File) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+        use windows_sys::Win32::System::IO::DeviceIoControl;
+        let mut returned = 0_u32;
+        // SAFETY: the handle is open for the lifetime of `file`; FSCTL_SET_SPARSE
+        // takes no input buffer (meaning "set") and writes no output buffer.
+        let ok = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_SET_SPARSE,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            ok,
+            0,
+            "FSCTL_SET_SPARSE: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     /// A local backend in a fresh directory.

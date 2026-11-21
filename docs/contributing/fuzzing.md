@@ -26,6 +26,7 @@ boundary extends it.
 | `granted_http` | The granted reverse channel | `bookclerk-workerd::granted_http` |
 | `workerd_control` | Lines on workerd's stdout, shared with plugin isolates, that report the bridge RPC port on Windows (`--control-fd`) | `bookclerk-workerd::control` |
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
+| `egress_relay_head` | Request heads workerd sends the launcher's egress relay (plugin code) and response heads from the servers a plugin reached | `bookclerk-workerd::egress_relay` |
 | `egress_bridge` | The workerd egress gate (`bridge/egress.js`) every workerd guest's `fetch()` and `connect()` goes through, run in an embedded JavaScript engine against `EgressPolicy` | `bookclerk-workerd` bridge |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
@@ -40,6 +41,7 @@ boundary extends it.
 | `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
 | `media_decode` | Audio the media worker demuxes and decodes before it encodes or repackages it: store downloads, library copies and files on storage, recognised by their bytes, never their names | `bookclerk-media::decode_pcm_bytes` |
+| `media_pcm_wire` | PCM worker frames for the desktop window's player: requests the worker reads, and the worker's whole output (byte-range requests, the stream format, samples, the end) the host reads while the worker decodes untrusted audio | `bookclerk-media::pcm_wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
@@ -119,6 +121,14 @@ only that. The others check:
   an `httparse` reference decoder. The route body reader (framing dispatch,
   byte cap, end of stream) is split-invariant and yields what the declared
   framing promises.
+- **`egress_relay_head`**: byte 0 picks a request head (even) or a
+  response head (odd). Every head the relay accepts is one `httparse` reads
+  the same way (method, target, status). A rewritten request is in origin
+  form with exactly one `host` naming the tunnel target, one `connection:
+  close` or `upgrade`, none of the stripped proxy and hop-by-hop headers,
+  and every other header intact. A final response head carries exactly one
+  `connection: close`. The shared oracle is
+  `fuzz/oracles/egress_relay_head.rs`, replayed from `bookclerk-workerd`.
 - **`workerd_control`**: a port the parser accepts agrees with an
   independent `serde_json::Value` reading, every listen object that reading
   accepts is accepted once re-encoded canonically, and no structured log
@@ -132,7 +142,9 @@ only that. The others check:
   percent-encoded hosts never match, and the JSON round-trips. The
   guest's own `User-Agent` is kept only on hosts an own-agent pattern
   matches, never through a `*` entry however it is spelled, and every
-  other request gets the host's agent.
+  other request gets the host's agent. The isolate tunnel rule
+  (`allows_isolate_tunnel`) is exactly the union of the fetch, redirect and
+  TCP rules, on any port.
 - **`egress_bridge`**: for a policy the host can emit (every pattern
   already normalized, every CIDR in its `network/prefix` form), each probe
   host (the grants' names and near misses, `localhost` and the metadata
@@ -303,6 +315,16 @@ only that. The others check:
   it. Seeds cover every container and codec the worker reads, including
   HE-AAC, HE-AAC v2, Ogg Opus (mono and stereo) and Ogg Vorbis. The shared oracle is
   `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
+- **`media_pcm_wire`**: the first byte, modulo 3, picks a request body, a
+  reply body, or the worker's whole output. An accepted request or reply
+  re-encodes to exactly its own bytes, and a reply's fields are within the
+  wire's limits, checked against the constants rather than the decoder's
+  own code. The whole output is fed to `ReplyReader` in pieces whose sizes
+  come from the input: the replies it yields re-encode, concatenated, to
+  exactly the bytes it consumed, it yields nothing after an error, and
+  every `Pcm` that `ReplyOrder` admits holds whole frames of the `Format`
+  it admitted first. The shared oracle is `fuzz/oracles/media_pcm_wire.rs`,
+  replayed from `bookclerk-media`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
   them is the current tag, strong or weak. Any raw header that matches,

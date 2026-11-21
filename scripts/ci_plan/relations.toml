@@ -163,10 +163,13 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-# The workerd_control, socket_broker, socket_route and egress_bridge oracles
-# are shared with the replay tests through `#[path]`; the egress_bridge
-# replay compares its result with the SDK's committed vectors.
+# The workerd_control, socket_broker, socket_route, egress_relay_head and
+# egress_bridge oracles are shared with the replay tests through `#[path]`;
+# the egress_bridge replay compares its result with the SDK's committed
+# vectors.
 paths = [
+    "fuzz/corpus/egress_relay_head/**",
+    "fuzz/oracles/egress_relay_head.rs",
     "fuzz/corpus/granted_http/**",
     "fuzz/corpus/egress_bridge/**",
     "fuzz/oracles/egress_bridge.rs",
@@ -255,6 +258,14 @@ package = "bookclerk-media"
 paths = [
     "fuzz/corpus/media_decode/**",
     "fuzz/oracles/media_decode.rs",
+]
+
+[[test_input]]
+package = "bookclerk-media"
+# The media_pcm_wire oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_pcm_wire/**",
+    "fuzz/oracles/media_pcm_wire.rs",
 ]
 
 [[test_input]]
@@ -441,6 +452,8 @@ build = [
     "bookclerk-plugin-destination-local",
     "bookclerk-jail",
     "bookclerk-workerd",
+    # The desktop window's player test decodes through the PCM worker.
+    "bookclerk-media-worker",
 ]
 ensure_workerd = true
 
