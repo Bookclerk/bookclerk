@@ -45,7 +45,10 @@ pub async fn require_csrf_for_cookie_api(
         return Ok(next.run(req).await);
     }
     let cfg = state.config.read().await;
-    let public_origin = cfg.integrations.effective_public_origin().map(str::to_owned);
+    let public_origin = cfg
+        .integrations
+        .effective_public_origin()
+        .map(str::to_owned);
     drop(cfg);
     if origin_ok(req.headers(), public_origin.as_deref()) {
         Ok(next.run(req).await)

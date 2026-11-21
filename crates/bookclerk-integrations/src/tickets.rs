@@ -87,7 +87,9 @@ pub async fn mint_claim_ticket(
 /// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn ticket_portal_url(integrations: &IntegrationsConfig, token: &str) -> Option<String> {
-    let origin = integrations.effective_public_origin()?.trim_end_matches('/');
+    let origin = integrations
+        .effective_public_origin()?
+        .trim_end_matches('/');
     Some(format!("{origin}/invite?ticket={token}"))
 }
 

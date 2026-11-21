@@ -25,7 +25,10 @@ fn an_empty_document_is_ingress_off_exposing_branches() {
     assert_eq!(settings.exposure, IngressExposure::Branches);
     assert_eq!(settings.active(), None);
     assert_eq!(settings.serving_origin(), None);
-    assert_eq!(serde_json::to_string(&settings).unwrap(), r#"{"exposure":"branches"}"#);
+    assert_eq!(
+        serde_json::to_string(&settings).unwrap(),
+        r#"{"exposure":"branches"}"#
+    );
     assert!(serde_json::from_str::<IngressSettings>(r#"{"fly":true}"#).is_err());
 }
 
@@ -56,7 +59,10 @@ fn reports_adopt_first_then_wait_for_the_operator() {
     let other = PluginInstanceId::mint();
     let off = IngressSettings::default();
     let origin = |raw: &str| parse_ingress_origin(&started(raw)).unwrap();
-    assert_eq!(report_into(&off, &instance, &origin("https://a.example")), None);
+    assert_eq!(
+        report_into(&off, &instance, &origin("https://a.example")),
+        None
+    );
 
     let on = IngressSettings {
         active_instance: Some(instance.to_string()),
@@ -69,7 +75,10 @@ fn reports_adopt_first_then_wait_for_the_operator() {
 
     let pending = report_into(&adopted, &instance, &origin("https://b.example")).unwrap();
     assert_eq!(pending.origin.as_deref(), Some("https://a.example"));
-    assert_eq!(pending.reported_origin.as_deref(), Some("https://b.example"));
+    assert_eq!(
+        pending.reported_origin.as_deref(),
+        Some("https://b.example")
+    );
     assert!(matches!(
         classify(&pending, origin("https://b.example")),
         OriginReport::Pending { ref adopted, .. } if adopted == "https://a.example"
@@ -109,14 +118,22 @@ async fn the_document_follows_activation_reports_and_acceptance() {
             .unwrap();
         assert!(matches!(report, OriginReport::Adopted(_)), "{name}");
         let settings = ingress_settings(store).await.unwrap();
-        assert_eq!(settings.serving_origin(), Some("https://a.example"), "{name}");
+        assert_eq!(
+            settings.serving_origin(),
+            Some("https://a.example"),
+            "{name}"
+        );
 
         let report = record_started(store, &actor, &relay, &started("https://b.example"))
             .await
             .unwrap();
         assert!(matches!(report, OriginReport::Pending { .. }), "{name}");
         let settings = ingress_settings(store).await.unwrap();
-        assert_eq!(settings.serving_origin(), Some("https://a.example"), "{name}");
+        assert_eq!(
+            settings.serving_origin(),
+            Some("https://a.example"),
+            "{name}"
+        );
         assert_eq!(
             settings.reported_origin.as_deref(),
             Some("https://b.example"),
@@ -125,7 +142,11 @@ async fn the_document_follows_activation_reports_and_acceptance() {
 
         accept_reported_origin(store, &actor).await.unwrap();
         let settings = ingress_settings(store).await.unwrap();
-        assert_eq!(settings.serving_origin(), Some("https://b.example"), "{name}");
+        assert_eq!(
+            settings.serving_origin(),
+            Some("https://b.example"),
+            "{name}"
+        );
         assert_eq!(settings.reported_origin, None, "{name}");
 
         set_ingress_exposure(store, &actor, IngressExposure::Library)
@@ -134,7 +155,11 @@ async fn the_document_follows_activation_reports_and_acceptance() {
         deactivate_ingress(store, &actor).await.unwrap();
         let settings = ingress_settings(store).await.unwrap();
         assert_eq!(settings.serving_origin(), None, "{name}");
-        assert_eq!(settings.origin.as_deref(), Some("https://b.example"), "{name}");
+        assert_eq!(
+            settings.origin.as_deref(),
+            Some("https://b.example"),
+            "{name}"
+        );
         assert_eq!(settings.exposure, IngressExposure::Library, "{name}");
     }
 }
@@ -146,7 +171,11 @@ async fn a_bad_origin_is_refused_and_nothing_is_written() {
     let actor = operator();
     let relay = PluginInstanceId::mint();
     activate_ingress(store, &actor, &relay).await.unwrap();
-    for bad in ["http://a.example", "https://127.0.0.1", "https://a.example/x"] {
+    for bad in [
+        "http://a.example",
+        "https://127.0.0.1",
+        "https://a.example/x",
+    ] {
         let err = record_started(store, &actor, &relay, &started(bad))
             .await
             .unwrap_err();

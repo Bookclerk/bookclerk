@@ -367,7 +367,9 @@ async fn write(
             ReplaceOutcome::Conflict { .. } | ReplaceOutcome::Replayed { .. } => {}
         }
     }
-    Err(LibraryError::Conflict("core.ingress kept changing; retry".into()))
+    Err(LibraryError::Conflict(
+        "core.ingress kept changing; retry".into(),
+    ))
 }
 
 /// Parses a stored `core.ingress` document.

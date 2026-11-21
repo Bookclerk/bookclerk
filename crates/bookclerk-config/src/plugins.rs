@@ -266,7 +266,9 @@ mod tests {
         config.integrations.ingress_origin = Some("https://relay.example.workers.dev".into());
         let encoded = toml::to_string(&config.integrations).expect("encode");
         assert!(!encoded.contains("relay.example"), "{encoded}");
-        assert!(toml::from_str::<IntegrationsConfig>("ingress_origin = \"https://x.example\"").is_err());
+        assert!(
+            toml::from_str::<IntegrationsConfig>("ingress_origin = \"https://x.example\"").is_err()
+        );
     }
 
     #[test]
