@@ -138,6 +138,13 @@ xychart-beta horizontal
 | gte-multilingual-base | 1,002 | out of memory | 33 |
 | EmbeddingGemma-300m | 1,563 | out of memory | 72 |
 
+> [!NOTE]
+> The times in this table come from batches of 8 texts padded to the
+> longest one, which roughly doubles the cost of each text (multilingual-e5-small
+> takes 77 ms a text in a batch of 8 and 37 ms alone). They compare models
+> fairly with each other, but [Fast multilingual models](#fast-multilingual-models)
+> has the times to plan with: one description at a time.
+
 granite and EmbeddingGemma q4 peaked just above 512 MiB and survived only
 because the kernel didn't reclaim in time, so they don't count as
 fitting. potion-multilingual-128M untrimmed peaks at 715 MB and fails
@@ -207,22 +214,137 @@ saw in training and stored as 8-bit integers.
 - Each run took 1.2 to 5 hours, so building models per language in CI is
   feasible; the quality is what limits them.
 
+## A smaller tokenizer
+
+A trimmed model still loads its tokenizer from `tokenizer.json`, which
+costs 48 to 58 MB for multilingual-e5-small. SentencePiece Lite, the
+small runtime in the SentencePiece repository, reads a compact model file
+straight from disk instead. It was built as a 64 KB library and given a
+SentencePiece model holding only the kept tokens, numbered like the
+trimmed `tokenizer.json`: a 2.0 MB file for 4 languages and 2.5 MB for 7.
+
+| multilingual-e5-small | `tokenizer.json` | Lite, pruned model |
+| --- | --- | --- |
+| Tokenizer memory, 4 languages (MB) | 48 | 6 |
+| Tokenizer memory, 7 languages (MB) | 58 | 6 |
+| Time per text (ms) | 0.28 to 0.30 | 0.05 |
+| Whole pipeline peak, 4 languages (MB) | 268 | 246 |
+| Whole pipeline peak, 7 languages (MB) | 281 | 249 |
+
+- Lite gives the same token ids as full SentencePiece on all 3,140 test
+  texts (765 Open Library, 2,375 Wikipedia), for every model tried.
+- For multilingual-e5-small, SentencePiece and `tokenizer.json` disagree
+  on 563 of the Wikipedia texts, trimmed or not: `tokenizer.json` adds a
+  lone trailing space token and maps a few rare characters to unknown.
+  The vectors stay close (mean cosine 0.995, lowest 0.964).
+- Keeping all 250,000 pieces and marking the dropped ones unused saves
+  nothing. The model file has to hold only the kept pieces.
+
+These peaks include about 29 MB for the Python process that ran the test.
+
+## Trimmed EmbeddingGemma
+
+EmbeddingGemma-300m (4-bit) was trimmed the same way, with a trimmer that
+keeps every merge step its byte-pair tokenizer needs to build a kept
+token.
+
+| Variant | Tokens kept | Weights (MB) | Peak RAM with Lite (MB) | Open Library P@10 | Wikipedia English | Wikipedia German |
+| --- | --- | --- | --- | --- | --- | --- |
+| Full | 262,144 | 197 | 359 | 0.526 | 0.476 | 0.417 |
+| 4 languages | 111,846 | 122 | 291 | 0.531 | 0.477 | 0.421 |
+| 7 languages | 121,574 | 129 | 293 | 0.528 | 0.478 | 0.419 |
+
+- Trimming costs no quality, and Lite's ids match `tokenizer.json` on
+  every test text.
+- It takes about 400 ms for one description on one core, 11 times
+  multilingual-e5-small. That is too slow for a small server and slow
+  even on a desktop.
+- The trimmed copy is a modified Gemma model under Google's Gemma terms,
+  which pass use restrictions on to everyone who receives it.
+
+## Fast multilingual models
+
+The last round looked for a multilingual transformer fast enough to embed
+at request time, that trims and runs with Lite. Four newer models were
+tested against multilingual-e5-small:
+
+- **bekko-a8m** and **bekko-a25m** (MIT): mmBERT-small cut to 4 and 13
+  layers.
+- **Harrier 270m** (MIT), 4-bit: a Gemma-3-sized decoder, with
+  last-token pooling and an instruction prefix on queries.
+- **EmbeddingGemma 2** (Apache 2.0), 4-bit: tested untrimmed.
+
+Times are for one description of about 150 tokens at a time, on one core.
+
+```mermaid
+xychart-beta horizontal
+  title "Open Library English P@10, trimmed to 4 languages"
+  x-axis [Harrier-270m, EmbeddingGemma-2, EmbeddingGemma-300m, bekko-a8m, bekko-a25m, e5-small]
+  y-axis "P@10" 0 --> 0.6
+  bar [0.560, 0.549, 0.531, 0.436, 0.428, 0.327]
+```
+
+| Model, trimmed to 4 languages | ms per description | ms per query | Peak RAM with Lite (MB) | Open Library P@10 | Wikipedia English | Spanish | French | German | English seeds, German books |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| bekko-a8m | 28 | 3 | 221 | 0.436 | 0.489 | 0.398 | 0.363 | 0.385 | 0.405 |
+| multilingual-e5-small | 36 | 4 | 150 | 0.327 | 0.421 | 0.396 | 0.369 | 0.356 | 0.346 |
+| bekko-a25m | 89 | 14 | 221 | 0.428 | 0.494 | 0.411 | 0.428 | 0.419 | 0.429 |
+| Harrier 270m | 305 | 77 | 208 | 0.560 | 0.557 | 0.501 | 0.501 | 0.452 | 0.471 |
+| EmbeddingGemma-300m | 398 | 50 | 291 | 0.531 | 0.477 | 0.441 | 0.433 | 0.421 | 0.418 |
+| EmbeddingGemma 2 (untrimmed) | 421 | | | 0.549 | 0.494 | 0.434 | 0.463 | 0.405 | 0.455 |
+
+Trimming these models, for English, German, French and Spanish:
+
+| Model | Tokens kept | Weights (MB) | Lite model file (MB) | Peak RAM, `tokenizer.json` to Lite (MB) | Lite ids match |
+| --- | --- | --- | --- | --- | --- |
+| bekko-a8m | 135,671 of 256,000 | 130 to 83 | 4.5 | 241 to 221 | 3,140 of 3,140 |
+| bekko-a25m | 135,671 of 256,000 | 199 to 152 | 4.5 | 241 to 221 | 3,140 of 3,140 |
+| Harrier 270m | 111,847 of 262,144 | 197 to 144 | 3.7 | 231 to 208 | 3,140 of 3,140 |
+
+What this shows:
+
+- bekko-a8m is faster than multilingual-e5-small and better on Open
+  Library by a third. It trails only in French, by 0.006.
+- Harrier is the most accurate model in every column, at about 11 times
+  bekko-a8m's cost per description.
+- Trimming changes no score by more than 0.013, and untrimmed bekko-a8m
+  peaks at 460 MB against 221 MB trimmed with Lite.
+- EmbeddingGemma 2 has the same depth as EmbeddingGemma-300m, so it is no
+  faster.
+- bekko publishes only `tokenizer.json`. A SentencePiece model was built
+  from it for Lite, and the caller must first split the text on the
+  tokenizer's added tokens (newlines and HTML tags). With that, the ids
+  match on every text.
+- Italian, Portuguese and Japanese were not scored in this round.
+
 ## What the results suggest
 
-- For an English-only library, potion-retrieval-32M is good enough at
-  every size and costs almost nothing.
-- For a multilingual library, multilingual-e5-small trimmed to the
-  library's languages fits a small VPS, and arctic-embed-m-v2.0 trimmed
-  the same way fits too and scores higher, at about 2.7 times the CPU.
-- Static models trained per language match potion's speed but not a
-  transformer's accuracy outside English. Shelves rank vectors computed
-  ahead of time, so their speed matters mostly for request-time work.
+- A multilingual transformer trimmed to the library's languages, with
+  the Lite tokenizer, is the approach: it keeps the model's vectors and
+  fits a small server.
+- bekko-a8m suits a default: about 28 ms a description and 3 ms a search
+  query on one core, in about 220 MB.
+- Harrier 270m suits desktops and background embedding where accuracy
+  matters more than time.
+- English-only and static models are not worth a second code path:
+  potion-retrieval-32M scores 0.451 on English Open Library against
+  bekko-a8m's 0.436, and falls to 0.13 to 0.18 outside English.
 - Descriptions are the main signal. A text sample can be added later as a
-  background pass: at 8 chunks a book, 1,000 books take about 10 minutes
-  with trimmed e5-small on a small VPS.
-- EmbeddingGemma-300m is under Google's Gemma terms rather than an
-  open-source licence, so it needs a licence review before Bookclerk could
-  ship it.
+  background pass: at 8 chunks a book, 1,000 books take roughly 5 minutes
+  with bekko-a8m on one core.
+- EmbeddingGemma-300m is slower than Harrier, scores lower, and is under
+  Google's Gemma terms rather than an open-source licence.
+
+## How the tests were run
+
+- Quality runs used ONNX Runtime on CPU from Python, with each model's
+  published quantized weights where it has them.
+- Token ids were compared text by text between `tokenizer.json`, full
+  SentencePiece and Lite, and vectors by cosine.
+- Memory is the process's peak resident size. Speed runs used one thread
+  on an otherwise idle machine, and were taken twice.
+- Trimmed and untrimmed runs of the same model differ by up to 0.013,
+  so differences that small are not findings.
 
 ## Next steps
 
