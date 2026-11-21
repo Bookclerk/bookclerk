@@ -742,7 +742,7 @@ async fn a_page_states_the_copy_the_library_holds() {
         .await
         .unwrap());
     acquire("B0UNPROBED", "A/Unprobed/Unprobed.mp3", true).await;
-    acquire("B0UNKNOWN1", "A/Unknown/Unknown.ogg", true).await;
+    acquire("B0UNKNOWN1", "A/Unknown/Unknown.wma", true).await;
     acquire("B0NOROW001", "A/NoRow/NoRow.m4b", false).await;
 
     let copies = |works: Vec<WindowWork>| -> BTreeMap<String, Option<WindowCopy>> {

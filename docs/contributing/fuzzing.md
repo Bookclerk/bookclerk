@@ -35,7 +35,7 @@ boundary extends it.
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
 | `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
-| `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
+| `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, Ogg Opus and Vorbis headers and comments, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
 | `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
@@ -45,6 +45,8 @@ boundary extends it.
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
+| `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
+| `notify_raise` | A plugin's `NOTIFY.raise`: the `/notify/raise` JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert | `bookclerk-plugin-abi::notifications::check_raise_params` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
@@ -64,6 +66,7 @@ boundary extends it.
 | `diagnostics_lookup_reply` | The diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue and pull request links | `bookclerk-config::parse_lookup_reply`, `parse_delete_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
+| `download_resume` | A store CDN's `Content-Range` and status when a guest resumes an interrupted download, which decide whether the body is appended to the bytes already on disk | `bookclerk-plugin-sdk::resume` (`parse_content_range`, `next_step`) |
 | `throttle_reason` | A store's refusal text, which the `audible` guest reads from a refused license request to tell throttling (which pauses the whole account) from a plain refusal | `bookclerk-storefront::is_throttle_reason` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
@@ -72,6 +75,7 @@ boundary extends it.
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
 | `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
+| `upload_part` | The `Content-Range` header of an upload `PUT`, `/api/node/v1/uploads/{upload_id}/files/{n}`, which decides which bytes of a declared file the body is, or that it only asks where the owner is | `bookclerk-node-proto::parse_upload_range` |
 | `copy_answer` | A library's answer to a copy download, read on the branch or clerk that took the copy: where its head ends, how many bytes follow and where in the file they are written | `bookclerk-node-proto::copy_answer_head_end`, `parse_copy_answer` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics, pages of the library's books with the person's marked, and the grant of a copy with its download token) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `instance_config` | A plugin instance's settings, table rows included: the `settings` object of `PUT /api/config/plugin-instances/{id}/config` and the row text of `bookclerk plugins config set` | `bookclerk-library::control_plane::PluginInstanceConfigV1::validate`, `parse_setting_text` |
@@ -296,7 +300,7 @@ only that. The others check:
   does, with the same rate and length. A plain 16-bit PCM WAV must decode
   to exactly the samples an independent parser in the oracle reads from
   it. Seeds cover every container and codec the worker reads, including
-  HE-AAC and HE-AAC v2. The shared oracle is
+  HE-AAC, HE-AAC v2, Ogg Opus (mono and stereo) and Ogg Vorbis. The shared oracle is
   `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
@@ -343,6 +347,29 @@ only that. The others check:
   An accepted record round-trips through the codec and is accepted again.
   The shared oracle is `fuzz/oracles/metadata_file_record.rs`, replayed
   from `bookclerk-plugin-abi`.
+- **`notifier_reply`**: byte 0 modulo 2 picks a `NotifySendReply` message
+  (0) or an address document as text (1). A reply is delivered exactly when
+  it is the `ok` arm, keeping a provider id only when it is a non-empty line
+  within the field cap; it is retried exactly for `rate_limited`,
+  `unavailable`, `deadline_exceeded` and `cancelled`, waiting only on
+  `rate_limited` and never past an hour; and every reason is the error
+  text with control, line-separator and bidi characters blanked, cut to
+  512 bytes on a character boundary. The reply round-trips through the
+  codec. An address document is accepted exactly when it is one JSON
+  object of at most 16 distinct identifier keys with one-line string values
+  within the field cap, re-serialises to text that parses back equal, and
+  fits a fixed `email` (required) and `name` field list exactly when it has
+  a non-blank `email` and no other key. The shared oracle is
+  `fuzz/oracles/notifier_reply.rs`, replayed from `bookclerk-plugin-abi`.
+- **`notify_raise`**: byte 0 modulo 2 picks the bridge's JSON body (0) or a
+  Cap'n Proto `NotifyRaiseParams` (1). The raise is accepted exactly when
+  an independent restatement agrees: a local type id, at most 25 fields
+  with non-blank one-line names, a printable patron id, a link path that
+  starts with exactly one `/` and has no space, backslash or control
+  character, a one-line group key, and an alert key exactly when the alert
+  action is not `none`. An accepted raise round-trips through the codec and
+  is accepted again. The shared oracle is `fuzz/oracles/notify_raise.rs`,
+  replayed from `bookclerk-plugin-abi`.
 - **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
   a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
   `EventReadPage` (3). The body parser accepts exactly the JSON objects whose
@@ -544,6 +571,18 @@ only that. The others check:
   Seeds named `part-*` must parse as a part and the others must not. The
   shared oracle is `fuzz/oracles/copy_range.rs`, replayed from
   `bookclerk-node-proto`.
+- **`upload_part`**: the input is the file's declared size (eight bytes,
+  big endian) and then the header as sent. A part the parser answers lies
+  inside the file (at least one byte, ending at or before the end), so the
+  owner never writes past the declared size; only `bytes <first>-<last>/<size>`
+  with canonical decimal numbers and the declared size is a part, and
+  only `bytes */<size>` a status query, so each has one spelling (the
+  answer names the header back exactly); and the answer equals the one
+  the oracle works out by reading the header a second way (digits
+  folded into a wide integer). Seeds named `part-*` must parse as a
+  part, `status-*` as a status query, and the others must be refused.
+  The shared oracle is `fuzz/oracles/upload_part.rs`, replayed from
+  `bookclerk-node-proto`.
 - **`copy_answer`**: the input is the byte the reader asked to resume
   from and the file's size (eight bytes each, big endian) and then the
   answer as received: the head, the blank line that ends it (CRLF CRLF)
@@ -744,6 +783,21 @@ only that. The others check:
   86400 seconds). Only `custom` may carry a number, and it needs at least
   one. Anything else is refused as `Invalid`. The shared oracle is
   `fuzz/oracles/pace_request.rs`, replayed from `bookclerk-library`.
+- **`download_resume`**: the input is a flags byte (the length is already
+  known; the answer sent `Content-Length`; it sent `Content-Range`), the
+  resume offset, the known length and the `Content-Length` (eight bytes
+  each, big endian), the status (two bytes) and then the `Content-Range`
+  value as sent. The parser answers exactly what the oracle reads by
+  splitting the value as UTF-8 text and folding digits into a 128-bit
+  integer; and the step equals the one the oracle works out from the
+  rules: a `206` is appended only when its range starts at a non-zero
+  offset, its length agrees with a known one and its `Content-Length`
+  with its span, and the step names the range's end so the body is held
+  to it; a `200` replaces the partial; a `416` finishes it only at
+  `bytes */<offset>`; `408`, `429` and `5xx` retry; any other status fails.
+  Seeds named after a step (`append-*`, `replace-*`, `complete-*`,
+  `startover-*`, `retry-*`, `fail-*`) must take it. The shared oracle is
+  `fuzz/oracles/download_resume.rs`, replayed from `bookclerk-plugin-sdk`.
 - **`throttle_reason`**: restates the throttle words byte by byte. Refusal
   text is a throttle exactly when it contains `throttl`, `rate limit`,
   `rate-limit`, `ratelimit`, `too many requests` or `429`, ignoring ASCII

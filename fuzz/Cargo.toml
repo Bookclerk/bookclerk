@@ -159,6 +159,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "notifier_reply"
+path = "fuzz_targets/notifier_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notify_raise"
+path = "fuzz_targets/notify_raise.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "event_read"
 path = "fuzz_targets/event_read.rs"
 test = false
@@ -341,6 +355,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "upload_part"
+path = "fuzz_targets/upload_part.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "copy_answer"
 path = "fuzz_targets/copy_answer.rs"
 test = false
@@ -469,6 +490,13 @@ bench = false
 [[bin]]
 name = "audible_catalog"
 path = "fuzz_targets/audible_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "download_resume"
+path = "fuzz_targets/download_resume.rs"
 test = false
 doc = false
 bench = false

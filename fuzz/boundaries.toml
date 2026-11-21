@@ -133,6 +133,20 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.notifier_reply]
+crate = "bookclerk-plugin-abi"
+boundary = "A notifier's Notifier.send reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a validateDestination answer or a patron's form carries"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.notify_raise]
+crate = "bookclerk-plugin-abi"
+boundary = "A plugin's NOTIFY.raise: the /notify/raise JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.event_read]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds"
@@ -219,7 +233,7 @@ artifacts = ["bookclerk"]
 
 [targets.tags_read]
 crate = "bookclerk-tags"
-boundary = "Embedded tags of media files on storage (MP4 ilst and chapter tracks, ID3v2/ID3v1, FLAC metadata), read in the tag worker"
+boundary = "Embedded tags of media files on storage (MP4 ilst and chapter tracks, ID3v2/ID3v1, FLAC metadata, Ogg Opus/Vorbis comments), read in the tag worker"
 input_from = "storage"
 side = "host"
 artifacts = ["bookclerk"]
@@ -357,6 +371,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.upload_part]
+crate = "bookclerk-node-proto"
+boundary = "The Content-Range header of an upload PUT, /api/node/v1/uploads/{upload_id}/files/{n}, which decides which bytes of a declared file the body is, or that it only asks where the owner is"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.clerk_socket_frame]
 crate = "bookclerk-node-proto"
 boundary = "The clerk socket's frames, GET /api/clerk/v1/connect: what a library reads from a clerk (pages asked for, a copy asked for) and what a clerk reads back (topics, pages, a granted copy and its token)"
@@ -477,6 +498,15 @@ input_from = "store"
 # same crate.
 side = "host"
 artifacts = ["bookclerk"]
+
+[targets.download_resume]
+crate = "bookclerk-plugin-sdk"
+boundary = "A store CDN's Content-Range and status when a download resumes"
+input_from = "store"
+# Storefront guests resume downloads with it, and the host's plugin package
+# installer decides registry download resumes with the same functions.
+side = "host"
+artifacts = ["bookclerk", "rust-sdk"]
 
 [targets.throttle_reason]
 crate = "bookclerk-storefront"

@@ -86,6 +86,9 @@ type CoversCall = EntrypointCall<dyn bookclerk_plugin_sdk::CoverFetcher>;
 /// Typed call against the opened `metadataFiles` entrypoint.
 type MetadataFilesCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataFiles>;
 
+/// Typed call against the opened `notifier` entrypoint.
+type NotifierCall = EntrypointCall<dyn bookclerk_plugin_sdk::Notifier>;
+
 /// Typed call against the opened `socketHandler` entrypoint.
 type SocketHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::SocketHandler>;
 
@@ -198,6 +201,11 @@ enum Work {
     MetadataFiles {
         /// Typed call; replies through the sender it captured.
         call: MetadataFilesCall,
+    },
+    /// One typed `notifier` method on the opened primary entrypoints.
+    Notifier {
+        /// Typed call; replies through the sender it captured.
+        call: NotifierCall,
     },
     /// One socket event for the opened `socketHandler` entrypoint.
     SocketHandler {
@@ -1403,6 +1411,26 @@ impl PluginSession {
             + 'static,
     {
         self.entrypoint_call(call, |call| Work::MetadataFiles { call })
+            .await
+    }
+
+    /// One typed `notifier` method on the opened primary entrypoints.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `notifier` or
+    /// the method fails.
+    pub async fn notifier<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::Notifier>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.entrypoint_call(call, |call| Work::Notifier { call })
             .await
     }
 
@@ -3443,6 +3471,22 @@ fn vat_thread(
                             let _ = with_session(&session_cancel, &mut child, &mut guest, open)
                                 .await;
                         }
+                        Work::Notifier { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "notifier",
+                                |eps| {
+                                    eps.notifier.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::Notifier>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
                         Work::SocketHandler { call } => {
                             let open = run_entrypoint_call(
                                 &client,
@@ -4221,6 +4265,8 @@ async fn run_stream_copy(
                 // The stream-copy job never needs a pushed socket; the
                 // broker hands sockets only to a deployment's own open.
                 sockets: None,
+                // Nor does it raise notifications.
+                notify: None,
             },
         )
         .await
@@ -5183,13 +5229,50 @@ mode = "deny"
             .expect("wait_flag hung");
     }
 
+    /// A child that runs for about 30 seconds unless killed, on every OS.
+    ///
+    /// Windows has no `sleep` (a Git for Windows one may be on `PATH`), so it
+    /// uses `ping`, which ships with the OS.
+    fn long_running_child() -> tokio::process::Child {
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut cmd = tokio::process::Command::new("ping");
+            cmd.args(["-n", "31", "127.0.0.1"]);
+            cmd
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut cmd = tokio::process::Command::new("sleep");
+            cmd.arg("30");
+            cmd
+        };
+        cmd.stdout(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a long-running child")
+    }
+
+    /// Force-kills `pid` from outside the [`tokio::process::Child`] that owns it.
+    fn kill_pid_externally(pid: u32) {
+        #[cfg(windows)]
+        let status = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .status();
+        #[cfg(not(windows))]
+        let status = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+        assert!(
+            status.is_ok_and(|status| status.success()),
+            "could not kill {pid}"
+        );
+    }
+
     #[tokio::test]
     async fn with_session_stops_a_stalled_guest_call() {
         let flag = Arc::new(AtomicBool::new(true));
-        let mut gateway = tokio::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("sleep");
+        let mut gateway = long_running_child();
         let mut guest = None;
         let err = with_session(
             &flag,
@@ -5206,16 +5289,13 @@ mode = "deny"
         let _ = gateway.kill().await;
 
         let flag = Arc::new(AtomicBool::new(false));
-        let mut gateway = tokio::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("sleep");
+        let mut gateway = long_running_child();
         let pid = gateway.id().expect("pid");
-        tokio::spawn(async move {
+        let killer = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(30)).await;
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", &pid.to_string()])
-                .status();
+            tokio::task::spawn_blocking(move || kill_pid_externally(pid))
+                .await
+                .expect("external kill");
         });
         let mut guest = None;
         let err = tokio::time::timeout(
@@ -5227,9 +5307,12 @@ mode = "deny"
                 std::future::pending::<Result<()>>(),
             ),
         )
-        .await
-        .expect("sibling exit did not unblock the stalled call")
-        .expect_err("sibling");
+        .await;
+        // A failed kill surfaces as itself, not as a stalled call.
+        killer.await.expect("external kill task");
+        let err = err
+            .expect("sibling exit did not unblock the stalled call")
+            .expect_err("sibling");
         assert!(
             err.to_string().contains("exited"),
             "stalled dispatch must stop when a sibling exits: {err}"

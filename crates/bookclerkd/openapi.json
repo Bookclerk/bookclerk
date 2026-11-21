@@ -4518,6 +4518,123 @@
         "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
+    "/api/status/media": {
+      "get": {
+        "tags": [
+          "Status"
+        ],
+        "summary": "Returns the audio codecs, file types and output encodings this build's\nmedia worker handles.",
+        "operationId": "media_capabilities",
+        "responses": {
+          "200": {
+            "description": "What the media worker reads and writes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaCapabilitiesJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller may not do this",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
+      }
+    },
     "/api/jobs": {
       "get": {
         "tags": [
@@ -35846,6 +35963,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Content-Range",
+            "in": "header",
+            "description": "For a file sent in parts: `bytes <first>-<last>/<size>`, the part this body is, each its own request in order; or `bytes */<size>` with an empty body, which asks for the offset the owner needs next (to resume). A file sent whole carries no range.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -35860,15 +35989,28 @@
         },
         "responses": {
           "200": {
-            "description": "The file was stored (`received`).",
+            "description": "The file was stored (`received`), or a part that is not the file's last was taken, or a status query was answered, with the offset the owner needs next (`partial`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
-                "example": {
-                  "job_completed": false,
-                  "status": "received"
+                "examples": {
+                  "partial": {
+                    "summary": "Send the file from this offset.",
+                    "value": {
+                      "job_completed": false,
+                      "offset": 67108864,
+                      "status": "partial"
+                    }
+                  },
+                  "received": {
+                    "summary": "The whole file was stored.",
+                    "value": {
+                      "job_completed": false,
+                      "status": "received"
+                    }
+                  }
                 }
               }
             }
@@ -35943,7 +36085,7 @@
             }
           },
           "422": {
-            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
+            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a `Content-Range` that is not exactly a part of the declared file (`invalid_range`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -35963,6 +36105,14 @@
                     "value": {
                       "job_completed": false,
                       "reason": "destinations_changed",
+                      "status": "refused"
+                    }
+                  },
+                  "invalid_range": {
+                    "summary": "The range is not a part of the declared file.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "invalid_range",
                       "status": "refused"
                     }
                   },
@@ -35995,15 +36145,29 @@
             }
           },
           "503": {
-            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`).",
+            "description": "Storage or the upload record is unavailable, or the file lock timed out; retry (`unavailable`). With reason `resume`, a part did not start where the open file stands, or broke part way: send the file from `offset` (0 when no write is open here).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
-                "example": {
-                  "job_completed": false,
-                  "status": "unavailable"
+                "examples": {
+                  "resume": {
+                    "summary": "Send the file from this offset.",
+                    "value": {
+                      "job_completed": false,
+                      "offset": 67108864,
+                      "reason": "resume",
+                      "status": "unavailable"
+                    }
+                  },
+                  "unavailable": {
+                    "summary": "Retry the request.",
+                    "value": {
+                      "job_completed": false,
+                      "status": "unavailable"
+                    }
+                  }
                 }
               }
             }
@@ -40589,16 +40753,17 @@
           "m4b",
           "mp3",
           "mp3_chapters",
-          "original"
+          "original",
+          "opus"
         ]
       },
       "CopyQuality": {
         "type": "string",
-        "description": "A copy's quality: `original`, a constant bitrate the MP3 encoder writes (`64k`, `96k`, `128k`, `160k`, `192k`, `256k` or `320k`), or a LAME VBR quality `v0` to `v9`; the last two may end in `-mono`.",
+        "description": "A copy's quality: `original`, a bitrate (for MP3 a constant rate the encoder writes: `64k`, `96k`, `128k`, `160k`, `192k`, `256k` or `320k`; for Opus a target: `16k`, `24k`, `32k`, `48k`, `64k`, `96k` or `128k`), or a LAME VBR quality `v0` to `v9` (MP3 only); the last two may end in `-mono`.",
         "examples": [
           "64k-mono"
         ],
-        "pattern": "^(original|((64|96|128|160|192|256|320)k|v[0-9])(-mono)?)$"
+        "pattern": "^(original|((16|24|32|48|64|96|128|160|192|256|320)k|v[0-9])(-mono)?)$"
       },
       "CreatePluginInstance": {
         "type": "object",
@@ -43859,6 +44024,66 @@
           }
         }
       },
+      "MediaCapabilitiesJson": {
+        "type": "object",
+        "description": "The codecs, containers and encodings this build's media worker handles.",
+        "required": [
+          "decodes",
+          "reads",
+          "encodes"
+        ],
+        "properties": {
+          "decodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Audio codecs the worker decodes (`aac`, `alac`, `flac`, `mp3`,\n`opus`, `vorbis`).",
+            "example": [
+              "aac",
+              "alac",
+              "flac",
+              "mp3",
+              "opus",
+              "vorbis"
+            ]
+          },
+          "reads": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Media types of files the worker opens, compared without case or\nparameters.",
+            "example": [
+              "audio/mp4",
+              "audio/mpeg",
+              "audio/flac",
+              "audio/ogg"
+            ]
+          },
+          "encodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutputEncodingJson"
+            },
+            "description": "Encodings the worker writes.",
+            "example": [
+              {
+                "advanced": false,
+                "name": "m4b"
+              },
+              {
+                "advanced": false,
+                "name": "mp3"
+              },
+              {
+                "advanced": true,
+                "name": "opus"
+              }
+            ]
+          }
+        }
+      },
       "MediaKindJson": {
         "type": "string",
         "description": "Carrier of an edition (`editions.media_kind`).",
@@ -45608,9 +45833,29 @@
         ],
         "description": "Body of `GET /api/config/domains/core.output` and of a `PUT` that was\napplied: the revision metadata and the `[output]` document."
       },
+      "OutputEncodingJson": {
+        "type": "object",
+        "description": "One encoding the media worker writes.",
+        "required": [
+          "name",
+          "advanced"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The output format id that selects it (`m4b`, `mp3` or `opus`).",
+            "example": "opus"
+          },
+          "advanced": {
+            "type": "boolean",
+            "description": "True when settings offer it only under their advanced options,\nbecause fewer players open it than M4B and MP3.",
+            "example": true
+          }
+        }
+      },
       "OutputFormat": {
         "type": "string",
-        "description": "Post-download output formatting. Default is enriched M4B (tags + chapters).\n`split_mp3_by_size` and `opus` parse but are not implemented yet: the\nacquire pipeline rejects a job that selects either before downloading.",
+        "description": "Post-download output formatting. Default is enriched M4B (tags + chapters).\n`split_mp3_by_size` parses but is not implemented yet: the acquire\npipeline rejects a job that selects it before downloading.",
         "enum": [
           "enriched_m4b",
           "single_mp3",
@@ -53347,7 +53592,7 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
+            "description": "Stable outcome: `received`, `partial` (a part that is not the\nfile's last was taken), `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
             "example": "received"
           },
           "reason": {
@@ -53355,8 +53600,18 @@
               "string",
               "null"
             ],
-            "description": "Why, for `refused`.",
+            "description": "Why, for `refused`, and `resume` for an `unavailable` part that\ndoes not continue the open file at [`Self::offset`].",
             "example": "size_mismatch"
+          },
+          "offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "For `partial`, and an `unavailable` part with reason `resume`: the\noffset of the next byte of the file the owner needs.",
+            "example": 67108864,
+            "minimum": 0
           },
           "job_completed": {
             "type": "boolean",

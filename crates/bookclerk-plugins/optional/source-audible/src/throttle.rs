@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use audible_rs::api::client::Client;
 use audible_rs::downloader::{self, DownloadOutcome};
-use bookclerk_plugin_sdk::http::header::CONTENT_TYPE;
+use bookclerk_plugin_sdk::http::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{AudibleError, Result};
@@ -72,90 +72,274 @@ pub async fn download_to_file_limited(
         let _ = tokio::fs::remove_file(&marker).await;
     }
 
-    let request = client
-        .authed_get(url)
-        .await
-        .map_err(|e| AudibleError::Download(e.to_string()))?;
-    let response = request
-        .send()
-        .await
-        .map_err(|e| AudibleError::Download(e.to_string()))?;
-    let response = response
-        .error_for_status()
-        .map_err(|e| AudibleError::Download(e.to_string()))?;
+    let job = LimitedJob {
+        client,
+        url,
+        expected_size,
+        limit_kbps,
+        expected_content_type,
+        ext_overrides,
+        version_tag,
+        dest,
+        part: &part,
+        marker: &marker,
+    };
+    let mut wait = Duration::from_secs(1);
+    let mut attempt = 1;
+    loop {
+        match job.attempt().await {
+            Ok(done) => return Ok(done),
+            Err(Interrupted::Retry(reason)) if attempt < crate::retry::TRANSFER_ATTEMPTS => {
+                tracing::warn!(attempt, %reason, "Audible transfer interrupted; resuming");
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(30));
+                attempt += 1;
+            }
+            Err(Interrupted::Retry(reason)) => return Err(AudibleError::Download(reason)),
+            Err(Interrupted::Fatal(err)) => return Err(err),
+        }
+    }
+}
 
-    let got_content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
+/// Longest wait for the next body chunk before a throttled transfer
+/// counts as stalled (the client's own timeout covers the answer's head
+/// only).
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
 
-    if !expected_content_type.is_empty() {
-        if let Some(got) = &got_content_type {
-            if !content_type_matches(got, expected_content_type) {
-                return Err(content_type_error(response, got, expected_content_type).await);
+/// How a throttled attempt ended without the file.
+enum Interrupted {
+    /// The connection failed, stalled, ended short, or the answer did not
+    /// fit the partial: another attempt resumes (or restarts) it.
+    Retry(String),
+    /// A failure another attempt would not fix.
+    Fatal(AudibleError),
+}
+
+impl From<std::io::Error> for Interrupted {
+    fn from(err: std::io::Error) -> Self {
+        Self::Fatal(err.into())
+    }
+}
+
+/// One throttled download, with what each attempt needs.
+struct LimitedJob<'a> {
+    /// Authenticated Audible client.
+    client: &'a Client,
+    /// Content URL.
+    url: &'a str,
+    /// The file's size from the license, when known.
+    expected_size: Option<u64>,
+    /// Speed limit in KiB/s (non-zero).
+    limit_kbps: u32,
+    /// Accepted response Content-Types (empty: any).
+    expected_content_type: &'a [&'a str],
+    /// Content-Type → extension corrections for the final path.
+    ext_overrides: &'a [(&'a str, &'a str)],
+    /// License content version; a partial resumes only under the same one.
+    version_tag: Option<&'a str>,
+    /// Planned final path.
+    dest: &'a Path,
+    /// `<dest>.part`.
+    part: &'a Path,
+    /// `<dest>.part.ver`.
+    marker: &'a Path,
+}
+
+impl LimitedJob<'_> {
+    /// Bytes of the partial that may be resumed: only under a matching
+    /// version marker, and never more than the expected size.
+    async fn resumable_offset(&self) -> u64 {
+        let Some(tag) = self.version_tag else {
+            return 0;
+        };
+        let Ok(stamped) = tokio::fs::read_to_string(self.marker).await else {
+            return 0;
+        };
+        if stamped != tag {
+            return 0;
+        }
+        let held = tokio::fs::metadata(self.part)
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        match self.expected_size {
+            Some(size) if held > size => 0,
+            _ => held,
+        }
+    }
+
+    /// One request, resuming the partial with `Range` when it can.
+    async fn attempt(&self) -> std::result::Result<(DownloadOutcome, PathBuf), Interrupted> {
+        use bookclerk_plugin_sdk::resume::{next_step, Partial, ResponseHead, Step};
+
+        let offset = self.resumable_offset().await;
+        let mut request = self
+            .client
+            .authed_get(self.url)
+            .await
+            .map_err(|e| Interrupted::Fatal(AudibleError::Download(e.to_string())))?;
+        if offset > 0 {
+            request = request.header(RANGE, format!("bytes={offset}-"));
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| Interrupted::Retry(e.to_string()))?;
+        let status = response.status();
+        let step = next_step(
+            Partial {
+                offset,
+                total: self.expected_size,
+            },
+            ResponseHead {
+                status: status.as_u16(),
+                content_range: response.headers().get(CONTENT_RANGE).map(|v| v.as_bytes()),
+                content_length: response.content_length(),
+            },
+        );
+        let (append, total, end) = match step {
+            Step::Append { total, end } => (true, total, end),
+            Step::Replace { total, end } => (false, total, end),
+            Step::Complete if self.ext_overrides.is_empty() => {
+                return self.finish(self.dest.to_path_buf()).await;
+            }
+            Step::Complete => {
+                // The final extension comes from the Content-Type, which a
+                // 416 does not carry: fetch the file again to learn it.
+                let _ = tokio::fs::remove_file(self.part).await;
+                let _ = tokio::fs::remove_file(self.marker).await;
+                return Err(Interrupted::Retry(
+                    "the partial is complete but its type is unknown; restarting".into(),
+                ));
+            }
+            Step::StartOver => {
+                let _ = tokio::fs::remove_file(self.part).await;
+                let _ = tokio::fs::remove_file(self.marker).await;
+                return Err(Interrupted::Retry(format!(
+                    "the answer ({status}) does not continue the partial at byte {offset}"
+                )));
+            }
+            Step::Retry => return Err(Interrupted::Retry(format!("HTTP {status}"))),
+            Step::Fail => {
+                return Err(Interrupted::Fatal(AudibleError::Download(format!(
+                    "download failed with HTTP {status}"
+                ))))
+            }
+        };
+
+        let got_content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        if !self.expected_content_type.is_empty() {
+            if let Some(got) = &got_content_type {
+                if !content_type_matches(got, self.expected_content_type) {
+                    return Err(Interrupted::Fatal(
+                        content_type_error(response, got, self.expected_content_type).await,
+                    ));
+                }
             }
         }
-    }
+        let final_dest = got_content_type
+            .as_deref()
+            .and_then(|ct| extension_override(ct, self.ext_overrides))
+            .map(|ext| self.dest.with_extension(ext))
+            .unwrap_or_else(|| self.dest.to_path_buf());
 
-    let final_dest = got_content_type
-        .as_deref()
-        .and_then(|ct| extension_override(ct, ext_overrides))
-        .map(|ext| dest.with_extension(ext))
-        .unwrap_or_else(|| dest.to_path_buf());
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&part)
-        .await?;
-
-    if let Some(tag) = version_tag {
-        let _ = tokio::fs::write(&marker, tag).await;
-    }
-
-    let limit_bps = u64::from(limit_kbps) * 1024;
-    let mut downloaded = 0u64;
-    let mut window_bytes = 0u64;
-    let mut window_start = Instant::now();
-    let mut stream = response.bytes_stream();
-    use futures::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| AudibleError::Download(e.to_string()))?;
-        file.write_all(&chunk).await?;
-        let n = chunk.len() as u64;
-        downloaded += n;
-        window_bytes += n;
-        let elapsed = window_start.elapsed();
-        let expected = Duration::from_secs_f64(window_bytes as f64 / limit_bps as f64);
-        if expected > elapsed {
-            tokio::time::sleep(expected - elapsed).await;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(self.part)
+            .await?;
+        if let Some(tag) = self.version_tag {
+            let _ = tokio::fs::write(self.marker, tag).await;
         }
-        if window_bytes >= limit_bps {
-            window_start = Instant::now();
-            window_bytes = 0;
-        }
-    }
-    file.flush().await?;
-    file.sync_all().await?;
-    drop(file);
 
-    if let Some(size) = expected_size {
-        if downloaded != size {
-            if downloaded > size {
-                let _ = tokio::fs::remove_file(&part).await;
-                let _ = tokio::fs::remove_file(&marker).await;
+        let limit_bps = u64::from(self.limit_kbps) * 1024;
+        let mut written = if append { offset } else { 0 };
+        let mut window_bytes = 0u64;
+        let mut window_start = Instant::now();
+        let mut stream = response.bytes_stream();
+        use futures::StreamExt;
+        loop {
+            let chunk = match tokio::time::timeout(READ_TIMEOUT, stream.next()).await {
+                Ok(Some(Ok(chunk))) => chunk,
+                Ok(None) => break,
+                Ok(Some(Err(err))) => {
+                    file.flush().await?;
+                    return Err(Interrupted::Retry(err.to_string()));
+                }
+                Err(_) => {
+                    file.flush().await?;
+                    return Err(Interrupted::Retry(format!(
+                        "the transfer stalled at {written} bytes"
+                    )));
+                }
+            };
+            let n = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+            if end.is_some_and(|end| written.saturating_add(n) > end) {
+                // The body runs past the range it stated.
+                drop(file);
+                let _ = tokio::fs::remove_file(self.part).await;
+                let _ = tokio::fs::remove_file(self.marker).await;
+                return Err(Interrupted::Retry(
+                    "the answer ran past the range it stated".into(),
+                ));
             }
-            return Err(AudibleError::Download(format!(
-                "size mismatch: wrote {downloaded} bytes, expected {size}"
+            file.write_all(&chunk).await?;
+            written = written.saturating_add(n);
+            window_bytes = window_bytes.saturating_add(n);
+            let elapsed = window_start.elapsed();
+            let nanos = u128::from(window_bytes) * 1_000_000_000 / u128::from(limit_bps.max(1));
+            let expected = Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX));
+            if expected > elapsed {
+                tokio::time::sleep(expected - elapsed).await;
+            }
+            if window_bytes >= limit_bps {
+                window_start = Instant::now();
+                window_bytes = 0;
+            }
+        }
+        file.flush().await?;
+        file.sync_all().await?;
+        drop(file);
+
+        if let Some(size) = self.expected_size.or(total) {
+            if written > size {
+                let _ = tokio::fs::remove_file(self.part).await;
+                let _ = tokio::fs::remove_file(self.marker).await;
+                return Err(Interrupted::Fatal(AudibleError::Download(format!(
+                    "size mismatch: wrote {written} bytes, expected {size}"
+                ))));
+            }
+            if written < size {
+                // Ended early without an error: keep the partial and resume.
+                return Err(Interrupted::Retry(format!(
+                    "transfer ended at {written} of {size} bytes"
+                )));
+            }
+        } else if end.is_some() {
+            // A range of a file whose length nobody stated: the next
+            // attempt asks from here and a 416 there finishes it.
+            return Err(Interrupted::Retry(format!(
+                "range done at {written} bytes; the file's length is unknown"
             )));
         }
+        self.finish(final_dest).await
     }
 
-    tokio::fs::rename(&part, &final_dest).await?;
-    let _ = tokio::fs::remove_file(&marker).await;
-    Ok((DownloadOutcome::Downloaded, final_dest))
+    /// Moves the finished partial onto `final_dest`.
+    async fn finish(
+        &self,
+        final_dest: PathBuf,
+    ) -> std::result::Result<(DownloadOutcome, PathBuf), Interrupted> {
+        tokio::fs::rename(self.part, &final_dest).await?;
+        let _ = tokio::fs::remove_file(self.marker).await;
+        Ok((DownloadOutcome::Downloaded, final_dest))
+    }
 }
 
 /// Sibling `.part` path used while a download is still incomplete.
@@ -241,4 +425,341 @@ async fn content_type_error(
         "unexpected Content-Type: got {got}, expected {}{detail}",
         expected.join(", ")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    /// The file every test server holds.
+    const BODY: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+    /// Speed limit high enough that throttling never sleeps noticeably.
+    const FAST_KBPS: u32 = 1_000_000;
+
+    /// A client with a valid synthetic token (no refresh, no signing).
+    fn client() -> Client {
+        let auth = audible_rs::auth::Authenticator::from_value(serde_json::json!({
+            "country_code": "us",
+            "bearer": {"access_token": "Atna|synthetic", "expires": 9_999_999_999.0_f64},
+        }))
+        .unwrap();
+        Client::new(auth).unwrap()
+    }
+
+    /// The `Range` header's first byte, if the request sent one.
+    fn range_start(request: &Request) -> Option<usize> {
+        let value = request.headers.get("range")?.to_str().ok()?;
+        value
+            .strip_prefix("bytes=")?
+            .strip_suffix('-')?
+            .parse()
+            .ok()
+    }
+
+    /// Answers like a well-behaved CDN: 206 for a range, 416 past the end.
+    fn ranged(content_type: &'static str) -> impl Fn(&Request) -> ResponseTemplate {
+        move |request: &Request| match range_start(request) {
+            None => ResponseTemplate::new(200).set_body_raw(BODY, content_type),
+            Some(start) if start >= BODY.len() => ResponseTemplate::new(416)
+                .insert_header("content-range", format!("bytes */{}", BODY.len()).as_str()),
+            Some(start) => ResponseTemplate::new(206)
+                .insert_header(
+                    "content-range",
+                    format!("bytes {start}-{}/{}", BODY.len() - 1, BODY.len()).as_str(),
+                )
+                .set_body_raw(&BODY[start..], content_type),
+        }
+    }
+
+    /// Runs one throttled download of the server's `/file`.
+    async fn fetch(
+        server: &MockServer,
+        dest: &Path,
+        version_tag: Option<&str>,
+        ext_overrides: &[(&str, &str)],
+        expected_content_type: &[&str],
+    ) -> Result<(DownloadOutcome, PathBuf)> {
+        download_to_file_limited(
+            &client(),
+            &format!("{}/file", server.uri()),
+            dest,
+            Some(u64::try_from(BODY.len()).unwrap()),
+            false,
+            FAST_KBPS,
+            expected_content_type,
+            ext_overrides,
+            version_tag,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_fresh_download_lands_at_the_overridden_extension() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/vnd.audible.aaxc"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.aax");
+        let (outcome, path) = fetch(
+            &server,
+            &dest,
+            Some("v1"),
+            &[("audio/vnd.audible.aaxc", "aaxc")],
+            &["audio/vnd.audible.aaxc"],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, DownloadOutcome::Downloaded));
+        assert_eq!(path, dir.path().join("book.aaxc"));
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        assert!(!version_marker_path(&part_path(&dest)).exists());
+
+        // A second call finds the finished file under its corrected name.
+        let (again, same) = fetch(
+            &server,
+            &dest,
+            Some("v1"),
+            &[("audio/vnd.audible.aaxc", "aaxc")],
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(again, DownloadOutcome::AlreadyComplete));
+        assert_eq!(same, path);
+    }
+
+    #[tokio::test]
+    async fn a_partial_under_the_same_version_resumes_with_a_range() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/mp4"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.m4b");
+        let part = part_path(&dest);
+        std::fs::write(&part, &BODY[..10]).unwrap();
+        std::fs::write(version_marker_path(&part), "v1").unwrap();
+
+        let (_, path) = fetch(&server, &dest, Some("v1"), &[], &[]).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(range_start(&requests[0]), Some(10));
+    }
+
+    #[tokio::test]
+    async fn a_partial_under_another_version_is_fetched_again_whole() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/mp4"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.m4b");
+        let part = part_path(&dest);
+        std::fs::write(&part, b"stale bytes").unwrap();
+        std::fs::write(version_marker_path(&part), "v0").unwrap();
+
+        let (_, path) = fetch(&server, &dest, Some("v1"), &[], &[]).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(range_start(&requests[0]), None);
+    }
+
+    #[tokio::test]
+    async fn a_complete_partial_finishes_on_416() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/mp4"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.m4b");
+        let part = part_path(&dest);
+        std::fs::write(&part, BODY).unwrap();
+        std::fs::write(version_marker_path(&part), "v1").unwrap();
+
+        // `expected_size` unknown, so the already-complete probe cannot
+        // short-circuit and the server's 416 has to finish it.
+        let (outcome, path) = download_to_file_limited(
+            &client(),
+            &format!("{}/file", server.uri()),
+            &dest,
+            None,
+            false,
+            FAST_KBPS,
+            &[],
+            &[],
+            Some("v1"),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, DownloadOutcome::Downloaded));
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+    }
+
+    #[tokio::test]
+    async fn a_complete_partial_of_unknown_type_is_fetched_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ranged("audio/vnd.audible.aaxc"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.aax");
+        let part = part_path(&dest);
+        std::fs::write(&part, BODY).unwrap();
+        std::fs::write(version_marker_path(&part), "v1").unwrap();
+
+        let (_, path) = download_to_file_limited(
+            &client(),
+            &format!("{}/file", server.uri()),
+            &dest,
+            None,
+            false,
+            FAST_KBPS,
+            &[],
+            &[("audio/vnd.audible.aaxc", "aaxc")],
+            Some("v1"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(path, dir.path().join("book.aaxc"));
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_fails_without_retrying() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let err = fetch(&server, &dir.path().join("book.m4b"), None, &[], &[])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("403"), "{err}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_multipart_title_answer_names_the_parts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "Please download the parts of this title individually.",
+                "text/plain",
+            ))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let err = fetch(
+            &server,
+            &dir.path().join("book.aax"),
+            None,
+            &[],
+            &["audio/vnd.audible.aax"],
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("multipart title"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_unexpected_binary_type_is_refused_without_its_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(BODY, "image/png"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let err = fetch(
+            &server,
+            &dir.path().join("book.aax"),
+            None,
+            &[],
+            &["audio/vnd.audible.aax"],
+        )
+        .await
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("unexpected Content-Type: got image/png"),
+            "{text}"
+        );
+        assert!(!text.contains("0123"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_body_longer_than_the_license_says_is_discarded() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(BODY, "audio/mp4"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("book.m4b");
+        let err = download_to_file_limited(
+            &client(),
+            &format!("{}/file", server.uri()),
+            &dest,
+            Some(4),
+            false,
+            FAST_KBPS,
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("size mismatch"), "{err}");
+        assert!(!part_path(&dest).exists());
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_retried() {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&calls);
+        let answer = ranged("audio/mp4");
+        Mock::given(method("GET"))
+            .respond_with(move |request: &Request| {
+                if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                } else {
+                    answer(request)
+                }
+            })
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let (_, path) = fetch(&server, &dir.path().join("book.m4b"), None, &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn content_types_compare_without_parameters_or_case() {
+        assert!(content_type_matches("Audio/MP4; charset=x", &["audio/mp4"]));
+        assert!(content_type_matches("anything", &[]));
+        assert!(!content_type_matches("text/html", &["audio/mp4"]));
+        assert_eq!(
+            extension_override("AUDIO/X-M4A ; q=1", &[("audio/x-m4a", "m4a")]),
+            Some("m4a")
+        );
+        assert!(is_text_like("application/problem+json"));
+        assert!(is_text_like("application/xml"));
+        assert!(!is_text_like("audio/mp4"));
+    }
 }

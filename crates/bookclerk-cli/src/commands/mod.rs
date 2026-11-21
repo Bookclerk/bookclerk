@@ -12,6 +12,7 @@ pub mod integrations;
 pub mod libraries;
 mod libraries_join;
 pub mod library;
+pub mod media;
 pub mod migrate;
 pub mod nodes;
 pub mod plugin_installs;

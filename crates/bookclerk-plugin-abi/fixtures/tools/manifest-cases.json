@@ -736,6 +736,142 @@
       "name": "table setting with columns",
       "tables": "[vars]\n[[settings]]\nkey = \"mappings\"\ntype = \"table\"\ndefault = [{ library = \"main\" }]\n[[settings.columns]]\nkey = \"library\"\ntype = \"string\"\nrequired = true\n[[settings.columns]]\nkey = \"watch\"\ntype = \"bool\"\ndefault = true\n",
       "error": null
+    },
+    {
+      "name": "notifier plugin for email",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"personal\"]\naccount_mail = true\nformats = [\"text\", \"html\"]\n\n[[notifier.address_fields]]\nkey = \"email\"\nlabel = \"Email address\"\nrequired = true\n",
+      "error": null
+    },
+    {
+      "name": "notifier plugin for a channel",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"channel\"]\nformats = [\"text\", \"markdown\"]\n",
+      "error": null
+    },
+    {
+      "name": "notifier plugin without the table",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "error": "plugin.toml: `[notifier]` is required for a plugin with the `notifier` entrypoint"
+    },
+    {
+      "name": "notifier table without the entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[notifier]\ndestinations = [\"channel\"]\n",
+      "error": "plugin.toml: `[notifier]` needs the `notifier` entrypoint"
+    },
+    {
+      "name": "notifier without destinations",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = []\n",
+      "error": "plugin.toml: `[notifier].destinations` is empty"
+    },
+    {
+      "name": "notifier destination twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"channel\", \"channel\"]\n",
+      "error": "plugin.toml: `[notifier].destinations` names a kind twice"
+    },
+    {
+      "name": "notifier with empty formats",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"channel\"]\nformats = []\n",
+      "error": "plugin.toml: `[notifier].formats` must include `text`"
+    },
+    {
+      "name": "notifier formats without text",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"channel\"]\nformats = [\"markdown\"]\n",
+      "error": "plugin.toml: `[notifier].formats` must include `text`"
+    },
+    {
+      "name": "notifier format twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"channel\"]\nformats = [\"text\", \"text\"]\n",
+      "error": "plugin.toml: `[notifier].formats` names a format twice"
+    },
+    {
+      "name": "notifier personal without address fields",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"personal\"]\n",
+      "error": "plugin.toml: `[notifier]` sends to `personal` destinations but declares no `[[notifier.address_fields]]`"
+    },
+    {
+      "name": "notifier address fields without personal",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"channel\"]\n\n[[notifier.address_fields]]\nkey = \"to\"\nlabel = \"To\"\nrequired = true\n",
+      "error": "plugin.toml: `[[notifier.address_fields]]` needs `personal` in `[notifier].destinations`"
+    },
+    {
+      "name": "notifier address field bad key",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"personal\"]\n\n[[notifier.address_fields]]\nkey = \"Chat\"\nlabel = \"Chat\"\nrequired = true\n",
+      "error": "plugin.toml: notifier.address_fields[0].key `Chat` is not an identifier ([a-z][a-z0-9_]{0,63})"
+    },
+    {
+      "name": "notifier address field twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"personal\"]\n\n[[notifier.address_fields]]\nkey = \"to\"\nlabel = \"To\"\nrequired = true\n\n[[notifier.address_fields]]\nkey = \"to\"\nlabel = \"To again\"\n",
+      "error": "plugin.toml: notifier address field `to` is declared twice"
+    },
+    {
+      "name": "notifier address field without label",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"personal\"]\n\n[[notifier.address_fields]]\nkey = \"to\"\nlabel = \" \"\nrequired = true\n",
+      "error": "plugin.toml: notifier.address_fields[0].label is required"
+    },
+    {
+      "name": "notifier address fields none required",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"personal\"]\n\n[[notifier.address_fields]]\nkey = \"to\"\nlabel = \"To\"\n",
+      "error": "plugin.toml: `[[notifier.address_fields]]` needs at least one required field"
+    },
+    {
+      "name": "notifier account mail without email",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"notifier\"]\n",
+      "tables": "[notifier]\ndestinations = [\"personal\"]\naccount_mail = true\n\n[[notifier.address_fields]]\nkey = \"to\"\nlabel = \"To\"\nrequired = true\n",
+      "error": "plugin.toml: `[notifier].account_mail` needs a required, non-secret `email` address field"
+    },
+    {
+      "name": "notification types",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[[notifications.types]]\nid = \"sync_failed\"\naudience = \"operational\"\nseverity = \"warning\"\ntitle = \"Library sync failed\"\n\n[[notifications.types]]\nid = \"new_episode\"\naudience = \"patron\"\ntitle = \"New episode\"\n",
+      "error": null
+    },
+    {
+      "name": "notification type bad id",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[[notifications.types]]\nid = \"SyncFailed\"\naudience = \"operational\"\ntitle = \"Sync failed\"\n",
+      "error": "plugin.toml: notifications.types[0].id `SyncFailed` is not an identifier ([a-z][a-z0-9_]{0,63})"
+    },
+    {
+      "name": "notification type twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[[notifications.types]]\nid = \"a\"\naudience = \"operational\"\ntitle = \"A\"\n\n[[notifications.types]]\nid = \"a\"\naudience = \"patron\"\ntitle = \"A again\"\n",
+      "error": "plugin.toml: notification type `a` is declared twice"
+    },
+    {
+      "name": "notification type account audience",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[[notifications.types]]\nid = \"reset\"\naudience = \"account\"\ntitle = \"Reset\"\n",
+      "error": "plugin.toml: notifications.types[0].audience `account` is reserved to Bookclerk"
+    },
+    {
+      "name": "notification type blank title",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[[notifications.types]]\nid = \"a\"\naudience = \"operational\"\ntitle = \" \"\n",
+      "error": "plugin.toml: notifications.types[0].title must be one line of 1 to 256 bytes"
+    },
+    {
+      "name": "notification type multi-line title",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[[notifications.types]]\nid = \"a\"\naudience = \"operational\"\ntitle = \"one\\ntwo\"\n",
+      "error": "plugin.toml: notifications.types[0].title must be one line of 1 to 256 bytes"
+    },
+    {
+      "name": "notification types take the NOTIFY binding",
+      "tables": "[[notifications.types]]\nid = \"a\"\naudience = \"operational\"\ntitle = \"A\"\n\n[[queues.producers]]\nbinding = \"NOTIFY\"\nqueue = \"jobs\"\n",
+      "error": "plugin.toml: [queues.producers][0] binding collides with another binding"
     }
   ]
 }

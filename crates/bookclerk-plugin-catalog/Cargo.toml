@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 bookclerk-plugin-manifest.workspace = true
+bookclerk-plugin-sdk.workspace = true
 chrono.workspace = true
 fs4.workspace = true
 flate2.workspace = true

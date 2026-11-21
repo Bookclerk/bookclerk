@@ -39,6 +39,9 @@ pub(crate) fn read(src: &Source<'_>) -> Step<TagRecord> {
     let mut builder = RecordBuilder::new(Container::Flac);
     let mut offset = 4u64;
     let mut pictures: Vec<(u32, &[u8], u64)> = Vec::new();
+    // Pictures carried as `METADATA_BLOCK_PICTURE` comments, used only
+    // when the file has no `PICTURE` block.
+    let mut comment_pictures: Vec<(u32, Vec<u8>)> = Vec::new();
     for _ in 0..MAX_BLOCKS {
         let &[flags, a, b, c] = src.bytes(offset, 4, NAME)? else {
             return Err(malformed("block header runs past the end"));
@@ -59,7 +62,9 @@ pub(crate) fn read(src: &Source<'_>) -> Step<TagRecord> {
                     len: len + 4,
                 });
                 if kind == VORBIS_COMMENT {
-                    read_comments(body, &mut builder)?;
+                    for (kind, data) in read_comments(body, &mut builder)? {
+                        comment_pictures.push((kind, data));
+                    }
                 } else if kind == PICTURE {
                     if let Some((kind, data, at)) = picture(body) {
                         pictures.push((kind, data, body_at + at));
@@ -80,6 +85,12 @@ pub(crate) fn read(src: &Source<'_>) -> Step<TagRecord> {
                     .ok()
                     .map(|len| ByteSpan { offset: at, len });
                 builder.cover(data, span);
+            } else if let Some((_, data)) = comment_pictures
+                .iter()
+                .find(|(kind, _)| *kind == FRONT_COVER)
+                .or_else(|| comment_pictures.first())
+            {
+                builder.cover(data, None);
             }
             return builder.finish(src);
         }
@@ -123,12 +134,24 @@ impl<'a> LeReader<'a> {
     }
 }
 
-/// Adds the comments of a Vorbis comment block, and its chapters.
+/// The comment key that carries a base64 FLAC `PICTURE` block (the Ogg
+/// way to embed a cover).
+const PICTURE_KEY: &str = "METADATA_BLOCK_PICTURE";
+
+/// Adds the comments of a Vorbis comment block (FLAC, Ogg Opus, Ogg
+/// Vorbis), and its chapters.
+///
+/// # Returns
+///
+/// The pictures carried as [`PICTURE_KEY`] comments, as picture type and
+/// image bytes; those comments are not entries. A value that is not
+/// base64 of a picture block is dropped.
 ///
 /// # Errors
 ///
 /// A malformed failure when a length runs past the block.
-pub(crate) fn read_comments(body: &[u8], builder: &mut RecordBuilder) -> Step<()> {
+pub(crate) fn read_comments(body: &[u8], builder: &mut RecordBuilder) -> Step<Vec<(u32, Vec<u8>)>> {
+    let mut pictures = Vec::new();
     let mut reader = LeReader(body);
     reader
         .string()
@@ -147,6 +170,12 @@ pub(crate) fn read_comments(body: &[u8], builder: &mut RecordBuilder) -> Step<()
             continue;
         };
         let upper = key.to_ascii_uppercase();
+        if upper == PICTURE_KEY {
+            if let Some((kind, data, _)) = base64(value).as_deref().and_then(picture) {
+                pictures.push((kind, data.to_vec()));
+            }
+            continue;
+        }
         if let Some((number, is_name)) = chapter_key(&upper) {
             let slot = chapters.entry(number).or_default();
             if is_name {
@@ -164,7 +193,34 @@ pub(crate) fn read_comments(body: &[u8], builder: &mut RecordBuilder) -> Step<()
         }
     }
     builder.chapter_source(ChapterSource::VorbisComment);
-    Ok(())
+    Ok(pictures)
+}
+
+/// Decodes standard base64 (RFC 4648 section 4) with optional padding;
+/// `None` for any other character or a dangling bit group.
+fn base64(text: &str) -> Option<Vec<u8>> {
+    let digits = text.trim_end_matches('=').as_bytes();
+    let mut out = Vec::with_capacity(digits.len() / 4 * 3 + 2);
+    let mut bits = 0u32;
+    let mut held = 0u8;
+    for &byte in digits {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        bits = (bits << 6) | u32::from(value);
+        held += 6;
+        if held >= 8 {
+            held -= 8;
+            out.push(u8::try_from((bits >> held) & 0xFF).ok()?);
+        }
+    }
+    // Six leftover bits cannot end a whole byte.
+    (held < 6).then_some(out)
 }
 
 /// `CHAPTER001` → `(1, false)`, `CHAPTER001NAME` → `(1, true)`.
@@ -292,6 +348,15 @@ pub(crate) mod tests {
         assert_eq!(parse_timestamp("1:2"), None);
         assert_eq!(chapter_key("CHAPTER12NAME"), Some((12, true)));
         assert_eq!(chapter_key("CHAPTERNAME"), None);
+    }
+
+    #[test]
+    fn base64_decodes_strictly() {
+        assert_eq!(base64("aGVsbG8=").as_deref(), Some(&b"hello"[..]));
+        assert_eq!(base64("aGVsbG8").as_deref(), Some(&b"hello"[..]));
+        assert_eq!(base64("").as_deref(), Some(&b""[..]));
+        assert_eq!(base64("a"), None);
+        assert_eq!(base64("aGV*"), None);
     }
 
     #[test]

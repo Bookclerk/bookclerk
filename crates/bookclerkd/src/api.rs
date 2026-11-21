@@ -1139,6 +1139,7 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(legacy_cancel_job))
         .routes(routes!(trigger_integration_scan))
         .routes(routes!(status))
+        .routes(routes!(crate::media_capabilities::media_capabilities))
         .routes(routes!(list_jobs))
         .routes(routes!(cancel_job))
         .routes(routes!(list_events))

@@ -295,22 +295,40 @@ impl LibroClient {
         Ok(Some(meta))
     }
 
-    /// Download arbitrary URL bytes (CDN part or M4B). Sends auth headers for libro.fm hosts.
+    /// Downloads a URL (CDN part or M4B) to `dest`, resuming dropped
+    /// transfers. Sends auth headers for libro.fm hosts.
+    ///
+    /// The body streams to disk through the SDK's resumable download
+    /// (`bookclerk_plugin_sdk::download`), so a multi-gigabyte M4B is
+    /// never held in memory and a dropped connection asks only for the
+    /// missing bytes.
+    ///
+    /// # Returns
+    ///
+    /// The file's length in bytes.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
-    pub async fn download_bytes(&self, url: &str) -> Result<bytes::Bytes> {
-        let mut req = self.http.get(url);
-        if url_is_libro_host(url) {
-            req = req.headers(self.headers(true)?);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(LibroError::download(format!("GET {url} failed ({status})")));
-        }
-        Ok(resp.bytes().await?)
+    /// Returns [`LibroError::Download`] when the store refuses the file or
+    /// the transfer keeps failing, and [`LibroError::Api`] when the auth
+    /// headers cannot be built.
+    pub async fn download_to_file(&self, url: &str, dest: &std::path::Path) -> Result<u64> {
+        let auth = if url_is_libro_host(url) {
+            Some(self.headers(true)?)
+        } else {
+            None
+        };
+        let done = bookclerk_plugin_sdk::download::Download::new()
+            .to_file(dest, || {
+                let req = self.http.get(url);
+                match &auth {
+                    Some(headers) => req.headers(headers.clone()),
+                    None => req,
+                }
+            })
+            .await
+            .map_err(|err| LibroError::download(err.to_string()))?;
+        Ok(done.bytes)
     }
 
     /// Decodes a JSON body, or maps HTTP / `{error,message}` payloads to [`LibroError`].
