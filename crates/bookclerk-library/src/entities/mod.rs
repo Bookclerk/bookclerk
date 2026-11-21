@@ -15,6 +15,7 @@ pub mod account_pace;
 pub mod account_scan_state;
 pub mod account_shares;
 pub mod accounts;
+pub mod admin_controls;
 pub mod bookclerk_receipts;
 pub mod bookmarks;
 pub mod books;

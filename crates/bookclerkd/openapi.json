@@ -3187,6 +3187,512 @@
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
+    "/api/users/default-admin-controls": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Reads the library's default Administrator switches.",
+        "operationId": "get_default_admin_controls",
+        "responses": {
+          "200": {
+            "description": "The default switches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultAdminControlsJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or Administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "forbidden"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The switches could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "patch": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Changes the named default Administrator switches; the others keep\ntheir stored value. Every Administrator follows the change at once,\nexcept in the switches set for them alone. Only an Owner or the\noperator may.",
+        "operationId": "patch_default_admin_controls",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchDefaultAdminControls"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The default switches after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultAdminControlsJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body names a switch that does not exist. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unknown field `fly`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or the operator. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "only an Owner can change what Administrators may do"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The default kept changing underneath the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "core.admin_controls kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `changes` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The switches could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/users/{id}/admin-controls": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Reads what an Administrator may do: the library's default, their own\noverrides, and what applies. An Administrator may read their own.",
+        "operationId": "get_user_admin_controls",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user's switches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserAdminControlsJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner, and not the Administrator asking about themselves.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "only an Owner can change what Administrators may do"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 4 not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The switches could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "patch": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Changes the named switches for one Administrator; every switch it does\nnot name keeps what it had. Only an Owner or the operator\nmay, and switches stored for someone who is not an Administrator apply\nonly if their role changes to Administrator.",
+        "operationId": "patch_user_admin_controls",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchUserAdminControls"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The user's switches after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserAdminControlsJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body names a switch that does not exist. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unknown field `fly`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Owner or the operator. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "only an Owner can change what Administrators may do"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "user 4 not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The switches kept changing underneath the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `changes` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The switches could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the administrator's switches could not be read or written"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
     "/api/users/{id}/claim-ticket": {
       "post": {
         "tags": [
@@ -38211,6 +38717,120 @@
         },
         "additionalProperties": false
       },
+      "AdminControlOverrides": {
+        "type": "object",
+        "description": "One Administrator's overrides: a value for some switches, and the\nlibrary's default for the rest (an absent or `null` field).",
+        "properties": {
+          "manage_members": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Overrides [`AdminControls::manage_members`].",
+            "example": null
+          },
+          "set_patron_limits": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Overrides [`AdminControls::set_patron_limits`].",
+            "example": null
+          },
+          "library_scan": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Overrides [`AdminControls::library_scan`].",
+            "example": false
+          },
+          "run_jobs": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Overrides [`AdminControls::run_jobs`].",
+            "example": null
+          },
+          "fix_catalog": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Overrides [`AdminControls::fix_catalog`].",
+            "example": null
+          },
+          "invite_branches": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Overrides [`AdminControls::invite_branches`].",
+            "example": null
+          },
+          "approve_requests": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Overrides [`AdminControls::approve_requests`].",
+            "example": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "AdminControls": {
+        "type": "object",
+        "description": "A value for each switch: the library's default, or what applies to one\nAdministrator.",
+        "properties": {
+          "manage_members": {
+            "type": "boolean",
+            "description": "May manage Members ([`AdminControl::ManageMembers`]).",
+            "example": true
+          },
+          "set_patron_limits": {
+            "type": "boolean",
+            "description": "May set patron limits ([`AdminControl::SetPatronLimits`]).",
+            "example": true
+          },
+          "library_scan": {
+            "type": "boolean",
+            "description": "May scan and acquire library-wide ([`AdminControl::LibraryScan`]).",
+            "example": false
+          },
+          "run_jobs": {
+            "type": "boolean",
+            "description": "May run the job queue ([`AdminControl::RunJobs`]).",
+            "example": true
+          },
+          "fix_catalog": {
+            "type": "boolean",
+            "description": "May fix the catalog ([`AdminControl::FixCatalog`]).",
+            "example": true
+          },
+          "invite_branches": {
+            "type": "boolean",
+            "description": "May invite branches ([`AdminControl::InviteBranches`]).",
+            "example": true
+          },
+          "approve_requests": {
+            "type": "boolean",
+            "description": "May approve interlibrary requests ([`AdminControl::ApproveRequests`]).",
+            "example": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "AdminSwitchChoice": {
+        "type": "string",
+        "description": "What a change does to one switch of one Administrator.",
+        "enum": [
+          "on",
+          "off",
+          "default"
+        ]
+      },
       "ApiError": {
         "type": "object",
         "description": "An error. `error` is a stable slug; bodies the error middleware writes also carry `message` and `status`, and some routes add fields of their own.",
@@ -41029,6 +41649,19 @@
           }
         }
       },
+      "DefaultAdminControlsJson": {
+        "type": "object",
+        "description": "The library's default Administrator switches as the switch routes\nreport them.",
+        "required": [
+          "controls"
+        ],
+        "properties": {
+          "controls": {
+            "$ref": "#/components/schemas/AdminControls",
+            "description": "The switches every Administrator follows unless set for them alone."
+          }
+        }
+      },
       "DefaultControlsJson": {
         "type": "object",
         "description": "The library's default member controls as the control routes report\nthem.",
@@ -41054,6 +41687,69 @@
             "description": "The scope patrons without their own follow."
           }
         }
+      },
+      "DefaultSwitchChanges": {
+        "type": "object",
+        "description": "Changes to some of the library's default switches: a new value for\neach named switch; an absent switch keeps its stored value.",
+        "properties": {
+          "manage_members": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "New default for [`AdminControl::ManageMembers`].",
+            "example": null
+          },
+          "set_patron_limits": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "New default for [`AdminControl::SetPatronLimits`].",
+            "example": null
+          },
+          "library_scan": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "New default for [`AdminControl::LibraryScan`].",
+            "example": false
+          },
+          "run_jobs": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "New default for [`AdminControl::RunJobs`].",
+            "example": null
+          },
+          "fix_catalog": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "New default for [`AdminControl::FixCatalog`].",
+            "example": null
+          },
+          "invite_branches": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "New default for [`AdminControl::InviteBranches`].",
+            "example": null
+          },
+          "approve_requests": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "New default for [`AdminControl::ApproveRequests`].",
+            "example": null
+          }
+        },
+        "additionalProperties": false
       },
       "DeliveryBacklog": {
         "type": "object",
@@ -46134,6 +46830,90 @@
         },
         "additionalProperties": false
       },
+      "OverrideSwitchChanges": {
+        "type": "object",
+        "description": "Changes to some of one Administrator's overrides: `on` or `off` for\nthem alone, or `default` to follow the library's default again; an\nabsent switch keeps what it had.",
+        "properties": {
+          "manage_members": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AdminSwitchChoice",
+                "description": "Change to [`AdminControl::ManageMembers`]."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "set_patron_limits": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AdminSwitchChoice",
+                "description": "Change to [`AdminControl::SetPatronLimits`]."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "library_scan": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AdminSwitchChoice",
+                "description": "Change to [`AdminControl::LibraryScan`]."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_jobs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AdminSwitchChoice",
+                "description": "Change to [`AdminControl::RunJobs`]."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fix_catalog": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AdminSwitchChoice",
+                "description": "Change to [`AdminControl::FixCatalog`]."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invite_branches": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AdminSwitchChoice",
+                "description": "Change to [`AdminControl::InviteBranches`]."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approve_requests": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AdminSwitchChoice",
+                "description": "Change to [`AdminControl::ApproveRequests`]."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "OwnerBootstrapped": {
         "type": "object",
         "description": "JSON body after the first Owner was created.",
@@ -46659,6 +47439,20 @@
           }
         }
       },
+      "PatchDefaultAdminControls": {
+        "type": "object",
+        "description": "`PATCH /api/users/default-admin-controls` body.",
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "$ref": "#/components/schemas/DefaultSwitchChanges",
+            "description": "The default switches to change and their new values. Switches it\ndoes not name keep their stored value, so two Owners editing\ndifferent switches do not undo each other."
+          }
+        },
+        "additionalProperties": false
+      },
       "PatchPreferencesBody": {
         "type": "object",
         "description": "Partial preferences update; omitted fields keep their stored values.",
@@ -46786,6 +47580,20 @@
             "example": 7
           }
         }
+      },
+      "PatchUserAdminControls": {
+        "type": "object",
+        "description": "`PATCH /api/users/{id}/admin-controls` body.",
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "$ref": "#/components/schemas/OverrideSwitchChanges",
+            "description": "The switches to change for this Administrator: `on` or `off` sets\nthe switch for them alone, `default` follows the library's default\nagain. Switches it does not name keep what they had, so two Owners\nediting different switches do not undo each other."
+          }
+        },
+        "additionalProperties": false
       },
       "PatchUserRequest": {
         "type": "object",
@@ -53828,6 +54636,42 @@
             ],
             "description": "The edition it was stored under.",
             "example": "6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b"
+          }
+        }
+      },
+      "UserAdminControlsJson": {
+        "type": "object",
+        "description": "An Administrator's switches as the switch routes report them.",
+        "required": [
+          "user_id",
+          "defaults",
+          "overrides",
+          "effective",
+          "applies"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The user (`users.id`).",
+            "example": 4
+          },
+          "defaults": {
+            "$ref": "#/components/schemas/AdminControls",
+            "description": "The library's default for every Administrator."
+          },
+          "overrides": {
+            "$ref": "#/components/schemas/AdminControlOverrides",
+            "description": "The switches set for this Administrator alone; the others follow\nthe default."
+          },
+          "effective": {
+            "$ref": "#/components/schemas/AdminControls",
+            "description": "What applies to the user now: everything for an Owner, nothing for\na disabled user or a Member, and the default with the\noverrides applied for an Administrator."
+          },
+          "applies": {
+            "type": "boolean",
+            "description": "Whether the switches limit the user's role: true only for an\nAdministrator.",
+            "example": true
           }
         }
       },

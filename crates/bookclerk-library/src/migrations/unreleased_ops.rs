@@ -277,6 +277,18 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )",
     ),
+    // One Administrator's overrides of the library's default Administrator
+    // switches (`control_plane::admin_controls`), set by an Owner or the
+    // operator: JSON with only the switches that differ from the default.
+    // No row means the Administrator follows the default for every switch.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS admin_controls (
+        user_id INTEGER PRIMARY KEY,
+        controls_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    )",
+    ),
     // A Member's own patron scope (`crate::patron_scope`). No row means
     // the Member follows the library's default scope document.
     MigrationOp::Schema(
