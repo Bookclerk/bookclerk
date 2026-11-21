@@ -181,6 +181,7 @@ impl WorkerdRoot {
             queues: BTreeMap::new(),
             kv: BTreeMap::new(),
             sockets: BTreeMap::new(),
+            network: bindings.network.clone(),
             notify_token: None,
             origin_token: None,
         };
@@ -411,6 +412,7 @@ impl WorkerdRoot {
             queues,
             kv,
             sockets,
+            network: bindings.network,
             notify_token,
             origin_token,
         };
@@ -615,6 +617,9 @@ struct BridgeContext {
     /// most one entry.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     sockets: BTreeMap<String, String>,
+    /// `NETWORK`: the network grant in effect, which the adapter hands the
+    /// author as `env.NETWORK`.
+    network: bookclerk_plugin_abi::NetworkGrant,
     /// Notify-only bearer for `/notify/raise`, when the manifest declares
     /// `[[notifications.types]]`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1038,6 +1043,7 @@ mod tests {
             queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
             sockets: BTreeMap::from([("SOCKETS".to_string(), "stok".to_string())]),
+            network: bookclerk_plugin_abi::NetworkGrant::default(),
             notify_token: None,
             origin_token: Some("otok".into()),
         };
@@ -1056,5 +1062,6 @@ mod tests {
         assert_eq!(v["sockets"]["SOCKETS"], "stok");
         assert_eq!(v["originToken"], "otok");
         assert!(v.get("config").is_some());
+        assert_eq!(v["network"]["outbound"], false, "{v}");
     }
 }

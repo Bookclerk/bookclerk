@@ -45,15 +45,20 @@ tcp = [{ host = "api.example.com", ports = [443] }]
 ### Network rules
 
 - `capabilities.network.domains` is the **fetch** allowlist (workerd
-  only). Raw TCP is `capabilities.network.tcp` (`host` + `ports`).
+  only). An entry is `host` or `host:port` (`*.host` and `*.host:port`
+  too). An entry without a port grants ports 80 and 443 only; name any
+  other port explicitly, as in `abs.example.com:13378`. Raw TCP is
+  `capabilities.network.tcp` (`host` + `ports`).
 - A bare `*` in `domains` grants **any public website**: every public
   hostname, but never an IP literal. Loopback names such as `localhost`
   and private, loopback, link-local and metadata addresses stay denied,
   including a public name that resolves to one. It is a fetch grant
   only; a TCP `host` can't be `*`. Consent screens show it as "Any public
   website". Use it only when the hosts can't be known in advance, as for
-  cover art or a self-hosted server such as Audiobookshelf. A server on a
-  private address still needs the operator to add its host and CIDR.
+  cover art. For a server the operator chooses, such as Audiobookshelf,
+  declare a [network setting](#network-settings) instead: its value
+  becomes the grant, and a server on the operator's network then works
+  without a CIDR. `*` never takes a port.
 - The operator may add extra fetch hosts, TCP targets and CIDRs. The
   guest's `describe()` can't.
 - The default address-space policy is the public Internet only. Loopback,
@@ -134,14 +139,56 @@ It checks that:
 
 See [CI → native-behind-workerd gateway smoke](../contributing/ci.md#native-behind-workerd-gateway-smoke).
 
+### Network settings
+
+A plugin that talks to a server the operator chooses (an Audiobookshelf
+URL, an S3 endpoint, a database host) declares the setting that names it
+with `network`, instead of asking for `*` or for a CIDR:
+
+```toml
+[[settings]]
+key = "server_url"
+label = "Server URL"
+type = "string"
+network = "fetch"            # or "tcp"
+# default_port = 13378       # the port when the value names none
+```
+
+- A `fetch` value is an `http://` or `https://` URL; a bare `host[:port]`
+  means `https://`. A `tcp` value is `host:port`, `[v6]:port`, a bare
+  host with `default_port`, or a URL of any scheme. A value with a user
+  name or password, a percent-encoded or wildcard host, a host name past
+  DNS limits (253 bytes, labels of 1-63), or no usable port names no
+  destination.
+- Saving a value grants nothing. The host derives the one destination it
+  names, and the [consent form](#approving-in-settings) lists it with the
+  setting as its source. The plugin reaches it only once the operator
+  approves it.
+- The grant is exactly that host and port. A host name may resolve to a
+  local-network address (RFC 1918, shared CGNAT space, IPv6 ULA) for that
+  name only, so a LAN server works without a CIDR; another name that
+  resolves to the same address gains nothing. An IP literal on the local
+  network grants exactly that address. Loopback, link-local and metadata
+  addresses still need an explicit CIDR.
+- A changed value replaces the old destination: the new one waits for
+  approval, and the old one stops working. Approving the form again drops
+  destinations no instance names any more.
+- Plain `http://` and raw TCP trust the network's DNS answer, so the form
+  marks them as not encrypted. `https://` verifies the certificate.
+
+The plugin sees what was granted in [`env.NETWORK`](abi.md#network-grant-envnetwork),
+and a refused connection fails with the typed `network_not_granted`
+error, which names the setting when its destination awaits approval.
+
 ### Workerd egress matching
 
 Workerd egress is matched by the shared `EgressPolicy` and
 `bridge/egress.js`:
 
-- **Every hop.** The request URL's host must be on
+- **Every hop.** The request URL's host and port must be on
   `capabilities.network.domains` (with `*.` prefix wildcards, or `*` for
-  any public hostname), including
+  any public hostname; an entry without a port grants 80 and 443),
+  including
   **redirect hops**, unless the operator granted undeclared public
   redirects. Matching uses **IDNA ToASCII** on both the request host and
   the allowlist patterns. Percent-encoded hosts and failed IDNA are
@@ -283,6 +330,9 @@ plugin that isn't covered yet. The dialog starts from the manifest
 baseline, and lets the operator **widen or narrow**:
 
 - domains, bindings and flags;
+- the destinations network settings name ("Destinations from settings"),
+  each with the setting it comes from and whether it may be on the local
+  network;
 - the network mode;
 - the hosts that keep the plugin's own [User-Agent](#user-agent) (only
   narrowed: the operator approves or refuses the hosts the manifest
@@ -294,8 +344,12 @@ The daemon APIs behind it:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/plugins/{id}/consent` | Request surface, `covered`, optional `brand` / `limits` |
-| `POST` | `/api/plugins/{id}/consent` | `{ "approve": true, "grant"?: { … } }`; omit `grant` for the full request |
+| `GET` | `/api/plugins/{id}/consent` | Request surface, `covered`, optional `brand` / `limits`, and `setting_destinations` (one row per instance and network setting, with its `state`) |
+| `POST` | `/api/plugins/{id}/consent` | `{ "approve": true, "grant"?: { … }, "setting_destinations"?: [{ "setting", "destination" }] }`; omit `grant` for the full request |
+
+`covered` stays false while a setting destination is `pending`. A
+destination left out of `setting_destinations` stays pending; one no
+setting names any more is withdrawn.
 
 A `grant` override's `bindings` may keep or drop the tokens the consent
 request lists for manifest rows: `database:<NAME>`, `queue:<BINDING>`,
@@ -306,7 +360,10 @@ rejected. A dropped token isn't granted.
 ### Approving on the command line
 
 `bookclerk plugins approve` approves what the plugin's current version
-asks for, as accepting the consent dialog unchanged does:
+asks for, as accepting the consent dialog unchanged does, including every
+destination the plugin's network settings name now, which it lists under
+"Destinations from settings". `bookclerk plugins config set` says when a
+value names a destination that needs approval.
 
 ```sh
 bookclerk plugins approve echo          # interactive summary of network/bindings

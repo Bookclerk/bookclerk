@@ -166,6 +166,11 @@ MAX_INGRESS_ORIGIN_BYTES: int = 253
 MAX_KV_METADATA_BYTES: int = 1024
 """Largest `KvNamespace` metadata JSON text in bytes."""
 
+MAX_NETWORK_GRANT_ENTRIES: int = 256
+"""Most entries in each list of a `NetworkGrant` (fetch hosts, TCP
+destinations, network settings).
+"""
+
 MAX_PLUGIN_MIGRATION_OPS: int = 256
 """Maximum already-separated operations in one plugin-owned migration."""
 
@@ -212,7 +217,19 @@ treated as `changed`.
 Ordinal-ordered ``ObjectChangeKind`` wire names (index = Cap'n Proto ordinal).
 """
 
-PLUGIN_ERROR_CODES: tuple[str, ...] = ("invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited")
+SETTING_NETWORK_KINDS: tuple[str, ...] = ("fetch", "tcp")
+"""How a setting's destination is reached.
+
+Ordinal-ordered ``SettingNetworkKind`` wire names (index = Cap'n Proto ordinal).
+"""
+
+SETTING_GRANT_STATES: tuple[str, ...] = ("approved", "pending", "unset", "invalid")
+"""Where a network setting's destination stands.
+
+Ordinal-ordered ``SettingGrantState`` wire names (index = Cap'n Proto ordinal).
+"""
+
+PLUGIN_ERROR_CODES: tuple[str, ...] = ("invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited", "network_not_granted")
 """Stable `PluginError.code` strings. Unknown future codes are forwarded
 as-is; SDKs surface them as a local `unknown` while keeping the raw wire
 code.
@@ -434,6 +451,7 @@ __all__ = [
     "MAX_ORIGIN_TARGET_BYTES",
     "MAX_INGRESS_ORIGIN_BYTES",
     "MAX_KV_METADATA_BYTES",
+    "MAX_NETWORK_GRANT_ENTRIES",
     "MAX_PLUGIN_MIGRATION_OPS",
     "MAX_PLUGIN_MIGRATION_TOTAL_OPS",
     "MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES",
@@ -448,6 +466,8 @@ __all__ = [
     "FEATURE_STORAGE_CHANGES",
     "FEATURE_STORAGE_TRANSLATE_KEYS",
     "OBJECT_CHANGE_KINDS",
+    "SETTING_NETWORK_KINDS",
+    "SETTING_GRANT_STATES",
     "PLUGIN_ERROR_CODES",
     "ENTRYPOINTS",
     "PORTAL_AUTH_MODES",

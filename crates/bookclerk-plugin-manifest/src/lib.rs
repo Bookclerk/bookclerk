@@ -56,20 +56,22 @@ pub mod error;
 pub mod fmt;
 pub mod id;
 pub mod logo;
+pub mod setting_network;
 pub mod types;
 pub mod workerd_contract;
 
 pub use address::{
-    address_allowed, canonical_ip, is_public_internet, is_restricted_hostname,
+    address_allowed, canonical_ip, is_local_network, is_public_internet, is_restricted_hostname,
     workerd_network_allow, CidrGrant,
 };
 
 pub use cron::{CronError, CronSchedule, UnixMinute, MAX_CRON_SOURCE_BYTES};
 pub use egress::{
     consent_domains_for, host_matches, host_user_agent, manifest_needs_python,
-    normalize_domain_pattern, normalize_hostname, normalize_own_user_agent_host,
-    normalize_tcp_host, with_python_runtime_hosts, EgressPolicy, TcpGrant, ANY_PUBLIC_HOST,
-    DEFAULT_MAX_REDIRECTS, HOST_USER_AGENT_URL, PYODIDE_EGRESS_HOSTS,
+    normalize_domain_pattern, normalize_hostname, normalize_local_name,
+    normalize_own_user_agent_host, normalize_tcp_host, split_domain_entry,
+    with_python_runtime_hosts, EgressPolicy, PendingSettingDestination, TcpGrant, ANY_PUBLIC_HOST,
+    DEFAULT_MAX_REDIRECTS, FETCH_DEFAULT_PORTS, HOST_USER_AGENT_URL, PYODIDE_EGRESS_HOSTS,
 };
 pub use error::{Error, Result};
 pub use fmt::format_manifest;
@@ -77,6 +79,9 @@ pub use id::validate_plugin_id;
 pub use logo::{
     embedded_logo_api_path, logo_content_type, validate_logo, LogoKind, LOGO_EXTENSIONS,
     MAX_EMBEDDED_LOGO_BYTES,
+};
+pub use setting_network::{
+    derive_setting_destination, DestinationScope, SettingDestination, SettingDestinationError,
 };
 pub use types::*;
 pub use workerd_contract::{

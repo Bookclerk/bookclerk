@@ -44,6 +44,27 @@ fn data(type_code: u32, value: &[u8]) -> Vec<u8> {
     mp4_box(b"data", &body)
 }
 
+/// An MPEG-4 `ES_Descriptor` for AAC whose decoder-specific info is `asc`.
+fn es_descriptor(asc: &[u8]) -> Vec<u8> {
+    let asc_len = u8::try_from(asc.len()).expect("short config");
+    assert!(asc_len <= 100, "config too long for the fixture");
+    // Object type 0x40 (MPEG-4 audio), stream type audio, buffer size and
+    // bit rates left zero, then the config.
+    let mut config = vec![0x04, 13 + 2 + asc_len, 0x40, 0x15];
+    config.extend_from_slice(&[0u8; 11]);
+    config.extend_from_slice(&[0x05, asc_len]);
+    config.extend_from_slice(asc);
+    let sl = [0x06, 1, 2];
+    let mut out = vec![
+        0x03,
+        3 + u8::try_from(config.len() + sl.len()).expect("len"),
+    ];
+    out.extend_from_slice(&[0, 1, 0]);
+    out.extend_from_slice(&config);
+    out.extend_from_slice(&sl);
+    out
+}
+
 /// A QuickTime chapter title sample.
 fn text_sample(title: &str) -> Vec<u8> {
     let mut out = u16::try_from(title.len())
@@ -61,6 +82,28 @@ fn text_sample(title: &str) -> Vec<u8> {
 ///
 /// Never: the fixed sizes all fit their fields.
 pub fn tagged_m4b() -> Vec<u8> {
+    // AAC-LC, 44.1 kHz, stereo.
+    tagged_m4b_with_audio_config(&[0x12, 0x10])
+}
+
+/// [`tagged_m4b`] whose `mp4a` sample entry carries `asc` as its MPEG-4
+/// `AudioSpecificConfig` (stereo, 44.1 kHz in the entry itself).
+///
+/// # Panics
+///
+/// When `asc` is longer than 100 bytes, which a one-byte descriptor length
+/// cannot hold here.
+pub fn tagged_m4b_with_audio_config(asc: &[u8]) -> Vec<u8> {
+    tagged_m4b_with_sample_entry(b"mp4a", &full(b"esds", 0, &es_descriptor(asc)))
+}
+
+/// [`tagged_m4b`] whose audio sample entry is of type `kind` (stereo,
+/// 44.1 kHz in the entry itself) with `child` as its one child box.
+///
+/// # Panics
+///
+/// Never: the fixed sizes all fit their fields.
+pub fn tagged_m4b_with_sample_entry(kind: &[u8; 4], child: &[u8]) -> Vec<u8> {
     let ftyp = mp4_box(b"ftyp", b"M4B \0\0\0\0M4B mp42isom");
     let samples = [text_sample("Opening"), text_sample("Chapter One")];
     let mut mdat_body = vec![0xAAu8; 4096];
@@ -94,8 +137,16 @@ pub fn tagged_m4b() -> Vec<u8> {
 
     // Audio track: an AAC sample description, then a big sample table the
     // reader must skip unread.
+    let mut mp4a = vec![0u8; 28];
+    // Data reference index, then after version, revision and vendor: two
+    // channels, 16-bit samples, and the rate in 16.16.
+    mp4a[7] = 1;
+    mp4a[16..18].copy_from_slice(&2u16.to_be_bytes());
+    mp4a[18..20].copy_from_slice(&16u16.to_be_bytes());
+    mp4a[24..28].copy_from_slice(&(44_100u32 << 16).to_be_bytes());
+    mp4a.extend_from_slice(child);
     let mut stsd = 1u32.to_be_bytes().to_vec();
-    stsd.extend_from_slice(&mp4_box(b"mp4a", &[0u8; 28]));
+    stsd.extend_from_slice(&mp4_box(kind, &mp4a));
     let audio_stbl = mp4_box(
         b"stbl",
         &[

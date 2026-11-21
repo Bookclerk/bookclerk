@@ -962,7 +962,7 @@
       "name": "Bindings",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 12,
+      "pointerCount": 13,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -1086,14 +1086,24 @@
           "offset": 10
         },
         {
-          "name": "origin",
+          "name": "network",
           "codeOrder": 11,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NetworkGrant"
+          },
+          "offset": 11
+        },
+        {
+          "name": "origin",
+          "codeOrder": 12,
           "discriminantValue": null,
           "type": {
             "kind": "interface",
             "name": "Origin"
           },
-          "offset": 11
+          "offset": 12
         }
       ]
     },
@@ -10606,6 +10616,62 @@
         }
       ]
     },
+    "NetworkGrant": {
+      "name": "NetworkGrant",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "outbound",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "domains",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "tcp",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "settings",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SettingNetworkGrant"
+            }
+          },
+          "offset": 2
+        }
+      ]
+    },
     "NotificationField": {
       "name": "NotificationField",
       "file": "plugin.capnp",
@@ -14978,6 +15044,63 @@
         }
       ]
     },
+    "SettingNetworkGrant": {
+      "name": "SettingNetworkGrant",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "key",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "network",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "SettingNetworkKind"
+          },
+          "offset": 0
+        },
+        {
+          "name": "destination",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "state",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "SettingGrantState"
+          },
+          "offset": 1
+        },
+        {
+          "name": "error",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        }
+      ]
+    },
     "SocketAutoResponse": {
       "name": "SocketAutoResponse",
       "file": "plugin.capnp",
@@ -16502,7 +16625,8 @@
         "cancelled",
         "conflict",
         "limitExceeded",
-        "rateLimited"
+        "rateLimited",
+        "networkNotGranted"
       ]
     },
     "PortalAuthMode": {
@@ -16535,6 +16659,24 @@
         "blob",
         "boolean",
         "null"
+      ]
+    },
+    "SettingGrantState": {
+      "name": "SettingGrantState",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "approved",
+        "pending",
+        "unset",
+        "invalid"
+      ]
+    },
+    "SettingNetworkKind": {
+      "name": "SettingNetworkKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "fetch",
+        "tcp"
       ]
     },
     "WorkKind": {
@@ -17577,6 +17719,11 @@
       "name": "maxMetadataFileTextBytes",
       "file": "plugin.capnp",
       "value": 1024
+    },
+    "maxNetworkGrantEntries": {
+      "name": "maxNetworkGrantEntries",
+      "file": "plugin.capnp",
+      "value": 256
     },
     "maxNotificationFieldBytes": {
       "name": "maxNotificationFieldBytes",

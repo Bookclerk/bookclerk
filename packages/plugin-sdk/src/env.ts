@@ -11,6 +11,7 @@ import type { DatabaseBinding } from "./db-execute.js";
 import type { OriginBinding } from "./origin.js";
 import type {
   EventReadPage,
+  NetworkGrant,
   NotificationAlertAction,
   NotificationField,
   NotifyRaised,
@@ -497,6 +498,12 @@ export interface BookclerkEnv {
   KV?: KvNamespaceBinding;
   /** `[sockets]` host-brokered WebSockets (default name). */
   SOCKETS?: SocketsBinding;
+  /**
+   * The network grant in effect: fetch hosts, TCP destinations, and each
+   * network setting's destination with its approval state (`pending` until
+   * the operator approves it). Read-only; the host enforces the grant.
+   */
+  NETWORK?: NetworkGrant;
   /** `[[notifications.types]]` raiser. */
   NOTIFY?: NotifyBinding;
   /**
@@ -511,5 +518,11 @@ export interface BookclerkEnv {
    * renamed `binding = "..."` entries.
    */
   [binding: string]:
-    DatabaseBinding | EventPublisherBinding | QueueBinding | StorageBinding | JsonObject | unknown;
+    | DatabaseBinding
+    | EventPublisherBinding
+    | QueueBinding
+    | StorageBinding
+    | NetworkGrant
+    | JsonObject
+    | unknown;
 }

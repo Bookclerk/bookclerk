@@ -148,6 +148,90 @@ pub(super) fn write_extensible_config(
     b.set_payload(&cfg.payload);
 }
 
+/// Writes the `NETWORK` binding, at most `maxNetworkGrantEntries` per list.
+fn write_network_grant(
+    mut b: crate::plugin_capnp::network_grant::Builder<'_>,
+    grant: &crate::NetworkGrant,
+) {
+    use crate::plugin_capnp::{SettingGrantState as WireState, SettingNetworkKind as WireKind};
+    // Each list holds at most `MAX_NETWORK_GRANT_ENTRIES` after the
+    // truncation, so its length always fits a `u32`.
+    let list_len = |len: usize| u32::try_from(len).unwrap_or(0);
+    let mut grant = grant.clone();
+    grant.truncate_to_bound();
+    b.set_outbound(grant.outbound);
+    let mut domains = b.reborrow().init_domains(list_len(grant.domains.len()));
+    for (i, domain) in (0u32..).zip(&grant.domains) {
+        domains.set(i, domain.as_str());
+    }
+    let mut tcp = b.reborrow().init_tcp(list_len(grant.tcp.len()));
+    for (i, entry) in (0u32..).zip(&grant.tcp) {
+        tcp.set(i, entry.as_str());
+    }
+    let mut settings = b.init_settings(list_len(grant.settings.len()));
+    for (i, setting) in (0u32..).zip(&grant.settings) {
+        let mut row = settings.reborrow().get(i);
+        row.set_key(&setting.key);
+        row.set_network(match setting.network {
+            crate::SettingNetwork::Fetch => WireKind::Fetch,
+            crate::SettingNetwork::Tcp => WireKind::Tcp,
+        });
+        row.set_destination(&setting.destination);
+        row.set_state(match setting.state {
+            crate::SettingGrantState::Approved => WireState::Approved,
+            crate::SettingGrantState::Pending => WireState::Pending,
+            crate::SettingGrantState::Unset => WireState::Unset,
+            crate::SettingGrantState::Invalid => WireState::Invalid,
+        });
+        row.set_error(&setting.error);
+    }
+}
+
+/// Reads the `NETWORK` binding; entries past `maxNetworkGrantEntries`, and
+/// settings with an unknown enum value, are dropped.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list pointer is malformed.
+fn read_network_grant(
+    r: crate::plugin_capnp::network_grant::Reader<'_>,
+) -> capnp::Result<crate::NetworkGrant> {
+    use crate::plugin_capnp::{SettingGrantState as WireState, SettingNetworkKind as WireKind};
+    let max = crate::MAX_NETWORK_GRANT_ENTRIES;
+    let mut grant = crate::NetworkGrant {
+        outbound: r.get_outbound(),
+        ..crate::NetworkGrant::default()
+    };
+    for domain in r.get_domains()?.iter().take(max) {
+        grant.domains.push(domain?.to_str()?.to_string());
+    }
+    for entry in r.get_tcp()?.iter().take(max) {
+        grant.tcp.push(entry?.to_str()?.to_string());
+    }
+    for row in r.get_settings()?.iter().take(max) {
+        let network = match row.get_network() {
+            Ok(WireKind::Fetch) => crate::SettingNetwork::Fetch,
+            Ok(WireKind::Tcp) => crate::SettingNetwork::Tcp,
+            Err(_) => continue,
+        };
+        let state = match row.get_state() {
+            Ok(WireState::Approved) => crate::SettingGrantState::Approved,
+            Ok(WireState::Pending) => crate::SettingGrantState::Pending,
+            Ok(WireState::Unset) => crate::SettingGrantState::Unset,
+            Ok(WireState::Invalid) => crate::SettingGrantState::Invalid,
+            Err(_) => continue,
+        };
+        grant.settings.push(crate::SettingNetworkGrant {
+            key: row.get_key()?.to_str()?.to_string(),
+            network,
+            destination: row.get_destination()?.to_str()?.to_string(),
+            state,
+            error: row.get_error()?.to_str()?.to_string(),
+        });
+    }
+    Ok(grant)
+}
+
 pub(super) fn write_error(mut b: plugin_error::Builder<'_>, err: &PluginError) {
     b.set_code(err.wire_str());
     b.set_message(&err.message);
@@ -2039,6 +2123,11 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
     } else {
         None
     };
+    let network = if b.has_network() {
+        read_network_grant(b.get_network()?)?
+    } else {
+        crate::NetworkGrant::default()
+    };
     let notify: Option<Box<dyn NotificationRaiser>> = if b.has_notify() {
         Some(Box::new(NotificationRaiserClient::new(b.get_notify()?)))
     } else {
@@ -2056,6 +2145,7 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
         config,
         secrets,
         adapter,
+        network,
         events,
         databases,
         cancel,
@@ -4212,6 +4302,7 @@ impl PluginClient {
             write_extensible_config(b.reborrow().init_secrets(), &bindings.values.secrets);
             write_database_adapter_config(b.reborrow().init_adapter(), &bindings.values.adapter)
                 .map_err(from_capnp)?;
+            write_network_grant(b.reborrow().init_network(), &bindings.values.network);
             if let Some(events) = bindings.events {
                 b.set_events(capnp_rpc::new_client(EventPublisherServer {
                     inner: events,
@@ -9257,6 +9348,27 @@ mod tests {
                         plugin_data_dir: "/tmp/plugins/probe/data".into(),
                         binding: Some("DB".into()),
                         ..crate::DatabaseAdapterConfig::default()
+                    },
+                    network: crate::NetworkGrant {
+                        outbound: true,
+                        domains: vec!["api.example.com".into(), "abs.home.lan:13378".into()],
+                        tcp: vec!["[fd00::5]:5432".into()],
+                        settings: vec![
+                            crate::SettingNetworkGrant {
+                                key: "server_url".into(),
+                                network: crate::SettingNetwork::Fetch,
+                                destination: "http://abs.home.lan:13378".into(),
+                                state: crate::SettingGrantState::Approved,
+                                error: String::new(),
+                            },
+                            crate::SettingNetworkGrant {
+                                key: "db".into(),
+                                network: crate::SettingNetwork::Tcp,
+                                destination: String::new(),
+                                state: crate::SettingGrantState::Invalid,
+                                error: "the value names no valid port".into(),
+                            },
+                        ],
                     },
                 };
                 let err = match client

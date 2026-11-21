@@ -595,6 +595,7 @@ mod tests {
             chapter_source: None,
             duration: None,
             codec: None,
+            format: bookclerk_tags::AudioFormat::default(),
             cover: None,
             region: bookclerk_tags::RegionDigest {
                 version: bookclerk_tags::REGION_HASH_VERSION,

@@ -618,6 +618,22 @@ fn hash_grant(kind: &[u8], grant: &PluginGrant) -> String {
             hasher.update(b",");
         }
     }
+    // Only a non-empty map is hashed, so revisions of grants from before
+    // network settings existed stay what they were. What a spawn derives
+    // from the values (`setting_network`) is not hashed: the values belong
+    // to the instance's configuration revision.
+    if !grant.setting_destinations.is_empty() {
+        hasher.update(b"\nsetting_destinations\n");
+        for (key, destinations) in &grant.setting_destinations {
+            hasher.update(key.as_bytes());
+            hasher.update(b"=");
+            for destination in destinations {
+                hasher.update(destination.display().as_bytes());
+                hasher.update(format!("|{:?},", destination.scope).as_bytes());
+            }
+            hasher.update(b";");
+        }
+    }
     hasher.update(b"\nredirects\n");
     hasher.update(
         u8::from(grant.allow_undeclared_public_redirects)

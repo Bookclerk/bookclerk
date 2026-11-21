@@ -137,6 +137,9 @@ const maxOriginTargetBytes :UInt32 = 8192;
 const maxIngressOriginBytes :UInt32 = 253;
 # Largest `KvNamespace` metadata JSON text in bytes.
 const maxKvMetadataBytes :UInt32 = 1024;
+# Most entries in each list of a `NetworkGrant` (fetch hosts, TCP
+# destinations, network settings).
+const maxNetworkGrantEntries :UInt32 = 256;
 # Plugin `databaseMigrations` is a startup-time scalar (not a stream). Count is
 # `maxListPage`. Each SQL text is `maxScalarBytes`. Ops-per-migration, total
 # operations across the registration, and the aggregate UTF-8 bytes of ids +
@@ -610,10 +613,68 @@ struct Bindings {
   # `NOTIFY`: raises the notification types the plugin declares in
   # `[[notifications.types]]`; null when it declares none.
   notify @10 :NotificationRaiser;
+  # `NETWORK`: what the operator granted this plugin's network, including
+  # the destination each network setting names and whether it is approved,
+  # so a guest can tell an unapproved destination from an unreachable one.
+  network @11 :NetworkGrant;
   # `ORIGIN`: the library itself, for a relay `ingress` plugin to send the
   # public requests it carries to; null unless the plugin is the library's
   # active relay ingress.
-  origin @11 :Origin;
+  origin @12 :Origin;
+}
+
+# The network grant in effect for one `PluginWorker.open`. Read-only
+# feedback: the host enforces the grant whatever the guest does with this.
+struct NetworkGrant {
+  # True when the grant allows outbound connections; false for `deny`.
+  outbound @0 :Bool;
+  # Fetch destinations in effect, as `plugin.toml` `domains` entries
+  # (`host`, `*.host`, `host:port`, or `*` for any public host), including
+  # approved setting destinations; at most `maxNetworkGrantEntries`.
+  domains @1 :List(Text);
+  # Raw TCP destinations in effect, as `host:port` (IPv6 in brackets), one
+  # per granted port; at most `maxNetworkGrantEntries`.
+  tcp @2 :List(Text);
+  # One entry per `[[settings]]` entry that declares `network`, in
+  # declaration order; at most `maxNetworkGrantEntries`.
+  settings @3 :List(SettingNetworkGrant);
+}
+
+# How a setting's destination is reached.
+enum SettingNetworkKind {
+  # HTTP requests through `fetch`.
+  fetch @0;
+  # A raw TCP socket (`connect()` or the native socket proxy).
+  tcp @1;
+}
+
+# Where a network setting's destination stands.
+enum SettingGrantState {
+  # The operator approved the destination the current value names.
+  approved @0;
+  # The current value names a destination the operator has not approved
+  # yet; connections to it are refused with `networkNotGranted`.
+  pending @1;
+  # The setting is empty and names no destination.
+  unset @2;
+  # The value names no valid destination; see `SettingNetworkGrant.error`.
+  invalid @3;
+}
+
+# One network setting and the destination its value names.
+struct SettingNetworkGrant {
+  # The setting key.
+  key @0 :Text;
+  # Whether the plugin fetches the destination or opens a socket to it.
+  network @1 :SettingNetworkKind;
+  # The destination as the consent form shows it: `scheme://host:port` for
+  # a fetch, `host:port` for TCP (IPv6 in brackets); empty when `state` is
+  # `unset` or `invalid`.
+  destination @2 :Text $optional;
+  # Where the destination stands.
+  state @3 :SettingGrantState;
+  # Why the value names no destination, when `state` is `invalid`.
+  error @4 :Text $optional;
 }
 
 # Exported entrypoints returned by `PluginWorker.open`. One capability per
@@ -1728,6 +1789,10 @@ enum PluginErrorCode $jsonEnum {
   # `details.retryAfterMs` says how long the host should leave this
   # backend alone, when the backend said so.
   rateLimited @13;
+  # The network grant does not cover the destination. `details.destination`
+  # names it, and `details.setting` names the network setting whose value
+  # names it, when one does (its destination awaits the operator's approval).
+  networkNotGranted @14;
 }
 
 #############################################################################

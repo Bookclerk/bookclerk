@@ -15,6 +15,8 @@
 
 import type {
   ObjectChangeKind,
+  SettingNetworkKind,
+  SettingGrantState,
   PluginErrorCode,
   Entrypoint,
   PortalAuthMode,
@@ -45,6 +47,8 @@ import type {
 
 export type {
   ObjectChangeKind,
+  SettingNetworkKind,
+  SettingGrantState,
   PluginErrorCode,
   Entrypoint,
   PortalAuthMode,
@@ -579,12 +583,65 @@ export interface Bindings {
    */
   notify?: NotificationRaiser | null;
   /**
+   * `NETWORK`: what the operator granted this plugin's network, including
+   * the destination each network setting names and whether it is approved,
+   * so a guest can tell an unapproved destination from an unreachable one.
+   */
+  network: NetworkGrant;
+  /**
    * `ORIGIN`: the library itself, for a relay `ingress` plugin to send the
    * public requests it carries to; null unless the plugin is the library's
    * active relay ingress.
    * Null when the guest does not export this capability.
    */
   origin?: Origin | null;
+}
+
+/**
+ * The network grant in effect for one `PluginWorker.open`. Read-only
+ * feedback: the host enforces the grant whatever the guest does with this.
+ */
+export interface NetworkGrant {
+  /** True when the grant allows outbound connections; false for `deny`. */
+  outbound: boolean;
+  /**
+   * Fetch destinations in effect, as `plugin.toml` `domains` entries
+   * (`host`, `*.host`, `host:port`, or `*` for any public host), including
+   * approved setting destinations; at most `maxNetworkGrantEntries`.
+   */
+  domains: string[];
+  /**
+   * Raw TCP destinations in effect, as `host:port` (IPv6 in brackets), one
+   * per granted port; at most `maxNetworkGrantEntries`.
+   */
+  tcp: string[];
+  /**
+   * One entry per `[[settings]]` entry that declares `network`, in
+   * declaration order; at most `maxNetworkGrantEntries`.
+   */
+  settings: SettingNetworkGrant[];
+}
+
+/** One network setting and the destination its value names. */
+export interface SettingNetworkGrant {
+  /** The setting key. */
+  key: string;
+  /** Whether the plugin fetches the destination or opens a socket to it. */
+  network: SettingNetworkKind;
+  /**
+   * The destination as the consent form shows it: `scheme://host:port` for
+   * a fetch, `host:port` for TCP (IPv6 in brackets); empty when `state` is
+   * `unset` or `invalid`.
+   * Omitted when absent (wire zero value).
+   */
+  destination?: string;
+  /** Where the destination stands. */
+  state: SettingGrantState;
+  /**
+   * Why the value names no destination, when `state` is `invalid`.
+   * Omitted when absent (wire zero value).
+   */
+  error?: string;
 }
 
 /**

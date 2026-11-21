@@ -816,6 +816,9 @@ pub fn classify_send_reply(reply: &Result<NotifySent, PluginError>) -> SendOutco
                 | PluginErrorCode::InvalidCursor
                 | PluginErrorCode::Conflict
                 | PluginErrorCode::LimitExceeded
+                // The destination waits on operator approval; retrying
+                // before then cannot succeed.
+                | PluginErrorCode::NetworkNotGranted
                 | PluginErrorCode::Unknown => SendOutcome::Failed { reason },
             }
         }

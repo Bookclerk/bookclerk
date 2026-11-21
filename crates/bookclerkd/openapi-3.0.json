@@ -48788,6 +48788,13 @@
               }
             },
             "nullable": true
+          },
+          "setting_destinations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingDestinationApproval"
+            },
+            "description": "Setting destinations to approve, from the response's\n`setting_destinations`. An approved destination stays approved while\na setting still names it; one left out stays pending, and one no\nsetting names any more is withdrawn."
           }
         }
       },
@@ -49022,7 +49029,8 @@
           "covered",
           "summary",
           "limits",
-          "host_user_agent"
+          "host_user_agent",
+          "setting_destinations"
         ],
         "properties": {
           "plugin_id": {
@@ -49465,6 +49473,13 @@
             "type": "string",
             "description": "The `User-Agent` this host sends for the plugin's requests, except to\nthe request's `ownUserAgentHosts`.",
             "example": "bookclerk/0.1.0 (+https://bookclerk.app)"
+          },
+          "setting_destinations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingDestinationView"
+            },
+            "description": "The destination each network setting (`network = \"fetch\"` or\n`\"tcp\"`) names on each instance, and whether it is approved. Empty\nwhen the plugin declares no network setting. A `pending` row is not\nreachable until it is approved; `covered` is false while one is."
           }
         }
       },
@@ -50528,6 +50543,88 @@
             "type": "boolean",
             "description": "True when every row must have a value in this column.",
             "example": true
+          }
+        }
+      },
+      "PluginSettingDestinationApproval": {
+        "type": "object",
+        "description": "A setting destination the operator approves.",
+        "required": [
+          "setting",
+          "destination"
+        ],
+        "properties": {
+          "setting": {
+            "type": "string",
+            "description": "The setting key.",
+            "example": "server_url"
+          },
+          "destination": {
+            "type": "string",
+            "description": "The destination exactly as the consent response shows it.",
+            "example": "http://abs.home.lan:13378"
+          }
+        }
+      },
+      "PluginSettingDestinationView": {
+        "type": "object",
+        "description": "One network setting's destination on one plugin instance.",
+        "required": [
+          "setting",
+          "label",
+          "network",
+          "state"
+        ],
+        "properties": {
+          "instanceId": {
+            "type": "string",
+            "description": "The instance whose settings name it; absent when the plugin has no\ninstance yet and the row shows the setting's default.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+            "nullable": true
+          },
+          "setting": {
+            "type": "string",
+            "description": "The setting key, the source the grant is stored under.",
+            "example": "server_url"
+          },
+          "label": {
+            "type": "string",
+            "description": "The setting's label (its key when it has none).",
+            "example": "Server URL"
+          },
+          "network": {
+            "type": "string",
+            "description": "`fetch` (HTTP requests) or `tcp` (a raw socket).",
+            "example": "fetch"
+          },
+          "destination": {
+            "type": "string",
+            "description": "The destination: `scheme://host:port` for a fetch, `host:port` for\nTCP (IPv6 in brackets); absent when the setting is unset or invalid.",
+            "example": "http://abs.home.lan:13378",
+            "nullable": true
+          },
+          "scope": {
+            "type": "string",
+            "description": "What kind of host it is: `name` (may resolve to a local-network\naddress, for this name only), `publicAddress`, `localAddress` (this\none local-network address) or `restricted` (loopback, link-local or\na name such as `localhost`, which also needs an address grant).",
+            "example": "name",
+            "nullable": true
+          },
+          "tls": {
+            "type": "boolean",
+            "description": "True for an `https` fetch, whose certificate is verified; false for\nplain HTTP and raw TCP, which trust the network's DNS answer.",
+            "example": false,
+            "nullable": true
+          },
+          "state": {
+            "type": "string",
+            "description": "`approved`, `pending` (awaiting consent), `unset` or `invalid`.",
+            "example": "pending"
+          },
+          "error": {
+            "type": "string",
+            "description": "Why the value names no destination, when `state` is `invalid`.",
+            "example": "the URL must start with http:// or https://",
+            "nullable": true
           }
         }
       },

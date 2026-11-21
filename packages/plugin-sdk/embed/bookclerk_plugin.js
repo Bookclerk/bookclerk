@@ -43,73 +43,20 @@ var FEATURE_STORAGE_HEAD_MANY = "storage.headMany";
 var FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite";
 var FEATURE_STORAGE_CHANGES = "storage.changes";
 var OBJECT_CHANGE_KINDS = ["changed", "upserted", "removed"];
-var PLUGIN_ERROR_CODES = [
-  "invalid_params",
-  "unauthorized",
-  "forbidden",
-  "not_found",
-  "unavailable",
-  "unsupported",
-  "internal",
-  "payload_too_large",
-  "deadline_exceeded",
-  "invalid_cursor",
-  "cancelled",
-  "conflict",
-  "limit_exceeded",
-  "rate_limited"
-];
+var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited", "network_not_granted"];
 var CLI_ARG_KINDS = ["string", "bool", "int", "path"];
 var WORK_KINDS = ["unspecified", "book", "podcast"];
-var EXPRESSION_KINDS = [
-  "unspecified",
-  "text",
-  "narration",
-  "dramatisation",
-  "graphic",
-  "originalAudio"
-];
+var EXPRESSION_KINDS = ["unspecified", "text", "narration", "dramatisation", "graphic", "originalAudio"];
 var MEDIA_KINDS = ["unspecified", "audio", "ebook", "print"];
-var IDENTIFIER_SCHEMES = [
-  "isbn",
-  "asin",
-  "openLibraryEdition",
-  "openLibraryWork"
-];
-var CREDIT_ROLES = [
-  "author",
-  "narrator",
-  "translator",
-  "editor",
-  "illustrator",
-  "publisher",
-  "host",
-  "cast",
-  "adaptor"
-];
+var IDENTIFIER_SCHEMES = ["isbn", "asin", "openLibraryEdition", "openLibraryWork"];
+var CREDIT_ROLES = ["author", "narrator", "translator", "editor", "illustrator", "publisher", "host", "cast", "adaptor"];
 var CREDIT_LEVELS = ["roleDefault", "work", "expression", "edition"];
 var FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"];
 var CATALOG_SORTS = ["relevance", "popularity", "rating", "title", "author"];
 var CATALOG_FIELDS = ["any", "author", "narrator", "series", "genre"];
 var PRICE_LOOKUPS = ["unspecified", "product", "isbn", "asin", "title"];
 var ABRIDGEMENTS = ["unknown", "unabridged", "abridged"];
-var METADATA_FIELDS = [
-  "title",
-  "subtitle",
-  "description",
-  "publisher",
-  "publishedAt",
-  "language",
-  "genres",
-  "tags",
-  "abridgement",
-  "expressionKind",
-  "identifiers",
-  "credits",
-  "series",
-  "chapters",
-  "duration"
-];
+var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"];
 var NOTIFICATION_SEVERITYS = ["info", "warning", "critical"];
 var NOTIFICATION_ALERT_ACTIONS = ["none", "trigger", "resolve"];
 var NOTIFY_DESTINATION_KINDS = ["channel", "personal"];
@@ -1186,10 +1133,7 @@ var MoveManyTargetCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return {
-          kind: "pairs",
-          value: s.getStructList(0, 0, 2).map((item) => KeyPairCodec.read(item, caps))
-        };
+        return { kind: "pairs", value: s.getStructList(0, 0, 2).map((item) => KeyPairCodec.read(item, caps)) };
       case 1:
         return { kind: "prefix", value: KeyPairCodec.read(s.getStruct(0, 0, 2), caps) };
       default:
@@ -1864,10 +1808,7 @@ var EventBatchReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return {
-          kind: "ok",
-          value: s.getStructList(0, 1, 1).map((item) => EventResultCodec.read(item, caps))
-        };
+        return { kind: "ok", value: s.getStructList(0, 1, 1).map((item) => EventResultCodec.read(item, caps)) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -6173,10 +6114,7 @@ var TableConstraintCodec = {
       case 2:
         return { kind: "check", value: s.getText(0) };
       case 3:
-        return {
-          kind: "foreignKey",
-          value: ForeignKeyConstraintCodec.read(s.getStruct(0, 0, 3), caps)
-        };
+        return { kind: "foreignKey", value: ForeignKeyConstraintCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("TableConstraint", disc);
     }
@@ -6608,15 +6546,9 @@ var ExecuteStreamFrameCodec = {
       case 0:
         return { kind: "head", value: ExecuteStreamHeadCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return {
-          kind: "statement",
-          value: ExecuteStreamStatementCodec.read(s.getStruct(0, 2, 1), caps)
-        };
+        return { kind: "statement", value: ExecuteStreamStatementCodec.read(s.getStruct(0, 2, 1), caps) };
       case 2:
-        return {
-          kind: "rows",
-          value: s.getStructList(0, 0, 1).map((item) => DbRowCodec.read(item, caps))
-        };
+        return { kind: "rows", value: s.getStructList(0, 0, 1).map((item) => DbRowCodec.read(item, caps)) };
       case 3:
         return { kind: "end", value: DbTimingCodec.read(s.getStruct(0, 2, 1), caps) };
       case 4:
@@ -6850,10 +6782,7 @@ var IdentityExportReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return {
-          kind: "ok",
-          value: s.getStructList(0, 1, 1).map((item) => IdentityHighWaterCodec.read(item, caps))
-        };
+        return { kind: "ok", value: s.getStructList(0, 1, 1).map((item) => IdentityHighWaterCodec.read(item, caps)) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -12103,8 +12032,19 @@ function invocationEnv(rawEnv, context) {
       merged[sockets.name] = socketsBinding(sockets.sockets);
     if (context.origin)
       merged.ORIGIN = originBinding(context.origin);
+    if (context.network && typeof context.network === "object") {
+      merged.NETWORK = Object.freeze(normalizeNetworkGrant(context.network));
+    }
   }
   return Object.freeze(merged);
+}
+function normalizeNetworkGrant(grant) {
+  return {
+    outbound: grant.outbound === true,
+    domains: Array.isArray(grant.domains) ? grant.domains : [],
+    tcp: Array.isArray(grant.tcp) ? grant.tcp : [],
+    settings: Array.isArray(grant.settings) ? grant.settings : []
+  };
 }
 function transportDatabase(entry) {
   const transport = entry;

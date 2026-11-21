@@ -3,15 +3,23 @@
  *
  * Bound as the plugin's `globalOutbound`. Policy JSON is injected by
  * bookclerk-workerd (`mode`, `domains`, `maxRedirects`, `subrequests`,
- * `allowUndeclaredPublicRedirects`, `tcp`, `addressCidrs`).
+ * `allowUndeclaredPublicRedirects`, `tcp`, `addressCidrs`, `localNames`,
+ * `pendingSettings`).
  *
  * - Initial (hop 0) hosts must match `domains` (IDNA ASCII; reject `%` / non-ASCII).
  *   A bare `*` entry matches every hostname but never an IP literal; it is a
  *   fetch grant only and never matches a `tcp[]` grant.
+ * - A `domains` entry may end in `:port` (`abs.example.com:13378`,
+ *   `[2606:4700::1]:9000`); it then grants that port only. An entry with no
+ *   port grants 80 and 443. The URL's effective port (its scheme default when
+ *   it names none) must be granted.
  * - Redirect hops must also match `domains` unless `allowUndeclaredPublicRedirects`
- *   is set. That flag never grants loopback, RFC1918, link-local, or metadata.
- * - Workerd `internet` `allow = ["public", …cidrs]` is the resolved-address
- *   layer (SSRF / DNS rebinding). This script is hostname policy.
+ *   is set. That flag never grants loopback, RFC1918, link-local, or metadata,
+ *   and an undeclared hop stays on ports 80 and 443.
+ * - The host's CONNECT proxy is the resolved-address layer (SSRF / DNS
+ *   rebinding): it resolves each tunnel, checks every address and dials the
+ *   checked one. This script is hostname policy. A local-network literal
+ *   listed in `localNames` (a setting named it) passes here.
  * - Hosts are judged as the URL parser prints them (`connect()` authorities
  *   go through `canonicalSocketHost` first), and the checks mirror the Rust
  *   `EgressPolicy` in `bookclerk-plugin-manifest`: IP literals are classified
@@ -54,6 +62,71 @@ const ANY_PUBLIC_HOST = "*";
 
 /** Agent sent when the injected policy names none (SDK dev harnesses). */
 const FALLBACK_USER_AGENT = "bookclerk (+https://bookclerk.app)";
+
+/** Ports a `domains` entry that names no port grants. */
+const FETCH_DEFAULT_PORTS = [80, 443];
+
+/** Canonical decimal port (digits, no leading zero, 1-65535), else null. */
+function parseCanonicalPort(text) {
+  if (!/^[1-9][0-9]{0,4}$/.test(text)) return null;
+  const port = Number(text);
+  return port <= 65535 ? port : null;
+}
+
+/**
+ * Splits a `domains` entry into `{ host, port }` (`port` null when the entry
+ * names none). `[v6]` and `[v6]:port` carry IPv6 literals; a bare IPv6
+ * literal has several colons and no port. Null when malformed.
+ */
+function splitEntryPort(entry) {
+  if (typeof entry !== "string") return null;
+  const e = entry.trim();
+  if (e.startsWith("[")) {
+    const end = e.indexOf("]");
+    if (end < 0) return null;
+    const host = e.slice(1, end);
+    const after = e.slice(end + 1);
+    if (after === "") return { host, port: null };
+    if (!after.startsWith(":")) return null;
+    const port = parseCanonicalPort(after.slice(1));
+    return port == null ? null : { host, port };
+  }
+  const colon = e.lastIndexOf(":");
+  if (colon >= 0 && !e.slice(0, colon).includes(":")) {
+    const port = parseCanonicalPort(e.slice(colon + 1));
+    return port == null ? null : { host: e.slice(0, colon), port };
+  }
+  return { host: e, port: null };
+}
+
+/** The URL's port, or its scheme default (80 for http, 443 for https). */
+function effectivePort(url) {
+  if (url.port) return Number(url.port);
+  if (url.protocol === "http:") return 80;
+  if (url.protocol === "https:") return 443;
+  return null;
+}
+
+/** `[v6]` → `v6`, so a URL hostname compares with a stored IPv6 entry. */
+function unbracketed(host) {
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+}
+
+/** True when the host part of `domains` entry `entry` covers `host`. */
+function entryMatches(host, entry) {
+  const split = splitEntryPort(entry);
+  return split != null && hostMatches(host, split.host);
+}
+
+/** True when some `domains` entry covers `host` and grants `port`. */
+function domainGrants(host, port, policy) {
+  if (port == null) return false;
+  return (policy.domains || []).some((d) => {
+    const entry = splitEntryPort(d);
+    if (entry == null || !hostMatches(host, entry.host)) return false;
+    return entry.port == null ? FETCH_DEFAULT_PORTS.includes(port) : entry.port === port;
+  });
+}
 
 function hostMatches(host, pattern) {
   const h = normalizeHostToken(host);
@@ -247,6 +320,48 @@ function addressAllowed(ip, policy) {
   });
 }
 
+/** RFC 1918, RFC 6598 shared space or IPv6 ULA: an address a setting may name. */
+function isLocalNetwork(ip) {
+  const addr = canonicalIp(ip);
+  if (addr.v4 != null) {
+    const a = Math.floor(addr.v4 / 16777216);
+    const b = Math.floor(addr.v4 / 65536) % 256;
+    return (
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    );
+  }
+  return (addr.v6[0] & 0xfe00) === 0xfc00;
+}
+
+/** Whether two addresses are the same once canonicalized. */
+function sameIp(a, b) {
+  const x = canonicalIp(a);
+  const y = canonicalIp(b);
+  if (x.v4 != null || y.v4 != null) return x.v4 === y.v4;
+  return x.v6.every((g, i) => g === y.v6[i]);
+}
+
+/**
+ * Whether an IP literal may be requested: [`addressAllowed`], or a
+ * local-network literal a setting named (`localNames`), which grants exactly
+ * that address.
+ */
+function literalAllowed(ip, policy) {
+  if (addressAllowed(ip, policy)) return true;
+  if (!isLocalNetwork(ip)) return false;
+  return (policy.localNames || []).some((n) => {
+    if (typeof n !== "string") return false;
+    const bare = unbracketed(n.trim());
+    const v4 = parseIpv4(bare);
+    const v6 = v4 == null ? parseIpv6(bare) : null;
+    if (v4 == null && v6 == null) return false;
+    return sameIp(v4 != null ? { v4 } : { v6 }, ip);
+  });
+}
+
 function isRestrictedHostname(host) {
   const h = normalizeHostToken(host);
   if (h == null) return true;
@@ -382,12 +497,22 @@ function allowsInitial(host, policy) {
   const target = classifyHost(host);
   if (target == null) return false;
   if (target.ip) {
-    if (!addressAllowed(target.ip, policy)) return false;
+    if (!literalAllowed(target.ip, policy)) return false;
   } else if (isRestrictedHostname(target.name) && !restrictedNameOk(target.name, policy)) {
     return false;
   }
   const text = target.ip ? target.text : target.name;
-  return (policy.domains || []).some((d) => hostMatches(text, d));
+  return (policy.domains || []).some((d) => entryMatches(text, d));
+}
+
+/**
+ * A direct fetch to `host:port`: [`allowsInitial`] plus the port rule (an
+ * entry's own port, else 80 and 443).
+ */
+function allowsFetch(host, port, policy) {
+  if (!allowsInitial(host, policy)) return false;
+  const target = classifyHost(host);
+  return target != null && domainGrants(target.ip ? target.text : target.name, port, policy);
 }
 
 function allowsRedirect(host, hop, policy, maxRedirects) {
@@ -397,9 +522,9 @@ function allowsRedirect(host, hop, policy, maxRedirects) {
   if (target == null) return false;
   if (target.ip) {
     return (
-      addressAllowed(target.ip, policy) &&
+      literalAllowed(target.ip, policy) &&
       (policy.allowUndeclaredPublicRedirects === true ||
-        (policy.domains || []).some((d) => hostMatches(target.text, d)))
+        (policy.domains || []).some((d) => entryMatches(target.text, d)))
     );
   }
   const restricted = isRestrictedHostname(target.name);
@@ -408,7 +533,20 @@ function allowsRedirect(host, hop, policy, maxRedirects) {
     // A restricted name is never an undeclared public destination.
     return !restricted;
   }
-  return (policy.domains || []).some((d) => hostMatches(target.name, d));
+  return (policy.domains || []).some((d) => entryMatches(target.name, d));
+}
+
+/**
+ * A redirect hop to `host:port`: [`allowsRedirect`] plus the port rule. A
+ * hop to a declared host needs a port its entry grants; an undeclared public
+ * hop is limited to 80 and 443.
+ */
+function allowsRedirectTo(host, port, hop, policy, maxRedirects) {
+  if (!allowsRedirect(host, hop, policy, maxRedirects)) return false;
+  const target = classifyHost(host);
+  if (target == null) return false;
+  if (domainGrants(target.ip ? target.text : target.name, port, policy)) return true;
+  return policy.allowUndeclaredPublicRedirects === true && FETCH_DEFAULT_PORTS.includes(port);
 }
 
 function allowsTcp(host, port, policy) {
@@ -416,7 +554,7 @@ function allowsTcp(host, port, policy) {
   const target = classifyHost(host);
   if (target == null) return false;
   if (target.ip) {
-    if (!addressAllowed(target.ip, policy)) return false;
+    if (!literalAllowed(target.ip, policy)) return false;
   } else if (isRestrictedHostname(target.name) && !restrictedNameOk(target.name, policy)) {
     return false;
   }
@@ -596,6 +734,49 @@ function parseAuthority(authority) {
 }
 
 /** Workerd `json` bindings arrive as objects; keep string parse for tests. */
+/**
+ * The pending network setting whose destination is `host:port`, if any.
+ * Pending settings grant nothing; they only let a refusal name the setting.
+ */
+function pendingSetting(host, port, policy) {
+  const want = unbracketed(String(host)).toLowerCase().replace(/\.$/, "");
+  return (policy.pendingSettings || []).find(
+    (p) => p && Number(p.port) === port && String(p.host).toLowerCase() === want,
+  );
+}
+
+/** `host:port` as a refusal names it (IPv6 in brackets). */
+function destinationOf(host, port) {
+  const bare = unbracketed(String(host));
+  return bare.includes(":") ? `[${bare}]:${port}` : `${bare}:${port}`;
+}
+
+/**
+ * The typed `network_not_granted` refusal: a 403 whose JSON body names the
+ * destination and, when a pending network setting names it, that setting.
+ * `x-bookclerk-error` repeats the code so a plugin can tell this refusal
+ * from an upstream 403.
+ */
+function notGranted(host, port, policy, fallback) {
+  const destination = destinationOf(host, port);
+  const pending = pendingSetting(host, port, policy);
+  const details = { destination };
+  if (pending) details.setting = String(pending.setting);
+  const message = pending
+    ? `${destination} is named by setting \`${pending.setting}\` and awaits the operator's approval`
+    : fallback;
+  return new Response(
+    JSON.stringify({ error: { code: "network_not_granted", message, details } }),
+    {
+      status: 403,
+      headers: {
+        "content-type": "application/json",
+        "x-bookclerk-error": "network_not_granted",
+      },
+    },
+  );
+}
+
 function loadPolicy(raw) {
   if (raw == null || raw === "") return {};
   if (typeof raw === "string") {
@@ -630,19 +811,25 @@ export default {
 
     while (true) {
       const url = new URL(current.url);
+      const port = effectivePort(url);
       if (hop === 0) {
-        if (!allowsInitial(url.hostname, policy)) {
-          return new Response(
-            `host \`${url.hostname}\` not in capabilities.network.domains`,
-            { status: 403 },
+        if (!allowsFetch(url.hostname, port, policy)) {
+          return notGranted(
+            url.hostname,
+            port,
+            policy,
+            `host \`${url.host}\` not in capabilities.network.domains`,
           );
         }
-      } else if (!allowsRedirect(url.hostname, hop, policy, maxRedirects)) {
-        return new Response(
-          hop >= maxRedirects
-            ? "too many redirects"
-            : `redirect host \`${url.hostname}\` is not permitted`,
-          { status: hop >= maxRedirects ? 508 : 403 },
+      } else if (!allowsRedirectTo(url.hostname, port, hop, policy, maxRedirects)) {
+        if (hop >= maxRedirects) {
+          return new Response("too many redirects", { status: 508 });
+        }
+        return notGranted(
+          url.hostname,
+          port,
+          policy,
+          `redirect host \`${url.host}\` is not permitted`,
         );
       }
 
@@ -712,8 +899,12 @@ export default {
       } catch {
         /* already closed */
       }
+      const named = hostname ?? String(parsed.hostname);
+      const pending = pendingSetting(named, port, policy);
       throw new Error(
-        `tcp connect \`${parsed.hostname}:${port}\` is not in capabilities.network.tcp`,
+        pending
+          ? `network_not_granted: ${destinationOf(named, port)} is named by setting \`${pending.setting}\` and awaits the operator's approval`
+          : `network_not_granted: tcp connect \`${parsed.hostname}:${port}\` is not in capabilities.network.tcp`,
       );
     }
     // `connect()` takes IPv6 without the URL form's brackets.

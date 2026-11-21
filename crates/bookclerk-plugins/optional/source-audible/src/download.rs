@@ -357,7 +357,6 @@ async fn fetch_via_widevine(
         asin,
         options.quality,
         options.xhe_aac,
-        false,
         &cdm,
         &work_dir,
     )
