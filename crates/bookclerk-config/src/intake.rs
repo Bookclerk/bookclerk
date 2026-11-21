@@ -53,6 +53,14 @@ pub const MAX_PRUNE_IMPORTED_DAYS: u16 = 3_650;
 /// Largest settings body [`parse_intake_settings`] reads, in bytes.
 pub const MAX_INTAKE_SETTINGS_BYTES: usize = 16 * 1024;
 
+/// Largest the settings may be once written out with every default filled
+/// in, in bytes. [`IntakeSettings::validate`] holds them to it, so accepted
+/// settings always fit, with room for the `{"intake":…}` wrapper, both the
+/// 16 KiB stored-document cap and [`MAX_INTAKE_SETTINGS_BYTES`] when they
+/// are read back. Only patterns full of `"`, which JSON escapes, come near
+/// it: 64 plain 128-byte patterns take under 9 KiB.
+pub const MAX_INTAKE_CANONICAL_BYTES: usize = 12 * 1024;
+
 /// What happens to a drop folder item once it has been ingested.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema,
@@ -185,6 +193,39 @@ pub struct IntakeSettings {
     pub prune_imported_days: Option<u16>,
 }
 
+/// The drop folder settings as a request body may send them: every field
+/// may be left out and takes the default [`IntakeSettings`] names. Only the
+/// published API schema uses it; the body is read as [`IntakeSettings`].
+#[derive(Debug, Clone, PartialEq, Eq, utoipa::ToSchema)]
+pub struct IntakeSettingsRequest {
+    /// Seconds an item's files must stay unchanged before it is ingested,
+    /// 5 to 86,400 (default 60).
+    #[schema(required = false, minimum = 5, maximum = 86400, example = 60)]
+    pub settle_seconds: u32,
+    /// Seconds between two full listings of the folder, 30 to 86,400
+    /// (default 300).
+    #[schema(required = false, minimum = 30, maximum = 86400, example = 300)]
+    pub scan_interval_seconds: u32,
+    /// What happens to an item once it is ingested (default `move`).
+    #[schema(required = false)]
+    pub after_ingest: AfterIngest,
+    /// Who holds the ingested books (default `owner`).
+    #[schema(required = false)]
+    pub attribute_to: IntakeAttribution,
+    /// The user id that holds every book in `owner` mode; required there
+    /// and refused in `subfolder` mode. It must name an active user.
+    #[schema(minimum = 1, example = 2)]
+    pub patron: Option<i64>,
+    /// Extra file name patterns to ignore, at most 64, each 1 to 128 bytes
+    /// with no `/` (default none).
+    #[schema(required = false, max_items = 64, example = json!(["*.nzb"]))]
+    pub ignore: Vec<String>,
+    /// With `after_ingest = move`, delete `_imported` day folders older than
+    /// this many days, 1 to 3,650; absent keeps them.
+    #[schema(minimum = 1, maximum = 3650, example = 30)]
+    pub prune_imported_days: Option<u16>,
+}
+
 /// File name patterns every drop folder ignores: partial downloads,
 /// editor and sync-tool temporaries, and desktop metadata files. A name
 /// starting with `.` is always ignored as well.
@@ -247,7 +288,8 @@ impl IntakeSettings {
     ///
     /// Returns an [`IntakeSettingsError`] naming the first broken bound: a
     /// number out of range, a missing or unwanted `patron`, a bad ignore
-    /// pattern, or `prune_imported_days` without `after_ingest = move`.
+    /// pattern, `prune_imported_days` without `after_ingest = move`, or
+    /// settings longer than [`MAX_INTAKE_CANONICAL_BYTES`] written out.
     pub fn validate(&self) -> Result<(), IntakeSettingsError> {
         if !(MIN_SETTLE_SECONDS..=MAX_SETTLE_SECONDS).contains(&self.settle_seconds) {
             return Err(IntakeSettingsError::new(format!(
@@ -307,6 +349,12 @@ impl IntakeSettings {
                     ))
                 }
             }
+        }
+        let canonical = serde_json::to_vec(self).map_err(IntakeSettingsError::new)?;
+        if canonical.len() > MAX_INTAKE_CANONICAL_BYTES {
+            return Err(IntakeSettingsError::new(format!(
+                "the settings are at most {MAX_INTAKE_CANONICAL_BYTES} bytes written out with every default; shorten the ignore patterns"
+            )));
         }
         Ok(())
     }
@@ -683,6 +731,38 @@ mod tests {
                 String::from_utf8_lossy(body)
             );
         }
+    }
+
+    #[test]
+    fn accepted_settings_fit_their_stored_form() {
+        // 64 plain 128-byte patterns: accepted, and the stored document with
+        // its wrapper reads back under every cap.
+        let plain: Vec<String> = (0..MAX_IGNORE_PATTERNS)
+            .map(|n| format!("{n:02}{}", "x".repeat(MAX_IGNORE_PATTERN_BYTES - 2)))
+            .collect();
+        let settings = IntakeSettings {
+            ignore: plain,
+            ..IntakeSettings::for_patron(1)
+        };
+        settings.validate().unwrap();
+        let stored = format!(
+            r#"{{"intake":{}}}"#,
+            serde_json::to_string(&settings).unwrap()
+        );
+        assert!(stored.len() <= MAX_INTAKE_SETTINGS_BYTES);
+        assert_eq!(
+            parse_intake_settings(&serde_json::to_vec(&settings).unwrap()).unwrap(),
+            settings
+        );
+        // Quotes double when written out: these patterns fit the body cap
+        // but not the written-out one, so they are refused.
+        let quotes: Vec<String> = (0..MAX_IGNORE_PATTERNS)
+            .map(|n| format!("{n:02}{}", "\"".repeat(100)))
+            .collect();
+        let body = serde_json::to_vec(&serde_json::json!({"patron": 1, "ignore": quotes})).unwrap();
+        assert!(body.len() <= MAX_INTAKE_SETTINGS_BYTES);
+        let err = parse_intake_settings(&body).unwrap_err();
+        assert!(err.to_string().contains("written out"), "{err}");
     }
 
     #[test]

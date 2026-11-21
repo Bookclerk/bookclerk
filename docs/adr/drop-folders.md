@@ -42,8 +42,12 @@ listing into items (each top-level file or folder), and records each
 item's state in `intake_items`. An item whose files keep the same sizes and
 signatures for `settle_seconds` is handed to the ingest job as one batch of
 storage references into the folder. The job copies each file and fails
-one that no longer has the size that settled; the runner moves or deletes
-the item afterwards only if its signature has not changed.
+one that no longer has the size that settled, or whose resumed read comes
+from another version; the runner moves or deletes the item afterwards only
+if its signature has not changed. The runner stores the batch id on the
+item before it creates the batch, so after a crash it finds the batch, or
+knows it was never created and lets the item settle again: an item is
+never handed to two batches.
 
 Grouping and settling are sans-IO code in `bookclerk-intake`, fuzzed
 against an independent oracle, because the listing is untrusted input.

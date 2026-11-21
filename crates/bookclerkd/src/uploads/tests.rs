@@ -278,7 +278,7 @@ async fn an_intake_batch_is_queued_ingested_and_announced() {
     let owner = first_active_owner(&library).await.unwrap().unwrap();
 
     // Nothing to ingest is refused before anything is queued.
-    let empty = queue_intake_batch(&state, owner, "local", &[]).await;
+    let empty = queue_intake_batch(&state, &IngestBatchId::new(), owner, "local", &[]).await;
     assert!(
         matches!(empty, Err(IntakeError::Refused(CreateRefusal::Empty))),
         "{empty:?}"
@@ -293,8 +293,10 @@ async fn an_intake_batch_is_queued_ingested_and_announced() {
             signature: None,
         }),
     };
-    let id = queue_intake_batch(
+    let id = IngestBatchId::new();
+    queue_intake_batch(
         &state,
+        &id,
         owner,
         "local",
         &[
@@ -374,29 +376,20 @@ async fn a_drop_folder_item_is_ingested_and_moved_to_imported() {
     let settings = IntakeSettings::for_patron(owner);
     let backend = bookclerk_storage::LocalFsBackend::new(folder.path().to_path_buf()).unwrap();
     let handoff = crate::intake::QueueHandOff { state: &state };
+    let drop_folder = crate::intake::Folder {
+        store: &library,
+        instance_id: &instance,
+        backend: &backend,
+        prefix: "",
+        settings: &settings,
+    };
 
-    crate::intake::run_pass(
-        &library,
-        &instance,
-        &backend,
-        "",
-        &settings,
-        0,
-        Some(&handoff),
-    )
-    .await
-    .unwrap();
-    let ready = crate::intake::run_pass(
-        &library,
-        &instance,
-        &backend,
-        "",
-        &settings,
-        60_000,
-        Some(&handoff),
-    )
-    .await
-    .unwrap();
+    crate::intake::run_pass(drop_folder, &|| 0, Some(&handoff))
+        .await
+        .unwrap();
+    let ready = crate::intake::run_pass(drop_folder, &|| 60_000, Some(&handoff))
+        .await
+        .unwrap();
     assert_eq!(ready.queued, ["Dropped"]);
     let batch_id = load_intake_items(&library, &instance)
         .await
@@ -407,7 +400,7 @@ async fn a_drop_folder_item_is_ingested_and_moved_to_imported() {
 
     // Not finished while the job has not run.
     assert_eq!(
-        crate::intake::finish_ended(&library, &instance, &backend, "", &settings, 60_000)
+        crate::intake::finish_ended(drop_folder, 60_000)
             .await
             .unwrap(),
         0
@@ -427,16 +420,9 @@ async fn a_drop_folder_item_is_ingested_and_moved_to_imported() {
     run_ingest_batch(&state, &payload, None).await.unwrap();
 
     // 2026-11-20T00:00:00Z.
-    let finished = crate::intake::finish_ended(
-        &library,
-        &instance,
-        &backend,
-        "",
-        &settings,
-        1_795_132_800_000,
-    )
-    .await
-    .unwrap();
+    let finished = crate::intake::finish_ended(drop_folder, 1_795_132_800_000)
+        .await
+        .unwrap();
     assert_eq!(finished, 1);
     assert!(folder
         .path()
@@ -463,8 +449,10 @@ async fn an_intake_file_that_grew_after_settling_fails() {
     crate::node_api::uploads::set_test_intake(files.path(), "drop", drop.path());
     std::fs::write(drop.path().join("Growing.mp3"), b"longer than it was").unwrap();
     let owner = first_active_owner(&library).await.unwrap().unwrap();
-    let id = queue_intake_batch(
+    let id = IngestBatchId::new();
+    queue_intake_batch(
         &state,
+        &id,
         owner,
         "drop",
         &[MemberSpec {

@@ -26,15 +26,31 @@ destination: acquired books are not written into it.
    same job an [upload](uploads.md) runs. The job copies the files from the
    folder, checks that they still have the size that settled, and adds the
    book. A read that breaks partway, as a network share or S3 prefix can,
-   picks up where it stopped, up to three times, before that file fails. Files it does not keep, such as a stray `.exe`, are refused on
-   their own without failing the book.
+   picks up where it stopped, up to three times, before that file fails.
+   A resumed read must come from the same version of the file (its version
+   id or ETag); a file replaced in between fails as `intake_changed`, and
+   on storage that reports no version the read starts over instead. Files
+   it does not keep, such as a stray `.exe`, are refused on their own
+   without failing the book.
 5. When the batch ends, the item is moved to `_imported/<date>/` (the
    default, with the date in UTC), deleted, or left where it is. An item
    that could not be added, or with a file that failed to store, goes to
    `_failed/`, with a `<item>.bookclerk-error.txt` note beside it saying
-   why (for example `intake_changed` when a file was still growing). An
-   item whose files changed while it was being added stays where it is and
-   settles again.
+   why (for example `intake_changed` when a file was still growing). A
+   note never replaces a file already there; the next free name
+   (`<item>.bookclerk-error-2.txt`, …) is used. An item whose files changed
+   while it was being added stays where it is and settles again.
+
+Moves never replace a file already at the target, and where the storage
+reports an ETag, a move or delete touches only the version that was
+listed. If one file of an item cannot be moved or deleted, the files
+already moved stay moved, the rest stay in place, and Bookclerk records
+why; the files left behind are not added again unless they change.
+
+If the job could not be queued (for example, the queue is full) or
+Bookclerk stopped before the batch was created, the item's files are left
+alone and it settles again, then is handed off once more. An item is never
+handed to two batches at once.
 
 > [!NOTE]
 > Bookclerk never matches a dropped book by its title alone. A book whose
@@ -78,6 +94,8 @@ while the instance is deployed nowhere.
    bookclerk plugins instances intake set <instance-id> --patron 1
    ```
 
+   The patron must be an active user.
+
    Or, for one subfolder per patron:
 
    ```bash
@@ -96,13 +114,17 @@ it, then run `bookclerk plugins instances intake clear <instance-id>`.
 
 The web API has the same three operations on
 `/api/config/plugin-instances/{id}/intake` (`GET`, `PUT` with the settings,
-`DELETE`), for Administrators and Owners.
+`DELETE`). They are operator routes: the operator token, or an Owner who
+has elevated, can call them (see
+[Owners and elevation](sign-in.md#owners-and-elevation)).
 
 ## Settings
 
 The settings of a drop folder that is already one can change at any time,
 deployed or not; Bookclerk reads them on every pass. Options left out of
-`intake set` keep their current value.
+`intake set` keep their current value. `intake set` applies only if nobody
+changed the settings since it read them; otherwise it stops and asks you
+to run it again.
 
 | Setting | CLI option | Default | Meaning |
 | --- | --- | --- | --- |
@@ -111,8 +133,8 @@ deployed or not; Bookclerk reads them on every pass. Options left out of
 | `after_ingest` | `--after-ingest` | `move` | `move` to `_imported/<date>/`, `delete`, or `leave`. With `leave`, Bookclerk remembers the item and adds it again only if its files change. |
 | `attribute_to` | `--patron` / `--subfolder` | `owner` | Who holds the books; see [Who holds a dropped book](#who-holds-a-dropped-book). |
 | `patron` | `--patron` | none | The holding patron's user id. Required for `owner`, refused for `subfolder`. |
-| `ignore` | `--ignore` (repeatable) | none | Extra file name patterns to skip, with `*` and `?`, matched without regard to case (up to 64). |
-| `prune_imported_days` | `--prune-imported-days` | off | With `move`, delete `_imported/` day folders older than this many days (1 to 3650). Checked at most once an hour. |
+| `ignore` | `--ignore` (repeatable), `--clear-ignore` | none | Extra file name patterns to skip, with `*` and `?`, matched without regard to case (up to 64). `--clear-ignore` removes them all. Written out, the settings may take at most 12 KiB, which only patterns full of `"` come near. |
+| `prune_imported_days` | `--prune-imported-days`, `--no-prune` | off | With `move`, delete `_imported/` day folders older than this many days (1 to 3650). Checked at most once an hour. `--no-prune` turns it off, and can go with `--after-ingest leave` in the same command. |
 
 > [!NOTE]
 > `delete` removes the files from the drop folder only after the book is

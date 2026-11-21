@@ -219,16 +219,19 @@ only that. The others check:
   documented names for `after_ingest` and `attribute_to`, a positive
   `patron` exactly when `attribute_to` is `owner`, `prune_imported_days`
   only with `after_ingest = move`, and at most 64 distinct ignore patterns
-  of 1 to 128 bytes with no path separator or control character. Accepted
+  of 1 to 128 bytes with no path separator or control character, with the
+  settings written out with every default at most 12 KiB. Accepted
   settings equal the oracle's reading and survive a JSON round trip. The
   shared oracle is `fuzz/oracles/intake_settings.rs`, replayed from
   `bookclerk-config`.
 - **`intake_items`**: the first byte picks the attribution mode and a quiet
   period, and the rest is lines of `key<TAB>size<TAB>signature`. Every
   object is ignored, a stray or a member of the same item as an independent
-  reading of the key rules says, the items hold the oracle's members, the
-  signature does not depend on listing order and moves with any size
-  change, and `step` makes an item ready only once the quiet period has
+  reading of the key rules says (ignore patterns through a reference
+  matcher of its own), the items hold the oracle's members with the member
+  cap flagged exactly when a member past it was listed, the signature does
+  not depend on listing order and moves with any size change or a member
+  past the cap, and `step` makes an item ready only once the quiet period has
   passed, never past the member cap, and never forgets a queued item. The
   shared oracle is `fuzz/oracles/intake_items.rs`, replayed from
   `bookclerk-intake`.

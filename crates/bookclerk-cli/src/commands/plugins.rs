@@ -305,12 +305,19 @@ pub enum IntakeCommand {
         after_ingest: Option<String>,
         /// Extra file name pattern to ignore, with `*` and `?` (repeatable;
         /// replaces the current list).
-        #[arg(long, value_name = "PATTERN")]
+        #[arg(long, value_name = "PATTERN", conflicts_with = "clear_ignore")]
         ignore: Vec<String>,
+        /// Remove every extra ignore pattern (the built-in list still
+        /// applies).
+        #[arg(long)]
+        clear_ignore: bool,
         /// With `--after-ingest move`, delete `_imported` day folders older
         /// than this many days (1 to 3650).
-        #[arg(long, value_name = "DAYS")]
+        #[arg(long, value_name = "DAYS", conflicts_with = "no_prune")]
         prune_imported_days: Option<u16>,
+        /// Keep `_imported` day folders: turn pruning off.
+        #[arg(long)]
+        no_prune: bool,
     },
     /// Make a drop folder a destination again. Needs the instance
     /// undeployed on every node.
@@ -2429,7 +2436,9 @@ async fn run_intake(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     use bookclerk_config::{AfterIngest, IntakeAttribution, IntakeSettings};
-    use bookclerk_library::control_plane::{intake_settings, set_intake};
+    use bookclerk_library::control_plane::{
+        intake_settings, load_intake_role, set_intake, set_intake_at,
+    };
     let (instance, settings) = match command {
         IntakeCommand::Get { instance } => {
             let instance = resolve_instance(store, &instance).await?;
@@ -2444,10 +2453,15 @@ async fn run_intake(
             scan_interval_seconds,
             after_ingest,
             ignore,
+            clear_ignore,
             prune_imported_days,
+            no_prune,
         } => {
             let instance = resolve_instance(store, &instance).await?;
-            let current = intake_settings(store, instance.id.as_str()).await?;
+            let read = load_intake_role(store, instance.id.as_str()).await?;
+            // The edit applies only to the revision it was made from.
+            let revision = read.as_ref().map_or(0, |document| document.revision);
+            let current = read.and_then(|document| document.body.intake);
             let mut settings = current.unwrap_or(IntakeSettings {
                 patron: None,
                 ..IntakeSettings::for_patron(1)
@@ -2471,13 +2485,24 @@ async fn run_intake(
                     anyhow::anyhow!("--after-ingest is move, delete or leave, not `{action}`")
                 })?;
             }
-            if !ignore.is_empty() {
+            if clear_ignore {
+                settings.ignore.clear();
+            } else if !ignore.is_empty() {
                 settings.ignore = ignore;
             }
-            if prune_imported_days.is_some() {
+            if no_prune {
+                settings.prune_imported_days = None;
+            } else if prune_imported_days.is_some() {
                 settings.prune_imported_days = prune_imported_days;
             }
-            let stored = set_intake(store, &cli_actor(), &instance.id, Some(settings)).await?;
+            let stored = set_intake_at(
+                store,
+                &cli_actor(),
+                &instance.id,
+                Some(settings),
+                Some(revision),
+            )
+            .await?;
             (instance, stored.body.intake)
         }
         IntakeCommand::Clear { instance } => {
@@ -3151,6 +3176,11 @@ mod filter_tests {
         let instance = create_plugin_instance(&store, &cli_actor(), "local", "Drop")
             .await
             .unwrap();
+        let reader = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Reader"), None)
+            .await
+            .unwrap()
+            .id;
         let id = instance.id.to_string();
         let set = |patron, subfolder, after: Option<&str>| IntakeCommand::Set {
             instance: id.clone(),
@@ -3160,13 +3190,15 @@ mod filter_tests {
             scan_interval_seconds: Some(600),
             after_ingest: after.map(str::to_string),
             ignore: vec!["*.nfo".into()],
+            clear_ignore: false,
             prune_imported_days: Some(14),
+            no_prune: false,
         };
-        run_intake(&store, set(Some(3), false, None), OutputFormat::Text)
+        run_intake(&store, set(Some(reader), false, None), OutputFormat::Text)
             .await
             .unwrap();
         let stored = intake_settings(&store, &id).await.unwrap().unwrap();
-        assert_eq!(stored.patron, Some(3));
+        assert_eq!(stored.patron, Some(reader));
         assert_eq!(stored.settle_seconds, 30);
         assert_eq!(stored.scan_interval_seconds, 600);
         assert_eq!(stored.ignore, ["*.nfo"]);
@@ -3187,7 +3219,9 @@ mod filter_tests {
                 scan_interval_seconds: None,
                 after_ingest: Some("delete".into()),
                 ignore: Vec::new(),
+                clear_ignore: false,
                 prune_imported_days: None,
+                no_prune: false,
             },
             OutputFormat::Text,
         )
@@ -3207,6 +3241,31 @@ mod filter_tests {
         assert_eq!(moved.attribute_to, IntakeAttribution::Subfolder);
         assert_eq!(moved.patron, None);
         assert_eq!(moved.after_ingest, AfterIngest::Move);
+
+        // The last extra pattern and pruning can be turned off, and `leave`
+        // set in the same command.
+        run_intake(
+            &store,
+            IntakeCommand::Set {
+                instance: id.clone(),
+                patron: None,
+                subfolder: false,
+                settle_seconds: None,
+                scan_interval_seconds: None,
+                after_ingest: Some("leave".into()),
+                ignore: Vec::new(),
+                clear_ignore: true,
+                prune_imported_days: None,
+                no_prune: true,
+            },
+            OutputFormat::Text,
+        )
+        .await
+        .unwrap();
+        let cleared = intake_settings(&store, &id).await.unwrap().unwrap();
+        assert!(cleared.ignore.is_empty());
+        assert_eq!(cleared.prune_imported_days, None);
+        assert_eq!(cleared.after_ingest, AfterIngest::Leave);
 
         for format in [OutputFormat::Text, OutputFormat::Json] {
             run_intake(

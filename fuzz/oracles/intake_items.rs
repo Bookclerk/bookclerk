@@ -15,18 +15,24 @@
 //!   when it is shallower than the mode's item depth; otherwise a member of
 //!   the item named by its first one or two segments;
 //! - the items are exactly the oracle's, with the same members (last
-//!   listing of a repeated key wins) and saturating byte totals;
+//!   listing of a repeated key wins), saturating byte totals, and the
+//!   member cap flagged exactly when a distinct member past it was listed;
 //! - the signature does not depend on listing order, and changes when any
-//!   member's size or signature changes;
+//!   member's size or signature changes or the item goes past the cap;
+//!
+//! Ignore patterns are matched here by a table-driven reference matcher
+//! written from the documented rules (`*` any run, `?` one character, ASCII
+//! case folded), not by the production `glob_matches`.
 //! - `step` makes an item ready only once the quiet period has passed with
 //!   its signature unchanged, never for an item over the member cap, and
 //!   never forgets a queued item.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use bookclerk_config::{glob_matches, IntakeAttribution, IntakeSettings, BUILTIN_IGNORE_PATTERNS};
+use bookclerk_config::{IntakeAttribution, IntakeSettings, BUILTIN_IGNORE_PATTERNS};
 use bookclerk_intake::{
-    step, ItemGrouper, ListedObject, Placement, Step, TrackedItem, TrackedState, MAX_ITEM_MEMBERS,
+    signature_of, step, ItemGrouper, ItemLimit, ListedObject, Placement, Step, TrackedItem,
+    TrackedState, MAX_ITEM_MEMBERS,
 };
 
 /// Largest input worth checking.
@@ -59,6 +65,28 @@ fn lines(text: &str) -> Vec<Line<'_>> {
         .collect()
 }
 
+/// The reference glob matcher: `matches[i][j]` says whether the first `i`
+/// pattern characters match the first `j` name characters, where `*`
+/// matches any run (empty included), `?` one character, and anything else
+/// itself without ASCII case.
+fn reference_glob(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    let mut matches = vec![vec![false; name.len() + 1]; pattern.len() + 1];
+    matches[0][0] = true;
+    for i in 1..=pattern.len() {
+        let p = pattern[i - 1];
+        for j in 0..=name.len() {
+            matches[i][j] = match p {
+                '*' => matches[i - 1][j] || (j > 0 && matches[i][j - 1]),
+                '?' => j > 0 && matches[i - 1][j - 1],
+                c => j > 0 && matches[i - 1][j - 1] && c.eq_ignore_ascii_case(&name[j - 1]),
+            };
+        }
+    }
+    matches[pattern.len()][name.len()]
+}
+
 /// The oracle's placement of `key`: `None` ignored, `Some(None)` stray,
 /// `Some(Some(item))` a member of `item`.
 fn oracle_place(settings: &IntakeSettings, key: &str) -> Option<Option<String>> {
@@ -72,7 +100,7 @@ fn oracle_place(settings: &IntakeSettings, key: &str) -> Option<Option<String>> 
             .iter()
             .copied()
             .chain(settings.ignore.iter().map(String::as_str))
-            .any(|pattern| glob_matches(pattern, segment));
+            .any(|pattern| reference_glob(pattern, segment));
         if segment.is_empty()
             || segment.starts_with('.')
             || segment.chars().any(char::is_control)
@@ -123,6 +151,7 @@ pub fn check(data: &[u8]) {
     // Placement and grouping.
     let mut grouper = ItemGrouper::new(&settings);
     let mut expected: BTreeMap<String, BTreeMap<String, (u64, String)>> = BTreeMap::new();
+    let mut over_cap: BTreeSet<String> = BTreeSet::new();
     for line in &listed {
         let placement = grouper.add(ListedObject {
             key: line.key,
@@ -140,6 +169,8 @@ pub fn check(data: &[u8]) {
                         line.key.to_string(),
                         (line.size, line.signature.to_string()),
                     );
+                } else {
+                    over_cap.insert(want.clone());
                 }
             }
             _ => panic!("key {:?} placed {placement:?}, oracle {oracle:?}", line.key),
@@ -162,6 +193,25 @@ pub fn check(data: &[u8]) {
             .values()
             .fold(0u64, |sum, (size, _)| sum.saturating_add(*size));
         assert_eq!(item.total_bytes, total);
+        let capped = over_cap.contains(&item.key);
+        assert_eq!(
+            item.limit,
+            capped.then_some(ItemLimit::TooManyMembers),
+            "member cap of {:?}",
+            item.key
+        );
+        assert_eq!(
+            item.members.len() == MAX_ITEM_MEMBERS,
+            want.len() == MAX_ITEM_MEMBERS
+        );
+        if capped {
+            assert_ne!(
+                item.signature,
+                signature_of(&item.members, None),
+                "going past the cap changes the signature of {:?}",
+                item.key
+            );
+        }
         match settings.attribute_to {
             IntakeAttribution::Owner => assert_eq!(item.patron_folder, None),
             IntakeAttribution::Subfolder => {
@@ -172,7 +222,7 @@ pub fn check(data: &[u8]) {
 
     // Order independence: the reversed listing gives the same signatures
     // (when no key repeats, since the last listing of a key wins).
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = BTreeSet::new();
     if listed.iter().all(|line| seen.insert(line.key)) {
         let mut reversed = ItemGrouper::new(&settings);
         for line in listed.iter().rev() {

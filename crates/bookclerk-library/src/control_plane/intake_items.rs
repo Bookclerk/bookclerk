@@ -78,6 +78,23 @@ pub enum IntakeFinish {
     Removed,
     /// The ingest failed for this reason.
     Failed(String),
+    /// Some members were moved or deleted and the rest could not be. The
+    /// record is kept `failed` with this reason under the signature of the
+    /// members left, so they are not ingested again on their own; they are
+    /// offered again only when they change.
+    PartlyRemoved {
+        /// What went wrong.
+        reason: String,
+        /// The signature of the members still in place.
+        remaining: ItemSignature,
+    },
+    /// The batch never became one the job runs (it was not written, or
+    /// was not queued and has been cancelled): the item settles again from
+    /// this time, unix milliseconds, and is handed off anew.
+    Retry {
+        /// When the new quiet period starts, unix milliseconds.
+        quiet_since_ms: u64,
+    },
 }
 
 /// The lowercase hex SHA-256 of an item key: its row's key.
@@ -97,7 +114,7 @@ pub async fn load_intake_items(
     store: &LibraryStore,
     instance_id: &str,
 ) -> Result<BTreeMap<String, IntakeItemRecord>> {
-    let page = match store.db_capabilities().max_result_rows {
+    let mut page = match store.db_capabilities().max_result_rows {
         0 => ITEM_PAGE,
         rows => u64::from(rows).clamp(1, ITEM_PAGE),
     };
@@ -110,11 +127,19 @@ pub async fn load_intake_items(
         if let Some(after) = &after {
             query = query.filter(intake_items::Column::ItemHash.gt(after.as_str()));
         }
-        let rows = query
-            .limit(page)
-            .all(store.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        // Keys run to 1 KiB, so a plugin with a small `maxResultBytes` can
+        // refuse a page for its bytes: read it again with half the rows.
+        let rows = match query.limit(page).all(store.db()).await {
+            Ok(rows) => rows,
+            Err(err) => {
+                let err = LibraryError::Orm(err);
+                if page > 1 && super::catalog_lookup::is_result_bytes_limit(&err) {
+                    page /= 2;
+                    continue;
+                }
+                return Err(err);
+            }
+        };
         let full = u64::try_from(rows.len()).unwrap_or(u64::MAX) >= page;
         after = rows.last().map(|row| row.item_hash.clone());
         for row in rows {
@@ -210,24 +235,47 @@ pub async fn finish_intake_item(
               WHERE plugin_instance_id = ? AND item_hash = ? AND state = 'queued' AND batch_id = ?",
             vec![text(instance_id), text(&hash), text(batch_id)],
         ),
-        IntakeFinish::Done | IntakeFinish::Failed(_) => {
-            let (state, error) = match finish {
-                IntakeFinish::Failed(reason) => ("failed", Some(bounded(reason))),
-                IntakeFinish::Done | IntakeFinish::Removed => ("done", None),
-            };
-            exec(
-                "UPDATE intake_items SET state = ?, error = ?, updated_at = ?
-                  WHERE plugin_instance_id = ? AND item_hash = ? AND state = 'queued' AND batch_id = ?",
-                vec![
-                    text(state),
-                    text_opt(error.as_deref()),
-                    text(&now),
-                    text(instance_id),
-                    text(&hash),
-                    text(batch_id),
-                ],
-            )
-        }
+        IntakeFinish::PartlyRemoved { reason, remaining } => exec(
+            "UPDATE intake_items SET state = 'failed', signature = ?, error = ?, updated_at = ?
+              WHERE plugin_instance_id = ? AND item_hash = ? AND state = 'queued' AND batch_id = ?",
+            vec![
+                text(&remaining.to_hex()),
+                text(&bounded(reason)),
+                text(&now),
+                text(instance_id),
+                text(&hash),
+                text(batch_id),
+            ],
+        ),
+        IntakeFinish::Retry { quiet_since_ms } => exec(
+            "UPDATE intake_items
+                SET state = 'settling', batch_id = NULL, error = NULL, quiet_since_ms = ?,
+                    updated_at = ?
+              WHERE plugin_instance_id = ? AND item_hash = ? AND state = 'queued' AND batch_id = ?",
+            vec![
+                int(i64::try_from(*quiet_since_ms).unwrap_or(i64::MAX)),
+                text(&now),
+                text(instance_id),
+                text(&hash),
+                text(batch_id),
+            ],
+        ),
+        IntakeFinish::Done => exec(
+            "UPDATE intake_items SET state = 'done', error = NULL, updated_at = ?
+              WHERE plugin_instance_id = ? AND item_hash = ? AND state = 'queued' AND batch_id = ?",
+            vec![text(&now), text(instance_id), text(&hash), text(batch_id)],
+        ),
+        IntakeFinish::Failed(reason) => exec(
+            "UPDATE intake_items SET state = 'failed', error = ?, updated_at = ?
+              WHERE plugin_instance_id = ? AND item_hash = ? AND state = 'queued' AND batch_id = ?",
+            vec![
+                text(&bounded(reason)),
+                text(&now),
+                text(instance_id),
+                text(&hash),
+                text(batch_id),
+            ],
+        ),
     };
     let reply = store
         .execute_host_batch(super::batch::request(
@@ -525,5 +573,63 @@ mod tests {
                 .unwrap()
         );
         assert!(load_intake_items(&store, &id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_retry_or_partial_cleanup_rewrites_the_queued_record() {
+        let store = crate::control_plane::tests::memory_store().await;
+        let id = drop_folder(&store).await;
+        let queue = |key: &str, batch: &str| {
+            vec![
+                IntakeWrite::Store {
+                    item_key: key.into(),
+                    tracked: TrackedItem {
+                        state: TrackedState::Settling,
+                        signature: sig(4),
+                        quiet_since_ms: 0,
+                    },
+                },
+                IntakeWrite::Queue {
+                    item_key: key.into(),
+                    signature: sig(4),
+                    batch_id: batch.into(),
+                },
+            ]
+        };
+        apply_intake_writes(&store, &id, &queue("R", "r"))
+            .await
+            .unwrap();
+        apply_intake_writes(&store, &id, &queue("P", "p"))
+            .await
+            .unwrap();
+        let retry = IntakeFinish::Retry {
+            quiet_since_ms: 5_000,
+        };
+        assert!(!finish_intake_item(&store, &id, "R", "other", &retry)
+            .await
+            .unwrap());
+        assert!(finish_intake_item(&store, &id, "R", "r", &retry)
+            .await
+            .unwrap());
+        let partly = IntakeFinish::PartlyRemoved {
+            reason: "moving 02.mp3 failed".into(),
+            remaining: sig(5),
+        };
+        assert!(finish_intake_item(&store, &id, "P", "p", &partly)
+            .await
+            .unwrap());
+        let items = load_intake_items(&store, &id).await.unwrap();
+        assert_eq!(
+            items["R"].tracked,
+            TrackedItem {
+                state: TrackedState::Settling,
+                signature: sig(4),
+                quiet_since_ms: 5_000,
+            }
+        );
+        assert_eq!(items["R"].batch_id, None);
+        assert_eq!(items["P"].tracked.state, TrackedState::Failed);
+        assert_eq!(items["P"].tracked.signature, sig(5));
+        assert_eq!(items["P"].error.as_deref(), Some("moving 02.mp3 failed"));
     }
 }

@@ -113,7 +113,9 @@ pub struct ObservedItem {
     pub members: Vec<ItemMember>,
     /// Sum of the members' sizes, saturating.
     pub total_bytes: u64,
-    /// Digest of every member's key, size and signature.
+    /// Digest of every member's key, size and signature, and of whether
+    /// the item went past [`MAX_ITEM_MEMBERS`] (so a member added past the
+    /// cap still changes it).
     pub signature: ItemSignature,
     /// Set when the item can never become ready as listed.
     pub limit: Option<ItemLimit>,
@@ -190,7 +192,7 @@ impl<'s> ItemGrouper<'s> {
                     .contains_key(&key)
                     .then_some(ItemLimit::TooManyMembers);
                 ObservedItem {
-                    signature: signature_of(&members),
+                    signature: signature_of(&members, limit),
                     key,
                     patron_folder,
                     members,
@@ -227,8 +229,15 @@ fn place(settings: &IntakeSettings, key: &str) -> Placement {
 
 /// The order-independent digest of sorted `members`: each member's key,
 /// size and signature, length-prefixed so no two lists collide by
-/// concatenation.
-fn signature_of(members: &[ItemMember]) -> ItemSignature {
+/// concatenation, then a marker when the item is over a limit. An item
+/// within every limit hashes exactly as before the marker existed.
+///
+/// # Arguments
+///
+/// * `members` - The members, sorted by key.
+/// * `limit` - The limit the item went past, if any.
+#[must_use]
+pub fn signature_of(members: &[ItemMember], limit: Option<ItemLimit>) -> ItemSignature {
     let mut hasher = Sha256::new();
     hasher.update(b"bookclerk-intake-item-v1");
     for member in members {
@@ -237,6 +246,13 @@ fn signature_of(members: &[ItemMember]) -> ItemSignature {
             hasher.update(part);
         }
         hasher.update(member.size.to_be_bytes());
+    }
+    match limit {
+        None => {}
+        // Read as the start of another member, the trailer's first eight
+        // bytes are a length far past its end, so no member list hashes
+        // the same bytes.
+        Some(ItemLimit::TooManyMembers) => hasher.update(b"\xFFover-limit:members"),
     }
     ItemSignature(hasher.finalize().into())
 }
@@ -484,5 +500,37 @@ mod tests {
             quiet_since_ms: 0,
         };
         assert_eq!(step(Some(&record), Some(&item), u64::MAX, 1), Step::Keep);
+    }
+
+    #[test]
+    fn a_member_past_the_cap_changes_the_signature() {
+        let settings = IntakeSettings::for_patron(1);
+        let keys: Vec<String> = (0..=MAX_ITEM_MEMBERS)
+            .map(|i| format!("Big/{i:05}"))
+            .collect();
+        let mut at_cap = ItemGrouper::new(&settings);
+        for key in &keys[..MAX_ITEM_MEMBERS] {
+            at_cap.add(obj(key, 1, ""));
+        }
+        let at_cap = at_cap.finish().remove(0);
+        assert_eq!(at_cap.limit, None);
+        assert_eq!(at_cap.signature, signature_of(&at_cap.members, None));
+        let mut over = ItemGrouper::new(&settings);
+        for key in &keys {
+            over.add(obj(key, 1, ""));
+        }
+        let over = over.finish().remove(0);
+        assert_eq!(over.members, at_cap.members, "the extra member is not kept");
+        assert_ne!(over.signature, at_cap.signature);
+        // A record that settled at the cap restarts when the item grows.
+        let record = TrackedItem {
+            state: TrackedState::Settling,
+            signature: at_cap.signature,
+            quiet_since_ms: 0,
+        };
+        assert!(matches!(
+            step(Some(&record), Some(&over), 1_000_000, 1),
+            Step::Store(_)
+        ));
     }
 }

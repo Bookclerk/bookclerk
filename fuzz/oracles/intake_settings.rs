@@ -15,7 +15,8 @@
 //!   3,650 and only with `after_ingest = move`), the documented names for
 //!   `after_ingest` and `attribute_to`, a positive `patron` exactly when
 //!   `attribute_to` is `owner`, and at most 64 distinct ignore patterns of
-//!   1 to 128 bytes with no path separator or control character;
+//!   1 to 128 bytes with no path separator or control character, and the
+//!   settings written out with every default fill at most 12 KiB;
 //! - accepted settings equal the oracle's reading field by field and
 //!   survive a JSON round trip.
 
@@ -191,7 +192,26 @@ fn read(data: &[u8]) -> Option<Reading> {
         && reading
             .prune
             .is_none_or(|days| (1..=3_650).contains(&days) && reading.after == "move");
-    in_range.then_some(reading)
+    (in_range && written_out_len(&reading) <= 12 * 1024).then_some(reading)
+}
+
+/// The length of the reading written out with every default filled in:
+/// the five fields that always appear, plus `patron` and
+/// `prune_imported_days` when set.
+fn written_out_len(reading: &Reading) -> usize {
+    let mut object = serde_json::Map::new();
+    object.insert("settle_seconds".into(), reading.settle.into());
+    object.insert("scan_interval_seconds".into(), reading.scan.into());
+    object.insert("after_ingest".into(), reading.after.clone().into());
+    object.insert("attribute_to".into(), reading.attribute.clone().into());
+    if let Some(patron) = reading.patron {
+        object.insert("patron".into(), patron.into());
+    }
+    object.insert("ignore".into(), reading.ignore.clone().into());
+    if let Some(days) = reading.prune {
+        object.insert("prune_imported_days".into(), days.into());
+    }
+    serde_json::to_vec(&Value::Object(object)).map_or(usize::MAX, |bytes| bytes.len())
 }
 
 /// A non-negative whole number no larger than `max`.

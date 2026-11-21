@@ -13,7 +13,7 @@
 //! folder that is already one may change at any time; the host reads them
 //! on every pass.
 
-use bookclerk_config::{parse_intake_settings, IntakeSettings};
+use bookclerk_config::IntakeSettings;
 use serde::{Deserialize, Serialize};
 
 use super::deployments::{list_deployments_for_instance, DesiredState};
@@ -103,19 +103,51 @@ pub async fn intake_settings(
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] for settings that fail
-/// [`IntakeSettings::validate`], [`LibraryError::Conflict`] when the role
-/// would change while the instance is deployed on some node or when the
-/// document keeps changing underneath, or the write's error.
+/// [`IntakeSettings::validate`] or name a patron who is not an active user,
+/// [`LibraryError::Conflict`] when the role would change while the instance
+/// is deployed on some node or when the document keeps changing underneath,
+/// or the write's error.
 pub async fn set_intake(
     store: &LibraryStore,
     actor: &ConfigActor,
     instance_id: &PluginInstanceId,
     settings: Option<IntakeSettings>,
 ) -> Result<ConfigurationDocument<IntakeRoleV1>> {
+    set_intake_at(store, actor, instance_id, settings, None).await
+}
+
+/// [`set_intake`] for a caller that changed settings it read: the write
+/// applies only while the document is still at `expected_revision` (`0`
+/// when none was written), so an edit never restores fields another writer
+/// changed meanwhile.
+///
+/// # Arguments
+///
+/// * `store` - The library database.
+/// * `actor` - Who is writing, for authorization and the audit log.
+/// * `instance_id` - The storage plugin instance.
+/// * `settings` - The drop folder's settings, or `None` for a destination.
+/// * `expected_revision` - The revision the settings were read at; `None`
+///   replaces whatever is stored.
+///
+/// # Errors
+///
+/// As [`set_intake`], and [`LibraryError::Conflict`] when the document is
+/// no longer at `expected_revision`.
+pub async fn set_intake_at(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    instance_id: &PluginInstanceId,
+    settings: Option<IntakeSettings>,
+    expected_revision: Option<i64>,
+) -> Result<ConfigurationDocument<IntakeRoleV1>> {
     if let Some(settings) = &settings {
         settings
             .validate()
             .map_err(|err| LibraryError::Invalid(err.to_string()))?;
+        if let Some(patron) = settings.patron {
+            refuse_inactive_patron(store, patron).await?;
+        }
     }
     let body = IntakeRoleV1 { intake: settings };
     let key = intake_key(instance_id.as_str());
@@ -134,6 +166,16 @@ pub async fn set_intake(
                 .await?,
             )?,
         };
+        let unchanged_since_read = match expected_revision {
+            None => true,
+            // Read before anything was written: the default document the
+            // import above wrote is what the reader saw.
+            Some(0) => current.body == IntakeRoleV1::default(),
+            Some(expected) => current.revision == expected,
+        };
+        if !unchanged_since_read {
+            return Err(changed_since_read(instance_id));
+        }
         if current.body == body {
             return Ok(current);
         }
@@ -157,6 +199,11 @@ pub async fn set_intake(
         .await?
         {
             ReplaceOutcome::Applied(stored) => return parse_role(stored),
+            ReplaceOutcome::Conflict { .. } | ReplaceOutcome::Replayed { .. }
+                if expected_revision.is_some() =>
+            {
+                return Err(changed_since_read(instance_id));
+            }
             ReplaceOutcome::Conflict { .. } | ReplaceOutcome::Replayed { .. } => {}
         }
     }
@@ -164,6 +211,25 @@ pub async fn set_intake(
         "the role of storage instance {} kept changing; retry",
         instance_id.as_str()
     )))
+}
+
+/// The conflict for an edit whose document changed after it was read.
+fn changed_since_read(instance_id: &PluginInstanceId) -> LibraryError {
+    LibraryError::Conflict(format!(
+        "the drop folder settings of storage instance {} changed since they were read; run the command again",
+        instance_id.as_str()
+    ))
+}
+
+/// Refuses a `patron` that does not name an active user: items handed to
+/// the ingest job for them would only fail.
+async fn refuse_inactive_patron(store: &LibraryStore, patron: i64) -> Result<()> {
+    match store.get_user(patron).await? {
+        Some(user) if user.status == crate::models::UserStatus::Active => Ok(()),
+        Some(_) | None => Err(LibraryError::Invalid(format!(
+            "intake settings: patron {patron} is not an active user"
+        ))),
+    }
 }
 
 /// Refuses a role change while any node runs, or is meant to run, the
@@ -197,28 +263,26 @@ fn parse_role(stored: StoredDocument) -> Result<ConfigurationDocument<IntakeRole
             stored.schema_version,
         ));
     }
-    let invalid = |err: &dyn std::fmt::Display| {
-        LibraryError::Invalid(format!("invalid {INTAKE_NAMESPACE}: {err}"))
-    };
-    let body: StoredRole =
-        serde_json::from_str(&stored.document_json).map_err(|err| invalid(&err))?;
-    let intake = match body.intake {
-        Some(raw) => {
-            let bytes = serde_json::to_vec(&raw).map_err(|err| invalid(&err))?;
-            Some(parse_intake_settings(&bytes).map_err(|err| invalid(&err))?)
-        }
-        None => None,
-    };
-    Ok(document(stored, IntakeRoleV1 { intake }))
+    // The settings are read straight from the stored text by their strict
+    // reader, so a key repeated inside them is refused, as it is in a
+    // request body.
+    let body: StoredRole = serde_json::from_str(&stored.document_json)
+        .map_err(|err| LibraryError::Invalid(format!("invalid {INTAKE_NAMESPACE}: {err}")))?;
+    Ok(document(
+        stored,
+        IntakeRoleV1 {
+            intake: body.intake,
+        },
+    ))
 }
 
-/// A stored `core.intake` body as it is read back; the settings go through
-/// their strict reader.
+/// A stored `core.intake` body as it is read back.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredRole {
-    /// The settings object, or `null`; read again by the strict reader.
-    intake: Option<serde_json::Value>,
+    /// The settings, or `null`, through [`IntakeSettings`]'s strict reader
+    /// (unknown and repeated keys refused, then validated).
+    intake: Option<IntakeSettings>,
 }
 
 /// Serializes a body for storage.
@@ -246,9 +310,19 @@ mod tests {
         assert!(intake_settings(&store, "a").await.unwrap().is_none());
     }
 
+    /// Creates an active patron and returns its user id.
+    async fn patron(store: &LibraryStore) -> i64 {
+        store
+            .create_user(crate::models::UserRole::Member, Some("Reader"), None)
+            .await
+            .unwrap()
+            .id
+    }
+
     #[tokio::test]
     async fn the_role_changes_only_while_undeployed() {
         let store = crate::control_plane::tests::memory_store().await;
+        let reader = patron(&store).await;
         let instance = create_plugin_instance(&store, &operator(), "local", "Drop folder")
             .await
             .unwrap();
@@ -256,16 +330,16 @@ mod tests {
             &store,
             &operator(),
             &instance.id,
-            Some(IntakeSettings::for_patron(2)),
+            Some(IntakeSettings::for_patron(reader)),
         )
         .await
         .unwrap();
-        assert_eq!(first.body.intake, Some(IntakeSettings::for_patron(2)));
+        assert_eq!(first.body.intake, Some(IntakeSettings::for_patron(reader)));
         let again = set_intake(
             &store,
             &operator(),
             &instance.id,
-            Some(IntakeSettings::for_patron(2)),
+            Some(IntakeSettings::for_patron(reader)),
         )
         .await
         .unwrap();
@@ -286,7 +360,7 @@ mod tests {
             &instance.id,
             Some(IntakeSettings {
                 settle_seconds: 30,
-                ..IntakeSettings::for_patron(2)
+                ..IntakeSettings::for_patron(reader)
             }),
         )
         .await
@@ -338,5 +412,101 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_patron_must_be_an_active_user() {
+        let store = crate::control_plane::tests::memory_store().await;
+        let instance = create_plugin_instance(&store, &operator(), "local", "Drop folder")
+            .await
+            .unwrap();
+        let err = set_intake(
+            &store,
+            &operator(),
+            &instance.id,
+            Some(IntakeSettings::for_patron(4242)),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
+        assert!(err.to_string().contains("not an active user"), "{err}");
+        let reader = patron(&store).await;
+        set_intake(
+            &store,
+            &operator(),
+            &instance.id,
+            Some(IntakeSettings::for_patron(reader)),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_edit_applies_only_at_the_revision_it_read() {
+        let store = crate::control_plane::tests::memory_store().await;
+        let reader = patron(&store).await;
+        let instance = create_plugin_instance(&store, &operator(), "local", "Drop folder")
+            .await
+            .unwrap();
+        let first = set_intake_at(
+            &store,
+            &operator(),
+            &instance.id,
+            Some(IntakeSettings::for_patron(reader)),
+            Some(0),
+        )
+        .await
+        .unwrap();
+        // Another writer changes the scan interval.
+        set_intake(
+            &store,
+            &operator(),
+            &instance.id,
+            Some(IntakeSettings {
+                scan_interval_seconds: 600,
+                ..IntakeSettings::for_patron(reader)
+            }),
+        )
+        .await
+        .unwrap();
+        // An edit of the settle time made from the first read is refused
+        // rather than restoring the old interval.
+        for expected in [Some(first.revision), Some(0)] {
+            let err = set_intake_at(
+                &store,
+                &operator(),
+                &instance.id,
+                Some(IntakeSettings {
+                    settle_seconds: 30,
+                    ..IntakeSettings::for_patron(reader)
+                }),
+                expected,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, LibraryError::Conflict(_)), "{err}");
+        }
+        assert_eq!(
+            intake_settings(&store, instance.id.as_str())
+                .await
+                .unwrap()
+                .map(|settings| (settings.settle_seconds, settings.scan_interval_seconds)),
+            Some((60, 600))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repeated_key_in_the_stored_settings_is_refused() {
+        let stored = StoredDocument {
+            key: intake_key("a"),
+            schema_version: INTAKE_SCHEMA_VERSION,
+            revision: 1,
+            document_json: r#"{"intake":{"patron":1,"patron":2}}"#.to_string(),
+            updated_at: "2026-11-21T00:00:00Z".to_string(),
+            updated_by: "operator:test".to_string(),
+            write_operation_id: "op".to_string(),
+        };
+        let err = parse_role(stored).unwrap_err();
+        assert!(err.to_string().contains("patron"), "{err}");
     }
 }

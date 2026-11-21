@@ -1660,14 +1660,14 @@ pub async fn get_intake(
     put,
     path = "/api/config/plugin-instances/{id}/intake",
     params(("id" = String, Path, description = "Plugin instance id of the storage instance.")),
-    request_body(content = bookclerk_config::IntakeSettings, content_type = "application/json"),
+    request_body(content = bookclerk_config::IntakeSettingsRequest, content_type = "application/json"),
     responses(
         (status = 200, description = "The settings after the change.", body = IntakeResponse),
-        (status = 400, description = "The body is not JSON.", body = String, content_type = "text/plain"),
+        (status = 400, description = "The body is not JSON (text), or the patron is not an active user (JSON).", body = ErrorMessage, example = json!({"error": "intake settings: patron 4242 is not an active user"})),
         (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
         (status = 413, description = "The body is over 16 KiB.", body = ErrorMessage, example = json!({"error": "the body is at most 16384 bytes"})),
         (status = 415, description = "The body is not sent as `application/json`.", body = String, content_type = "text/plain"),
-        (status = 422, description = "The settings are invalid: an unknown or repeated key, a value of the wrong type or out of range.", body = String, content_type = "text/plain", example = "Failed to deserialize the JSON body into the target type: intake settings: attribute_to = owner needs a patron user id at line 1 column 2"),
+        (status = 422, description = "The settings are invalid: an unknown or repeated key, a value of the wrong type or out of range, or settings over 12 KiB written out.", body = String, content_type = "text/plain", example = "Failed to deserialize the JSON body into the target type: intake settings: attribute_to = owner needs a patron user id at line 1 column 2"),
         (status = 409, description = "The instance is deployed, or the document kept changing.", body = ErrorMessage, example = json!({"error": "storage instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is deployed on node-a; undeploy it before changing whether it is a drop folder"})),
         (status = 500, description = "The settings could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -3229,17 +3229,25 @@ mod tests {
             )
             .with_state(std::sync::Arc::clone(&state));
         let uri = format!("/api/config/plugin-instances/{}/intake", instance.id);
+        let reader = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Reader"), None)
+            .await
+            .unwrap()
+            .id;
 
         let (status, empty) = send(&app, "GET", &uri, Value::Null).await;
         assert_eq!(status, StatusCode::OK, "{empty}");
         assert_eq!(empty["revision"], 0);
         assert_eq!(empty["intake"], Value::Null);
 
+        // A patron who is not a user is refused.
+        let (status, _) = send(&app, "PUT", &uri, json!({"patron": 4242})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, put) = send(
             &app,
             "PUT",
             &uri,
-            json!({"patron": 2, "settle_seconds": 90}),
+            json!({"patron": reader, "settle_seconds": 90}),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{put}");
@@ -3251,13 +3259,13 @@ mod tests {
         // Bad settings and repeated keys are refused and change nothing.
         let (status, _) = send(&app, "PUT", &uri, json!({"settle_seconds": 90})).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        let (status, _) = send(&app, "PUT", &uri, json!({"patron": 2, "colour": 1})).await;
+        let (status, _) = send(&app, "PUT", &uri, json!({"patron": reader, "colour": 1})).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         let (status, _) = send(
             &app,
             "PUT",
             &uri,
-            json!({"patron": 2, "ignore": ["x".repeat(16 * 1024)]}),
+            json!({"patron": reader, "ignore": ["x".repeat(16 * 1024)]}),
         )
         .await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);

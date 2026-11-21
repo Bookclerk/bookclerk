@@ -3,19 +3,30 @@
 //! A read from storage can break partway, as an S3 drop folder's stream
 //! may. The copy keeps what it already staged and asks the backend again
 //! from the staged length, a few times with backoff, before it gives up.
+//!
+//! Every read reports the identity of the object version it serves. A
+//! resumed read must serve the same version as the bytes already staged,
+//! or the copy stops as changed, so a replacement of the same size is
+//! never spliced onto the old prefix. Where the backend reports no
+//! identity, a broken read starts the copy over from the first byte.
 
 use std::future::Future;
+use std::io::SeekFrom;
 use std::path::Path;
 use std::pin::Pin;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 /// Reads tried for one file: the first plus three resumptions.
 pub(crate) const COPY_ATTEMPTS: u32 = 4;
 
 /// A body read from storage, from the requested offset.
 pub(crate) type Body = Pin<Box<dyn AsyncRead + Send>>;
+
+/// One read of the source: the identity of the object version it serves
+/// (its version id or ETag), when the backend reports one, and the body.
+pub(crate) type Opened = (Option<String>, Body);
 
 /// Why a resumable copy stopped without the whole file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,9 +41,9 @@ pub(crate) enum CopyFailure {
 /// Copies `size` bytes into `path`, resuming from the staged length when a
 /// read breaks.
 ///
-/// `open(offset, length)` returns the body from byte `offset`, at most
-/// `length` bytes long. Each attempt asks for one byte past the settled
-/// size, so a file that grew is seen.
+/// `open(offset, length)` returns the version identity and the body from
+/// byte `offset`, at most `length` bytes long. Each attempt asks for one
+/// byte past the settled size, so a file that grew is seen.
 ///
 /// # Arguments
 ///
@@ -45,8 +56,9 @@ pub(crate) enum CopyFailure {
 /// # Errors
 ///
 /// [`CopyFailure::Changed`] when the source holds more or fewer bytes than
-/// `size`; [`CopyFailure::Unavailable`] when staging cannot be written or
-/// every attempt broke.
+/// `size`, or a resumed read serves another version than the staged bytes
+/// came from; [`CopyFailure::Unavailable`] when staging cannot be written
+/// or every attempt broke.
 pub(crate) async fn copy_resumable<F, Fut>(
     mut open: F,
     path: &Path,
@@ -55,7 +67,7 @@ pub(crate) async fn copy_resumable<F, Fut>(
 ) -> Result<(), CopyFailure>
 where
     F: FnMut(u64, u64) -> Fut,
-    Fut: Future<Output = std::io::Result<Body>>,
+    Fut: Future<Output = std::io::Result<Opened>>,
 {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -66,17 +78,33 @@ where
         .await
         .map_err(|_| CopyFailure::Unavailable)?;
     let mut staged: u64 = 0;
+    // The version the staged bytes came from.
+    let mut pinned: Option<String> = None;
     let mut wait = backoff;
     for attempt in 0..COPY_ATTEMPTS {
         if attempt > 0 {
             tokio::time::sleep(wait).await;
             wait = wait.saturating_mul(2);
         }
+        if staged > 0 && pinned.is_none() {
+            // Nothing says which version the staged bytes are: start over.
+            file.set_len(0)
+                .await
+                .map_err(|_| CopyFailure::Unavailable)?;
+            file.seek(SeekFrom::Start(0))
+                .await
+                .map_err(|_| CopyFailure::Unavailable)?;
+            staged = 0;
+        }
         // One byte past the settled size is enough to see it grew.
         let want = size.saturating_add(1).saturating_sub(staged);
-        let Ok(body) = open(staged, want).await else {
+        let Ok((identity, body)) = open(staged, want).await else {
             continue;
         };
+        if staged > 0 && identity != pinned {
+            return Err(CopyFailure::Changed);
+        }
+        pinned = identity;
         let mut limited = body.take(want);
         let (copied, broke) = copy_counting(&mut limited, &mut file).await;
         staged = staged.saturating_add(copied);
@@ -170,13 +198,25 @@ mod tests {
     }
 
     /// Opens `source` at an offset, breaking after `chunk` bytes for the
-    /// first `breaks` opens, and records each offset asked for.
+    /// first `breaks` opens, and records each offset asked for. Every read
+    /// reports the version `v1`.
     fn opener(
         source: Vec<u8>,
         chunk: usize,
         breaks: usize,
         offsets: Arc<Mutex<Vec<u64>>>,
-    ) -> impl FnMut(u64, u64) -> std::future::Ready<std::io::Result<Body>> {
+    ) -> impl FnMut(u64, u64) -> std::future::Ready<std::io::Result<Opened>> {
+        versioned_opener(source, chunk, breaks, offsets, |_| Some("v1".to_string()))
+    }
+
+    /// [`opener`] with the version each open reports, by open number.
+    fn versioned_opener(
+        source: Vec<u8>,
+        chunk: usize,
+        breaks: usize,
+        offsets: Arc<Mutex<Vec<u64>>>,
+        version: impl Fn(usize) -> Option<String>,
+    ) -> impl FnMut(u64, u64) -> std::future::Ready<std::io::Result<Opened>> {
         let mut opened = 0_usize;
         move |offset, length| {
             offsets.lock().expect("offsets").push(offset);
@@ -189,12 +229,13 @@ mod tests {
             if fail {
                 slice.truncate(chunk);
             }
+            let identity = version(opened);
             opened += 1;
             let body: Body = Box::pin(Breaking {
                 data: std::io::Cursor::new(slice),
                 fail,
             });
-            std::future::ready(Ok(body))
+            std::future::ready(Ok((identity, body)))
         }
     }
 
@@ -252,10 +293,11 @@ mod tests {
         let mut calls = 0_u32;
         let open = move |_offset: u64, _length: u64| {
             calls += 1;
-            let result: std::io::Result<Body> = if calls == 1 {
+            let result: std::io::Result<Opened> = if calls == 1 {
                 Err(std::io::Error::other("timeout"))
             } else {
-                Ok(Box::pin(std::io::Cursor::new(vec![9_u8; 5])))
+                let body: Body = Box::pin(std::io::Cursor::new(vec![9_u8; 5]));
+                Ok((None, body))
             };
             std::future::ready(result)
         };
@@ -263,5 +305,36 @@ mod tests {
             .await
             .expect("copied");
         assert_eq!(std::fs::read(&path).expect("read"), vec![9; 5]);
+    }
+
+    #[tokio::test]
+    async fn a_resumed_read_of_another_version_is_changed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("1");
+        let offsets = Arc::new(Mutex::new(Vec::new()));
+        // The first read breaks after 40 bytes of v1; the same key then
+        // holds v2 of the same size.
+        let open = versioned_opener(vec![3; 100], 40, 1, offsets.clone(), |n| {
+            Some(if n == 0 { "v1" } else { "v2" }.to_string())
+        });
+        assert_eq!(
+            copy_resumable(open, &path, 100, Duration::ZERO).await,
+            Err(CopyFailure::Changed)
+        );
+        assert_eq!(*offsets.lock().expect("offsets"), vec![0, 40]);
+    }
+
+    #[tokio::test]
+    async fn without_a_version_a_broken_read_starts_over() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("1");
+        let source: Vec<u8> = (0..200_u8).collect();
+        let offsets = Arc::new(Mutex::new(Vec::new()));
+        let open = versioned_opener(source.clone(), 70, 1, offsets.clone(), |_| None);
+        copy_resumable(open, &path, 200, Duration::ZERO)
+            .await
+            .expect("copied");
+        assert_eq!(std::fs::read(&path).expect("read"), source);
+        assert_eq!(*offsets.lock().expect("offsets"), vec![0, 0]);
     }
 }

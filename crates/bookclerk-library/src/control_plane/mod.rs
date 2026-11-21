@@ -195,8 +195,8 @@ pub use instances::{
     PluginInstanceId,
 };
 pub use intake::{
-    intake_key, intake_settings, load_intake_role, set_intake, IntakeRoleV1, INTAKE_NAMESPACE,
-    INTAKE_SCHEMA_VERSION,
+    intake_key, intake_settings, load_intake_role, set_intake, set_intake_at, IntakeRoleV1,
+    INTAKE_NAMESPACE, INTAKE_SCHEMA_VERSION,
 };
 pub use intake_items::{
     apply_intake_writes, finish_intake_item, intake_item_hash, load_intake_items, IntakeFinish,

@@ -310,10 +310,19 @@ impl Run<'_> {
                     offset,
                     length: None,
                 });
+                // The version a resumed read must match: the backend's
+                // version id, else its ETag, else its change signature.
                 source
                     .get_stream(key, range)
                     .await
-                    .map(|(_, body)| body)
+                    .map(|(probe, body)| {
+                        let identity = probe
+                            .version_id
+                            .or(probe.etag)
+                            .or(probe.signature)
+                            .filter(|identity| !identity.is_empty());
+                        (identity, body)
+                    })
                     .map_err(std::io::Error::other)
             }
         };
