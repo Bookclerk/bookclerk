@@ -8,6 +8,7 @@ prerequisites, and the exact commands ``ci-exec.py run`` would issue.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import importlib.util
 import json
 import os
@@ -15,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -433,7 +435,7 @@ class ScenarioTests(unittest.TestCase):
         e2e_cmd = [c for key, c in planned_commands(artifact(p), "e2e", CTX) if not key][0]
         self.assertEqual(
             e2e_cmd.argv,
-            ["cargo", "test", "-p", E2E_PACKAGE, "--lib", "--test", "staged_plugins", "--test", "installed_plugin_path", "--test", "cold_start"],
+            ["cargo", "test", "-p", E2E_PACKAGE, "--lib", "--test", "staged_plugins", "--test", "installed_plugin_path", "--test", "cold_start", "--test", "workerd_isolate_egress"],
         )
         self.assertEqual(e2e_cmd.env["BOOKCLERK_STAGED_PLUGINS"], "libro")
         self.assertEqual(e2e_cmd.env["BOOKCLERK_REQUIRE_STAGED_PLUGINS"], "1")
@@ -1636,7 +1638,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(out["check_needs_uv"], "false")
         self.assertEqual(
             set(out),
-            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs", "test_parts"}
+            {"mode", "check_needs_cargo", "check_needs_node", "check_needs_uv", "release_mode", "os_matrix", "os_legs", "test_parts", "os_test_matrix"}
             | {f"job_{j.replace('-', '_')}" for j in JOB_CHECKS}
             | {f"check_{c}" for j in STEP_GATED_JOBS for c in JOB_CHECKS[j]}
             | {f"check_{c}" for c in BUILD_ONLY_HOSTED_CHECKS},
@@ -1813,6 +1815,47 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len(workerd), 1, calls)
         self.assertEqual(len(staged), 1, calls)
         self.assertEqual(len(e2e), 2, calls)
+
+    def test_the_report_suite_runs_every_test_command_before_failing(self) -> None:
+        """Under `CI_OS_SUITE` a failing test command lets the later ones run; elsewhere it stops the check."""
+        full = build_plan(["docs/x.md"], INDEX, RELATIONS, force_full=True, guests=GUESTS)
+        art = artifact(full)
+        nextest = ["cargo", "nextest", "run"]
+
+        def run(env: dict[str, str], fail: list[str]) -> tuple[list[list[str]], str | None]:
+            calls: list[list[str]] = []
+
+            def fake_run(argv, cwd=None, env=None):
+                calls.append(list(argv))
+                return subprocess.CompletedProcess(argv, 1 if argv[: len(fail)] == fail else 0)
+
+            with tempfile.TemporaryDirectory(prefix="bc-exec-") as tmp, mock.patch.dict(os.environ, env):
+                ctx = self._exec_ctx(Path(tmp))
+                with mock.patch("ci_plan.execute.subprocess.run", side_effect=fake_run):
+                    try:
+                        run_check(art, "rust_test", ctx)
+                    except ExecError as err:
+                        return calls, str(err)
+            return calls, None
+
+        suite = {execute.OS_SUITE_ENV: "1", "CI_TEST_PART": "1/2"}
+        checks = check_argv(full, "rust_test")
+        self.assertGreater(len(checks), 1, "part 1 runs more than the main nextest command")
+        calls, err = run(suite, nextest)
+        self.assertIsNotNone(err)
+        # Every command after the failing one still ran, up to the last.
+        first = next(i for i, c in enumerate(calls) if c[:3] == nextest)
+        self.assertEqual(len(calls) - first, len(checks), calls)
+        self.assertEqual(calls[-1], checks[-1], calls)
+        self.assertRegex(err or "", r"rust_test: \d+ command\(s\) failed")
+        # Ordinary runs stop at the first failure.
+        calls, err = run({"CI_TEST_PART": "1/2"}, nextest)
+        self.assertIsNotNone(err)
+        self.assertEqual(calls[-1][:3], nextest, calls)
+        # A prerequisite failure stops the report suite too.
+        calls, err = run(suite, ["cargo", "build"])
+        self.assertIsNotNone(err)
+        self.assertFalse(any(c[:3] == nextest for c in calls), calls)
 
     def test_prereqs_only_runs_the_prerequisites(self) -> None:
         art = artifact(plan("crates/bookclerk-plugin-host/src/rpc.rs"))
@@ -2196,6 +2239,33 @@ class RunnerLayoutTests(unittest.TestCase):
                 if merge_group:
                     self.assertEqual(argv[argv.index("--retries") + 1], "1")
 
+    def test_windows_and_macos_use_the_report_profile(self) -> None:
+        """The `test-os` job's `rust_test` runs every test under the `ci-os` profile, whatever the event."""
+        p = plan("crates/bookclerk-cli/src/main.rs")
+        for os_name in ("Windows", "Darwin"):
+            ctx = dataclasses.replace(CTX, os_name=os_name)
+            for event in ("merge_group", "pull_request", "push"):
+                with self.subTest(os=os_name, event=event):
+                    art = dict(artifact(p), event=event)
+                    # Only the job's own signal picks the profile, not the OS.
+                    plain = [c.argv for key, c in planned_commands(art, "rust_test", ctx) if not key][0]
+                    self.assertNotIn(execute.NEXTEST_OS_PROFILE, plain)
+                    with mock.patch.dict(os.environ, {execute.OS_SUITE_ENV: "1"}):
+                        argv = [c.argv for key, c in planned_commands(art, "rust_test", ctx) if not key][0]
+                    self.assertEqual(argv[argv.index("--profile") + 1], execute.NEXTEST_OS_PROFILE)
+                    self.assertFalse({"--retries", "--fail-fast", "--no-fail-fast"} & set(argv))
+        art = artifact(p)
+        with mock.patch.dict(os.environ, {execute.OS_SUITE_ENV: "yes"}), self.assertRaises(ExecError):
+            planned_commands(art, "rust_test", CTX)
+        with tempfile.TemporaryDirectory() as cov, mock.patch.dict(
+            os.environ, {execute.OS_SUITE_ENV: "1", execute.COVERAGE_DIR_ENV: cov}
+        ), self.assertRaises(ExecError):
+            planned_commands(art, "rust_test", CTX)
+        with (REPO / ".config" / "nextest.toml").open("rb") as f:
+            profile = tomllib.load(f)["profile"][execute.NEXTEST_OS_PROFILE]
+        self.assertIs(profile["fail-fast"], False)
+        self.assertEqual(profile["slow-timeout"], {"period": "60s", "terminate-after": 10})
+
     def test_whole_workspace_tests_split_into_parts(self) -> None:
         full = build_plan(["docs/x.md"], INDEX, RELATIONS, force_full=True, guests=GUESTS)
         self.assertEqual(json.loads(job_outputs(artifact(full))["test_parts"]), list(range(1, TEST_PARTS + 1)))
@@ -2453,6 +2523,7 @@ class RunnerLayoutTests(unittest.TestCase):
         self.assertEqual(json.loads(out["os_matrix"]), ["ubuntu-latest"])
         self.assertEqual(out["os_legs"], "false")
         self.assertEqual(out["job_windows_cluster"], "false")
+        self.assertEqual(json.loads(out["os_test_matrix"]), [])
         for job in ("check", "test", "e2e", "release", "confinement", "native_gateway", "tray", "postgres", "site"):
             with self.subTest(job=job):
                 self.assertEqual(out[f"job_{job}"], "true")
@@ -2490,6 +2561,16 @@ class RunnerLayoutTests(unittest.TestCase):
                 self.assertEqual(json.loads(out["os_matrix"]), ["ubuntu-latest", "windows-latest"])
                 self.assertEqual(out["os_legs"], "true")
                 self.assertTrue(expected_jobs(art)["macos"])
+                # The full suite on Windows and macOS: every part in the
+                # queue, one compile-only leg per OS on the main push.
+                legs = json.loads(out["os_test_matrix"])
+                want = [
+                    {"os": runner, "part": n, "parts": 1 if build_only else parts}
+                    for runner, parts in execute.OS_TEST_PARTS
+                    for n in range(1, (1 if build_only else parts) + 1)
+                ]
+                self.assertEqual(legs, want)
+                self.assertNotIn("test-os", expected_jobs(art))
         self.assertEqual(job_outputs(self.ready_artifact("Cargo.lock", linux_only=False))["job_windows_cluster"], "true")
 
     def test_linux_only_and_build_only_are_exclusive(self) -> None:

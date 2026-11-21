@@ -459,7 +459,33 @@ async fn spawn_single(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
+    // A workerd launcher's jail has no IP reach (`NetPolicy::LocalIpc`): its
+    // isolate's fetches and its broker's sockets leave as tunnels over this
+    // link, and the host checks each one against the grant and dials it.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let egress = if plan.fronted_by_workerd() {
+        WorkerdEgress::prepare(&mut cmd, &jail.start, grant, &cancel)?
+    } else {
+        None
+    };
+
     let mut child = with_fd_spawn_lock(|| cmd.spawn())?;
+    let (proxy, egress_handoff) = match egress {
+        Some(egress) => {
+            let (proxy, handoff) = egress.started();
+            (Some(proxy), handoff)
+        }
+        None => (None, None),
+    };
+    #[cfg(windows)]
+    if let Some(handoff) = egress_handoff {
+        if let Err(err) = handoff.write(&mut child).await {
+            let _ = child.kill().await;
+            return Err(err);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = egress_handoff;
     let identities = sibling_identities(Some(&child), None);
     if let Some(stderr) = child.stderr.take() {
         forward_guest_stderr(id.to_string(), "guest", stderr, Arc::clone(&stderr_tail));
@@ -481,10 +507,236 @@ async fn spawn_single(
         gateway_pid: None,
         guest_pid: pid,
         session_job: None,
-        cancel: Arc::new(AtomicBool::new(false)),
-        proxy: None,
+        cancel,
+        proxy,
         identities,
     })
+}
+
+/// The host side of a workerd launcher's egress link, before the spawn.
+///
+/// [`Self::prepare`] serves the host's CONNECT proxy on one end under the
+/// isolate tunnel rule ([`bookclerk_workerd::socket_proxy::LinkPolicy::isolate`])
+/// and names the other end in the launcher's environment. The session
+/// challenge travels in that environment too; the launcher writes it first
+/// and removes it, so workerd never inherits it.
+struct WorkerdEgress {
+    /// The running host proxy. Dropping it cancels its tasks.
+    proxy: bookclerk_workerd::socket_proxy::ProxyServer,
+    /// The launcher's end, held until the launcher has its copy.
+    #[cfg(unix)]
+    launcher_end: DuplexLink,
+    /// The launcher's read half (host → launcher).
+    #[cfg(windows)]
+    launcher_read: DuplexHalf,
+    /// The launcher's write half (launcher → host).
+    #[cfg(windows)]
+    launcher_write: DuplexHalf,
+    /// Whether `bookclerk-jail` fronts the launcher and takes a handoff line.
+    #[cfg(windows)]
+    confined: bool,
+}
+
+/// The Windows handoff line that gives a jailed launcher its egress pipes.
+#[cfg(windows)]
+struct WorkerdEgressHandoff {
+    /// The launcher's read half (host → launcher).
+    read: DuplexHalf,
+    /// The launcher's write half (launcher → host).
+    write: DuplexHalf,
+    /// Whether a handoff line is written; an unjailed launcher inherited
+    /// the halves at spawn instead.
+    confined: bool,
+}
+
+#[cfg(windows)]
+impl WorkerdEgressHandoff {
+    /// Duplicates the halves into the jail and writes the handoff line.
+    ///
+    /// The line leaves stdin and stdout alone, so the launcher's stdio stays
+    /// the host RPC link, like the sibling gateway's handoff.
+    ///
+    /// # Errors
+    ///
+    /// `DuplicateHandle` or the stdin write failed.
+    async fn write(self, child: &mut Child) -> Result<()> {
+        if !self.confined {
+            return Ok(());
+        }
+        // Built before any await: a raw process handle held across `.await`
+        // makes the future `!Send`.
+        let handoff = {
+            let target = process_handle(child)?;
+            let read = bookclerk_sandbox::duplicate_handle_into(self.read.as_raw_handle(), target)
+                .map_err(|err| {
+                    PluginError::message(format!("DuplicateHandle workerd egress read: {err}"))
+                })?;
+            let write =
+                bookclerk_sandbox::duplicate_handle_into(self.write.as_raw_handle(), target)
+                    .map_err(|err| {
+                        PluginError::message(format!("DuplicateHandle workerd egress write: {err}"))
+                    })?;
+            JailHandoff {
+                v: JailHandoff::VERSION,
+                stdin: None,
+                stdout: None,
+                extra: vec![
+                    JailHandoffExtra::inherited(bookclerk_sandbox::WORKERD_EGRESS_ENV, read),
+                    JailHandoffExtra::inherited(bookclerk_sandbox::WORKERD_EGRESS_WRITE_ENV, write),
+                ],
+            }
+        };
+        write_handoff_line(child, &handoff).await
+    }
+}
+
+/// Unix stand-in: the link is inherited at spawn, so nothing is written.
+#[cfg(not(windows))]
+struct WorkerdEgressHandoff;
+
+impl WorkerdEgress {
+    /// Creates the link, starts the host proxy and prepares `cmd`.
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` - The launcher's command, before spawn.
+    /// * `start` - How the launcher starts; on Windows a jailed launcher
+    ///   takes its pipes in a handoff line, an unjailed one inherits them.
+    /// * `grant` - The effective grant; its egress policy is the tunnel rule.
+    /// * `cancel` - The session fence; a revoke stops the proxy.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the grant denies the network: the launcher then gets no
+    /// link and its isolate's egress is `blocked`.
+    ///
+    /// # Errors
+    ///
+    /// The link or proxy could not be created.
+    fn prepare(
+        cmd: &mut Command,
+        start: &Start,
+        grant: &PluginGrant,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<Option<Self>> {
+        let policy = grant.egress_policy();
+        if policy.mode == bookclerk_plugin_manifest::NetworkMode::Deny {
+            return Ok(None);
+        }
+        let challenge = new_session_challenge();
+        cmd.env(
+            bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
+            hex::encode(challenge),
+        );
+        let rule = bookclerk_workerd::socket_proxy::LinkPolicy::isolate(policy);
+        #[cfg(unix)]
+        {
+            let (host_end, launcher_end) = DuplexLink::pair().map_err(|err| {
+                PluginError::message(format!("could not create the workerd egress link: {err}"))
+            })?;
+            let _ = start;
+            let proxy =
+                serve_host_socket_proxy(host_end, rule, Arc::clone(cancel), challenge, None)?;
+            let fd = launcher_end.as_raw_fd();
+            // SAFETY: the closure only calls async-signal-safe dup2/close.
+            unsafe {
+                cmd.pre_exec(move || {
+                    bookclerk_sandbox::inherit_fd_at(fd, bookclerk_sandbox::WORKERD_EGRESS_FD)?;
+                    if fd != bookclerk_sandbox::WORKERD_EGRESS_FD {
+                        libc::close(fd);
+                    }
+                    Ok(())
+                });
+            }
+            cmd.env(
+                bookclerk_sandbox::WORKERD_EGRESS_ENV,
+                format!("fd:{}", bookclerk_sandbox::WORKERD_EGRESS_FD),
+            );
+            Ok(Some(Self {
+                proxy,
+                launcher_end,
+            }))
+        }
+        #[cfg(windows)]
+        {
+            let pipes = StdioEnds::pair_overlapped().map_err(|err| {
+                PluginError::message(format!("could not create the workerd egress pipes: {err}"))
+            })?;
+            let StdioEnds {
+                host_stdin,
+                host_stdout,
+                guest_stdin,
+                guest_stdout,
+            } = pipes;
+            let proxy = serve_host_socket_proxy(
+                host_stdout,
+                host_stdin,
+                rule,
+                Arc::clone(cancel),
+                challenge,
+                None,
+            )?;
+            let confined = matches!(start, Start::Confined { .. });
+            if confined {
+                cmd.env(JAIL_HANDOFF_ENV, "1");
+            } else {
+                // Isolation is off: no jail takes a handoff line, so the
+                // launcher inherits the halves (the host drops its copies
+                // right after the spawn).
+                for half in [&guest_stdin, &guest_stdout] {
+                    half.set_inheritable(true).map_err(|err| {
+                        PluginError::message(format!("workerd egress inherit: {err}"))
+                    })?;
+                }
+                cmd.env(
+                    bookclerk_sandbox::WORKERD_EGRESS_ENV,
+                    format!("handle:{}", guest_stdin.handle_value()),
+                );
+                cmd.env(
+                    bookclerk_sandbox::WORKERD_EGRESS_WRITE_ENV,
+                    format!("handle:{}", guest_stdout.handle_value()),
+                );
+            }
+            Ok(Some(Self {
+                proxy,
+                launcher_read: guest_stdin,
+                launcher_write: guest_stdout,
+                confined,
+            }))
+        }
+    }
+
+    /// Splits off the proxy once the launcher is spawned.
+    ///
+    /// # Returns
+    ///
+    /// The proxy (kept for the session) and, on Windows, the handoff line
+    /// still to be written.
+    fn started(
+        self,
+    ) -> (
+        bookclerk_workerd::socket_proxy::ProxyServer,
+        Option<WorkerdEgressHandoff>,
+    ) {
+        #[cfg(unix)]
+        {
+            // The child holds its copy now; the parent's end must close so
+            // the host sees EOF when the launcher exits.
+            drop(self.launcher_end);
+            (self.proxy, Some(WorkerdEgressHandoff))
+        }
+        #[cfg(windows)]
+        {
+            (
+                self.proxy,
+                Some(WorkerdEgressHandoff {
+                    read: self.launcher_read,
+                    write: self.launcher_write,
+                    confined: self.confined,
+                }),
+            )
+        }
+    }
 }
 
 /// Host-spawned gateway + native guest joined by inherited duplex links.
@@ -862,7 +1114,7 @@ enum ProcessStart {
     /// Linux `/proc/<pid>/stat` field 22, in clock ticks since boot.
     #[cfg(target_os = "linux")]
     LinuxTicks(u64),
-    /// macOS `proc_bsdinfo` start timeval.
+    /// macOS `kinfo_proc` start timeval (`kp_proc.p_starttime`).
     #[cfg(target_os = "macos")]
     MacMicros { sec: u64, usec: u64 },
 }
@@ -1035,72 +1287,94 @@ fn read_process_start(pid: u32) -> Option<ProcessStart> {
     linux_start_ticks(&text).map(ProcessStart::LinuxTicks)
 }
 
+/// Size in bytes of macOS `struct kinfo_proc` on 64-bit targets (x86_64 and
+/// arm64), the record `sysctl(KERN_PROC_PID)` writes for one process.
 #[cfg(target_os = "macos")]
-#[repr(C)]
-struct ProcBsdInfo {
-    pbi_flags: u32,
-    pbi_status: u32,
-    pbi_xstatus: u32,
-    pbi_pid: u32,
-    pbi_ppid: u32,
-    pbi_uid: u32,
-    pbi_gid: u32,
-    pbi_ruid: u32,
-    pbi_rgid: u32,
-    pbi_svuid: u32,
-    pbi_svgid: u32,
-    rfu_1: u32,
-    pbi_comm: [u8; 16],
-    pbi_name: [u8; 32],
-    pbi_nfiles: u32,
-    pbi_pgid: u32,
-    pbi_pjobc: u32,
-    e_tdev: u32,
-    e_tpgid: u32,
-    pbi_nice: i32,
-    pbi_start_tvsec: u64,
-    pbi_start_tvusec: u64,
+const KINFO_PROC_SIZE: usize = 648;
+
+/// Byte offset of `kp_proc.p_un.__p_starttime.tv_sec` (`i64` seconds) in
+/// `struct kinfo_proc`; the start time shares a union with two pointers at
+/// the front of `struct extern_proc`.
+#[cfg(target_os = "macos")]
+const KINFO_START_SEC_OFFSET: usize = 0;
+
+/// Byte offset of `kp_proc.p_un.__p_starttime.tv_usec` (`i32` microseconds).
+#[cfg(target_os = "macos")]
+const KINFO_START_USEC_OFFSET: usize = 8;
+
+/// Byte offset of `kp_proc.p_pid` (`i32`), after the start-time union, the
+/// `p_vmspace` and `p_sigacts` pointers, `p_flag` and the padded `p_stat`.
+#[cfg(target_os = "macos")]
+const KINFO_PID_OFFSET: usize = 40;
+
+/// Buffer for one `struct kinfo_proc`, aligned like the kernel's record.
+#[cfg(target_os = "macos")]
+#[repr(C, align(8))]
+struct KinfoProcBuf([u8; KINFO_PROC_SIZE]);
+
+/// `N` native-endian bytes of `buf` starting at `offset`.
+#[cfg(target_os = "macos")]
+fn kinfo_bytes<const N: usize>(buf: &[u8], offset: usize) -> Option<[u8; N]> {
+    buf.get(offset..offset.checked_add(N)?)?.try_into().ok()
 }
 
+/// Start time and pid from one `struct kinfo_proc` record.
+///
+/// # Arguments
+///
+/// * `buf` - the bytes `sysctl(KERN_PROC_PID)` wrote.
+///
+/// # Returns
+///
+/// `(pid, start)`, or `None` when the record is short or its start time is
+/// negative.
 #[cfg(target_os = "macos")]
-const PROC_PIDTBSDINFO: i32 = 3;
-
-#[cfg(target_os = "macos")]
-#[link(name = "proc")]
-extern "C" {
-    fn proc_pidinfo(
-        pid: i32,
-        flavor: i32,
-        arg: u64,
-        buffer: *mut ProcBsdInfo,
-        buffersize: i32,
-    ) -> i32;
+fn parse_kinfo_proc(buf: &[u8]) -> Option<(i32, ProcessStart)> {
+    if buf.len() != KINFO_PROC_SIZE {
+        return None;
+    }
+    let sec = i64::from_ne_bytes(kinfo_bytes(buf, KINFO_START_SEC_OFFSET)?);
+    let usec = i32::from_ne_bytes(kinfo_bytes(buf, KINFO_START_USEC_OFFSET)?);
+    let pid = i32::from_ne_bytes(kinfo_bytes(buf, KINFO_PID_OFFSET)?);
+    Some((
+        pid,
+        ProcessStart::MacMicros {
+            sec: u64::try_from(sec).ok()?,
+            usec: u64::try_from(usec).ok()?,
+        },
+    ))
 }
 
+/// Read `pid`'s start time with `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID)`.
+///
+/// Unlike `proc_pidinfo(PROC_PIDTBSDINFO)`, which fails for a zombie, the
+/// sysctl also searches exited processes that have not been reaped. The
+/// leader of a plugin's process group is often exactly that when cleanup
+/// runs ([`exited_without_reaping`]), and [`ProcessIdentity::kill_if_same`]
+/// must still recognise it to signal the rest of the group.
 #[cfg(target_os = "macos")]
 fn read_process_start(pid: u32) -> Option<ProcessStart> {
-    const _: () = assert!(std::mem::offset_of!(ProcBsdInfo, pbi_start_tvsec) == 120);
-    let mut info = std::mem::MaybeUninit::<ProcBsdInfo>::zeroed();
-    let wrote = unsafe {
-        proc_pidinfo(
-            pid as i32,
-            PROC_PIDTBSDINFO,
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    let mut buf = KinfoProcBuf([0; KINFO_PROC_SIZE]);
+    let mut len: libc::size_t = KINFO_PROC_SIZE;
+    let mib_len = libc::c_uint::try_from(mib.len()).ok()?;
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib_len,
+            buf.0.as_mut_ptr().cast::<libc::c_void>(),
+            &mut len,
+            std::ptr::null_mut(),
             0,
-            info.as_mut_ptr(),
-            std::mem::size_of::<ProcBsdInfo>() as i32,
         )
     };
-    if wrote < std::mem::size_of::<ProcBsdInfo>() as i32 {
+    // No such process: the call succeeds and writes nothing.
+    if rc != 0 {
         return None;
     }
-    let info = unsafe { info.assume_init() };
-    if info.pbi_pid != pid {
-        return None;
-    }
-    Some(ProcessStart::MacMicros {
-        sec: info.pbi_start_tvsec,
-        usec: info.pbi_start_tvusec,
-    })
+    let (record_pid, start) = parse_kinfo_proc(buf.0.get(..len)?)?;
+    (record_pid == pid).then_some(start)
 }
 
 /// Host journal of package SIDs and paths.
@@ -2234,7 +2508,7 @@ fn inherit_unix_gateway(cmd: &mut Command, rpc: &DuplexLink) {
 #[cfg(unix)]
 fn serve_host_socket_proxy(
     link: DuplexLink,
-    policy: bookclerk_plugin_manifest::EgressPolicy,
+    policy: impl Into<bookclerk_workerd::socket_proxy::LinkPolicy>,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
     channel_tag: Option<&str>,
@@ -2263,7 +2537,7 @@ fn serve_host_socket_proxy(
 fn serve_host_socket_proxy(
     read: DuplexHalf,
     write: DuplexHalf,
-    policy: bookclerk_plugin_manifest::EgressPolicy,
+    policy: impl Into<bookclerk_workerd::socket_proxy::LinkPolicy>,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
     channel_tag: Option<&str>,
@@ -2930,6 +3204,8 @@ fn guest_env_forbidden_key(key: &str) -> bool {
         || upper == GATEWAY_GUEST_RPC_WRITE_ENV
         || upper == GATEWAY_PROXY_ENV
         || upper == bookclerk_sandbox::GATEWAY_PROXY_WRITE_ENV
+        || upper == bookclerk_sandbox::WORKERD_EGRESS_ENV
+        || upper == bookclerk_sandbox::WORKERD_EGRESS_WRITE_ENV
         || upper == WORKERD_STATE_DIR_ENV
         || upper == "BOOKCLERK_NATIVE_BACKEND"
         || upper == "BOOKCLERK_NESTED_NATIVE_JAIL"
@@ -3703,6 +3979,54 @@ mod tests {
         } else {
             std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
         }
+    }
+
+    /// A `kinfo_proc` record with `pid` and start time `sec`.`usec` at the
+    /// offsets the kernel writes them.
+    #[cfg(target_os = "macos")]
+    fn kinfo_record(pid: i32, sec: i64, usec: i32) -> Vec<u8> {
+        let mut buf = vec![0u8; KINFO_PROC_SIZE];
+        buf[KINFO_START_SEC_OFFSET..KINFO_START_SEC_OFFSET + 8].copy_from_slice(&sec.to_ne_bytes());
+        buf[KINFO_START_USEC_OFFSET..KINFO_START_USEC_OFFSET + 4]
+            .copy_from_slice(&usec.to_ne_bytes());
+        buf[KINFO_PID_OFFSET..KINFO_PID_OFFSET + 4].copy_from_slice(&pid.to_ne_bytes());
+        buf
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn kinfo_proc_parse_reads_pid_and_start_and_rejects_bad_records() {
+        assert_eq!(
+            parse_kinfo_proc(&kinfo_record(4321, 1_700_000_000, 123_456)),
+            Some((
+                4321,
+                ProcessStart::MacMicros {
+                    sec: 1_700_000_000,
+                    usec: 123_456
+                }
+            ))
+        );
+        // No such process: sysctl writes nothing.
+        assert_eq!(parse_kinfo_proc(&[]), None);
+        let record = kinfo_record(1, 1, 1);
+        assert_eq!(parse_kinfo_proc(&record[..KINFO_PROC_SIZE - 1]), None);
+        assert_eq!(parse_kinfo_proc(&kinfo_record(1, -1, 0)), None);
+        assert_eq!(parse_kinfo_proc(&kinfo_record(1, 0, -1)), None);
+    }
+
+    /// The live record for this test process carries its own pid and a start
+    /// time in the past.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn kinfo_proc_reads_this_process() {
+        let ProcessStart::MacMicros { sec, usec } =
+            read_process_start(std::process::id()).expect("own start time");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs();
+        assert!(sec > 0 && sec <= now, "start {sec} not before now {now}");
+        assert!(usec < 1_000_000);
     }
 
     #[cfg(unix)]

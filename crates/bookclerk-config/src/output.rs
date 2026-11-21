@@ -151,6 +151,9 @@ pub struct OutputConfig {
     /// title: copy from a present dest, re-fetch into missing only, or re-fetch
     /// into every destination.
     pub multi_destination: MultiDestinationMode,
+    /// What happens to a stored copy whose file disappears from its
+    /// destination outside Bookclerk.
+    pub missing_files: MissingFileAction,
     /// Scratch directory for in-progress work; relative to files_dir.
     pub in_progress: Option<PathBuf>,
     /// Operator action when a title fails to acquire (`ask` / `abort` / `retry` / `ignore`).
@@ -216,6 +219,7 @@ impl Default for OutputConfig {
             chapter_layout: String::from("tree"),
             overwrite_existing: false,
             multi_destination: MultiDestinationMode::default(),
+            missing_files: MissingFileAction::default(),
             in_progress: None,
             bad_book_action: BadBookAction::Ask,
             split_mp3_max_mb: 200,
@@ -305,6 +309,43 @@ pub enum MultiDestinationMode {
     RefetchAll,
 }
 
+/// What happens to a stored copy whose file disappears from its destination
+/// outside Bookclerk (noticed by the destination's change feed or listing).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[schema(example = "mark_missing")]
+pub enum MissingFileAction {
+    /// The copy is marked missing and left alone. When no destination holds
+    /// the edition any more, it is no longer acquired, so a member can ask
+    /// for it again. Default.
+    #[default]
+    MarkMissing,
+    /// The copy turns pending and the background retry writes it again.
+    Restore,
+}
+
+impl MissingFileAction {
+    /// The stored spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MarkMissing => "mark_missing",
+            Self::Restore => "restore",
+        }
+    }
+
+    /// The action a spelling names, ignoring ASCII case and taking `-` for
+    /// `_`; `None` for any other value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "mark_missing" => Some(Self::MarkMissing),
+            "restore" => Some(Self::Restore),
+            _ => None,
+        }
+    }
+}
+
 /// How to handle acquire failures (`BadBook` setting).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -319,37 +360,6 @@ pub enum BadBookAction {
     Retry,
     /// Skip the failed title and continue the batch.
     Ignore,
-}
-
-/// How a destination names what it stores, which decides how acquire
-/// sanitizes and limits keys.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum DestinationKeyStyle {
-    /// Paths on a file system (the `local` plugin): per-component length
-    /// limits, and Windows-safe names on Windows hosts.
-    #[default]
-    Filesystem,
-    /// Object-store keys (every other storage plugin): one key of at most
-    /// 1024 bytes and the object-store character set.
-    ObjectStore,
-}
-
-impl DestinationKeyStyle {
-    /// True for object-store keys.
-    #[must_use]
-    pub fn is_object_store(self) -> bool {
-        match self {
-            Self::Filesystem => false,
-            Self::ObjectStore => true,
-        }
-    }
-
-    /// True for file-system paths.
-    #[must_use]
-    pub fn is_filesystem(self) -> bool {
-        !self.is_object_store()
-    }
 }
 
 /// Id of one output destination: the plugin instance id of the deployed
@@ -445,18 +455,6 @@ mod tests {
         let parsed: DestinationId = serde_json::from_str("\"r2\"").unwrap();
         assert_eq!(serde_json::to_string(&parsed).unwrap(), "\"r2\"");
         assert!(serde_json::from_str::<DestinationId>("\"R2\"").is_err());
-    }
-
-    #[test]
-    fn key_styles_say_which_is_an_object_store() {
-        assert!(!DestinationKeyStyle::Filesystem.is_object_store());
-        assert!(DestinationKeyStyle::ObjectStore.is_object_store());
-        assert!(DestinationKeyStyle::Filesystem.is_filesystem());
-        assert!(!DestinationKeyStyle::ObjectStore.is_filesystem());
-        assert_eq!(
-            DestinationKeyStyle::default(),
-            DestinationKeyStyle::Filesystem
-        );
     }
 
     #[test]

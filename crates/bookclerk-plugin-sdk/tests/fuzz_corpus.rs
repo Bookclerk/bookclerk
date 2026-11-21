@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 #[allow(dead_code)]
 mod oracle;
 
+/// The `download_resume` oracle, shared with its fuzz target.
+#[path = "../../../fuzz/oracles/download_resume.rs"]
+mod resume_oracle;
+
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
 /// confined to that directory.
 // Test helper: a missing corpus is a failed test, not a handled error.
@@ -66,4 +70,30 @@ fn fuzz_corpus_mux_peer_settles_and_stays_bounded() {
         delivered_any |= outcome.received > 0;
     }
     assert!(delivered_any, "no mux_peer seed delivered any payload");
+}
+
+/// Every `download_resume` seed keeps the oracle's invariants, and a seed
+/// named after a step (`append-*`, `replace-*`, …) takes that step.
+#[test]
+fn fuzz_corpus_download_resume_keeps_every_invariant() {
+    use bookclerk_plugin_sdk::resume::Step;
+    for path in corpus_files("download_resume") {
+        let data = std::fs::read(&path).expect("read");
+        let step = resume_oracle::check(&data);
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        let kind = stem.split('-').next().unwrap_or_default();
+        let matches = match kind {
+            "append" => matches!(step, Some(Step::Append { .. })),
+            "replace" => matches!(step, Some(Step::Replace { .. })),
+            "complete" => matches!(step, Some(Step::Complete)),
+            "startover" => matches!(step, Some(Step::StartOver)),
+            "retry" => matches!(step, Some(Step::Retry)),
+            "fail" => matches!(step, Some(Step::Fail)),
+            _ => true,
+        };
+        assert!(matches, "{stem}: {step:?}");
+    }
 }

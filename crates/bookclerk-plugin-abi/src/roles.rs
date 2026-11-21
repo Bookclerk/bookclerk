@@ -11,10 +11,11 @@ use crate::generated::{
     ExternalUser, FetchTitleParams, Invocation, ListDealsParams, ListeningProgress,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
     MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed, MetadataFileRenderParams,
-    MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
-    PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
-    PurchaseHintsParams, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams,
-    SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
+    MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
+    NotifyRaiseParams, NotifyRaised, NotifySendParams, NotifySent, NotifyValidateParams,
+    NotifyValidated, PlainFetch, PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams,
+    PurchaseHintResult, PurchaseHintsParams, RevokeAccountParams, ScanLibraryParams, ScanPage,
+    ScanParams, SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
     SocketMessage, SocketMessageOk, SourceAccount,
 };
 use crate::rpc_types::{
@@ -288,6 +289,14 @@ pub trait Destination {
     async fn changes(&self, _request: crate::ChangesRequest) -> Result<crate::ChangesPage> {
         Err(PluginError::unsupported("changes"))
     }
+
+    /// Translate up to [`crate::MAX_BATCH_KEYS`] host keys into the keys
+    /// this destination stores them under (`storage.translateKeys`), one
+    /// per host key in order. The same host key must always translate to
+    /// the same key.
+    async fn translate_keys(&self, _keys: Vec<String>) -> Result<Vec<String>> {
+        Err(PluginError::unsupported("translateKeys"))
+    }
 }
 
 /// Source capability that can open a named object as a stream.
@@ -376,6 +385,21 @@ pub trait EventPublisher {
         let _ = request;
         Err(PluginError::unsupported("this EVENTS binding cannot read"))
     }
+}
+
+/// `NOTIFY` binding: raises the notification types the plugin declares in
+/// `[[notifications.types]]` ([`Bindings::notify`]).
+///
+/// The host router applies the administrators' routing rules and each
+/// patron's preferences; the raising plugin never learns where the
+/// notification went.
+#[async_trait::async_trait(?Send)]
+pub trait NotificationRaiser {
+    /// Raises one notification. The type must be one the plugin declared
+    /// (without the plugin prefix the host adds); a patron-audience type
+    /// names a patron inside the invocation's account scope. Raises are
+    /// rate-limited per instance (`rate_limited`).
+    async fn raise(&self, params: NotifyRaiseParams) -> Result<NotifyRaised>;
 }
 
 /// `[[queues.consumers]]` handler ([`Entrypoints::queue_consumer`]).
@@ -788,6 +812,41 @@ pub trait MetadataFiles {
     }
 }
 
+/// `notifier` entrypoint: delivers one host-rendered notification to one
+/// destination.
+///
+/// The host decides what is worth a notification, who gets it and which
+/// instance carries it, renders the message, and checks it
+/// ([`crate::notifications::check_send_params`]) before it reaches the
+/// plugin. Each send is one claimed `notify.send` job, so the host owns
+/// retries: answer `rate_limited` (with the service's `Retry-After`) or
+/// `unavailable` to be retried; any other error fails that destination.
+#[async_trait::async_trait(?Send)]
+pub trait Notifier {
+    /// Liveness / readiness probe: credentials and reachability.
+    async fn health(&self) -> Result<crate::rpc_types::HealthOk> {
+        Ok(crate::rpc_types::HealthOk {
+            ok: true,
+            detail: String::new(),
+        })
+    }
+
+    /// Delivers `params.message` to `params.destination`.
+    async fn send(&self, _params: NotifySendParams) -> Result<NotifySent> {
+        Err(PluginError::unsupported("send"))
+    }
+
+    /// Normalises and checks a patron's address document before the host
+    /// saves it; an address the plugin refuses is `invalid_params`. The
+    /// default accepts the document unchanged.
+    async fn validate_destination(&self, params: NotifyValidateParams) -> Result<NotifyValidated> {
+        Ok(NotifyValidated {
+            address_json: params.address_json,
+            label: None,
+        })
+    }
+}
+
 /// `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`.
 #[async_trait::async_trait(?Send)]
 pub trait PluginCli {
@@ -1014,6 +1073,9 @@ pub struct Bindings {
     /// `SOCKETS`: host-brokered WebSockets; `None` unless `[sockets]` is
     /// granted.
     pub sockets: Option<Box<dyn Sockets>>,
+    /// `NOTIFY`: raises declared notification types; `None` unless the
+    /// manifest declares `[[notifications.types]]`.
+    pub notify: Option<Box<dyn NotificationRaiser>>,
 }
 
 impl Bindings {
@@ -1032,6 +1094,7 @@ impl Bindings {
             queues: Vec::new(),
             kv: Vec::new(),
             sockets: None,
+            notify: None,
         }
     }
 
@@ -1102,6 +1165,8 @@ pub struct Entrypoints {
     pub socket_handler: Option<Box<dyn SocketHandler>>,
     /// `metadataFiles` entrypoint.
     pub metadata_files: Option<Box<dyn MetadataFiles>>,
+    /// `notifier` entrypoint.
+    pub notifier: Option<Box<dyn Notifier>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

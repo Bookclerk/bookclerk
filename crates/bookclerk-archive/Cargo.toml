@@ -1,0 +1,33 @@
+[package]
+name = "bookclerk-archive"
+description = "Bounded, sans-IO extraction of uploaded ZIP and tar archives: entry path policy, size and ratio limits, and the report the media worker returns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# ZIP reading. `deflate64` is what Windows' "Send to compressed folder"
+# writes for large files; it is a small pure-Rust decoder.
+zip = { workspace = true, features = ["deflate64"] }
+tar.workspace = true
+flate2.workspace = true
+# Entry names are compared after NFC normalisation and case folding, so two
+# names a case-insensitive or normalising filesystem would merge clash here.
+unicode-normalization = "0.1"
+serde.workspace = true
+thiserror.workspace = true
+
+[features]
+# `fixtures`: ZIP and tar builders for tests and fuzz seeds.
+fixtures = []
+
+[dev-dependencies]
+bookclerk-archive = { path = ".", features = ["fixtures"] }
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

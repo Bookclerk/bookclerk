@@ -167,12 +167,6 @@ pub async fn match_storage_using_index(
                 summary.unchanged += 1;
                 continue;
             }
-            // The status writes are still keyed by the title's flat row.
-            let Some(book_uuid) = title.book_uuid.as_deref() else {
-                summary.unchanged += 1;
-                continue;
-            };
-
             let Some(mut key) = find_audio_for_title(title, index, storage, library).await? else {
                 if options.only_mark_found || !options.clear_missing {
                     summary.unchanged += 1;
@@ -191,9 +185,8 @@ pub async fn match_storage_using_index(
                     continue;
                 }
                 library
-                    .set_acquire_status(
-                        book_uuid,
-                        &title.account_id,
+                    .set_holding_acquire_status(
+                        &title.holding_id,
                         AcquireStatus::NotAcquired,
                         None,
                         None,
@@ -212,9 +205,9 @@ pub async fn match_storage_using_index(
             }
 
             if options.fix_layout {
-                let planned =
-                    planned_storage_key(library, &request_from_title(title, &options.download))
-                        .await;
+                let mut planned_req = request_from_title(title, &options.download);
+                planned_req.destination_keys = crate::keys::DestinationKeys::of(storage);
+                let planned = planned_storage_key(library, &planned_req).await;
                 if planned != key {
                     match relocate_with_sidecars(storage, &key, &planned).await {
                         Ok(()) => {
@@ -237,9 +230,8 @@ pub async fn match_storage_using_index(
             match title_update(title, &walk, Some(&key)) {
                 TitleUpdate::Acquired(key) => {
                     library
-                        .set_acquire_status(
-                            book_uuid,
-                            &title.account_id,
+                        .set_holding_acquire_status(
+                            &title.holding_id,
                             AcquireStatus::Acquired,
                             Some(&key),
                             None,

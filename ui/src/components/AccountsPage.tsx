@@ -1,7 +1,8 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link2, RefreshCw, Share2, Unlink } from "lucide-react";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
+import { ConnectionPace } from "@/components/ConnectionPace";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -58,6 +59,11 @@ export function AccountsPage({
   const [connections, setConnections] = useState<PortalConnection[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Pace saves in flight, so the page is not refreshed under one.
+  const [paceSaves, setPaceSaves] = useState(0);
+  // Bumped by every pace change this page applies, so a connections read
+  // that started before it never puts the old pace back.
+  const paceEpoch = useRef(0);
   const [openSource, setOpenSource] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -84,6 +90,8 @@ export function AccountsPage({
             () => [],
           )
         : Promise.resolve([]);
+    // A pace change applied while the read runs wins over what it returns.
+    const epoch = paceEpoch.current;
     const connectionsRead = portalConnections().then(
       (conns) => ({ ok: true as const, conns }),
       (err: unknown) => ({ ok: false as const, err }),
@@ -94,7 +102,9 @@ export function AccountsPage({
       setLibraries(await librariesRead);
       const conns = await connectionsRead;
       if (conns.ok) {
-        setConnections(conns.conns);
+        if (epoch === paceEpoch.current) {
+          setConnections(conns.conns);
+        }
       } else {
         setConnections([]);
         if (!canConnect) {
@@ -237,7 +247,11 @@ export function AccountsPage({
             nav={nav}
             onSignOut={onSignOut}
             actions={
-              <Button variant="secondary" onClick={() => void refresh()} disabled={busy}>
+              <Button
+                variant="secondary"
+                onClick={() => void refresh()}
+                disabled={busy || paceSaves > 0}
+              >
                 <RefreshCw className="h-4 w-4" />
                 Refresh
               </Button>
@@ -425,6 +439,21 @@ export function AccountsPage({
                         </Button>
                       ) : null}
                     </div>
+                    <ConnectionPace
+                      connection={c}
+                      busy={busy}
+                      onSavingChange={(saving) => setPaceSaves((n) => n + (saving ? 1 : -1))}
+                      onChanged={(pace) => {
+                        paceEpoch.current += 1;
+                        setConnections((list) =>
+                          list.map((item) =>
+                            item.plugin_key === c.plugin_key && item.account_id === c.account_id
+                              ? { ...item, pace }
+                              : item,
+                          ),
+                        );
+                      }}
+                    />
                   </li>
                 ))}
               </ul>

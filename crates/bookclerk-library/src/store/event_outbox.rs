@@ -3008,44 +3008,89 @@ pub fn prepare_publish_domain_event(
     Ok(spec)
 }
 
-/// Build the `book_acquired` outbox spec for a library row.
+/// What an acquire event says about the title it reports.
+///
+/// Events name a title by its account holding (`holdings.id`), which
+/// outlives the flat `books` row (book model step 6).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AcquireEventTitle<'a> {
+    /// The account holding (`titleId` in the payload, and the event's
+    /// correlation and ordering key).
+    pub(crate) title_id: &'a str,
+    /// The store's source label (`audible`, `libro`, ...).
+    pub(crate) source: &'a str,
+    /// The title's ASIN, when the store has one.
+    pub(crate) asin: Option<&'a str>,
+    /// The title's ISBN, when the store has one.
+    pub(crate) isbn: Option<&'a str>,
+    /// The store account that holds the title.
+    pub(crate) account_id: &'a str,
+    /// The primary audio key already recorded, used when a write names
+    /// none.
+    pub(crate) storage_key: Option<&'a str>,
+}
+
+impl<'a> AcquireEventTitle<'a> {
+    /// The event view of `title` (the library model's account title).
+    pub(crate) fn of_title(title: &'a crate::AcquireTitle) -> Self {
+        Self {
+            title_id: &title.holding_id,
+            source: &title.source,
+            asin: title.asin.as_deref(),
+            isbn: title.isbn.as_deref(),
+            account_id: &title.account_id,
+            storage_key: title.storage_key.as_deref(),
+        }
+    }
+
+    /// The event view of flat row `book`, held by holding `holding_id`.
+    pub(crate) fn of_book(holding_id: &'a str, book: &'a books::Model) -> Self {
+        Self {
+            title_id: holding_id,
+            source: &book.source,
+            asin: book.asin.as_deref(),
+            isbn: book.isbn.as_deref(),
+            account_id: &book.account_id,
+            storage_key: book.storage_key.as_deref(),
+        }
+    }
+}
+
+/// Build the `book_acquired` outbox spec for a title.
 ///
 /// `edition_id` is the title's edition (`editionId` in the payload, `null`
 /// when the title has no edition yet).
 pub(crate) fn book_acquired_spec(
-    book: &books::Model,
+    title: AcquireEventTitle<'_>,
     storage_key: Option<&str>,
     edition_id: Option<&str>,
 ) -> PublishDomainEventSpec {
-    let key = storage_key
-        .map(str::to_string)
-        .or_else(|| book.storage_key.clone())
-        .unwrap_or_default();
+    let key = storage_key.or(title.storage_key).unwrap_or_default();
     let path_keys = if key.is_empty() {
         Vec::<String>::new()
     } else {
-        vec![key]
+        vec![key.to_string()]
     };
     let payload = serde_json::json!({
-        "titleId": book.uuid,
+        "titleId": title.title_id,
         "editionId": edition_id,
-        "source": book.source,
-        "asin": book.asin,
-        "isbn": book.isbn,
+        "source": title.source,
+        "asin": title.asin,
+        "isbn": title.isbn,
         "pathKeys": path_keys,
-        "accountId": book.account_id,
+        "accountId": title.account_id,
     });
     PublishDomainEventSpec {
         id: String::new(),
         event_type: "book_acquired".into(),
         schema_version: 1,
-        account_id: book.account_id.clone(),
-        source: book.source.clone(),
-        correlation_id: book.uuid.clone(),
+        account_id: title.account_id.to_string(),
+        source: title.source.to_string(),
+        correlation_id: title.title_id.to_string(),
         causation_id: String::new(),
-        dedup_key: format!("book_acquired:{}", book.uuid),
+        dedup_key: format!("book_acquired:{}", title.title_id),
         payload: serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into()),
-        ordering_key: book.uuid.clone(),
+        ordering_key: title.title_id.to_string(),
         ..PublishDomainEventSpec::default()
     }
 }
@@ -3058,22 +3103,22 @@ pub(crate) fn book_acquired_spec(
 /// failed and reset states too. Every change gets its own dedup key, since
 /// an edition can pass through the same state many times.
 pub(crate) fn edition_acquire_changed_spec(
-    book: &books::Model,
+    title: AcquireEventTitle<'_>,
     edition_id: &str,
     status: AcquireStatus,
 ) -> PublishDomainEventSpec {
     let payload = serde_json::json!({
         "editionId": edition_id,
-        "titleId": book.uuid,
+        "titleId": title.title_id,
         "status": status.as_str(),
     });
     PublishDomainEventSpec {
         id: String::new(),
         event_type: crate::EDITION_ACQUIRE_CHANGED.into(),
         schema_version: 1,
-        account_id: book.account_id.clone(),
-        source: book.source.clone(),
-        correlation_id: book.uuid.clone(),
+        account_id: title.account_id.to_string(),
+        source: title.source.to_string(),
+        correlation_id: title.title_id.to_string(),
         causation_id: String::new(),
         dedup_key: format!(
             "{}:{edition_id}:{}",
@@ -3081,64 +3126,105 @@ pub(crate) fn edition_acquire_changed_spec(
             Uuid::new_v4()
         ),
         payload: serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into()),
-        ordering_key: book.uuid.clone(),
+        ordering_key: title.title_id.to_string(),
         ..PublishDomainEventSpec::default()
     }
 }
 
-/// The outbox row an acquire state change publishes, if any.
-///
-/// Becoming acquired publishes `book_acquired`; any other state publishes
-/// `edition_acquire_changed` when the title has an edition, and nothing
-/// when it has none yet.
+/// The outbox row an acquire state change of `title`'s edition
+/// `edition_id` publishes: `book_acquired` on becoming acquired, else
+/// `edition_acquire_changed`.
 ///
 /// # Errors
 ///
 /// Returns an error when the spec fails [`prepare_publish_domain_event`].
 pub(crate) fn acquire_status_event(
-    book: &books::Model,
-    edition_id: Option<&str>,
+    title: AcquireEventTitle<'_>,
+    edition_id: &str,
     status: AcquireStatus,
     storage_key: Option<&str>,
-) -> Result<Option<PublishDomainEventSpec>> {
-    let spec = match (status, edition_id) {
-        (AcquireStatus::Acquired, _) => book_acquired_spec(book, storage_key, edition_id),
-        (_, Some(edition)) => edition_acquire_changed_spec(book, edition, status),
-        (_, None) => return Ok(None),
+) -> Result<PublishDomainEventSpec> {
+    let spec = match status {
+        AcquireStatus::Acquired => book_acquired_spec(title, storage_key, Some(edition_id)),
+        _ => edition_acquire_changed_spec(title, edition_id, status),
     };
-    prepare_publish_domain_event(spec).map(Some)
+    prepare_publish_domain_event(spec)
 }
 
-/// Apply acquire status and publish its outbox row ([`acquire_status_event`]).
+/// One acquire state write, keyed by the account holding that made it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AcquireStatusWrite<'a> {
+    /// The edition the holding's listing sells, and the holding.
+    pub(crate) holding: &'a TitleHolding,
+    /// The title the event reports (its `titleId` is the holding).
+    pub(crate) title: AcquireEventTitle<'a>,
+    /// The flat `books` row mirrored until the table is dropped (book
+    /// model step 6); `None` when the holding has none.
+    pub(crate) book_uuid: Option<&'a str>,
+    /// The new state.
+    pub(crate) status: AcquireStatus,
+    /// Object-storage key for the primary audio artifact.
+    pub(crate) storage_key: Option<&'a str>,
+    /// Failure message to persist, if any.
+    pub(crate) error_message: Option<&'a str>,
+}
+
+/// Apply an acquire state write and publish its outbox row
+/// ([`acquire_status_event`]): the edition's `edition_acquisitions` row
+/// ([`update_edition_acquisition_on`]), the mirrored `books` row, and the
+/// event, all only while the holding still holds the edition.
 ///
-/// `title` is the title's edition and account holding, whose
-/// `edition_acquisitions` row is written too
-/// ([`update_edition_acquisition_on`]).
+/// # Errors
+///
+/// Returns [`LibraryError::NotFound`] when the holding no longer holds the
+/// edition (a revoke or rescan removed it since it was read), or the read
+/// or write error.
 pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
     db: &C,
-    model: books::Model,
-    title: Option<&TitleHolding>,
-    status: AcquireStatus,
-    storage_key: Option<&str>,
-    error_message: Option<&str>,
+    write: AcquireStatusWrite<'_>,
 ) -> Result<()> {
-    let edition_id = title.map(|t| t.edition_id.as_str());
-    let spec = acquire_status_event(&model, edition_id, status, storage_key)?;
-    if let Some(title) = title {
-        update_edition_acquisition_on(
-            db,
-            &title.edition_id,
-            &title.holding_id,
-            status,
-            storage_key,
-            error_message,
-        )
-        .await?;
+    let holding = write.holding;
+    if !holding_holds_edition(db, &holding.holding_id, &holding.edition_id).await? {
+        return Err(LibraryError::not_found(
+            crate::EntityKind::Book,
+            holding.holding_id.as_str(),
+        ));
     }
-    update_acquire_status_on(db, model, status, storage_key, error_message).await?;
-    if let Some(spec) = spec {
-        publish_domain_event_on(db, spec).await?;
+    let spec = acquire_status_event(
+        write.title,
+        &holding.edition_id,
+        write.status,
+        write.storage_key,
+    )?;
+    update_edition_acquisition_on(
+        db,
+        &holding.edition_id,
+        &holding.holding_id,
+        write.status,
+        write.storage_key,
+        write.error_message,
+    )
+    .await?;
+    if let Some(uuid) = write.book_uuid {
+        if let Some(model) = books::Entity::find()
+            .filter(books::Column::Uuid.eq(uuid))
+            .one(db)
+            .await
+            .map_err(LibraryError::Orm)?
+        {
+            update_acquire_status_on(
+                db,
+                model,
+                write.status,
+                write.storage_key,
+                write.error_message,
+            )
+            .await?;
+        }
+    } else {
+        crate::control_plane::bump_on(db, crate::control_plane::LiveTopic::Library).await?;
     }
+    publish_domain_event_on(db, spec).await?;
     Ok(())
 }
 

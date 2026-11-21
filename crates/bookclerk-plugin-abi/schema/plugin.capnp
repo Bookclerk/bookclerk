@@ -92,6 +92,20 @@ const maxMetadataFileTextBytes :UInt32 = 1024;
 const maxMetadataFileListEntries :UInt32 = 256;
 # Most chapters in a `MetadataFileRecord`.
 const maxMetadataFileChapters :UInt32 = 2000;
+# Longest `NotificationMessage.title` and `NotificationField` name, in UTF-8
+# bytes.
+const maxNotificationTitleBytes :UInt32 = 256;
+# Longest `NotificationMessage.text` or `markdown`, in UTF-8 bytes.
+const maxNotificationTextBytes :UInt32 = 16384;
+# Longest `NotificationMessage.html`, in UTF-8 bytes.
+const maxNotificationHtmlBytes :UInt32 = 65536;
+# Most `NotificationField`s on one message or raise.
+const maxNotificationFields :UInt32 = 25;
+# Longest `NotificationField.value`, link, group key or alert key, in UTF-8
+# bytes.
+const maxNotificationFieldBytes :UInt32 = 1024;
+# Longest destination address document (`addressJson`), in UTF-8 bytes.
+const maxNotifierAddressBytes :UInt32 = 4096;
 # Most entries in `MetadataFileRenderParams.audioFiles`.
 const maxMetadataAudioFiles :UInt32 = 4096;
 # Longest `KvNamespace` key in UTF-8 bytes.
@@ -149,6 +163,8 @@ const featureStorageHeadMany :Text = "storage.headMany";
 const featureStorageConditionalWrite :Text = "storage.conditionalWrite";
 # Guest implements `Destination.changes` (`storage.changes`).
 const featureStorageChanges :Text = "storage.changes";
+# Guest implements `Destination.translateKeys` (`storage.translateKeys`).
+const featureStorageTranslateKeys :Text = "storage.translateKeys";
 
 # Guest-advertised caps for `rpc.scalarLimits`; never above the file constants.
 struct ScalarLimits {
@@ -393,6 +409,14 @@ struct HeadManyResult {
   objects @0 :List(HeadOk);
 }
 
+# Success payload of `Destination.translateKeys`.
+struct TranslateKeysResult {
+  # One translated key per requested host key, in request order: the key
+  # the guest stores that host key under. Each is a relative key with no
+  # empty, `.` or `..` segment.
+  keys @0 :List(Text);
+}
+
 # Argument of `Destination.changes`. Fields are only ever appended.
 struct ChangesRequest {
   # `ChangesPage.cursor` from the previous call. Empty asks for the current
@@ -573,6 +597,9 @@ struct Bindings {
   # `SOCKETS`: host-brokered outbound WebSockets that stay open while the
   # guest sleeps; null unless `[sockets]` is declared and granted.
   sockets @9 :Sockets;
+  # `NOTIFY`: raises the notification types the plugin declares in
+  # `[[notifications.types]]`; null when it declares none.
+  notify @10 :NotificationRaiser;
 }
 
 # Exported entrypoints returned by `PluginWorker.open`. One capability per
@@ -607,6 +634,8 @@ struct Entrypoints {
   socketHandler @12 :SocketHandler;
   # `metadataFiles` entrypoint.
   metadataFiles @13 :MetadataFiles;
+  # `notifier` entrypoint.
+  notifier @14 :Notifier;
 }
 
 # Result union of `PluginWorker.open`.
@@ -990,6 +1019,16 @@ struct HeadManyReply {
   }
 }
 
+# Result union of `Destination.translateKeys`.
+struct TranslateKeysReply {
+  union {
+    # Success: one translated key per host key.
+    ok @0 :TranslateKeysResult;
+    # Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
 # Result union of `Destination.changes`.
 struct ChangesReply {
   union {
@@ -1183,6 +1222,14 @@ interface Destination {
   changes @12 (
       request :ChangesRequest  # Cursor and page size.
   ) -> (result :ChangesReply);
+  # Translate up to `maxBatchKeys` host keys into the keys the guest stores
+  # them under (requires `storage.translateKeys`). A host key is `/`-joined
+  # segments, none empty, `.`, `..` or holding `\` or a control character.
+  # The same host key must always translate to the same key. Without the
+  # feature the host stores each host key as written.
+  translateKeys @13 (
+      keys :List(Text)  # Host keys to translate.
+  ) -> (result :TranslateKeysReply);
 }
 
 # Read-only byte source for job inputs (not a storefront).
@@ -1542,6 +1589,39 @@ interface MetadataFiles {
   ) -> (result :MetadataFileRenderReply);
 }
 
+# `notifier` entrypoint: delivers one host-rendered message to one
+# destination (an email address, a chat webhook, a push subscription). The
+# host decides what is worth a notification, who gets it and which instance
+# carries it; the plugin only sends. Each send is one claimed `notify.send`
+# job, so the host owns retries: a reply of `rate_limited`, `unavailable`,
+# `deadline_exceeded` or `cancelled` is retried (`rate_limited` honouring
+# `details.retryAfterMs`), any other error is a permanent failure for that
+# destination.
+interface Notifier {
+  # Liveness / readiness probe: credentials and reachability.
+  health @0 () -> (result :HealthReply);
+  # Deliver one message to one destination.
+  send @1 (
+      params :NotifySendParams  # Message and destination.
+  ) -> (result :NotifySendReply);
+  # Normalise and check a personal destination's address before the host
+  # saves it.
+  validateDestination @2 (
+      params :NotifyValidateParams  # Address document to check.
+  ) -> (result :NotifyValidateReply);
+}
+
+# `NOTIFY` binding: raises a notification type the plugin declared in
+# `[[notifications.types]]`. The host router applies the administrators'
+# routing and each patron's preferences; the raising plugin never learns
+# where the notification went.
+interface NotificationRaiser {
+  # Raise one notification.
+  raise @0 (
+      params :NotifyRaiseParams  # Declared type, fields and optional patron.
+  ) -> (result :NotifyRaiseReply);
+}
+
 # Marks an enum whose wire strings (where an enum travels as `Text`, e.g.
 # `PluginError.code`) are the snake_case form of the enumerant names
 # (`payloadTooLarge` -> "payload_too_large").
@@ -1623,6 +1703,8 @@ enum Entrypoint {
   covers @7;
   # Metadata file dialects: `parse` and `render` (`MetadataFiles`).
   metadataFiles @8;
+  # Notification delivery: `send` and `validateDestination` (`Notifier`).
+  notifier @9;
 }
 
 # One declared event consumer: a `[[events.consumers]]` row the default
@@ -3414,6 +3496,190 @@ struct MetadataFileRenderReply {
   union {
     # Success: the new file.
     ok @0 :MetadataFileRendered;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# How urgent a notification is. Routing rules carry a minimum severity.
+enum NotificationSeverity {
+  # Informational.
+  info @0;
+  # Needs attention soon.
+  warning @1;
+  # Needs attention now; ignores quiet hours for administrators.
+  critical @2;
+}
+
+# Who a notification type is for. The account audience is reserved to the
+# host; a plugin may declare only operational and patron types.
+enum NotificationAudience {
+  # Administrators and library channels.
+  operational @0;
+  # One patron, under their own preferences.
+  patron @1;
+  # Account mail and security notices; host-only.
+  account @2;
+}
+
+# Lifecycle step of an alert, for services such as PagerDuty that open and
+# close incidents.
+enum NotificationAlertAction {
+  # Not an alert: a one-off message.
+  none @0;
+  # Open (or update) the alert named by `alertKey`.
+  trigger @1;
+  # Close the alert named by `alertKey`.
+  resolve @2;
+}
+
+# Kind of destination a `Notifier` sends to.
+enum NotifyDestinationKind {
+  # A library channel the instance itself is configured for (its settings
+  # hold the webhook or service key); `addressJson` is empty.
+  channel @0;
+  # One patron's own address on this instance (`addressJson`).
+  personal @1;
+}
+
+# One labelled value shown with a notification.
+struct NotificationField {
+  # Label; at most `maxNotificationTitleBytes`.
+  name @0 :Text;
+  # Value; at most `maxNotificationFieldBytes`.
+  value @1 :Text;
+}
+
+# A message the host rendered for one notification. Every link is built
+# from the library's public origin, never from a request.
+struct NotificationMessage {
+  # Host-assigned id, the same on every destination's copy; plugins use it
+  # as an idempotency key where the service takes one.
+  notificationId @0 :Text;
+  # Notification type id (`job_failed`, `<plugin>:sync_failed`).
+  notificationType @1 :Text;
+  # How urgent it is.
+  severity @2 :NotificationSeverity;
+  # Short title; at most `maxNotificationTitleBytes`.
+  title @3 :Text;
+  # Plain-text body; at most `maxNotificationTextBytes`.
+  text @4 :Text;
+  # Markdown body for chat services; at most `maxNotificationTextBytes`.
+  markdown @5 :Text $optional;
+  # Minimal HTML body for email; at most `maxNotificationHtmlBytes`.
+  html @6 :Text $optional;
+  # Absolute `https` (or loopback `http`) link into the library.
+  link @7 :Text $optional;
+  # Labelled values, at most `maxNotificationFields`.
+  fields @8 :List(NotificationField);
+  # Messages with one group key may be threaded or collapsed together.
+  groupKey @9 :Text $optional;
+  # Alert lifecycle step; `none` for a one-off message.
+  alertAction @10 :NotificationAlertAction;
+  # Alert this message opens or closes; required unless `alertAction` is
+  # `none`.
+  alertKey @11 :Text $optional;
+  # True when the body carries a secret (an account-mail link): the plugin
+  # and SDKs must never log it.
+  sensitive @12 :Bool;
+}
+
+# Where a `Notifier.send` goes.
+struct NotifyDestination {
+  # Channel or personal destination.
+  kind @0 :NotifyDestinationKind;
+  # Host id of the destination, stable across sends.
+  destinationId @1 :Text;
+  # Personal address as a JSON object of the fields the manifest's
+  # `[[notifier.address_fields]]` declare; empty for a channel. At most
+  # `maxNotifierAddressBytes`. May hold secrets; never logged.
+  addressJson @2 :Text;
+}
+
+# Params of `Notifier.send`.
+struct NotifySendParams {
+  # What to send.
+  message @0 :NotificationMessage;
+  # Where to send it.
+  destination @1 :NotifyDestination;
+}
+
+# Success payload of `Notifier.send`.
+struct NotifySent {
+  # The service's id for the delivered message, when it gives one.
+  providerId @0 :Text $optional;
+}
+
+# Result union of `Notifier.send`.
+struct NotifySendReply {
+  union {
+    # Delivered.
+    ok @0 :NotifySent;
+    # Typed failure; `rate_limited`, `unavailable`, `deadline_exceeded` and `cancelled` are retried.
+    err @1 :PluginError;
+  }
+}
+
+# Params of `Notifier.validateDestination`.
+struct NotifyValidateParams {
+  # Address document as the patron entered it; at most
+  # `maxNotifierAddressBytes`.
+  addressJson @0 :Text;
+}
+
+# Success payload of `Notifier.validateDestination`.
+struct NotifyValidated {
+  # Normalised address document the host saves; at most
+  # `maxNotifierAddressBytes`.
+  addressJson @0 :Text;
+  # Short label shown to the patron (`a***@example.com`); never a secret.
+  label @1 :Text $optional;
+}
+
+# Result union of `Notifier.validateDestination`. An address the plugin
+# refuses is `invalid_params`.
+struct NotifyValidateReply {
+  union {
+    # Accepted, normalised address.
+    ok @0 :NotifyValidated;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Params of `NotificationRaiser.raise`.
+struct NotifyRaiseParams {
+  # Type id from the plugin's `[[notifications.types]]` (without the plugin
+  # prefix the host adds).
+  notificationType @0 :Text;
+  # Labelled values, at most `maxNotificationFields`.
+  fields @1 :List(NotificationField);
+  # Patron the notification is for; required for a patron-audience type
+  # and must be inside the invocation's account scope; empty otherwise.
+  patronId @2 :Text $optional;
+  # Path inside the library the notification links to (starts with `/`);
+  # the host prefixes the public origin.
+  linkPath @3 :Text $optional;
+  # Messages with one group key may be threaded or collapsed together.
+  groupKey @4 :Text $optional;
+  # Alert lifecycle step; `none` for a one-off notification.
+  alertAction @5 :NotificationAlertAction;
+  # Alert this raise opens or closes; required unless `alertAction` is
+  # `none`.
+  alertKey @6 :Text $optional;
+}
+
+# Success payload of `NotificationRaiser.raise`.
+struct NotifyRaised {
+  # Host-assigned notification id.
+  notificationId @0 :Text;
+}
+
+# Result union of `NotificationRaiser.raise`.
+struct NotifyRaiseReply {
+  union {
+    # Accepted by the router.
+    ok @0 :NotifyRaised;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }

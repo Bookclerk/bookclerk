@@ -379,6 +379,7 @@ impl S3Backend {
         head_many: true,
         conditional_write: true,
         changes: false,
+        translate_keys: true,
     };
 
     /// Which conditional requests this store enforces, probed on first use
@@ -1589,6 +1590,15 @@ impl StorageBackend for S3Backend {
             changes: self.queue.is_some(),
             ..Self::CAPABILITIES
         }
+    }
+
+    /// Object keys that fit under this backend's prefix
+    /// ([`crate::key_syntax::translate_for_object_store`]).
+    async fn translate_keys(&self, keys: &[crate::key_syntax::HostKey]) -> Result<Vec<String>> {
+        Ok(keys
+            .iter()
+            .map(|key| crate::key_syntax::translate_for_object_store(key, self.prefix.len()))
+            .collect())
     }
 
     /// Drains the bucket's notification queue when one is configured

@@ -863,7 +863,7 @@ fn create_session_dir(state_root: &Path) -> Result<PathBuf> {
 enum JailRole {
     /// Isolate or direct-native: today's single-jail grants.
     Combined,
-    /// Native-behind gateway: OutboundListen, session dir, fds 3+4.
+    /// Native-behind gateway: LocalIpc, session dir, fd 3.
     Gateway,
     /// Native-behind guest: Deny, data/tmp, fd 3.
     Guest,
@@ -927,11 +927,18 @@ fn build_spec_with_grant(
             }
             let mut reads = vec![plugin.root.clone()];
             reads.extend(spawn.executable_reads());
+            // A workerd launcher keeps the host egress link; with no IP reach
+            // of its own, that link is how its isolate and broker get out.
+            let preserve = if spawn.fronted_by_workerd() {
+                vec![bookclerk_sandbox::WORKERD_EGRESS_FD]
+            } else {
+                Vec::new()
+            };
             (
                 writes,
                 reads,
                 jail_net_policy(plugin, spawn, grant),
-                Vec::new(),
+                preserve,
                 None,
                 String::new(),
             )
@@ -945,7 +952,7 @@ fn build_spec_with_grant(
             (
                 vec![session.clone()],
                 reads,
-                NetPolicy::OutboundListen,
+                NetPolicy::LocalIpc,
                 // The CONNECT mux stays in the unsandboxed host. Preserving
                 // fd 4 would keep an unrelated descriptor open in the gateway.
                 vec![bookclerk_sandbox::GATEWAY_RPC_FD],
@@ -1103,22 +1110,22 @@ fn apply_global_jail_resource_overrides(
     }
 }
 
-/// Maps manifest network need and a deny grant onto Landlock/AppContainer `NetPolicy` (workerd-fronted guests stay `OutboundListen`).
+/// Maps manifest network need and a deny grant onto Landlock/AppContainer `NetPolicy` (workerd-fronted guests get `LocalIpc`).
 fn jail_net_policy(
     plugin: &DiscoveredPlugin,
     spawn: &SpawnPlan,
     grant: Option<&PluginGrant>,
 ) -> NetPolicy {
     if spawn.fronted_by_workerd() {
-        // Intentional OS-jail exception (see docs/adr/plugin-workers-rpc-workerd.md):
-        // `bookclerk-workerd` must `bind(127.0.0.1:0)` for the host↔isolate RPC
-        // bridge. Linux Landlock has no loopback-only policy, so
-        // `OutboundListen` also permits `connect` for the launcher. Isolate
-        // egress (`WORKERD_GRANT_*` → `globalOutbound = blocked` under deny)
-        // remains the grant enforcement layer for isolates. Native-behind
-        // *guests* use [`JailRole::Guest`] (`NetPolicy::Deny`) and the SDK
-        // socket proxy rather than ambient `AF_INET`.
-        return NetPolicy::OutboundListen;
+        // A workerd jail needs no IP socket (see
+        // docs/adr/plugin-workers-rpc-workerd.md): the launcher's bridge to
+        // workerd is a Unix socket, and the isolate's egress leaves through
+        // the launcher's relay as tunnels the host checks and dials. So
+        // whatever the grant says, the OS jail denies IP reach; the grant is
+        // enforced by the host's tunnel check, outside the jail. Windows
+        // workerd has no Unix sockets, so `LocalIpc` keeps an in-container
+        // loopback bridge there.
+        return NetPolicy::LocalIpc;
     }
     let denied = grant.is_some_and(|g| g.network_mode.eq_ignore_ascii_case("deny"));
     match plugin.manifest.jail_network_need() {
@@ -1561,7 +1568,8 @@ entrypoints = ["{entrypoint}"]
     /// Front-door plan against fake `bookclerk-workerd` + `workerd` files in `helpers`.
     fn fronted(plugin: &DiscoveredPlugin, helpers: &Path) -> SpawnPlan {
         for name in ["bookclerk-workerd", "workerd", "bookclerk-jail"] {
-            let path = helpers.join(name);
+            // `locate_in` looks for the platform file name (`.exe` on Windows).
+            let path = helpers.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
             if !path.exists() {
                 std::fs::write(&path, b"").expect("fake helper");
             }
@@ -1840,7 +1848,7 @@ entrypoints = ["{entrypoint}"]
         // The install directory is granted to both (plugin.toml); the gateway
         // must not receive an extra explicit grant of the workerd helpers'
         // parent, and the guest must not receive the helper binaries.
-        assert_eq!(gateway.net, NetPolicy::OutboundListen);
+        assert_eq!(gateway.net, NetPolicy::LocalIpc);
         assert_eq!(guest.net, NetPolicy::Deny);
         assert_eq!(gateway.active_processes, Some(2));
         // guest 1 + default extra 2
@@ -2072,7 +2080,8 @@ entrypoints = ["{entrypoint}"]
             assert_eq!(spec.net, expected, "{need:?}");
         }
 
-        // Workerd needs loopback listen/connect to its Cloudflare child.
+        // Workerd needs no IP socket: its bridge is a Unix socket and its
+        // egress leaves as host-checked tunnels, so the jail is `LocalIpc`.
         let mut workerd = plugin_at(install.path(), "echo", JailNetworkNeed::None);
         as_workerd_isolate(&mut workerd, Default::default());
         let workerd_plan = fronted(&workerd, helpers.path());
@@ -2091,10 +2100,14 @@ entrypoints = ["{entrypoint}"]
             Enforcement::Required,
             None,
         );
-        assert_eq!(spec.net, NetPolicy::OutboundListen);
+        assert_eq!(spec.net, NetPolicy::LocalIpc);
+        assert_eq!(
+            spec.preserve_fds,
+            vec![bookclerk_sandbox::WORKERD_EGRESS_FD]
+        );
 
-        // Operator `deny` must not strip the loopback RPC bind; isolate egress
-        // still honours the grant via WORKERD_GRANT_NETWORK_MODE.
+        // An operator `deny` is the same jail; the host then gives the
+        // launcher no egress link at all.
         let deny = PluginGrant {
             schema_version: crate::GRANT_SCHEMA_VERSION,
             plugin_key: String::new(),
@@ -2133,7 +2146,7 @@ entrypoints = ["{entrypoint}"]
             None,
             None,
         );
-        assert_eq!(denied.net, NetPolicy::OutboundListen);
+        assert_eq!(denied.net, NetPolicy::LocalIpc);
 
         // Direct native OAuth Listen + stored deny grant stays OS-Deny (no
         // workerd bridge to keep open).

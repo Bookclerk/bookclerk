@@ -1,0 +1,38 @@
+[package]
+name = "bookclerk-keystore"
+description = "OS keychain access for the Bookclerk library key: Keychain Services, Credential Manager and Secret Service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", default-features = false, features = ["keychain"] }
+keyring-core = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring-core = "1"
+windows-native-keyring-store = "1"
+
+# The Secret Service is spoken directly over zbus in a `plain` session: the
+# `secret-service` crate needs AES-CBC for its encrypted session, and the
+# store-free host scan forbids block ciphers in the hosts.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
+futures.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+# The tests answer the client with a fake Secret Service over a socket pair.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dev-dependencies]
+tokio = { workspace = true, features = ["net", "rt", "rt-multi-thread", "time"] }
+zbus = { version = "5", default-features = false, features = ["p2p", "tokio"] }
+
+[lints]
+workspace = true

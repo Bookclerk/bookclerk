@@ -12,10 +12,12 @@ pub struct Model {
     pub id: String,
     /// The listing held.
     pub listing_id: String,
-    /// Stored holder key, `account:<account_id>` or `node:<node_id>`
-    /// (`bookclerk_resolve::Holder::stored`); unique with `listing_id`.
+    /// Stored holder key, `account:<account_id>`, `node:<node_id>` or
+    /// `patron:<user id>` (`bookclerk_resolve::Holder::stored`); unique with
+    /// `listing_id`.
     pub holder: String,
-    /// `account` or `node`: which of the typed holder columns is set.
+    /// `account`, `node` or `patron`: which of the typed holder columns is
+    /// set.
     pub holder_kind: String,
     /// PluginKey of the holding account (the listing's plugin); `None` for a
     /// node holder.
@@ -26,7 +28,10 @@ pub struct Model {
     /// Holding branch library node (`nodes.node_id`); `None` for an account
     /// holder.
     pub node_id: Option<String>,
-    /// `purchase`, `plus`, `loan` or `free`.
+    /// Holding patron (`users.id`) of an uploaded book; `None` for an
+    /// account or node holder.
+    pub user_id: Option<i64>,
+    /// `purchase`, `plus`, `loan`, `free` or `own` (an upload).
     pub entitlement: String,
     /// RFC 3339 time it was bought or added, when known.
     pub purchased_at: Option<String>,

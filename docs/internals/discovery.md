@@ -405,6 +405,9 @@ never holds up Discover again.
 `discovery.embeddings_enabled = false` (the default, or CLI `--hash` / `?no`
 paths that pass `prefer_onnx = false`) skips ONNX and uses local-hash directly.
 
+[Embedding model benchmarks](embedding-benchmarks.md) compares MiniLM with
+newer and multilingual models on taste quality, memory and speed.
+
 ### Refreshing work vectors
 
 `embed_dirty_works` keeps one vector per work and model in `embeddings`,

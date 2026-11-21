@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::job_handler::{InProcessJobTransport, JobCommand, JobExecCtx, JobTransport};
-use crate::jobs::{note_job_failure, JOB_SUSPENDED_DETAIL_PREFIX};
+use crate::jobs::{note_job_failure, JobFailedForGood, JOB_SUSPENDED_DETAIL_PREFIX};
 
 /// How long a worker may hold the [`AppState::job_runtime`] read permit while
 /// replaying a lost `claim_next_job` RPC with the same operation id.
@@ -404,6 +404,13 @@ enum HandlerFailKind {
     Handler,
 }
 
+/// Whether a handler failure goes back to the queue for another attempt:
+/// every failure does except a [`JobFailedForGood`], wherever it sits in
+/// the error's chain.
+fn may_retry(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<JobFailedForGood>().is_none()
+}
+
 /// Distinguishes operator cancel from local cancel caused by fence loss.
 fn classify_handler_failure(local_cancel: bool, operator_cancel: bool) -> HandlerFailKind {
     if operator_cancel {
@@ -587,7 +594,15 @@ async fn run_fenced_job(
                 }
                 HandlerFailKind::Handler => {
                     note_job_failure(&fence.job_id, &err);
-                    match library.fail_job(&fence, "handler", &err.to_string()).await {
+                    // A failure no retry can fix ends the job now.
+                    let failed = if !may_retry(&err) {
+                        library
+                            .fail_job_without_retry(&fence, "handler", &err.to_string())
+                            .await
+                    } else {
+                        library.fail_job(&fence, "handler", &err.to_string()).await
+                    };
+                    match failed {
                         Ok(true) => {
                             if let Err(err) = library
                                 .storage_scan_reclaim_if_terminal(&fence.job_id)
@@ -846,6 +861,18 @@ mod tests {
             classify_handler_failure(false, false),
             HandlerFailKind::Handler
         ));
+    }
+
+    /// A failure marked for good is not retried, even under added
+    /// context; any other failure is.
+    #[test]
+    fn only_a_failure_for_good_skips_the_retry() {
+        use anyhow::Context as _;
+        let for_good: anyhow::Error = JobFailedForGood("slow down".into()).into();
+        assert!(!may_retry(&for_good));
+        let wrapped = Err::<(), _>(for_good).context("acquire").unwrap_err();
+        assert!(!may_retry(&wrapped));
+        assert!(may_retry(&anyhow::anyhow!("store unreachable")));
     }
 
     #[test]

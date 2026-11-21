@@ -124,7 +124,12 @@ the old nested topology appeared to work there. The host therefore applies
 each jail once from an unsandboxed parent on every OS.
 
 What each jail grants is decided entirely by the host. The gateway jail is
-`OutboundListen` (loopback RPC bridge to the pinned `workerd`); it may write
+`LocalIpc`: no IP socket at all on Linux and macOS (its RPC bridge to the
+pinned `workerd` is a Unix socket), and on Windows only the in-container
+loopback the bridge needs (`privateNetworkClientServer`, no
+`internetClient`). An isolate's front door gets the same jail; its egress
+leaves as tunnels the host checks (see
+[the egress relay](workerd-bridge.md#the-egress-relay)). It may write
 only the host-owned `<plugin state root>/session-<nonce>/` (the plugin state
 root is `plugin-state/<PluginKey fs-id>/`, or its link subtree on a branch)
 directory (`0700`, also `BOOKCLERK_WORKERD_STATE_DIR` and the gateway's
@@ -410,7 +415,8 @@ doesn't change) and falls back to process-group SIGKILL. That fallback is a diff
 has called `setsid` is outside the group, and without a delegated cgroup
 this path does not own it. The host
 records each leader's pid and start time (`/proc/<pid>/stat` starttime on
-Linux, `proc_pidinfo` on macOS). It observes leader exit with `waitid`
+Linux, `sysctl(KERN_PROC_PID)` `kinfo_proc` on macOS, which still answers
+for an unreaped zombie). It observes leader exit with `waitid`
 `WNOWAIT` so the zombie still has that start time, signals the group only
 while the start time matches, and reaps afterward. It does not signal a
 process-group id whose start time is gone.

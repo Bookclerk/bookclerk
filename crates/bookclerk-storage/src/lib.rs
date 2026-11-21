@@ -26,6 +26,7 @@ pub mod guest;
 /// Intent operations (moves, batches, conditional writes, change feeds) and
 /// their fallbacks.
 pub mod intent;
+pub mod key_syntax;
 /// On-disk local list index (external sort, O(page) reads).
 mod list_index;
 mod local;

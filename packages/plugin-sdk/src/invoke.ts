@@ -323,6 +323,38 @@ const okFileBytes = (value: unknown) => {
   }
   return okValue({ bytes: value });
 };
+/**
+ * Wraps a notifier's `send` return as `NotifySent`; `undefined` means the
+ * service gave no message id.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the provider id, if any.
+ */
+const okNotifySent = (value: unknown) => {
+  const v = (value ?? {}) as { providerId?: unknown };
+  const providerId =
+    v.providerId === undefined || v.providerId === null ? "" : String(v.providerId);
+  return okValue(providerId ? { providerId } : {});
+};
+/**
+ * Wraps a notifier's `validateDestination` return as `NotifyValidated`. The
+ * Rust client checks the address document and label.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the normalised address and label.
+ * @throws {PluginError} `internal` when `value` has no string `addressJson`.
+ */
+const okNotifyValidated = (value: unknown) => {
+  const v = (value ?? {}) as { addressJson?: unknown; label?: unknown };
+  if (typeof v.addressJson !== "string") {
+    throw PluginError.fromWire(
+      "internal",
+      "validateDestination must return an object with an addressJson string",
+    );
+  }
+  const label = typeof v.label === "string" ? v.label : "";
+  return okValue(label ? { addressJson: v.addressJson, label } : { addressJson: v.addressJson });
+};
 const okLines = (value: unknown) =>
   okValue({ lines: asList<unknown>(value).map((l) => String(l)) });
 const okHealth = (value: unknown) => {
@@ -800,6 +832,17 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
           })),
         }),
     }),
+    translateKeys: spec<
+      W.DestinationTranslateKeysParams,
+      W.DestinationTranslateKeysResults["result"]
+    >({
+      params: W.DestinationTranslateKeysParamsCodec,
+      results: W.DestinationTranslateKeysResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "translateKeys", [batchKeys(p.keys)]),
+      ok: (value) => okValue({ keys: asList<unknown>(value).map(String) }),
+    }),
     changes: spec<W.DestinationChangesParams, W.DestinationChangesResults["result"]>({
       params: W.DestinationChangesParamsCodec,
       results: W.DestinationChangesResultsCodec,
@@ -1028,6 +1071,29 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       },
       ok: okCoverImages,
     }),
+  },
+  Notifier: {
+    health: withoutParams(
+      "notifier",
+      "health",
+      W.NotifierHealthParamsCodec,
+      W.NotifierHealthResultsCodec,
+      okHealth,
+    ),
+    send: withParams(
+      "notifier",
+      "send",
+      W.NotifierSendParamsCodec,
+      W.NotifierSendResultsCodec,
+      okNotifySent,
+    ),
+    validateDestination: withParams(
+      "notifier",
+      "validateDestination",
+      W.NotifierValidateDestinationParamsCodec,
+      W.NotifierValidateDestinationResultsCodec,
+      okNotifyValidated,
+    ),
   },
   MetadataFiles: {
     health: withoutParams(

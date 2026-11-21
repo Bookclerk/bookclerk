@@ -202,8 +202,17 @@ MARKER = re.compile(
     re.ASCII,
 )
 
-#: Most rows the comment shows; the rest are counted.
-MAX_COMMENT_ROWS = 40
+#: Most characters a comment body holds; GitHub refuses bodies over 65,536,
+#: and the rest is headroom for the outcome notes ``approve`` appends.
+MAX_COMMENT_CHARS = 60_000
+
+#: The categories of a change, in the order the comment shows them: the
+#: section title and the image columns each row has.
+CATEGORIES = (
+    ("changed", "Changed", ("Approved", "Proposed")),
+    ("added", "New", ("Proposed",)),
+    ("removed", "Removed", ("Approved",)),
+)
 
 #: Largest event or API document read, in bytes.
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
@@ -259,49 +268,90 @@ def render_comment(
 ) -> str:
     """Renders the bot's review comment for a proposed set.
 
+    One comment holds every change: a summary line with the count in each
+    category, the approval checkbox, then one collapsed section per
+    category. Changed screenshots show the approved and proposed image, new
+    ones only the proposed and removed ones only the approved. Only a set
+    too large for one GitHub comment loses images: the rows that no longer
+    fit list the screenshot's name alone.
+
     # Arguments
     * ``head``: the pull request head the set was recorded from.
     * ``set_commit``: the baselines commit holding the proposed set.
-    * ``approved_commit``: the commit the pull request's lock names, or
-      ``None`` before any set was approved.
+    * ``approved_commit``: the approved set the pull request is compared
+      with, or ``None`` before any set was approved.
     * ``changes``: from ``diff_sets``; validated paths only.
     * ``raw_base``: the raw-file URL prefix of the baselines repository,
       such as ``https://raw.githubusercontent.com/<owner>/<repo>``.
+    * ``bot_login``: the automation App's login, for the reply command.
 
     # Returns
-    The comment body: the marker, a table of approved and proposed images,
-    and the unticked checkbox.
+    The comment body, opened by ``MARKER``.
     """
-    lines = [
+    by_kind = {kind: [p for p, c in changes if c == kind] for kind, _, _ in CATEGORIES}
+    counts = ", ".join(
+        f"{len(by_kind[kind])} {title.lower()}"
+        for kind, title, _ in CATEGORIES
+        if by_kind[kind]
+    )
+    head_lines = [
         f"<!-- bookclerk-visual-baselines v1 head={head} set={set_commit} -->",
         "### Visual changes",
         "",
-        f"{len(changes)} screenshot(s) differ from the approved baselines at `{head[:12]}`.",
-        "",
-        "| Screenshot | Approved | Proposed |",
-        "| --- | --- | --- |",
-    ]
-    for path, change in changes[:MAX_COMMENT_ROWS]:
-        old = (
-            "new"
-            if change == "added" or approved_commit is None
-            else f"![approved]({raw_base}/{approved_commit}/{path})"
-        )
-        new = (
-            "removed"
-            if change == "removed"
-            else f"![proposed]({raw_base}/{set_commit}/{path})"
-        )
-        lines.append(f"| `{path[:-4]}` | {old} | {new} |")
-    if len(changes) > MAX_COMMENT_ROWS:
-        lines.append(f"| and {len(changes) - MAX_COMMENT_ROWS} more | | |")
-    lines += [
+        (
+            f"{len(changes)} screenshot(s) differ from the approved baselines at "
+            f"`{head[:12]}`: {counts}."
+        ),
         "",
         checkbox(head, False),
         "",
         f"Without write access, a visual reviewer approves by replying `{approve_command(bot_login)}`.",
         "",
     ]
+    images = {
+        "Approved": f"{raw_base}/{approved_commit}" if approved_commit else None,
+        "Proposed": f"{raw_base}/{set_commit}",
+    }
+    sections: list[tuple[list[str], list[str], list[str]]] = []
+    for kind, title, columns in CATEGORIES:
+        paths = by_kind[kind]
+        if not paths:
+            continue
+        top = [
+            f"<details><summary>{title} ({len(paths)})</summary>",
+            "",
+            "| Screenshot | " + " | ".join(columns) + " |",
+            "| --- |" + " --- |" * len(columns),
+        ]
+        rows = []
+        for path in paths:
+            cells = [
+                f"![{column.lower()}]({images[column]}/{path})"
+                if images[column]
+                else "none"
+                for column in columns
+            ]
+            rows.append(f"| `{path[:-4]}` | " + " | ".join(cells) + " |")
+        sections.append(
+            (top, rows, [f"| `{path[:-4]}` |" + " |" * len(columns) for path in paths])
+        )
+    tail = ["</details>", ""]
+    size = sum(len(line) + 1 for line in head_lines)
+    size += sum(
+        sum(len(line) + 1 for line in top + tail) + sum(len(r) + 1 for r in bare)
+        for top, _, bare in sections
+    )
+    lines = list(head_lines)
+    for top, rows, bare in sections:
+        lines += top
+        for row, plain in zip(rows, bare, strict=True):
+            # Swap a bare row for its imaged one while the whole body fits.
+            if size - len(plain) + len(row) <= MAX_COMMENT_CHARS:
+                size += len(row) - len(plain)
+                lines.append(row)
+            else:
+                lines.append(plain)
+        lines += tail
     return "\n".join(lines)
 
 

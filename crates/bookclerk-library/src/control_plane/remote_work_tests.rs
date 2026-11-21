@@ -2048,11 +2048,122 @@ async fn a_committed_uploads_probe_is_kept_on_the_file_row() {
     }
 }
 
-/// An upload is granted only for a title of the job, its token opens only
-/// that upload, the commit waits for every file, and the title's commit
-/// marks the title acquired and publishes `book_acquired` but cannot
-/// finish the job; only the closing upload completes it and gives its
-/// permits back, and a repeat answers the same.
+/// A title's commit and its pace ledger row land in one batch under every
+/// database profile: a batch the database refuses leaves neither the
+/// commit nor the row, and the retry records exactly one. A batch cut off
+/// after any of its statements (the ledger row among them) leaves nothing
+/// of the commit either.
+#[tokio::test]
+async fn a_refused_commit_records_no_download_and_its_retry_records_one() {
+    let _guard = master_key_test_lock_async().await;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let w = world_on(dir, kit.store().clone()).await;
+        let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+        let (book_uuid, files) = riley_title(&w.store).await;
+        let fence = claim(&w.store).await.unwrap().job.lease_generation;
+        let UploadGrant::Granted { upload_id, .. } = grant_upload(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            "owner",
+            &UploadGrantRequest {
+                holding_id: &holding_of(&w.store, &book_uuid).await,
+                primary_key: "Author/Title/Title.m4b",
+                pdf_key: None,
+                files: &files,
+                destinations: &local("Author/Title"),
+            },
+        )
+        .await
+        .unwrap() else {
+            panic!("granted ({name})");
+        };
+        for index in 0..files.len() {
+            assert!(record_upload_file(&w.store, &upload_id, index)
+                .await
+                .unwrap());
+        }
+        let nothing_landed = |why: String| {
+            let store = w.store.clone();
+            let book_uuid = book_uuid.clone();
+            async move {
+                assert_eq!(ledger_len(&store, "riley-acct").await, 0, "{why}");
+                let book = store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+                assert_ne!(
+                    book.acquire_status,
+                    crate::models::AcquireStatus::Acquired,
+                    "{why}: nothing of the failed commit landed"
+                );
+            }
+        };
+        kit.lock_next_requests(1);
+        assert!(
+            commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+                .await
+                .is_err(),
+            "{name}: the refused batch fails the commit"
+        );
+        nothing_landed(format!("{name}: refused")).await;
+        // Cut the commit's batch off after each statement in turn, until
+        // the cut lands past the last one: every cut short, including one
+        // right after the ledger row, rolls the whole commit back.
+        for skip in 0..64u32 {
+            crate::inject_atomic_interrupt_after(
+                crate::AtomicInterruptPhase::BetweenStatements,
+                crate::AtomicInterruptKind::Cancel,
+                skip,
+            );
+            let cut = commit_upload(&w.store, &upload_id, None, SETTINGS.limits).await;
+            // The injection is spent or left over; clear any left over.
+            let _ = crate::proxy_txn::consume_atomic_interrupt(
+                crate::AtomicInterruptPhase::BetweenStatements,
+            );
+            match cut {
+                Err(_) => nothing_landed(format!("{name}: cut after {skip}")).await,
+                Ok(committed) => {
+                    assert_eq!(
+                        committed,
+                        UploadCommit::Committed {
+                            job_completed: false
+                        },
+                        "{name}"
+                    );
+                    assert!(skip > 0, "{name}: the commit ran no statement");
+                    break;
+                }
+            }
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+                    .await
+                    .unwrap(),
+                UploadCommit::Committed {
+                    job_completed: false
+                },
+                "{name}"
+            );
+            assert_eq!(ledger_len(&w.store, "riley-acct").await, 1, "{name}");
+        }
+    }
+}
+
+/// How many downloads `account` has in its pace window now.
+async fn ledger_len(store: &LibraryStore, account: &str) -> usize {
+    store
+        .account_pace_state(PLUGIN, account, chrono::Utc::now())
+        .await
+        .unwrap()
+        .window
+        .starts
+        .len()
+}
+
 #[tokio::test]
 async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
     let _guard = master_key_test_lock_async().await;
@@ -2203,6 +2314,24 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
             job_completed: false
         }
     );
+    assert_eq!(
+        ledger_len(&w.store, "riley-acct").await,
+        1,
+        "the Host's download counts toward the account's pace"
+    );
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+    assert_eq!(
+        ledger_len(&w.store, "riley-acct").await,
+        1,
+        "a repeated commit records nothing more"
+    );
     let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
     assert_eq!(book.acquire_status, crate::models::AcquireStatus::Acquired);
     assert_eq!(book.storage_key.as_deref(), Some("Author/Title/Title.m4b"));
@@ -2228,13 +2357,15 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
     let done = w.store.get_job(&job_id).await.unwrap().unwrap();
     assert_eq!(done.state, crate::models::JobState::Succeeded);
     assert_eq!(done.progress.as_deref(), Some("1 title"));
+    // `book_acquired` names the uploading holding.
+    let holding = holding_of(&w.store, &book_uuid).await;
     assert!(w
         .store
         .list_domain_events(50)
         .await
         .unwrap()
         .iter()
-        .any(|event| event.event_type == "book_acquired" && event.correlation_id == book_uuid));
+        .any(|event| event.event_type == "book_acquired" && event.correlation_id == holding));
     assert!(
         live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
             .await

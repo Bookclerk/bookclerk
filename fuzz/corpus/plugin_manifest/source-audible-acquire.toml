@@ -1,0 +1,72 @@
+api_version = 3
+id = "audible"
+name = "Audible"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=audible.com&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-source-audible"
+entrypoints = ["storefront"]
+# Audible registers a device for each login and rotates its refresh token:
+# one instance keeps the login fresh and the others receive each new token.
+credentials = "single_keeper"
+
+[media]
+works = ["book", "podcast"]
+lists = ["audio"]
+fetches = ["audio"]
+
+# Audible throttles an account that downloads too much (licenses are refused
+# for a day or two) without publishing the limit, so automatic downloads stay
+# well under it and pause a day when Audible says to slow down.
+[acquire]
+downloads_per_day = 100
+min_gap_seconds = 30
+cooldown_seconds = 86400
+
+[capabilities.network]
+mode = "outbound"
+tcp = [
+    { host = "*.audible.com", ports = [443] },
+    { host = "*.amazon.com", ports = [443] },
+    { host = "*.media-amazon.com", ports = [443] },
+    { host = "*.amazonaws.com", ports = [443] },
+    { host = "api.audnex.us", ports = [443] },
+]
+
+# Every other request (Audnexus included) carries Bookclerk's own agent.
+# Every Audible marketplace is listed, so a regional marketplace the operator
+# adds as a TCP destination keeps the app agent too.
+[capabilities.network.own_user_agent]
+hosts = [
+    "*.audible.com", "*.amazon.com",
+    "*.audible.co.uk", "*.amazon.co.uk",
+    "*.audible.de", "*.amazon.de",
+    "*.audible.fr", "*.amazon.fr",
+    "*.audible.ca", "*.amazon.ca",
+    "*.audible.it", "*.amazon.it",
+    "*.audible.com.au", "*.amazon.com.au",
+    "*.audible.in", "*.amazon.in",
+    "*.audible.co.jp", "*.amazon.co.jp",
+    "*.audible.es", "*.amazon.es",
+    "*.audible.com.br", "*.amazon.com.br",
+    "*.media-amazon.com", "*.amazonaws.com",
+]
+reason = "Audible's sign-in, device registration, app API and content servers answer only Audible's own iOS and Android apps."
+# Native TCP via `bookclerk_plugin_sdk::http` / `connect`. Fetch `domains`
+# are workerd-only. CDNs and regional Amazon hosts match the wildcards;
+# operator additions can extend the set.
+
+[vars]
+
+[[settings]]
+key = "bitrate"
+label = "Bitrate"
+type = "enum"
+values = [{ id = "high", label = "High" }, { id = "normal", label = "Normal" }]
+default = "high"
+
+[secrets]
+
+[work_fs]
+
+[oauth]

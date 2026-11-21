@@ -58,6 +58,9 @@ pub struct Config {
     /// How external plugin guests are run (`[plugins]`).
     #[serde(default)]
     pub plugins: crate::PluginsConfig,
+    /// Upload limits on this node (`[uploads]`).
+    #[serde(default)]
+    pub uploads: crate::UploadsConfig,
     /// Revision of the DB-authoritative `[events]` document after overlay.
     ///
     /// Absent until control-plane bootstrap or reconcile loads `core.events`.
@@ -95,9 +98,53 @@ pub struct AuthConfig {
     /// env (wins when both are set). Registered for log redaction on load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
+    /// Where this install keeps the library's data-encryption key
+    /// (`[auth].key_store`). Unset means the host's default: the OS keychain
+    /// for the desktop app, the `master.key` file for the daemon and CLI.
+    /// Set, it is required: a keychain that can't be reached is an error
+    /// rather than a fallback to the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_store: Option<KeyStoreKind>,
     /// Optional upstream OIDC/OAuth identity broker (`[auth.oidc]`).
     #[serde(default, skip_serializing_if = "crate::OidcBrokerConfig::is_unset")]
     pub oidc: crate::OidcBrokerConfig,
+}
+
+/// Where an install keeps the library's data-encryption key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyStoreKind {
+    /// `{files_dir}/master.key` holds the key itself (`BCK1`, or `BCK2`
+    /// under the auth password).
+    File,
+    /// The OS keychain (Keychain Services, Credential Manager or Secret
+    /// Service) holds the key; `master.key` only names the item (`BCK3`).
+    Keychain,
+}
+
+impl KeyStoreKind {
+    /// The setting's spelling: `file` or `keychain`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Keychain => "keychain",
+        }
+    }
+}
+
+impl std::str::FromStr for KeyStoreKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim() {
+            "file" => Ok(Self::File),
+            "keychain" => Ok(Self::Keychain),
+            other => Err(format!(
+                "unknown key store `{other}` (expected `file` or `keychain`)"
+            )),
+        }
+    }
 }
 
 /// Library / scan related settings.

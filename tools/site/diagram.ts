@@ -56,6 +56,7 @@ const DIAGRAM_TYPES: ReadonlyMap<string, string> = new Map([
   ["sequenceDiagram", "Sequence diagram"],
   ["classDiagram", "Class diagram"],
   ["erDiagram", "Entity relationship diagram"],
+  ["xychart-beta", "Chart"],
 ]);
 
 /** SVG elements kept; see SKIPPED for those dropped, anything else rejects the diagram. */
@@ -81,10 +82,27 @@ const ELEMENTS: ReadonlySet<string> = new Set([
  */
 const SKIPPED: ReadonlySet<string> = new Set(["style", "title"]);
 
-/** The only `class` kept: monospace member lines in class and ER diagrams. */
-const MONO_CLASS = "mono";
+/**
+ * The classes kept: `mono` for monospace member lines in class and ER
+ * diagrams, and the chart parts site.css colors in an `xychart-beta` chart
+ * (bars, lines, dots, grid, labels and titles). Any other class is dropped.
+ */
+const KEPT_CLASSES: ReadonlySet<string> = new Set([
+  "mono",
+  "xychart-bar",
+  "xychart-line",
+  "xychart-line-shadow",
+  "xychart-dot",
+  "xychart-grid",
+  "xychart-label",
+  "xychart-axis-title",
+  "xychart-title",
+]);
 
-/** Attributes kept; `class` (but `mono`), `style` and `data-*` are dropped, anything else rejects the diagram. */
+/** A chart series' color slot (`xychart-color-0` …), also kept; site.css colors the first few. */
+const SERIES_CLASS = /^xychart-color-[0-9]{1,2}$/;
+
+/** Attributes kept; `class` (but KEPT_CLASSES), `style` and `data-*` are dropped, anything else rejects the diagram. */
 const ATTRIBUTES: ReadonlySet<string> = new Set([
   "xmlns",
   "viewBox",
@@ -171,8 +189,9 @@ function diagramType(source: string): string {
  * whose value uses only the characters numbers, keywords, `var(--…)` and
  * `url(#…)` need, text must hold no `>` or bare `&`, and nothing may follow
  * the root `<svg>`. The `<style>` and `<title>` elements and their contents
- * are dropped, as are `style`, `data-*` and every `class` but `mono`. Each `id`, and each
- * `url(#…)` reference to one, gets `prefix` so several diagrams on a page do
+ * are dropped, as are `style`, `data-*` and every class but `mono` and the
+ * chart parts. Each `id`, and each `url(#…)` reference to one, gets
+ * `prefix` so several diagrams on a page do
  * not share ids; any other `url(`, in any letter case, rejects the diagram,
  * so nothing in it can load a resource.
  *
@@ -217,8 +236,9 @@ export function cleanSvg(svg: string, prefix: string): string | null {
     let kept = "";
     for (const attr of attrs.matchAll(/([a-zA-Z][a-zA-Z0-9:-]*)="([^"]*)"/g)) {
       const [, key = "", raw = ""] = attr;
-      if (key === "class" && raw.split(" ").includes(MONO_CLASS)) {
-        kept += ` class="${MONO_CLASS}"`;
+      if (key === "class") {
+        const classes = raw.split(" ").filter((c) => KEPT_CLASSES.has(c) || SERIES_CLASS.test(c));
+        if (classes.length > 0) kept += ` class="${classes.join(" ")}"`;
         continue;
       }
       if (dropped(key)) continue;

@@ -37,6 +37,7 @@ pub mod migrations;
 mod models;
 mod named_atomic;
 pub mod operator_token;
+pub mod pacing;
 pub mod password;
 pub mod proxy_txn;
 mod schema_state;
@@ -96,10 +97,13 @@ pub use host_schema::{
 pub use in_process_atomic::{InProcessSqlite, InProcessSqliteAtomic};
 pub use master_key::{
     configure_master_key, configure_master_key_with, discard_minted_master_key,
-    encode_master_key_file, inspect_master_key, install_master_key, master_key_fingerprint,
-    master_key_path, prepare_master_key_dir, require_master_key, resolve_master_key_detailed,
-    uncache_master_key, warn_unwrapped_master_key, wrap_master_key, MasterKey, MasterKeyFormat,
-    MasterKeyResolution, AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
+    encode_master_key_file, export_master_key, import_master_key, inspect_master_key,
+    install_master_key, key_store_preference, master_key_fingerprint, master_key_is_wrapped,
+    master_key_path, move_master_key, prepare_master_key_dir, require_master_key,
+    resolve_master_key_detailed, set_key_store_preference, set_keychain_vault, store_master_key,
+    uncache_master_key, warn_unwrapped_master_key, wrap_master_key, KeyStorePreference, MasterKey,
+    MasterKeyFormat, MasterKeyResolution, StoredMasterKey,
+    AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
 };
 pub use migrations::{
     apply_plugin_migrations, binding_bootstrap_type_env, history_from_execute_reply,
@@ -133,9 +137,9 @@ pub use models::{
     UserTitleState, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, CORE_EVENTS_QUEUE,
     EDITION_ACQUIRE_CHANGED, EVENT_DELIVERY_DEFAULT_RETENTION_SECS, EVENT_DELIVERY_MAX_ATTEMPTS,
     EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, HOST_CONSUMER_PREFIX,
-    JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN, MAX_QUEUE_WISHERS,
-    NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON,
-    QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
+    INGEST_BATCH_FINISHED, JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN,
+    MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
+    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
 };
 pub use named_atomic::{NamedAtomicBackend, NamedAtomicRunner};
 pub use operator_token::{
@@ -190,6 +194,7 @@ pub use store::{
     },
     listening::{ListeningIdentifiers, ListeningMatch, ListeningProgressWrite},
     overrides::{ConflictCursor, PinOutcome, ResolutionConflict, MAX_CONFLICT_PAGE},
+    pacing::{AccountPaceState, DownloadId, DownloadStarter},
     playback::{
         reaches_end, Bookmark, NewPlaybackSession, PlaybackChange, PlaybackEdition, PlaybackEvent,
         PlaybackMs, PlaybackProgress, PlaybackProgressEdit, PlaybackSession, PlaybackSync,
@@ -221,14 +226,16 @@ pub use store::{
         MAX_SPLIT_EXPRESSIONS, MAX_SPLIT_EXPRESSION_ID_BYTES,
     },
     AcquireTitle, AcquireTitlePage, AcquiredTitleKey, AcquiredTitleKeyPage, BookPage, CandidateRef,
-    CatalogEnrichmentFields, CopyState, DiscoverSubject, EditionAcquisition, EditionAsin,
-    EditionCopy, EditionEnrichment, EditionFile, EnrichCandidate, EnrichCandidatePage, FileOwner,
-    FileProbe, FileRole, HeldIdentifiers, HoldingSelection, LibraryStore, NewBook,
-    NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection, QueueRank,
-    SavedFilterRecord, ScannedTitle, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
-    StoredFeed, StoredQueueRank, TitleHolding, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE,
+    CatalogEnrichmentFields, ChangedObject, CopyState, DestinationFeed, DiscoverSubject,
+    EditionAcquisition, EditionAsin, EditionCopy, EditionEnrichment, EditionFile, EnrichCandidate,
+    EnrichCandidatePage, FeedState, FileOwner, FileProbe, FileRole, HeldIdentifiers,
+    HoldingSelection, LibraryStore, LostCopies, NewBook, NewListeningProgress, NewTitleRequest,
+    NewTitleRequestSource, NodeHoldingSelection, QueueRank, SavedFilterRecord, ScannedTitle,
+    SeedScope, SeenObject, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed,
+    StoredQueueRank, TitleHolding, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE,
     ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, COPY_RETRY_BASE_DELAY,
     COPY_RETRY_MAX_DELAY, HOLDING_REMOVED, MAX_COPY_ATTEMPTS, MAX_QUEUE_REASONS,
+    OBJECT_TOMBSTONE_DAYS,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

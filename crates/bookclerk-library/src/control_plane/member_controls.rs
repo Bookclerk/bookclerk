@@ -1,7 +1,9 @@
 //! Member controls: what a patron may do in the library, beside what they
 //! see (see `docs/adr/patron-scopes.md`).
 //!
-//! Six switches, each on out of the box ([`MemberControl`]). The library's
+//! Six switches, each on out of the box except upload ([`MemberControl`],
+//! [`MemberControls::default`]), so letting patrons add files is a
+//! deliberate choice. The library's
 //! default (the `core.member_controls` library document) sets every switch
 //! for Members; single switches can be overridden for one patron (a
 //! `patron_controls` row), and a Member's other switches keep following
@@ -103,9 +105,15 @@ impl MemberControl {
     }
 }
 
-/// The serde default of every switch: allowed.
+/// The serde default of every switch but upload: allowed.
 fn allowed() -> bool {
     true
+}
+
+/// The serde default of the upload switch: refused until an Administrator
+/// turns it on.
+fn refused() -> bool {
+    false
 }
 
 /// A value for each control: the library's default, or what applies to
@@ -127,9 +135,9 @@ pub struct MemberControls {
     #[serde(default = "allowed")]
     #[schema(example = true)]
     pub edit_metadata: bool,
-    /// May upload books ([`MemberControl::Upload`]).
-    #[serde(default = "allowed")]
-    #[schema(example = true)]
+    /// May upload books ([`MemberControl::Upload`]); off unless set.
+    #[serde(default = "refused")]
+    #[schema(example = false)]
     pub upload: bool,
     /// May ask branches for books ([`MemberControl::RequestBooks`]).
     #[serde(default = "allowed")]
@@ -142,8 +150,13 @@ pub struct MemberControls {
 }
 
 impl Default for MemberControls {
+    /// The library default before an Administrator changes it: everything
+    /// allowed except upload.
     fn default() -> Self {
-        Self::all(true)
+        Self {
+            upload: false,
+            ..Self::all(true)
+        }
     }
 }
 
@@ -781,7 +794,7 @@ mod strict {
     use serde::de::{value::MapAccessDeserializer, Deserializer, MapAccess, Visitor};
     use serde::Deserialize;
 
-    use super::{allowed, ControlOverrides, MemberControls, PutUserControls};
+    use super::{allowed, refused, ControlOverrides, MemberControls, PutUserControls};
 
     /// Reads a JSON object, and only an object, as `T`.
     struct Object<T>(PhantomData<T>);
@@ -812,7 +825,7 @@ mod strict {
         #[serde(default = "allowed")]
         edit_metadata: bool,
         /// See [`MemberControls::upload`].
-        #[serde(default = "allowed")]
+        #[serde(default = "refused")]
         upload: bool,
         /// See [`MemberControls::request_books`].
         #[serde(default = "allowed")]

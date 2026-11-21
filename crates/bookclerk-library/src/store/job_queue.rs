@@ -260,6 +260,85 @@ impl LibraryStore {
         ))
     }
 
+    /// Makes parked paced acquires that may download on an account ready
+    /// to run now, after its pace was relaxed or its pause cleared.
+    ///
+    /// A paced acquire parked by the pace ([`Self::defer_job`]) waits until
+    /// the moment its account was due to download again. When a person or
+    /// the operator loosens the limit, the job must look again rather than
+    /// sleep out the old deadline. Every pending paced acquire that names
+    /// `account_id`, or names no account, and whose `run_after` is later
+    /// than now is moved to now; on its next claim it checks the pace and
+    /// parks again if it still has to wait. Each write is a compare-and-swap
+    /// on `state = 'pending'` and the generation it read, which it bumps, so
+    /// a job claimed meanwhile is left alone.
+    ///
+    /// # Returns
+    ///
+    /// How many jobs were woken.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or write fails.
+    pub async fn wake_paced_acquires(&self, account_id: &str) -> Result<u32> {
+        let now = Utc::now();
+        let mut woken = 0u32;
+        let mut after: Option<String> = None;
+        // Pages of 64, or of the database's result cap when it is smaller.
+        let page_rows = match self.db_capabilities().max_result_rows {
+            0 => 64,
+            rows => u64::from(rows).clamp(1, 64),
+        };
+        loop {
+            let (page, next) = self
+                .list_pending_jobs_page(after.as_deref(), page_rows)
+                .await?;
+            for job in page {
+                let names_account = job
+                    .payload
+                    .account
+                    .as_deref()
+                    .is_none_or(|named| named == account_id);
+                if job.kind != JobKind::Acquire
+                    || !job.payload.paced
+                    || !names_account
+                    || job.run_after <= now
+                {
+                    continue;
+                }
+                let res = self
+                    .exec_bumped(
+                        jobs::Entity::update_many()
+                            .col_expr(
+                                jobs::Column::RunAfter,
+                                sea_orm::sea_query::Expr::value(now.to_rfc3339()),
+                            )
+                            .col_expr(
+                                jobs::Column::LeaseGeneration,
+                                sea_orm::sea_query::Expr::value(job.lease_generation + 1),
+                            )
+                            .col_expr(
+                                jobs::Column::UpdatedAt,
+                                sea_orm::sea_query::Expr::value(now_str()),
+                            )
+                            .filter(jobs::Column::Id.eq(&job.id))
+                            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
+                            .filter(jobs::Column::LeaseGeneration.eq(job.lease_generation)),
+                        LiveTopic::Jobs,
+                        Bump::Always,
+                    )
+                    .await?;
+                if res == 1 {
+                    woken += 1;
+                }
+            }
+            match next {
+                Some(next) => after = Some(next),
+                None => return Ok(woken),
+            }
+        }
+    }
+
     /// Replaces the payload of a pending job read at `lease_generation`.
     ///
     /// A compare-and-swap on `state = 'pending'` and the generation, which it
@@ -632,6 +711,91 @@ impl LibraryStore {
                     .col_expr(
                         jobs::Column::UpdatedAt,
                         sea_orm::sea_query::Expr::value(now),
+                    )
+                    .filter(jobs::Column::Id.eq(&fence.job_id))
+                    .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+                    .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
+                    .filter(jobs::Column::LeaseGeneration.eq(fence.generation)),
+                LiveTopic::Jobs,
+                Bump::Always,
+            )
+            .await?;
+        Ok(res == 1)
+    }
+
+    /// Parks a running job as `pending` until `wake_at` without spending an
+    /// attempt, with `progress` saying why it waits.
+    ///
+    /// For a job that cannot go on yet and has nothing to resume from, such
+    /// as an acquire waiting for its store account's download pace
+    /// (`crate::pacing`). Unlike [`Self::suspend_job`] it drops any stored
+    /// checkpoint, so the next claim starts fresh. The CAS matches
+    /// [`Self::complete_job`]: `state=running` and the caller's fence.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was parked; `false` when `fence` no longer owns
+    /// the running generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read or update fails, or
+    /// [`LibraryError::Other`] when the stored payload is not valid JSON.
+    pub async fn defer_job(
+        &self,
+        fence: &JobFence,
+        wake_at: chrono::DateTime<Utc>,
+        progress: &str,
+    ) -> Result<bool> {
+        let Some(model) = jobs::Entity::find_by_id(&fence.job_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(false);
+        };
+        if model.state != JobState::Running.as_str()
+            || model.lease_owner.as_deref() != Some(fence.owner.as_str())
+            || model.lease_generation != fence.generation
+        {
+            return Ok(false);
+        }
+        let mut payload: JobPayload = serde_json::from_str(&model.payload)
+            .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+        payload.checkpoint = None;
+        payload.resume_pending = true;
+        let payload_json = serde_json::to_string(&payload)
+            .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+        let res = self
+            .exec_bumped(
+                jobs::Entity::update_many()
+                    .col_expr(
+                        jobs::Column::State,
+                        sea_orm::sea_query::Expr::value(JobState::Pending.as_str()),
+                    )
+                    .col_expr(
+                        jobs::Column::Payload,
+                        sea_orm::sea_query::Expr::value(payload_json),
+                    )
+                    .col_expr(
+                        jobs::Column::RunAfter,
+                        sea_orm::sea_query::Expr::value(wake_at.to_rfc3339()),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseOwner,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        jobs::Column::LeaseExpiresAt,
+                        sea_orm::sea_query::Expr::value(Option::<String>::None),
+                    )
+                    .col_expr(
+                        jobs::Column::Progress,
+                        sea_orm::sea_query::Expr::value(Some(progress.to_string())),
+                    )
+                    .col_expr(
+                        jobs::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now_str()),
                     )
                     .filter(jobs::Column::Id.eq(&fence.job_id))
                     .filter(jobs::Column::State.eq(JobState::Running.as_str()))

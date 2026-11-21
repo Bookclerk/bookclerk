@@ -16,6 +16,7 @@ others go deeper.
 - [Where your books go](guide/where-books-go.md): folders, cloud storage and file names
 - [Discover and wishlist](guide/discover.md): suggestions, catalog search and the wishlist
 - [The web app](guide/web-app.md): the screens, roles and ways to sign in
+- [Listen in the web app](guide/listening.md): the player, bookmarks, the sleep timer and media keys
 - [Sharing with your household](guide/sharing.md): invites, what is shared, and Audiobookshelf
 - [Join a library as a branch](guide/branches.md): let a second computer help
 - [Coming from Libation](guide/from-libation.md): bring over an existing library
@@ -36,6 +37,7 @@ others go deeper.
 - [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
 - [Libraries and branches](server/branches.md): join a library, shared branches and consent
 - [Media worker](server/media.md): the confined process that handles audio files
+- [Uploads](server/uploads.md): adding books from files, folders and archives, limits and review
 - [Playback reference](server/playback.md): what the daemon stores and serves for players
 - [Backups, updates, import and export](server/backups.md): native backups, schema backups, updating, Libation and PostgreSQL export
 - [Diagnostics](server/diagnostics.md): opt-in error reports
@@ -59,6 +61,7 @@ others go deeper.
 - [How it works](internals/README.md): the shelf for contributors reading the code
 - [Architecture](internals/architecture.md): how the pieces fit
 - [Discovery design](internals/discovery.md): how suggestions are found and ranked
+- [Embedding model benchmarks](internals/embedding-benchmarks.md): how candidate models match taste across languages, and what they cost to run
 - [Durable job queue](internals/jobs.md): admission, leases and crash recovery
 - [Bounded storage](internals/storage-bounds.md): size caps, streams, paged scans and checkpoints
 - [The guest jail](internals/guest-jail.md): why plugins run as jailed processes, and how each platform confines them
@@ -107,8 +110,11 @@ Build and agent conventions for this repository live in
 - [Library catalog network](adr/library-catalog-network.md): a branch of several libraries, what each library owns, and how libraries list and lend books
 - [Metadata claims and file sync](adr/metadata-claims-and-file-sync.md): every value is a claim with its source, one resolver, evidence-based works, and two-way sync with tags and sidecar files
 - [Patron scopes and linked sign-in](adr/patron-scopes.md): which part of the library a Member sees, and how a linked server's permissions follow one authority
+- [Desktop window identity](adr/desktop-window-identity.md): the window is the person signed in to the computer, named by a per-account profile
 - [Playback](adr/playback.md): playback is a host feature with one core that the web player, the desktop window and app-compatible clients share
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks
+- [Master key store](adr/master-key-store.md): the library key can live in the OS keychain, with `master.key` as a pointer and recovery copies
+- [Uploads and ingest batches](adr/uploads-and-ingest.md): one batch per upload, patron holdings for uploaded books, strong identifiers only, archives expanded under caps
 - [What needs the operator](adr/owner-and-operator.md): the rule for which actions need elevation, and the switches an Owner sets on each Administrator
 - [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins
 - [Notifications](adr/notifications.md): the host routes events into send jobs, notifier plugins send them, and account mail carries reset and recovery

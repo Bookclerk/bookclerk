@@ -53,7 +53,9 @@ use crate::entities::{books, edition_acquisitions, node_upload_sessions};
 use crate::error::{LibraryError, Result};
 use crate::models::{is_downloadable, AcquireStatus, JobRecord};
 use crate::models::{JobKind, JobState};
-use crate::store::event_outbox::{book_acquired_spec, prepare_publish_domain_event};
+use crate::store::event_outbox::{
+    book_acquired_spec, prepare_publish_domain_event, AcquireEventTitle,
+};
 use crate::store::{AcquireTitle, EditionFile, FileOwner, FileProbe, FileRole, LibraryStore};
 
 /// How long a granted upload's token is accepted past its latest
@@ -1613,7 +1615,9 @@ pub(super) fn commit_trust_gate(
 /// re-checked just before. A key another title or an acquire took since
 /// the grant refuses the commit (`key_taken`) and records nothing. A repeat
 /// of a commit that already landed answers [`UploadCommit::Committed`]
-/// again without writing.
+/// again without writing. A title's commit also records the store
+/// download in its account's pace ledger (`account_downloads`), in the same
+/// batch.
 ///
 /// # Errors
 ///
@@ -1734,7 +1738,6 @@ async fn commit_upload_checked(
             .map_err(LibraryError::Orm)?,
         None => None,
     };
-    let edition = title.as_ref().map(|t| t.edition_id.clone());
     let now = stamp(Utc::now());
     let gate_sql = "EXISTS (SELECT 1 FROM node_upload_sessions \
                      WHERE upload_id = ? AND state = 'committed' AND committed_at = ?)";
@@ -1788,6 +1791,31 @@ async fn commit_upload_checked(
         binds,
     )];
     if let Some(title) = &title {
+        // The title's store download counts toward its account's pace, in
+        // the same batch as the commit so the two never part. Hosts never
+        // run paced acquires (`claimant_may_run`), so the row is a person's.
+        // The id is the upload's, and the gate holds only for the statement
+        // batch that committed it, so a repeated commit records nothing.
+        let mut binds = vec![
+            text(&format!("upload:{upload_id}")),
+            text(&title.plugin_key),
+            text(&title.account_id),
+            batch::int(Utc::now().timestamp_millis()),
+            text(&fence.job_id),
+            text(&title.plugin_key),
+            text(&title.account_id),
+        ];
+        binds.extend(gate());
+        statements.push(exec(
+            &format!(
+                "INSERT OR IGNORE INTO account_downloads \
+                   (id, plugin_key, account_id, started_at_ms, job_id, paced) \
+                 SELECT ?, ?, ?, ?, ?, 0 \
+                  WHERE EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ?) \
+                    AND {gate_sql}"
+            ),
+            binds,
+        ));
         if let Some(model) = &model {
             let mut binds = vec![text(&session.primary_key), text(&now), text(&model.uuid)];
             binds.extend(gate());
@@ -1930,12 +1958,12 @@ async fn commit_upload_checked(
                 binds,
             ));
         }
-        // `book_acquired` names the flat row while `books` exists.
-        if let Some(model) = &model {
+        // `book_acquired` names the uploading holding.
+        {
             let event = prepare_publish_domain_event(book_acquired_spec(
-                model,
+                AcquireEventTitle::of_title(title),
                 Some(&session.primary_key),
-                edition.as_deref(),
+                Some(&title.edition_id),
             ))?;
             let mut binds = vec![
                 text(&event.id),

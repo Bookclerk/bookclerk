@@ -21,6 +21,7 @@ mod drm;
 mod error;
 mod guest;
 mod options;
+mod retry;
 mod sync;
 mod throttle;
 mod widevine;
