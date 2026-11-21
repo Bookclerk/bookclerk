@@ -1177,7 +1177,15 @@ mod tests {
         .unwrap();
         assert!(chapters.is_none());
         let cover = cover.expect("cover downloaded");
-        assert_eq!(cover, dir.path().join("B0BOOK0001.cover.jpg"));
+        // The cover path comes back canonical (on macOS the temp dir sits
+        // behind the `/var` -> `/private/var` link).
+        assert_eq!(
+            cover,
+            dir.path()
+                .canonicalize()
+                .unwrap()
+                .join("B0BOOK0001.cover.jpg")
+        );
         assert_eq!(std::fs::read(&cover).unwrap(), jpeg);
     }
 
