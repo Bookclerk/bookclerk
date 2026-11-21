@@ -67,7 +67,11 @@ pub struct ChapterInput {
 }
 
 /// One chapter of a checked list.
+///
+/// Named `EditionChapter` in the OpenAPI documents, apart from the player
+/// apps' `Chapter`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[schema(as = EditionChapter)]
 pub struct Chapter {
     /// Chapter title; never empty, at most 512 bytes, no control
     /// characters.

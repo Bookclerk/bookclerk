@@ -49493,31 +49493,37 @@
       },
       "Chapter": {
         "type": "object",
-        "description": "One chapter of a checked list.",
+        "description": "A chapter of a book.",
         "required": [
-          "title",
-          "start_ms",
-          "depth"
+          "id",
+          "start",
+          "end",
+          "title"
         ],
         "properties": {
-          "title": {
-            "type": "string",
-            "description": "Chapter title; never empty, at most 512 bytes, no control\ncharacters.",
-            "example": "Chapter 1: The Boy Who Lived"
-          },
-          "start_ms": {
+          "id": {
             "type": "integer",
             "format": "int64",
-            "description": "Start, in milliseconds from the start of the edition's timeline.",
-            "example": 33000,
+            "description": "The chapter's place, from 0.",
+            "example": 1,
             "minimum": 0
           },
-          "depth": {
-            "type": "integer",
-            "format": "int32",
-            "description": "Nesting depth; 0 for a top-level chapter, at most 7. A chapter at\ndepth n + 1 is nested under the nearest earlier chapter at depth n.",
-            "example": 0,
-            "minimum": 0
+          "start": {
+            "type": "number",
+            "format": "double",
+            "description": "Where it starts, in seconds.",
+            "example": 0.0
+          },
+          "end": {
+            "type": "number",
+            "format": "double",
+            "description": "Where it ends, in seconds.",
+            "example": 600.0
+          },
+          "title": {
+            "type": "string",
+            "description": "Its title.",
+            "example": "The First"
           }
         }
       },
@@ -49558,7 +49564,7 @@
               "null"
             ],
             "items": {
-              "$ref": "#/components/schemas/Chapter"
+              "$ref": "#/components/schemas/EditionChapter"
             },
             "description": "The claimed chapters; absent while the list's write is unfinished."
           },
@@ -51903,6 +51909,36 @@
           }
         }
       },
+      "EditionChapter": {
+        "type": "object",
+        "description": "One chapter of a checked list.\n\nNamed `EditionChapter` in the OpenAPI documents, apart from the player\napps' `Chapter`.",
+        "required": [
+          "title",
+          "start_ms",
+          "depth"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Chapter title; never empty, at most 512 bytes, no control\ncharacters.",
+            "example": "Chapter 1: The Boy Who Lived"
+          },
+          "start_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Start, in milliseconds from the start of the edition's timeline.",
+            "example": 33000,
+            "minimum": 0
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Nesting depth; 0 for a top-level chapter, at most 7. A chapter at\ndepth n + 1 is nested under the nearest earlier chapter at depth n.",
+            "example": 0,
+            "minimum": 0
+          }
+        }
+      },
       "EditionChaptersJson": {
         "type": "object",
         "description": "The chapters an edition plays.",
@@ -51919,7 +51955,7 @@
           "chapters": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Chapter"
+              "$ref": "#/components/schemas/EditionChapter"
             },
             "description": "The chapters in pre-order, starts never decreasing; empty when the\nedition has none or an Administrator cleared them."
           },
