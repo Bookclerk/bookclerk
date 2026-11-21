@@ -323,7 +323,6 @@ pub(crate) enum CollectionsCommand {
     },
 }
 
-/// Parses `NAME=PREFIX[,PREFIX…]` into a collection (validated on write).
 /// Reads `--to` for `library convert`: one copy written `format:quality`.
 ///
 /// # Errors
@@ -333,6 +332,7 @@ fn parse_copy(arg: &str) -> Result<bookclerk_config::OutputCopy, String> {
     bookclerk_config::OutputCopy::parse(arg).map_err(|err| err.to_string())
 }
 
+/// Parses `NAME=PREFIX[,PREFIX…]` into a collection (validated on write).
 fn parse_collection_arg(arg: &str) -> anyhow::Result<LibraryCollection> {
     let Some((name, prefixes)) = arg.split_once('=') else {
         anyhow::bail!("a collection is NAME=PREFIX[,PREFIX…], such as Kids=kids/");

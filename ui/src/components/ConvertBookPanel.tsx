@@ -47,8 +47,8 @@ export function ConvertBookPanel({ editions, onQueued }: ConvertBookPanelProps) 
     <section className="space-y-2 border-t border-ink/10 pt-3" aria-label="Convert">
       <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">Convert</p>
       <p className="text-xs text-ink/55">
-        Adds another copy of this book, kept beside the original. Each destination receives it
-        when its filter takes that copy.
+        Adds another copy of this book, kept beside the original. Each destination receives it when
+        its filter takes that copy.
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <select
