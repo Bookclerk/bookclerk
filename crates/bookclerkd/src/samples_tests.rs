@@ -212,7 +212,7 @@ async fn edition(world: &World, asin: &str, audio: Option<&[u8]>) -> String {
             .unwrap();
         let owner = world
             .store
-            .file_owner_of_book(&saved.uuid)
+            .file_owner_of_holding(&saved.holding_id)
             .await
             .unwrap()
             .unwrap();
@@ -224,14 +224,14 @@ async fn edition(world: &World, asin: &str, audio: Option<&[u8]>) -> String {
     }
     let work = world
         .store
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .unwrap()
         .expect("a work");
     world.store.refresh_library_works(&[work]).await.unwrap();
     world
         .store
-        .edition_of_book(&saved.uuid)
+        .edition_of_holding(&saved.holding_id)
         .await
         .unwrap()
         .expect("an edition")
