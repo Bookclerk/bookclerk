@@ -161,6 +161,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.notify_address_body]
+crate = "bookclerk-plugin-abi"
+boundary = "The address object of a patron's POST /api/me/notifications/destinations body: a flat object of strings with no key written twice"
+input_from = "signed-in patron"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.notify_cursor]
 crate = "bookclerk-library"
 boundary = "The cursor query parameter of the notification delivery log and a patron's inbox: a token the caller sends back"

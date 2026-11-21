@@ -53,6 +53,10 @@ fn missing(message: impl std::fmt::Display) -> ApiError {
     (StatusCode::NOT_FOUND, Json(ErrorMessage::new(message))).into()
 }
 
+/// Longest a route waits for a notifier to check an address, queueing
+/// included: under the 8-second limit every route has.
+const VALIDATE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(7);
+
 /// Maps a store error: refusals keep their words, the rest is logged and
 /// answered as a 500.
 fn store_error(route: &str, err: LibraryError) -> ApiError {
@@ -354,8 +358,9 @@ pub(crate) struct DestinationJson {
     /// Name shown in pickers.
     #[schema(example = "Ops room")]
     label: String,
-    /// Permanent failures in a row; a delivery, or resuming the
-    /// destination, resets it to 0. It pauses at 5.
+    /// Deliveries in a row that ended `failed`, whether refused for good
+    /// or out of attempts; a delivery, or resuming the destination, resets
+    /// it to 0. It pauses at 5.
     #[schema(example = 0)]
     failure_count: i64,
     /// When repeated failures paused it (RFC 3339); `null` while active.
@@ -411,6 +416,23 @@ pub(crate) struct RenameBody {
     /// The new name, 1 to 128 bytes on one line.
     #[schema(example = "Ops room")]
     label: String,
+}
+
+/// The library a write goes to, with a shared job-runtime permit that
+/// holds off a database reload until the write is done, so a write never
+/// lands on (and reports success from) a superseded store.
+///
+/// # Errors
+///
+/// A 500 when a reload holds the runtime for longer than the permit waits.
+async fn write_snapshot<'a>(
+    state: &'a AppState,
+    operation: &'static str,
+) -> Result<(tokio::sync::RwLockReadGuard<'a, ()>, LibraryStore), ApiError> {
+    let permit = crate::jobs::admission_permit(state)
+        .await
+        .map_err(|err| store_error(operation, LibraryError::Other(err)))?;
+    Ok((permit, state.library_snapshot().await))
 }
 
 /// The channel `id`, or a 404 for a missing or personal destination.
@@ -472,7 +494,7 @@ pub(crate) async fn post_channel(
     Json(body): Json<NewChannelBody>,
 ) -> Result<(StatusCode, Json<DestinationJson>), ApiError> {
     administrator(&state, &headers).await?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "post_channel").await?;
     let catalog = catalog(&state, &library).await?;
     if !catalog
         .notifier(&body.plugin_instance_id)
@@ -521,7 +543,7 @@ pub(crate) async fn patch_channel(
     Json(body): Json<RenameBody>,
 ) -> Result<Json<DestinationJson>, ApiError> {
     administrator(&state, &headers).await?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "patch_channel").await?;
     channel(&library, &id).await?;
     library
         .rename_notify_destination(&id, &body.label)
@@ -551,7 +573,7 @@ pub(crate) async fn delete_channel(
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
     administrator(&state, &headers).await?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "delete_channel").await?;
     channel(&library, &id).await?;
     library
         .delete_notify_destination(&id)
@@ -583,7 +605,7 @@ pub(crate) async fn post_channel_resume(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<DestinationJson>, ApiError> {
     administrator(&state, &headers).await?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "post_channel_resume").await?;
     channel(&library, &id).await?;
     library
         .resume_notify_destination(&id)
@@ -629,10 +651,7 @@ pub(crate) async fn post_channel_test(
     administrator(&state, &headers).await?;
     // Hold job admission from the snapshot through routing, so a database
     // reload cannot leave the test's job on a superseded store.
-    let _permit = crate::jobs::admission_permit(&state)
-        .await
-        .map_err(|err| store_error("post_channel_test", LibraryError::Other(err)))?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "post_channel_test").await?;
     let destination = channel(&library, &id).await?;
     if destination.paused_at.is_some() {
         // A paused channel's deliveries are dropped, so a test would say
@@ -744,20 +763,29 @@ fn known_type<'a>(
 }
 
 /// Checks the type a routes or offers replacement names. Clearing (an
-/// empty replacement) also takes a type the catalog no longer knows, such
-/// as one a plugin upgrade dropped, so its stale rules can be removed;
-/// anything else must be a known type of `audience`.
+/// empty replacement) also takes a type the catalog no longer knows, or
+/// one now of the other audience, such as one a plugin upgrade dropped or
+/// moved, so its stale rules can be removed; anything else must be a known
+/// type of `audience`.
 ///
 /// # Errors
 ///
-/// A 400 as [`known_type`] answers, except for clearing an unknown type.
+/// A 400 as [`known_type`] answers, except when clearing a type that is
+/// unknown or of the other audience.
 fn replaceable_type(
     catalog: &NotificationCatalog,
     id: &str,
     audience: NotificationAudience,
     clearing: bool,
 ) -> Result<(), ApiError> {
-    if clearing && is_qualified_notification_type(id) && catalog.notification_type(id).is_none() {
+    // Rows left behind when a type was removed, or when a plugin update
+    // moved it to the other audience, can always be cleared.
+    if clearing
+        && is_qualified_notification_type(id)
+        && catalog
+            .notification_type(id)
+            .is_none_or(|known| known.audience != audience.wire_name())
+    {
         return Ok(());
     }
     known_type(catalog, id, audience).map(|_| ())
@@ -814,7 +842,7 @@ pub(crate) async fn get_routes(
     request_body = RoutesBody,
     responses(
         (status = 204, description = "The routes are replaced."),
-        (status = 400, description = "An unknown or patron type (an unknown one may still be cleared with no routes), a bad severity, a personal destination, a repeat, or more than 32.", body = ErrorMessage, example = json!({"error": "destination 8a7b6c5d is routed twice"})),
+        (status = 400, description = "An unknown or patron type (either may still be cleared with no routes, to remove rules left from before the type changed), a bad severity, a personal destination, a repeat, or more than 32.", body = ErrorMessage, example = json!({"error": "destination 8a7b6c5d is routed twice"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
         (status = 404, description = "A destination does not exist.", body = ErrorMessage, example = json!({"error": "notification destination 8a7b6c5d not found"})),
@@ -828,7 +856,7 @@ pub(crate) async fn put_routes(
     Json(body): Json<RoutesBody>,
 ) -> Result<StatusCode, ApiError> {
     administrator(&state, &headers).await?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "put_routes").await?;
     let catalog = catalog(&state, &library).await?;
     replaceable_type(
         &catalog,
@@ -933,7 +961,7 @@ fn offer_json(o: PatronOffer) -> OfferJson {
     request_body = OffersBody,
     responses(
         (status = 204, description = "The offers are replaced."),
-        (status = 400, description = "An unknown or operational type (an unknown one may still be cleared with no offers), an instance that is not a personal notifier, a repeat, or more than 32.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e does not send to patrons"})),
+        (status = 400, description = "An unknown or operational type (either may still be cleared with no offers, to remove offers left from before the type changed), an instance that is not a personal notifier, a repeat, or more than 32.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e does not send to patrons"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
         (status = 500, description = "The offers could not be written.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
@@ -946,7 +974,7 @@ pub(crate) async fn put_offers(
     Json(body): Json<OffersBody>,
 ) -> Result<StatusCode, ApiError> {
     administrator(&state, &headers).await?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "put_offers").await?;
     let catalog = catalog(&state, &library).await?;
     replaceable_type(
         &catalog,
@@ -1270,7 +1298,9 @@ pub(crate) struct ChoiceBody {
     /// `false` keeps the type in the inbox only.
     #[schema(example = true)]
     enabled: bool,
-    /// The caller's own destinations it goes to; at most 32.
+    /// The caller's own destinations it goes to; at most 32. Left out or
+    /// empty, the type goes to no destination outside the inbox, even
+    /// with `enabled: true`; delete the choice to return to the defaults.
     #[serde(default)]
     #[schema(max_items = 32, example = json!(["8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"]))]
     destination_ids: Vec<String>,
@@ -1308,7 +1338,7 @@ pub(crate) async fn put_my_choice(
             "`{notification_type}` is not a notification type id"
         )));
     }
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "put_my_choice").await?;
     library
         .set_patron_choice(
             user,
@@ -1346,52 +1376,12 @@ pub(crate) async fn delete_my_choice(
     AxumPath(notification_type): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
     let user = patron(&caller)?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "delete_my_choice").await?;
     library
         .clear_patron_choice(user, &notification_type)
         .await
         .map_err(|err| store_error("delete_my_choice", err))?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Reads an address object, refusing a key written twice: the address
-/// checks only ever see the map, where the last value would silently win.
-///
-/// # Errors
-///
-/// When the value is not an object of strings or repeats a key.
-fn unique_address<'de, D>(de: D) -> Result<std::collections::BTreeMap<String, String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    /// Collects the entries, failing on a repeat.
-    struct Fields;
-
-    impl<'de> serde::de::Visitor<'de> for Fields {
-        type Value = std::collections::BTreeMap<String, String>;
-
-        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("an object of strings")
-        }
-
-        fn visit_map<A: serde::de::MapAccess<'de>>(
-            self,
-            mut map: A,
-        ) -> Result<Self::Value, A::Error> {
-            let mut out = std::collections::BTreeMap::new();
-            while let Some((key, value)) = map.next_entry::<String, String>()? {
-                if out.contains_key(&key) {
-                    return Err(serde::de::Error::custom(format!(
-                        "the address repeats the key `{key}`"
-                    )));
-                }
-                out.insert(key, value);
-            }
-            Ok(out)
-        }
-    }
-
-    de.deserialize_map(Fields)
 }
 
 /// Body of `POST /api/me/notifications/destinations`.
@@ -1404,9 +1394,8 @@ pub(crate) struct NewPersonalBody {
     /// The address, as the notifier's `address_fields` describe it: a flat
     /// object of strings.
     /// A key written twice is refused (`422`) rather than one value kept.
-    #[schema(example = json!({"chat_id": "123456789"}))]
-    #[serde(deserialize_with = "unique_address")]
-    address: std::collections::BTreeMap<String, String>,
+    #[schema(value_type = std::collections::BTreeMap<String, String>, example = json!({"chat_id": "123456789"}))]
+    address: bookclerk_plugin_abi::notifications::AddressFields,
     /// Name shown in pickers; the notifier's own label for the address,
     /// or the notifier's name, when absent.
     #[schema(example = "My phone")]
@@ -1464,7 +1453,7 @@ pub(crate) async fn post_my_destination(
     Json(body): Json<NewPersonalBody>,
 ) -> Result<(StatusCode, Json<DestinationJson>), ApiError> {
     let user = patron(&caller)?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "post_my_destination").await?;
     let catalog = catalog(&state, &library).await?;
     let notifier_info = catalog
         .notifier(&body.plugin_instance_id)
@@ -1499,7 +1488,7 @@ pub(crate) async fn post_my_destination(
             required: f.required,
         })
         .collect();
-    let address_json = personal_address(&body.address, &rules).map_err(bad)?;
+    let address_json = personal_address(&body.address.0, &rules).map_err(bad)?;
     let notifier = {
         let integrations = state.integrations.read().await;
         integrations
@@ -1528,10 +1517,19 @@ pub(crate) async fn post_my_destination(
             )),
         )
     };
-    let validated = match notifier
-        .notify_validate_destination(NotifyValidateParams { address_json })
-        .await
-    {
+    // The whole wait, including time queued behind a send on the
+    // notifier's session, stays inside the route's own 8-second limit, so
+    // a busy notifier answers 502 rather than a bare timeout.
+    let validated = match tokio::time::timeout(
+        VALIDATE_DEADLINE,
+        notifier.notify_validate_destination(NotifyValidateParams { address_json }),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(bookclerk_integrations::IntegrationError::message(
+            "the notifier did not answer in time",
+        ))
+    }) {
         Ok(Ok(validated)) => validated,
         Ok(Err(refused))
             if refused.code == bookclerk_plugin_abi::PluginErrorCode::InvalidParams =>
@@ -1584,8 +1582,32 @@ fn accept_validated(
     let label = patron_label
         .filter(|l| !l.trim().is_empty())
         .or(suggested)
-        .unwrap_or_else(|| fallback.to_string());
+        .unwrap_or_else(|| fallback_label(fallback));
     Ok((address, label))
+}
+
+/// The notifier's name made into a label the store takes: control and
+/// layout characters dropped, cut at a character boundary to the label
+/// cap, and "Notifier" when nothing is left. A manifest name has no length
+/// limit of its own.
+fn fallback_label(name: &str) -> String {
+    let mut label = String::new();
+    for c in name
+        .chars()
+        .filter(|c| !c.is_control() && !bookclerk_plugin_abi::notifications::is_layout_char(*c))
+    {
+        if label.len() + c.len_utf8()
+            > bookclerk_library::notifications::MAX_DESTINATION_LABEL_BYTES
+        {
+            break;
+        }
+        label.push(c);
+    }
+    if label.trim().is_empty() {
+        "Notifier".to_string()
+    } else {
+        label
+    }
 }
 
 /// Whether a label a notifier proposed is usable as is: one non-blank line
@@ -1623,7 +1645,7 @@ pub(crate) async fn delete_my_destination(
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
     let user = patron(&caller)?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "delete_my_destination").await?;
     let mine = library
         .notify_destination(&id)
         .await
@@ -1664,7 +1686,7 @@ pub(crate) async fn post_my_destination_resume(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<DestinationJson>, ApiError> {
     let user = patron(&caller)?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "post_my_destination_resume").await?;
     let mine = |found: Option<Destination>| {
         found
             .filter(|d| d.kind == DestinationKind::Personal && d.user_id == Some(user))
@@ -1880,7 +1902,7 @@ pub(crate) async fn post_my_inbox_read(
     Json(body): Json<ReadBody>,
 ) -> Result<Json<ReadMarked>, ApiError> {
     let user = patron(&caller)?;
-    let library = state.library_snapshot().await;
+    let (_permit, library) = write_snapshot(&state, "post_my_inbox_read").await?;
     let marked = library
         .mark_inbox_read(user, body.notification_id.as_deref())
         .await

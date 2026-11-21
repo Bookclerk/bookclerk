@@ -432,6 +432,11 @@ async fn a_patron_notification_follows_offers_defaults_and_choices_under_every_p
             .await
             .unwrap_err();
         assert!(matches!(err, LibraryError::Invalid(_)), "{name}: {err}");
+        assert_eq!(
+            store.personal_destinations(many).await.unwrap().len(),
+            crate::notifications::MAX_ROUTES_PER_TYPE,
+            "{name}: the refused insert wrote nothing"
+        );
 
         // A patron notification needs a patron who exists.
         let err = store
@@ -997,6 +1002,17 @@ async fn a_test_goes_to_one_destination_whatever_the_routes_under_every_profile(
         let name = profile.name();
         let store = memory(profile).await.into_store();
         let ops = channel(&store, "slack-1", "Ops").await;
+        let pager = channel(&store, "pd-1", "Pager").await;
+        store
+            .set_notify_routes(
+                "test",
+                &[Route {
+                    destination_id: pager,
+                    min_severity: NotificationSeverity::Info,
+                }],
+            )
+            .await
+            .unwrap();
         let routed = store
             .route_notification_to(
                 &operational("test", NotificationSeverity::Info),
@@ -1006,6 +1022,16 @@ async fn a_test_goes_to_one_destination_whatever_the_routes_under_every_profile(
             .await
             .unwrap();
         assert_eq!(routed.deliveries.len(), 1, "{name}");
+        let sent = store
+            .notify_send_work(&routed.deliveries[0].id)
+            .await
+            .unwrap()
+            .expect("delivery");
+        assert_eq!(
+            sent.destination.map(|d| d.id),
+            Some(ops.clone()),
+            "{name}: only the requested channel, not the routed one"
+        );
         let err = store
             .route_notification_to(
                 &operational("test", NotificationSeverity::Info),

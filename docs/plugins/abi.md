@@ -1595,8 +1595,10 @@ The typed methods on `Notifier` and `NotifierEntrypoint` are:
 | `validateDestination` | `({ addressJson })` → `{ addressJson, label? }`. Check and normalise a personal address a patron entered; `label` is a short hint that is never a secret (`a***@example.com`). The default accepts the address as given |
 
 A `NotificationMessage` carries `notificationId` (the same on every
-destination's copy, so use it as an idempotency key where the service
-takes one), `notificationType`, `severity`, `title`, a plain `text` body,
+destination's copy; where the service takes an idempotency key, build it
+from `notificationId` and the destination's `destinationId`, so two
+addresses on one service account both receive it and a retry to the same
+destination reuses the same key), `notificationType`, `severity`, `title`, a plain `text` body,
 optional `markdown` and `html` bodies, an optional `link` into the
 library, labelled `fields`, an optional `groupKey` for threading, and an
 alert action and key for services that open and close incidents. When

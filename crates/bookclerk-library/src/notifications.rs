@@ -341,6 +341,16 @@ pub struct PendingDelivery {
     pub plugin_instance_id: String,
 }
 
+/// A delivery whose send job has been ready to run for a long time and
+/// nothing claimed it: its notifier instance is deployed but not running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StalledSend {
+    /// Delivery-log row id.
+    pub delivery_id: String,
+    /// The pending send job nothing claimed.
+    pub job_id: String,
+}
+
 /// What the router did with a notification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Routed {

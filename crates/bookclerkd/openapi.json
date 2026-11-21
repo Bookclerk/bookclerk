@@ -15961,7 +15961,7 @@
             "description": "The routes are replaced."
           },
           "400": {
-            "description": "An unknown or patron type (an unknown one may still be cleared with no routes), a bad severity, a personal destination, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "An unknown or patron type (either may still be cleared with no routes, to remove rules left from before the type changed), a bad severity, a personal destination, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16297,7 +16297,7 @@
             "description": "The offers are replaced."
           },
           "400": {
-            "description": "An unknown or operational type (an unknown one may still be cleared with no offers), an instance that is not a personal notifier, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "An unknown or operational type (either may still be cleared with no offers, to remove offers left from before the type changed), an instance that is not a personal notifier, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -51579,7 +51579,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The caller's own destinations it goes to; at most 32.",
+            "description": "The caller's own destinations it goes to; at most 32. Left out or\nempty, the type goes to no destination outside the inbox, even\nwith `enabled: true`; delete the choice to return to the defaults.",
             "example": [
               "8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"
             ],
@@ -53170,7 +53170,7 @@
           "failure_count": {
             "type": "integer",
             "format": "int64",
-            "description": "Permanent failures in a row; a delivery, or resuming the\ndestination, resets it to 0. It pauses at 5.",
+            "description": "Deliveries in a row that ended `failed`, whether refused for good\nor out of attempts; a delivery, or resuming the destination, resets\nit to 0. It pauses at 5.",
             "example": 0
           },
           "paused_at": {

@@ -23,7 +23,7 @@ use std::time::Duration;
 use bookclerk_library::notifications::{
     link_for, DeliveryState, FailedAttempt, FailureEffect, SendWork, MAX_SEND_ATTEMPTS,
 };
-use bookclerk_library::{JobPayload, NotifyQueueLimits};
+use bookclerk_library::{JobPayload, JobState, NotifyQueueLimits};
 use bookclerk_plugin_abi::notifications::{check_send_params, classify_send_reply, SendOutcome};
 use bookclerk_plugin_abi::{NotifyDestination, NotifySendParams};
 use tracing::{info, warn};
@@ -43,6 +43,14 @@ pub const NOTIFY_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Most deliveries one sweep pass schedules.
 const NOTIFY_SWEEP_BATCH: u64 = 100;
+
+/// How long a send job may stay ready to run without being claimed
+/// before the sweep fails its delivery: its notifier instance is deployed
+/// but not running.
+pub const NOTIFY_STALL_AFTER: Duration = Duration::from_secs(60 * 60);
+
+/// The delivery-log reason of a send that waited out [`NOTIFY_STALL_AFTER`].
+const STALLED_REASON: &str = "the notifier was not running for an hour";
 
 /// The backoff before retry number `attempts + 1`: [`RETRY_BASE`] doubled
 /// per attempt made, capped at [`RETRY_MAX`].
@@ -299,6 +307,9 @@ pub fn spawn_notify_sweep(state: Arc<AppState>) {
 ///
 /// An error when a library read or write fails.
 pub async fn sweep_once(state: &AppState) -> anyhow::Result<()> {
+    // Hold off a database swap while this pass works on its snapshot, so
+    // nothing it enqueues lands on a superseded store.
+    let _permit = crate::jobs::admission_permit(state).await?;
     let library = state.library.read().await.clone();
     let dropped = library.drop_orphaned_notify_deliveries().await?;
     if dropped > 0 {
@@ -307,6 +318,8 @@ pub async fn sweep_once(state: &AppState) -> anyhow::Result<()> {
             "dropped deliveries whose send job ended without a result"
         );
     }
+    let stall = chrono::Duration::from_std(NOTIFY_STALL_AFTER)?;
+    fail_stalled_sends(&library, chrono::Utc::now() - stall).await?;
     let limits = notify_queue_limits(state).await;
     for delivery in library
         .unscheduled_notify_deliveries(NOTIFY_SWEEP_BATCH)
@@ -314,19 +327,77 @@ pub async fn sweep_once(state: &AppState) -> anyhow::Result<()> {
     {
         // A send job that ended before its link was written means the
         // delivery is finished (cancelled or failed), not unscheduled.
-        if library
+        match library
             .drop_notify_delivery_if_job_ended(&delivery.id)
-            .await?
+            .await
         {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(err) => {
+                warn!(delivery = %delivery.id, error = %err, "notification sweep skipped a delivery");
+                continue;
+            }
+        }
+        match library.enqueue_notify_send(&delivery, limits).await {
+            Ok(Some(_)) => {}
+            // The queue is full; the next pass tries again.
+            Ok(None) => break,
+            // One delivery's failed write does not hold up the rest of the
+            // page; the next pass tries it again.
+            Err(err) => {
+                warn!(delivery = %delivery.id, error = %err, "notification sweep skipped a delivery");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fails the deliveries whose send job has been ready to run since before
+/// `ready_before` without being claimed (the notifier instance is deployed
+/// but not running): the job is cancelled and the delivery counts as a
+/// failed attempt, so the destination pauses as it would for any other
+/// run of failures.
+///
+/// # Errors
+///
+/// An error when the read of stalled sends fails.
+async fn fail_stalled_sends(
+    library: &bookclerk_library::LibraryStore,
+    ready_before: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<()> {
+    for stalled in library
+        .stalled_notify_sends(ready_before, NOTIFY_SWEEP_BATCH)
+        .await?
+    {
+        // Cancelling races a claim: only a job that really was cancelled
+        // here leaves its delivery to fail; a claimed one sends.
+        let cancelled = match library.request_job_cancel(&stalled.job_id).await {
+            Ok(job) => job.is_some_and(|job| job.state == JobState::Cancelled),
+            Err(err) => {
+                warn!(job = %stalled.job_id, error = %err, "could not cancel a stalled send");
+                false
+            }
+        };
+        if !cancelled {
             continue;
         }
-        if library
-            .enqueue_notify_send(&delivery, limits)
-            .await?
-            .is_none()
+        match library
+            .record_notify_failed(
+                &stalled.delivery_id,
+                STALLED_REASON,
+                FailedAttempt::New,
+                None,
+            )
+            .await
         {
-            // The queue is full; the next pass tries again.
-            break;
+            Ok(Some(FailureEffect::Paused)) => warn!(
+                delivery = %stalled.delivery_id,
+                "notification destination paused after repeated failures"
+            ),
+            Ok(_) => {}
+            Err(err) => {
+                warn!(delivery = %stalled.delivery_id, error = %err, "could not fail a stalled send");
+            }
         }
     }
     Ok(())
@@ -549,6 +620,38 @@ mod tests {
         run_notify_send(&state, &payload, None).await.expect("gone");
         assert!(library.notify_send_work(&id).await.unwrap().is_none());
         assert!(fake.sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_send_no_notifier_claims_fails_and_counts_toward_a_pause() {
+        let (state, fake, channel) = daemon(Vec::new()).await;
+        let library = state.library_snapshot().await;
+        let payload = routed_under(&library, 1_000).await;
+        let delivery = payload.notify_delivery.expect("delivery");
+        // Within the wait, nothing is failed.
+        fail_stalled_sends(&library, chrono::Utc::now() - chrono::Duration::hours(1))
+            .await
+            .expect("early pass");
+        let work = library.notify_send_work(&delivery).await.unwrap().unwrap();
+        assert_eq!(work.state, DeliveryState::Pending);
+        // Once the job has waited past the cutoff, it is cancelled and its
+        // delivery fails like any other failed attempt.
+        fail_stalled_sends(&library, chrono::Utc::now() + chrono::Duration::minutes(1))
+            .await
+            .expect("late pass");
+        let work = library.notify_send_work(&delivery).await.unwrap().unwrap();
+        assert_eq!(work.state, DeliveryState::Failed);
+        assert_eq!(work.attempts, 1);
+        let dest = work.destination.expect("destination");
+        assert_eq!(dest.id, channel);
+        assert_eq!(dest.failure_count, 1);
+        assert!(fake.sent.lock().unwrap().is_empty());
+        // Its job was cancelled, so nothing is left to claim it.
+        assert!(library
+            .stalled_notify_sends(chrono::Utc::now() + chrono::Duration::minutes(1), 10)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

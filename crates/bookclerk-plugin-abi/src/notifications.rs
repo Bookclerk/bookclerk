@@ -11,6 +11,8 @@
 //!   JSON object a patron typed (an email address, a Telegram chat id, a
 //!   push subscription) and that a notifier's `validateDestination`
 //!   normalised. Only a flat object of short string values is accepted.
+//!   The `address` object of a patron's request body is first read as
+//!   [`AddressFields`], which refuses a key written twice.
 //! - **A plugin's raise** on the `NOTIFY` binding ([`check_raise_params`]):
 //!   a declared type id, labelled fields, an optional patron and a path
 //!   inside the library.
@@ -29,6 +31,48 @@ use crate::{
     MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES, MAX_NOTIFICATION_TITLE_BYTES,
     MAX_NOTIFIER_ADDRESS_BYTES,
 };
+
+/// The `address` object of a patron's
+/// `POST /api/me/notifications/destinations` body, as sent: a flat object
+/// of strings in which no key is written twice. JSON parsers keep the last
+/// of a repeated key, so a repeat is refused instead of silently dropping
+/// a value. The notifier's declared fields and [`parse_address_document`]
+/// check it further.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddressFields(pub BTreeMap<String, String>);
+
+impl<'de> serde::Deserialize<'de> for AddressFields {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        /// Collects the entries, failing on a repeat.
+        struct Fields;
+
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = AddressFields;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object of strings")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = BTreeMap::new();
+                while let Some((key, value)) = map.next_entry::<String, String>()? {
+                    if out.contains_key(&key) {
+                        return Err(serde::de::Error::custom(format!(
+                            "the address repeats the key `{key}`"
+                        )));
+                    }
+                    out.insert(key, value);
+                }
+                Ok(AddressFields(out))
+            }
+        }
+
+        de.deserialize_map(Fields)
+    }
+}
 
 /// Longest notification id, destination id or patron id, in bytes. Ids are
 /// printable ASCII without spaces.

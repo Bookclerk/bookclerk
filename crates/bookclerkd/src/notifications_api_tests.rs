@@ -183,7 +183,17 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    // `test` is operational: patrons cannot be offered it.
+    // `test` is operational: patrons cannot be offered it, though offers
+    // left from before a type changed audience can still be cleared.
+    let (status, _) = call(
+        &app,
+        None,
+        "PUT",
+        "/api/notifications/offers/test",
+        Some(r#"{"offers": [{"plugin_instance_id": "telegram-1", "default_on": true}]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = call(
         &app,
         None,
@@ -192,7 +202,7 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
         Some(r#"{"offers": []}"#),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // A test goes to the one channel and lands in the log.
     let mut sent_ids = Vec::new();
@@ -644,5 +654,17 @@ fn a_personal_address_with_a_repeated_key_is_refused() {
         "{err}"
     );
     let ok = body(r#"{"chat_id":"111","thread":"7"}"#).expect("unique keys");
-    assert_eq!(ok.address.len(), 2);
+    assert_eq!(ok.address.0.len(), 2);
+}
+
+#[test]
+fn a_long_notifier_name_still_makes_a_label_the_store_takes() {
+    use bookclerk_library::notifications::MAX_DESTINATION_LABEL_BYTES;
+
+    let long = "Ä".repeat(MAX_DESTINATION_LABEL_BYTES);
+    let label = super::fallback_label(&long);
+    assert!(label.len() <= MAX_DESTINATION_LABEL_BYTES);
+    assert!(label.chars().all(|c| c == 'Ä'));
+    assert_eq!(super::fallback_label("Tele\u{202e}gram\n"), "Telegram");
+    assert_eq!(super::fallback_label("\u{202a}\t "), "Notifier");
 }

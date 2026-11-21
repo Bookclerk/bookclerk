@@ -44,8 +44,10 @@ one.
 A **route** sends one operational type to a channel, from a minimum
 severity up. `PUT /api/notifications/routes/{type}` replaces a type's
 routes; a type with no routes goes nowhere. An empty replacement also
-clears a type the catalog no longer lists, such as one a plugin upgrade
-dropped (offers work the same way). `GET
+clears a type the catalog no longer lists, or one a plugin upgrade moved
+to the patron audience, so rules left from before can be removed (offers
+work the same way). Offers for a type that is now operational make no
+notifier eligible for patrons. `GET
 /api/notifications/catalog` lists every known type and every notifier
 instance, with the address fields each one asks patrons for.
 
@@ -77,6 +79,8 @@ For each patron type, a patron's notifications go to:
 - nowhere but the inbox, when the patron turned the type off;
 - otherwise, their addresses on the notifiers offered on by default.
 
+A choice with no destinations (or `destination_ids` left out) sends
+nothing outside the inbox, even with `enabled: true`.
 `DELETE /api/me/notifications/choices/{type}` returns to the default. A
 patron reads their settings with `GET /api/me/notifications`, and their
 inbox with `GET /api/me/notifications/inbox`; `POST
@@ -90,15 +94,18 @@ people outside its own account.
 
 - A send runs on a node that holds the library database, so deploy each
   notifier instance on at least one such node. A send job for an instance
-  that runs only elsewhere waits in the queue.
+  that runs only elsewhere, or is deployed but not running, waits in the
+  queue for up to an hour; then the job is cancelled and the delivery
+  fails, counting toward a pause.
 - A notifier that does not answer within 30 seconds is retried like one
   that asked to.
 
 - A notifier that asks to retry is tried again after the wait it gave,
   or after a backoff that starts at 30 seconds and doubles up to an hour.
   A delivery makes at most 10 attempts.
-- A notifier that refuses a message for good fails that delivery. After 5
-  failures in a row its destination is **paused**: nothing more is sent
+- A notifier that refuses a message for good fails that delivery, and so
+  does running out of attempts. After 5 failed deliveries in a row its
+  destination is **paused**: nothing more is sent
   to it until it is resumed: a channel by an administrator
   (`POST /api/notifications/channels/{id}/resume`), a patron's address by
   that patron (`POST /api/me/notifications/destinations/{id}/resume`). A

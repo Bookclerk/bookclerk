@@ -33,8 +33,9 @@ use crate::models::{
 use crate::notifications::{
     severity_reaches, DeliveryRecord, DeliveryState, Destination, DestinationKind, FailedAttempt,
     FailureEffect, InboxEntry, NewDestination, NewNotification, PatronChoice, PatronOffer,
-    PendingDelivery, Route, Routed, SendWork, StoredNotification, MAX_DESTINATION_LABEL_BYTES,
-    MAX_ROUTES_PER_TYPE, NOTIFICATION_RETENTION_DAYS, PAUSE_AFTER_FAILURES,
+    PendingDelivery, Route, Routed, SendWork, StalledSend, StoredNotification,
+    MAX_DESTINATION_LABEL_BYTES, MAX_ROUTES_PER_TYPE, NOTIFICATION_RETENTION_DAYS,
+    PAUSE_AFTER_FAILURES,
 };
 
 /// Queue limits a `notify_send` admission uses (the daemon's `[jobs]`).
@@ -506,13 +507,17 @@ impl LibraryStore {
                     .map(|r| r.destination_id)
                     .collect();
                 if !wanted.is_empty() {
-                    for row in notify_destinations::Entity::find()
-                        .filter(notify_destinations::Column::Id.is_in(wanted))
-                        .filter(notify_destinations::Column::Kind.eq("channel"))
-                        .filter(notify_destinations::Column::PausedAt.is_null())
-                        .all(&self.db)
-                        .await
-                        .map_err(LibraryError::Orm)?
+                    for row in super::library_model::find_chunked::<notify_destinations::Entity, _>(
+                        self,
+                        &wanted,
+                        |chunk| {
+                            notify_destinations::Entity::find()
+                                .filter(notify_destinations::Column::Id.is_in(chunk.to_vec()))
+                                .filter(notify_destinations::Column::Kind.eq("channel"))
+                                .filter(notify_destinations::Column::PausedAt.is_null())
+                        },
+                    )
+                    .await?
                     {
                         let dest = destination(row)?;
                         out.insert(dest.id.clone(), dest);
@@ -619,6 +624,22 @@ impl LibraryStore {
         Ok(link.is_some())
     }
 
+    /// The notifications with the given ids, read in chunks that fit the
+    /// backend's bind and result limits.
+    ///
+    /// # Errors
+    ///
+    /// An error when a read fails.
+    async fn notifications_by_id(&self, ids: &[String]) -> Result<Vec<notifications::Model>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        super::library_model::find_chunked::<notifications::Entity, _>(self, ids, |chunk| {
+            notifications::Entity::find().filter(notifications::Column::Id.is_in(chunk.to_vec()))
+        })
+        .await
+    }
+
     /// Enqueues the `notify_send` job of one delivery and records its id.
     ///
     /// # Returns
@@ -653,8 +674,11 @@ impl LibraryStore {
             EnqueueOutcome::Created { id } | EnqueueOutcome::Duplicate { existing_id: id } => id,
             EnqueueOutcome::QueueFull => return Ok(None),
         };
+        // A fresh operation id: the first enqueue and a sweep can both link
+        // the same job, and the second write must not be refused as a
+        // reused operation with another request.
         self.execute_host_batch(batch::request(
-            &format!("notify-job-{}", delivery.id),
+            &format!("notify-job-{}-{}", delivery.id, uuid::Uuid::new_v4()),
             vec![batch::exec(
                 "UPDATE notify_deliveries SET job_id = ?, updated_at = ? \
                  WHERE id = ? AND state = 'pending'",
@@ -719,6 +743,62 @@ impl LibraryStore {
             ))
             .await?;
         Ok(batch::rows_affected(&reply, 0))
+    }
+
+    /// Pending deliveries whose send job is still pending although it has
+    /// been ready to run since before `ready_before`: nothing claimed it,
+    /// because its notifier instance is deployed but not running. Read
+    /// from the oldest jobs first, at most `limit` jobs per call.
+    ///
+    /// # Errors
+    ///
+    /// An error when a read fails.
+    pub async fn stalled_notify_sends(
+        &self,
+        ready_before: DateTime<Utc>,
+        limit: u64,
+    ) -> Result<Vec<StalledSend>> {
+        let stalled: Vec<String> = jobs::Entity::find()
+            .filter(jobs::Column::Kind.eq(JobKind::NotifySend.as_str()))
+            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
+            .order_by_asc(jobs::Column::RunAfter)
+            .order_by_asc(jobs::Column::Id)
+            .limit(page(limit).min(self.result_row_cap()))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .filter(|job| {
+                DateTime::parse_from_rfc3339(&job.run_after)
+                    .is_ok_and(|ready| ready.with_timezone(&Utc) < ready_before)
+            })
+            .map(|job| job.id)
+            .collect();
+        if stalled.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(
+            super::library_model::find_chunked::<notify_deliveries::Entity, _>(
+                self,
+                &stalled,
+                |chunk| {
+                    notify_deliveries::Entity::find()
+                        .filter(notify_deliveries::Column::JobId.is_in(chunk.to_vec()))
+                        .filter(
+                            notify_deliveries::Column::State.eq(DeliveryState::Pending.as_str()),
+                        )
+                },
+            )
+            .await?
+            .into_iter()
+            .filter_map(|row| {
+                row.job_id.map(|job_id| StalledSend {
+                    delivery_id: row.id,
+                    job_id,
+                })
+            })
+            .collect(),
+        )
     }
 
     /// Drops a pending delivery no send job is linked to when a send job
@@ -1046,15 +1126,6 @@ impl LibraryStore {
             }
             (DestinationKind::Personal, Some(user)) => {
                 self.require_user(user).await?;
-                // A patron's default fanout is every one of their addresses
-                // on a default-on notifier, written in the routing batch
-                // with the notification and inbox rows: the cap keeps that
-                // batch within the strictest database's statement limit.
-                if self.personal_destinations(user).await?.len() >= MAX_ROUTES_PER_TYPE {
-                    return Err(LibraryError::Invalid(format!(
-                        "a patron keeps at most {MAX_ROUTES_PER_TYPE} notification addresses"
-                    )));
-                }
             }
             (DestinationKind::Personal, None) => {
                 return Err(LibraryError::Invalid(
@@ -1078,25 +1149,42 @@ impl LibraryStore {
         }
         let id = uuid::Uuid::new_v4().to_string();
         let now = super::now_str();
-        self.execute_host_batch(batch::request(
-            &format!("notify-destination-{id}"),
-            vec![batch::exec(
-                "INSERT INTO notify_destinations (id, plugin_instance_id, kind, user_id, label, \
-                 address_json, failure_count, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-                vec![
-                    batch::text(&id),
-                    batch::text(&new.plugin_instance_id),
-                    batch::text(new.kind.as_str()),
-                    batch::int_opt(new.user_id),
-                    batch::text(new.label.trim()),
-                    batch::text(&new.address_json),
-                    batch::text(&now),
-                    batch::text(&now),
-                ],
-            )],
-        ))
-        .await?;
+        // A patron's default fanout is every one of their addresses on a
+        // default-on notifier, written in the routing batch with the
+        // notification and inbox rows: the cap keeps that batch within the
+        // strictest database's statement limit. The count is part of the
+        // insert, so two requests racing for the last slot cannot both
+        // take it. A channel's owner is NULL, which no count matches.
+        let reply = self
+            .execute_host_batch(batch::request(
+                &format!("notify-destination-{id}"),
+                vec![batch::exec(
+                    "INSERT INTO notify_destinations (id, plugin_instance_id, kind, user_id, \
+                     label, address_json, failure_count, created_at, updated_at) \
+                     SELECT ?, ?, ?, ?, ?, ?, 0, ?, ? WHERE ? = 'channel' OR \
+                     (SELECT COUNT(*) FROM notify_destinations \
+                     WHERE kind = 'personal' AND user_id = ?) < ?",
+                    vec![
+                        batch::text(&id),
+                        batch::text(&new.plugin_instance_id),
+                        batch::text(new.kind.as_str()),
+                        batch::int_opt(new.user_id),
+                        batch::text(new.label.trim()),
+                        batch::text(&new.address_json),
+                        batch::text(&now),
+                        batch::text(&now),
+                        batch::text(new.kind.as_str()),
+                        batch::int_opt(new.user_id),
+                        batch::int(i64::try_from(MAX_ROUTES_PER_TYPE).unwrap_or(i64::MAX)),
+                    ],
+                )],
+            ))
+            .await?;
+        if batch::rows_affected(&reply, 0) != 1 {
+            return Err(LibraryError::Invalid(format!(
+                "a patron keeps at most {MAX_ROUTES_PER_TYPE} notification addresses"
+            )));
+        }
         // Built from what was written rather than read back, so a failed
         // read after the commit cannot answer an error for a destination
         // that exists (and invite a retry that makes a second one).
@@ -1603,19 +1691,18 @@ impl LibraryStore {
                     .is_some();
             }
         }
-        let ids: BTreeSet<String> = rows.iter().map(|r| r.notification_id.clone()).collect();
-        let notes: BTreeMap<String, notifications::Model> = if ids.is_empty() {
-            BTreeMap::new()
-        } else {
-            notifications::Entity::find()
-                .filter(notifications::Column::Id.is_in(ids))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
-                .into_iter()
-                .map(|n| (n.id.clone(), n))
-                .collect()
-        };
+        let ids: Vec<String> = rows
+            .iter()
+            .map(|r| r.notification_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let notes: BTreeMap<String, notifications::Model> = self
+            .notifications_by_id(&ids)
+            .await?
+            .into_iter()
+            .map(|n| (n.id.clone(), n))
+            .collect();
         let items = rows
             .into_iter()
             .map(|row| {
@@ -1694,18 +1781,12 @@ impl LibraryStore {
             }
         }
         let ids: Vec<String> = rows.iter().map(|r| r.notification_id.clone()).collect();
-        let mut notes: BTreeMap<String, notifications::Model> = if ids.is_empty() {
-            BTreeMap::new()
-        } else {
-            notifications::Entity::find()
-                .filter(notifications::Column::Id.is_in(ids))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
-                .into_iter()
-                .map(|n| (n.id.clone(), n))
-                .collect()
-        };
+        let mut notes: BTreeMap<String, notifications::Model> = self
+            .notifications_by_id(&ids)
+            .await?
+            .into_iter()
+            .map(|n| (n.id.clone(), n))
+            .collect();
         let mut out = Vec::new();
         for row in rows {
             if let Some(note) = notes.remove(&row.notification_id) {

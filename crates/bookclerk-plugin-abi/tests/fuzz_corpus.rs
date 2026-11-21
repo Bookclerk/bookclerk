@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `event_read`, `socket_request`, `storage_reply` and `origin_request` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_address_body`, `notify_raise`, `event_read`, `socket_request`, `storage_reply` and `origin_request` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -1780,6 +1780,27 @@ fn storage_reply_seeds_are_current() {
             path.display()
         );
     }
+}
+
+#[path = "../../../fuzz/oracles/notify_address_body.rs"]
+mod notify_address_body_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/notify_address_body.rs` with the shared
+/// oracle; the seeds must include both accepted and refused bodies.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_notify_address_body_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("notify_address_body") {
+        if notify_address_body_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    assert!(accepted > 0, "no notify_address_body seed was accepted");
+    assert!(refused > 0, "every notify_address_body seed was accepted");
 }
 
 #[path = "../../../fuzz/oracles/notifier_reply.rs"]
