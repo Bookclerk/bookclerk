@@ -406,6 +406,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.tunnel_policy]
+crate = "bookclerk-node-proto"
+boundary = "Paths of requests a relay ingress plugin carries from the public internet on the tunnel transport, which reach the router unless refused as operator-only or outside the exposure the operator chose"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.upload_part]
 crate = "bookclerk-node-proto"
 boundary = "The Content-Range header of an upload PUT, /api/node/v1/uploads/{upload_id}/files/{n}, which decides which bytes of a declared file the body is, or that it only asks where the owner is"

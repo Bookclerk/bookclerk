@@ -2356,6 +2356,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
                 &fresh_output,
                 db_plugin_changed,
             );
+            // The ingress origin comes from the database, not the file.
+            new_cfg.integrations.ingress_origin = config.integrations.ingress_origin.clone();
             *config = new_cfg.clone();
         }
     }
