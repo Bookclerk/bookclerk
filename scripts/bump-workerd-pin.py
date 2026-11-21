@@ -133,7 +133,16 @@ def pick_release(cooldown_days: int) -> dict | None:
     return None
 
 
-def build_pin_data(tag: str, digests: dict[str, str], version_stamp: str) -> dict:
+def build_pin_data(
+    tag: str, digests: dict[str, str], version_stamp: str, pyodide_bundle: dict
+) -> dict:
+    """Pin data for ``tag``.
+
+    The Pyodide bundle carries over from the current pin: a workerd release
+    that wants another bundle fails the staged Python plugin checks, whose
+    error names the bundle URL workerd asked for (see
+    docs/contributing/packaging.md#the-pyodide-bundle).
+    """
     compat = parse_tag_date(tag)
     if not compat:
         raise SystemExit(f"unrecognized workerd tag shape: {tag}")
@@ -146,6 +155,7 @@ def build_pin_data(tag: str, digests: dict[str, str], version_stamp: str) -> dic
         "bundled_compat_date": compat,
         "version_stamp": version_stamp,
         "assets": assets,
+        "pyodide_bundle": pyodide_bundle,
     }
 
 
@@ -173,7 +183,8 @@ def main() -> int:
 
     sync = _load_sync()
     current = current_pin()
-    version_stamp = sync.load_pin(PIN_JSON).get("version_stamp", "workerd.version")
+    loaded = sync.load_pin(PIN_JSON)
+    version_stamp = loaded.get("version_stamp", "workerd.version")
 
     try:
         rel = pick_release(args.cooldown_days)
@@ -216,7 +227,7 @@ def main() -> int:
     if args.check:
         return 0
 
-    data = build_pin_data(tag, digests, version_stamp)
+    data = build_pin_data(tag, digests, version_stamp, loaded["pyodide_bundle"])
     body = sync.canonical_json(data)
     PIN_JSON.write_text(body, encoding="utf-8")
     print(f"wrote {PIN_JSON.relative_to(ROOT)}")

@@ -45,8 +45,9 @@ pub use config::{
     BindingTarget, EntrypointSource, GeneratedConfig, ListenSpec, WORKERD_SERVE_EXPERIMENTAL,
 };
 pub use egress::EgressProxy;
-pub use ensure::{ensure_workerd, workerd_bin_path};
+pub use ensure::{ensure_pyodide_bundle, ensure_workerd, pyodide_bundle_dir, workerd_bin_path};
 pub use grant::OperatorGrantEnv;
 pub use pin::{
-    binary_name, BUNDLED_WORKERD_COMPAT_DATE, WORKERD_RELEASE_TAG, WORKERD_VERSION_STAMP,
+    binary_name, pyodide_bundle_url, BUNDLED_WORKERD_COMPAT_DATE, PYODIDE_BUNDLE_DIR,
+    PYODIDE_BUNDLE_FILE, PYODIDE_BUNDLE_SHA256_HEX, WORKERD_RELEASE_TAG, WORKERD_VERSION_STAMP,
 };
