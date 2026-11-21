@@ -521,6 +521,18 @@ class HeadManyResult(TypedDict):
     objects: list[HeadOk]
 
 
+class TranslateKeysResult(TypedDict):
+    """Success payload of `Destination.translateKeys`.
+
+    Attributes:
+        keys: One translated key per requested host key, in request order: the key the
+            guest stores that host key under. Each is a relative key with no empty, `.`
+            or `..` segment.
+    """
+
+    keys: list[str]
+
+
 class ChangesRequest(TypedDict):
     """Argument of `Destination.changes`. Fields are only ever appended.
 
@@ -1696,6 +1708,42 @@ HeadManyReply = Union[
 """Result union of `Destination.headMany`."""
 
 
+class TranslateKeysReplyOk(TypedDict):
+    """``TranslateKeysReply`` member ``ok``.
+
+    Success: one translated key per host key.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: one translated key per host key.
+    """
+
+    kind: Literal["ok"]
+    value: TranslateKeysResult
+
+
+class TranslateKeysReplyErr(TypedDict):
+    """``TranslateKeysReply`` member ``err``.
+
+    Typed failure of the whole call; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure of the whole call; `code` is a `PluginErrorCode` wire
+            string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+TranslateKeysReply = Union[
+    TranslateKeysReplyOk,
+    TranslateKeysReplyErr,
+]
+"""Result union of `Destination.translateKeys`."""
+
+
 class ChangesReplyOk(TypedDict):
     """``ChangesReply`` member ``ok``.
 
@@ -2224,6 +2272,21 @@ class Destination(Protocol):
 
         Returns:
             ``ChangesReply``
+        """
+        ...
+
+    async def translate_keys(self, keys: list[str]) -> TranslateKeysReply:
+        """Translate up to `maxBatchKeys` host keys into the keys the guest stores
+        them under (requires `storage.translateKeys`). A host key is `/`-joined
+        segments, none empty, `.`, `..` or holding `\` or a control character.
+        The same host key must always translate to the same key. Without the
+        feature the host stores each host key as written.
+
+        Args:
+            keys: Host keys to translate.
+
+        Returns:
+            ``TranslateKeysReply``
         """
         ...
 
@@ -7357,6 +7420,7 @@ __all__ = [
     "MoveManyPage",
     "DeleteManyResult",
     "HeadManyResult",
+    "TranslateKeysResult",
     "ChangesRequest",
     "ObjectChange",
     "ChangesPage",
@@ -7435,6 +7499,9 @@ __all__ = [
     "HeadManyReplyOk",
     "HeadManyReplyErr",
     "HeadManyReply",
+    "TranslateKeysReplyOk",
+    "TranslateKeysReplyErr",
+    "TranslateKeysReply",
     "ChangesReplyOk",
     "ChangesReplyErr",
     "ChangesReply",

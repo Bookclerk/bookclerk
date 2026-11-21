@@ -77,21 +77,20 @@ From the command line, `bookclerk users scope get` and
 ## Limit what a patron may do
 
 Six switches, the **member controls**, say what a Member may do. All are
-on out of the box.
+on out of the box except **Upload**, which is off until you turn it on.
 
 | Control | Turning it off stops |
 | --- | --- |
 | Link store accounts | Connecting a store, signing in to one again, and bringing connections from another library. Connections already here keep working. |
 | Download | Taking copies of the library's files to a branch or a clerk app. Listening in the web app stays allowed |
 | Edit metadata | Changing a book's details |
-| Upload | Adding books by uploading files |
+| Upload | Adding books by uploading files, folders or ZIP and tar archives |
 | Request books | Asking a branch for a book it listed |
 | See prices and store links | Prices and store links in Discover and the wishlist |
 
 > [!NOTE]
-> Members can't edit metadata or upload books in Bookclerk yet, so those
-> two switches change nothing today. They are kept so the setting is
-> ready when it applies.
+> Members can't edit metadata in Bookclerk yet, so that switch changes
+> nothing today. It is kept so the setting is ready when it applies.
 
 With **See prices and store links** off, Discover, catalog search and
 the wishlist still show which stores carry a book, but no price and no

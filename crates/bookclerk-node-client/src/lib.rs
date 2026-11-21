@@ -77,8 +77,9 @@ pub use client::{
 };
 pub use copies::{fetch_copy_file, CopyFetchError};
 pub use endpoint::{
-    CopyStreamError, DialError, OwnerEndpoint, OwnerIo, OwnerSocket, SocketMessage, TlsProbe,
-    CONNECT_PATH, ENROLL_OAUTH_PATH, ENROLL_PATH, INFO_PATH,
+    CopyStreamError, DialError, LocalFileSource, OwnerEndpoint, OwnerIo, OwnerSocket,
+    SocketMessage, TlsProbe, UploadSource, CONNECT_PATH, ENROLL_OAUTH_PATH, ENROLL_PATH, INFO_PATH,
+    MAX_UPLOAD_RESUMES,
 };
 pub use enroll::{check_join_ancestry, join_library, refuse_cycle, JoinError};
 pub use jobs::{

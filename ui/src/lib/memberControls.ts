@@ -32,8 +32,7 @@ export const MEMBER_CONTROLS: readonly MemberControlInfo[] = [
   {
     control: "upload",
     label: "Upload",
-    detail:
-      "Add books by uploading files. Patrons can't do this here yet; the switch is kept for when they can.",
+    detail: "Add books by uploading files, folders or archives. Off unless you turn it on.",
   },
   {
     control: "request_books",
@@ -47,12 +46,12 @@ export const MEMBER_CONTROLS: readonly MemberControlInfo[] = [
   },
 ];
 
-/** The default of a library that has never set one: everything allowed. */
-export const ALL_ALLOWED: MemberControls = {
+/** The default of a library that has never set one: everything allowed except upload. */
+export const LIBRARY_DEFAULT: MemberControls = {
   link_accounts: true,
   download: true,
   edit_metadata: true,
-  upload: true,
+  upload: false,
   request_books: true,
   see_prices: true,
 };

@@ -374,6 +374,7 @@ async fn a_work_detail_lists_its_editions_listings_and_holdings() {
                 account_id.clone()
             }
             super::super::work_detail::HoldingHolder::Node { node_id } => node_id.clone(),
+            super::super::work_detail::HoldingHolder::Patron { user_id } => user_id.to_string(),
         })
         .collect();
     accounts.sort();

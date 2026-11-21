@@ -1554,6 +1554,21 @@ async fn an_acquire_by_edition_picks_a_title_the_requester_may_acquire() {
             "one edition, held on two accounts"
         );
         let sams = store.edition_of_book(&only_sam).await.unwrap().unwrap();
+        // A title is picked by its account holding.
+        let holding = |uuid: String| {
+            let store = store.clone();
+            async move {
+                store
+                    .title_holding_of_book(&uuid)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .holding_id
+            }
+        };
+        let both_a1 = holding(both_a1).await;
+        let both_a2 = holding(both_a2).await;
+        let only_sam = holding(only_sam).await;
         let ids = |ids: &[&str]| ids.iter().map(|t| t.to_string()).collect::<Vec<_>>();
         let first = both_a1.clone().min(both_a2.clone());
 

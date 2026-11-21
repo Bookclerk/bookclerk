@@ -32,6 +32,7 @@ bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-tags = { path = "../crates/bookclerk-tags" }
+bookclerk-archive = { path = "../crates/bookclerk-archive" }
 # media_decode drives the media worker's demux and decode path.
 bookclerk-media = { path = "../crates/bookclerk-media" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
@@ -347,6 +348,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "upload_part"
+path = "fuzz_targets/upload_part.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "copy_answer"
 path = "fuzz_targets/copy_answer.rs"
 test = false
@@ -510,6 +518,27 @@ bench = false
 [[bin]]
 name = "s3_event"
 path = "fuzz_targets/s3_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_extract"
+path = "fuzz_targets/archive_extract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_report"
+path = "fuzz_targets/archive_report.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "upload_manifest"
+path = "fuzz_targets/upload_manifest.rs"
 test = false
 doc = false
 bench = false

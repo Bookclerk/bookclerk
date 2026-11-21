@@ -133,6 +133,7 @@ jobs:
       os_matrix: ${{ steps.resolve.outputs.os_matrix }}
       os_legs: ${{ steps.resolve.outputs.os_legs }}
       test_parts: ${{ steps.resolve.outputs.test_parts }}
+      os_test_matrix: ${{ steps.resolve.outputs.os_test_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -721,6 +722,145 @@ jobs:
           path: ${{ runner.temp }}/coverage
           if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}
           retention-days: 7
+
+  test-os:
+    name: unit + integration tests (${{ matrix.os }}${{ matrix.parts > 1 && format(', {0}/{1}', matrix.part, matrix.parts) || '' }}, report only)
+    needs: plan
+    # Runs the whole `rust_test` suite on Windows and macOS, but only
+    # reports: CI Gate doesn't need it, so a failure there doesn't keep a
+    # pull request out of `main` while the failures it finds are fixed
+    # (`REPORT_JOBS`, docs/contributing/ci.md#full-suite-on-windows-and-macos).
+    # Not on pull requests (`os_legs`).
+    if: needs.plan.outputs.os_legs == 'true' && needs.plan.outputs.job_test == 'true'
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    # A build-only main push compiles every test binary from scratch when
+    # its cache misses, then saves it.
+    timeout-minutes: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 90 || 75 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.os_test_matrix) }}
+    env:
+      BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
+      # The `ci-os` nextest profile (OS_SUITE_ENV in scripts/ci_plan/execute.py).
+      CI_OS_SUITE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/contributing/automation.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python scripts/ci-exec.py validate
+
+      # Tool versions shared with the Dev Container and rust-toolchain.toml
+      # (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.pins.outputs.rust }}
+          components: rustfmt, clippy
+
+      # Runner images preinstall other Rust toolchains, and rust-cache hashes
+      # every installed one into its key, so two image versions would save
+      # and look up different keys (docs/contributing/ci.md#caches).
+      - name: Remove other Rust toolchains
+        shell: bash
+        run: python scripts/tool_versions.py prune-rust
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest@${{ steps.pins.outputs.cargo-nextest }}
+
+      # As on Linux, macOS confinement tests must enforce; Windows enforces
+      # through the spawn check only (see the confinement check).
+      - name: Require sandbox enforcement
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT=1" >> "$GITHUB_ENV"
+
+      # Its own cache (`debug-tests`), not the `debug` one the other
+      # Windows and macOS jobs share: every test binary of the workspace is
+      # far more than they compile, and while this job only reports it must
+      # not change what they restore. Saved by the build-only main push
+      # (docs/contributing/ci.md#caches).
+      - name: Look up the saved cache
+        id: saved
+        if: env.CI_BUILD_ONLY == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: debug-tests
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES CI_BUILD_PLAN_DEBUG
+          cache-on-failure: true
+          lookup-only: true
+          save-if: false
+
+      - name: Skip the build when the saved cache is current
+        if: steps.saved.outputs.cache-hit == 'true'
+        shell: bash
+        run: echo "CI_SAVED_CACHE_CURRENT=true" >> "$GITHUB_ENV"
+
+      - name: Cache cargo
+        if: env.CI_SAVED_CACHE_CURRENT != 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: debug-tests
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES CI_BUILD_PLAN_DEBUG
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 1 && !inputs.private-head }}
+
+      - name: Install capnproto (macOS)
+        if: runner.os == 'macOS' && env.CI_SAVED_CACHE_CURRENT != 'true'
+        run: brew install capnp
+
+      - name: Install capnproto (Windows)
+        if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://capnproto.org/capnproto-c++-win32-1.1.0.zip"
+          $zip = "$env:RUNNER_TEMP\capnproto.zip"
+          $expectedHash = "623b7525501d410e6479c8029eba265aa57ac8153c6fa09ab21a62f906b3e3f9"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          $actualHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            Write-Error "capnproto checksum mismatch. Expected $expectedHash, got $actualHash"
+            exit 1
+          }
+          Expand-Archive -Path $zip -DestinationPath "C:\capnproto" -Force
+          $toolsDir = "C:\capnproto\capnproto-tools-win32-1.1.0"
+          if (-not (Test-Path "$toolsDir\capnp.exe")) {
+            Write-Error "capnp.exe not found at $toolsDir"
+            Get-ChildItem -Path "C:\capnproto" -Recurse | Select-Object FullName
+            exit 1
+          }
+          echo $toolsDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Test
+        env:
+          CI_TEST_PART: ${{ format('{0}/{1}', matrix.part, matrix.parts) }}
+        run: python scripts/ci-exec.py run rust_test
 
   e2e:
     name: staged plugin installation (e2e)${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('e2e-{0}', strategy.job-index)].label }}
@@ -1784,7 +1924,8 @@ jobs:
   # until the slowest job ends. Pull requests keep running every job so one
   # round shows every failure. This job builds and runs no repository code;
   # it is the only one that can cancel the run. In a called run, job names
-  # carry the caller's prefix (`<caller job> / CI Gate`).
+  # carry the caller's prefix (`<caller job> / CI Gate`). A report-only job
+  # (named "report only", REPORT_JOBS) is ignored: its failure never gates.
   merge-queue-fail-fast:
     name: merge-queue fail-fast
     if: github.event_name == 'merge_group' || inputs.private-head
@@ -1803,7 +1944,7 @@ jobs:
           set -uo pipefail
           while true; do
             if ! jobs=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
-                --jq '.jobs[] | select(.name | endswith("merge-queue fail-fast") | not) | "\(.status)|\(.conclusion)|\(.name)"'); then
+                --jq '.jobs[] | select((.name | endswith("merge-queue fail-fast")) or (.name | contains("report only")) | not) | "\(.status)|\(.conclusion)|\(.name)"'); then
               sleep 30
               continue
             fi

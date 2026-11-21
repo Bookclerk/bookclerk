@@ -1423,6 +1423,19 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::profile::get_avatar))
         .routes(routes!(get_preferences, patch_preferences))
+        // Uploads: the handlers resolve the patron who holds the books, and
+        // the review list admits only an Administrator.
+        .routes(routes!(
+            crate::uploads::create_upload,
+            crate::uploads::list_uploads
+        ))
+        .routes(routes!(crate::uploads::list_upload_review))
+        .routes(routes!(
+            crate::uploads::get_upload,
+            crate::uploads::delete_upload
+        ))
+        .routes(routes!(crate::uploads::patch_upload_file))
+        .routes(routes!(crate::uploads::commit_upload))
 }
 
 /// Routes with no auth layer; each handler checks what it needs.

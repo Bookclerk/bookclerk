@@ -44,7 +44,7 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::{
     AcquireStatus, AcquireTitle, AcquiredTitleKey, LibraryStore, ACQUIRED_KEYS_MAX_PAGE,
 };
-use bookclerk_node_client::{CatalogSession, HostClientHandle, OwnerCallError};
+use bookclerk_node_client::{CatalogSession, HostClientHandle, OwnerCallError, UploadSource};
 use bookclerk_node_proto::{
     is_storage_key, CatalogFile, CatalogMetadata, CatalogRef, CatalogTitle, FileCopy, UploadFile,
     UploadProbe, MAX_CATALOG_BATCH_TITLES, MAX_UPLOAD_FILES,
@@ -291,6 +291,33 @@ async fn own_files(
         "the primary file {primary:?} is not on this install's destination"
     );
     Ok(files.into_values().take(MAX_UPLOAD_FILES).collect())
+}
+
+/// One file on a branch's shelf as an upload source, read from any
+/// offset so an interrupted file resends only what the library lacks.
+struct ShelfFile<'a> {
+    /// The shelf the file is on.
+    shelf: &'a dyn StorageBackend,
+    /// The file's key on the shelf.
+    key: &'a str,
+}
+
+impl UploadSource for ShelfFile<'_> {
+    async fn open_at(
+        &self,
+        offset: u64,
+    ) -> std::io::Result<std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>> {
+        let range = (offset > 0).then_some(bookclerk_storage::ByteRange {
+            offset,
+            length: None,
+        });
+        let (_, body) = self
+            .shelf
+            .get_stream(self.key, range)
+            .await
+            .map_err(std::io::Error::other)?;
+        Ok(body)
+    }
 }
 
 impl<S: BranchShelf> CatalogSync<S> {
@@ -733,12 +760,12 @@ impl<S: BranchShelf> CatalogSync<S> {
             .await
             .map_err(|err| call_error("catalog.upload", &err))?;
         for (index, file) in title.files.iter().enumerate() {
-            let (_, body) = shelf
-                .get_stream(&file.key, None)
-                .await
-                .with_context(|| format!("reading {:?}", file.key))?;
+            let source = ShelfFile {
+                shelf,
+                key: &file.key,
+            };
             self.handle
-                .upload_catalog_file(&upload, index, file.size, body)
+                .upload_catalog_file(&upload, index, file.size, &source)
                 .await
                 .map_err(|err| call_error("a catalog file", &err))?;
         }

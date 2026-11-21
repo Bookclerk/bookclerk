@@ -6088,7 +6088,14 @@ pub(crate) mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         let job_id = body["job_id"].as_str().expect("job id").to_string();
         let job = library.get_job(&job_id).await.unwrap().expect("job");
-        assert_eq!(job.payload.title.as_deref(), Some(mine.uuid.as_str()));
+        // The edition's title is named by its account holding.
+        let mine_holding = library
+            .title_holding_of_book(&mine.uuid)
+            .await
+            .unwrap()
+            .expect("holding")
+            .holding_id;
+        assert_eq!(job.payload.title.as_deref(), Some(mine_holding.as_str()));
         assert_eq!(job.payload.account.as_deref(), Some("mine"));
         for (editions, want, slug) in [
             (vec![foreign_edition], StatusCode::FORBIDDEN, "forbidden"),

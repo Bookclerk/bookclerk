@@ -264,16 +264,17 @@ The host `EventPublisher` writes straight into the library outbox
 - **Host-emitted types.** Some domain events belong to the host.
   `book_acquired` is one: a source plugin's acquire handler returns the
   book, then the host's acquire pipeline records it and publishes
-  `book_acquired` in the same transaction as the library row. Its payload
-  names the title (`titleId`), its edition (`editionId`, `null` before the
-  title resolves to one), `source`, `asin`, `isbn`, `accountId` and the
-  written `pathKeys`.
+  `book_acquired` in the same transaction as the edition's acquire state.
+  Its payload names the title by the account holding that acquired it
+  (`titleId`), its edition (`editionId`), `source`, `asin`, `isbn`,
+  `accountId` and the written `pathKeys`.
   `edition_linked`, `edition_updated` and `holding_added` are written by
   the library model resolver in the same batch as the store listing they
   describe, `holding_removed` in the batch that deletes the holding,
   `edition_acquire_changed` with an acquire state change other than
-  becoming acquired, `wishlist_changed` and `listening_synced` by the library
-  after a wishlist or listening write, and `playback_started`,
+  becoming acquired, `ingest_batch_finished` when an upload or storage
+  intake batch ends, `wishlist_changed` and `listening_synced` by the
+  library after a wishlist or listening write, and `playback_started`,
   `playback_progress` and `playback_finished` by the built-in player after
   a listening write. A plugin can consume them under
   `[[events.consumers]]`, but can't declare them under
@@ -902,15 +903,30 @@ piling up work.
   UPDATE includes `EXISTS (wake_pending ∧ lease owner)`.
 
 **`book_acquired`.** A successful acquire writes `book_acquired` into
-`domain_events` in the same transaction as the library acquire-status
-change (book uuid, storage key, product ids; never media bytes). It sets
-the envelope `source` to the book's storefront plugin id.
+`domain_events` in the same transaction as the edition's acquire state
+(the account holding as `titleId`, the edition, storage key, product ids;
+never media bytes). The holding is also the event's correlation and
+ordering key. It sets the envelope `source` to the book's storefront
+plugin id.
 
 **`edition_acquire_changed`.** Any other acquire state change of a title
-with an edition (queued, downloading, failed, or reset to not acquired)
-writes `edition_acquire_changed` (`editionId`, `titleId`, `status`, one of
-`not_acquired`, `queued`, `downloading` or `error`) in the same
-transaction. Its `source` is the book's storefront plugin id too.
+(queued, downloading, failed, or reset to not acquired) writes
+`edition_acquire_changed` (`editionId`, `titleId`, the account holding,
+and `status`, one of `not_acquired`, `queued`, `downloading` or `error`)
+in the same transaction. Its `source` is the book's storefront plugin id
+too.
+
+A write is recorded only while its holding still holds the edition: one
+read before a revoke or rescan removed the holding changes nothing and
+publishes no event.
+
+**`ingest_batch_finished`.** When an [upload](../server/uploads.md) or a
+storage intake batch reaches a final state, the host writes
+`ingest_batch_finished` (`batchId`; `state`, one of `done`, `failed` or
+`cancelled`; `source`, `upload` or `intake`; `intakeInstance`, the storage
+instance an intake batch read, else `null`; `detail`, why it failed, else
+`null`) in the same transaction. Its `source` is `core.import`. Each file's
+outcome stays with the batch: read `GET /api/uploads/{id}`.
 
 **Library model events.** Recording a store listing publishes, in the same
 batch as its rows:
@@ -1564,6 +1580,7 @@ operation, or `storage.conditionalWrite`, and enforces it natively.
 | `storage.moveMany` | `moveMany(request)` | Moves explicit pairs, or one page of every object under a prefix. |
 | `storage.deleteMany` | `deleteMany(keys)` | Removes up to `maxBatchKeys` (256) objects. |
 | `storage.headMany` | `headMany(keys)` | Probes up to `maxBatchKeys` objects. |
+| `storage.translateKeys` | `translateKeys(keys)` | Turns up to `maxBatchKeys` host keys into the keys it stores ([Translating keys](#translating-keys)). |
 | `storage.conditionalWrite` | `put` with `ifMatch` / `ifNoneMatch` | Publishes only while the precondition holds, else fails with `conflict`. |
 | `storage.changes` | `changes(request)` | Returns keys changed since a cursor. |
 
@@ -1666,6 +1683,30 @@ the guest awake instead of stopping it when idle. A page without them, a
 honours `liveWatch` only from the first-party storage plugins it starts on
 demand, which today means the `local` destination with `watch` on (see
 [decision 13](../adr/event-delivery-model.md#decision)).
+
+#### Translating keys
+
+The host names every file with one **host key**: segments joined by `/`,
+each non-empty, never `.` or `..`, with no `\` or control characters, at
+most 1024 bytes. A destination that declares `storage.translateKeys`
+receives host keys in `translateKeys(keys)` and returns, in the same order,
+the key it will store each one under: a path its file system accepts, or an
+object key its store can hold. The host then writes, checks for and records
+that key, and never passes a translated key back through `translateKeys`.
+
+A destination without the feature stores each host key as written, and the
+host does not wake a sleeping guest to ask. The host checks every reply: it
+has one key per host key, and each key is relative, at most
+4 KiB, with no control characters and no empty,
+`.` or `..` segment when split on `/` or `\`. A reply that breaks a rule
+fails with `internal`, and the host stores host keys for that write.
+
+Translation should be deterministic: the same host key must give the same
+key on every call, because the host recomputes it to find files it wrote
+earlier. The SDKs' `translateKeys` default returns the keys unchanged. The
+`local` destination applies the host platform's file-name rules, and `s3`
+the object-store rules and 1024-byte limit including its prefix (see
+[Keys each destination stores](../server/output.md#keys-each-destination-stores)).
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming

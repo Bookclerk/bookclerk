@@ -339,6 +339,7 @@ class StorageOperationTests(unittest.IsolatedAsyncioTestCase):
             "moveMany": ({"target": {"kind": "pairs", "value": []}},),
             "headMany": (["a"],),
             "changes": ({"cursor": ""},),
+            "translateKeys": (["a/b.m4b"],),
         }
         for method, args in calls.items():
             with self.assertRaises(PluginError) as ctx:

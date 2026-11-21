@@ -231,6 +231,20 @@ input_from = "storage"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.archive_extract]
+crate = "bookclerk-archive"
+boundary = "Archives people upload (ZIP and tar, plain or gzip): entry names, links, sizes and ratios, expanded in the media worker's extract job"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.archive_report]
+crate = "bookclerk-archive"
+boundary = "The media worker's extract report, read by the host: written paths, sizes and totals"
+input_from = "media worker"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.tags_wire]
 crate = "bookclerk-tags"
 boundary = "Tag worker frames (requests the worker reads, replies the host reads)"
@@ -350,6 +364,13 @@ input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.upload_part]
+crate = "bookclerk-node-proto"
+boundary = "The Content-Range header of an upload PUT, /api/node/v1/uploads/{upload_id}/files/{n}, which decides which bytes of a declared file the body is, or that it only asks where the owner is"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.clerk_socket_frame]
 crate = "bookclerk-node-proto"
 boundary = "The clerk socket's frames, GET /api/clerk/v1/connect: what a library reads from a clerk (pages asked for, a copy asked for) and what a clerk reads back (topics, pages, a granted copy and its token)"
@@ -396,6 +417,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-library"
 boundary = "A library operator's \"Acquire all of this branch's members' books\" choice, from PUT /api/config/branches/members-books"
 input_from = "Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.upload_manifest]
+crate = "bookclerk-library"
+boundary = "What a patron sends to start and fill an upload: the POST /api/uploads manifest and each PATCH's Upload-Offset header"
+input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
 

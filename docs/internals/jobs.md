@@ -212,6 +212,7 @@ stateDiagram-v2
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
 | `library_index_rebuild` | `library_index_rebuild` | `network` | `run_library_index_rebuild` (no network; rewrites every row of the library's page index) |
 | `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
+| `ingest_batch` | `ingest_batch:batch={id}` | `network` | `run_ingest_batch` on the node that holds the upload's bytes (pinned by `payload.node_id`; never handed to a branch) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
 ticker claims a due fire with a compare-and-swap on the instance's
@@ -234,6 +235,16 @@ consumes `wishlist_changed`, `listening_synced`, `book_acquired`,
 `holding_added` and `holding_removed` and admits jobs with a 30 s `run_after`) queue them. See
 [Precomputed shelves](discovery.md#precomputed-shelves) and
 [Taste events](discovery.md#taste-events).
+
+`ingest_batch` stores one upload (or one drop-folder intake batch): it
+checks each file against the manifest, expands archives in the media
+worker, groups files into books, resolves each through a patron-held
+`core.import` listing and writes it to every destination. The upload
+routes queue it on commit with `payload.ingest_batch`, and a storage
+intake queues it with `uploads::queue_intake_batch`, which copies each
+object from the named storage instance first. Its end publishes
+`ingest_batch_finished` in the same write as the batch's final state; see
+[Uploads](../server/uploads.md).
 
 `branch_request` is an interlibrary request: a user of this library asks
 a branch for a book it listed. The job is pinned to the branch's node

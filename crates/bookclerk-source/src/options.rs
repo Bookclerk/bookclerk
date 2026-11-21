@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 
 use bookclerk_config::{
-    resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DestinationKeyStyle,
-    DestinationNaming, FileTimestampMode, LameConfig, NamingProfile, OutputConfig, OutputCopy,
-    OutputFormat, PathLimits, PathSanitizationMode, ReplacementRule, ResolvedNamingTemplates,
+    resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DestinationNaming,
+    FileTimestampMode, LameConfig, NamingProfile, OutputConfig, OutputCopy, OutputFormat,
+    PathLimits, ReplacementRule, ResolvedNamingTemplates,
 };
 use serde::{Deserialize, Serialize};
 
@@ -88,21 +88,13 @@ pub struct DownloadOptions {
     pub creation_time: FileTimestampMode,
     /// How to set the file last-write / mtime after acquire.
     pub last_write_time: FileTimestampMode,
-    /// Resolved find/replace rules for path-segment sanitisation.
+    /// Resolved find/replace rules the host applies to tag values when it
+    /// fills a naming template.
     pub replacement_characters: Vec<ReplacementRule>,
-    /// Filesystem / object-store path length limits for storage keys.
+    /// Length limits for the host keys naming templates build.
     pub path_limits: PathLimits,
     /// Save podcast episodes under the parent show folder.
     pub save_podcasts_to_parent_folder: bool,
-}
-
-/// True when path sanitization should use the NTFS reserved-character map (`Windows`, or `Auto` on a non-S3 Windows host).
-fn path_sanitization_is_windows(mode: PathSanitizationMode, storage_is_s3: bool) -> bool {
-    match mode {
-        PathSanitizationMode::Windows => true,
-        PathSanitizationMode::Auto => !storage_is_s3 && cfg!(windows),
-        _ => false,
-    }
 }
 
 impl From<&OutputConfig> for DownloadOptions {
@@ -146,14 +138,8 @@ impl From<&OutputConfig> for DownloadOptions {
             replacement_characters: resolve_replacement_characters(
                 &cfg.replacement_characters,
                 cfg.path_sanitization,
-                false,
             ),
-            path_limits: PathLimits::resolve(
-                cfg.max_filename_length,
-                false,
-                "",
-                path_sanitization_is_windows(cfg.path_sanitization, false),
-            ),
+            path_limits: PathLimits::for_host_keys(cfg.max_filename_length, ""),
             save_podcasts_to_parent_folder: false,
         }
     }
@@ -163,12 +149,7 @@ impl From<&Config> for DownloadOptions {
     /// Global `[output]` naming with no destination prefix: what a listing,
     /// match, or convert pass uses when no destination document applies.
     fn from(cfg: &Config) -> Self {
-        Self::for_destination(
-            cfg,
-            DestinationKeyStyle::Filesystem,
-            &DestinationNaming::default(),
-            "",
-        )
+        Self::for_destination(cfg, &DestinationNaming::default(), "")
     }
 }
 
@@ -184,15 +165,11 @@ impl DownloadOptions {
     /// Packaging knobs come from global `[output]`; naming templates prefer
     /// the destination's own overrides, which a storage plugin may
     /// declare as `[[settings]]` and the host reads from the deployed
-    /// instance document. `prefix` is that document's key prefix.
+    /// instance document. `prefix` is that document's key prefix, which
+    /// the host-key length budget leaves room for. The storage plugin
+    /// translates each host key into the key it stores.
     #[must_use]
-    pub fn for_destination(
-        cfg: &Config,
-        key_style: DestinationKeyStyle,
-        naming: &DestinationNaming,
-        prefix: &str,
-    ) -> Self {
-        let storage_is_s3 = key_style.is_object_store();
+    pub fn for_destination(cfg: &Config, naming: &DestinationNaming, prefix: &str) -> Self {
         let mut opts = Self::from(&cfg.output);
         opts.save_podcasts_to_parent_folder = cfg.library.save_podcasts_to_parent_folder;
         opts.naming_profile = naming.effective_profile(&cfg.output);
@@ -203,14 +180,8 @@ impl DownloadOptions {
         opts.replacement_characters = resolve_replacement_characters(
             &cfg.output.replacement_characters,
             cfg.output.path_sanitization,
-            storage_is_s3,
         );
-        opts.path_limits = PathLimits::resolve(
-            cfg.output.max_filename_length,
-            storage_is_s3,
-            &prefix,
-            path_sanitization_is_windows(cfg.output.path_sanitization, storage_is_s3),
-        );
+        opts.path_limits = PathLimits::for_host_keys(cfg.output.max_filename_length, &prefix);
         opts
     }
 
@@ -323,18 +294,8 @@ mod tests {
             ..Default::default()
         };
 
-        let local = DownloadOptions::for_destination(
-            &cfg,
-            DestinationKeyStyle::Filesystem,
-            &local_naming,
-            "",
-        );
-        let s3 = DownloadOptions::for_destination(
-            &cfg,
-            DestinationKeyStyle::ObjectStore,
-            &s3_naming,
-            "library",
-        );
+        let local = DownloadOptions::for_destination(&cfg, &local_naming, "");
+        let s3 = DownloadOptions::for_destination(&cfg, &s3_naming, "library");
 
         assert_eq!(local.naming_profile, NamingProfile::Classic);
         assert_eq!(local.folder_template.as_deref(), Some("<global folder>"));
@@ -350,7 +311,7 @@ mod tests {
         assert_eq!(s3.chapter_file_template.as_deref(), Some("<s3 chapter>"));
         assert_eq!(
             s3.path_limits.max_storage_key_bytes,
-            bookclerk_config::S3_MAX_OBJECT_KEY_BYTES - "library/".len()
+            bookclerk_config::MAX_HOST_KEY_BYTES - "library/".len()
         );
     }
 }

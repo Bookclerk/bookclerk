@@ -110,6 +110,8 @@ paths = [
     "fuzz/oracles/members_books_request.rs",
     "fuzz/corpus/member_controls_request/**",
     "fuzz/oracles/member_controls_request.rs",
+    "fuzz/corpus/upload_manifest/**",
+    "fuzz/oracles/upload_manifest.rs",
     "fuzz/corpus/patron_scope_request/**",
     "fuzz/oracles/patron_scope_request.rs",
     "fuzz/corpus/work_split_request/**",
@@ -227,6 +229,16 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-archive"
+# The archive oracles are shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/archive_extract/**",
+    "fuzz/oracles/archive_extract.rs",
+    "fuzz/corpus/archive_report/**",
+    "fuzz/oracles/archive_report.rs",
+]
+
+[[test_input]]
 package = "bookclerk-media"
 # The media_decode oracle is shared with the replay test through `#[path]`.
 paths = [
@@ -309,6 +321,14 @@ package = "bookclerk-node-proto"
 paths = [
   "fuzz/corpus/copy_range/**",
   "fuzz/oracles/copy_range.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The upload part Content-Range oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/upload_part/**",
+  "fuzz/oracles/upload_part.rs",
 ]
 
 [[test_input]]

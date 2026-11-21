@@ -321,37 +321,6 @@ pub enum BadBookAction {
     Ignore,
 }
 
-/// How a destination names what it stores, which decides how acquire
-/// sanitizes and limits keys.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum DestinationKeyStyle {
-    /// Paths on a file system (the `local` plugin): per-component length
-    /// limits, and Windows-safe names on Windows hosts.
-    #[default]
-    Filesystem,
-    /// Object-store keys (every other storage plugin): one key of at most
-    /// 1024 bytes and the object-store character set.
-    ObjectStore,
-}
-
-impl DestinationKeyStyle {
-    /// True for object-store keys.
-    #[must_use]
-    pub fn is_object_store(self) -> bool {
-        match self {
-            Self::Filesystem => false,
-            Self::ObjectStore => true,
-        }
-    }
-
-    /// True for file-system paths.
-    #[must_use]
-    pub fn is_filesystem(self) -> bool {
-        !self.is_object_store()
-    }
-}
-
 /// Id of one output destination: the plugin instance id of the deployed
 /// storage plugin instance that serves it.
 ///
@@ -445,18 +414,6 @@ mod tests {
         let parsed: DestinationId = serde_json::from_str("\"r2\"").unwrap();
         assert_eq!(serde_json::to_string(&parsed).unwrap(), "\"r2\"");
         assert!(serde_json::from_str::<DestinationId>("\"R2\"").is_err());
-    }
-
-    #[test]
-    fn key_styles_say_which_is_an_object_store() {
-        assert!(!DestinationKeyStyle::Filesystem.is_object_store());
-        assert!(DestinationKeyStyle::ObjectStore.is_object_store());
-        assert!(DestinationKeyStyle::Filesystem.is_filesystem());
-        assert!(!DestinationKeyStyle::ObjectStore.is_filesystem());
-        assert_eq!(
-            DestinationKeyStyle::default(),
-            DestinationKeyStyle::Filesystem
-        );
     }
 
     #[test]

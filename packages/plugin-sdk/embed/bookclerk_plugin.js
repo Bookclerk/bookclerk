@@ -1234,6 +1234,20 @@ var HeadManyResultCodec = {
     };
   }
 };
+var TranslateKeysResultCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0)
+    };
+  }
+};
 var ChangesRequestCodec = {
   dataWords: 1,
   pointerCount: 1,
@@ -2117,6 +2131,39 @@ var HeadManyReplyCodec = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HeadManyReply", disc);
+    }
+  }
+};
+var TranslateKeysReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          TranslateKeysResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("TranslateKeysReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: TranslateKeysResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("TranslateKeysReply", disc);
     }
   }
 };
@@ -6846,6 +6893,34 @@ var DestinationChangesResultsCodec = {
     };
   }
 };
+var DestinationTranslateKeysParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0)
+    };
+  }
+};
+var DestinationTranslateKeysResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      TranslateKeysReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: TranslateKeysReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var JobRunnerJobParamsCodec = {
   dataWords: 0,
   pointerCount: 1,
@@ -10330,6 +10405,13 @@ var METHODS = {
         }))
       })
     }),
+    translateKeys: spec({
+      params: DestinationTranslateKeysParamsCodec,
+      results: DestinationTranslateKeysResultsCodec,
+      stub: "storage",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "translateKeys", [batchKeys(p.keys)]),
+      ok: (value) => okValue({ keys: asList(value).map(String) })
+    }),
     changes: spec({
       params: DestinationChangesParamsCodec,
       results: DestinationChangesResultsCodec,
@@ -10983,6 +11065,20 @@ var Destination = class extends RpcTarget {
    */
   changes(_request) {
     return Promise.reject(unsupported("changes"));
+  }
+  /**
+   * Translate up to `MAX_BATCH_KEYS` host keys into the keys this
+   * destination stores them under (declare `storage.translateKeys`). A host
+   * key is `/`-joined segments, none empty, `.`, `..` or holding `\` or a
+   * control character; return a relative key with the same properties. The
+   * same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param _keys - Host keys.
+   * @returns One translated key per host key, in order.
+   */
+  translateKeys(_keys) {
+    return Promise.reject(unsupported("translateKeys"));
   }
 };
 var Source = class extends RpcTarget {
@@ -12096,7 +12192,8 @@ var STORAGE_METHODS = Object.freeze([
   "moveMany",
   "deleteMany",
   "headMany",
-  "changes"
+  "changes",
+  "translateKeys"
 ]);
 var StorageEntrypoint = class extends NamedEntrypoint {
   static bookclerkMethods = STORAGE_METHODS;
@@ -12226,6 +12323,20 @@ var StorageEntrypoint = class extends NamedEntrypoint {
    */
   changes(_request) {
     return Promise.reject(unsupported("changes"));
+  }
+  /**
+   * Translate up to `MAX_BATCH_KEYS` host keys into the keys this
+   * destination stores them under (declare `storage.translateKeys`). A host
+   * key is `/`-joined segments, none empty, `.`, `..` or holding `\` or a
+   * control character; return a relative key with the same properties. The
+   * same host key must always translate to the same key. Without the
+   * feature the host stores each host key as written.
+   *
+   * @param _keys - Host keys.
+   * @returns One translated key per host key, in order.
+   */
+  translateKeys(_keys) {
+    return Promise.reject(unsupported("translateKeys"));
   }
 };
 var REMOTE_LIBRARY_METHODS = Object.freeze([
