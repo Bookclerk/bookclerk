@@ -6,7 +6,7 @@
 //! Reads and writes the library database directly, like `nodes`. The web
 //! app's Settings → Users, `GET`/`PUT /api/users/{id}/scope` and
 //! `GET`/`PUT /api/users/{id}/controls` and
-//! `GET`/`PUT /api/users/{id}/admin-controls` change the same records.
+//! `GET`/`PATCH /api/users/{id}/admin-controls` change the same records.
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
