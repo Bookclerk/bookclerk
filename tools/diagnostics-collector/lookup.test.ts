@@ -353,6 +353,10 @@ describe("/lookup", () => {
     const page = await res.text();
     assert.match(page, /<form method="post" action="\/lookup"/);
     assert.ok(!page.includes("<script"), "the public page loads no script");
+    assert.match(
+      page,
+      /<pre class="command"[^>]*><code>bookclerk diagnostics reports<\/code><\/pre>/,
+    );
     assert.match(res.headers.get("Content-Security-Policy") ?? "", /form-action 'self'/);
   });
 
