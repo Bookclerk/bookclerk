@@ -75,7 +75,7 @@ version = "0.1.0"               # required semver; pins the [[settings]] schema
 # logo = "https://example.com/icon.png"   # or "assets/logo.png" (host-served)
 runtime = "native"
 command = "./bookclerk-plugin-echo-native-rust"
-entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers | metadataFiles
+entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers | metadataFiles | ingress
 
 [capabilities.network]
 mode = "deny"
@@ -297,6 +297,29 @@ credit_roles = ["author", "narrator"]
 The host refuses a parsed record that states anything outside its row.
 See [Metadata file dialects](abi.md#metadata-file-dialects) for the
 methods and limits.
+
+### `[ingress]` (public address)
+
+A plugin with the `ingress` entrypoint says how it gives the library a
+public `https` address. The table is required for that entrypoint, and
+every other plugin must leave it out.
+
+```toml
+entrypoints = ["ingress"]
+
+[ingress]
+kind = "relay"
+```
+
+- `kind = "relay"`: the provider holds the public address and delivers
+  each request to the plugin, which hands it to the library through
+  `env.ORIGIN` (a tunnel or relay service).
+- `kind = "direct"`: the public address points at the daemon itself, by
+  port mapping or dynamic DNS. The plugin only keeps the address current
+  and never gets `env.ORIGIN`.
+
+See [Public addresses](abi.md#public-addresses-ingress) for the methods
+and the rules on each request.
 
 ### `command` (native)
 

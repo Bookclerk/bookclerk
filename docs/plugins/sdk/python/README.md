@@ -41,7 +41,10 @@ matching name extending its base: `Storefront(StorefrontEntrypoint)`,
 `Storage(StorageEntrypoint)`, `RemoteLibrary(RemoteLibraryEntrypoint)`,
 `DatabaseAdapter(DatabaseAdapterEntrypoint)`, `Cli(CliEntrypoint)`,
 `Oidc(OidcEntrypoint)`, `Metadata(MetadataEntrypoint)`,
-`Covers(CoverEntrypoint)` and `MetadataFiles(MetadataFilesEntrypoint)`.
+`Covers(CoverEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)` and
+`Ingress(IngressEntrypoint)`. The Python SDK serves `direct`
+[`[ingress]`](../../manifest.md#ingress-public-address) plugins only; the
+`ORIGIN` binding a relay plugin hands requests to is in the TypeScript SDK.
 
 ```python
 from bookclerk_plugin_sdk.workerd import (

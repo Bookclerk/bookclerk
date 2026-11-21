@@ -48,6 +48,7 @@ extending its base:
 | `entrypoints = ["metadata"]` | `Metadata` | `MetadataEntrypoint` |
 | `entrypoints = ["covers"]` | `Covers` | `CoverEntrypoint` |
 | `entrypoints = ["metadataFiles"]` | `MetadataFiles` | `MetadataFilesEntrypoint` |
+| `entrypoints = ["ingress"]` | `Ingress` | `IngressEntrypoint` |
 
 ```ts
 import {
@@ -131,6 +132,10 @@ resumably; see
 A storefront's `scan` can hand its paging to `scanPage(params, fetch)`,
 which slices the store's own pages into replies the host accepts; see
 [Paged scans](../../abi.md#paged-scans).
+A relay [`[ingress]`](../../manifest.md#ingress-public-address) plugin also
+gets `ORIGIN` while it is the active ingress; `ORIGIN.fetch(request, {
+clientAddress })` hands one request to the library (see
+[Public addresses](../../abi.md#public-addresses-ingress)).
 Generate the `Env` type from `plugin.toml`:
 
 ```bash
