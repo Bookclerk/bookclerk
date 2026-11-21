@@ -1,0 +1,1 @@
+{"account": "3f4b7e3dcab231cbfdaa90a6a28bd548", "action": "PutObject", "bucket": "books", "object": {"key": "library/a b.m4b", "size": 65536, "eTag": "c846ff7a"}, "eventTime": "2024-05-24T19:36:44.379Z"}

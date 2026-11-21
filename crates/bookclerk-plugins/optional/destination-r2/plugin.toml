@@ -1,0 +1,101 @@
+api_version = 3
+id = "r2"
+name = "Cloudflare R2"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=cloudflare.com&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-destination-r2"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "outbound"
+tcp = [
+    # The bucket's S3 API: <account>.r2.cloudflarestorage.com, or
+    # <account>.<jurisdiction>.r2.cloudflarestorage.com.
+    { host = "*.r2.cloudflarestorage.com", ports = [443] },
+    # The Cloudflare API, for the notification queue's HTTP pull consumer.
+    { host = "api.cloudflare.com", ports = [443] },
+]
+
+[vars]
+
+[[settings]]
+key = "account_id"
+label = "Account ID"
+type = "string"
+required = true
+description = "The Cloudflare account that owns the bucket (32 hex digits, shown in the R2 overview)."
+
+[[settings]]
+key = "jurisdiction"
+label = "Jurisdiction"
+type = "enum"
+values = [{ id = "default", label = "Default" }, { id = "eu", label = "European Union" }, { id = "fedramp", label = "FedRAMP" }]
+default = "default"
+description = "The jurisdiction the bucket was created in; it picks the S3 endpoint."
+
+[[settings]]
+key = "bucket"
+label = "Bucket"
+type = "string"
+required = true
+
+[[settings]]
+key = "prefix"
+label = "Key prefix"
+type = "string"
+default = "library/"
+
+[[settings]]
+key = "notification_queue_id"
+label = "Notification queue ID"
+type = "string"
+description = "ID of the Cloudflare Queue that receives this bucket's event notifications, with HTTP pull turned on; when set, changes made outside Bookclerk are picked up from it. Needs the queue API token. Only this destination may consume the queue."
+
+[[settings]]
+key = "naming_profile"
+label = "Naming profile"
+type = "enum"
+values = [{ id = "audiobookshelf", label = "Audiobookshelf" }, { id = "classic", label = "Classic Libation" }]
+description = "Overrides [output].naming_profile for this destination only; unset inherits it."
+
+[[settings]]
+key = "folder_template"
+label = "Folder template"
+type = "string"
+
+[[settings]]
+key = "file_template"
+label = "File template"
+type = "string"
+
+[[settings]]
+key = "chapter_file_template"
+label = "Chapter file template"
+type = "string"
+
+[[settings]]
+key = "access_key_id"
+label = "Access key ID"
+type = "secret"
+required = true
+description = "An R2 API token's access key ID with Object Read & Write on the bucket."
+
+[[settings]]
+key = "secret_access_key"
+label = "Secret access key"
+type = "secret"
+required = true
+
+[[settings]]
+key = "queue_api_token"
+label = "Queue API token"
+type = "secret"
+description = "A Cloudflare API token with Queues Read and Write on the account; needed only with a notification queue."
+
+[secrets]
+
+[work_fs]
+
+[triggers]
+jobs = ["stream_copy"]
