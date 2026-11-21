@@ -191,7 +191,7 @@ pub fn effective_public_origin(
 #[must_use]
 pub fn effective_origin_from_config(cfg: &Config, headers: Option<&HeaderMap>) -> String {
     effective_public_origin(
-        cfg.integrations.public_origin.as_deref(),
+        cfg.integrations.effective_public_origin(),
         headers,
         &cfg.daemon.listen,
     )

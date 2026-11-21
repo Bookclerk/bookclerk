@@ -31,6 +31,7 @@ mod documents;
 mod enrollment;
 mod identity;
 mod ingest;
+mod ingress;
 mod instance_config;
 mod instances;
 mod job_routing;
@@ -81,6 +82,11 @@ pub use admin_controls::{
     set_default_admin_controls, AdminControl, AdminControlOverrides, AdminControls,
     AdminSwitchChoice, AssignedAdminControls, DefaultSwitchChanges, OverrideSwitchChanges,
     ADMIN_CONTROLS_NAMESPACE,
+};
+pub use ingress::{
+    accept_reported_origin, activate_ingress, deactivate_ingress, ingress_settings,
+    load_ingress_settings, record_started, set_ingress_exposure, IngressExposure,
+    IngressSettings, OriginReport, INGRESS_NAMESPACE, INGRESS_SCHEMA_VERSION,
 };
 #[cfg(test)]
 pub(crate) use artifacts::chunk_bytes;

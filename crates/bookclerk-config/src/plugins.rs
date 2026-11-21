@@ -193,6 +193,33 @@ pub struct IntegrationsConfig {
     pub public_origin: Option<String>,
     /// Hours a portal browser session cookie remains valid (default 12).
     pub portal_session_ttl_hours: u64,
+    /// Public origin the library's active ingress plugin reported, loaded
+    /// from the database at run time.
+    ///
+    /// Never read from or written to `config.toml`: handlers write the
+    /// in-memory configuration back to the file, and a plugin-reported name
+    /// must not become the operator's override. Read the origin through
+    /// [`IntegrationsConfig::effective_public_origin`].
+    #[serde(skip)]
+    pub ingress_origin: Option<String>,
+}
+
+impl IntegrationsConfig {
+    /// The library's public origin: the operator's
+    /// `integrations.public_origin` when set, otherwise the origin the
+    /// active ingress plugin reported.
+    ///
+    /// # Returns
+    ///
+    /// The origin as written (callers trim and normalize it), or `None` when
+    /// neither is set.
+    #[must_use]
+    pub fn effective_public_origin(&self) -> Option<&str> {
+        self.public_origin
+            .as_deref()
+            .filter(|origin| !origin.trim().is_empty())
+            .or(self.ingress_origin.as_deref())
+    }
 }
 
 impl Default for IntegrationsConfig {
@@ -201,6 +228,7 @@ impl Default for IntegrationsConfig {
             claim_ticket_ttl_hours: 72,
             public_origin: None,
             portal_session_ttl_hours: 12,
+            ingress_origin: None,
         }
     }
 }
@@ -209,6 +237,37 @@ impl Default for IntegrationsConfig {
 mod tests {
     use super::*;
     use crate::Config;
+
+    #[test]
+    fn the_operator_origin_wins_over_the_ingress_origin() {
+        let mut integrations = IntegrationsConfig {
+            ingress_origin: Some("https://relay.example.workers.dev".into()),
+            ..IntegrationsConfig::default()
+        };
+        assert_eq!(
+            integrations.effective_public_origin(),
+            Some("https://relay.example.workers.dev")
+        );
+        integrations.public_origin = Some("  ".into());
+        assert_eq!(
+            integrations.effective_public_origin(),
+            Some("https://relay.example.workers.dev")
+        );
+        integrations.public_origin = Some("https://library.example".into());
+        assert_eq!(
+            integrations.effective_public_origin(),
+            Some("https://library.example")
+        );
+    }
+
+    #[test]
+    fn the_ingress_origin_never_reaches_config_toml() {
+        let mut config = Config::default();
+        config.integrations.ingress_origin = Some("https://relay.example.workers.dev".into());
+        let encoded = toml::to_string(&config.integrations).expect("encode");
+        assert!(!encoded.contains("relay.example"), "{encoded}");
+        assert!(toml::from_str::<IntegrationsConfig>("ingress_origin = \"https://x.example\"").is_err());
+    }
 
     #[test]
     fn plugins_jail_toml_round_trips() {
