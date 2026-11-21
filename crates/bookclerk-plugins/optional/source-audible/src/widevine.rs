@@ -6,8 +6,9 @@
 //! 3. CDM challenge → `drmlicense` → content key (KID/key)
 //! 4. Ranged download of the fMP4, then native DASH/CENC decrypt
 //!
-//! Codecs: AAC-LC always; optional xHE-AAC. Spatial/Atmos needs L1 and is not
-//! requested by acquire on desktop.
+//! Codecs: AAC-LC always; optional xHE-AAC. Spatial audio (Dolby Atmos,
+//! E-AC-3, AC-4) is never requested: it needs Widevine L1, and the license
+//! request always asks for stereo ([`STEREO_ONLY`]).
 
 use std::path::{Path, PathBuf};
 
@@ -21,6 +22,10 @@ use audible_rs::downloader::{
 };
 use audible_rs::widevine::{mpd, provider, Cdm, Device};
 
+/// The spatial flag of every license request: Bookclerk never asks Audible
+/// for spatial audio.
+const STEREO_ONLY: bool = false;
+
 /// Amazon Android device type id required for Widevine drmlicense grants.
 const ANDROID_DEVICE_TYPE: &str = "A10KISP2GWF0E4";
 
@@ -32,8 +37,6 @@ pub const DEFAULT_WIDEVINE_CDM_PROVIDER: &str =
 pub struct WidevineCdm {
     /// Initialized Widevine L3 device used to mint license challenges.
     cdm: Cdm,
-    /// Security level.
-    pub security_level: u8,
 }
 
 /// Resolve provider URL: `None` config → built-in Bookclerk AudibleCdm; empty/`off` → disabled.
@@ -180,16 +183,9 @@ async fn provision_cdm_bytes_from_provider(
 fn load_cdm_from_bytes(bytes: &[u8], label: &str) -> Result<(WidevineCdm, PathBuf)> {
     let device = Device::from_wvd(bytes)
         .map_err(|err| AudibleError::Widevine(format!("failed to parse CDM for {label}: {err}")))?;
-    let security_level = device.security_level();
     let cdm = Cdm::from_device(&device)
         .map_err(|err| AudibleError::Widevine(format!("failed to init CDM for {label}: {err}")))?;
-    Ok((
-        WidevineCdm {
-            cdm,
-            security_level,
-        },
-        PathBuf::from(format!("<db:{label}>")),
-    ))
+    Ok((WidevineCdm { cdm }, PathBuf::from(format!("<db:{label}>"))))
 }
 
 /// Candidate `.wvd` paths: configured (resolved against `files_dir`) then `widevine.wvd`.
@@ -214,14 +210,10 @@ fn load_cdm_at(path: &Path) -> Result<WidevineCdm> {
     let device = Device::from_wvd(&bytes).map_err(|err| {
         AudibleError::Widevine(format!("failed to parse CDM {}: {err}", path.display()))
     })?;
-    let security_level = device.security_level();
     let cdm = Cdm::from_device(&device).map_err(|err| {
         AudibleError::Widevine(format!("failed to init CDM {}: {err}", path.display()))
     })?;
-    Ok(WidevineCdm {
-        cdm,
-        security_level,
-    })
+    Ok(WidevineCdm { cdm })
 }
 
 /// Lowercase hex encoding of a KID or content key.
@@ -260,34 +252,23 @@ struct CachedKey {
 }
 
 /// Request Widevine license, fetch MPD, obtain content key, download CENC (or plain MP3).
-#[allow(clippy::too_many_arguments)]
+///
+/// The request always asks for stereo audio ([`STEREO_ONLY`]).
 pub async fn fetch_widevine_download(
     client: &Client,
     marketplace: &str,
     asin: &str,
     quality: Bitrate,
     xhe: bool,
-    spatial: bool,
     cdm: &WidevineCdm,
     work_dir: &Path,
 ) -> Result<WidevineDownload> {
-    let spatial = if spatial && cdm.security_level != 1 {
-        tracing::warn!(
-            asin,
-            level = cdm.security_level,
-            "Dolby Atmos needs Widevine L1; downloading stereo instead"
-        );
-        false
-    } else {
-        spatial
-    };
-
     let grant = request_widevine_license(
         client,
         marketplace,
         asin,
         Quality::from(quality),
-        spatial,
+        STEREO_ONLY,
         xhe,
     )
     .await

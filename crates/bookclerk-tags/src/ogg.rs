@@ -11,7 +11,9 @@
 use crate::cache::{Miss, Source, Step};
 use crate::flac;
 use crate::text::RecordBuilder;
-use crate::{AudioCodec, ByteSpan, Container, Duration, DurationPrecision, TagError, TagRecord};
+use crate::{
+    AudioCodec, AudioFormat, ByteSpan, Container, Duration, DurationPrecision, TagError, TagRecord,
+};
 
 /// Container name in errors.
 const NAME: &str = "Ogg";
@@ -150,6 +152,7 @@ pub(crate) fn read(src: &Source<'_>) -> Step<TagRecord> {
         Codec::Opus { .. } => AudioCodec::Opus,
         Codec::Vorbis { .. } => AudioCodec::Vorbis,
     });
+    builder.format = head_format(&identification);
     for span in comment_pages {
         builder.region(span);
     }
@@ -276,6 +279,36 @@ fn identify(packet: &[u8]) -> Step<Codec> {
         return Ok(Codec::Vorbis { rate });
     }
     Err(Miss::Fail(TagError::Unsupported))
+}
+
+/// The channel count and sample rate an identification header states.
+///
+/// `OpusHead` carries the version, the channel count, the pre-skip and then
+/// the encoder's input rate, which is zero when unknown (Opus itself always
+/// decodes at 48 kHz). The Vorbis header carries a 4-byte version, the
+/// channel count and the rate.
+fn head_format(packet: &[u8]) -> AudioFormat {
+    let rate_at = |head: &[u8], at: usize| {
+        head.get(at..at + 4)
+            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+            .map(u32::from_le_bytes)
+            .filter(|&rate| rate > 0)
+    };
+    if let Some(head) = packet.strip_prefix(b"OpusHead") {
+        return AudioFormat {
+            channels: head.get(1).copied(),
+            sample_rate_hz: rate_at(head, 4),
+            aac_profile: None,
+        };
+    }
+    if let Some(head) = packet.strip_prefix(b"\x01vorbis") {
+        return AudioFormat {
+            channels: head.get(4).copied(),
+            sample_rate_hz: rate_at(head, 5),
+            aac_profile: None,
+        };
+    }
+    AudioFormat::default()
 }
 
 /// The granule position of the last page of stream `serial` that ends a
@@ -516,6 +549,14 @@ mod tests {
         assert_eq!(record.chapters[1].title, "Later");
         // 48,000 * 10 samples past a 312-sample pre-skip.
         assert_eq!(record.duration.map(|d| d.ms), Some(10_000));
+        assert_eq!(
+            record.format,
+            crate::AudioFormat {
+                channels: Some(2),
+                sample_rate_hz: Some(48_000),
+                aac_profile: None,
+            }
+        );
         record
             .validate(u64::try_from(file.len()).expect("len"))
             .expect("valid");
@@ -557,6 +598,14 @@ mod tests {
         let record = drive(&file).expect("read");
         assert_eq!(record.codec, Some(AudioCodec::Vorbis));
         assert_eq!(record.duration.map(|d| d.ms), Some(2_000));
+        assert_eq!(
+            record.format,
+            crate::AudioFormat {
+                channels: Some(2),
+                sample_rate_hz: Some(22_050),
+                aac_profile: None,
+            }
+        );
     }
 
     #[test]

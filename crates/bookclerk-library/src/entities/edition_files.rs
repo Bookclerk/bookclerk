@@ -48,6 +48,19 @@ pub struct Model {
     /// Quality of that copy (`original`, `64k-mono`, `v2`); `None` exactly
     /// when [`Self::copy_format`] is.
     pub copy_quality: Option<String>,
+    /// The audio encoding a probe found (`aac`, `mp3`, `opus`, ...), once
+    /// probed and when the tag reader knows it.
+    pub codec: Option<String>,
+    /// The AAC profile (`lc`, `he`, `he_v2`, `xhe`) of an AAC file whose
+    /// decoder configuration names one.
+    pub aac_profile: Option<String>,
+    /// Output channels, when the headers state them.
+    pub channels: Option<i64>,
+    /// Output sample rate in hertz, when the headers state it.
+    pub sample_rate_hz: Option<i64>,
+    /// The running time a player sees, in milliseconds; null when unknown,
+    /// never zero.
+    pub duration_ms: Option<i64>,
     /// The host upload id that claimed the key last, or
     /// [`crate::store::ACQUIRE_WRITER`] for an acquire run on this node.
     pub writer: String,
