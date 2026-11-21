@@ -100,6 +100,25 @@ pub const MAX_METADATA_FILE_CHAPTERS: u32 = crate::plugin_capnp::MAX_METADATA_FI
 /// Most audio files a `MetadataFiles.render` request names.
 pub const MAX_METADATA_AUDIO_FILES: u32 = crate::plugin_capnp::MAX_METADATA_AUDIO_FILES;
 
+/// Longest notification title or field name, in UTF-8 bytes.
+pub const MAX_NOTIFICATION_TITLE_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFICATION_TITLE_BYTES;
+
+/// Longest notification plain-text or markdown body, in UTF-8 bytes.
+pub const MAX_NOTIFICATION_TEXT_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFICATION_TEXT_BYTES;
+
+/// Longest notification HTML body, in UTF-8 bytes.
+pub const MAX_NOTIFICATION_HTML_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFICATION_HTML_BYTES;
+
+/// Most labelled fields on one notification message or raise.
+pub const MAX_NOTIFICATION_FIELDS: u32 = crate::plugin_capnp::MAX_NOTIFICATION_FIELDS;
+
+/// Longest notification field value, link, group key or alert key, in UTF-8
+/// bytes.
+pub const MAX_NOTIFICATION_FIELD_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFICATION_FIELD_BYTES;
+
+/// Longest notifier destination address document, in UTF-8 bytes.
+pub const MAX_NOTIFIER_ADDRESS_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFIER_ADDRESS_BYTES;
+
 /// Parses a `CoverFetcher.fetchCovers` sink key into the URL index it names.
 ///
 /// The guest puts the body for `urls[i]` under the key `i`. Only the

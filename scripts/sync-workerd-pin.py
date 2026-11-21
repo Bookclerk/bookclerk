@@ -85,6 +85,11 @@ PLATFORM_MATCH: dict[str, tuple[str, str]] = {
 
 DEFAULT_COOLDOWN_DAYS = 7
 
+# The Pyodide runtime bundle Python isolates load at start. workerd would
+# fetch it itself; the jail gives workerd no network, so the bundle is pinned
+# here, fetched beside the binary and handed to workerd as a read-only cache.
+PYODIDE_BUNDLE_FILE_RE = r"pyodide_[0-9A-Za-z._-]+\.capnp\.bin"
+
 
 def load_pin(path: Path = PIN_JSON) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -115,6 +120,17 @@ def validate_pin(data: object, path: Path) -> None:
             raise SystemExit(
                 f"{path}: assets[{key!r}].sha256_hex must be 64 lowercase hex chars"
             )
+    bundle = data.get("pyodide_bundle")
+    if not isinstance(bundle, dict):
+        raise SystemExit(f"{path}: missing 'pyodide_bundle' object")
+    if not isinstance(bundle.get("file"), str) or not re.fullmatch(
+        PYODIDE_BUNDLE_FILE_RE, bundle["file"]
+    ):
+        raise SystemExit(f"{path}: pyodide_bundle.file must match {PYODIDE_BUNDLE_FILE_RE}")
+    if not isinstance(bundle.get("sha256_hex"), str) or not re.fullmatch(
+        r"[0-9a-f]{64}", bundle["sha256_hex"]
+    ):
+        raise SystemExit(f"{path}: pyodide_bundle.sha256_hex must be 64 lowercase hex chars")
 
 
 def canonical_json(data: dict) -> str:
@@ -131,6 +147,10 @@ def canonical_json(data: dict) -> str:
         "bundled_compat_date": data["bundled_compat_date"],
         "version_stamp": data["version_stamp"],
         "assets": ordered_assets,
+        "pyodide_bundle": {
+            "file": data["pyodide_bundle"]["file"],
+            "sha256_hex": data["pyodide_bundle"]["sha256_hex"],
+        },
     }
     return json.dumps(payload, indent=2) + "\n"
 
@@ -139,6 +159,8 @@ def render_pin_rs(data: dict) -> str:
     tag = data["release_tag"]
     compat = data["bundled_compat_date"]
     stamp = data["version_stamp"]
+    bundle_file = data["pyodide_bundle"]["file"]
+    bundle_sha = data["pyodide_bundle"]["sha256_hex"]
     arms: list[str] = []
     checks: list[str] = []
     for key in PLATFORM_ORDER:
@@ -233,6 +255,23 @@ pub fn download_url(artifact: &str) -> String {{
     )
 }}
 
+/// Pyodide runtime bundle file the pinned workerd loads for Python isolates.
+pub const PYODIDE_BUNDLE_FILE: &str = "{bundle_file}";
+
+/// Expected SHA-256 hex digest of [`PYODIDE_BUNDLE_FILE`].
+pub const PYODIDE_BUNDLE_SHA256_HEX: &str =
+    "{bundle_sha}";
+
+/// Directory beside the `workerd` binary that holds [`PYODIDE_BUNDLE_FILE`];
+/// workerd reads it through `--pyodide-bundle-disk-cache-dir`.
+pub const PYODIDE_BUNDLE_DIR: &str = "pyodide-bundles";
+
+/// Download URL of the pinned Pyodide bundle.
+#[must_use]
+pub fn pyodide_bundle_url() -> String {{
+    format!("https://pyodide-capnp-bin.edgeworker.net/{{PYODIDE_BUNDLE_FILE}}")
+}}
+
 /// On-disk binary name after extracting the gzipped release asset.
 #[must_use]
 pub fn binary_name() -> &'static str {{
@@ -265,6 +304,16 @@ mod pin_json_sync {{
             v["version_stamp"].as_str(),
             Some(WORKERD_VERSION_STAMP),
             "WORKERD_VERSION_STAMP drift vs workerd-pin.json"
+        );
+        assert_eq!(
+            v["pyodide_bundle"]["file"].as_str(),
+            Some(PYODIDE_BUNDLE_FILE),
+            "PYODIDE_BUNDLE_FILE drift vs workerd-pin.json"
+        );
+        assert_eq!(
+            v["pyodide_bundle"]["sha256_hex"].as_str(),
+            Some(PYODIDE_BUNDLE_SHA256_HEX),
+            "PYODIDE_BUNDLE_SHA256_HEX drift vs workerd-pin.json"
         );
         let assets = v["assets"].as_object().expect("assets object");
         let platforms = [

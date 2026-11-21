@@ -110,6 +110,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "egress_relay_head"
+path = "fuzz_targets/egress_relay_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "egress_policy"
 path = "fuzz_targets/egress_policy.rs"
 test = false
@@ -154,6 +161,20 @@ bench = false
 [[bin]]
 name = "metadata_file_record"
 path = "fuzz_targets/metadata_file_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notifier_reply"
+path = "fuzz_targets/notifier_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notify_raise"
+path = "fuzz_targets/notify_raise.rs"
 test = false
 doc = false
 bench = false
@@ -287,6 +308,13 @@ bench = false
 [[bin]]
 name = "media_decode"
 path = "fuzz_targets/media_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media_pcm_wire"
+path = "fuzz_targets/media_pcm_wire.rs"
 test = false
 doc = false
 bench = false
@@ -483,6 +511,13 @@ bench = false
 [[bin]]
 name = "audible_catalog"
 path = "fuzz_targets/audible_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "download_resume"
+path = "fuzz_targets/download_resume.rs"
 test = false
 doc = false
 bench = false

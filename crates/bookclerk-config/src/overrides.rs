@@ -187,6 +187,11 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 _ => crate::MultiDestinationMode::SyncMissing,
             };
         }
+        "output.missing_files" => {
+            if let Some(action) = crate::MissingFileAction::parse(v) {
+                config.output.missing_files = action;
+            }
+        }
         "output.in_progress" => config.output.in_progress = Some(PathBuf::from(v)),
         "diagnostics.share_reports" => {
             config.diagnostics.share_reports = parse_bool(v).unwrap_or(false);
@@ -658,6 +663,14 @@ mod tests {
             assert_eq!(sanitize(v), PathSanitizationMode::None, "{v}");
         }
         assert_eq!(sanitize("other"), PathSanitizationMode::Auto);
+
+        let missing = |v: &str| with("output.missing_files", v).output.missing_files;
+        assert_eq!(missing("Restore"), crate::MissingFileAction::Restore);
+        assert_eq!(
+            missing("mark-missing"),
+            crate::MissingFileAction::MarkMissing
+        );
+        assert_eq!(missing("other"), crate::MissingFileAction::MarkMissing);
 
         let multi = |v: &str| with("output.multi_destination", v).output.multi_destination;
         for v in ["refetch_missing", "refetch-missing"] {

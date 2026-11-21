@@ -179,6 +179,11 @@ const INTERFACES: &[InterfaceEntry] = &[
         methods: &["health", "parse", "render"],
     },
     InterfaceEntry {
+        id: <plugin_capnp::notifier::Client as HasTypeId>::TYPE_ID,
+        name: "Notifier",
+        methods: &["health", "send", "validateDestination"],
+    },
+    InterfaceEntry {
         id: <plugin_capnp::ingress::Client as HasTypeId>::TYPE_ID,
         name: "Ingress",
         methods: &["start", "health", "stop"],

@@ -151,6 +151,9 @@ pub struct OutputConfig {
     /// title: copy from a present dest, re-fetch into missing only, or re-fetch
     /// into every destination.
     pub multi_destination: MultiDestinationMode,
+    /// What happens to a stored copy whose file disappears from its
+    /// destination outside Bookclerk.
+    pub missing_files: MissingFileAction,
     /// Scratch directory for in-progress work; relative to files_dir.
     pub in_progress: Option<PathBuf>,
     /// Operator action when a title fails to acquire (`ask` / `abort` / `retry` / `ignore`).
@@ -216,6 +219,7 @@ impl Default for OutputConfig {
             chapter_layout: String::from("tree"),
             overwrite_existing: false,
             multi_destination: MultiDestinationMode::default(),
+            missing_files: MissingFileAction::default(),
             in_progress: None,
             bad_book_action: BadBookAction::Ask,
             split_mp3_max_mb: 200,
@@ -303,6 +307,43 @@ pub enum MultiDestinationMode {
     RefetchMissing,
     /// Re-run acquire and write to every enabled destination.
     RefetchAll,
+}
+
+/// What happens to a stored copy whose file disappears from its destination
+/// outside Bookclerk (noticed by the destination's change feed or listing).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[schema(example = "mark_missing")]
+pub enum MissingFileAction {
+    /// The copy is marked missing and left alone. When no destination holds
+    /// the edition any more, it is no longer acquired, so a member can ask
+    /// for it again. Default.
+    #[default]
+    MarkMissing,
+    /// The copy turns pending and the background retry writes it again.
+    Restore,
+}
+
+impl MissingFileAction {
+    /// The stored spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MarkMissing => "mark_missing",
+            Self::Restore => "restore",
+        }
+    }
+
+    /// The action a spelling names, ignoring ASCII case and taking `-` for
+    /// `_`; `None` for any other value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "mark_missing" => Some(Self::MarkMissing),
+            "restore" => Some(Self::Restore),
+            _ => None,
+        }
+    }
 }
 
 /// How to handle acquire failures (`BadBook` setting).

@@ -55,14 +55,25 @@ lives, and before allocating a new one it removes this plugin's sibling
 directories whose lock it can take, plus any older than two minutes that
 never got a lock. Links are never followed.
 
+Killing the launcher must also end its `workerd` child. On Linux and macOS
+the jail's session cgroup or process group does that. On Windows the
+launcher puts each `workerd.exe` in its own kill-on-close Job (nested in
+the jail's Job when there is one) and never closes it, so the kernel ends
+`workerd.exe` whenever the launcher process ends, including an unjailed
+launcher killed with `TerminateProcess`. The launcher also clears
+`HANDLE_FLAG_INHERIT` on its standard handles and on every inherited link
+it adopts, the Windows counterpart of `FD_CLOEXEC`, so `workerd.exe` holds
+none of the host's pipes and cannot keep them open after the launcher exits.
+
 ## The bridge socket
 
-The bridge listens on an ephemeral loopback port that only the launcher
-dials. The launcher never picks a port number for workerd to bind:
+The bridge listens on a socket that only the launcher dials:
 
-- **Unix:** the launcher binds `127.0.0.1:0` and hands the listener to
-  workerd with `--socket-fd=rpc=<fd>`. Linux Landlock `OutboundListen`
-  allows `bind(port=0)` only, so workerd could not bind a chosen port.
+- **Unix:** the launcher binds a Unix socket (an abstract name on Linux, a
+  short relative path in the session directory on macOS) and hands the
+  listener to workerd with `--socket-fd=rpc=<fd>`. Neither process needs an
+  IP socket, so the jail is `NetPolicy::LocalIpc` (see
+  [the egress relay](#the-egress-relay)).
 - **Windows:** workerd has no `--socket-fd`, so it binds `127.0.0.1:0`
   itself and reports the port with `--control-fd=1`, one JSON line on its
   stdout: `{"event":"listen","socket":"rpc","port":53117}`. Isolates write
@@ -70,6 +81,34 @@ dials. The launcher never picks a port number for workerd to bind:
   structured logging, and `bookclerk_workerd::control::listen_port` accepts
   only an object with exactly the three control keys. The `workerd_control`
   fuzz target checks that no log line reads as a control message.
+
+## The egress relay
+
+workerd never opens an IP socket. Its generated config has no `network`
+service: the egress worker's only way out is an `external` service with
+`http = (style = proxy)` that points at the launcher's egress relay, a
+Unix socket on Linux and macOS and a loopback port on Windows. workerd
+sends each `fetch()` there as an absolute-form request
+(`GET https://host/path`) and each `connect()` as `CONNECT host:port`.
+
+The relay (`bookclerk_workerd::egress_relay`) turns every request into a
+tunnel on the host link (`BOOKCLERK_WORKERD_EGRESS`, an inherited `fd:3` on
+Unix and two `handle:` pipe halves on Windows). The unsandboxed host checks
+the destination against the grant (`EgressPolicy::allows_isolate_tunnel`:
+fetch hosts on any port, TCP grants on their ports, consented redirects),
+resolves it, checks every address, and dials. For `fetch()` the relay then
+rewrites the head to origin form, sets `host` and `connection: close`,
+drops proxy and hop-by-hop headers, and adds TLS for `https` (Mozilla's
+roots, the hosts' rustls provider). TLS and HTTP stay inside the jail; the
+host only parses the `CONNECT` line, as it does for native guests.
+
+The host link carries no TCP half-close. When a plugin closes its socket's
+writer and keeps reading (`allowHalfOpen`), the relay keeps the tunnel open
+and relays the reply until the server ends it, so the server never sees the
+half-close.
+
+With the grant's network denied, the host passes no link and the egress
+worker's `globalOutbound` is `blocked`.
 
 The launcher forwards workerd's stdout and stderr to its own log line by
 line. It keeps at most 16 KiB of each line and drops the rest, so isolate
@@ -119,9 +158,9 @@ Request headers:
 | --- | --- |
 | `Authorization` | `Bearer <BRIDGE_TOKEN>` |
 | `Content-Type` | `application/x-capnp` |
-| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `MetadataFiles`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
+| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `MetadataFiles`, `Notifier`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
 | `X-Bookclerk-Method` | Method name as declared in `plugin.capnp` (`login`, `event`, `job`, `openSession`, `databaseMigrations`, …) |
-| `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `env.<BINDING>` bindings; authors never see them |
+| `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `notifyToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `NOTIFY` / `env.<BINDING>` bindings; authors never see them |
 | `X-Bookclerk-Caps` | JSON array of capability descriptors for the request message's capability table (only when the `$Params` struct carries interface-typed fields) |
 | `X-Bookclerk-Target` | Isolate-side object id for calls on a capability the isolate returned earlier (`AdapterDatabaseSession.*`) |
 
@@ -194,6 +233,7 @@ reach the launcher through the granted `GET /open` / `PUT /put` routes.
 | `MetadataProvider` | `health`, `lookup`, `search`, `chapters` | `Metadata extends MetadataEntrypoint` |
 | `CoverFetcher` | `health`, `fetchCovers` — the `sink` is a `destination` grant token | `Covers extends CoverEntrypoint` |
 | `MetadataFiles` | `health`, `parse`, `render` | `MetadataFiles extends MetadataFilesEntrypoint` |
+| `Notifier` | `health`, `send`, `validateDestination` | `Notifier extends NotifierEntrypoint` |
 | `Database` | `openSession` | `DatabaseAdapter extends DatabaseAdapterEntrypoint` |
 | `AdapterDatabaseSession` | all 10 (`X-Bookclerk-Target`) | the `AdapterDatabaseSession` object `openSession` returned |
 
@@ -219,6 +259,7 @@ unknown, expired, or revoked tokens.
 | `POST /db/execute-streamed` | `allow_database` | `GuestDatabase.executeStreamed`: the same request bytes as `/db/execute`, answered as consecutive Cap'n `ExecuteStreamFrame`s with a content length. The pre-dispatch checks answer with HTTP statuses like `/db/execute` (an unknown, expired or database-less grant, a chunked request body, a request past `maxRequestBytes` as `413` with the canonical `limit_exceeded` message); once a decoded request is dispatched every outcome is a frame sequence: a SQL authorization failure, a session that does not stream (`unsupported`) or a session error is one `err` frame. A body that does not decode as an `ExecuteRequest` closes the exchange without a reply, as on `/db/execute`; the SDKs report it as a transport failure |
 | `GET /db/limits` | `allow_database` | `GuestDatabase.limits`: the session's `DbCapabilities` as a Cap'n `DbCapabilitiesReply` (`401` when the grant has no database, `500` when the reply cannot be encoded) |
 | `POST /events/publish` | `events` present | `env.EVENTS.publish` |
+| `POST /notify/raise` | `notify` present (a notify-only token minted at `open` when `[[notifications.types]]` is declared) | `env.NOTIFY.raise`: a JSON `NotifyRaiseParams` of at most 128 KiB. The launcher applies the ABI raise checks, then the host's `NotificationRaiser` checks the type against the manifest and the patron against the account scope; it answers `{"notificationId": …}` or the typed `PluginError`. The `notify_raise` fuzz target covers the body |
 | `POST /sockets/<op>` | `sockets` present (a sockets-only token minted at `open` when `[sockets]` is granted) | `env.SOCKETS`: `connect`, `send`, `close`, `attachment` and `list`, each a JSON object of that operation's fields with frames and attachments in base64. The launcher applies the ABI socket checks before calling the host's `Sockets` (a refused call answers the typed `PluginError` with its status, another operation `404`, a body past one base64 frame plus 64 KiB `413`) and answers the `SocketInfo`, `{"sockets": [...]}` or `{}`. The parser is the `socket_route` fuzz target |
 | `POST /origin/fetch` | `origin` present (an origin-only token minted at `open` for a plugin exporting `ingress` when the host grants `ORIGIN`) | `env.ORIGIN.fetch`: the body is a framed head (a 4-byte big-endian length, then the `OriginRequest` as JSON) followed by the request body, which streams on to the library. The launcher checks the head before the library sees it (a refused head, an oversized frame or a body that ends inside the head answers the typed `PluginError`) and answers `200` with a framed response head (status and header fields as JSON) followed by the response body, chunked; a response body that breaks off drops the connection so the isolate never sees a clean end. The frame and head checks are the `origin_request` fuzz target; the HTTP framing around them is `granted_http` |
 

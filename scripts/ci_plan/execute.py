@@ -123,6 +123,7 @@ CUSTOM_HARNESS_TESTS: tuple[tuple[str, str], ...] = (("bookclerk-plugin-catalog"
 # Staged-installation targets of the e2e crate. `native_gateway*` is its own
 # check (three OSes) and must not run again here. `cold_start` only
 # measures (its one test is ignored); listing it keeps it compiling.
+# `workerd_isolate_egress` spawns a jailed isolate through the same helpers.
 E2E_STAGED_TARGETS = (
     "--lib",
     "--test",
@@ -131,6 +132,8 @@ E2E_STAGED_TARGETS = (
     "installed_plugin_path",
     "--test",
     "cold_start",
+    "--test",
+    "workerd_isolate_egress",
 )
 NATIVE_GATEWAY_TESTS = (
     "native_gateway",

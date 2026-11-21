@@ -143,6 +143,10 @@ On the command line, this prints one invite once:
 bookclerk nodes invite --user riley --ttl 24h
 ```
 
+An Administrator whose **Invite branches** switch an Owner turned off is
+refused (`403`); see
+[Sharing](../guide/sharing.md#limit-what-an-administrator-may-do).
+
 An invite looks like
 `<public_origin>/enroll#bcn1.<link_id>.<secret>[.<spki_pin>]`. It is a
 single-use secret:
@@ -500,7 +504,10 @@ The joining daemon writes them as its own bootstrap:
   into the TOML.
 - `node-identity.json`, with the node id the library recorded.
 - `master.key`, wrapped with this server's own `BOOKCLERK_AUTH_PASSWORD`
-  (or `[auth].password`) when set, and unwrapped otherwise.
+  (or `[auth].password`) when set, and unwrapped otherwise. When this
+  server keeps its key in the OS keychain (`[auth].key_store`, or the
+  desktop window's default), the key goes into a new keychain item and
+  `master.key` only names it.
 
 Then `bookclerkd` restarts itself cleanly. It stops its listeners as on
 SIGTERM and re-executes the same binary with the same arguments and
@@ -759,6 +766,8 @@ It runs as the user who owns this node:
 - An Owner or Administrator scanning every account gets one job per
   scan-enabled account, spread over every shared node and host trusted with
   each.
+  An Administrator whose **Scan and acquire library-wide** switch is off
+  counts as anyone else.
 - Anyone else scans only their own accounts. A named account that isn't
   theirs is refused (403).
 - A node trusted with nothing (no owner, a disabled owner, or revoked) is

@@ -73,8 +73,8 @@ OS.
 | `GET`/`PUT /api/config/domains/core.output` | Operator | The authoritative shared `[output]` document and revision (`{expected_revision, document}`) |
 | `GET`/`PUT /api/auth/mfa-policy` | Owner or operator reads; operator changes | `require_second_factor`: password sign-in needs TOTP or a passkey |
 | `GET /api/status` (also `/status`) | Yes | Status snapshot |
-| `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan. Any user may call `/api/library/scan`; a Member scans only the store accounts linked to them. The `/scan` alias stays with Administrators |
-| `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member acquires only from the store accounts linked to them. `editions` queues editions from a work's detail. The `/acquire` alias stays with Administrators |
+| `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan. Any user may call `/api/library/scan`; a Member or an Administrator whose library-wide switch is off scans only the store accounts linked to them. The `/scan` alias stays with Administrators |
+| `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member or an Administrator whose library-wide switch is off acquires only from the store accounts linked to them. `editions` queues editions from a work's detail. The `/acquire` alias stays with Administrators |
 | `GET /api/library/works` | Yes | The library's works, one row per work, paged by cursor and filterable by media kind, kind, acquire status and account; `q` searches titles, people, series and store identifiers |
 | `GET /api/library/works/{id}` | Yes | One work with its editions, store listings, holdings and the caller's own state |
 | `PUT`/`DELETE /api/library/listings/{id}/pin` | Provisioner | Pin a store listing to the edition it sells (it moves there at once, with its holdings and offers, and later scans keep it there), or remove the pin (the listing stays where it is) |
@@ -84,6 +84,11 @@ OS.
 | `GET /api/jobs` (also `/jobs`) | Yes | The durable job list: progress, attempts, times |
 | `POST /api/jobs/{id}/cancel` | Yes | Cancel pending work, or ask running work to stop |
 | `/` | None | The web app, when `ui/dist` is present |
+
+An Owner can turn off single Administrator switches (see
+[Sharing](../guide/sharing.md#limit-what-an-administrator-may-do)). The
+routes a switch guards, such as user changes, pins, splits and job
+cancels, then answer `403` to that Administrator.
 
 - `POST` bodies need `Content-Type: application/json`.
 - Scan and acquire return `409` if one is already pending or running, and
@@ -393,6 +398,36 @@ Give `master.key` a password with `BOOKCLERK_AUTH_PASSWORD` (or
 existing BCK1 key later, run `bookclerk config master-key wrap`, or
 reload `bookclerkd` after setting the password (SIGHUP or
 `POST /api/config/reload`).
+
+A service like this has no OS keychain to keep the key in (no login
+session, no Secret Service), so the key stays in the password-wrapped
+file. Keep the password itself off disk with an encrypted systemd
+credential, which a TPM can seal to the machine:
+
+```sh
+systemd-creds encrypt --name=bookclerk-auth-password - /etc/credstore.encrypted/bookclerk-auth-password
+```
+
+Then load it in the unit, and start `bookclerkd` through a small script
+that reads it into `BOOKCLERK_AUTH_PASSWORD`:
+
+```ini
+LoadCredentialEncrypted=bookclerk-auth-password
+ExecStart=/usr/local/bin/bookclerkd-with-credential
+```
+
+```sh
+#!/bin/sh
+set -eu
+BOOKCLERK_AUTH_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/bookclerk-auth-password")"
+# An empty password would leave a fresh key unwrapped: refuse to start.
+if [ -z "$(printf '%s' "$BOOKCLERK_AUTH_PASSWORD" | tr -d '[:space:]')" ]; then
+  echo "bookclerk-auth-password is empty" >&2
+  exit 1
+fi
+export BOOKCLERK_AUTH_PASSWORD
+exec /usr/local/bin/bookclerkd
+```
 
 If your books live outside the files directory, set an absolute root and
 add it to `ReadWritePaths`:

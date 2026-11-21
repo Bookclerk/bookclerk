@@ -57,6 +57,7 @@ export const ENTRYPOINT_EXPORT_CLASSES: Readonly<Record<string, string>> = Objec
   metadata: "Metadata",
   covers: "Covers",
   metadataFiles: "MetadataFiles",
+  notifier: "Notifier",
   ingress: "Ingress",
 });
 
@@ -85,7 +86,7 @@ export function checkMainModuleSource(
     throw new Error(
       `${mainName}: \`BookclerkPlugin\` was removed in api_version 3; extend ` +
         `\`${base}\` (default export with event()/job() triggers) and export ` +
-        `named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers, MetadataFiles)`,
+        `named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers, MetadataFiles, Notifier)`,
     );
   }
   if (language === "js") {

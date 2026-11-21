@@ -238,7 +238,7 @@ pub fn write_output_within_budget(
     if let Some(max) = max {
         if next > max {
             return Err(MediaError::Native(format!(
-                "MP3 output of {next} bytes would exceed the {max} byte budget"
+                "output of {next} bytes would exceed the {max} byte budget"
             )));
         }
     }

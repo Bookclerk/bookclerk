@@ -164,6 +164,15 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
         .join(", ")}).`,
     });
   }
+  if ((m.notifications?.types?.length ?? 0) > 0) {
+    props.push({
+      name: "NOTIFY",
+      type: "NotifyBinding",
+      doc: `\`[[notifications.types]]\` raiser (${(m.notifications!.types ?? [])
+        .map((t) => t.id)
+        .join(", ")}); the host routes each raise.`,
+    });
+  }
   if (m.work_fs) {
     props.push({
       name: m.work_fs.binding ?? "WORK_FS",
@@ -253,6 +262,7 @@ export function renderEnvTypes(m: Manifest): string {
       "DatabaseBinding",
       "EventPublisherBinding",
       "KvNamespaceBinding",
+      "NotifyBinding",
       "OriginBinding",
       "QueueBinding",
       "SocketsBinding",

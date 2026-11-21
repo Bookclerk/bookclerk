@@ -199,18 +199,51 @@ fn open_unix_fd(fd: i32) -> Result<InheritedDuplex> {
 #[cfg(windows)]
 fn open_windows_handle(value: u64) -> Result<InheritedDuplex> {
     use std::os::windows::io::RawHandle;
-    let pipe = unsafe {
-        tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(
-            value as usize as RawHandle,
-        )?
-    };
+    let raw = usize::try_from(value)
+        .with_context(|| format!("inherited handle {value} does not fit this platform"))?
+        as RawHandle;
+    // Same rule as Unix `FD_CLOEXEC`: the host marked the handle inheritable
+    // only so this process could receive it. Left inheritable, `workerd.exe`
+    // would get a copy of the guest link and keep it open after we exit.
+    stop_inheriting(raw)
+        .with_context(|| format!("clear HANDLE_FLAG_INHERIT on inherited handle {value}"))?;
+    let pipe = unsafe { tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(raw)? };
     Ok(InheritedDuplex::Pipe(pipe))
+}
+
+/// Clears `HANDLE_FLAG_INHERIT` so a later `CreateProcess` does not pass `handle` on.
+///
+/// Rust's process spawn on Windows inherits every inheritable handle, so the
+/// launcher calls this on each handle it holds that `workerd.exe` must not
+/// receive: the adopted sibling links and its own standard handles.
+///
+/// # Arguments
+///
+/// * `handle` - A handle this process owns; ownership is not taken.
+///
+/// # Errors
+///
+/// Returns the OS error when `SetHandleInformation` fails, for example on an
+/// invalid handle.
+#[cfg(windows)]
+pub fn stop_inheriting(handle: std::os::windows::io::RawHandle) -> std::io::Result<()> {
+    /// `HANDLE_FLAG_INHERIT` from `winbase.h`.
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+    extern "system" {
+        fn SetHandleInformation(handle: *mut core::ffi::c_void, mask: u32, flags: u32) -> i32;
+    }
+    // SAFETY: SetHandleInformation only reads the handle value; an invalid one
+    // fails with an OS error instead of touching memory.
+    let ok = unsafe { SetHandleInformation(handle.cast(), HANDLE_FLAG_INHERIT, 0) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     use bookclerk_sandbox::DuplexLink;
 
     #[cfg(unix)]
@@ -243,6 +276,32 @@ mod tests {
         host_tok.write_all(b"pong").await.expect("host write");
         reader.read_exact(&mut buf).await.expect("child read");
         assert_eq!(&buf, b"pong");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_handle_spec_stops_inheritance() {
+        use std::os::windows::io::IntoRawHandle;
+
+        extern "system" {
+            fn GetHandleInformation(handle: *mut core::ffi::c_void, flags: *mut u32) -> i32;
+        }
+
+        let (_host, child) = DuplexLink::pair().expect("pair");
+        child
+            .set_inheritable(true)
+            .expect("mark inheritable like the host");
+        let raw = child.into_owned_handle().into_raw_handle();
+        let spec = format!("handle:{}", raw as usize);
+        let _opened = InheritedDuplex::open(&spec).expect("open child end");
+        let mut flags = 0_u32;
+        let ok = unsafe { GetHandleInformation(raw.cast(), &mut flags) };
+        assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(
+            flags & 0x1,
+            0,
+            "inherited link must not stay inheritable so workerd.exe cannot hold it"
+        );
     }
 
     #[test]

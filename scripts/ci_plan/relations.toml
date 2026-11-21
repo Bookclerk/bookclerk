@@ -83,6 +83,10 @@ paths = [
     "fuzz/oracles/plain_fetch.rs",
     "fuzz/corpus/metadata_file_record/**",
     "fuzz/oracles/metadata_file_record.rs",
+    "fuzz/corpus/notifier_reply/**",
+    "fuzz/oracles/notifier_reply.rs",
+    "fuzz/corpus/notify_raise/**",
+    "fuzz/oracles/notify_raise.rs",
     "fuzz/corpus/event_read/**",
     "fuzz/oracles/event_read.rs",
     "fuzz/corpus/socket_request/**",
@@ -142,7 +146,12 @@ paths = ["fuzz/corpus/title_meta_fill/**", "fuzz/oracles/title_meta_fill.rs"]
 # The mux peer oracle is shared the same way with the plugin-sdk replay test.
 [[test_input]]
 package = "bookclerk-plugin-sdk"
-paths = ["fuzz/corpus/mux_peer/**", "fuzz/oracles/mux_peer.rs"]
+paths = [
+  "fuzz/corpus/mux_peer/**",
+  "fuzz/oracles/mux_peer.rs",
+  "fuzz/corpus/download_resume/**",
+  "fuzz/oracles/download_resume.rs",
+]
 
 [[test_input]]
 package = "bookclerk-db-exec"
@@ -154,10 +163,13 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-# The workerd_control, socket_broker, socket_route and egress_bridge oracles
-# are shared with the replay tests through `#[path]`; the egress_bridge
-# replay compares its result with the SDK's committed vectors.
+# The workerd_control, socket_broker, socket_route, egress_relay_head and
+# egress_bridge oracles are shared with the replay tests through `#[path]`;
+# the egress_bridge replay compares its result with the SDK's committed
+# vectors.
 paths = [
+    "fuzz/corpus/egress_relay_head/**",
+    "fuzz/oracles/egress_relay_head.rs",
     "fuzz/corpus/granted_http/**",
     "fuzz/corpus/egress_bridge/**",
     "fuzz/oracles/egress_bridge.rs",
@@ -246,6 +258,14 @@ package = "bookclerk-media"
 paths = [
     "fuzz/corpus/media_decode/**",
     "fuzz/oracles/media_decode.rs",
+]
+
+[[test_input]]
+package = "bookclerk-media"
+# The media_pcm_wire oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_pcm_wire/**",
+    "fuzz/oracles/media_pcm_wire.rs",
 ]
 
 [[test_input]]
@@ -432,6 +452,8 @@ build = [
     "bookclerk-plugin-destination-local",
     "bookclerk-jail",
     "bookclerk-workerd",
+    # The desktop window's player test decodes through the PCM worker.
+    "bookclerk-media-worker",
 ]
 ensure_workerd = true
 

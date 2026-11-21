@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::chapter_align::ChapterAlignOptions;
 use crate::error::Result;
 use crate::metadata::FixupRequest;
+use crate::opus_enc::OpusEncodeOptions;
 use crate::package_m4b::PackageM4bRequest;
 use crate::MediaOutcome;
 use bookclerk_mp4::TrimRange;
@@ -20,7 +21,7 @@ use bookclerk_mp4::TrimRange;
 /// A single codec operation.
 ///
 /// These are the CPU-bound paths that decode or encode attacker-influenced
-/// audio through LAME and FDK-AAC, both of which are C libraries.
+/// audio through LAME, FDK-AAC and libopus, all of which are C libraries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum MediaJob {
@@ -34,6 +35,18 @@ pub enum MediaJob {
         lame: Box<LameConfig>,
         /// Optional ceiling for output sample rate in Hz (`None` = leave source).
         max_sample_rate: Option<u32>,
+        /// Hard cap on bytes written to `output`. `None` does not cap the file.
+        #[serde(default)]
+        max_output_bytes: Option<u64>,
+    },
+    /// Encode audio to Ogg Opus via Symphonia and libopus.
+    EncodeOpus {
+        /// Absolute path of the source audio to encode.
+        input: PathBuf,
+        /// Absolute path where the `.opus` file should be written.
+        output: PathBuf,
+        /// Bitrate and channel choice.
+        options: OpusEncodeOptions,
         /// Hard cap on bytes written to `output`. `None` does not cap the file.
         #[serde(default)]
         max_output_bytes: Option<u64>,
@@ -137,7 +150,9 @@ impl MediaJob {
     #[must_use]
     pub fn read_paths(&self) -> Vec<PathBuf> {
         match self {
-            Self::EncodeMp3 { input, .. } | Self::RemuxTrimmed { input, .. } => {
+            Self::EncodeMp3 { input, .. }
+            | Self::EncodeOpus { input, .. }
+            | Self::RemuxTrimmed { input, .. } => {
                 vec![input.clone()]
             }
             Self::Fixup { request } => {
@@ -162,7 +177,9 @@ impl MediaJob {
             return vec![output_dir.clone()];
         }
         let output = match self {
-            Self::EncodeMp3 { output, .. } | Self::RemuxTrimmed { output, .. } => Some(output),
+            Self::EncodeMp3 { output, .. }
+            | Self::EncodeOpus { output, .. }
+            | Self::RemuxTrimmed { output, .. } => Some(output),
             Self::Fixup { request } => Some(&request.output),
             Self::PackageM4b { request } => Some(&request.output),
             Self::AlignChapters { .. } | Self::ExtractArchive { .. } => None,
@@ -178,6 +195,7 @@ impl MediaJob {
     pub fn label(&self) -> &'static str {
         match self {
             Self::EncodeMp3 { .. } => "encode_mp3",
+            Self::EncodeOpus { .. } => "encode_opus",
             Self::RemuxTrimmed { .. } => "remux_trimmed",
             Self::Fixup { .. } => "fixup",
             Self::PackageM4b { .. } => "package_m4b",
@@ -249,6 +267,15 @@ impl MediaJob {
                     max_sample_rate,
                     max_output_bytes,
                 )?;
+                Ok(MediaJobOutput::File { output })
+            }
+            Self::EncodeOpus {
+                input,
+                output,
+                options,
+                max_output_bytes,
+            } => {
+                crate::opus_enc::encode_to_opus_native(&input, &output, options, max_output_bytes)?;
                 Ok(MediaJobOutput::File { output })
             }
             Self::RemuxTrimmed {
@@ -348,6 +375,22 @@ mod tests {
         let job = encode_job("/cache/in.m4b", "/out/book/ch1.mp3");
         assert_eq!(job.read_paths(), vec![PathBuf::from("/cache/in.m4b")]);
         assert_eq!(job.write_dirs(), vec![PathBuf::from("/out/book")]);
+    }
+
+    #[test]
+    fn opus_encode_declares_its_input_and_output_directory() {
+        let job = MediaJob::EncodeOpus {
+            input: PathBuf::from("/cache/in.m4b"),
+            output: PathBuf::from("/out/book/book.opus"),
+            options: OpusEncodeOptions {
+                bitrate_kbps: 32,
+                mono: true,
+            },
+            max_output_bytes: None,
+        };
+        assert_eq!(job.read_paths(), vec![PathBuf::from("/cache/in.m4b")]);
+        assert_eq!(job.write_dirs(), vec![PathBuf::from("/out/book")]);
+        assert_eq!(job.label(), "encode_opus");
     }
 
     #[test]

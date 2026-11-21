@@ -48,6 +48,7 @@ Entrypoint = Literal[
     "metadata",
     "covers",
     "metadataFiles",
+    "notifier",
     "ingress",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
@@ -148,6 +149,22 @@ MetadataField = Literal[
 fields their format carries; a parsed record lists the ones its file
 states, and a render request lists the ones to write.
 """
+
+NotificationSeverity = Literal["info", "warning", "critical"]
+"""How urgent a notification is. Routing rules carry a minimum severity."""
+
+NotificationAudience = Literal["operational", "patron", "account"]
+"""Who a notification type is for. The account audience is reserved to the
+host; a plugin may declare only operational and patron types.
+"""
+
+NotificationAlertAction = Literal["none", "trigger", "resolve"]
+"""Lifecycle step of an alert, for services such as PagerDuty that open and
+close incidents.
+"""
+
+NotifyDestinationKind = Literal["channel", "personal"]
+"""Kind of destination a `Notifier` sends to."""
 
 DbType = Literal["unspecified", "bool", "int64", "float64", "text", "bytes"]
 """Universal database cell/parameter domain. Engine-native arrays, enums,
@@ -751,6 +768,9 @@ class Bindings(TypedDict):
         sockets: `SOCKETS`: host-brokered outbound WebSockets that stay open while the
             guest sleeps; null unless `[sockets]` is declared and granted. Null when the
             guest does not export this capability.
+        notify: `NOTIFY`: raises the notification types the plugin declares in
+            `[[notifications.types]]`; null when it declares none. Null when the guest
+            does not export this capability.
         origin: `ORIGIN`: the library itself, for a relay `ingress` plugin to send the
             public requests it carries to; null unless the plugin is the library's
             active relay ingress. Null when the guest does not export this capability.
@@ -766,6 +786,7 @@ class Bindings(TypedDict):
     queues: list[NamedQueue]
     kv: list[NamedKv]
     sockets: NotRequired[Sockets | None]
+    notify: NotRequired[NotificationRaiser | None]
     origin: NotRequired[Origin | None]
 
 
@@ -801,6 +822,8 @@ class Entrypoints(TypedDict):
             sockets. Null when the guest does not export this capability.
         metadataFiles: `metadataFiles` entrypoint. Null when the guest does not export
             this capability.
+        notifier: `notifier` entrypoint. Null when the guest does not export this
+            capability.
         ingress: `ingress` entrypoint. Null when the guest does not export this
             capability.
     """
@@ -819,6 +842,7 @@ class Entrypoints(TypedDict):
     covers: NotRequired[CoverFetcher | None]
     socketHandler: NotRequired[SocketHandler | None]
     metadataFiles: NotRequired[MetadataFiles | None]
+    notifier: NotRequired[Notifier | None]
     ingress: NotRequired[Ingress | None]
 
 
@@ -3170,6 +3194,68 @@ class MetadataFiles(Protocol):
 
         Returns:
             ``MetadataFileRenderReply``
+        """
+        ...
+
+
+class Notifier(Protocol):
+    """`notifier` entrypoint: delivers one host-rendered message to one
+    destination (an email address, a chat webhook, a push subscription). The
+    host decides what is worth a notification, who gets it and which instance
+    carries it; the plugin only sends. Each send is one claimed `notify.send`
+    job, so the host owns retries: a reply of `rate_limited`, `unavailable`,
+    `deadline_exceeded` or `cancelled` is retried (`rate_limited` honouring
+    `details.retryAfterMs`), any other error is a permanent failure for that
+    destination.
+    """
+
+    async def health(self) -> HealthReply:
+        """Liveness / readiness probe: credentials and reachability.
+
+        Returns:
+            ``HealthReply``
+        """
+        ...
+
+    async def send(self, params: NotifySendParams) -> NotifySendReply:
+        """Deliver one message to one destination.
+
+        Args:
+            params: Message and destination.
+
+        Returns:
+            ``NotifySendReply``
+        """
+        ...
+
+    async def validate_destination(self, params: NotifyValidateParams) -> NotifyValidateReply:
+        """Normalise and check a personal destination's address before the host
+        saves it.
+
+        Args:
+            params: Address document to check.
+
+        Returns:
+            ``NotifyValidateReply``
+        """
+        ...
+
+
+class NotificationRaiser(Protocol):
+    """`NOTIFY` binding: raises a notification type the plugin declared in
+    `[[notifications.types]]`. The host router applies the administrators'
+    routing and each patron's preferences; the raising plugin never learns
+    where the notification went.
+    """
+
+    async def raise_(self, params: NotifyRaiseParams) -> NotifyRaiseReply:
+        """Raise one notification.
+
+        Args:
+            params: Declared type, fields and optional patron.
+
+        Returns:
+            ``NotifyRaiseReply``
         """
         ...
 
@@ -5891,6 +5977,270 @@ MetadataFileRenderReply = Union[
 """Result union of `MetadataFiles.render`."""
 
 
+class NotificationField(TypedDict):
+    """One labelled value shown with a notification.
+
+    Attributes:
+        name: Label; at most `maxNotificationTitleBytes`.
+        value: Value; at most `maxNotificationFieldBytes`.
+    """
+
+    name: str
+    value: str
+
+
+class NotificationMessage(TypedDict):
+    """A message the host rendered for one notification. Every link is built
+    from the library's public origin, never from a request.
+
+    Attributes:
+        notificationId: Host-assigned id, the same on every destination's copy; plugins
+            use it as an idempotency key where the service takes one.
+        notificationType: Notification type id (`job_failed`, `<plugin>:sync_failed`).
+        severity: How urgent it is.
+        title: Short title; at most `maxNotificationTitleBytes`.
+        text: Plain-text body; at most `maxNotificationTextBytes`.
+        markdown: Markdown body for chat services; at most `maxNotificationTextBytes`.
+            Omitted when absent (wire zero value).
+        html: Minimal HTML body for email; at most `maxNotificationHtmlBytes`. Omitted
+            when absent (wire zero value).
+        link: Absolute `https` (or loopback `http`) link into the library. Omitted when
+            absent (wire zero value).
+        fields: Labelled values, at most `maxNotificationFields`.
+        groupKey: Messages with one group key may be threaded or collapsed together.
+            Omitted when absent (wire zero value).
+        alertAction: Alert lifecycle step; `none` for a one-off message.
+        alertKey: Alert this message opens or closes; required unless `alertAction` is
+            `none`. Omitted when absent (wire zero value).
+        sensitive: True when the body carries a secret (an account-mail link): the
+            plugin and SDKs must never log it.
+    """
+
+    notificationId: str
+    notificationType: str
+    severity: NotificationSeverity
+    title: str
+    text: str
+    markdown: NotRequired[str]
+    html: NotRequired[str]
+    link: NotRequired[str]
+    fields: list[NotificationField]
+    groupKey: NotRequired[str]
+    alertAction: NotificationAlertAction
+    alertKey: NotRequired[str]
+    sensitive: bool
+
+
+class NotifyDestination(TypedDict):
+    """Where a `Notifier.send` goes.
+
+    Attributes:
+        kind: Channel or personal destination.
+        destinationId: Host id of the destination, stable across sends.
+        addressJson: Personal address as a JSON object of the fields the manifest's
+            `[[notifier.address_fields]]` declare; empty for a channel. At most
+            `maxNotifierAddressBytes`. May hold secrets; never logged.
+    """
+
+    kind: NotifyDestinationKind
+    destinationId: str
+    addressJson: str
+
+
+class NotifySendParams(TypedDict):
+    """Params of `Notifier.send`.
+
+    Attributes:
+        message: What to send.
+        destination: Where to send it.
+    """
+
+    message: NotificationMessage
+    destination: NotifyDestination
+
+
+class NotifySent(TypedDict):
+    """Success payload of `Notifier.send`.
+
+    Attributes:
+        providerId: The service's id for the delivered message, when it gives one.
+            Omitted when absent (wire zero value).
+    """
+
+    providerId: NotRequired[str]
+
+
+class NotifySendReplyOk(TypedDict):
+    """``NotifySendReply`` member ``ok``.
+
+    Delivered.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Delivered.
+    """
+
+    kind: Literal["ok"]
+    value: NotifySent
+
+
+class NotifySendReplyErr(TypedDict):
+    """``NotifySendReply`` member ``err``.
+
+    Typed failure; `rate_limited`, `unavailable`, `deadline_exceeded` and `cancelled` are retried.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `rate_limited`, `unavailable`, `deadline_exceeded` and
+            `cancelled` are retried.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+NotifySendReply = Union[
+    NotifySendReplyOk,
+    NotifySendReplyErr,
+]
+"""Result union of `Notifier.send`."""
+
+
+class NotifyValidateParams(TypedDict):
+    """Params of `Notifier.validateDestination`.
+
+    Attributes:
+        addressJson: Address document as the patron entered it; at most
+            `maxNotifierAddressBytes`.
+    """
+
+    addressJson: str
+
+
+class NotifyValidated(TypedDict):
+    """Success payload of `Notifier.validateDestination`.
+
+    Attributes:
+        addressJson: Normalised address document the host saves; at most
+            `maxNotifierAddressBytes`.
+        label: Short label shown to the patron (`a***@example.com`); never a secret.
+            Omitted when absent (wire zero value).
+    """
+
+    addressJson: str
+    label: NotRequired[str]
+
+
+class NotifyValidateReplyOk(TypedDict):
+    """``NotifyValidateReply`` member ``ok``.
+
+    Accepted, normalised address.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Accepted, normalised address.
+    """
+
+    kind: Literal["ok"]
+    value: NotifyValidated
+
+
+class NotifyValidateReplyErr(TypedDict):
+    """``NotifyValidateReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+NotifyValidateReply = Union[
+    NotifyValidateReplyOk,
+    NotifyValidateReplyErr,
+]
+"""Result union of `Notifier.validateDestination`. An address the plugin
+refuses is `invalid_params`.
+"""
+
+
+class NotifyRaiseParams(TypedDict):
+    """Params of `NotificationRaiser.raise`.
+
+    Attributes:
+        notificationType: Type id from the plugin's `[[notifications.types]]` (without
+            the plugin prefix the host adds).
+        fields: Labelled values, at most `maxNotificationFields`.
+        patronId: Patron the notification is for; required for a patron-audience type
+            and must be inside the invocation's account scope; empty otherwise. Omitted
+            when absent (wire zero value).
+        linkPath: Path inside the library the notification links to (starts with `/`);
+            the host prefixes the public origin. Omitted when absent (wire zero value).
+        groupKey: Messages with one group key may be threaded or collapsed together.
+            Omitted when absent (wire zero value).
+        alertAction: Alert lifecycle step; `none` for a one-off notification.
+        alertKey: Alert this raise opens or closes; required unless `alertAction` is
+            `none`. Omitted when absent (wire zero value).
+    """
+
+    notificationType: str
+    fields: list[NotificationField]
+    patronId: NotRequired[str]
+    linkPath: NotRequired[str]
+    groupKey: NotRequired[str]
+    alertAction: NotificationAlertAction
+    alertKey: NotRequired[str]
+
+
+class NotifyRaised(TypedDict):
+    """Success payload of `NotificationRaiser.raise`.
+
+    Attributes:
+        notificationId: Host-assigned notification id.
+    """
+
+    notificationId: str
+
+
+class NotifyRaiseReplyOk(TypedDict):
+    """``NotifyRaiseReply`` member ``ok``.
+
+    Accepted by the router.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Accepted by the router.
+    """
+
+    kind: Literal["ok"]
+    value: NotifyRaised
+
+
+class NotifyRaiseReplyErr(TypedDict):
+    """``NotifyRaiseReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+NotifyRaiseReply = Union[
+    NotifyRaiseReplyOk,
+    NotifyRaiseReplyErr,
+]
+"""Result union of `NotificationRaiser.raise`."""
+
+
 class SocketFrameText(TypedDict):
     """``SocketFrame`` member ``text``.
 
@@ -7636,6 +7986,10 @@ __all__ = [
     "PriceLookup",
     "Abridgement",
     "MetadataField",
+    "NotificationSeverity",
+    "NotificationAudience",
+    "NotificationAlertAction",
+    "NotifyDestinationKind",
     "DbType",
     "DbStatementKind",
     "DbResultSelection",
@@ -7806,6 +8160,8 @@ __all__ = [
     "MetadataProvider",
     "CoverFetcher",
     "MetadataFiles",
+    "Notifier",
+    "NotificationRaiser",
     "EventConsumerSpec",
     "PluginCapabilities",
     "CatalogCapabilities",
@@ -7977,6 +8333,24 @@ __all__ = [
     "MetadataFileRenderReplyOk",
     "MetadataFileRenderReplyErr",
     "MetadataFileRenderReply",
+    "NotificationField",
+    "NotificationMessage",
+    "NotifyDestination",
+    "NotifySendParams",
+    "NotifySent",
+    "NotifySendReplyOk",
+    "NotifySendReplyErr",
+    "NotifySendReply",
+    "NotifyValidateParams",
+    "NotifyValidated",
+    "NotifyValidateReplyOk",
+    "NotifyValidateReplyErr",
+    "NotifyValidateReply",
+    "NotifyRaiseParams",
+    "NotifyRaised",
+    "NotifyRaiseReplyOk",
+    "NotifyRaiseReplyErr",
+    "NotifyRaiseReply",
     "SocketFrameText",
     "SocketFrameBinary",
     "SocketFrame",

@@ -39,7 +39,7 @@ Classic Libation setting names work as aliases where
 | --- | --- |
 | `[library]` | Auto-acquire, scan interval, Audible matching, storage layout fix |
 | `[database]`, `[database.sqlite]`, `[database.d1]`, `[database.postgres]` | The library database plugin (`sqlite` by default, Cloudflare D1 or PostgreSQL) |
-| `[auth]` | `[auth].password` to wrap `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`), and `[auth.oidc]` sign-in providers |
+| `[auth]` | `[auth].password` to wrap the library key (prefer `BOOKCLERK_AUTH_PASSWORD`), `[auth].key_store` (`file` or `keychain`; see [The key in the OS keychain](database.md#the-key-in-the-os-keychain)), and `[auth.oidc]` sign-in providers |
 | `[media]` | The codec worker pool: concurrency and confinement; see [Media worker](media.md) |
 | `[uploads]` | Upload limits on this node: file size, staging quota, free-disk floor and idle pruning; see [Upload limits](#upload-limits) |
 | `[plugins]` | How external plugins are jailed; see [Isolation modes](plugins.md#isolation-modes) |
@@ -214,22 +214,25 @@ can read `core.events` and `core.output`:
 | File or setting | Role |
 | --- | --- |
 | `[database]` and the `BOOKCLERK_DATABASE_*`, D1 and Postgres variables | Which library database to open |
-| `master.key`, with `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` | The library's data-encryption key |
+| `master.key`, with `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` | The library's data-encryption key, or a pointer to the OS keychain item that holds it |
 | `node-identity.json` | This host's stable id, and the library it joined |
 
 **Adding a second host to an existing database:**
 
 - Copy `master.key` and the database settings. The host must have the
-  same `master.key`; Bookclerk never mints a new key when the database
-  already has a secret-root fingerprint.
+  same key; Bookclerk never mints a new key when the database already has
+  a secret-root fingerprint. A `master.key` that points at an OS keychain
+  item names that machine's keychain only: bring the key over with
+  `bookclerk config master-key export` and `import` instead.
 - Leave out `node-identity.json` so the process becomes a new host.
   Copying it reuses the host id, and a file bound to a different library
   fails without changing either side.
 
 The CLI aligns the key when a command opens the library, and never mints
-or caches a key before the command runs. `bookclerk config master-key
-status` and `bookclerk config master-key wrap` don't open the database,
-and `wrap` fails when `master.key` is missing.
+or caches a key before the command runs. `bookclerk config master-key`
+`status`, `wrap`, `move`, `export` and `import` don't open the database;
+`wrap`, `move` and `export` fail when there is no key, and `import` fails
+when there already is one.
 
 ## Branch nodes
 
@@ -501,7 +504,9 @@ the extra copies of each book (`copies`, see
 [Keeping several copies](output.md#keeping-several-copies)), Widevine
 and CDM provider, naming profile and templates, sidecars, cover
 and chapter options, LAME settings, timestamps, path sanitization and
-replacement rules, file name length, and the multi-destination policy.
+replacement rules, file name length, the multi-destination policy, and
+what happens when a stored file disappears (`missing_files`, see
+[Noticing changes made outside Bookclerk](output.md#noticing-changes-made-outside-bookclerk)).
 
 It follows the same rules as `core.events`:
 

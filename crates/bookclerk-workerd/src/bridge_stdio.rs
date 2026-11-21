@@ -34,12 +34,12 @@ use bookclerk_plugin_abi::{
     Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer, EventConsumerClient,
     ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Ingress, IngressClient, Invocation,
     JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles,
-    MetadataFilesClient, MetadataProvider, MetadataProviderClient, ObjectMetadata, Oidc,
-    OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient, PluginClient,
-    PluginDescribe, PluginMigration, PluginWorker, PutResult, QueueConsumer, QueueConsumerClient,
-    ReadResult, RemoteLibrary, RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient,
-    SocketHandler, SocketHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
-    PRODUCT_API_VERSION,
+    MetadataFilesClient, MetadataProvider, MetadataProviderClient, Notifier, NotifierClient,
+    ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli,
+    PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult,
+    QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient,
+    ScheduledHandler, ScheduledHandlerClient, SocketHandler, SocketHandlerClient, WriteOptions,
+    MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -181,6 +181,7 @@ impl WorkerdRoot {
             queues: BTreeMap::new(),
             kv: BTreeMap::new(),
             sockets: BTreeMap::new(),
+            notify_token: None,
             origin_token: None,
         };
         let requested = self.manifest_families();
@@ -223,6 +224,7 @@ impl WorkerdRoot {
                 .sockets
                 .filter(|_| self.capabilities.sockets)
                 .map(Arc::from),
+            notify: bindings.notify.map(Arc::from),
             origin: bindings
                 .origin
                 .filter(|_| self.exports(Entrypoint::Ingress))
@@ -351,6 +353,29 @@ impl WorkerdRoot {
             }
             None => (BTreeMap::new(), None),
         };
+        // A notify-only grant token for the `NOTIFY` binding: the adapter
+        // isolate raises through `/notify/raise` with it and installs
+        // `env.NOTIFY` on the author's `env`.
+        let (notify_token, notify_grant) = match bindings.notify {
+            Some(raiser) => {
+                let token = format!("{:032x}", rand::random::<u128>());
+                self.table.borrow_mut().insert(
+                    token.clone(),
+                    GrantedSlot::notify_only(
+                        Rc::from(raiser),
+                        grant_expiry(invocation.deadline_unix_ms),
+                    ),
+                );
+                (
+                    Some(token.clone()),
+                    Some(RevokeGrant {
+                        table: Rc::clone(&self.table),
+                        grant: token,
+                    }),
+                )
+            }
+            None => (None, None),
+        };
         // One origin-only grant token for a relay ingress plugin: the
         // adapter isolate reaches the library over `/origin/fetch` and
         // installs `ORIGIN` on the author's `env`.
@@ -386,6 +411,7 @@ impl WorkerdRoot {
             queues,
             kv,
             sockets,
+            notify_token,
             origin_token,
         };
         let ctx_json = context_header(&ctx)?;
@@ -395,6 +421,7 @@ impl WorkerdRoot {
             _queues: queue_grants,
             _kv: kv_grants,
             _sockets: sockets_grant,
+            _notify: notify_grant,
             _origin: origin_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
@@ -441,6 +468,9 @@ impl WorkerdRoot {
         if self.exports(Entrypoint::MetadataFiles) {
             exported.metadata_files = Some(Box::new(MetadataFilesClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::Notifier) {
+            exported.notifier = Some(Box::new(NotifierClient::new(invoke.typed())));
+        }
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
         }
@@ -484,6 +514,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         covers,
         socket_handler,
         metadata_files,
+        notifier,
         ingress,
     } = opened;
     Entrypoints {
@@ -529,6 +560,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         metadata_files: metadata_files
             .filter(|_| allow(Entrypoint::MetadataFiles.wire_name()))
             .map(|c| Box::new(c) as Box<dyn MetadataFiles>),
+        notifier: notifier
+            .filter(|_| allow(Entrypoint::Notifier.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn Notifier>),
         ingress: ingress
             .filter(|_| allow(Entrypoint::Ingress.wire_name()))
             .map(|c| Box::new(c) as Box<dyn Ingress>),
@@ -581,6 +615,10 @@ struct BridgeContext {
     /// most one entry.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     sockets: BTreeMap<String, String>,
+    /// Notify-only bearer for `/notify/raise`, when the manifest declares
+    /// `[[notifications.types]]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notify_token: Option<String>,
     /// Origin-only bearer for `/origin/fetch`: the `ORIGIN` binding of the
     /// active relay ingress plugin.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -605,6 +643,7 @@ struct OpenGrants {
     _queues: Vec<RevokeGrant>,
     _kv: Vec<RevokeGrant>,
     _sockets: Option<RevokeGrant>,
+    _notify: Option<RevokeGrant>,
     _origin: Option<RevokeGrant>,
 }
 
@@ -851,6 +890,7 @@ impl JobRunner for InvokeJobRunner {
                 queue: None,
                 kv: None,
                 sockets: None,
+                notify: None,
                 origin: None,
             },
         );
@@ -998,6 +1038,7 @@ mod tests {
             queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
             sockets: BTreeMap::from([("SOCKETS".to_string(), "stok".to_string())]),
+            notify_token: None,
             origin_token: Some("otok".into()),
         };
         let json = context_header(&JobBridgeContext {

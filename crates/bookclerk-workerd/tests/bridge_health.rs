@@ -14,6 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use bookclerk_workerd::bridge_addr::BridgeAddr;
 use bookclerk_workerd::bridge_http::{check_health, BridgeHttp};
 
 /// The bearer token the test sends, to check where it arrives.
@@ -137,7 +138,10 @@ fn bridge_requests_skip_an_inherited_proxy() {
     }
     let (target, target_rx) = one_shot_server();
     runtime()
-        .block_on(check_health(target.port(), "test-bridge-token"))
+        .block_on(check_health(
+            &BridgeAddr::Tcp(target.port()),
+            "test-bridge-token",
+        ))
         .expect("health");
     let head = target_rx
         .recv_timeout(Duration::from_secs(5))
@@ -155,7 +159,7 @@ fn bridge_requests_skip_an_inherited_proxy() {
     let err = runtime()
         .block_on(
             BridgeHttp {
-                port: target.port(),
+                addr: BridgeAddr::Tcp(target.port()),
                 token: "wrong".to_owned(),
             }
             .health(),
@@ -168,7 +172,7 @@ fn bridge_requests_skip_an_inherited_proxy() {
     let err = runtime()
         .block_on(
             BridgeHttp {
-                port: target.port(),
+                addr: BridgeAddr::Tcp(target.port()),
                 token: "test-bridge-token".to_owned(),
             }
             .health(),

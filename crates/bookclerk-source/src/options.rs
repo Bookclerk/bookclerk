@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use bookclerk_config::{
     resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DestinationNaming,
-    FileTimestampMode, LameConfig, NamingProfile, OutputConfig, OutputCopy, OutputFormat,
-    PathLimits, ReplacementRule, ResolvedNamingTemplates,
+    FileTimestampMode, LameConfig, NamingProfile, OpusSettings, OutputConfig, OutputCopy,
+    OutputFormat, PathLimits, ReplacementRule, ResolvedNamingTemplates,
 };
 use serde::{Deserialize, Serialize};
 
@@ -82,6 +82,10 @@ pub struct DownloadOptions {
     /// [`Self::lame`] make (`output.copies`).
     #[serde(default)]
     pub copies: Vec<OutputCopy>,
+    /// Opus encoder settings used when [`Self::format`] is `opus`: the main
+    /// output's defaults, or an Opus copy's quality after [`Self::for_copy`].
+    #[serde(default)]
+    pub opus: OpusSettings,
     /// Optional ceiling for output sample rate in Hz (`None` = leave source rate).
     pub max_sample_rate: Option<u32>,
     /// How to set the file creation / birth timestamp after acquire.
@@ -132,6 +136,7 @@ impl From<&OutputConfig> for DownloadOptions {
             download_speed_limit_kbps: cfg.download_speed_limit_kbps,
             lame: cfg.lame.clone(),
             copies: cfg.copies.clone(),
+            opus: OpusSettings::default(),
             max_sample_rate: cfg.max_sample_rate,
             creation_time: cfg.creation_time,
             last_write_time: cfg.last_write_time,
@@ -206,6 +211,12 @@ impl DownloadOptions {
         let mut options = self.clone();
         options.format = copy.format.output();
         options.lame = copy.quality.lame(&self.lame);
+        options.opus = copy
+            .opus_kbps()
+            .map_or_else(OpusSettings::default, |(kbps, mono)| OpusSettings {
+                kbps,
+                mono,
+            });
         options.split_files_by_chapter = options.format.wants_split_by_chapter();
         options
     }
@@ -228,7 +239,7 @@ impl DownloadOptions {
         self.effective_output().is_noop()
     }
 
-    /// True when Opus packaging is selected (not yet implemented).
+    /// True when the effective format encodes to Ogg Opus.
     #[must_use]
     pub fn wants_opus(&self) -> bool {
         self.effective_output().wants_opus()

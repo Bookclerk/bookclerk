@@ -229,6 +229,8 @@ def check_method_names() -> list[str]:
         "MetadataProvider",
         "CoverFetcher",
         "MetadataFiles",
+        "Notifier",
+        "NotificationRaiser",
         "PluginCli",
         "EventConsumer",
         "EventPublisher",

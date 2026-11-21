@@ -99,12 +99,13 @@ pub use operator_auth::{
     ResolveOperatorTokenEnv,
 };
 pub use output::{
-    normalize_storage_prefix, BadBookAction, DestinationId, DestinationNaming,
+    normalize_storage_prefix, BadBookAction, DestinationId, DestinationNaming, MissingFileAction,
     MultiDestinationMode, OutputConfig,
 };
 pub use output_copy::{
-    copies_to_make, mp3_cbr_kbps, validate_copies, CopyError, CopyFormat, CopyQuality, OutputCopy,
-    MAX_EXTRA_COPIES, MAX_QUALITY_BYTES, MP3_CBR_KBPS,
+    copies_to_make, mp3_cbr_kbps, validate_copies, CopyError, CopyFormat, CopyQuality,
+    OpusSettings, OutputCopy, MAX_EXTRA_COPIES, MAX_QUALITY_BYTES, MP3_CBR_KBPS, OPUS_KBPS,
+    OPUS_MAIN_KBPS,
 };
 pub use overrides::{
     apply_config_updates, apply_config_updates_from_path, apply_setting_overrides,
@@ -144,8 +145,9 @@ pub use report_lookup::{
 };
 pub use settings::{
     read_node_api_spki_pin, AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig,
-    DiagnosticsConfig, DiscoveryConfig, LibraryConfig, NodeApiConfig, NodeApiMode, ProcessEnvGuard,
-    LETS_ENCRYPT_DIRECTORY, NODE_API_ACME_DIR, NODE_API_SELF_SIGNED_DIR, NODE_API_SPKI_PIN_FILE,
-    TRAY_HANDOFF_TTL_SECS_DEFAULT, TRAY_HANDOFF_TTL_SECS_MAX, TRAY_HANDOFF_TTL_SECS_MIN,
+    DiagnosticsConfig, DiscoveryConfig, KeyStoreKind, LibraryConfig, NodeApiConfig, NodeApiMode,
+    ProcessEnvGuard, LETS_ENCRYPT_DIRECTORY, NODE_API_ACME_DIR, NODE_API_SELF_SIGNED_DIR,
+    NODE_API_SPKI_PIN_FILE, TRAY_HANDOFF_TTL_SECS_DEFAULT, TRAY_HANDOFF_TTL_SECS_MAX,
+    TRAY_HANDOFF_TTL_SECS_MIN,
 };
 pub use uploads::UploadsConfig;

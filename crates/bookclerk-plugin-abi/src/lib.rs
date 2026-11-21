@@ -5,7 +5,7 @@
 //! `describe()` advertises typed [`PluginCapabilities`], then
 //! `open(invocation, bindings)` returns the exported [`Entrypoints`]
 //! (`storefront`, `storage`, `databaseAdapter`, `remoteLibrary`, `cli`,
-//! `oidc`, `metadata`, `covers`, `metadataFiles`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
+//! `oidc`, `metadata`, `covers`, `metadataFiles`, `notifier`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
 //! [`Bindings`] carry `CONFIG` / `SECRETS`, the `EVENTS` publisher, and named
 //! `[[databases]]` sessions — the Workers `env` idiom.
 //!
@@ -48,6 +48,7 @@
 //! | --- | --- |
 //! | [`metadata_files`] | Checks on `metadataFiles` requests and the records dialects return |
 //! | [`methods`] | Capability / consent method name constants (`login`, `event`, …) |
+//! | [`notifications`] | Checks on notification messages, addresses, raises and notifier replies |
 //! | Crate-root DTOs | [`PluginDescribe`], health, CLI, destination objects |
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
 //! | [`settings_schema`] | `[[settings]]` operator settings schema shared by manifest and host |
@@ -88,6 +89,7 @@ mod limits;
 pub mod media;
 pub mod metadata_files;
 pub mod methods;
+pub mod notifications;
 pub mod origin;
 pub mod package_version;
 mod plugin_migration;
@@ -260,7 +262,9 @@ pub use limits::{
     MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE,
     MAX_METADATA_AUDIO_FILES, MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS,
     MAX_METADATA_FILE_DESCRIPTION_BYTES, MAX_METADATA_FILE_LIST_ENTRIES,
-    MAX_METADATA_FILE_TEXT_BYTES, MAX_ORIGIN_HEADERS, MAX_ORIGIN_HEADER_BYTES,
+    MAX_METADATA_FILE_TEXT_BYTES, MAX_NOTIFICATION_FIELDS, MAX_NOTIFICATION_FIELD_BYTES,
+    MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES, MAX_NOTIFICATION_TITLE_BYTES,
+    MAX_NOTIFIER_ADDRESS_BYTES, MAX_ORIGIN_HEADERS, MAX_ORIGIN_HEADER_BYTES,
     MAX_ORIGIN_TARGET_BYTES, MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
     MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES,
     MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_SOCKETS_PER_INSTANCE,
@@ -282,10 +286,10 @@ pub use roles::{
     hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,
     ByteRange, Cancellation, ContentSource, CoverFetcher, Database, Destination, Entrypoints,
     EventConsumer, EventPublisher, GuestDatabase, Ingress, JobController, JobRunner, KvNamespace,
-    MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc, Origin,
-    OriginReply, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult,
-    RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source, PURCHASE_HINTS_BUDGET,
-    PURCHASE_HINTS_CONCURRENCY,
+    MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel,
+    NotificationRaiser, Notifier, Oidc, Origin, OriginReply, PluginCli, PluginWorker, ProgressSink,
+    QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler,
+    Sockets, Source, PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
@@ -296,10 +300,10 @@ pub use rpc::{
     ContentSourceClient, CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer,
     EventConsumerClient, EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings,
     IngressClient, JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient,
-    NoOrigin, OidcClient, OpenedEntrypoints, OriginClient, PluginCliClient, PluginClient,
-    PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
-    ScheduledHandlerClient, SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient,
-    SourceClient, SourceServer,
+    NoOrigin, NotificationRaiserClient, NotifierClient, OidcClient, OpenedEntrypoints,
+    OriginClient, PluginCliClient, PluginClient, PluginServer, QueueConsumerClient,
+    QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient, SocketCodec,
+    SocketHandlerClient, SocketWireMessage, SocketsClient, SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

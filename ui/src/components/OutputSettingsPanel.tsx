@@ -55,6 +55,16 @@ const FIELDS: OutputField[] = [
     ],
   },
   {
+    key: "output.missing_files",
+    label: "When a stored file disappears",
+    kind: "select",
+    options: [
+      ["mark_missing", "Mark it missing (members can ask for it again)"],
+      ["restore", "Write it again"],
+    ],
+    hint: "For files removed from a destination outside Bookclerk.",
+  },
+  {
     key: "output.chapter_json",
     label: "Chapter JSON",
     kind: "select",

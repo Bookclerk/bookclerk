@@ -48,6 +48,7 @@ extending its base:
 | `entrypoints = ["metadata"]` | `Metadata` | `MetadataEntrypoint` |
 | `entrypoints = ["covers"]` | `Covers` | `CoverEntrypoint` |
 | `entrypoints = ["metadataFiles"]` | `MetadataFiles` | `MetadataFilesEntrypoint` |
+| `entrypoints = ["notifier"]` | `Notifier` | `NotifierEntrypoint` |
 | `entrypoints = ["ingress"]` | `Ingress` | `IngressEntrypoint` |
 
 ```ts

@@ -851,7 +851,7 @@ pub(crate) async fn list_upload_review(
     headers: HeaderMap,
     Query(query): Query<ReviewQuery>,
 ) -> Result<Json<ReviewPage>, Response> {
-    if let Err(refusal) = crate::auth::library_administrator(&state, &headers).await {
+    if let Err(refusal) = crate::auth::library_administrator(&state, &headers, None).await {
         return Err(refusal.answer(|status| {
             if status == StatusCode::UNAUTHORIZED {
                 refused(status, "sign in first")

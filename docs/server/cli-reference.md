@@ -38,8 +38,9 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
 - [`bookclerk libraries`](#bookclerk-libraries): Owner libraries this install hosts for, and consent to their plugins
 - [`bookclerk nodes`](#bookclerk-nodes): Library nodes: liveness, capacity, budgets, and placement labels
-- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes and member controls
+- [`bookclerk users`](#bookclerk-users): The library's people: patron scopes, member controls and Administrator switches
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
+- [`bookclerk media`](#bookclerk-media): What this build's media worker reads and writes
 - [`bookclerk login`](#bookclerk-login): Print a loopback operator sign-in URL (requires a running daemon)
 - [`bookclerk diagnostics`](#bookclerk-diagnostics): Diagnostics ring buffer and opt-in upload
 - [`bookclerk version`](#bookclerk-version): Print version information
@@ -1077,7 +1078,7 @@ Commands:
 - [`bookclerk config set`](#bookclerk-config-set): Set a configuration value and write `config.toml`
 - [`bookclerk config show`](#bookclerk-config-show): Print the effective configuration as TOML-ish summary
 - [`bookclerk config paths`](#bookclerk-config-paths): Print resolved filesystem paths
-- [`bookclerk config master-key`](#bookclerk-config-master-key): Inspect or wrap `{files_dir}/master.key` (BCK1 ↔ BCK2)
+- [`bookclerk config master-key`](#bookclerk-config-master-key): Inspect, wrap, move, export or import the library's data-encryption key
 - [`bookclerk config template`](#bookclerk-config-template): Naming template helpers
 - [`bookclerk config database`](#bookclerk-config-database): Database backend helpers (plugin switch / migration)
 
@@ -1128,7 +1129,7 @@ bookclerk config paths [OPTIONS]
 
 ### `bookclerk config master-key`
 
-Inspect or wrap `{files_dir}/master.key` (BCK1 ↔ BCK2)
+Inspect, wrap, move, export or import the library's data-encryption key
 
 ```text
 bookclerk config master-key [OPTIONS] <COMMAND>
@@ -1136,12 +1137,15 @@ bookclerk config master-key [OPTIONS] <COMMAND>
 
 Commands:
 
-- [`bookclerk config master-key status`](#bookclerk-config-master-key-status): Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2)
-- [`bookclerk config master-key wrap`](#bookclerk-config-master-key-wrap): Wrap a BCK1 `master.key` with a passphrase (no-op unlock if already BCK2)
+- [`bookclerk config master-key status`](#bookclerk-config-master-key-status): Show where the key is kept (the file or the OS keychain) and whether it is raw (BCK1) or wrapped (BCK2)
+- [`bookclerk config master-key wrap`](#bookclerk-config-master-key-wrap): Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in `master.key` or in its OS keychain item
+- [`bookclerk config master-key move`](#bookclerk-config-master-key-move): Move the key to the OS keychain or back into `master.key`, and record the choice as `[auth].key_store` in config.toml
+- [`bookclerk config master-key export`](#bookclerk-config-master-key-export): Write a recovery copy of the key, wrapped with a password read from stdin (never argv)
+- [`bookclerk config master-key import`](#bookclerk-config-master-key-import): Restore the key from a recovery copy (or a copied `master.key`) on an install that has no `master.key`. A wrapped copy's password is read from stdin
 
 #### `bookclerk config master-key status`
 
-Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2)
+Show where the key is kept (the file or the OS keychain) and whether it is raw (BCK1) or wrapped (BCK2)
 
 ```text
 bookclerk config master-key status [OPTIONS]
@@ -1149,13 +1153,53 @@ bookclerk config master-key status [OPTIONS]
 
 #### `bookclerk config master-key wrap`
 
-Wrap a BCK1 `master.key` with a passphrase (no-op unlock if already BCK2).
+Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in `master.key` or in its OS keychain item.
 
 Password from `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — never argv.
 
 ```text
 bookclerk config master-key wrap [OPTIONS]
 ```
+
+#### `bookclerk config master-key move`
+
+Move the key to the OS keychain or back into `master.key`, and record the choice as `[auth].key_store` in config.toml.
+
+The key itself doesn't change, so every sealed secret stays readable. Stop `bookclerkd` first.
+
+```text
+bookclerk config master-key move [OPTIONS] <TO>
+```
+
+Arguments:
+
+- `<TO>`: Where to keep the key: `keychain` or `file`
+
+#### `bookclerk config master-key export`
+
+Write a recovery copy of the key, wrapped with a password read from stdin (never argv).
+
+Keep it apart from the server's files: with it and its password, the library's sealed secrets can be read.
+
+```text
+bookclerk config master-key export [OPTIONS] --out <OUT>
+```
+
+Options:
+
+- `--out <OUT>`: File to write (created with mode 0600; never overwritten) (required)
+
+#### `bookclerk config master-key import`
+
+Restore the key from a recovery copy (or a copied `master.key`) on an install that has no `master.key`. A wrapped copy's password is read from stdin
+
+```text
+bookclerk config master-key import [OPTIONS] --from <FROM>
+```
+
+Options:
+
+- `--from <FROM>`: The recovery copy to read (required)
 
 ### `bookclerk config template`
 
@@ -1907,7 +1951,7 @@ Arguments:
 
 ## `bookclerk users`
 
-The library's people: patron scopes and member controls
+The library's people: patron scopes, member controls and Administrator switches
 
 ```text
 bookclerk users [OPTIONS] <COMMAND>
@@ -1917,6 +1961,7 @@ Commands:
 
 - [`bookclerk users scope`](#bookclerk-users-scope): Read or set which part of the library a patron sees
 - [`bookclerk users controls`](#bookclerk-users-controls): Read or set what a patron may do: link store accounts, download, edit metadata, upload, request books, see prices
+- [`bookclerk users admin-controls`](#bookclerk-users-admin-controls): Read or set what an Administrator may do: manage members, set patron limits, library-wide scan and acquire, run the job queue, fix the catalog, invite branches, approve requests
 
 ### `bookclerk users scope`
 
@@ -2014,6 +2059,54 @@ Options:
 - `--deny <CONTROL>`: Turn a control off. Repeatable
 - `--follow-default <CONTROL>`: Make the patron follow the library's default for a control again. Repeatable; `all` names every control
 
+### `bookclerk users admin-controls`
+
+Read or set what an Administrator may do: manage members, set patron limits, library-wide scan and acquire, run the job queue, fix the catalog, invite branches, approve requests
+
+```text
+bookclerk users admin-controls [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk users admin-controls get`](#bookclerk-users-admin-controls-get): Print an Administrator's switches, or the library's default
+- [`bookclerk users admin-controls set`](#bookclerk-users-admin-controls-set): Change switches of an Administrator, or of the library's default. Switches not named keep their value
+
+#### `bookclerk users admin-controls get`
+
+Print an Administrator's switches, or the library's default
+
+```text
+bookclerk users admin-controls get [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: The library's default, which Administrators follow unless a switch is set for them alone
+
+#### `bookclerk users admin-controls set`
+
+Change switches of an Administrator, or of the library's default. Switches not named keep their value
+
+```text
+bookclerk users admin-controls set [OPTIONS] [USER]
+```
+
+Arguments:
+
+- `[USER]`: Login name or user id
+
+Options:
+
+- `--default`: Change the library's default instead of one Administrator's
+- `--allow <SWITCH>`: Turn a switch on (`manage_members`, `set_patron_limits`, `library_scan`, `run_jobs`, `fix_catalog`, `invite_branches`, `approve_requests`). Repeatable
+- `--deny <SWITCH>`: Turn a switch off. Repeatable
+- `--follow-default <SWITCH>`: Make the Administrator follow the library's default for a switch again. Repeatable; `all` names every switch
+
 ## `bookclerk queues`
 
 Plugin-owned queues on the outbox: counters, consumers, messages
@@ -2046,6 +2139,26 @@ bookclerk queues inspect [OPTIONS] <NAME>
 Arguments:
 
 - `<NAME>`: Queue name (`core.events` is the domain-event bus)
+
+## `bookclerk media`
+
+What this build's media worker reads and writes
+
+```text
+bookclerk media [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk media capabilities`](#bookclerk-media-capabilities): List the audio codecs, file types and output formats this build's media worker handles (the daemon's `GET /api/status/media`)
+
+### `bookclerk media capabilities`
+
+List the audio codecs, file types and output formats this build's media worker handles (the daemon's `GET /api/status/media`)
+
+```text
+bookclerk media capabilities [OPTIONS]
+```
 
 ## `bookclerk login`
 

@@ -11,9 +11,9 @@ use bookclerk_config::{DestinationId, FileTimestampMode, MultiDestinationMode};
 use bookclerk_enrich::{asin_identifier, chapter_info_from_layout, MetadataProviders};
 use bookclerk_library::{AcquireStatus, CopyState, FileOwner, FileProbe, LibraryStore};
 use bookclerk_media::{
-    align_chapter_starts_async, bookclerk_tool_tag, encode_to_mp3, fixup_audiobook,
+    align_chapter_starts_async, bookclerk_tool_tag, encode_to_mp3, encode_to_opus, fixup_audiobook,
     package_m4b_from_mp3, parse_mp4, track_duration_ms, ChapterAlignOptions, FixupRequest,
-    PackageM4bRequest,
+    OpusEncodeOptions, PackageM4bRequest,
 };
 use bookclerk_plugin_abi::MetadataChaptersParams;
 use bookclerk_source::{ContentSource, DownloadOptions, FetchOptions, PlainFetch};
@@ -335,7 +335,7 @@ enum StoredCopies {
     Tracked {
         /// Destinations holding the edition, with their keys.
         present: Vec<(DestinationId, String)>,
-        /// Destinations whose copy is `failed`: an acquire leaves them
+        /// Destinations whose copy is `failed` or `missing`: an acquire leaves them
         /// alone until a forced one tries them again.
         held: Vec<DestinationId>,
         /// True when every destination in the target set holds the
@@ -419,9 +419,10 @@ async fn stored_copies(
         .items
         .iter()
         .filter(|dest| {
-            copies
-                .iter()
-                .any(|copy| copy.destination == dest.id.as_str() && copy.state == CopyState::Failed)
+            copies.iter().any(|copy| {
+                copy.destination == dest.id.as_str()
+                    && matches!(copy.state, CopyState::Failed | CopyState::Missing)
+            })
         })
         .map(|dest| dest.id.clone())
         .collect();
@@ -541,12 +542,6 @@ async fn acquire_book_recorded(
         "acquire requested"
     );
 
-    if req.options.wants_opus() {
-        return Err(AcquireError::Other(anyhow::anyhow!(
-            "output=opus is not implemented yet; use enriched_m4b, single_mp3, \
-             split_mp3_by_chapter, or none"
-        )));
-    }
     if req.options.wants_split_by_size() {
         return Err(AcquireError::Other(anyhow::anyhow!(
             "output=split_mp3_by_size is not implemented yet (split_mp3_max_mb={}); \
@@ -1780,8 +1775,12 @@ async fn write_prepared_files_to_destination(
 ) -> Result<(String, Vec<String>)> {
     let mut first_key = None;
     let mut written_keys = Vec::new();
+    // Resolved once for every file: each resolve reads the book, its
+    // edition and up to four name probes, and a split book has hundreds
+    // of files.
+    let contexts = naming_contexts(library, dest_req).await;
     for (idx, file) in files.iter().enumerate() {
-        let key = planned_key_for_prepared_file(library, dest_req, file, idx, plan).await;
+        let key = planned_key_for_prepared_file(dest_req, &contexts, file, idx, plan).await;
         let meta = object_meta_for(
             library,
             dest_req,
@@ -1799,33 +1798,47 @@ async fn write_prepared_files_to_destination(
     Ok((first_key.unwrap_or_default(), written_keys))
 }
 
-/// Storage key for one prepared file under the single, chapter, or part naming plan.
+/// Storage key for one prepared file under the single, chapter, or part
+/// naming plan, from the request's folder and file naming `contexts`
+/// ([`naming_contexts`]), translated by the request's destination
+/// ([`AcquireRequest::destination_keys`]).
 async fn planned_key_for_prepared_file(
-    library: &LibraryStore,
     req: &AcquireRequest,
+    contexts: &(NamingContext, NamingContext),
     file: &PreparedAudioFile,
     idx: usize,
     plan: AudioKeyPlan,
 ) -> String {
     match plan {
-        AudioKeyPlan::Single => planned_storage_key_for(library, req, &file.ext).await,
-        AudioKeyPlan::SplitChapters => planned_chapter_storage_key(library, req, idx, file).await,
-        AudioKeyPlan::PlainParts => planned_plain_part_storage_key(library, req, idx, file).await,
+        AudioKeyPlan::Single => {
+            let templates = req.options.naming_templates();
+            let host_key = storage_key_with_contexts(
+                &contexts.0,
+                &contexts.1,
+                Some(templates.folder.as_str()),
+                Some(templates.file.as_str()),
+                &file.ext,
+                &req.options.replacement_characters,
+                req.options.path_limits,
+            );
+            req.destination_keys.translate(host_key).await
+        }
+        AudioKeyPlan::SplitChapters => planned_chapter_storage_key(req, contexts, idx, file).await,
+        AudioKeyPlan::PlainParts => planned_plain_part_storage_key(req, contexts, idx, file).await,
     }
 }
 
 /// Chapter-file storage key using 1-based index and the chapter title.
 async fn planned_chapter_storage_key(
-    library: &LibraryStore,
     req: &AcquireRequest,
+    (folder_ctx, file_ctx): &(NamingContext, NamingContext),
     idx: usize,
     file: &PreparedAudioFile,
 ) -> String {
     let templates = req.options.naming_templates();
-    let (folder_ctx, file_ctx) = naming_contexts(library, req).await;
     let host_key = chapter_storage_key_with_folder(
-        &folder_ctx,
-        &file_ctx,
+        folder_ctx,
+        file_ctx,
         Some(templates.folder.as_str()),
         Some(templates.chapter_file.as_str()),
         &req.options.replacement_characters,
@@ -1839,13 +1852,12 @@ async fn planned_chapter_storage_key(
 
 /// Part-file storage key with a `-pNNN` product-id suffix so parts do not collide.
 async fn planned_plain_part_storage_key(
-    library: &LibraryStore,
     req: &AcquireRequest,
+    (folder_ctx, file_ctx): &(NamingContext, NamingContext),
     idx: usize,
     file: &PreparedAudioFile,
 ) -> String {
-    let (folder_ctx, file_ctx) = naming_contexts(library, req).await;
-    let mut part_ctx = file_ctx;
+    let mut part_ctx = file_ctx.clone();
     part_ctx.title = format!("{} — {}", req.title, file.title);
     part_ctx.asin = format!("{}-p{:03}", req.asin, idx + 1);
     // The default file templates name a title by `<call number>`, not
@@ -1858,7 +1870,7 @@ async fn planned_plain_part_storage_key(
     part_ctx.chapter_title = Some(file.title.clone());
     let templates = req.options.naming_templates();
     let host_key = storage_key_with_contexts(
-        &folder_ctx,
+        folder_ctx,
         &part_ctx,
         Some(templates.folder.as_str()),
         Some(templates.file.as_str()),
@@ -2699,6 +2711,7 @@ async fn store_plain_fetch(
     library_pdf: Option<&Path>,
 ) -> Result<AcquireResult> {
     let want_mp3 = req.options.wants_mp3();
+    let want_opus = req.options.wants_opus();
     let multi = plain.parts.len() > 1;
     let audible_overlay_possible = plain_source_has_audible_asin(library, req).await;
 
@@ -2762,7 +2775,7 @@ async fn store_plain_fetch(
             req.source,
             req.asin
         )));
-    } else if plain.parts.len() == 1 && want_mp3 && !audible_overlay_possible {
+    } else if plain.parts.len() == 1 && (want_mp3 || want_opus) && !audible_overlay_possible {
         plain.parts[0].path.clone()
     } else {
         // Package MP3/M4A part(s) into M4B (single-file M4B target, multi→single, or
@@ -2859,6 +2872,32 @@ async fn store_plain_fetch(
             )
             .await?;
             acquired_path = mp3_out;
+        }
+    }
+    if want_opus {
+        // Like MP3 (`reencodes_mp3`): a store's Opus file is kept as
+        // delivered unless the library keeps several copies, which must
+        // each hold the audio their quality names.
+        let ext = acquired_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !ext.eq_ignore_ascii_case("opus") || !req.options.copies.is_empty() {
+            let mut opus_out = work_dir.join(format!("{}.opus", status_key(req)));
+            if opus_out == acquired_path {
+                opus_out = work_dir.join(format!("{}.encoded.opus", status_key(req)));
+            }
+            encode_to_opus(
+                &acquired_path,
+                &opus_out,
+                OpusEncodeOptions {
+                    bitrate_kbps: req.options.opus.kbps,
+                    mono: req.options.opus.mono,
+                },
+                None,
+            )
+            .await?;
+            acquired_path = opus_out;
         }
     }
 
@@ -3726,7 +3765,7 @@ fn content_type_for_ext(ext: &str) -> &'static str {
         "m4a" | "m4b" => "audio/mp4",
         "flac" => "audio/flac",
         "aac" => "audio/aac",
-        "ogg" | "oga" => "audio/ogg",
+        "ogg" | "oga" | "opus" => "audio/ogg",
         "aaxc" | "aax" | "cenc" => "audio/mp4",
         _ => "application/octet-stream",
     }
@@ -5983,22 +6022,9 @@ mod tests {
         assert_eq!(fetched.load(Ordering::SeqCst), 1);
         remove_library_copy(&work_dir.join(LIBRARY_COPY_DIR)).await;
 
-        // A copy in a kind of file the worker does not open is not
-        // downloaded when the output repackages the audio.
-        let (mut req, fetched, _) = compare((Some(700), false), tagged_mp3(), "Twin.ogg");
-        req.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
-        let offer = offered_copy(&store, &req).await.unwrap();
-        let own_fetch = own(&work_dir);
-        assert!(matches!(
-            replace_with_better_copy(&store, &req, &work_dir, &offer, own_fetch).await,
-            Compared::Own(_)
-        ));
-        assert_eq!(fetched.load(Ordering::SeqCst), 0);
-        assert!(work_dir.join("own.mp3").exists());
-
         // A lossy MP4 copy is used by an output that repackages audio
         // only when its encoding is one the media worker decodes: the
-        // same file with an Opus sample entry is downloaded, read and
+        // same file with an E-AC-3 sample entry is downloaded, read and
         // dropped, and the store's download is kept.
         let bigger_m4b = |entry: &[u8; 4]| {
             let mut file = bookclerk_tags::fixtures::tagged_m4b();
@@ -6012,7 +6038,7 @@ mod tests {
             ));
             file
         };
-        for (entry, used) in [(b"mp4a", true), (b"Opus", false)] {
+        for (entry, used) in [(b"mp4a", true), (b"ec-3", false)] {
             let (mut req, fetched, _) = compare((Some(900), false), bigger_m4b(entry), "Twin.m4b");
             req.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
             let offer = offered_copy(&store, &req).await.unwrap();
@@ -8146,6 +8172,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_copy_the_worker_cannot_open_is_used_only_as_delivered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut req = dummy_req(tmp.path(), None, None);
+        req.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
+        let probe = |content_type: &str| FileProbe {
+            content_type: content_type.into(),
+            bitrate_kbps: Some(128),
+            lossless: false,
+            source_store: None,
+        };
+        assert!(output_can_use(&req, &probe("audio/ogg")));
+        assert!(!output_can_use(&req, &probe("audio/x-matroska")));
+        req.options.format = bookclerk_config::OutputFormat::None;
+        assert!(output_can_use(&req, &probe("audio/x-matroska")));
+    }
+
     #[tokio::test]
     async fn two_parts_with_one_title_get_two_names() {
         let store = test_store().await;
@@ -8157,8 +8200,9 @@ mod tests {
             title: "Introduction".into(),
             ext: "mp3".into(),
         };
-        let first = planned_plain_part_storage_key(&store, &req, 0, &part("a.mp3")).await;
-        let second = planned_plain_part_storage_key(&store, &req, 1, &part("b.mp3")).await;
+        let contexts = naming_contexts(&store, &req).await;
+        let first = planned_plain_part_storage_key(&req, &contexts, 0, &part("a.mp3")).await;
+        let second = planned_plain_part_storage_key(&req, &contexts, 1, &part("b.mp3")).await;
         assert_ne!(first, second, "parts with one title share {first}");
         assert!(first.contains("hd4j63pc-p001"), "{first}");
         assert!(second.contains("hd4j63pc-p002"), "{second}");

@@ -41,8 +41,8 @@ matching name extending its base: `Storefront(StorefrontEntrypoint)`,
 `Storage(StorageEntrypoint)`, `RemoteLibrary(RemoteLibraryEntrypoint)`,
 `DatabaseAdapter(DatabaseAdapterEntrypoint)`, `Cli(CliEntrypoint)`,
 `Oidc(OidcEntrypoint)`, `Metadata(MetadataEntrypoint)`,
-`Covers(CoverEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)` and
-`Ingress(IngressEntrypoint)`. The Python SDK serves `direct`
+`Covers(CoverEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)`,
+`Notifier(NotifierEntrypoint)` and `Ingress(IngressEntrypoint)`. The Python SDK serves `direct`
 [`[ingress]`](../../manifest.md#ingress-public-address) plugins only; the
 `ORIGIN` binding a relay plugin hands requests to is in the TypeScript SDK.
 

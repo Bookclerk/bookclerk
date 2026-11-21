@@ -59,6 +59,9 @@ pub enum Container {
     Mp3,
     /// FLAC: Vorbis comments, pictures and `STREAMINFO`.
     Flac,
+    /// Ogg (`.opus`, `.ogg`, `.oga`) holding Opus or Vorbis: the stream's
+    /// comment header and the last page's granule position.
+    Ogg,
 }
 
 /// The audio encodings the reader tells apart.
@@ -77,8 +80,10 @@ pub enum AudioCodec {
     Flac,
     /// MPEG audio layer I, II or III, lossy.
     Mp3,
-    /// Opus in MP4 (`Opus` sample entry), lossy.
+    /// Opus, in Ogg or in MP4 (`Opus` sample entry), lossy.
     Opus,
+    /// Vorbis, in Ogg, lossy.
+    Vorbis,
     /// Dolby Digital Plus (`ec-3` sample entry), lossy.
     Eac3,
     /// Dolby AC-4 (`ac-4` sample entry), lossy.
@@ -86,12 +91,28 @@ pub enum AudioCodec {
 }
 
 impl AudioCodec {
+    /// The codec's name as records and the web API spell it (`aac`,
+    /// `opus`, `eac3`, ...), the same as its serialized form.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Aac => "aac",
+            Self::Alac => "alac",
+            Self::Flac => "flac",
+            Self::Mp3 => "mp3",
+            Self::Opus => "opus",
+            Self::Vorbis => "vorbis",
+            Self::Eac3 => "eac3",
+            Self::Ac4 => "ac4",
+        }
+    }
+
     /// True when decoding gives back the source audio bit for bit.
     #[must_use]
     pub fn is_lossless(self) -> bool {
         match self {
             Self::Alac | Self::Flac => true,
-            Self::Aac | Self::Mp3 | Self::Opus | Self::Eac3 | Self::Ac4 => false,
+            Self::Aac | Self::Mp3 | Self::Opus | Self::Vorbis | Self::Eac3 | Self::Ac4 => false,
         }
     }
 
@@ -120,6 +141,7 @@ impl Container {
             Self::Mp4 => "audio/mp4",
             Self::Mp3 => "audio/mpeg",
             Self::Flac => "audio/flac",
+            Self::Ogg => "audio/ogg",
         }
     }
 }
@@ -488,13 +510,14 @@ impl TagRecord {
                 return Err(RecordError::CoverSpan);
             }
         }
-        let codec_fits = match (self.container, self.codec) {
-            (Container::Mp3, Some(AudioCodec::Mp3)) | (Container::Flac, Some(AudioCodec::Flac)) => {
-                true
-            }
-            (Container::Mp4, _) => true,
-            (Container::Mp3 | Container::Flac, _) => false,
-        };
+        let codec_fits =
+            match (self.container, self.codec) {
+                (Container::Mp3, Some(AudioCodec::Mp3))
+                | (Container::Flac, Some(AudioCodec::Flac)) => true,
+                (Container::Ogg, Some(AudioCodec::Opus | AudioCodec::Vorbis))
+                | (Container::Mp4, _) => true,
+                (Container::Mp3 | Container::Flac | Container::Ogg, _) => false,
+            };
         if !codec_fits {
             return Err(RecordError::Codec);
         }
