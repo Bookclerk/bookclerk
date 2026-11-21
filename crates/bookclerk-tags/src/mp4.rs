@@ -858,11 +858,13 @@ pub(crate) mod tests {
         for file in [
             crate::fixtures::tagged_mp3(),
             crate::fixtures::tagged_flac(),
+            crate::fixtures::tagged_ogg_opus(),
         ] {
             let record = crate::read_all(&file).expect("record");
             let own = match record.container {
                 Container::Mp3 => AudioCodec::Mp3,
                 Container::Flac => AudioCodec::Flac,
+                Container::Ogg => AudioCodec::Opus,
                 Container::Mp4 => unreachable!("not an MP4 fixture"),
             };
             assert_eq!(record.codec, Some(own));

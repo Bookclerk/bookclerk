@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-tags"
-description = "Sans-IO readers for metadata embedded in audiobook files (MP4, ID3, FLAC) and the tag worker's frames"
+description = "Sans-IO readers for metadata embedded in audiobook files (MP4, ID3, FLAC, Ogg) and the tag worker's frames"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,7 +21,7 @@ hex.workspace = true
 thiserror.workspace = true
 
 [features]
-# `fixtures`: tagged M4B, MP3 and FLAC builders for tests and fuzz seeds.
+# `fixtures`: tagged M4B, MP3, FLAC and Ogg Opus builders for tests and fuzz seeds.
 fixtures = []
 
 [dev-dependencies]

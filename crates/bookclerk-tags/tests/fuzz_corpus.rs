@@ -10,7 +10,9 @@
 
 use std::path::{Path, PathBuf};
 
-use bookclerk_tags::fixtures::{mp4_box, tagged_flac, tagged_m4b, tagged_mp3};
+use bookclerk_tags::fixtures::{
+    mp4_box, ogg_page, tagged_flac, tagged_m4b, tagged_mp3, tagged_ogg_opus, vorbis_comments,
+};
 use bookclerk_tags::wire::{encode_reply, encode_request, Reply, Request};
 use bookclerk_tags::{read_all, ByteSpan};
 
@@ -64,6 +66,7 @@ fn read_seeds() -> Vec<(&'static str, Vec<u8>)> {
     let m4b = tagged_m4b();
     let mp3 = tagged_mp3();
     let flac = tagged_flac();
+    let opus = tagged_ogg_opus();
     let mut huge_box = m4b.clone();
     // The moov box (after ftyp and mdat) claims to run past the file.
     let moov_at = huge_box.windows(4).position(|w| w == b"moov").unwrap() - 4;
@@ -76,14 +79,38 @@ fn read_seeds() -> Vec<(&'static str, Vec<u8>)> {
         frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
         cbr.extend(frame);
     }
+    // An Opus stream cropped 480,000 samples in, and one whose last page
+    // carries a whole page of the stream inside its body.
+    let opus_headers = || {
+        let mut head = b"OpusHead".to_vec();
+        head.extend([1, 2]);
+        head.extend(312u16.to_le_bytes());
+        head.extend([0u8; 7]);
+        let mut tags = b"OpusTags".to_vec();
+        tags.extend(vorbis_comments(&["TITLE=Cropped"]));
+        let mut file = ogg_page(0x02, 0, 9, &[&head]);
+        file.extend(ogg_page(0, 0, 9, &[&tags]));
+        file
+    };
+    let mut cropped = opus_headers();
+    cropped.extend(ogg_page(0, 480_960, 9, &[&[0xF8]]));
+    cropped.extend(ogg_page(0x04, 960_312, 9, &[&[0xF8]]));
+    let mut page_in_page = opus_headers();
+    let mut body = vec![0xF8];
+    body.extend(ogg_page(0, 12_345, 9, &[b"x"]));
+    page_in_page.extend(ogg_page(0x04, 480_312, 9, &[&body]));
     vec![
         ("tagged.m4b", m4b.clone()),
+        ("cropped.opus", cropped),
+        ("page_in_page.opus", page_in_page),
         ("tagged.mp3", mp3.clone()),
         ("tagged.flac", flac.clone()),
         ("cbr.mp3", cbr),
         ("cut.m4b", m4b[..m4b.len() - 100].to_vec()),
         ("cut.mp3", mp3[..mp3.len() / 3].to_vec()),
         ("cut.flac", flac[..flac.len() / 2].to_vec()),
+        ("tagged.opus", opus.clone()),
+        ("cut.opus", opus[..opus.len() / 2].to_vec()),
         ("huge_moov.m4b", huge_box),
         ("huge_id3.mp3", huge_id3),
         ("ftyp_only.m4b", mp4_box(b"ftyp", b"M4B \0\0\0\0")),

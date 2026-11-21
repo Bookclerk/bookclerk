@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use id3::frame::{
-    Chapter as Id3Chapter, ExtendedText, Frame, Picture, PictureType, TableOfContents,
+    Chapter as Id3Chapter, Comment, ExtendedText, Frame, Picture, PictureType, TableOfContents,
 };
 use id3::{Tag as Id3Tag, TagLike, Version as Id3Version};
 use mp4ameta::{Data, FreeformIdent, Img, ImgFmt, MediaType, Tag as Mp4Tag, WriteConfig};
@@ -125,9 +125,9 @@ pub(crate) fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
     match read_tag_record(&req.output)?.map(|record| record.container) {
         Some(bookclerk_tags::Container::Mp4) => fixup_m4b(req),
         Some(bookclerk_tags::Container::Mp3) => fixup_mp3(req),
-        Some(bookclerk_tags::Container::Flac) => Err(MediaError::Native(
-            "tag writing for FLAC is not supported yet".into(),
-        )),
+        Some(bookclerk_tags::Container::Flac | bookclerk_tags::Container::Ogg) => {
+            crate::vorbis_tags::fixup_vorbis(req)
+        }
         None => Err(MediaError::Native(format!(
             "cannot write tags into {}: not a container this build reads",
             req.output.display()
@@ -136,7 +136,7 @@ pub(crate) fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
 }
 
 /// Encoder/tool tag: request override, or the Bookclerk binary name and version.
-fn tool_string(req: &FixupRequest) -> String {
+pub(crate) fn tool_string(req: &FixupRequest) -> String {
     req.tool
         .clone()
         .filter(|s| !s.is_empty())
@@ -144,7 +144,7 @@ fn tool_string(req: &FixupRequest) -> String {
 }
 
 /// ABS-style album string: `title: subtitle` when a subtitle is present.
-fn album_title(req: &FixupRequest) -> String {
+pub(crate) fn album_title(req: &FixupRequest) -> String {
     // ABS `getFFMetadataObject` uses `title: subtitle` for album when subtitle exists.
     match req.subtitle.as_deref().filter(|s| !s.is_empty()) {
         Some(sub) => format!("{}: {sub}", req.title),
@@ -153,7 +153,7 @@ fn album_title(req: &FixupRequest) -> String {
 }
 
 /// Normalizes catalog genre lists to `; `-separated ABS tags, preserving comma-in-name genres.
-fn genres_for_abs(raw: &str) -> String {
+pub(crate) fn genres_for_abs(raw: &str) -> String {
     // ABS accepts `/`, `//`, or `;` as genre separators.
     // Prefer `;` when present so catalog names that contain commas
     // (e.g. "Movie, TV & Video Game Tie-Ins") stay intact.
@@ -173,7 +173,7 @@ fn genres_for_abs(raw: &str) -> String {
 }
 
 /// ABS grouping string: `series #index` when an index is present.
-fn grouping_for_abs(series: &str, index: Option<&str>) -> String {
+pub(crate) fn grouping_for_abs(series: &str, index: Option<&str>) -> String {
     match index.filter(|s| !s.is_empty()) {
         Some(idx) => format!("{series} #{idx}"),
         None => series.to_string(),
@@ -386,7 +386,17 @@ fn fixup_mp3(req: &FixupRequest) -> Result<()> {
         tag.set_text("TIT3", subtitle);
     }
     if let Some(desc) = req.description.as_deref().filter(|s| !s.is_empty()) {
-        tag.set_text("COMM", desc);
+        // COMM is a comment frame (language, description, text); id3
+        // refuses to write it as a plain text frame, which failed the
+        // whole fix-up of any MP3 with a description. Only the comment
+        // with no descriptor (the book's description) is replaced; other
+        // comments the file carries stay.
+        tag.remove_comment(Some(""), None);
+        tag.add_frame(Comment {
+            lang: "eng".into(),
+            description: String::new(),
+            text: desc.to_string(),
+        });
         set_txxx(&mut tag, "description", desc);
     }
     if let Some(lang) = req.language.as_deref().filter(|s| !s.is_empty()) {
@@ -638,7 +648,7 @@ fn audio_duration(path: &Path) -> Result<Option<bookclerk_tags::Duration>> {
 /// # Errors
 ///
 /// Returns an error when the file cannot be opened or read.
-fn read_tag_record(path: &Path) -> Result<Option<bookclerk_tags::TagRecord>> {
+pub(crate) fn read_tag_record(path: &Path) -> Result<Option<bookclerk_tags::TagRecord>> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
     let mut file = std::fs::File::open(path)?;
@@ -667,7 +677,7 @@ fn read_tag_record(path: &Path) -> Result<Option<bookclerk_tags::TagRecord>> {
 }
 
 /// Detects PNG/BMP/JPEG from magic bytes, then falls back to the file extension.
-fn guess_img_fmt(path: &Path, bytes: &[u8]) -> ImgFmt {
+pub(crate) fn guess_img_fmt(path: &Path, bytes: &[u8]) -> ImgFmt {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         return ImgFmt::Png;
     }
@@ -908,18 +918,49 @@ mod tests {
     }
 
     #[test]
+    fn mp3_fixup_writes_the_description_as_a_comment() {
+        let file = fixture_mp3(false);
+        let mut req = mp3_request(file.path(), &[], false);
+        req.description = Some("A book about books.".into());
+        // The file already has a description and a comment of its own.
+        let mut before = Id3Tag::read_from_path(file.path()).unwrap_or_default();
+        for (description, text) in [("", "Old description."), ("ripper", "Encoded by hand.")] {
+            before.add_frame(Comment {
+                lang: "eng".into(),
+                description: description.into(),
+                text: text.into(),
+            });
+        }
+        before
+            .write_to_path(file.path(), id3::Version::Id3v24)
+            .expect("seed tag");
+        fixup_audiobook_sync(&req).expect("fixup");
+        let tag = Id3Tag::read_from_path(file.path()).expect("id3");
+        let mut comments: Vec<_> = tag
+            .comments()
+            .map(|c| (c.description.clone(), c.text.clone()))
+            .collect();
+        comments.sort();
+        assert_eq!(
+            comments,
+            [
+                (String::new(), "A book about books.".to_string()),
+                ("ripper".to_string(), "Encoded by hand.".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn fixup_refuses_containers_it_cannot_write() {
         let dir = tempfile::tempdir().expect("dir");
-        let flac = dir.path().join("book.m4b");
-        std::fs::write(&flac, bookclerk_tags::fixtures::tagged_flac()).expect("write");
-        let before = std::fs::read(&flac).expect("read");
-        let err = fixup_audiobook_sync(&mp3_request(&flac, &[], false)).expect_err("flac");
-        assert!(err.to_string().contains("FLAC"), "{err}");
-        assert_eq!(
-            std::fs::read(&flac).expect("read"),
-            before,
-            "file untouched"
-        );
+        // A WAV file decodes but has no tag format the worker writes.
+        let wav = dir.path().join("book.m4b");
+        let mut bytes = b"RIFF\x24\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0".to_vec();
+        bytes.extend_from_slice(b"\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\0\0\0\0");
+        std::fs::write(&wav, &bytes).expect("write");
+        let err = fixup_audiobook_sync(&mp3_request(&wav, &[], false)).expect_err("wav");
+        assert!(err.to_string().contains("cannot write tags"), "{err}");
+        assert_eq!(std::fs::read(&wav).expect("read"), bytes, "file untouched");
 
         let text = dir.path().join("notes.mp3");
         std::fs::write(&text, b"plain text, not audio").expect("write");

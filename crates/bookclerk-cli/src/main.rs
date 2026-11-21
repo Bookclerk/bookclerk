@@ -151,6 +151,12 @@ enum Commands {
         /// Nested `queues` verb (list, inspect).
         command: commands::queues::QueuesCommand,
     },
+    /// What this build's media worker reads and writes.
+    Media {
+        #[command(subcommand)]
+        /// Nested `media` verb (capabilities).
+        command: commands::media::MediaCommand,
+    },
     /// Print a loopback operator sign-in URL (requires a running daemon).
     Login,
     /// Diagnostics ring buffer and opt-in upload.
@@ -404,6 +410,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Libraries { command } => commands::libraries::run(command, &config, format).await,
         Commands::Queues { command } => commands::queues::run(command, &config, format).await,
         Commands::Users { command } => commands::users::run(command, &config, format).await,
+        Commands::Media { command } => commands::media::run(command, format),
         Commands::Login => commands::daemon_cmd::run_login(&config, format).await,
         Commands::Diagnostics { command } => {
             commands::diagnostics_cmd::run(command, &config, format)

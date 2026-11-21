@@ -35,7 +35,7 @@ boundary extends it.
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
 | `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
-| `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
+| `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, Ogg Opus and Vorbis headers and comments, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
 | `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
@@ -300,7 +300,7 @@ only that. The others check:
   does, with the same rate and length. A plain 16-bit PCM WAV must decode
   to exactly the samples an independent parser in the oracle reads from
   it. Seeds cover every container and codec the worker reads, including
-  HE-AAC and HE-AAC v2. The shared oracle is
+  HE-AAC, HE-AAC v2, Ogg Opus (mono and stereo) and Ogg Vorbis. The shared oracle is
   `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
