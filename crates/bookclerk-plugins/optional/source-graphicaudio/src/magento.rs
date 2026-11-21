@@ -251,15 +251,15 @@ impl MagentoClient {
         )))
     }
 
-    /// Stream `url` to `path` (uses Magento/CloudFront cookies when present).
+    /// Stream `url` to `path`, resuming a dropped transfer (uses
+    /// Magento/CloudFront cookies when present).
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub async fn download_to_path(&self, url: &str, path: &Path) -> Result<()> {
         let abs = self.abs_url(url)?;
-        let resp = self.http.get(abs).send().await?;
-        crate::http_util::response_to_path(resp, path).await
+        crate::http_util::download_resumable(path, || self.http.get(abs.clone())).await
     }
 
     /// Fetch Browser Player library HTML (`library/index/content_library`).

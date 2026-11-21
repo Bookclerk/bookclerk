@@ -1443,6 +1443,15 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
         }
         probed = true;
     }
+    if session.has_entrypoint(Entrypoint::Notifier) {
+        let health = session
+            .notifier(|notifier| async move { notifier.health().await })
+            .await?;
+        if !health.ok {
+            anyhow::bail!("notifier health failed: {}", health.detail);
+        }
+        probed = true;
+    }
     if session.has_entrypoint(Entrypoint::DatabaseAdapter) {
         probe_database(&session, config, &plugin).await?;
         probed = true;

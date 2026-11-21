@@ -802,6 +802,25 @@ title, and the host fails it without fetching anything.
    the host.
    It checks the size and SHA-256 as it streams, and re-checks the job's
    fence about once a second.
+
+   A file larger than 64 MiB goes in parts, so a relay that caps
+   request bodies (such as an ingress plugin's Cloudflare Worker, 100 MB
+   on the Free plan) passes it. Each part is its own `PUT` of the same
+   URL with `Content-Range: bytes <first>-<last>/<size>`, in order. The
+   owner answers `200 partial` with the `offset` it needs next until the
+   last part, which is answered like a whole file. The parts feed one
+   write per destination, so the file is still never staged and the
+   checks cover the whole file.
+
+   An interrupted file resumes. Before sending, and after a part breaks,
+   the host sends an empty `PUT` with `Content-Range: bytes */<size>`;
+   the owner answers `200 partial` with the offset of the next byte it
+   needs (or `received` when it has the whole file), and the host sends
+   only the rest. A part that doesn't start there gets `503` with reason
+   `resume` and that offset. The owner keeps an open file for 10 minutes
+   without a part; after that, or once the owner restarts, it starts
+   again from byte 0. A file small enough to send whole starts again
+   too.
 3. **Commit.** The host sends `POST /api/node/v1/uploads/{upload_id}/commit`.
    One canonical batch, gated on the live fence, marks the title
    acquired, records a stored copy of the edition on each destination
@@ -809,8 +828,11 @@ title, and the host fails it without fetching anything.
    `book_acquired`, and (for the job's last title) completes the job.
 
 A destination sees the end of its stream only after the whole body
-matched. A mismatch, a lost fence or a broken connection ends every
-destination's stream with an error, so each discards what it wrote.
+matched. A mismatch or a lost fence ends every destination's stream with
+an error, so each discards what it wrote. So does a broken connection
+while a file is sent whole. A part whose connection breaks keeps the
+bytes that arrived: the file stays open at that offset until its last
+part, an abort, or 10 minutes without a part.
 
 | Refusal | Meaning |
 | --- | --- |
@@ -818,6 +840,8 @@ destination's stream with an error, so each discards what it wrote.
 | `421 misdirected` | Another shared node granted it |
 | `409 lost` | The fence is gone |
 | `422 refused`, `422 destinations_changed` | The shared node's destinations aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
+| `422 invalid_range` | A part's `Content-Range` isn't exactly a part of the declared file |
+| `503 unavailable`, reason `resume` | A part didn't start where the open file stands; send from `offset` |
 
 Limits: 512 files per title, 8 GiB per file, 16 copies per file and 1 KiB
 keys.

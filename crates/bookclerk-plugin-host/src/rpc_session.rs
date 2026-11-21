@@ -86,6 +86,9 @@ type CoversCall = EntrypointCall<dyn bookclerk_plugin_sdk::CoverFetcher>;
 /// Typed call against the opened `metadataFiles` entrypoint.
 type MetadataFilesCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataFiles>;
 
+/// Typed call against the opened `notifier` entrypoint.
+type NotifierCall = EntrypointCall<dyn bookclerk_plugin_sdk::Notifier>;
+
 /// Typed call against the opened `socketHandler` entrypoint.
 type SocketHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::SocketHandler>;
 
@@ -198,6 +201,11 @@ enum Work {
     MetadataFiles {
         /// Typed call; replies through the sender it captured.
         call: MetadataFilesCall,
+    },
+    /// One typed `notifier` method on the opened primary entrypoints.
+    Notifier {
+        /// Typed call; replies through the sender it captured.
+        call: NotifierCall,
     },
     /// One socket event for the opened `socketHandler` entrypoint.
     SocketHandler {
@@ -1403,6 +1411,26 @@ impl PluginSession {
             + 'static,
     {
         self.entrypoint_call(call, |call| Work::MetadataFiles { call })
+            .await
+    }
+
+    /// One typed `notifier` method on the opened primary entrypoints.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `notifier` or
+    /// the method fails.
+    pub async fn notifier<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::Notifier>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.entrypoint_call(call, |call| Work::Notifier { call })
             .await
     }
 
@@ -3443,6 +3471,22 @@ fn vat_thread(
                             let _ = with_session(&session_cancel, &mut child, &mut guest, open)
                                 .await;
                         }
+                        Work::Notifier { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "notifier",
+                                |eps| {
+                                    eps.notifier.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::Notifier>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
                         Work::SocketHandler { call } => {
                             let open = run_entrypoint_call(
                                 &client,
@@ -4221,6 +4265,8 @@ async fn run_stream_copy(
                 // The stream-copy job never needs a pushed socket; the
                 // broker hands sockets only to a deployment's own open.
                 sockets: None,
+                // Nor does it raise notifications.
+                notify: None,
             },
         )
         .await

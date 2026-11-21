@@ -264,16 +264,17 @@ The host `EventPublisher` writes straight into the library outbox
 - **Host-emitted types.** Some domain events belong to the host.
   `book_acquired` is one: a source plugin's acquire handler returns the
   book, then the host's acquire pipeline records it and publishes
-  `book_acquired` in the same transaction as the library row. Its payload
-  names the title (`titleId`), its edition (`editionId`, `null` before the
-  title resolves to one), `source`, `asin`, `isbn`, `accountId` and the
-  written `pathKeys`.
+  `book_acquired` in the same transaction as the edition's acquire state.
+  Its payload names the title by the account holding that acquired it
+  (`titleId`), its edition (`editionId`), `source`, `asin`, `isbn`,
+  `accountId` and the written `pathKeys`.
   `edition_linked`, `edition_updated` and `holding_added` are written by
   the library model resolver in the same batch as the store listing they
   describe, `holding_removed` in the batch that deletes the holding,
   `edition_acquire_changed` with an acquire state change other than
-  becoming acquired, `wishlist_changed` and `listening_synced` by the library
-  after a wishlist or listening write, and `playback_started`,
+  becoming acquired, `ingest_batch_finished` when an upload or storage
+  intake batch ends, `wishlist_changed` and `listening_synced` by the
+  library after a wishlist or listening write, and `playback_started`,
   `playback_progress` and `playback_finished` by the built-in player after
   a listening write. A plugin can consume them under
   `[[events.consumers]]`, but can't declare them under
@@ -902,15 +903,30 @@ piling up work.
   UPDATE includes `EXISTS (wake_pending ∧ lease owner)`.
 
 **`book_acquired`.** A successful acquire writes `book_acquired` into
-`domain_events` in the same transaction as the library acquire-status
-change (book uuid, storage key, product ids; never media bytes). It sets
-the envelope `source` to the book's storefront plugin id.
+`domain_events` in the same transaction as the edition's acquire state
+(the account holding as `titleId`, the edition, storage key, product ids;
+never media bytes). The holding is also the event's correlation and
+ordering key. It sets the envelope `source` to the book's storefront
+plugin id.
 
 **`edition_acquire_changed`.** Any other acquire state change of a title
-with an edition (queued, downloading, failed, or reset to not acquired)
-writes `edition_acquire_changed` (`editionId`, `titleId`, `status`, one of
-`not_acquired`, `queued`, `downloading` or `error`) in the same
-transaction. Its `source` is the book's storefront plugin id too.
+(queued, downloading, failed, or reset to not acquired) writes
+`edition_acquire_changed` (`editionId`, `titleId`, the account holding,
+and `status`, one of `not_acquired`, `queued`, `downloading` or `error`)
+in the same transaction. Its `source` is the book's storefront plugin id
+too.
+
+A write is recorded only while its holding still holds the edition: one
+read before a revoke or rescan removed the holding changes nothing and
+publishes no event.
+
+**`ingest_batch_finished`.** When an [upload](../server/uploads.md) or a
+storage intake batch reaches a final state, the host writes
+`ingest_batch_finished` (`batchId`; `state`, one of `done`, `failed` or
+`cancelled`; `source`, `upload` or `intake`; `intakeInstance`, the storage
+instance an intake batch read, else `null`; `detail`, why it failed, else
+`null`) in the same transaction. Its `source` is `core.import`. Each file's
+outcome stays with the batch: read `GET /api/uploads/{id}`.
 
 **Library model events.** Recording a store listing publishes, in the same
 batch as its rows:
@@ -1527,6 +1543,127 @@ maps to.
 The host does not call the entrypoint yet beyond health probes. Finding
 the files, matching them to editions and writing changes back come with
 the metadata file sync work.
+
+### Notifiers
+
+Export `notifier` to deliver notifications to one outside service: a
+chat webhook, a mail relay, a paging service. The host decides what to
+send and to whom (see the [notifications ADR](../adr/notifications.md));
+a notifier only sends one message, which the host has already rendered,
+to one destination. `[notifier]` in
+[`plugin.toml`](manifest.md#notifier-notifiers) declares the destination
+kinds, formats and personal address fields.
+
+The typed methods on `Notifier` and `NotifierEntrypoint` are:
+
+| Method | Notes |
+| --- | --- |
+| `health` | Liveness and readiness: can the service be reached with the current settings |
+| `send` | `({ message, destination })` → `{ providerId? }`. Deliver one message; `providerId` is the service's id for it, when it gives one |
+| `validateDestination` | `({ addressJson })` → `{ addressJson, label? }`. Check and normalise a personal address a patron entered; `label` is a short hint that is never a secret (`a***@example.com`). The default accepts the address as given |
+
+A `NotificationMessage` carries `notificationId` (the same on every
+destination's copy, so use it as an idempotency key where the service
+takes one), `notificationType`, `severity`, `title`, a plain `text` body,
+optional `markdown` and `html` bodies, an optional `link` into the
+library, labelled `fields`, an optional `groupKey` for threading, and an
+alert action and key for services that open and close incidents. When
+`sensitive` is set the body carries a secret, such as an account-mail
+link: never log it. The destination is `channel` (its target lives in
+the instance's settings, and `addressJson` is empty) or `personal` (its
+`addressJson` is a JSON object of the declared address fields, which may
+hold secrets and is never logged).
+
+How `send` fails decides what happens next:
+
+- `rate_limited` is retried, after `details.retryAfterMs` when the
+  service said how long (capped at one hour), otherwise on the job's
+  backoff;
+- `unavailable`, `deadline_exceeded` (the call ran out of time) and
+  `cancelled` (the host stopped it, for example on shutdown) are retried on
+  the job's backoff;
+- any other error fails this destination for this message.
+
+The host checks both directions:
+
+- A message has a printable `notificationId` of at most 128 bytes, a
+  type id, a non-blank one-line title of at most
+  `MAX_NOTIFICATION_TITLE_BYTES` (256), `text` and `markdown` of at most
+  `MAX_NOTIFICATION_TEXT_BYTES` (16 KiB), `html` of at most
+  `MAX_NOTIFICATION_HTML_BYTES` (64 KiB), at most `MAX_NOTIFICATION_FIELDS`
+  (25) fields with values of at most `MAX_NOTIFICATION_FIELD_BYTES` (1 KiB),
+  and an alert key exactly when the alert action is not `none`. A link
+  is `https`, or `http` only to a loopback host, with no credentials.
+- An address document is one JSON object of at most 16 keys, each
+  `[a-z][a-z0-9_]{0,63}` and given once, with one-line string values; the
+  whole text is at most `MAX_NOTIFIER_ADDRESS_BYTES` (4 KiB). A
+  `validateDestination` answer that breaks these rules, or an empty
+  address, is refused as `internal`.
+- A provider id that is empty, longer than 1 KiB or not one line is
+  dropped; the message still counts as delivered. An error's text is cut
+  to one line of 512 bytes for the delivery log.
+
+```ts
+export class Notifier extends NotifierEntrypoint<Env> {
+  async send({ message }: NotifySendParams): Promise<NotifySent> {
+    const res = await fetch(this.env.CONFIG.webhook_url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: `${message.title}\n${message.text}` }),
+    });
+    if (res.status === 429) {
+      const seconds = Number(res.headers.get("retry-after") ?? "0");
+      throw new PluginError("rate_limited", "service is busy", {
+        retryAfterMs: seconds * 1000,
+      });
+    }
+    if (res.status >= 500) throw new PluginError("unavailable", `HTTP ${res.status}`);
+    if (!res.ok) throw new PluginError("invalid_params", `HTTP ${res.status}`);
+    return {};
+  }
+}
+```
+
+> [!NOTE]
+> The host does not route notifications yet: notifiers answer health
+> probes only. The router, the `notify.send` jobs, the delivery log and
+> the inbox come next, followed by the first providers.
+
+### Raising notifications
+
+A plugin that declares [`[[notifications.types]]`](manifest.md#notificationstypes-notifications-a-plugin-raises)
+gets an `env.NOTIFY` binding with one method, `raise`. The host routes
+each raise by the administrators' rules and each patron's preferences;
+the plugin never learns where it went.
+
+```ts
+await env.NOTIFY.raise({
+  notificationType: "sync_failed",
+  fields: { Account: account.name },
+  linkPath: `/accounts/${account.id}`,
+  alertAction: "trigger",
+  alertKey: `sync:${account.id}`,
+});
+```
+
+- `notificationType` is a declared type id, without the plugin prefix
+  the host adds.
+- `fields` are `{ name, value }` rows or a plain object, with the caps of
+  a message's fields.
+- `patronId` is required for a `patron` type and must be inside the
+  invocation's account scope.
+- `linkPath` is a path inside the library (`/books/42`): it starts with
+  one `/` and has no space or backslash. The host adds its public origin.
+- `groupKey`, `alertAction` and `alertKey` follow the message rules.
+
+`raise` answers the host's `notificationId`, or `invalid_params` for an
+undeclared type or a malformed raise, `forbidden` for a patron outside
+the scope, and `rate_limited` past the per-instance raise budget.
+Python authors call `env.NOTIFY.raise_(...)` with snake-case keywords.
+Native guests receive the binding as `Bindings.notify`.
+
+> [!NOTE]
+> The host does not hand out `NOTIFY` yet; it comes with the router.
 
 ### Storage entrypoints
 

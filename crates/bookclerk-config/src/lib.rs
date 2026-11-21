@@ -49,6 +49,7 @@ mod redact;
 mod report_history;
 mod report_lookup;
 mod settings;
+mod uploads;
 
 pub use atomic_replace::replace_file;
 pub use cache_settings::{
@@ -148,3 +149,4 @@ pub use settings::{
     NODE_API_SPKI_PIN_FILE, TRAY_HANDOFF_TTL_SECS_DEFAULT, TRAY_HANDOFF_TTL_SECS_MAX,
     TRAY_HANDOFF_TTL_SECS_MIN,
 };
+pub use uploads::UploadsConfig;

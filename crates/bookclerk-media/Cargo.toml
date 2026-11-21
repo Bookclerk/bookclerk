@@ -15,6 +15,9 @@ bookclerk-config.workspace = true
 bookclerk-cover.workspace = true
 # Embedded tag reader and the frames the tag worker speaks.
 bookclerk-tags.workspace = true
+# Bounded archive extraction for the `extract_archive` job, and the report
+# the host re-checks.
+bookclerk-archive.workspace = true
 # Capability probe only: the pool reports at startup whether this platform can
 # confine a worker at all, instead of letting the first acquire discover it.
 bookclerk-sandbox.workspace = true
@@ -51,6 +54,7 @@ bookclerk-mp4 = { workspace = true, features = ["fixtures"] }
 # The probe tests read the tag reader's own sample files.
 bookclerk-tags = { workspace = true, features = ["fixtures"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+bookclerk-archive = { workspace = true, features = ["fixtures"] }
 
 [lints]
 workspace = true

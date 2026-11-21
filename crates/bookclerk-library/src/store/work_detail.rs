@@ -64,6 +64,11 @@ pub enum HoldingHolder {
         /// The node id.
         node_id: String,
     },
+    /// A patron who uploaded the book, by user id.
+    Patron {
+        /// The person's `users.id`.
+        user_id: i64,
+    },
 }
 
 /// One holding of a listing.
@@ -163,6 +168,9 @@ fn listing_holding(model: holdings::Model) -> Option<ListingHolding> {
         },
         "node" => HoldingHolder::Node {
             node_id: model.node_id?,
+        },
+        "patron" => HoldingHolder::Patron {
+            user_id: model.user_id?,
         },
         _ => return None,
     };
@@ -511,6 +519,7 @@ mod tests {
             plugin_key: plugin.map(Into::into),
             account_id: account.map(Into::into),
             node_id: node.map(Into::into),
+            user_id: None,
             entitlement: "purchase".into(),
             purchased_at: None,
             seen_pass: None,
@@ -551,6 +560,14 @@ mod tests {
                 node_id: "n1".into()
             })
         );
+        let mut patron = holding("patron", None, None, None);
+        patron.user_id = Some(4);
+        patron.entitlement = "own".into();
+        assert_eq!(
+            listing_holding(patron).map(|h| (h.holder, h.entitlement)),
+            Some((HoldingHolder::Patron { user_id: 4 }, Entitlement::Own))
+        );
+        assert!(listing_holding(holding("patron", None, None, None)).is_none());
         assert!(listing_holding(holding("account", Some("audible"), None, None)).is_none());
         assert!(listing_holding(holding("user", None, None, None)).is_none());
         let mut bad = holding("node", None, None, Some("n1"));

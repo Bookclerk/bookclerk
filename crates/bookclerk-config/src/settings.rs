@@ -58,6 +58,9 @@ pub struct Config {
     /// How external plugin guests are run (`[plugins]`).
     #[serde(default)]
     pub plugins: crate::PluginsConfig,
+    /// Upload limits on this node (`[uploads]`).
+    #[serde(default)]
+    pub uploads: crate::UploadsConfig,
     /// Revision of the DB-authoritative `[events]` document after overlay.
     ///
     /// Absent until control-plane bootstrap or reconcile loads `core.events`.

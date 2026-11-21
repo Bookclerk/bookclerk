@@ -36,7 +36,7 @@
       "description": "Named capabilities this plugin exports from PluginWorker.open.",
       "items": {
         "type": "string",
-        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles"]
+        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier"]
       }
     },
     "media": {
@@ -71,6 +71,51 @@
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/MetadataFileDialect" }
+        }
+      }
+    },
+    "notifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destinations"],
+      "description": "What a notifier sends to and in which formats. Required for a plugin exporting the notifier entrypoint; forbidden for every other plugin.",
+      "properties": {
+        "destinations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Destination kinds: channel (one shared target the operator sets up) and personal (a patron's own address).",
+          "items": { "type": "string", "enum": ["channel", "personal"] }
+        },
+        "account_mail": {
+          "type": "boolean",
+          "description": "Whether the plugin can carry account mail (invites, password resets, recovery). Needs a required, non-secret email address field. Defaults to false."
+        },
+        "formats": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "contains": { "const": "text" },
+          "description": "Body formats the service shows; must include text. Defaults to [\"text\"].",
+          "items": { "type": "string", "enum": ["text", "markdown", "html"] }
+        },
+        "address_fields": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "Fields of a personal address; required exactly when destinations names personal, with at least one required field.",
+          "items": { "$ref": "#/$defs/NotifierAddressField" }
+        }
+      }
+    },
+    "notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Notification types the plugin raises through env.NOTIFY. Declaring any grants the NOTIFY binding.",
+      "properties": {
+        "types": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/NotificationType" }
         }
       }
     },
@@ -202,9 +247,61 @@
       },
       "then": { "required": ["metadata_files"] },
       "else": { "properties": { "metadata_files": false } }
+    },
+    {
+      "if": {
+        "properties": { "entrypoints": { "contains": { "const": "notifier" } } },
+        "required": ["entrypoints"]
+      },
+      "then": { "required": ["notifier"] },
+      "else": { "properties": { "notifier": false } }
     }
   ],
   "$defs": {
+    "NotifierAddressField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "label"],
+      "description": "One field of a patron's personal address, such as an email address or a chat id.",
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "Key in the address document; unique within the plugin."
+        },
+        "label": { "type": "string", "minLength": 1, "description": "Label shown to the patron." },
+        "required": { "type": "boolean", "description": "Whether the patron must fill it in. Defaults to false." },
+        "secret": {
+          "type": "boolean",
+          "description": "Whether the value is a secret (a personal token): sealed at rest and never shown again. Defaults to false."
+        }
+      }
+    },
+    "NotificationType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "audience", "severity", "title"],
+      "description": "One notification type the plugin raises; the host names it <plugin>:<id>.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "Type id, unique within the plugin."
+        },
+        "audience": {
+          "type": "string",
+          "enum": ["operational", "patron"],
+          "description": "operational goes to administrators' channels; patron goes to the one patron a raise names. account is reserved to Bookclerk."
+        },
+        "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "One-line name shown in notification settings."
+        }
+      }
+    },
     "MetadataFileDialect": {
       "type": "object",
       "additionalProperties": false,

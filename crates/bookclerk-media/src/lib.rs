@@ -33,6 +33,7 @@
 )]
 
 mod aac_fdk;
+mod archive;
 pub mod capabilities;
 mod chapter_align;
 mod chapters_mp4;
@@ -53,6 +54,7 @@ mod pool;
 mod probe;
 mod tag_worker;
 
+pub use archive::{check_report as check_archive_report, extract_archive};
 pub use bookclerk_cover::{CoverSet, CoverSize};
 pub use bookclerk_mp4::{
     brand_durations_from_chapter_info, brand_trim_range, rebase_chapters_after_brand_trim,

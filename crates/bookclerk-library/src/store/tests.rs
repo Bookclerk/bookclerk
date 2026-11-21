@@ -90,10 +90,19 @@ async fn account_and_book_roundtrip() {
         .unwrap()
         .unwrap();
     assert_eq!(by_uuid.product_id, "B00TEST");
+    // The event names the account holding, which outlives the flat row.
+    let title = store
+        .title_holding_of_book(&updated.uuid)
+        .await
+        .unwrap()
+        .unwrap();
     let pending = next_event_of(&store, "book_acquired").await;
     assert_eq!(pending.event_type, "book_acquired");
-    assert_eq!(pending.ordering_key, updated.uuid);
-    assert_eq!(pending.dedup_key, format!("book_acquired:{}", updated.uuid));
+    assert_eq!(pending.ordering_key, title.holding_id);
+    assert_eq!(
+        pending.dedup_key,
+        format!("book_acquired:{}", title.holding_id)
+    );
     let payload: serde_json::Value = serde_json::from_str(&pending.payload).unwrap();
     let edition = store.edition_of_book(&updated.uuid).await.unwrap();
     assert!(edition.is_some(), "the stored title resolves to an edition");
@@ -125,23 +134,96 @@ async fn a_status_other_than_acquired_publishes_its_edition_change() {
             .await
             .unwrap();
         let edition = store.edition_of_book(&book.uuid).await.unwrap().unwrap();
+        let holding = store
+            .title_holding_of_book(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap()
+            .holding_id;
         for status in [AcquireStatus::Queued, AcquireStatus::Error] {
             store
                 .set_acquire_status("B00Q", "user-1", status, None, Some("x"))
                 .await
                 .unwrap();
             let event = next_event_of(&store, crate::EDITION_ACQUIRE_CHANGED).await;
-            assert_eq!(event.ordering_key, book.uuid);
+            assert_eq!(event.ordering_key, holding);
             assert_eq!(event.source, "audible");
             let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
             assert_eq!(payload["editionId"], edition.as_str());
-            assert_eq!(payload["titleId"], book.uuid.as_str());
+            assert_eq!(payload["titleId"], holding.as_str());
             assert_eq!(payload["status"], status.as_str());
             store
                 .dispatch_event_deliveries(&event.id, &[], &Uuid::new_v4().to_string())
                 .await
                 .unwrap();
         }
+    }
+}
+
+#[tokio::test]
+async fn a_holding_writes_its_edition_state_until_it_is_removed() {
+    for store in [kit_store().await, in_process_store().await] {
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let book = store
+            .upsert_book(&NewBook::minimal("B00H", "user-1", "us", "Held"))
+            .await
+            .unwrap();
+        let title = store
+            .title_holding_of_book(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .set_holding_acquire_status(
+                &title.holding_id,
+                AcquireStatus::Acquired,
+                Some("Held/Held.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        let acquisition = store
+            .edition_acquisition(&title.edition_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acquisition.status, AcquireStatus::Acquired);
+        assert_eq!(acquisition.holding_id, title.holding_id);
+        // The flat row is mirrored while the table exists.
+        let row = store.get_book_by_uuid(&book.uuid).await.unwrap().unwrap();
+        assert_eq!(row.acquire_status, AcquireStatus::Acquired);
+        let event = next_event_of(&store, "book_acquired").await;
+        let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
+        assert_eq!(payload["titleId"], title.holding_id.as_str());
+        assert_eq!(payload["editionId"], title.edition_id.as_str());
+        store
+            .set_holding_pdf_status(
+                &title.holding_id,
+                AcquireStatus::Acquired,
+                Some("Held/Held.pdf"),
+            )
+            .await
+            .unwrap();
+        let acquisition = store
+            .edition_acquisition(&title.edition_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acquisition.pdf_status, AcquireStatus::Acquired);
+
+        // Once the holding is removed, a write naming it is not found.
+        store
+            .remove_account_holdings("audible", "user-1", crate::HoldingSelection::All)
+            .await
+            .unwrap();
+        let err = store
+            .set_holding_acquire_status(&title.holding_id, AcquireStatus::Queued, None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::LibraryError::NotFound(_)), "{err}");
     }
 }
 
@@ -4936,8 +5018,14 @@ async fn acquire_status_and_outbox_commit_together() {
         )
         .await
         .unwrap();
+    let holding = store
+        .title_holding_of_book(&book.uuid)
+        .await
+        .unwrap()
+        .unwrap()
+        .holding_id;
     let pending = store.next_undispatched_event().await.unwrap().unwrap();
-    assert_eq!(pending.ordering_key, book.uuid);
+    assert_eq!(pending.ordering_key, holding);
     assert_eq!(pending.event_type, "book_acquired");
     assert_eq!(pending.source, "audible");
 }

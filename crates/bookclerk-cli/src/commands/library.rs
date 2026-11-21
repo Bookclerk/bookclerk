@@ -150,6 +150,25 @@ pub enum LibraryCommand {
         #[arg(long)]
         no_wait: bool,
     },
+    /// Upload files, folders or ZIP / tar archives to a running bookclerkd
+    /// as one upload, then wait for the ingest job.
+    ///
+    /// Each folder keeps its name and layout; symbolic links are skipped.
+    /// The books are held by the library's first active Owner. Unidentified
+    /// books are stored for an Administrator to review.
+    Upload {
+        /// Files, folders and archives to upload.
+        #[arg(value_name = "PATH", required = true)]
+        paths: Vec<std::path::PathBuf>,
+        /// Commit the upload and print its job id without waiting for the
+        /// ingest job.
+        #[arg(long)]
+        no_wait: bool,
+        /// Continue an earlier upload of the same paths that did not
+        /// finish, from the bytes the daemon already holds.
+        #[arg(long, value_name = "UPLOAD_ID")]
+        resume: Option<String>,
+    },
     /// Match storage files to library rows and update acquire status.
     ///
     /// Lists audio in storage and probes custom object metadata (S3
@@ -285,6 +304,15 @@ pub(crate) enum FilterCommand {
 
 /// Dispatches a `library` subcommand against the opened library store.
 pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()> {
+    // An upload goes to the running daemon over HTTP; it opens no host here.
+    if let LibraryCommand::Upload {
+        paths,
+        no_wait,
+        resume,
+    } = command
+    {
+        return crate::commands::upload::run(config, paths, !no_wait, resume).await;
+    }
     let host = open_host(config).await?;
     // Database-authoritative domains (`core.events`, `core.output`) are
     // overlaid on the host config; read that, not the TOML seed.
@@ -431,7 +459,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             for book in targets {
                 let req = AcquireRequest {
                     asin: book.product_id.clone(),
-                    book_uuid: book.book_uuid.clone(),
+                    holding_id: Some(book.holding_id.clone()),
                     source: book.source.clone(),
                     account_id: book.account_id.clone(),
                     title: book.title.clone(),
@@ -464,6 +492,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             }
             Ok(())
         }
+        // Answered above, before the host opened.
+        LibraryCommand::Upload { .. } => anyhow::bail!("library upload runs without a host"),
         LibraryCommand::SetStatus {
             account,
             keep_missing,

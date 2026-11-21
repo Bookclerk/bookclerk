@@ -1,7 +1,7 @@
 //! Replays the checked-in `node_frame`, `node_account_bundle`,
 //! `clerk_authorization`, `clerk_authorize`, `clerk_token_request`,
-//! `clerk_token_answer`, `clerk_socket_frame`, `copy_range` and `copy_answer`
-//! fuzz corpora
+//! `clerk_token_answer`, `clerk_socket_frame`, `copy_range`, `copy_answer`
+//! and `upload_part` fuzz corpora
 //! in PR CI (no libFuzzer required), through the same oracles the targets
 //! use, so an input that once broke a parsing invariant stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
@@ -38,6 +38,10 @@ mod copy_range_oracle;
 /// The `copy_answer` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/copy_answer.rs"]
 mod copy_answer_oracle;
+
+/// The `upload_part` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/upload_part.rs"]
+mod upload_part_oracle;
 
 /// The `clerk_token_answer` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/clerk_token_answer.rs"]
@@ -301,4 +305,36 @@ fn fuzz_corpus_copy_answer_replays() {
     assert!(bodies > 0, "no copy_answer seed was read as a body");
     assert!(statuses > 0, "no copy_answer seed was read as a status");
     assert!(refused > 0, "no copy_answer seed was refused");
+}
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_upload_part_replays() {
+    use upload_part_oracle::Read;
+
+    let (mut parts, mut statuses, mut others) = (0, 0, 0);
+    for path in corpus_files("upload_part") {
+        let data = std::fs::read(&path).expect("read");
+        let read = upload_part_oracle::check(&data);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Seeds say what they are read as in their name.
+        let named = if name.starts_with("part") {
+            Read::Part
+        } else if name.starts_with("status") {
+            Read::Status
+        } else {
+            Read::Refused
+        };
+        assert_eq!(read, named, "seed {name}");
+        match read {
+            Read::Part => parts += 1,
+            Read::Status => statuses += 1,
+            Read::Refused => others += 1,
+        }
+    }
+    // The seeds reach every answer.
+    assert!(parts > 0, "no upload_part seed named a part");
+    assert!(statuses > 0, "no upload_part seed named a status query");
+    assert!(others > 0, "no upload_part seed named a refusal");
 }

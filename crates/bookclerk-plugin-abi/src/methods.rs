@@ -2,7 +2,8 @@
 //!
 //! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
 //! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` /
-//! `MetadataProvider` / `CoverFetcher` / `MetadataFiles` / `Cli` /
+//! `MetadataProvider` / `CoverFetcher` / `MetadataFiles` / `Notifier` /
+//! `NotificationRaiser` / `Cli` /
 //! `EventConsumer` / `EventPublisher` / `QueueConsumer` / `QueueProducer` /
 //! `PluginWorker` method in
 //! `schema/plugin.capnp`. Prefer these constants over string literals when
@@ -52,6 +53,8 @@ pub const METHOD_NAMES: &[&str] = &[
     fetch_covers::NAME,
     parse::NAME,
     render::NAME,
+    validate_destination::NAME,
+    raise::NAME,
     put::NAME,
     get::NAME,
     exists::NAME,
@@ -132,9 +135,12 @@ pub mod scheduled {
     pub const NAME: &str = "scheduled";
 }
 
-/// Send one message into a granted queue (Cap'n Proto `QueueProducer.send`).
+/// Send one message into a granted queue (Cap'n Proto `QueueProducer.send`),
+/// or deliver one notification to one destination (Cap'n Proto
+/// `Notifier.send`).
 ///
-/// Params: [`crate::QueueSendMessage`]. Result: [`crate::QueueSendOk`].
+/// Params: [`crate::QueueSendMessage`] / [`crate::NotifySendParams`].
+/// Result: [`crate::QueueSendOk`] / [`crate::NotifySent`].
 pub mod send {
     /// Wire method name `"send"`.
     pub const NAME: &str = "send";
@@ -236,6 +242,25 @@ pub mod parse {
 pub mod render {
     /// Wire method name `"render"`.
     pub const NAME: &str = "render";
+}
+
+/// Normalise and check a patron's address on a notifier (Cap'n Proto
+/// `Notifier.validateDestination`).
+///
+/// Params: [`crate::NotifyValidateParams`]. Result:
+/// [`crate::NotifyValidated`].
+pub mod validate_destination {
+    /// Wire method name `"validateDestination"`.
+    pub const NAME: &str = "validateDestination";
+}
+
+/// Raise a notification type the plugin declared (Cap'n Proto
+/// `NotificationRaiser.raise`).
+///
+/// Params: [`crate::NotifyRaiseParams`]. Result: [`crate::NotifyRaised`].
+pub mod raise {
+    /// Wire method name `"raise"`.
+    pub const NAME: &str = "raise";
 }
 
 /// Plugin-provided OIDC client templates (Cap'n Proto `Oidc.clients`).

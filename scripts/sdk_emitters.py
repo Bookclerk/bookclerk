@@ -89,7 +89,7 @@ _PY_KEYWORDS = frozenset(keyword.kwlist) | {"self"}
 
 
 def _py_param(name: str) -> str:
-    """Python identifier for a Cap'n parameter (``from`` -> ``from_``)."""
+    """Python identifier for a Cap'n parameter or method (``from`` -> ``from_``)."""
     out = _snake(name)
     return f"{out}_" if out in _PY_KEYWORDS else out
 
@@ -844,7 +844,7 @@ def emit_py_abi(capnp_text: str) -> str:
             for m in sorted(decl.methods, key=lambda m: m.ordinal):
                 params = "".join(f", {_py_param(p.name)}: {py_type(p.type, res)}" for p in m.params)
                 lines.append(
-                    f"    async def {_snake(m.name)}(self{params}) -> {_method_result_py(m, res)}:"
+                    f"    async def {_py_param(m.name)}(self{params}) -> {_method_result_py(m, res)}:"
                 )
                 arg_doc = [(_py_param(p.name), p.doc) for p in m.params]
                 mdoc = list(m.doc) or [f"``{decl.name}.{m.name}``."]

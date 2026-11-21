@@ -83,6 +83,10 @@ paths = [
     "fuzz/oracles/plain_fetch.rs",
     "fuzz/corpus/metadata_file_record/**",
     "fuzz/oracles/metadata_file_record.rs",
+    "fuzz/corpus/notifier_reply/**",
+    "fuzz/oracles/notifier_reply.rs",
+    "fuzz/corpus/notify_raise/**",
+    "fuzz/oracles/notify_raise.rs",
     "fuzz/corpus/event_read/**",
     "fuzz/oracles/event_read.rs",
     "fuzz/corpus/socket_request/**",
@@ -110,6 +114,8 @@ paths = [
     "fuzz/oracles/members_books_request.rs",
     "fuzz/corpus/member_controls_request/**",
     "fuzz/oracles/member_controls_request.rs",
+    "fuzz/corpus/upload_manifest/**",
+    "fuzz/oracles/upload_manifest.rs",
     "fuzz/corpus/patron_scope_request/**",
     "fuzz/oracles/patron_scope_request.rs",
     "fuzz/corpus/work_split_request/**",
@@ -138,7 +144,12 @@ paths = ["fuzz/corpus/title_meta_fill/**", "fuzz/oracles/title_meta_fill.rs"]
 # The mux peer oracle is shared the same way with the plugin-sdk replay test.
 [[test_input]]
 package = "bookclerk-plugin-sdk"
-paths = ["fuzz/corpus/mux_peer/**", "fuzz/oracles/mux_peer.rs"]
+paths = [
+  "fuzz/corpus/mux_peer/**",
+  "fuzz/oracles/mux_peer.rs",
+  "fuzz/corpus/download_resume/**",
+  "fuzz/oracles/download_resume.rs",
+]
 
 [[test_input]]
 package = "bookclerk-db-exec"
@@ -227,6 +238,16 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-archive"
+# The archive oracles are shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/archive_extract/**",
+    "fuzz/oracles/archive_extract.rs",
+    "fuzz/corpus/archive_report/**",
+    "fuzz/oracles/archive_report.rs",
+]
+
+[[test_input]]
 package = "bookclerk-media"
 # The media_decode oracle is shared with the replay test through `#[path]`.
 paths = [
@@ -301,6 +322,14 @@ package = "bookclerk-node-proto"
 paths = [
   "fuzz/corpus/copy_range/**",
   "fuzz/oracles/copy_range.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The upload part Content-Range oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/upload_part/**",
+  "fuzz/oracles/upload_part.rs",
 ]
 
 [[test_input]]
