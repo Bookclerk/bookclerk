@@ -84,9 +84,8 @@ use bookclerk_config::{
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
 use crate::api::{
-    bind_listen_addrs, build_operator_auth, reload_daemon_config, resolve_ui_dist,
-    revert_listen_after_bind_failure, router, start_integration_watchers, validate_daemon_listen,
-    AppState,
+    bind_listen_addrs, build_operator_auth, resolve_ui_dist, revert_listen_after_bind_failure,
+    router, start_integration_watchers, validate_daemon_listen, AppState,
 };
 use crate::event_worker::start_event_runtime;
 use crate::job_worker::start_job_runtime;
@@ -759,7 +758,7 @@ fn spawn_config_reload_signals(state: Arc<AppState>) {
                     }
                 };
             while stream.recv().await.is_some() {
-                match reload_daemon_config(&state).await {
+                match crate::api::reload_daemon_config(&state).await {
                     Ok(detail) => tracing::info!(%detail, "SIGHUP config reload"),
                     Err(err) => tracing::error!(error = %err, "SIGHUP config reload failed"),
                 }
