@@ -25,7 +25,9 @@ use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
-use crate::{check_len, KeychainItemId, KeystoreError, KeystoreErrorKind, Result, Vault};
+use crate::{
+    check_len, ErrorStore, KeychainItemId, KeystoreError, KeystoreErrorKind, Result, Vault,
+};
 
 /// The credential name the key is sealed under, and the name a service
 /// unit hands it in as (`LoadCredentialEncrypted=bookclerk-master-key`).
@@ -313,6 +315,27 @@ fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 impl Vault for SystemdCredsVault {
     fn get(&self, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
+        self.get_item(item).map_err(name_store)
+    }
+
+    fn set(&self, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
+        self.set_item(item, bytes).map_err(name_store)
+    }
+
+    fn delete(&self, item: KeychainItemId) -> Result<()> {
+        self.delete_item(item).map_err(name_store)
+    }
+}
+
+/// Names `systemd-creds` as the store an error came from.
+fn name_store(err: KeystoreError) -> KeystoreError {
+    err.in_store(ErrorStore::SystemdCreds)
+}
+
+/// The [`Vault`] operations, before errors are labelled with the store.
+impl SystemdCredsVault {
+    /// Reads `item`: this install's sealed file, else the unit's copy.
+    fn get_item(&self, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
         let sealed = self.sealed_path(item);
         if sealed.is_file() {
             return self.decrypt(&sealed);
@@ -329,7 +352,8 @@ impl Vault for SystemdCredsVault {
         ))
     }
 
-    fn set(&self, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
+    /// Seals `bytes` as `item`, or adopts an identical unit credential.
+    fn set_item(&self, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
         check_len(bytes)?;
         let sealed = self.sealed_path(item);
         // The unit already hands in exactly this envelope: nothing to seal.
@@ -368,7 +392,8 @@ impl Vault for SystemdCredsVault {
         committed
     }
 
-    fn delete(&self, item: KeychainItemId) -> Result<()> {
+    /// Removes this install's sealed file for `item`, if any.
+    fn delete_item(&self, item: KeychainItemId) -> Result<()> {
         let sealed = self.sealed_path(item);
         match std::fs::remove_file(&sealed) {
             Ok(()) => Ok(()),
@@ -438,6 +463,24 @@ esac
         vault.delete(item).unwrap();
         assert!(!vault.sealed_path(item).exists());
         vault.delete(item).unwrap();
+    }
+
+    #[test]
+    fn errors_name_systemd_creds_not_the_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = SystemdCredsVault::with_program(dir.path(), None, None);
+        let err = vault.get(KeychainItemId::random()).unwrap_err();
+        assert_eq!(err.store, ErrorStore::SystemdCreds);
+        assert!(
+            err.to_string()
+                .starts_with("systemd-creds item not found: "),
+            "{err}"
+        );
+        let err = vault.set(KeychainItemId::random(), b"key").unwrap_err();
+        assert!(
+            err.to_string().starts_with("systemd-creds unavailable: "),
+            "{err}"
+        );
     }
 
     #[test]

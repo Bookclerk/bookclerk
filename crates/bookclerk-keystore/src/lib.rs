@@ -84,18 +84,42 @@ pub enum KeystoreErrorKind {
     Rejected,
 }
 
-/// A keychain failure, without any item bytes.
+/// Which store a [`KeystoreError`] came from, so messages name the store
+/// the operator configured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ErrorStore {
+    /// The OS keychain (also the label for the in-memory test store).
+    #[default]
+    OsKeychain,
+    /// A `systemd-creds` credential ([`SystemdCredsVault`]).
+    SystemdCreds,
+}
+
+impl ErrorStore {
+    /// How the store is named at the start of an error message.
+    fn label(self) -> &'static str {
+        match self {
+            Self::OsKeychain => "OS keychain",
+            Self::SystemdCreds => "systemd-creds",
+        }
+    }
+}
+
+/// A key store failure, without any item bytes.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("OS keychain {}: {message}", kind_label(.kind))]
+#[error("{} {}: {message}", .store.label(), kind_label(.kind))]
 pub struct KeystoreError {
     /// What went wrong, for callers that branch on it.
     pub kind: KeystoreErrorKind,
+    /// The store that failed.
+    pub store: ErrorStore,
     /// A human-readable explanation that never contains item bytes.
     pub message: String,
 }
 
 impl KeystoreError {
-    /// Builds an error of `kind` with `message`.
+    /// Builds an OS keychain error of `kind` with `message`; see
+    /// [`KeystoreError::in_store`] for another store.
     ///
     /// # Arguments
     ///
@@ -105,8 +129,19 @@ impl KeystoreError {
     pub fn new(kind: KeystoreErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
+            store: ErrorStore::OsKeychain,
             message: message.into(),
         }
+    }
+
+    /// The same error, naming `store` as the one that failed.
+    ///
+    /// # Arguments
+    ///
+    /// * `store` - the store the error came from.
+    #[must_use]
+    pub fn in_store(self, store: ErrorStore) -> Self {
+        Self { store, ..self }
     }
 }
 
