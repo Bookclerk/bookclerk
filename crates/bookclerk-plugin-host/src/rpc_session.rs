@@ -4221,6 +4221,8 @@ async fn run_stream_copy(
                 // The stream-copy job never needs a pushed socket; the
                 // broker hands sockets only to a deployment's own open.
                 sockets: None,
+                // Only the active relay ingress reaches the library.
+                origin: None,
             },
         )
         .await

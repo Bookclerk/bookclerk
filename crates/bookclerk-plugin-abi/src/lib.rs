@@ -281,10 +281,10 @@ pub use metadata_files::{
 pub use roles::{
     hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,
     ByteRange, Cancellation, ContentSource, CoverFetcher, Database, Destination, Entrypoints,
-    EventConsumer, EventPublisher, GuestDatabase, JobController, JobRunner, KvNamespace,
-    MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc,
-    PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
-    ScheduledHandler, SocketHandler, Sockets, Source, PURCHASE_HINTS_BUDGET,
+    EventConsumer, EventPublisher, GuestDatabase, Ingress, JobController, JobRunner, KvNamespace,
+    MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc, Origin,
+    OriginReply, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult,
+    RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source, PURCHASE_HINTS_BUDGET,
     PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
@@ -295,10 +295,11 @@ pub use rpc::{
     roundtrip_socket_message, serve_plugin, serve_plugin_stdio, serve_socket_broker,
     ContentSourceClient, CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer,
     EventConsumerClient, EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings,
-    JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient, OidcClient,
-    OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer, QueueConsumerClient,
-    QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient, SocketCodec,
-    SocketHandlerClient, SocketWireMessage, SocketsClient, SourceClient, SourceServer,
+    IngressClient, JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient,
+    NoOrigin, OidcClient, OpenedEntrypoints, OriginClient, PluginCliClient, PluginClient,
+    PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
+    ScheduledHandlerClient, SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient,
+    SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

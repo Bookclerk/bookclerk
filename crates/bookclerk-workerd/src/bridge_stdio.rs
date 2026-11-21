@@ -32,13 +32,13 @@ use bookclerk_plugin_abi::{
     serve_plugin_stdio, Bindings, ByteRange, ContentSource, ContentSourceClient, CopyResult,
     CoverFetchParams, CoverFetcher, CoverFetcherClient, CoverImage, Database, DatabaseClient,
     Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer, EventConsumerClient,
-    ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Invocation, JobController, JobOutcome,
-    JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles, MetadataFilesClient,
-    MetadataProvider, MetadataProviderClient, ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints,
-    PluginCapabilities, PluginCli, PluginCliClient, PluginClient, PluginDescribe, PluginMigration,
-    PluginWorker, PutResult, QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary,
-    RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient, SocketHandler,
-    SocketHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
+    ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Ingress, IngressClient, Invocation,
+    JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles,
+    MetadataFilesClient, MetadataProvider, MetadataProviderClient, ObjectMetadata, Oidc,
+    OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient, PluginClient,
+    PluginDescribe, PluginMigration, PluginWorker, PutResult, QueueConsumer, QueueConsumerClient,
+    ReadResult, RemoteLibrary, RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient,
+    SocketHandler, SocketHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
     PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
@@ -221,6 +221,10 @@ impl WorkerdRoot {
             sockets: bindings
                 .sockets
                 .filter(|_| self.capabilities.sockets)
+                .map(Arc::from),
+            origin: bindings
+                .origin
+                .filter(|_| self.exports(Entrypoint::Ingress))
                 .map(Arc::from),
         };
         let opened = client.open(&invocation, host_bindings).await?;
@@ -411,6 +415,9 @@ impl WorkerdRoot {
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::Ingress) {
+            exported.ingress = Some(Box::new(IngressClient::new(invoke.typed())));
+        }
         if self.exports(Entrypoint::Covers) {
             exported.covers = Some(Box::new(InvokeCoverFetcher {
                 typed: CoverFetcherClient::new(invoke.typed(), MAX_STREAM_WINDOW_BYTES),
@@ -448,6 +455,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         covers,
         socket_handler,
         metadata_files,
+        ingress,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -492,6 +500,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         metadata_files: metadata_files
             .filter(|_| allow(Entrypoint::MetadataFiles.wire_name()))
             .map(|c| Box::new(c) as Box<dyn MetadataFiles>),
+        ingress: ingress
+            .filter(|_| allow(Entrypoint::Ingress.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn Ingress>),
     }
 }
 
