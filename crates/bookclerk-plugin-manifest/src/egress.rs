@@ -120,6 +120,44 @@ pub struct EgressPolicy {
     /// name: `ownUserAgentHosts`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub own_user_agent_hosts: Vec<String>,
+
+    /// Host names that may resolve to a local-network address
+    /// ([`crate::is_local_network`]: RFC 1918, shared CGNAT space, IPv6 ULA)
+    /// without a CIDR grant; see [`Self::allows_ip_for`].
+    ///
+    /// Each entry is one exact, IDNA-normalized host name (no wildcard, no
+    /// port) or one local-network IP literal, which then grants a connection
+    /// to exactly that address. The binding is to the entry: another name
+    /// that resolves to the same address gains nothing. The host fills this from
+    /// approved settings whose value names a host (a server address on the
+    /// operator's LAN). Loopback and link-local addresses still need an
+    /// explicit CIDR. Wire name: `localNames`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_names: Vec<String>,
+
+    /// Destinations that network settings name but the operator has not
+    /// approved yet. They grant nothing: a refused connection to one says
+    /// which setting names it (`network_not_granted`), so the operator knows
+    /// what to approve. Wire name: `pendingSettings`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_settings: Vec<PendingSettingDestination>,
+}
+
+/// A destination a network setting names that awaits the operator's
+/// approval ([`EgressPolicy::pending_settings`]).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSettingDestination {
+    /// The setting key.
+    pub setting: String,
+    /// The destination as the consent form shows it
+    /// (`https://abs.home.lan:13378`, `db.home.lan:5432`).
+    pub destination: String,
+    /// The host: an IDNA-normalized name or canonical IP literal (no
+    /// brackets).
+    pub host: String,
+    /// The port, 1-65535.
+    pub port: u16,
 }
 
 /// Home page named in [`host_user_agent`], so a site operator who sees the
@@ -228,6 +266,9 @@ impl EgressPolicy {
             address_cidrs,
             user_agent: None,
             own_user_agent_hosts,
+            // Local names come from approved settings, never the manifest.
+            local_names: Vec::new(),
+            pending_settings: Vec::new(),
         })
     }
 
@@ -311,7 +352,24 @@ impl EgressPolicy {
             address_cidrs: Vec::new(),
             user_agent: None,
             own_user_agent_hosts: Vec::new(),
+            local_names: Vec::new(),
+            pending_settings: Vec::new(),
         }
+    }
+
+    /// The pending network setting whose destination is `host:port`, for a
+    /// refusal that names it.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - The refused host, as the guest asked for it.
+    /// * `port` - The refused port.
+    #[must_use]
+    pub fn pending_setting_for(&self, host: &str, port: u16) -> Option<&PendingSettingDestination> {
+        let host = normalize_hostname(unbracketed(host))?;
+        self.pending_settings
+            .iter()
+            .find(|pending| pending.port == port && pending.host.eq_ignore_ascii_case(&host))
     }
 
     /// The agent the host sends: [`Self::user_agent`] or [`host_user_agent`].
@@ -403,7 +461,7 @@ impl EgressPolicy {
                 let host = match classify_host(host) {
                     HostKind::Invalid => return false,
                     HostKind::Ip(ip) => {
-                        if !self.allows_ip(ip) {
+                        if !self.allows_literal(ip) {
                             return false;
                         }
                         ip.to_string()
@@ -438,6 +496,56 @@ impl EgressPolicy {
         address_allowed(ip, &self.cidr_grants())
     }
 
+    /// True when a connection to `host` may use the resolved address `ip`.
+    ///
+    /// [`Self::allows_ip`], plus one widening: when `host` is a name listed
+    /// in [`Self::local_names`], a local-network address
+    /// ([`crate::is_local_network`]) is allowed too, so a setting that names
+    /// a LAN server by host name works when local DNS answers with a private
+    /// address. Loopback, link-local and other special addresses are never
+    /// widened this way.
+    ///
+    /// Callers resolve `host` once, check every address with this method and
+    /// dial only an address that passed, so a later DNS answer cannot swap
+    /// in another address.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - The name the connection was asked for (or an IP literal).
+    /// * `ip` - One resolved address for it.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the address may be dialed for that name.
+    #[must_use]
+    pub fn allows_ip_for(&self, host: &str, ip: std::net::IpAddr) -> bool {
+        if self.allows_ip(ip) {
+            return true;
+        }
+        if self.mode == NetworkMode::Deny || !crate::is_local_network(ip) {
+            return false;
+        }
+        let bound = match classify_host(host) {
+            HostKind::Name(name) if !is_restricted_hostname(&name) => name,
+            // A literal binds only itself: the dialed address must be the
+            // address the setting named.
+            HostKind::Ip(literal) if crate::canonical_ip(literal) == crate::canonical_ip(ip) => {
+                crate::canonical_ip(literal).to_string()
+            }
+            HostKind::Name(_) | HostKind::Ip(_) | HostKind::Invalid => return false,
+        };
+        self.local_names
+            .iter()
+            .any(|entry| normalize_local_name(entry).as_deref() == Some(bound.as_str()))
+    }
+
+    /// [`Self::allows_ip_for`] for an IP literal request host: the public
+    /// Internet, a CIDR grant, or a local-network literal listed in
+    /// [`Self::local_names`].
+    fn allows_literal(&self, ip: std::net::IpAddr) -> bool {
+        self.allows_ip_for(&ip.to_string(), ip)
+    }
+
     /// Loopback / metadata hostnames need a matching CIDR, not any CIDR.
     fn hostname_address_ok(&self, host: &str) -> bool {
         // Same spelling rules as `is_restricted_hostname`: `LOCALHOST.` is
@@ -466,7 +574,7 @@ impl EgressPolicy {
         let host = match classify_host(host) {
             HostKind::Invalid => return false,
             HostKind::Ip(ip) => {
-                if !self.allows_ip(ip) {
+                if !self.allows_literal(ip) {
                     return false;
                 }
                 ip.to_string()
@@ -507,7 +615,7 @@ impl EgressPolicy {
                 let host = match classify_host(host) {
                     HostKind::Invalid => return false,
                     HostKind::Ip(ip) => {
-                        return self.allows_ip(ip)
+                        return self.allows_literal(ip)
                             && (self.allow_undeclared_public_redirects
                                 || self
                                     .domains
@@ -529,18 +637,74 @@ impl EgressPolicy {
         }
     }
 
+    /// Whether a direct (non-redirect) fetch to `host:port` is permitted.
+    ///
+    /// [`Self::allows_initial`] plus the port rule: an entry that names a
+    /// port grants that port only, and one that names none grants
+    /// [`FETCH_DEFAULT_PORTS`].
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - Request hostname or IP literal.
+    /// * `port` - The request's effective port (the scheme default when the
+    ///   URL names none).
+    ///
+    /// # Returns
+    ///
+    /// `true` when outbound mode allows the fetch.
+    #[must_use]
+    pub fn allows_fetch(&self, host: &str, port: u16) -> bool {
+        self.allows_initial(host) && self.matching_domain_grants_port(host, port)
+    }
+
+    /// Whether a redirect hop to `host:port` is permitted.
+    ///
+    /// [`Self::allows_redirect`] plus the port rule: a hop to a declared host
+    /// needs a port that entry grants; an undeclared public hop
+    /// ([`Self::allow_undeclared_public_redirects`]) is limited to
+    /// [`FETCH_DEFAULT_PORTS`].
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - Hop hostname or IP literal.
+    /// * `port` - The hop's effective port.
+    /// * `hop_index` - 0-based redirect hop.
+    ///
+    /// # Returns
+    ///
+    /// `true` when outbound mode allows the hop.
+    #[must_use]
+    pub fn allows_redirect_to(&self, host: &str, port: u16, hop_index: u32) -> bool {
+        if !self.allows_redirect(host, hop_index) {
+            return false;
+        }
+        self.matching_domain_grants_port(host, port)
+            || (self.allow_undeclared_public_redirects && FETCH_DEFAULT_PORTS.contains(&port))
+    }
+
+    /// Whether some `domains` entry that covers `host` grants `port`.
+    fn matching_domain_grants_port(&self, host: &str, port: u16) -> bool {
+        let host = match classify_host(host) {
+            HostKind::Invalid => return false,
+            HostKind::Ip(ip) => ip.to_string(),
+            HostKind::Name(name) => name,
+        };
+        self.domains
+            .iter()
+            .any(|d| host_matches_normalized(&host, d) && entry_grants_port(d, port))
+    }
+
     /// Host-side check for a `CONNECT` that arrives from a workerd isolate.
     ///
     /// A workerd guest's outbound traffic leaves its jail through the host's
     /// `CONNECT` proxy, one tunnel per `fetch()` request or `connect()`
     /// socket. The jail labels nothing the host can trust, so the host can't
     /// tell which call opened a tunnel. It therefore admits the union of what
-    /// either call may reach: a TCP grant for `host:port`, a fetch host
-    /// ([`Self::allows_initial`]), or a host a redirect could reach
-    /// ([`Self::allows_redirect`] at hop 0, which covers
-    /// [`Self::allow_undeclared_public_redirects`]). Fetch grants name hosts,
-    /// not ports, so a fetch host is admitted on any port. The resolved
-    /// addresses still have to pass [`Self::allows_ip`] before the host dials.
+    /// either call may reach on that port: a TCP grant for `host:port`, a
+    /// fetch entry that grants `host:port` ([`Self::allows_fetch`]), or a
+    /// redirect hop to it ([`Self::allows_redirect_to`] at hop 0). The
+    /// resolved addresses still have to pass [`Self::allows_ip`] before the
+    /// host dials.
     ///
     /// The isolate's own egress worker enforces the narrower per-call rules
     /// (the fetch allowlist, each redirect hop, the subrequest budget). This
@@ -557,8 +721,8 @@ impl EgressPolicy {
     #[must_use]
     pub fn allows_isolate_tunnel(&self, host: &str, port: u16) -> bool {
         self.allows_tcp(host, port)
-            || self.allows_initial(host)
-            || (self.max_redirects > 0 && self.allows_redirect(host, 0))
+            || self.allows_fetch(host, port)
+            || (self.max_redirects > 0 && self.allows_redirect_to(host, port, 0))
     }
 
     /// Serializes this policy to the JSON value injected as workerd
@@ -714,11 +878,15 @@ pub fn normalize_hostname(host: &str) -> Option<String> {
 }
 
 /// Normalizes an allowlist pattern (`*.example.com`, exact host, or
-/// [`ANY_PUBLIC_HOST`]) via IDNA.
+/// [`ANY_PUBLIC_HOST`]) via IDNA, keeping an optional port.
 ///
 /// The `*.` prefix is preserved; only the suffix is ToASCII-normalized. A bare
-/// `*` stays [`ANY_PUBLIC_HOST`]. Percent-encoded patterns and empty patterns
-/// return `None`.
+/// `*` stays [`ANY_PUBLIC_HOST`] and never takes a port. An entry may end in
+/// `:port` (`api.example.com:8443`, `[2001:db8::1]:8080`): it then grants
+/// that port only, while an entry without one grants the web ports 80 and
+/// 443 (see [`FETCH_DEFAULT_PORTS`]). The port must be canonical decimal
+/// (no sign, no leading zero, 1-65535). Percent-encoded patterns and empty
+/// patterns return `None`.
 ///
 /// # Arguments
 ///
@@ -731,18 +899,136 @@ pub fn normalize_hostname(host: &str) -> Option<String> {
 /// `None` on failure.
 #[must_use]
 pub fn normalize_domain_pattern(pattern: &str) -> Option<String> {
-    let pattern = pattern.trim().trim_end_matches('.');
+    let pattern = pattern.trim();
     if pattern.is_empty() || pattern.contains('%') {
         return None;
     }
-    if pattern == ANY_PUBLIC_HOST {
-        return Some(ANY_PUBLIC_HOST.to_string());
+    let (host, port) = split_domain_entry(pattern)?;
+    let normalized = normalize_host_pattern(host)?;
+    if normalized == ANY_PUBLIC_HOST && port.is_some() {
+        return None;
     }
-    if let Some(rest) = pattern.strip_prefix("*.") {
-        let ascii = normalize_hostname(rest)?;
-        Some(format!("*.{ascii}"))
+    Some(match port {
+        Some(port) if normalized.contains(':') => format!("[{normalized}]:{port}"),
+        Some(port) => format!("{normalized}:{port}"),
+        None => normalized,
+    })
+}
+
+/// Normalizes the host half of an allowlist entry, which carries no port:
+/// [`ANY_PUBLIC_HOST`], a `*.` wildcard, an IPv6 literal (without brackets)
+/// or an IDNA-normalized hostname, with any trailing dot removed.
+///
+/// # Returns
+///
+/// The normalized host pattern, or `None` when it is empty or invalid.
+fn normalize_host_pattern(host: &str) -> Option<String> {
+    let host = host.trim().trim_end_matches('.');
+    if host.is_empty() || host.contains('%') {
+        return None;
+    }
+    if host == ANY_PUBLIC_HOST {
+        Some(ANY_PUBLIC_HOST.to_string())
+    } else if let Some(rest) = host.strip_prefix("*.") {
+        normalize_hostname(rest).map(|ascii| format!("*.{ascii}"))
+    } else if let Ok(v6) = host.parse::<std::net::Ipv6Addr>() {
+        Some(v6.to_string())
     } else {
-        normalize_hostname(pattern)
+        normalize_hostname(host)
+    }
+}
+
+/// Ports a fetch allowlist entry without an explicit port grants: plain HTTP
+/// and HTTPS.
+pub const FETCH_DEFAULT_PORTS: [u16; 2] = [80, 443];
+
+/// Splits a `domains` allowlist entry into its host pattern and optional
+/// port.
+///
+/// `[v6]` and `[v6]:port` carry IPv6 literals; otherwise a final `:digits`
+/// is the port when the rest holds no other colon (a bare IPv6 literal has
+/// several and no port). An entry with no port grants
+/// [`FETCH_DEFAULT_PORTS`].
+///
+/// # Arguments
+///
+/// * `entry` - A `domains` entry, normalized or as written.
+///
+/// # Returns
+///
+/// The host pattern (IPv6 without brackets) and the port, or `None` when a
+/// port is present but not canonical decimal in 1-65535, or a bracket is
+/// unterminated.
+///
+/// # Examples
+///
+/// ```
+/// use bookclerk_plugin_manifest::split_domain_entry;
+///
+/// assert_eq!(split_domain_entry("abs.example.com:13378"), Some(("abs.example.com", Some(13378))));
+/// assert_eq!(split_domain_entry("[2606:4700::1]:9000"), Some(("2606:4700::1", Some(9000))));
+/// assert_eq!(split_domain_entry("api.example.com"), Some(("api.example.com", None)));
+/// assert_eq!(split_domain_entry("api.example.com:0443"), None);
+/// ```
+#[must_use]
+pub fn split_domain_entry(entry: &str) -> Option<(&str, Option<u16>)> {
+    if let Some(rest) = entry.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        return match after {
+            "" => Some((host, None)),
+            _ => Some((host, Some(parse_canonical_port(after.strip_prefix(':')?)?))),
+        };
+    }
+    match entry.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => {
+            Some((host, Some(parse_canonical_port(port)?)))
+        }
+        _ => Some((entry, None)),
+    }
+}
+
+/// Parses a canonical decimal port: digits only, no leading zero, not 0.
+fn parse_canonical_port(text: &str) -> Option<u16> {
+    if text.is_empty() || text.starts_with('0') || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Whether a normalized allowlist entry grants `port`: its explicit port, or
+/// [`FETCH_DEFAULT_PORTS`] when it names none.
+fn entry_grants_port(entry: &str, port: u16) -> bool {
+    match split_domain_entry(entry) {
+        Some((_, Some(granted))) => granted == port,
+        Some((_, None)) => FETCH_DEFAULT_PORTS.contains(&port),
+        None => false,
+    }
+}
+
+/// Normalizes a [`EgressPolicy::local_names`] entry: one exact host name
+/// (IDNA-normalized, never a wildcard, a port or a restricted name such as
+/// `localhost`) or one local-network IP literal ([`crate::is_local_network`],
+/// canonical spelling, IPv4-mapped IPv6 unwrapped).
+///
+/// # Arguments
+///
+/// * `host` - The host a setting value names.
+///
+/// # Returns
+///
+/// The normalized entry, or `None` when it is neither.
+#[must_use]
+pub fn normalize_local_name(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.starts_with("*.") || host == ANY_PUBLIC_HOST {
+        return None;
+    }
+    match classify_host(host) {
+        HostKind::Name(name) if !is_restricted_hostname(&name) && !name.contains(':') => Some(name),
+        HostKind::Ip(ip) if crate::is_local_network(ip) => {
+            Some(crate::canonical_ip(ip).to_string())
+        }
+        HostKind::Name(_) | HostKind::Ip(_) | HostKind::Invalid => None,
     }
 }
 
@@ -758,7 +1044,7 @@ pub fn normalize_domain_pattern(pattern: &str) -> Option<String> {
 /// The normalized pattern, or `None` when it is invalid or `*`.
 #[must_use]
 pub fn normalize_tcp_host(host: &str) -> Option<String> {
-    normalize_domain_pattern(host).filter(|pattern| pattern != ANY_PUBLIC_HOST)
+    normalize_host_pattern(unbracketed(host)).filter(|pattern| pattern != ANY_PUBLIC_HOST)
 }
 
 /// Normalizes a host that may keep a guest's own `User-Agent`: a
@@ -878,7 +1164,12 @@ fn classify_host(host: &str) -> HostKind {
 /// and pattern strings.
 fn host_matches_normalized(host: &str, pattern: &str) -> bool {
     // `host` and policy `domains` are already IDNA-normalized by callers
-    // (`allows_initial` / `try_from_network`). Do not re-run IDNA here.
+    // (`allows_initial` / `try_from_network`). Do not re-run IDNA here. A
+    // fetch entry's port is judged separately ([`entry_grants_port`]).
+    let pattern = match split_domain_entry(pattern) {
+        Some((host_part, _)) => host_part,
+        None => return false,
+    };
     if pattern == ANY_PUBLIC_HOST {
         // Hostnames only: an IP literal needs its own entry.
         return host.parse::<std::net::IpAddr>().is_err();
@@ -961,7 +1252,11 @@ mod tests {
     fn isolate_tunnels_admit_the_union_of_fetch_tcp_and_redirect_rules() {
         let policy = EgressPolicy {
             mode: NetworkMode::Outbound,
-            domains: vec!["api.example.com".into(), "*.cdn.example.com".into()],
+            domains: vec![
+                "api.example.com".into(),
+                "*.cdn.example.com".into(),
+                "abs.example.com:13378".into(),
+            ],
             tcp: vec![TcpGrant {
                 host: "db.example.com".into(),
                 ports: vec![5432],
@@ -969,10 +1264,14 @@ mod tests {
             max_redirects: 5,
             ..EgressPolicy::deny()
         };
-        // A fetch host is admitted on any port: fetch grants carry no port.
+        // A fetch entry without a port is admitted on 80 and 443 only.
         assert!(policy.allows_isolate_tunnel("api.example.com", 443));
-        assert!(policy.allows_isolate_tunnel("api.example.com", 8443));
         assert!(policy.allows_isolate_tunnel("img.cdn.example.com", 80));
+        assert!(!policy.allows_isolate_tunnel("api.example.com", 8443));
+        assert!(!policy.allows_isolate_tunnel("api.example.com", 22));
+        // A fetch entry with a port is admitted on that port only.
+        assert!(policy.allows_isolate_tunnel("abs.example.com", 13378));
+        assert!(!policy.allows_isolate_tunnel("abs.example.com", 443));
         // A TCP grant is admitted only on its ports.
         assert!(policy.allows_isolate_tunnel("db.example.com", 5432));
         assert!(!policy.allows_isolate_tunnel("db.example.com", 5433));
@@ -1007,6 +1306,8 @@ mod tests {
         };
         assert!(policy.allows_isolate_tunnel("anything.example.net", 443));
         assert!(policy.allows_isolate_tunnel("1.1.1.1", 443));
+        // Undeclared hops stay on the web ports.
+        assert!(!policy.allows_isolate_tunnel("anything.example.net", 8080));
         for host in ["localhost", "10.0.0.1", "192.168.1.1", "[fd00::1]"] {
             assert!(!policy.allows_isolate_tunnel(host, 443), "{host}");
         }
@@ -1331,6 +1632,178 @@ mod tests {
             !wire.allows_tcp("example.com", 443),
             "a wire `*` TCP grant grants nothing"
         );
+    }
+
+    #[test]
+    fn domain_entries_may_name_one_canonical_port() {
+        for (raw, want) in [
+            ("api.example.com:8443", Some("api.example.com:8443")),
+            ("API.Example.COM.:8443", Some("api.example.com:8443")),
+            ("*.cdn.example.com:8080", Some("*.cdn.example.com:8080")),
+            ("[2001:DB8::1]:8443", Some("[2001:db8::1]:8443")),
+            ("[2001:db8::1]", Some("2001:db8::1")),
+            ("2001:db8::1", Some("2001:db8::1")),
+            ("10.0.0.5:13378", Some("10.0.0.5:13378")),
+            ("api.example.com:65535", Some("api.example.com:65535")),
+        ] {
+            assert_eq!(normalize_domain_pattern(raw).as_deref(), want, "{raw}");
+        }
+        for raw in [
+            "*:443",
+            "api.example.com:",
+            "api.example.com:0",
+            "api.example.com:08443",
+            "api.example.com:+443",
+            "api.example.com:65536",
+            "api.example.com:443:443",
+            "[2001:db8::1",
+            "[2001:db8::1]8443",
+            ":443",
+        ] {
+            assert!(normalize_domain_pattern(raw).is_none(), "{raw}");
+        }
+        // A TCP host never carries a port: its ports are listed beside it.
+        assert!(normalize_tcp_host("db.example.com:5432").is_none());
+        assert_eq!(
+            normalize_tcp_host("[::1]").as_deref(),
+            Some("::1"),
+            "a bracketed TCP address is the address"
+        );
+    }
+
+    #[test]
+    fn fetch_ports_follow_the_entry() {
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec![
+                "api.example.com".into(),
+                "api.example.com:8443".into(),
+                "[2606:4700::1111]:9000".into(),
+            ],
+            max_redirects: 2,
+            ..EgressPolicy::deny()
+        };
+        assert!(policy.allows_fetch("api.example.com", 80));
+        assert!(policy.allows_fetch("api.example.com", 443));
+        assert!(policy.allows_fetch("API.example.com.", 8443));
+        assert!(!policy.allows_fetch("api.example.com", 8080));
+        assert!(policy.allows_fetch("[2606:4700::1111]", 9000));
+        assert!(!policy.allows_fetch("[2606:4700::1111]", 443));
+        assert!(policy.allows_redirect_to("api.example.com", 8443, 0));
+        assert!(!policy.allows_redirect_to("api.example.com", 8080, 0));
+        assert!(!policy.allows_redirect_to("api.example.com", 443, 2));
+        // The host match itself ignores the port, so `allows_initial` (used by
+        // callers that judge the port separately) still sees the host.
+        assert!(policy.allows_initial("api.example.com"));
+        assert!(host_matches("api.example.com", "api.example.com:8443"));
+    }
+
+    #[test]
+    fn a_local_name_may_resolve_to_a_lan_address_and_nothing_wider() {
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["abs.home.arpa:13378".into()],
+            local_names: vec!["ABS.home.arpa.".into()],
+            ..EgressPolicy::deny()
+        };
+        let ip = |text: &str| text.parse::<std::net::IpAddr>().expect("ip");
+        // The bound name reaches every local-network range.
+        for lan in [
+            "192.168.1.20",
+            "10.1.2.3",
+            "172.20.0.4",
+            "100.64.0.9",
+            "fd12::1",
+        ] {
+            assert!(policy.allows_ip_for("abs.home.arpa", ip(lan)), "{lan}");
+            assert!(policy.allows_ip_for("ABS.home.arpa.", ip(lan)), "{lan}");
+        }
+        assert!(policy.allows_ip_for("abs.home.arpa", ip("::ffff:192.168.1.20")));
+        // Never loopback, link-local (metadata), unspecified or multicast.
+        for special in [
+            "127.0.0.1",
+            "::1",
+            "169.254.169.254",
+            "fe80::1",
+            "0.0.0.0",
+            "224.0.0.1",
+        ] {
+            assert!(
+                !policy.allows_ip_for("abs.home.arpa", ip(special)),
+                "{special}"
+            );
+        }
+        // The binding is to the name: another name, a subdomain or the
+        // address itself gains nothing.
+        assert!(!policy.allows_ip_for("other.home.arpa", ip("192.168.1.20")));
+        assert!(!policy.allows_ip_for("x.abs.home.arpa", ip("192.168.1.20")));
+        assert!(!policy.allows_ip_for("192.168.1.20", ip("192.168.1.20")));
+        // A listed literal binds exactly that address, never another.
+        let literal = EgressPolicy {
+            local_names: vec!["192.168.1.5".into(), "::ffff:10.0.0.9".into()],
+            tcp: vec![TcpGrant {
+                host: "192.168.1.5".into(),
+                ports: vec![5432],
+            }],
+            ..policy.clone()
+        };
+        assert!(literal.allows_ip_for("192.168.1.5", ip("192.168.1.5")));
+        assert!(literal.allows_ip_for("10.0.0.9", ip("10.0.0.9")));
+        assert!(!literal.allows_ip_for("192.168.1.5", ip("192.168.1.6")));
+        assert!(!literal.allows_ip_for("192.168.1.6", ip("192.168.1.6")));
+        assert!(!literal.allows_ip_for("example.com", ip("192.168.1.5")));
+        assert!(literal.allows_tcp("192.168.1.5", 5432));
+        assert!(!literal.allows_tcp("192.168.1.5", 5433));
+        // Public addresses pass as before; deny mode passes nothing.
+        assert!(policy.allows_ip_for("abs.home.arpa", ip("1.1.1.1")));
+        let denied = EgressPolicy {
+            mode: NetworkMode::Deny,
+            ..policy.clone()
+        };
+        assert!(!denied.allows_ip_for("abs.home.arpa", ip("192.168.1.20")));
+        // A wire policy that lists a restricted or wildcard name gains nothing.
+        let odd = EgressPolicy {
+            local_names: vec!["localhost".into(), "*.home.arpa".into(), "*".into()],
+            ..policy
+        };
+        assert!(!odd.allows_ip_for("localhost", ip("10.0.0.1")));
+        assert!(!odd.allows_ip_for("a.home.arpa", ip("10.0.0.1")));
+        assert!(!odd.allows_ip_for("example.com", ip("10.0.0.1")));
+    }
+
+    #[test]
+    fn local_names_are_exact_host_names() {
+        assert_eq!(
+            normalize_local_name(" NAS.Home.Arpa. ").as_deref(),
+            Some("nas.home.arpa")
+        );
+        assert_eq!(
+            normalize_local_name("192.168.1.2").as_deref(),
+            Some("192.168.1.2")
+        );
+        assert_eq!(
+            normalize_local_name("[FD00::1]").as_deref(),
+            Some("fd00::1")
+        );
+        assert_eq!(
+            normalize_local_name("::ffff:10.0.0.1").as_deref(),
+            Some("10.0.0.1")
+        );
+        for refused in [
+            "*.home.arpa",
+            "*",
+            "localhost",
+            "a.localhost",
+            "127.0.0.1",
+            "169.254.169.254",
+            "8.8.8.8",
+            "fe80::1",
+            "nas.home.arpa:8080",
+            "nas%2ehome.arpa",
+            "",
+        ] {
+            assert!(normalize_local_name(refused).is_none(), "{refused:?}");
+        }
     }
 
     #[test]

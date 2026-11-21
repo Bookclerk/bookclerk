@@ -100,6 +100,19 @@ fn is_podcast(row: &Value) -> bool {
         || ["podcastparent", "podcastepisode", "episode"].contains(&delivery.as_str())
 }
 
+/// The abridged flag a row's `format_type` names: exactly `abridged` or
+/// `unabridged`, ignoring case and surrounding whitespace.
+fn expected_abridged(row: &Value) -> Option<bool> {
+    let format = row.get("format_type")?.as_str()?;
+    if format.trim().eq_ignore_ascii_case("abridged") {
+        Some(true)
+    } else if format.trim().eq_ignore_ascii_case("unabridged") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// The ASIN of a row that must become a title, or `None` when it is skipped.
 fn expected_asin(row: &Value) -> Option<&str> {
     if !row.is_object() || is_podcast(row) {
@@ -144,10 +157,10 @@ pub fn check(data: &[u8]) {
         .and_then(Value::as_array)
         .map(|rows| rows.iter().collect())
         .unwrap_or_default();
-    let expected: Vec<(&str, Option<String>, Vec<String>)> = rows
+    let expected: Vec<(&Value, &str, Option<String>, Vec<String>)> = rows
         .into_iter()
         .filter_map(|row| {
-            expected_asin(row).map(|asin| (asin, expected_genres(row), expected_roots(row)))
+            expected_asin(row).map(|asin| (row, asin, expected_genres(row), expected_roots(row)))
         })
         .collect();
     assert_eq!(
@@ -157,8 +170,13 @@ pub fn check(data: &[u8]) {
         titles.len(),
         expected.len()
     );
-    for (title, (asin, genres, roots)) in titles.iter().zip(&expected) {
+    for (title, (row, asin, genres, roots)) in titles.iter().zip(&expected) {
         check_title(title, asin, genres.as_deref(), roots);
+        assert_eq!(
+            title.is_abridged,
+            expected_abridged(row),
+            "abridged flag is not the row's format_type"
+        );
     }
     // Compared through `Debug`: a rating of NaN (`"NaN"` parses as one) is
     // not equal to itself under `PartialEq`, but prints the same both times.

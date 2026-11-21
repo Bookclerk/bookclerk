@@ -245,6 +245,147 @@ impl FileProbe {
     }
 }
 
+/// What a probe found about the audio stream of one file, besides its
+/// [`FileProbe`]: the encoding, channels, sample rate and the running time
+/// a player sees.
+///
+/// Each value is `None` when the file's headers do not state it; nothing
+/// is decoded to find them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AudioStream {
+    /// The audio encoding.
+    pub codec: Option<bookclerk_tags::AudioCodec>,
+    /// Channels, sample rate and, for AAC, the profile.
+    pub format: bookclerk_tags::AudioFormat,
+    /// The playable running time in milliseconds, as the container states
+    /// it after edit lists and encoder priming; never zero
+    /// ([`Self::is_well_formed`]).
+    pub duration_ms: Option<u64>,
+}
+
+impl AudioStream {
+    /// True when every stated value is in range: channels and a sample
+    /// rate above zero and within the tag reader's limits, an AAC profile
+    /// only on AAC, and a running time above zero that a database integer
+    /// holds and [`bookclerk_tags::MAX_DURATION_MS`] allows.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        let format = self.format;
+        format
+            .channels
+            .is_none_or(|channels| (1..=bookclerk_tags::MAX_CHANNELS).contains(&channels))
+            && format
+                .sample_rate_hz
+                .is_none_or(|rate| (1..=bookclerk_tags::MAX_SAMPLE_RATE_HZ).contains(&rate))
+            && (format.aac_profile.is_none() || self.codec == Some(bookclerk_tags::AudioCodec::Aac))
+            && self
+                .duration_ms
+                .is_none_or(|ms| (1..=bookclerk_tags::MAX_DURATION_MS).contains(&ms))
+    }
+}
+
+/// One audio file of an edition as [`LibraryStore::edition_audio_files`]
+/// reads it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbedAudioFile {
+    /// Output destination id (`local`, `s3`).
+    pub destination: String,
+    /// Storage key on that destination.
+    pub storage_key: String,
+    /// Primary audio, a part or a chapter file.
+    pub role: FileRole,
+    /// The library copy (`output.copies`) the file belongs to; `None` for
+    /// an upload or a copy this build cannot read.
+    pub copy: Option<bookclerk_config::OutputCopy>,
+    /// What the last probe found; `None` until the file has been probed.
+    pub probe: Option<FileProbe>,
+    /// What the last probe found about the stream; all `None` until the
+    /// file has been probed, or for a probe from before streams were
+    /// stored.
+    pub stream: AudioStream,
+}
+
+/// The row of an audio file read back into a [`ProbedAudioFile`]. Stored
+/// values this build cannot read (an unknown codec name, a negative count)
+/// read as unknown.
+fn probed_audio_file(row: edition_files::Model) -> ProbedAudioFile {
+    let probe = row.probed_at.as_ref().and_then(|_| {
+        Some(FileProbe {
+            content_type: row.content_type.clone()?,
+            bitrate_kbps: row.bitrate_kbps.and_then(|kbps| u32::try_from(kbps).ok()),
+            lossless: row.lossless != 0,
+            source_store: row.source_store.clone(),
+        })
+    });
+    let codec = row
+        .codec
+        .as_deref()
+        .and_then(bookclerk_tags::AudioCodec::parse);
+    let stream = AudioStream {
+        codec,
+        format: bookclerk_tags::AudioFormat {
+            channels: row
+                .channels
+                .and_then(|channels| u8::try_from(channels).ok()),
+            sample_rate_hz: row.sample_rate_hz.and_then(|rate| u32::try_from(rate).ok()),
+            aac_profile: row
+                .aac_profile
+                .as_deref()
+                .and_then(bookclerk_tags::AacProfile::parse),
+        },
+        duration_ms: row
+            .duration_ms
+            .and_then(|ms| u64::try_from(ms).ok())
+            .filter(|&ms| ms > 0),
+    };
+    ProbedAudioFile {
+        copy: row.copy_format.as_deref().and_then(|format| {
+            Some(bookclerk_config::OutputCopy {
+                format: bookclerk_config::CopyFormat::parse(format)?,
+                quality: bookclerk_config::CopyQuality::parse(row.copy_quality.as_deref()?)?,
+            })
+        }),
+        role: FileRole::parse(&row.role),
+        destination: row.destination,
+        storage_key: row.storage_key,
+        probe,
+        stream,
+    }
+}
+
+/// Clears the stream columns of an `edition_files` update, as a new claim
+/// of a key clears its probe: the old file's stream says nothing about the
+/// new one.
+trait ClearStream {
+    /// The update with every [`AudioStream`] column set to null.
+    fn clear_stream(self) -> Self;
+}
+
+impl ClearStream for sea_orm::UpdateMany<edition_files::Entity> {
+    fn clear_stream(self) -> Self {
+        self.col_expr(
+            edition_files::Column::Codec,
+            Expr::value(Option::<String>::None),
+        )
+        .col_expr(
+            edition_files::Column::AacProfile,
+            Expr::value(Option::<String>::None),
+        )
+        .col_expr(
+            edition_files::Column::Channels,
+            Expr::value(Option::<i64>::None),
+        )
+        .col_expr(
+            edition_files::Column::SampleRateHz,
+            Expr::value(Option::<i64>::None),
+        )
+        .col_expr(
+            edition_files::Column::DurationMs,
+            Expr::value(Option::<i64>::None),
+        )
+    }
+}
+
 /// An edition's acquire state (`edition_acquisitions`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditionAcquisition {
@@ -537,6 +678,11 @@ impl LibraryStore {
             sha256: Set(None),
             copy_format: Set(copy_format.clone()),
             copy_quality: Set(copy_quality.clone()),
+            codec: Set(None),
+            aac_profile: Set(None),
+            channels: Set(None),
+            sample_rate_hz: Set(None),
+            duration_ms: Set(None),
             writer: Set(ACQUIRE_WRITER.to_string()),
             written_at: Set(now.clone()),
         })
@@ -585,6 +731,7 @@ impl LibraryStore {
                 edition_files::Column::ProbedAt,
                 Expr::value(Option::<String>::None),
             )
+            .clear_stream()
             .col_expr(
                 edition_files::Column::Sha256,
                 Expr::value(Option::<String>::None),
@@ -677,6 +824,11 @@ impl LibraryStore {
                 sha256: Set(sha256.map(str::to_string)),
                 copy_format: Set(None),
                 copy_quality: Set(None),
+                codec: Set(None),
+                aac_profile: Set(None),
+                channels: Set(None),
+                sample_rate_hz: Set(None),
+                duration_ms: Set(None),
                 writer: Set(writer.to_string()),
                 written_at: Set(now.clone()),
             })
@@ -771,6 +923,7 @@ impl LibraryStore {
                 edition_files::Column::ProbedAt,
                 Expr::value(Option::<String>::None),
             )
+            .clear_stream()
             .col_expr(
                 edition_files::Column::CopyFormat,
                 Expr::value(Option::<String>::None),
@@ -869,6 +1022,7 @@ impl LibraryStore {
                         edition_files::Column::ProbedAt,
                         Expr::value(Option::<String>::None),
                     )
+                    .clear_stream()
                     .filter(ours)
                     .exec(self.db())
                     .await
@@ -1013,6 +1167,94 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         Ok(updated.rows_affected > 0)
+    }
+
+    /// Stores what a probe found about the audio stream of `owner`'s file
+    /// at `key` on `destination` ([`AudioStream`]), beside the probe
+    /// [`Self::set_edition_file_probe`] stores.
+    ///
+    /// The row is changed only while `owner` still holds the key, as for
+    /// the probe.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was `owner`'s and now carries `stream`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `stream` is not well formed
+    /// ([`AudioStream::is_well_formed`]) or the write fails.
+    pub async fn set_edition_file_stream(
+        &self,
+        destination: &str,
+        key: &str,
+        owner: &FileOwner,
+        stream: &AudioStream,
+    ) -> Result<bool> {
+        if !stream.is_well_formed() {
+            return Err(LibraryError::Invalid(
+                "an audio stream has a zero or out-of-range value".to_string(),
+            ));
+        }
+        let updated = edition_files::Entity::update_many()
+            .col_expr(
+                edition_files::Column::Codec,
+                Expr::value(stream.codec.map(|codec| codec.as_str().to_owned())),
+            )
+            .col_expr(
+                edition_files::Column::AacProfile,
+                Expr::value(
+                    stream
+                        .format
+                        .aac_profile
+                        .map(|profile| profile.as_str().to_owned()),
+                ),
+            )
+            .col_expr(
+                edition_files::Column::Channels,
+                Expr::value(stream.format.channels.map(i64::from)),
+            )
+            .col_expr(
+                edition_files::Column::SampleRateHz,
+                Expr::value(stream.format.sample_rate_hz.map(i64::from)),
+            )
+            .col_expr(
+                edition_files::Column::DurationMs,
+                Expr::value(stream.duration_ms.and_then(|ms| i64::try_from(ms).ok())),
+            )
+            .filter(edition_files::Column::Destination.eq(destination))
+            .filter(edition_files::Column::StorageKey.eq(key))
+            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(owner.id()))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(updated.rows_affected > 0)
+    }
+
+    /// Every audio file (primary audio, parts and chapters) recorded for
+    /// edition `edition_id`, on every destination, with what the last probe
+    /// of each found ([`ProbedAudioFile`]), in destination then key order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn edition_audio_files(&self, edition_id: &str) -> Result<Vec<ProbedAudioFile>> {
+        let owner = FileOwner::Edition(edition_id.to_owned());
+        let rows = edition_files::Entity::find()
+            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(owner.id()))
+            .filter(edition_files::Column::Role.is_in([
+                FileRole::Audio.as_str(),
+                FileRole::Part.as_str(),
+                FileRole::Chapter.as_str(),
+            ]))
+            .order_by_asc(edition_files::Column::Destination)
+            .order_by_asc(edition_files::Column::StorageKey)
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(rows.into_iter().map(probed_audio_file).collect())
     }
 
     /// What the last probe found in the file at `key` on `destination`;

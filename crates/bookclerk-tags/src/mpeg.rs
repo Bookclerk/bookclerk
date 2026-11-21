@@ -3,7 +3,9 @@
 
 use crate::cache::{Source, Step};
 use crate::text::{latin1, RecordBuilder};
-use crate::{id3v2, ByteSpan, Container, Duration, DurationPrecision, TagField, TagRecord};
+use crate::{
+    id3v2, AudioFormat, ByteSpan, Container, Duration, DurationPrecision, TagField, TagRecord,
+};
 
 /// Container name in errors.
 const NAME: &str = "MP3";
@@ -41,7 +43,7 @@ pub(crate) fn read(src: &Source<'_>) -> Step<TagRecord> {
         }
     }
 
-    builder.duration = duration(src, audio_start, audio_end)?;
+    builder.duration = duration(src, audio_start, audio_end, &mut builder.format)?;
     builder.finish(src)
 }
 
@@ -81,7 +83,14 @@ fn read_id3v1(tag: &[u8], builder: &mut RecordBuilder) {
 
 /// The running time from the first frame: its Xing/Info or VBRI frame
 /// count when there is one, else the bit rate over the audio size.
-fn duration(src: &Source<'_>, audio_start: u64, audio_end: u64) -> Step<Option<Duration>> {
+///
+/// The first frame's channel mode and sample rate go into `format`.
+fn duration(
+    src: &Source<'_>,
+    audio_start: u64,
+    audio_end: u64,
+    format: &mut AudioFormat,
+) -> Step<Option<Duration>> {
     if audio_start >= audio_end {
         return Ok(None);
     }
@@ -102,6 +111,11 @@ fn duration(src: &Source<'_>, audio_start: u64, audio_end: u64) -> Step<Option<D
         }
     }) else {
         return Ok(None);
+    };
+    *format = AudioFormat {
+        channels: Some(if header.mono { 1 } else { 2 }),
+        sample_rate_hz: Some(header.sample_rate),
+        aac_profile: None,
     };
     let frame = window.get(at..).unwrap_or_default();
     let frames = header.vbr_frame_count(frame);
@@ -301,6 +315,14 @@ mod tests {
         let duration = drive(&file).expect("read").duration.expect("duration");
         assert_eq!(duration.precision, DurationPrecision::Exact);
         assert_eq!(duration.ms, 261);
+        assert_eq!(
+            drive(&file).expect("read").format,
+            crate::AudioFormat {
+                channels: Some(2),
+                sample_rate_hz: Some(44_100),
+                aac_profile: None,
+            }
+        );
     }
 
     #[test]

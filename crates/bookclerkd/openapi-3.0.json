@@ -15995,6 +15995,701 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/library/works/{id}/tags": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Reads a work's library tags.",
+        "description": "Only the operator, an Owner or an Administrator may call it; patrons see\ntags through the Library's tag filter, inside their scope.",
+        "operationId": "get_work_tags",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "A top-level work id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The work's tags.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkTagsJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can read library tags here"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such work, or a podcast episode (tags go on its show).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "work 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The tags could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library tags could not be read or saved"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "put": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Replaces the tags an Administrator set on a work.",
+        "description": "Sidecar tags stay. The Library filter and patron scopes see the change\nat once. Only the operator, an Owner, or an Administrator whom an Owner\nlets set patron limits may call it.",
+        "operationId": "put_work_tags",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "A top-level work id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkTagsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The work's tags afterwards.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkTagsJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Too many tags, or one too long. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "a work has at most 32 library tags"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator, or an Owner turned off setting patron limits for them. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator whom an Owner lets set patron limits can change library tags"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such work, or a podcast episode (tags go on its show).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "work 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `tags` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The tags could not be saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library tags could not be read or saved"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/library/collections": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Reads the library's collections.",
+        "description": "Only the operator, an Owner or an Administrator may call it; patrons see\ncollection names through the Library's collection filter, inside their\nscope.",
+        "operationId": "get_collections",
+        "responses": {
+          "200": {
+            "description": "The collections, in the order shown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryCollections"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can read the collections here"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The collections could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the collections could not be read or saved"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "put": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Replaces the library's collections.",
+        "description": "Names are trimmed and must differ ignoring case; each prefix gets a\nclosing `/`. When the collections change, the page index is rebuilt so\nthe Library filter and patron scopes follow. Only the operator, an\nOwner, or an Administrator whom an Owner lets set patron limits may\ncall it.",
+        "operationId": "put_collections",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryCollections"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The collections after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryCollections"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The collections are invalid. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid collections: two collections are named Kids"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator, or an Owner turned off setting patron limits for them. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator whom an Owner lets set patron limits can change collections"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The collections kept changing underneath the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "core.collections kept changing; retry"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `collections` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The collections could not be saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the collections could not be read or saved"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/node-invites": {
       "get": {
         "tags": [
@@ -20022,6 +20717,236 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/config/clerk/request": {
+      "post": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`POST /api/config/clerk/request`: asks a library this install holds a\ncard for to fetch a book from one of its branches, with the card.",
+        "operationId": "post_clerk_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClerkRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The library took the request; it shows there with the person's other requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClerkRequestSent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The work or node id is malformed (`invalid_request`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "invalid work_id",
+                  "error": "invalid_request"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user is not an active Owner (`forbidden`), or the library's member controls turn requesting books off for the person (`not_allowed`). A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorAnswer"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "not_allowed": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "detail": "the library's administrator hasn't allowed you to ask its branches for books",
+                      "error": "not_allowed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This install holds no active card for that library (`not_found`), or no branch of the library lists the work now (`not_listed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "no branch of that library lists this book now",
+                  "error": "not_listed"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `library_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library database could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The library could not be reached (`unreachable`), no longer accepts the card (`card_refused`), or answered with another error (`library_error`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "the library could not be reached",
+                  "error": "unreachable"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library's job queue is full (`library_busy`). When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again; sent only with `session_check_unavailable`."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "library_busy": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "detail": "the library's job queue is full; try again later",
+                      "error": "library_busy"
+                    }
+                  },
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/config/join/connections": {
       "post": {
         "tags": [
@@ -21230,6 +22155,8 @@
                 "publisher",
                 "source",
                 "tag",
+                "library_tag",
+                "collection",
                 "progress"
               ]
             }
@@ -21857,6 +22784,8 @@
                 "publisher",
                 "source",
                 "tag",
+                "library_tag",
+                "collection",
                 "progress"
               ]
             }
@@ -36330,6 +37259,414 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
+    "/api/config/master-key": {
+      "get": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`GET /api/config/master-key`.",
+        "operationId": "get_master_key_status",
+        "responses": {
+          "200": {
+            "description": "Where the key lives and what was recorded about a recovery copy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MasterKeyStatus"
+                },
+                "example": {
+                  "needs_recovery_copy": true,
+                  "recorded_at": "2026-11-21T09:30:00+00:00",
+                  "recovery_copy": "skipped",
+                  "store": "keychain"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The key could not be read (`master_key_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "this install has no master.key",
+                  "error": "master_key_failed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or a signed-in Owner."
+      }
+    },
+    "/api/config/master-key/recovery-copy": {
+      "post": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`POST /api/config/master-key/recovery-copy`.",
+        "operationId": "post_recovery_copy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCopyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The recovery copy: a `BCK2` envelope wrapped with the password, for `bookclerk config master-key import`. Sent as an attachment; nothing is recorded until `PUT …/state`.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinaryBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The password is shorter than 12 characters (`password_too_short`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "a recovery password needs at least 12 characters",
+                  "error": "password_too_short"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in as the operator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session is impersonating a user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `password` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The key could not be read or wrapped (`master_key_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "master key file /home/bookclerk/BookclerkFiles/master.key keeps the key in OS keychain item 6f1c…, which could not be read: the keychain is locked",
+                  "error": "master_key_failed"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
+    "/api/config/master-key/recovery-copy/state": {
+      "put": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`PUT /api/config/master-key/recovery-copy/state`.",
+        "operationId": "put_recovery_copy_state",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCopyStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The answer was recorded for the key in use.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MasterKeyStatus"
+                },
+                "example": {
+                  "needs_recovery_copy": false,
+                  "recorded_at": "2026-11-21T09:30:00+00:00",
+                  "recovery_copy": "saved",
+                  "store": "keychain"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in as the operator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session is impersonating a user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `state` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The key could not be read or the answer could not be written (`master_key_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "failed to write /home/bookclerk/BookclerkFiles/master-key-recovery.json: No space left on device (os error 28)",
+                  "error": "master_key_failed"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
     "/api/node/v1/enroll": {
       "post": {
         "tags": [
@@ -41501,6 +42838,47 @@
           }
         }
       },
+      "ClerkRequestBody": {
+        "type": "object",
+        "description": "`POST /api/config/clerk/request` body.",
+        "required": [
+          "library_id",
+          "work_id"
+        ],
+        "properties": {
+          "library_id": {
+            "type": "string",
+            "description": "The library to ask: one this install holds an active card for.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          },
+          "work_id": {
+            "type": "string",
+            "description": "The library's own work id: 1 to 64 ASCII letters, digits and `-`.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "The library's branch to ask, from the work's `available_through`\nthere; absent asks the first branch that lists it.",
+            "example": "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ClerkRequestSent": {
+        "type": "object",
+        "description": "JSON body for `POST /api/config/clerk/request`.",
+        "required": [
+          "library_id"
+        ],
+        "properties": {
+          "library_id": {
+            "type": "string",
+            "description": "The library that took the request.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          }
+        }
+      },
       "ClerkSignOutBody": {
         "type": "object",
         "description": "`POST /api/config/clerk/sign-out` body.",
@@ -45243,6 +46621,52 @@
           }
         }
       },
+      "LibraryCollection": {
+        "type": "object",
+        "description": "One collection: a name and the storage key prefixes whose files belong\nto it.",
+        "required": [
+          "name",
+          "prefixes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name people see and scope rules match, 1 to 64 bytes, distinct\nignoring case.",
+            "example": "Kids"
+          },
+          "prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Storage key prefixes, 1 to 8, each a folder relative to the\ndestination's root (no leading `/`); a closing `/` is added when\nmissing, so `kids` matches `kids/…` but not `kidsbooks/…`.",
+            "example": [
+              "kids/",
+              "children/"
+            ],
+            "maxItems": 8
+          }
+        },
+        "additionalProperties": false
+      },
+      "LibraryCollections": {
+        "type": "object",
+        "description": "The library's collections: the `core.collections` document and the\nbody of `PUT /api/library/collections`.",
+        "required": [
+          "collections"
+        ],
+        "properties": {
+          "collections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LibraryCollection"
+            },
+            "description": "The collections, at most 32, in the order shown.",
+            "maxItems": 32
+          }
+        },
+        "additionalProperties": false
+      },
       "LibraryConsentsResponse": {
         "type": "object",
         "description": "JSON body for `GET /api/config/library-consents`.",
@@ -45835,6 +47259,53 @@
           }
         },
         "additionalProperties": false
+      },
+      "MasterKeyStatus": {
+        "type": "object",
+        "description": "`GET /api/config/master-key` and the `PUT` answer.",
+        "required": [
+          "store",
+          "recovery_copy",
+          "needs_recovery_copy"
+        ],
+        "properties": {
+          "store": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MasterKeyStore"
+              }
+            ],
+            "description": "Where the key lives."
+          },
+          "recovery_copy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RecoveryCopyAnswer"
+              }
+            ],
+            "description": "What the operator recorded about a recovery copy of this key. A\nrecord for an earlier key (since restored or replaced) reads as\n`unrecorded`."
+          },
+          "recorded_at": {
+            "type": "string",
+            "description": "When that was recorded (RFC 3339, UTC); absent when `unrecorded`.",
+            "example": "2026-11-21T09:30:00+00:00",
+            "nullable": true
+          },
+          "needs_recovery_copy": {
+            "type": "boolean",
+            "description": "Whether the web app should remind the operator to save a copy: the\nkey is in the OS keychain and no copy was recorded as saved.",
+            "example": true
+          }
+        }
+      },
+      "MasterKeyStore": {
+        "type": "string",
+        "description": "Where this install keeps its key.",
+        "enum": [
+          "file",
+          "password_file",
+          "keychain"
+        ]
       },
       "MeResponse": {
         "type": "object",
@@ -49484,6 +50955,13 @@
               }
             },
             "nullable": true
+          },
+          "setting_destinations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingDestinationApproval"
+            },
+            "description": "Setting destinations to approve, from the response's\n`setting_destinations`. An approved destination stays approved while\na setting still names it; one left out stays pending, and one no\nsetting names any more is withdrawn."
           }
         }
       },
@@ -49718,7 +51196,8 @@
           "covered",
           "summary",
           "limits",
-          "host_user_agent"
+          "host_user_agent",
+          "setting_destinations"
         ],
         "properties": {
           "plugin_id": {
@@ -50161,6 +51640,13 @@
             "type": "string",
             "description": "The `User-Agent` this host sends for the plugin's requests, except to\nthe request's `ownUserAgentHosts`.",
             "example": "bookclerk/0.1.0 (+https://bookclerk.app)"
+          },
+          "setting_destinations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingDestinationView"
+            },
+            "description": "The destination each network setting (`network = \"fetch\"` or\n`\"tcp\"`) names on each instance, and whether it is approved. Empty\nwhen the plugin declares no network setting. A `pending` row is not\nreachable until it is approved; `covered` is false while one is."
           }
         }
       },
@@ -51224,6 +52710,88 @@
             "type": "boolean",
             "description": "True when every row must have a value in this column.",
             "example": true
+          }
+        }
+      },
+      "PluginSettingDestinationApproval": {
+        "type": "object",
+        "description": "A setting destination the operator approves.",
+        "required": [
+          "setting",
+          "destination"
+        ],
+        "properties": {
+          "setting": {
+            "type": "string",
+            "description": "The setting key.",
+            "example": "server_url"
+          },
+          "destination": {
+            "type": "string",
+            "description": "The destination exactly as the consent response shows it.",
+            "example": "http://abs.home.lan:13378"
+          }
+        }
+      },
+      "PluginSettingDestinationView": {
+        "type": "object",
+        "description": "One network setting's destination on one plugin instance.",
+        "required": [
+          "setting",
+          "label",
+          "network",
+          "state"
+        ],
+        "properties": {
+          "instanceId": {
+            "type": "string",
+            "description": "The instance whose settings name it; absent when the plugin has no\ninstance yet and the row shows the setting's default.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+            "nullable": true
+          },
+          "setting": {
+            "type": "string",
+            "description": "The setting key, the source the grant is stored under.",
+            "example": "server_url"
+          },
+          "label": {
+            "type": "string",
+            "description": "The setting's label (its key when it has none).",
+            "example": "Server URL"
+          },
+          "network": {
+            "type": "string",
+            "description": "`fetch` (HTTP requests) or `tcp` (a raw socket).",
+            "example": "fetch"
+          },
+          "destination": {
+            "type": "string",
+            "description": "The destination: `scheme://host:port` for a fetch, `host:port` for\nTCP (IPv6 in brackets); absent when the setting is unset or invalid.",
+            "example": "http://abs.home.lan:13378",
+            "nullable": true
+          },
+          "scope": {
+            "type": "string",
+            "description": "What kind of host it is: `name` (may resolve to a local-network\naddress, for this name only), `publicAddress`, `localAddress` (this\none local-network address) or `restricted` (loopback, link-local or\na name such as `localhost`, which also needs an address grant).",
+            "example": "name",
+            "nullable": true
+          },
+          "tls": {
+            "type": "boolean",
+            "description": "True for an `https` fetch, whose certificate is verified; false for\nplain HTTP and raw TCP, which trust the network's DNS answer.",
+            "example": false,
+            "nullable": true
+          },
+          "state": {
+            "type": "string",
+            "description": "`approved`, `pending` (awaiting consent), `unset` or `invalid`.",
+            "example": "pending"
+          },
+          "error": {
+            "type": "string",
+            "description": "Why the value names no destination, when `state` is `invalid`.",
+            "example": "the URL must start with http:// or https://",
+            "nullable": true
           }
         }
       },
@@ -53298,6 +54866,54 @@
           }
         }
       },
+      "RecoveryCopyAnswer": {
+        "type": "string",
+        "description": "What the operator recorded about a recovery copy of the key in use.",
+        "enum": [
+          "unrecorded",
+          "saved",
+          "skipped"
+        ]
+      },
+      "RecoveryCopyChoiceBody": {
+        "type": "string",
+        "description": "What the operator did about a recovery copy.",
+        "enum": [
+          "saved",
+          "skipped"
+        ]
+      },
+      "RecoveryCopyRequest": {
+        "type": "object",
+        "description": "`POST /api/config/master-key/recovery-copy` body.",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The password the copy is wrapped with: at least 12 characters. Keep\nit apart from the copy; without it the copy can't be restored.",
+            "example": "correct horse battery staple"
+          }
+        }
+      },
+      "RecoveryCopyStateRequest": {
+        "type": "object",
+        "description": "`PUT /api/config/master-key/recovery-copy/state` body.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RecoveryCopyChoiceBody"
+              }
+            ],
+            "description": "What the operator did."
+          }
+        }
+      },
       "RedeemBody": {
         "type": "object",
         "description": "JSON body for `POST /redeem` (claim ticket plus retry nonce).",
@@ -53962,7 +55578,9 @@
           "genre",
           "series",
           "author",
-          "narrator"
+          "narrator",
+          "tag",
+          "collection"
         ]
       },
       "ScopeRule": {
@@ -55336,7 +56954,8 @@
         "type": "object",
         "description": "Title-metadata results aligned with the request; failed items are `null`.",
         "required": [
-          "results"
+          "results",
+          "incomplete"
         ],
         "properties": {
           "results": {
@@ -55494,6 +57113,17 @@
               "nullable": true
             },
             "description": "One optional metadata payload per query; enrichment errors become `None`."
+          },
+          "incomplete": {
+            "type": "array",
+            "items": {
+              "type": "boolean"
+            },
+            "description": "Per query, in order: `true` when its `null` is a failure or a query\nthat ran past the batch deadline, not an answer, so the client should\nnot keep it and may ask again later.",
+            "example": [
+              false,
+              true
+            ]
           }
         }
       },
@@ -57416,6 +59046,12 @@
             "type": "boolean",
             "description": "True when this install's person holds it there through a store\naccount of their own; false for a book only other people there\nhold.",
             "example": true
+          },
+          "requestable_work": {
+            "type": "string",
+            "description": "The library's own work id to ask it for this edition with\n(`POST /api/config/clerk/request`): set when this install holds a\ncard for the library, the library holds no copy, and one of its\nbranches lists it. Absent otherwise.",
+            "example": "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b",
+            "nullable": true
           }
         }
       },
@@ -57876,6 +59512,81 @@
             "description": "RFC 3339 time of the newest purchase a store reported.",
             "example": "2024-03-02T18:04:11Z",
             "nullable": true
+          }
+        }
+      },
+      "WorkTag": {
+        "type": "object",
+        "description": "One library tag on a work.",
+        "required": [
+          "value",
+          "source"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "The tag as written.",
+            "example": "Kids"
+          },
+          "source": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkTagSource"
+              }
+            ],
+            "description": "Where it came from."
+          }
+        }
+      },
+      "WorkTagSource": {
+        "type": "string",
+        "description": "Where a library tag came from (`work_tags.source`).",
+        "enum": [
+          "admin",
+          "sidecar"
+        ]
+      },
+      "WorkTagsBody": {
+        "type": "object",
+        "description": "`PUT /api/library/works/{id}/tags` body: the tags an Administrator sets.",
+        "required": [
+          "tags"
+        ],
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The tags, replacing the ones set in Bookclerk (sidecar tags stay).\nBlanks and repeats, ignoring case, are dropped; at most 32 tags of\nat most 256 bytes each.",
+            "example": [
+              "Kids",
+              "Bedtime"
+            ],
+            "maxItems": 32
+          }
+        },
+        "additionalProperties": false
+      },
+      "WorkTagsJson": {
+        "type": "object",
+        "description": "A work's library tags.",
+        "required": [
+          "work_id",
+          "tags"
+        ],
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "description": "The work.",
+            "example": "6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkTag"
+            },
+            "description": "Every tag, by key, with where it came from."
           }
         }
       },

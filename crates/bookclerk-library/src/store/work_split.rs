@@ -5,7 +5,8 @@
 //! A split moves some of a work's expressions, with their editions,
 //! listings and holdings, to a new work in one atomic batch. The new work
 //! copies the old one's title, match key, description, work-level credits
-//! and series, and each person's own state and tags for it. The batch also
+//! and series, its library tags, and each person's own state and tags for
+//! it. The batch also
 //! records an `isolate` override on the new work, so the work matcher keeps
 //! joining new listings with the same title to the original work, and
 //! publishes `edition_updated` for one edition on each side so the library
@@ -399,6 +400,18 @@ fn split_statements(p: &SplitWrite<'_>) -> Vec<TypedDbStatement> {
             &format!(
                 "INSERT OR IGNORE INTO user_work_tags (user_id, work_id, tag_key, tag) \
                  SELECT user_id, ?, tag_key, tag FROM user_work_tags WHERE work_id = ? AND {created}"
+            ),
+            vec![
+                batch::text(p.new_id),
+                batch::text(p.work_id),
+                batch::text(p.new_id),
+            ],
+        ),
+        batch::exec(
+            &format!(
+                "INSERT OR IGNORE INTO work_tags (work_id, source, key, value, created_at) \
+                 SELECT ?, source, key, value, created_at FROM work_tags \
+                 WHERE work_id = ? AND {created}"
             ),
             vec![
                 batch::text(p.new_id),

@@ -77,9 +77,9 @@ pub use precompute::{
 pub use purchase::{
     best_purchase_hint, best_purchase_hint_preferring, format_money_label,
     parse_money_label_to_cents, purchase_hints_for, resolve_purchase_hints,
-    resolve_purchase_hints_batch, retain_card_recording, seed_purchase_hint, PurchaseHint,
-    PurchaseHintsQuery, PurchaseHintsResponse, BATCH_DEADLINE, BREAKER_OPEN_FOR,
-    BREAKER_TRIP_TIMEOUTS, RATE_LIMIT_FIRST_PAUSE, RATE_LIMIT_MAX_PAUSE,
+    resolve_purchase_hints_batch, retain_card_recording, retain_card_recordings,
+    seed_purchase_hint, PurchaseHint, PurchaseHintsQuery, PurchaseHintsResponse, BATCH_DEADLINE,
+    BREAKER_OPEN_FOR, BREAKER_TRIP_TIMEOUTS, RATE_LIMIT_FIRST_PAUSE, RATE_LIMIT_MAX_PAUSE,
 };
 pub use recommend::{
     combine_wishlist_score, listening_engagement, rank_request_queue_taste, recommend,
@@ -94,6 +94,8 @@ pub use title_meta::{
     check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_batch,
     resolve_title_reviews, FillLookup, FillStoreLookups, TitleMeta, TitleMetaQuery,
     TitleMetaQueryProblem, TitleReview, TitleReviewsPage, TitleReviewsQuery,
-    TITLE_META_MAX_STORE_EDITIONS,
+    TITLE_META_BATCH_DEADLINE, TITLE_META_MAX_STORE_EDITIONS,
 };
-pub use wish_pool::{pool_wish_editions, PooledEdition, MAX_WISH_EDITIONS};
+pub use wish_pool::{
+    pool_wish_editions, record_wish_member_offers, PooledEdition, MAX_WISH_EDITIONS,
+};

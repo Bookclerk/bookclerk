@@ -3466,6 +3466,8 @@ mod tests {
                 required: false,
                 description: Some("Where finished books go.".into()),
                 columns: Vec::new(),
+                network: None,
+                default_port: None,
             },
             SettingSpec {
                 key: "api_token".into(),
@@ -3476,6 +3478,8 @@ mod tests {
                 required: false,
                 description: None,
                 columns: Vec::new(),
+                network: None,
+                default_port: None,
             },
         ]);
         bookclerk_library::control_plane::pin_plugin_schema(

@@ -436,6 +436,14 @@ pub fn narrow_remote_grant(requested: &PluginGrant, consent: &PluginGrant) -> Pl
             effective_extra_processes,
         ),
         approved_at: consent.approved_at.clone(),
+        // The owner's approved setting destinations; each applies only while
+        // a value still derives it.
+        setting_destinations: if deny {
+            std::collections::BTreeMap::new()
+        } else {
+            consent.setting_destinations.clone()
+        },
+        setting_network: crate::consent::SettingNetworkOverlay::default(),
     }
 }
 

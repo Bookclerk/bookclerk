@@ -7,9 +7,11 @@
  *
  * - collects the lookups asked within a short window into one batch, up to
  *   the route's limit, and splits anything larger into several;
- * - keeps **one batch in flight** at a time, so lookups asked while one is
- *   running wait and go out together in the next one, and a slow store
- *   never holds more than one of the browser's connections;
+ * - keeps at most `maxInFlight` batches in flight (one unless the caller
+ *   asks for more), so lookups asked while they run wait and go out
+ *   together in the next one, and a slow store never holds more than that
+ *   many of the browser's connections; with room for more, a batch split at
+ *   the limit sends its parts at once;
  * - asks once for a lookup already waiting or running with the same key
  *   (within one viewer generation);
  * - runs an optional `before` step ahead of each batch (Discover waits
@@ -24,6 +26,8 @@ export interface LookupBatcherOptions<Q, R> {
   maxBatch: number;
   /** How long, in milliseconds, the first lookup waits for others to join it. */
   windowMs: number;
+  /** Most batches in flight at once (default 1). */
+  maxInFlight?: number;
   /** Identity of a query: lookups with the same key share one answer. */
   keyOf: (query: Q) => string;
   /**
@@ -61,13 +65,14 @@ export function createLookupBatcher<Q, R>(
   options: LookupBatcherOptions<Q, R>,
 ): (query: Q) => Promise<R> {
   const maxBatch = Math.max(1, options.maxBatch);
+  const maxInFlight = Math.max(1, options.maxInFlight ?? 1);
   let queue: Waiter<Q, R>[] = [];
   const pending = new Map<string, Promise<R>>();
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let inFlight = false;
+  let inFlight = 0;
 
   const schedule = () => {
-    if (timer != null || inFlight || queue.length === 0) return;
+    if (timer != null || inFlight >= maxInFlight || queue.length === 0) return;
     timer = setTimeout(() => {
       timer = null;
       void drain();
@@ -75,7 +80,7 @@ export function createLookupBatcher<Q, R>(
   };
 
   const drain = async () => {
-    inFlight = true;
+    inFlight += 1;
     try {
       while (queue.length > 0) {
         if (options.before) {
@@ -88,8 +93,18 @@ export function createLookupBatcher<Q, R>(
         // Lookups asked during the wait join this batch.
         const chunk = queue.slice(0, maxBatch);
         queue = queue.slice(chunk.length);
+        // Another drain may have taken everything while this one waited.
+        if (chunk.length === 0) break;
+        let sent: Promise<R[]>;
         try {
-          const results = await options.send(chunk.map((w) => w.query));
+          sent = options.send(chunk.map((w) => w.query));
+        } catch (err) {
+          sent = Promise.reject(err);
+        }
+        // What is left over opens another batch now when a slot is free.
+        if (queue.length > 0 && inFlight < maxInFlight) void drain();
+        try {
+          const results = await sent;
           chunk.forEach((w, i) => {
             const result = results[i];
             if (result === undefined) w.reject(new Error("lookup batch answered short"));
@@ -100,7 +115,7 @@ export function createLookupBatcher<Q, R>(
         }
       }
     } finally {
-      inFlight = false;
+      inFlight -= 1;
       schedule();
     }
   };

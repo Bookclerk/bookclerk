@@ -1,0 +1,1 @@
+bookclerk-jail: plugin:pk-1 [landlock+seccomp]: filesystem=enforced

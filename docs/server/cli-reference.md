@@ -70,6 +70,8 @@ Commands:
 - [`bookclerk library list`](#bookclerk-library-list): List books in the local library DB
 - [`bookclerk library convert`](#bookclerk-library-convert): Convert acquired m4b/m4a to mp3
 - [`bookclerk library filters`](#bookclerk-library-filters): Manage saved quick filters
+- [`bookclerk library tags`](#bookclerk-library-tags): Read or set a work's library tags, which everyone sees, the Library filters by, and a patron scope can include or exclude
+- [`bookclerk library collections`](#bookclerk-library-collections): Read or set the library's collections: named parts of the library, each defined by storage key prefixes, which the Library filters by and a patron scope can include or exclude
 
 ### `bookclerk library accounts`
 
@@ -370,6 +372,80 @@ bookclerk library filters delete [OPTIONS] <NAME>
 Arguments:
 
 - `<NAME>`: Saved filter name to delete
+
+### `bookclerk library tags`
+
+Read or set a work's library tags, which everyone sees, the Library filters by, and a patron scope can include or exclude
+
+```text
+bookclerk library tags [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk library tags get`](#bookclerk-library-tags-get): Print a work's library tags, one per line, with where each came from
+- [`bookclerk library tags set`](#bookclerk-library-tags-set): Replace the tags set in Bookclerk on a work; tags read from a sidecar file stay
+
+#### `bookclerk library tags get`
+
+Print a work's library tags, one per line, with where each came from
+
+```text
+bookclerk library tags get [OPTIONS] <WORK>
+```
+
+Arguments:
+
+- `<WORK>`: The work id (a top-level work, as `GET /api/library/works` lists it)
+
+#### `bookclerk library tags set`
+
+Replace the tags set in Bookclerk on a work; tags read from a sidecar file stay
+
+```text
+bookclerk library tags set [OPTIONS] <WORK>
+```
+
+Arguments:
+
+- `<WORK>`: The work id
+
+Options:
+
+- `--tag <TAG>`: A tag to set (repeatable). With none, the work's tags set in Bookclerk are removed
+
+### `bookclerk library collections`
+
+Read or set the library's collections: named parts of the library, each defined by storage key prefixes, which the Library filters by and a patron scope can include or exclude
+
+```text
+bookclerk library collections [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk library collections get`](#bookclerk-library-collections-get): Print each collection with its prefixes
+- [`bookclerk library collections set`](#bookclerk-library-collections-set): Replace every collection. The page index is rebuilt by a running daemon's next heartbeat
+
+#### `bookclerk library collections get`
+
+Print each collection with its prefixes
+
+```text
+bookclerk library collections get [OPTIONS]
+```
+
+#### `bookclerk library collections set`
+
+Replace every collection. The page index is rebuilt by a running daemon's next heartbeat
+
+```text
+bookclerk library collections set [OPTIONS]
+```
+
+Options:
+
+- `--collection <NAME=PREFIXES>`: A collection as `NAME=PREFIX[,PREFIX…]` (`Kids=kids/,children/`), repeatable. With none, every collection is removed
 
 ## `bookclerk discover`
 
@@ -2070,7 +2146,7 @@ Arguments:
 Options:
 
 - `--default`: Set the library's default scope instead of one patron's
-- `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author and narrator. Repeatable: a book needs one
+- `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author, narrator, tag (a library tag) and collection. Repeatable: a book needs one
 - `--exclude <FIELD=VALUE>`: Hide books with this value, whatever `--include` says. Repeatable
 - `--follow-default`: Drop the patron's own scope so they follow the library's default
 

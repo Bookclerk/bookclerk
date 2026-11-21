@@ -65,6 +65,12 @@ pub enum ScopeField {
     Author,
     /// A narrator.
     Narrator,
+    /// A library tag: one an Administrator set on the work, or one read
+    /// from a sidecar file.
+    Tag,
+    /// A collection: a named part of the library, defined by storage key
+    /// prefixes (`core.collections`). A book with no file is in none.
+    Collection,
 }
 
 impl ScopeField {
@@ -76,6 +82,8 @@ impl ScopeField {
             Self::Series => WorkFacet::Series,
             Self::Author => WorkFacet::Author,
             Self::Narrator => WorkFacet::Narrator,
+            Self::Tag => WorkFacet::Tag,
+            Self::Collection => WorkFacet::Collection,
         }
     }
 }
@@ -300,8 +308,10 @@ mod strict {
                     ("series", ScopeField::Series),
                     ("author", ScopeField::Author),
                     ("narrator", ScopeField::Narrator),
+                    ("tag", ScopeField::Tag),
+                    ("collection", ScopeField::Collection),
                 ],
-                expected: &["genre", "series", "author", "narrator"],
+                expected: &["genre", "series", "author", "narrator", "tag", "collection"],
             })
         }
     }

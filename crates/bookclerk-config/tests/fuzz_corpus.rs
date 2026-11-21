@@ -1,6 +1,6 @@
 //! Replays the checked-in `bookclerk-config` fuzz corpora (`cache_settings`,
 //! `destination_id`, `diagnostics_submit_reply`, `diagnostics_lookup_reply`,
-//! `intake_settings` and others) through their shared
+//! `intake_settings`, `relayed_log_line` and others) through their shared
 //! oracles, so ordinary CI checks every seed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 
@@ -29,6 +29,10 @@ mod output_copies_oracle;
 /// The `diagnostics_submit_reply` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/diagnostics_submit_reply.rs"]
 mod diagnostics_submit_reply_oracle;
+
+/// The `relayed_log_line` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/relayed_log_line.rs"]
+mod relayed_log_line_oracle;
 
 /// The `diagnostics_lookup_reply` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/diagnostics_lookup_reply.rs"]
@@ -139,4 +143,17 @@ fn fuzz_corpus_intake_settings_holds_invariants() {
         checked += 1;
     }
     assert!(checked > 0, "no intake_settings seed");
+}
+
+/// Mirrors `fuzz/fuzz_targets/relayed_log_line.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_relayed_log_line_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("relayed_log_line") {
+        relayed_log_line_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no relayed_log_line seed");
 }

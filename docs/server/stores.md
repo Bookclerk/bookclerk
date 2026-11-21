@@ -115,8 +115,10 @@ labels, such as `AI_edition_inclusion`.
 ## Audible
 
 Connect Audible from **Accounts**, which signs in with Amazon OAuth.
-Connect again to refresh the sign-in, or when Widevine L3 provisioning
-needs the device registered as Android again.
+Sign-in always registers the device as Android: Widevine L3 provisioning
+needs an Android registration, so there is no option to register as an
+iPhone. Connect again to refresh the sign-in, or when L3 provisioning
+needs the device registered again.
 
 The plugin's network grants cover the Amazon and Audible hosts of every
 Audible marketplace (`*.amazon.co.uk`, `*.audible.de`, `*.amazon.co.jp`
@@ -145,7 +147,8 @@ MP3 or Opus.
 
 Widevine **L3** (software) covers stereo and xHE-AAC. Spatial audio and
 Atmos need **L1**, which isn't available on a desktop, as in classic
-Libation.
+Libation, so the plugin never asks Audible for them: every license
+request is for the stereo edition.
 
 ### The Widevine CDM
 
@@ -160,6 +163,10 @@ table (kind `widevine`). Sign-in registers as an Android device.
 ### Other Audible options
 
 - **Trim the Audible brand audio**: `output.strip_audible_brand_audio = true`.
+  The intro and outro are cut from every Audible download, decrypted or
+  already clear, and the chapters move with the audio, so each chapter
+  still starts where its narration does. A file that is not MP4 is
+  stored untrimmed.
 - **Bitrate**, a plugin setting:
 
   | Setting | Default | Values |

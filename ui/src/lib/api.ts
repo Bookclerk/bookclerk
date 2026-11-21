@@ -118,11 +118,21 @@ export type Entitlement = "purchase" | "plus" | "loan" | "free";
 export type WorkSort = "title" | "author" | "series" | "purchased" | "added" | "length";
 
 /**
- * What `facet` and `value` filter works by: a value list of the page index,
- * the caller's own tags, or their progress (`finished` / `not_finished`).
+ * What `facet` and `value` filter works by: a value list of the page index
+ * (`library_tag` is a library tag everyone sees), the caller's own tags
+ * (`tag`), or their progress (`finished` / `not_finished`).
  */
 export type WorkFacet =
-  "author" | "narrator" | "series" | "genre" | "publisher" | "source" | "tag" | "progress";
+  | "author"
+  | "narrator"
+  | "series"
+  | "genre"
+  | "publisher"
+  | "source"
+  | "tag"
+  | "library_tag"
+  | "collection"
+  | "progress";
 
 /** One value of a facet, from `GET /api/library/works/facets/{facet}`. */
 export interface FacetValue {
@@ -1442,7 +1452,7 @@ export interface ListedUser {
 }
 
 /** The book field a patron scope rule matches one value of. */
-export type ScopeField = "genre" | "series" | "author" | "narrator";
+export type ScopeField = "genre" | "series" | "author" | "narrator" | "tag" | "collection";
 
 /** Whether a patron scope rule lets matching books in or keeps them out. */
 export type RuleEffect = "include" | "exclude";
@@ -2470,6 +2480,49 @@ export interface PluginConsentResponse {
   limits: PluginConsentLimits;
   /** The `User-Agent` the host sends, except to the request's `ownUserAgentHosts`. */
   host_user_agent?: string;
+  /**
+   * The destination each network setting names on each instance and whether it
+   * is approved. A `pending` row is unreachable until approved, and `covered` is
+   * false while one is.
+   */
+  setting_destinations?: PluginSettingDestination[];
+}
+
+/** Where a setting's destination points, which decides how the grant reaches it. */
+export type SettingDestinationScope = "name" | "publicAddress" | "localAddress" | "restricted";
+
+/** One network setting's destination on one plugin instance. */
+export interface PluginSettingDestination {
+  /** The instance whose settings name it; absent while the plugin has no instance. */
+  instanceId?: string;
+  /** The setting key the grant is stored under. */
+  setting: string;
+  /** The setting's label. */
+  label: string;
+  /** `fetch` (HTTP requests) or `tcp` (a raw socket). */
+  network: "fetch" | "tcp";
+  /** `scheme://host:port` for a fetch, `host:port` for TCP; absent when unset or invalid. */
+  destination?: string;
+  /**
+   * `name` may resolve to a local-network address for this name only;
+   * `localAddress` is exactly that one local-network address; `restricted`
+   * (loopback, link-local, `localhost`) also needs an address grant.
+   */
+  scope?: SettingDestinationScope;
+  /** True for an `https` fetch; false trusts the network's DNS answer. */
+  tls?: boolean;
+  /** Approval state of the destination. */
+  state: "approved" | "pending" | "unset" | "invalid";
+  /** Why the value names no destination, when `state` is `invalid`. */
+  error?: string;
+}
+
+/** A setting destination the operator approves, as the consent response shows it. */
+export interface PluginSettingDestinationApproval {
+  /** The setting key. */
+  setting: string;
+  /** The destination exactly as `PluginSettingDestination.destination` shows it. */
+  destination: string;
 }
 
 /** The difference between a plugin's request and its stored grant. */
@@ -2521,6 +2574,9 @@ export async function fetchPluginConsent(
  * @param id - Display alias from Settings.
  * @param grant - Operator-approved grant overlay; omitted fields keep defaults.
  * @param pluginKey - Provenance-qualified PluginKey when the alias is ambiguous.
+ * @param settingDestinations - Setting destinations to approve; one left out
+ *   stays pending, and omitting the list keeps earlier approvals that a setting
+ *   still names.
  * @returns Updated consent response after approval.
  */
 export async function approvePluginConsent(
@@ -2542,6 +2598,7 @@ export async function approvePluginConsent(
     extraProcesses?: number;
   },
   pluginKey?: string,
+  settingDestinations?: PluginSettingDestinationApproval[],
 ): Promise<PluginConsentResponse> {
   const res = await fetch(
     `/api/plugins/${encodeURIComponent(id)}/consent${consentQuery(pluginKey)}`,
@@ -2549,7 +2606,11 @@ export async function approvePluginConsent(
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approve: true, ...(grant ? { grant } : {}) }),
+      body: JSON.stringify({
+        approve: true,
+        ...(grant ? { grant } : {}),
+        ...(settingDestinations ? { setting_destinations: settingDestinations } : {}),
+      }),
     },
   );
   return parseJson<PluginConsentResponse>(res);
@@ -3805,6 +3866,95 @@ export async function putWorkState(id: string, edit: WorkStateEdit): Promise<Wor
   return parseJson(res);
 }
 
+/** One collection: a name and the storage key prefixes whose files belong to it. */
+export interface LibraryCollection {
+  /** The name people see and scope rules match. */
+  name: string;
+  /** Folders relative to a destination's root, each ending in `/`. */
+  prefixes: string[];
+}
+
+/** The library's collections. */
+export interface LibraryCollections {
+  /** The collections, in the order shown. */
+  collections: LibraryCollection[];
+}
+
+/**
+ * Reads the library's collections (operator, Owner or Administrator).
+ *
+ * @returns The collections.
+ */
+export async function getCollections(): Promise<LibraryCollections> {
+  const res = await fetch("/api/library/collections", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the library's collections; the Library is re-indexed after.
+ *
+ * @param collections - The new collections.
+ * @returns The collections as saved (names trimmed, prefixes ending in `/`).
+ */
+export async function putCollections(collections: LibraryCollections): Promise<LibraryCollections> {
+  const res = await fetch("/api/library/collections", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collections),
+  });
+  return parseJson(res);
+}
+
+/** Where a library tag came from. */
+export type WorkTagSource = "admin" | "sidecar";
+
+/** One library tag on a work. */
+export interface WorkTag {
+  /** The tag as written. */
+  value: string;
+  /** Set in Bookclerk (`admin`) or read from a sidecar file. */
+  source: WorkTagSource;
+}
+
+/** A work's library tags as `GET /api/library/works/{id}/tags` reports them. */
+export interface WorkTags {
+  /** The work. */
+  work_id: string;
+  /** Every tag, by key. */
+  tags: WorkTag[];
+}
+
+/**
+ * Reads a work's library tags (operator, Owner or Administrator).
+ *
+ * @param id - A top-level work.
+ * @returns The tags.
+ */
+export async function getWorkTags(id: string): Promise<WorkTags> {
+  const res = await fetch(`/api/library/works/${encodeURIComponent(id)}/tags`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Replaces the tags set in Bookclerk on a work; sidecar tags stay.
+ *
+ * @param id - A top-level work.
+ * @param tags - The tags to set (`[]` removes them).
+ * @returns The tags afterwards.
+ */
+export async function putWorkTags(id: string, tags: string[]): Promise<WorkTags> {
+  const res = await fetch(`/api/library/works/${encodeURIComponent(id)}/tags`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tags }),
+  });
+  return parseJson(res);
+}
+
 /**
  * The editions of `work` an acquire should queue: those someone holds
  * that are not acquired or on their way.
@@ -4489,6 +4639,12 @@ const LOOKUP_BATCH_MAX = 24;
 /** How long the first card's lookup waits for other cards to join its batch. */
 const LOOKUP_BATCH_WINDOW_MS = 60;
 /**
+ * Batches of one kind in flight at once. Two lets the next page of cards go
+ * out while a slow store holds the first, without one lookup kind taking
+ * every connection the browser allows.
+ */
+const LOOKUP_BATCHES_IN_FLIGHT = 2;
+/**
  * Longest a lookup batch waits for the covers on screen to load first. Covers
  * are what the viewer sees first; prices and details follow.
  */
@@ -4565,6 +4721,7 @@ async function sendPurchaseHintsBatch(
 const purchaseHintsBatcher = createLookupBatcher<PurchaseHintsQuery, PurchaseHintsResponse>({
   maxBatch: LOOKUP_BATCH_MAX,
   windowMs: LOOKUP_BATCH_WINDOW_MS,
+  maxInFlight: LOOKUP_BATCHES_IN_FLIGHT,
   keyOf: (q) => purchaseHintsClientKey(q),
   send: sendPurchaseHintsBatch,
   before: coversFirst,
@@ -4786,10 +4943,18 @@ async function sendTitleMetaBatch(queries: TitleMetaQuery[]): Promise<(TitleMeta
     25_000,
     "Title metadata batch",
   );
-  const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
+  const data = (await parseJson(res)) as {
+    results: (TitleMeta | null)[];
+    incomplete?: boolean[];
+  };
   return queries.map((query, idx) => {
     const meta = data.results[idx] ?? null;
-    if (lookupGeneration() === asked) titleMetaClientCache.set(titleMetaClientKey(query), meta);
+    // A failed or late query is not an answer: keep it out of the cache so a
+    // later look asks again.
+    const keep = data.incomplete?.[idx] !== true;
+    if (keep && lookupGeneration() === asked) {
+      titleMetaClientCache.set(titleMetaClientKey(query), meta);
+    }
     return meta;
   });
 }
@@ -4798,6 +4963,7 @@ async function sendTitleMetaBatch(queries: TitleMetaQuery[]): Promise<(TitleMeta
 const titleMetaBatcher = createLookupBatcher<TitleMetaQuery, TitleMeta | null>({
   maxBatch: LOOKUP_BATCH_MAX,
   windowMs: LOOKUP_BATCH_WINDOW_MS,
+  maxInFlight: LOOKUP_BATCHES_IN_FLIGHT,
   keyOf: titleMetaClientKey,
   send: sendTitleMetaBatch,
   before: coversFirst,

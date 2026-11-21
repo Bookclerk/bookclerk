@@ -47,6 +47,7 @@ mod placement;
 mod platform;
 mod plugins;
 mod redact;
+mod relayed_log;
 mod report_history;
 mod report_lookup;
 mod settings;
@@ -131,7 +132,7 @@ pub use placement::{
     parse_destination_filter, DestinationFilter, FilterEffect, FilterError, FilterField,
     FilterRule, PlacementFacts, PlacementMediaKind, MAX_FILTER_RULES, MAX_FILTER_VALUE_BYTES,
 };
-pub use platform::detect_distro;
+pub use platform::{detect_distro, node_limits, NodeLimits};
 pub use plugins::{
     host_cpu_rate_max, node_logical_cpus, IntegrationsConfig, PluginRegistryEntry, PluginsConfig,
     PluginsJailConfig,
@@ -142,6 +143,7 @@ pub use redact::{
     register_secrets_from_env, sanitize_for_remote_upload, secrets_registry_test_lock,
     truncate_upload_message, unregister_secret, REDACTED,
 };
+pub use relayed_log::{parse_relayed_line, RelayedLevel, RelayedLine};
 pub use report_history::{
     find_report, load_report_history, mark_report_deleted, parse_submit_reply, record_report,
     AccessCode, ReportId, ReportRecord, SubmitReply, SubmitReplyError, ACCESS_CODE_ALPHABET,

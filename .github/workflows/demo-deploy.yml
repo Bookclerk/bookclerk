@@ -387,7 +387,7 @@ jobs:
         run: |
           set -euo pipefail
           git rev-parse HEAD > packaging/demo/version.txt
-          docker buildx bake -f packaging/demo/docker-bake.hcl --load demo
+          BUILD_COMMIT="$(git rev-parse HEAD)" docker buildx bake -f packaging/demo/docker-bake.hcl --load demo
 
       - name: Route the Worker
         id: route

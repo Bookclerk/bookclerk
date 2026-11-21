@@ -1886,6 +1886,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "utoipa",
  "uuid",
  "wiremock",
@@ -1995,6 +1996,7 @@ dependencies = [
  "bookclerk-resolve",
  "bookclerk-sandbox",
  "bookclerk-storefront",
+ "bookclerk-tags",
  "chacha20poly1305 0.11.0",
  "chrono",
  "email_address",
@@ -2279,6 +2281,19 @@ dependencies = [
  "bookclerk-storage",
  "bytes",
  "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "bookclerk-plugin-destination-r2"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bookclerk-plugin-sdk",
+ "bookclerk-storage",
  "serde",
  "serde_json",
  "tempfile",
@@ -2637,6 +2652,7 @@ dependencies = [
  "aws-sdk-sqs",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
+ "base64 0.23.1",
  "bookclerk-config",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",

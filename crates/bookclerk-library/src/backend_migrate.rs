@@ -45,7 +45,7 @@ use crate::entities::{
     security_audit_events, series, series_entries, store_listings, title_request_sources,
     title_requests, user_invites, user_preferences, user_title_state, user_work_tags, users,
     webauthn_challenges, webauthn_credentials, window_book_parts, window_books, work_identifiers,
-    works,
+    work_tags, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -192,6 +192,7 @@ macro_rules! copied_entities {
         // Shows before their episodes (`works.parent_work_id`).
         $each!(works);
         $each!(work_identifiers);
+        $each!(work_tags);
         $each!(expressions);
         $each!(editions);
         $each!(edition_identifiers);
