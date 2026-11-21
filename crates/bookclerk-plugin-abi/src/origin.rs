@@ -378,5 +378,6 @@ pub fn decode_origin_response_frame(json: &[u8]) -> Result<OriginResponseHead> {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 #[path = "origin_tests.rs"]
 mod tests;

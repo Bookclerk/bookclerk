@@ -323,5 +323,6 @@ impl Origin for NoOrigin {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 #[path = "rpc_origin_tests.rs"]
 mod tests;
