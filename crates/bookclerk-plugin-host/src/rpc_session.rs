@@ -4286,6 +4286,8 @@ async fn run_stream_copy(
                 sockets: None,
                 // Nor does it raise notifications.
                 notify: None,
+                // Only the active relay ingress reaches the library.
+                origin: None,
             },
         )
         .await

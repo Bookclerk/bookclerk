@@ -1,9 +1,8 @@
 # ADR: The library key can live in the OS keychain
 
 - **Status:** Accepted (decisions made with the maintainer on 2026-11-20).
-  Decisions 1 to 3 and the command line part of 4 are built; the desktop
-  window's recovery-copy step (decision 4) and a TPM-backed store for
-  headless Linux servers are planned
+  Decisions 1 to 4 are built; a TPM-backed store for headless Linux
+  servers is planned
 - **Date:** 2026-11-20
 - **Related:** [Control plane](control-plane.md),
   [Library catalog network](library-catalog-network.md),
@@ -110,9 +109,10 @@ copy under a password read from stdin, and `bookclerk config master-key
 import --from <file>` restores it (or a copied `master.key`) on an install
 that has no key, into that install's store.
 
-The desktop window will offer to save a recovery copy when it moves or
-mints the key. Skipping it shows a warning, and Settings keeps a reminder
-until one is saved.
+The desktop window offers to save a recovery copy when a library is
+started in it. Skipping it shows a warning, and Settings keeps a reminder
+until one is saved. The answer is recorded per key, beside `master.key`,
+so a restored or replaced key asks again.
 
 ### 5. Other per-install secrets stay sealed in the database
 

@@ -2136,6 +2136,14 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
     } else {
         None
     };
+    let origin: Option<Box<dyn crate::Origin>> = if b.has_origin() {
+        Some(Box::new(origin_glue::OriginClient::new(
+            b.get_origin()?,
+            MAX_STREAM_WINDOW_BYTES,
+        )))
+    } else {
+        None
+    };
     Ok(Bindings {
         config,
         secrets,
@@ -2149,6 +2157,7 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
         kv,
         sockets,
         notify,
+        origin,
     })
 }
 
@@ -2229,6 +2238,11 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
     }
     if let Some(x) = eps.notifier {
         b.set_notifier(capnp_rpc::new_client(NotifierServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.ingress {
+        b.set_ingress(capnp_rpc::new_client(origin_glue::IngressServer {
             inner: Arc::from(x),
         }));
     }
@@ -4150,6 +4164,9 @@ pub struct HostBindings {
     /// `NOTIFY` raiser; `None` unless the manifest declares
     /// `[[notifications.types]]`.
     pub notify: Option<Arc<dyn NotificationRaiser>>,
+    /// `ORIGIN`: the library; `None` unless the plugin is the active relay
+    /// ingress.
+    pub origin: Option<Arc<dyn crate::Origin>>,
 }
 
 impl HostBindings {
@@ -4166,6 +4183,7 @@ impl HostBindings {
             kv: Vec::new(),
             sockets: None,
             notify: None,
+            origin: None,
         }
     }
 }
@@ -4210,6 +4228,8 @@ pub struct OpenedEntrypoints {
     pub metadata_files: Option<MetadataFilesClient>,
     /// `notifier` entrypoint.
     pub notifier: Option<NotifierClient>,
+    /// `ingress` entrypoint.
+    pub ingress: Option<IngressClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -4356,6 +4376,13 @@ impl PluginClient {
                         inner: notify,
                     }));
             }
+            if let Some(origin) = bindings.origin {
+                b.reborrow()
+                    .set_origin(capnp_rpc::new_client(origin_glue::OriginServer {
+                        inner: origin,
+                        window: self.window,
+                    }));
+            }
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -4474,6 +4501,11 @@ impl PluginClient {
             },
             notifier: if eps.has_notifier() {
                 Some(NotifierClient::new(eps.get_notifier()?))
+            } else {
+                None
+            },
+            ingress: if eps.has_ingress() {
+                Some(IngressClient::new(eps.get_ingress()?))
             } else {
                 None
             },
@@ -6135,6 +6167,10 @@ where
         rpc_system,
     )
 }
+
+#[path = "rpc_origin.rs"]
+mod origin_glue;
+pub use origin_glue::{IngressClient, NoOrigin, OriginClient};
 
 #[path = "rpc_sockets.rs"]
 mod sockets_glue;
@@ -9603,6 +9639,7 @@ mod tests {
                             kv: Vec::new(),
                             sockets: None,
                             notify: None,
+                            origin: None,
                         },
                     )
                     .await

@@ -32,6 +32,7 @@ mod host_schema;
 mod in_process_atomic;
 pub mod library_link;
 pub mod master_key;
+pub mod master_key_recovery;
 pub mod migrations;
 /// Public library DTOs and status enums (`BookRecord`, `AcquireStatus`, prefs) re-exported from this crate.
 mod models;
@@ -105,6 +106,10 @@ pub use master_key::{
     uncache_master_key, warn_unwrapped_master_key, wrap_master_key, KeyStorePreference, MasterKey,
     MasterKeyFormat, MasterKeyResolution, StoredMasterKey,
     AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
+};
+pub use master_key_recovery::{
+    record_recovery_copy, recovery_copy_state, recovery_record_path, RecoveryCopyChoice,
+    RecoveryCopyState,
 };
 pub use migrations::{
     apply_plugin_migrations, binding_bootstrap_type_env, history_from_execute_reply,
@@ -180,6 +185,10 @@ pub use store::work_detail::{
     EditionDetail, EditionListing, HoldingHolder, ListingHolding, WorkDetail,
 };
 pub use store::work_search::WorkSearchDoc;
+pub use store::work_tags::{
+    normalize_work_tags, parse_work_tags_request, WorkTag, WorkTagSource, WorkTagsBody,
+    WorkTagsRequest, MAX_WORK_TAGS, MAX_WORK_TAG_BYTES,
+};
 pub use store::{
     apply_user_states,
     catalog_listings::{

@@ -80,6 +80,12 @@ import {
   type SocketsTransport,
   type SocketTransportReply,
 } from "./sockets.js";
+import {
+  grantedOriginFetch,
+  originBinding,
+  type OriginTransport,
+  type OriginTransportReply,
+} from "./origin.js";
 import type { ObjectChangeKind } from "./abi.js";
 import type {
   MoveManyTarget,
@@ -126,6 +132,9 @@ import type {
   NotifyValidateParams,
   NotifyValidated,
   OidcClientTemplate,
+  OriginRequest,
+  IngressHealth,
+  IngressStarted,
   PlainFetch,
   PluginCapabilities as WirePluginCapabilities,
   PluginDescribe as WirePluginDescribe,
@@ -822,6 +831,11 @@ export interface GrantedContext {
   kv?: NamedKv[];
   /** The `[sockets]` binding, when granted (at most one entry). */
   sockets?: NamedSockets[];
+  /**
+   * `ORIGIN`, the library a relay `ingress` plugin serves, when this
+   * instance is the active ingress.
+   */
+  origin?: OriginTransport;
   /** The network grant in effect, handed to the author as `env.NETWORK`. */
   network?: NetworkGrant;
 }
@@ -937,7 +951,7 @@ export interface NamedDatabase {
  */
 export interface BridgeContext extends Omit<
   GrantedContext,
-  "databases" | "queues" | "kv" | "sockets"
+  "databases" | "queues" | "kv" | "sockets" | "origin"
 > {
   /** Granted-channel bearer for `env.EVENTS.publish`; stripped before dispatch. */
   eventsToken?: string;
@@ -951,6 +965,8 @@ export interface BridgeContext extends Omit<
   kv?: Record<string, string>;
   /** `[sockets]` binding → sockets-only bearer for `/sockets/*`. */
   sockets?: Record<string, string>;
+  /** Origin-only bearer for `/origin/fetch`; stripped before dispatch. */
+  originToken?: string;
 }
 
 /** Job-runner bridge context: the durable job id plus {@link GrantedContext}. */
@@ -1058,6 +1074,7 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     }
     const sockets = socketsTransportOf(context);
     if (sockets) merged[sockets.name] = socketsBinding(sockets.sockets);
+    if (context.origin) merged.ORIGIN = originBinding(context.origin);
     if (context.network && typeof context.network === "object") {
       merged.NETWORK = Object.freeze(normalizeNetworkGrant(context.network));
     }
@@ -3111,6 +3128,46 @@ export class NotifierEntrypoint<
   }
 }
 
+/**
+ * `ingress` entrypoint (`Ingress`): gives the library a public `https`
+ * address. A relay plugin (`[ingress] kind = "relay"`) receives requests from
+ * its provider and hands each one to `env.ORIGIN.fetch`; the host starts at
+ * most one ingress instance at a time. Export it as
+ * `export class Ingress extends IngressEntrypoint`.
+ */
+export class IngressEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["start", "health", "stop"]);
+
+  /**
+   * Brings the public address up and returns it once it serves.
+   *
+   * @returns The public origin: `https://` and a host name, no port, path
+   *   or trailing slash.
+   */
+  start(): Promise<IngressStarted> {
+    return Promise.reject(unsupported("start"));
+  }
+  /**
+   * Reports whether the address is serving.
+   *
+   * @returns `serving`, plus a detail for the operator when it is not.
+   */
+  health(): Promise<IngressHealth> {
+    return Promise.resolve({ serving: true });
+  }
+  /**
+   * Takes the public address down. The host stops sending requests after
+   * this returns.
+   *
+   * @returns Resolves once the address no longer serves.
+   */
+  stop(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Adapter isolate (trusted; owns GRANTED / BRIDGE_TOKEN / PLUGIN_DESCRIBE)
 // ---------------------------------------------------------------------------
@@ -3126,7 +3183,8 @@ export type EntrypointName =
   | "metadata"
   | "covers"
   | "metadataFiles"
-  | "notifier";
+  | "notifier"
+  | "ingress";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -3140,6 +3198,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   covers: "PLUGIN_COVERS",
   metadataFiles: "PLUGIN_METADATA_FILES",
   notifier: "PLUGIN_NOTIFIER",
+  ingress: "PLUGIN_INGRESS",
 });
 
 /** Exported class name the launcher binds for each named entrypoint. */
@@ -3154,6 +3213,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   covers: "Covers",
   metadataFiles: "MetadataFiles",
   notifier: "Notifier",
+  ingress: "Ingress",
 });
 
 /** Reverse-channel fetcher bound as `GRANTED` on the adapter isolate. */
@@ -3920,6 +3980,43 @@ class GrantedSockets extends RpcTarget implements SocketsTransport {
 }
 
 /**
+ * `ORIGIN` grant handed to a relay `ingress` author: the adapter exchanges
+ * the origin-only grant token on `POST /origin/fetch`, so the author isolate
+ * never holds the bearer. Failures come back as `err` values so their code
+ * survives the Workers RPC hop.
+ */
+class GrantedOrigin extends RpcTarget implements OriginTransport {
+  /** Granted reverse channel that serves `POST /origin/fetch`. */
+  #granted: GrantedFetcher;
+  /** `Authorization` header carrying the origin-only grant token. */
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the origin grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Hands one request to the library.
+   *
+   * @param head - Method, target, header fields and client address.
+   * @param body - Request body, or `null`.
+   * @returns The library's response, or a typed failure; never throws.
+   */
+  fetch(
+    head: OriginRequest,
+    body: ReadableStream<Uint8Array> | null,
+  ): Promise<OriginTransportReply> {
+    return grantedOriginFetch(this.#granted, this.#auth, head, body);
+  }
+}
+
+/**
  * Named `[[databases]]` binding transport handed to the author: the adapter
  * exchanges the binding's database-only grant token on `POST /db/execute`,
  * so the author isolate never holds the bearer itself. ABI failures come
@@ -4425,7 +4522,8 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx: BridgeContext | undefined): GrantedContext {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, notifyToken, databases, queues, kv, sockets, ...rest } = source;
+      const { eventsToken, notifyToken, databases, queues, kv, sockets, originToken, ...rest } =
+        source;
       const bound: GrantedContext = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -4478,6 +4576,9 @@ function createInvocationAdapter() {
           });
         }
         if (named.length > 0) bound.sockets = named.slice(0, 1);
+      }
+      if (typeof originToken === "string" && originToken && granted) {
+        bound.origin = new GrantedOrigin(granted, { Authorization: `Bearer ${originToken}` });
       }
       return bound;
     }

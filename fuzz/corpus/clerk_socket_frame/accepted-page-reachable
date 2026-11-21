@@ -1,0 +1,1 @@
+{"v":1,"type":"books.page","after":"zz-branch","works":[{"work":"w-1","identifiers":[{"scheme":"asin","value":"B0TEST","marketplace":"us"}],"editions":[{"edition":{"store":"audible","marketplace":"us","product_id":"B0TEST","availability":"reachable","metadata":{"title":"A Title"}}}]}],"next":"zz-branch-e1"}

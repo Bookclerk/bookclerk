@@ -8,16 +8,16 @@ use tokio::io::AsyncRead;
 use crate::generated::{
     AuthenticateUserParams, CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult,
     CliSchema, CoverFetchParams, CoverImage, DatabaseAdapterConfig, ExpandCandidatesParams,
-    ExternalUser, FetchTitleParams, Invocation, ListDealsParams, ListeningProgress,
+    ExternalUser, FetchTitleParams, IngressHealth, Invocation, ListDealsParams, ListeningProgress,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
     MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed, MetadataFileRenderParams,
     MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
     NotifyRaiseParams, NotifyRaised, NotifySendParams, NotifySent, NotifyValidateParams,
-    NotifyValidated, PlainFetch, PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams,
-    PurchaseHintResult, PurchaseHintsParams, QualityOffersParams, QualityOffersResult,
-    RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams,
-    SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo, SocketMessage, SocketMessageOk,
-    SourceAccount,
+    NotifyValidated, OriginHeader, PlainFetch, PluginEvent, PublishOk, PurchaseHint,
+    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, QualityOffersParams,
+    QualityOffersResult, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams,
+    SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
+    SocketMessage, SocketMessageOk, SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -510,6 +510,61 @@ pub trait SocketHandler {
     async fn closed(&self, _event: SocketClosed) -> Result<()> {
         Ok(())
     }
+}
+
+/// The library's answer to one [`Origin::fetch`]: its response head and
+/// streamed body.
+pub struct OriginReply {
+    /// HTTP status code, 100 to 599.
+    pub status: u16,
+    /// Response header fields in order; repeated names stay separate.
+    pub headers: Vec<OriginHeader>,
+    /// Response body; `None` when the response has none. Dropping it
+    /// abandons the rest of the body.
+    pub body: Option<Pin<Box<dyn AsyncRead + Send>>>,
+}
+
+/// The library as a relay `ingress` plugin reaches it, granted on
+/// [`Bindings::origin`] (`ORIGIN` in the Workers idiom).
+///
+/// The host serves it and treats every request as the `tunnel` transport:
+/// public `https`, never loopback, with the client address the plugin
+/// reports. The guest calls it for each request its provider delivers.
+#[async_trait::async_trait(?Send)]
+pub trait Origin {
+    /// Serves one request and answers once the response head is ready; the
+    /// body streams after.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - The checked head ([`crate::origin::check_origin_request`]).
+    /// * `body` - The request body; `None` when the request has none.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` for a request refused before the library saw it;
+    /// `unavailable` when the library cannot serve now. Any HTTP status,
+    /// errors included, is an `Ok` answer.
+    async fn fetch(
+        &self,
+        request: crate::origin::CheckedOriginRequest,
+        body: Option<Pin<Box<dyn AsyncRead + Send>>>,
+    ) -> Result<OriginReply>;
+}
+
+/// `ingress` entrypoint: a public address provider (a relay, or a dynamic
+/// DNS name). The library runs at most one at a time.
+#[async_trait::async_trait(?Send)]
+pub trait Ingress {
+    /// Brings the public address up and answers the origin it serves.
+    async fn start(&self) -> Result<crate::generated::IngressStarted>;
+
+    /// Whether the public address is serving now.
+    async fn health(&self) -> Result<IngressHealth>;
+
+    /// Takes the public address down; stopping a stopped one is not an
+    /// error.
+    async fn stop(&self) -> Result<()>;
 }
 
 /// One granted `[[queues.producers]]` binding on [`Bindings::queues`].
@@ -1097,6 +1152,9 @@ pub struct Bindings {
     /// `NOTIFY`: raises declared notification types; `None` unless the
     /// manifest declares `[[notifications.types]]`.
     pub notify: Option<Box<dyn NotificationRaiser>>,
+    /// `ORIGIN`: the library, for the active relay `ingress` plugin; `None`
+    /// for every other plugin.
+    pub origin: Option<Box<dyn Origin>>,
 }
 
 impl Bindings {
@@ -1117,6 +1175,7 @@ impl Bindings {
             kv: Vec::new(),
             sockets: None,
             notify: None,
+            origin: None,
         }
     }
 
@@ -1190,6 +1249,8 @@ pub struct Entrypoints {
     pub metadata_files: Option<Box<dyn MetadataFiles>>,
     /// `notifier` entrypoint.
     pub notifier: Option<Box<dyn Notifier>>,
+    /// `ingress` entrypoint.
+    pub ingress: Option<Box<dyn Ingress>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

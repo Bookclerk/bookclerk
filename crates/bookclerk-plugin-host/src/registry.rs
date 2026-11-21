@@ -28,6 +28,7 @@ pub fn family_keyword(family: PluginFamily) -> &'static str {
         PluginFamily::Integration => "bookclerk-integration",
         PluginFamily::Output => "bookclerk-output",
         PluginFamily::Database => "bookclerk-database",
+        PluginFamily::Ingress => "bookclerk-ingress",
     }
 }
 

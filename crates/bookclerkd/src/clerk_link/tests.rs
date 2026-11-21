@@ -86,6 +86,10 @@ fn clerk_routes(state: &Arc<AppState>, caller: UserCaller) -> axum::Router {
             post(super::api::post_clerk_sign_out),
         )
         .route(
+            "/api/config/clerk/request",
+            post(super::requests::post_clerk_request),
+        )
+        .route(
             "/api/config/join/window",
             get(crate::library_link::join::get_join_window),
         )
@@ -1704,4 +1708,127 @@ async fn a_card_becomes_a_branch_and_a_branch_becomes_a_card() {
         credential.revoked_at.is_some(),
         "the library revoked the branch it was told left"
     );
+}
+
+/// A clerk asks its library for a book from the library's branches with
+/// its card: the library's own member route decides, and the clerk passes
+/// on what it said.
+#[tokio::test]
+async fn a_card_asks_its_library_for_a_branch_book() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let library_files = tempfile::tempdir().unwrap();
+    let (library_state, library_store, origin, member) = library(&library_files).await;
+    let clerk_files = tempfile::tempdir().unwrap();
+    let (clerk_state, clerk_store) = crate::node_api::tests::test_state(&clerk_files).await;
+    let clerk = clerk_routes(&clerk_state, UserCaller::Operator);
+    let work = "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b";
+
+    // No card for that library yet, and malformed ids, stop here.
+    let (status, _, refused) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/request",
+        Some(json!({ "library_id": "lib-unknown", "work_id": work })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{refused}");
+    assert_eq!(refused["error"], "not_found");
+    let library_id = sign_in(&clerk, &library_state, &origin, member).await;
+    for (body, field) in [
+        (
+            json!({ "library_id": library_id, "work_id": "not a work" }),
+            "work_id",
+        ),
+        (
+            json!({ "library_id": library_id, "work_id": work, "node_id": "no spaces" }),
+            "node_id",
+        ),
+    ] {
+        let (status, _, refused) =
+            call(&clerk, "POST", "/api/config/clerk/request", Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert_eq!(refused["detail"], format!("invalid {field}"));
+    }
+
+    // No branch of the library lists the work: the library says so.
+    let (status, _, missing) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/request",
+        Some(json!({ "library_id": library_id, "work_id": work })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert_eq!(missing["error"], "not_listed");
+
+    // A book only a branch of the library holds: the library takes the
+    // request, and the clerk's list offers it with the library's work id.
+    let listed =
+        crate::branch_requests::tests::work_only_a_branch_holds(&library_store, member).await;
+    let (status, _, sent) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/request",
+        Some(json!({ "library_id": library_id, "work_id": listed })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    assert_eq!(sent["library_id"], library_id.as_str());
+    let (pages, _) = bookclerk_library::control_plane::person_books_page(
+        &library_store,
+        member,
+        &bookclerk_node_proto::WindowCursor::parse("zz-branch").unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(pages.len(), 1);
+    let stamp = bookclerk_library::control_plane::window_read_stamp();
+    bookclerk_library::control_plane::record_window_page(&clerk_store, &library_id, &stamp, &pages)
+        .await
+        .unwrap();
+    let (status, _, view) = call(&clerk, "GET", "/api/config/join/window", None).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    let edition = &view["books"][0]["editions"][0];
+    assert_eq!(edition["requestable_work"], listed.as_str(), "{view}");
+    assert_eq!(edition["yours"], false);
+
+    // The library's member controls turn requests off for the person.
+    // Controls apply only with operator auth on; the card still signs in.
+    *library_state.auth.write().await = Arc::new(crate::auth::OperatorAuthState::new(
+        "op-token-requests".into(),
+        12,
+        true,
+        5,
+        30,
+    ));
+    bookclerk_library::control_plane::set_member_control_overrides(
+        &library_store,
+        member,
+        bookclerk_library::control_plane::ControlOverrides {
+            request_books: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (status, _, refused) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/request",
+        Some(json!({ "library_id": library_id, "work_id": work })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"], "not_allowed");
+
+    // Only the operator or an Owner sends requests with the card.
+    let as_member = clerk_routes(&clerk_state, UserCaller::User { user_id: 9_999 });
+    let (status, _, _) = call(
+        &as_member,
+        "POST",
+        "/api/config/clerk/request",
+        Some(json!({ "library_id": library_id, "work_id": work })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

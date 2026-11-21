@@ -409,6 +409,52 @@ fn fuzz_corpus_patron_scope_request_replays() {
     assert!(refused > 0, "every patron_scope_request seed was accepted");
 }
 
+/// The `work_tags_request` oracle, shared with the fuzz target: a tags
+/// body is accepted exactly when it has the documented shape and at most
+/// 32 distinct trimmed tags of at most 256 bytes.
+#[path = "../../../fuzz/oracles/work_tags_request.rs"]
+mod work_tags_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_work_tags_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("work_tags_request") {
+        if work_tags_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no work_tags_request seed was accepted");
+    assert!(refused > 0, "every work_tags_request seed was accepted");
+}
+
+/// The `collections_request` oracle, shared with the fuzz target: a
+/// collections body is accepted exactly when it has the documented shape
+/// and its names and prefixes are within bounds and distinct.
+#[path = "../../../fuzz/oracles/collections_request.rs"]
+mod collections_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_collections_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("collections_request") {
+        if collections_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no collections_request seed was accepted");
+    assert!(refused > 0, "every collections_request seed was accepted");
+}
+
 /// The `work_split_request` oracle, shared with the fuzz target: a split
 /// body is accepted exactly when it has the documented shape and 1 to 12
 /// distinct ids of 1 to 64 bytes.

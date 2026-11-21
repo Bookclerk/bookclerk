@@ -776,6 +776,76 @@ export interface SocketHandlerClosedResults {
 }
 
 /**
+ * Params envelope of `Origin.fetch`.
+ *
+ * @internal
+ */
+export interface OriginFetchParams {
+  request: T.OriginRequest;
+  body?: T.ByteSource | null;
+}
+
+/**
+ * Results envelope of `Origin.fetch`.
+ *
+ * @internal
+ */
+export interface OriginFetchResults {
+  result: T.OriginFetchReply;
+}
+
+/**
+ * Params envelope of `Ingress.start`.
+ *
+ * @internal
+ */
+export interface IngressStartParams {
+}
+
+/**
+ * Results envelope of `Ingress.start`.
+ *
+ * @internal
+ */
+export interface IngressStartResults {
+  result: T.IngressStartReply;
+}
+
+/**
+ * Params envelope of `Ingress.health`.
+ *
+ * @internal
+ */
+export interface IngressHealthParams {
+}
+
+/**
+ * Results envelope of `Ingress.health`.
+ *
+ * @internal
+ */
+export interface IngressHealthResults {
+  result: T.IngressHealthReply;
+}
+
+/**
+ * Params envelope of `Ingress.stop`.
+ *
+ * @internal
+ */
+export interface IngressStopParams {
+}
+
+/**
+ * Results envelope of `Ingress.stop`.
+ *
+ * @internal
+ */
+export interface IngressStopResults {
+  result: T.EmptyReply;
+}
+
+/**
  * Params envelope of `ContentSource.login`.
  *
  * @internal
@@ -2669,13 +2739,13 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
 };
 
 /**
- * Wire codec for `Bindings` (0 data words, 12 pointers).
+ * Wire codec for `Bindings` (0 data words, 13 pointers).
  *
  * @internal
  */
 export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
-  pointerCount: 12,
+  pointerCount: 13,
   write(s, v, caps) {
     if (v.config != null) {
       ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
@@ -2725,6 +2795,9 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (v.network != null) {
       NetworkGrantCodec.write(s.initStruct(11, 1, 3), v.network, caps);
     }
+    if (v.origin != null) {
+      s.setCap(12, caps.exportCap(v.origin));
+    }
   },
   read(s, caps) {
     const out: T.Bindings = {
@@ -2755,6 +2828,10 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     const notifyValue = caps.importCap(s.getCapIndex(10)) as T.NotificationRaiser;
     if (!(notifyValue == null)) {
       out.notify = notifyValue;
+    }
+    const originValue = caps.importCap(s.getCapIndex(12)) as T.Origin;
+    if (!(originValue == null)) {
+      out.origin = originValue;
     }
     return out;
   },
@@ -2830,13 +2907,13 @@ export const SettingNetworkGrantCodec: StructCodec<T.SettingNetworkGrant> = {
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 15 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 16 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 15,
+  pointerCount: 16,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -2882,6 +2959,9 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     }
     if (v.notifier != null) {
       s.setCap(14, caps.exportCap(v.notifier));
+    }
+    if (v.ingress != null) {
+      s.setCap(15, caps.exportCap(v.ingress));
     }
   },
   read(s, caps) {
@@ -2947,6 +3027,10 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(notifierValue == null)) {
       out.notifier = notifierValue;
     }
+    const ingressValue = caps.importCap(s.getCapIndex(15)) as T.Ingress;
+    if (!(ingressValue == null)) {
+      out.ingress = ingressValue;
+    }
     return out;
   },
 };
@@ -2964,7 +3048,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 15), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 16), v.value, caps);
         }
         break;
       case "err":
@@ -2981,7 +3065,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 15), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 16), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -4496,6 +4580,79 @@ export const GuestDatabaseReplyCodec: StructCodec<T.GuestDatabaseReply> = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("GuestDatabaseReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `OriginResponse` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const OriginResponseCodec: StructCodec<T.OriginResponse> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setUint16(0, v.status ?? 0);
+    {
+      const list = v.headers ?? [];
+      const items = s.initStructList(0, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        OriginHeaderCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.body != null) {
+      s.setCap(1, caps.exportCap(v.body));
+    }
+  },
+  read(s, caps) {
+    const out: T.OriginResponse = {
+      status: s.getUint16(0),
+      headers: s.getStructList(0, 0, 2).map((item) => OriginHeaderCodec.read(item, caps)),
+    };
+    const bodyValue = caps.importCap(s.getCapIndex(1)) as T.ByteSource;
+    if (!(bodyValue == null)) {
+      out.body = bodyValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `OriginFetchReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const OriginFetchReplyCodec: StructCodec<T.OriginFetchReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          OriginResponseCodec.write(s.initStruct(0, 1, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("OriginFetchReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: OriginResponseCodec.read(s.getStruct(0, 1, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("OriginFetchReply", disc);
     }
   },
 };
@@ -9846,6 +10003,190 @@ export const SocketClosedCodec: StructCodec<T.SocketClosed> = {
 };
 
 /**
+ * Wire codec for `OriginHeader` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const OriginHeaderCodec: StructCodec<T.OriginHeader> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setText(1, v.value ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      value: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `OriginRequest` (0 data words, 4 pointers).
+ *
+ * @internal
+ */
+export const OriginRequestCodec: StructCodec<T.OriginRequest> = {
+  dataWords: 0,
+  pointerCount: 4,
+  write(s, v, caps) {
+    s.setText(0, v.method ?? "");
+    s.setText(1, v.target ?? "");
+    {
+      const list = v.headers ?? [];
+      const items = s.initStructList(2, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        OriginHeaderCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.clientAddress !== undefined) {
+      s.setText(3, v.clientAddress ?? "");
+    }
+  },
+  read(s, caps) {
+    const out: T.OriginRequest = {
+      method: s.getText(0),
+      target: s.getText(1),
+      headers: s.getStructList(2, 0, 2).map((item) => OriginHeaderCodec.read(item, caps)),
+    };
+    const clientAddressValue = s.getText(3);
+    if (!(clientAddressValue === "")) {
+      out.clientAddress = clientAddressValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `IngressStarted` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const IngressStartedCodec: StructCodec<T.IngressStarted> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.origin ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      origin: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `IngressStartReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const IngressStartReplyCodec: StructCodec<T.IngressStartReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          IngressStartedCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("IngressStartReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: IngressStartedCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("IngressStartReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `IngressHealth` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const IngressHealthCodec: StructCodec<T.IngressHealth> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.serving ?? false);
+    if (v.detail !== undefined) {
+      s.setText(0, v.detail ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.IngressHealth = {
+      serving: s.getBool(0),
+    };
+    const detailValue = s.getText(0);
+    if (!(detailValue === "")) {
+      out.detail = detailValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `IngressHealthReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const IngressHealthReplyCodec: StructCodec<T.IngressHealthReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          IngressHealthCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("IngressHealthReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: IngressHealthCodec.read(s.getStruct(0, 1, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("IngressHealthReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `DbValue` (2 data words, 1 pointers).
  *
  * @internal
@@ -12769,6 +13110,174 @@ export const SocketHandlerClosedResultsCodec: StructCodec<SocketHandlerClosedRes
 };
 
 /**
+ * Wire codec for the `Origin.fetch` params envelope (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const OriginFetchParamsCodec: StructCodec<OriginFetchParams> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.request != null) {
+      OriginRequestCodec.write(s.initStruct(0, 0, 4), v.request, caps);
+    }
+    if (v.body != null) {
+      s.setCap(1, caps.exportCap(v.body));
+    }
+  },
+  read(s, caps) {
+    const out: OriginFetchParams = {
+      request: OriginRequestCodec.read(s.getStruct(0, 0, 4), caps),
+    };
+    const bodyValue = caps.importCap(s.getCapIndex(1)) as T.ByteSource;
+    if (!(bodyValue == null)) {
+      out.body = bodyValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for the `Origin.fetch` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const OriginFetchResultsCodec: StructCodec<OriginFetchResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      OriginFetchReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: OriginFetchReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Ingress.start` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const IngressStartParamsCodec: StructCodec<IngressStartParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `Ingress.start` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const IngressStartResultsCodec: StructCodec<IngressStartResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      IngressStartReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: IngressStartReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Ingress.health` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const IngressHealthParamsCodec: StructCodec<IngressHealthParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `Ingress.health` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const IngressHealthResultsCodec: StructCodec<IngressHealthResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      IngressHealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: IngressHealthReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Ingress.stop` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const IngressStopParamsCodec: StructCodec<IngressStopParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `Ingress.stop` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const IngressStopResultsCodec: StructCodec<IngressStopResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `ContentSource.login` params envelope (0 data words, 1 pointers).
  *
  * @internal
@@ -15113,13 +15622,13 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
       InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
     }
     if (v.bindings != null) {
-      BindingsCodec.write(s.initStruct(1, 0, 12), v.bindings, caps);
+      BindingsCodec.write(s.initStruct(1, 0, 13), v.bindings, caps);
     }
   },
   read(s, caps) {
     return {
       invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
-      bindings: BindingsCodec.read(s.getStruct(1, 0, 12), caps),
+      bindings: BindingsCodec.read(s.getStruct(1, 0, 13), caps),
     };
   },
 };

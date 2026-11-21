@@ -157,6 +157,24 @@ export const MAX_SOCKET_URL_BYTES = 2048 as const;
 /** Most request headers, and separately subprotocols, on one `Sockets.connect`. */
 export const MAX_SOCKET_HEADERS = 16 as const;
 
+/**
+ * Most header fields on one `Origin.fetch` request, and separately on its
+ * response.
+ */
+export const MAX_ORIGIN_HEADERS = 128 as const;
+
+/**
+ * Largest total UTF-8 bytes of header names and values on one `Origin.fetch`
+ * request, and separately on its response.
+ */
+export const MAX_ORIGIN_HEADER_BYTES = 65536 as const;
+
+/** Longest `OriginRequest.target` (path and query), in bytes. */
+export const MAX_ORIGIN_TARGET_BYTES = 8192 as const;
+
+/** Longest `IngressStarted.origin`, in bytes. */
+export const MAX_INGRESS_ORIGIN_BYTES = 253 as const;
+
 /** Largest `KvNamespace` metadata JSON text in bytes. */
 export const MAX_KV_METADATA_BYTES = 1024 as const;
 
@@ -257,7 +275,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];

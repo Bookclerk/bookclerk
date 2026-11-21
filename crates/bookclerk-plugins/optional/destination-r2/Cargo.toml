@@ -1,0 +1,35 @@
+[package]
+name = "bookclerk-plugin-destination-r2"
+description = "Cloudflare R2 output plugin: Workers RPC guest for Bookclerk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-output", "r2", "cloudflare"]
+
+[package.metadata.bookclerk]
+api_version = 3
+kind = "output"
+id = "r2"
+display_name = "Cloudflare R2"
+
+[[bin]]
+name = "bookclerk-plugin-destination-r2"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+bookclerk-plugin-sdk.workspace = true
+bookclerk-storage = { workspace = true, features = ["s3"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

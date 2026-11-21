@@ -126,6 +126,16 @@ const maxSocketAutoResponseBytes :UInt32 = 256;
 const maxSocketUrlBytes :UInt32 = 2048;
 # Most request headers, and separately subprotocols, on one `Sockets.connect`.
 const maxSocketHeaders :UInt32 = 16;
+# Most header fields on one `Origin.fetch` request, and separately on its
+# response.
+const maxOriginHeaders :UInt32 = 128;
+# Largest total UTF-8 bytes of header names and values on one `Origin.fetch`
+# request, and separately on its response.
+const maxOriginHeaderBytes :UInt32 = 65536;
+# Longest `OriginRequest.target` (path and query), in bytes.
+const maxOriginTargetBytes :UInt32 = 8192;
+# Longest `IngressStarted.origin`, in bytes.
+const maxIngressOriginBytes :UInt32 = 253;
 # Largest `KvNamespace` metadata JSON text in bytes.
 const maxKvMetadataBytes :UInt32 = 1024;
 # Most entries in each list of a `NetworkGrant` (fetch hosts, TCP
@@ -608,6 +618,10 @@ struct Bindings {
   # the destination each network setting names and whether it is approved,
   # so a guest can tell an unapproved destination from an unreachable one.
   network @11 :NetworkGrant;
+  # `ORIGIN`: the library itself, for a relay `ingress` plugin to send the
+  # public requests it carries to; null unless the plugin is the library's
+  # active relay ingress.
+  origin @12 :Origin;
 }
 
 # The network grant in effect for one `PluginWorker.open`. Read-only
@@ -698,6 +712,8 @@ struct Entrypoints {
   metadataFiles @13 :MetadataFiles;
   # `notifier` entrypoint.
   notifier @14 :Notifier;
+  # `ingress` entrypoint.
+  ingress @15 :Ingress;
 }
 
 # Result union of `PluginWorker.open`.
@@ -1216,6 +1232,29 @@ interface ByteSource {
   ) -> (result :PullReply);
 }
 
+# Success payload of `Origin.fetch`: the library's response head and its
+# streamed body.
+struct OriginResponse {
+  # HTTP status code, 100 to 599.
+  status @0 :UInt16;
+  # Response header fields in order, at most `maxOriginHeaders` and
+  # `maxOriginHeaderBytes`; repeated names (`set-cookie`) stay separate.
+  headers @1 :List(OriginHeader);
+  # Response body; read to `done`. Null when the response has no body.
+  body @2 :ByteSource;
+}
+
+# Result union of `Origin.fetch`.
+struct OriginFetchReply {
+  union {
+    # Success: the library answered (any HTTP status).
+    ok @0 :OriginResponse;
+    # Typed failure: the request was refused before the library saw it
+    # (`invalid_params`) or the library is unavailable.
+    err @1 :PluginError;
+  }
+}
+
 # Object store the host writes acquired media into (`output.*` plugins).
 # Keys are relative object paths; the plugin owns the physical layout.
 interface Destination {
@@ -1481,6 +1520,32 @@ interface SocketHandler {
   closed @1 (
       event :SocketClosed  # Socket, close code, and attachment.
   ) -> (result :EmptyReply);
+}
+
+# The library, as a relay `ingress` plugin reaches it (`Bindings.origin`,
+# `ORIGIN` in the Workers idiom). The plugin turns each request its provider
+# delivers into a `fetch` and streams the response back. The host treats
+# every request as the `tunnel` transport: public `https`, never loopback,
+# with the client address the plugin reports.
+interface Origin {
+  # Serve one request; the response body streams as the library writes it.
+  fetch @0 (
+      request :OriginRequest,  # Method, target, headers, client address.
+      body :ByteSource  # Request body; null when the request has none.
+  ) -> (result :OriginFetchReply);
+}
+
+# A public address provider (`Entrypoints.ingress`): the one `ingress`
+# family instance the library runs. A relay provider carries traffic to
+# `Bindings.origin`; a direct provider keeps a DNS name pointing at this
+# install.
+interface Ingress {
+  # Bring the public address up; answers the origin it serves.
+  start @0 () -> (result :IngressStartReply);
+  # Whether the public address is serving now.
+  health @1 () -> (result :IngressHealthReply);
+  # Take the public address down; stopping a stopped one is not an error.
+  stop @2 () -> (result :EmptyReply);
 }
 
 # Storefront content source (not byte Source). Every method takes and
@@ -1778,6 +1843,8 @@ enum Entrypoint {
   metadataFiles @8;
   # Notification delivery: `send` and `validateDestination` (`Notifier`).
   notifier @9;
+  # Public address provider: `start`, `health` and `stop` (`Ingress`).
+  ingress @10;
 }
 
 # One declared event consumer: a `[[events.consumers]]` row the default
@@ -3982,6 +4049,67 @@ struct SocketClosed {
   clean @3 :Bool;
   # The socket's last attachment.
   attachment @4 :Data;
+}
+
+# One header field on an `Origin.fetch` request or response.
+struct OriginHeader {
+  # Field name, an HTTP token; the host refuses hop-by-hop names.
+  name @0 :Text;
+  # Field value, visible ASCII, spaces and tabs. May carry a credential (a
+  # cookie, an authorization): the host never logs it.
+  value @1 :Text;
+}
+
+# The head of one public request a relay `ingress` plugin carries
+# (`Origin.fetch`). Its scheme is `https` and its authority is the library's
+# public origin; neither is the plugin's to choose.
+struct OriginRequest {
+  # Request method, an HTTP token (`GET`, `PUT`, ...).
+  method @0 :Text;
+  # Path and query in origin form (`/api/status?x=1`), at most
+  # `maxOriginTargetBytes`.
+  target @1 :Text;
+  # Request header fields in order, at most `maxOriginHeaders` and
+  # `maxOriginHeaderBytes`. `host` and forwarding headers are ignored.
+  headers @2 :List(OriginHeader);
+  # IP address of the client, from the provider's own connection metadata;
+  # empty when the provider gives none.
+  clientAddress @3 :Text $optional;
+}
+
+# Success payload of `Ingress.start`.
+struct IngressStarted {
+  # The public origin now serving: `https://` and a host name, no port, path
+  # or trailing slash, at most `maxIngressOriginBytes` after the scheme.
+  origin @0 :Text;
+}
+
+# Result union of `Ingress.start`.
+struct IngressStartReply {
+  union {
+    # Success: the address is up.
+    ok @0 :IngressStarted;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Success payload of `Ingress.health`.
+struct IngressHealth {
+  # True when the address is serving.
+  serving @0 :Bool;
+  # Why it is not serving, for the operator; empty when serving.
+  detail @1 :Text $optional;
+}
+
+# Result union of `Ingress.health`.
+struct IngressHealthReply {
+  union {
+    # Success: the provider's view of the address.
+    ok @0 :IngressHealth;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
 }
 
 # --- rust-generated: end ---
