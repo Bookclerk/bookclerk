@@ -8110,21 +8110,18 @@
             }
           },
           "400": {
-            "description": "The settings are invalid. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The body is not JSON. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorMessage"
-                },
-                "example": {
-                  "error": "invalid: intake settings: attribute_to = owner needs a patron user id"
-                }
-              },
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  }
+                }
               }
             }
           },
@@ -8184,25 +8181,43 @@
               }
             }
           },
+          "413": {
+            "description": "The body is over 16 KiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 16384 bytes"
+                }
+              }
+            }
+          },
           "415": {
-            "description": "The request did not declare a JSON body.",
+            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "Expected request with `Content-Type: application/json`"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Expected request with `Content-Type: application/json`"
+                  }
+                }
               }
             }
           },
           "422": {
-            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "description": "The settings are invalid: an unknown or repeated key, a value of the wrong type or out of range.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `settle_seconds` at line 1 column 2"
+                "example": "Failed to deserialize the JSON body into the target type: intake settings: attribute_to = owner needs a patron user id at line 1 column 2"
               }
             }
           },

@@ -150,8 +150,8 @@ impl IntakeAttribution {
 ///
 /// Every field has a default, so `{}` is a valid body only when
 /// `attribute_to` is `subfolder`; `owner` needs a `patron`.
-// Read by a strict hand-written reader ([`parse_intake_settings`]); the
-// serde attributes here shape the schema and the stored document.
+// Read by a strict hand-written `Deserialize` (see `settings_from_fields`);
+// the serde attributes here shape the schema and the stored document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IntakeSettings {
@@ -402,9 +402,19 @@ pub fn parse_intake_settings(body: &[u8]) -> Result<IntakeSettings, IntakeSettin
             "body is over {MAX_INTAKE_SETTINGS_BYTES} bytes"
         )));
     }
-    let fields = serde_json::from_slice::<UniqueObject>(body)
-        .map_err(IntakeSettingsError::new)?
-        .0;
+    serde_json::from_slice::<IntakeSettings>(body).map_err(IntakeSettingsError::new)
+}
+
+/// Builds settings from the keys of one JSON object, refusing an unknown
+/// key or a value of the wrong type, and checks them.
+///
+/// # Errors
+///
+/// Returns an [`IntakeSettingsError`] for an unknown key, a value of the
+/// wrong type, or settings that fail [`IntakeSettings::validate`].
+fn settings_from_fields(
+    fields: BTreeMap<String, Value>,
+) -> Result<IntakeSettings, IntakeSettingsError> {
     let mut settings = IntakeSettings {
         settle_seconds: DEFAULT_SETTLE_SECONDS,
         scan_interval_seconds: DEFAULT_SCAN_INTERVAL_SECONDS,
@@ -436,6 +446,18 @@ pub fn parse_intake_settings(body: &[u8]) -> Result<IntakeSettings, IntakeSettin
     }
     settings.validate()?;
     Ok(settings)
+}
+
+impl<'de> Deserialize<'de> for IntakeSettings {
+    /// Reads the settings strictly: one JSON object, no key repeated at any
+    /// depth, only the documented keys with values of their types, and
+    /// settings that pass [`IntakeSettings::validate`]. This is the reader
+    /// the web API uses (through its size-capped JSON extractor) and the
+    /// one [`parse_intake_settings`] wraps.
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let fields = UniqueObject::deserialize(de)?.0;
+        settings_from_fields(fields).map_err(de::Error::custom)
+    }
 }
 
 /// A JSON object read with every value kept as JSON, refusing a repeated

@@ -29,6 +29,7 @@ use serde_json::json;
 use crate::api::AppState;
 use crate::auth::NodeAdminCaller;
 use crate::http_error::ErrorMessage;
+use crate::playback::BoundedJson;
 
 /// Operator actor recorded on configuration commits from the daemon.
 fn operator_actor() -> ConfigActor {
@@ -1662,8 +1663,11 @@ pub async fn get_intake(
     request_body(content = bookclerk_config::IntakeSettings, content_type = "application/json"),
     responses(
         (status = 200, description = "The settings after the change.", body = IntakeResponse),
-        (status = 400, description = "The settings are invalid.", body = ErrorMessage, example = json!({"error": "invalid: intake settings: attribute_to = owner needs a patron user id"})),
+        (status = 400, description = "The body is not JSON.", body = String, content_type = "text/plain"),
         (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 413, description = "The body is over 16 KiB.", body = ErrorMessage, example = json!({"error": "the body is at most 16384 bytes"})),
+        (status = 415, description = "The body is not sent as `application/json`.", body = String, content_type = "text/plain"),
+        (status = 422, description = "The settings are invalid: an unknown or repeated key, a value of the wrong type or out of range.", body = String, content_type = "text/plain", example = "Failed to deserialize the JSON body into the target type: intake settings: attribute_to = owner needs a patron user id at line 1 column 2"),
         (status = 409, description = "The instance is deployed, or the document kept changing.", body = ErrorMessage, example = json!({"error": "storage instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is deployed on node-a; undeploy it before changing whether it is a drop folder"})),
         (status = 500, description = "The settings could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -1671,12 +1675,13 @@ pub async fn get_intake(
 pub async fn put_intake(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
-    body: axum::body::Bytes,
+    BoundedJson(settings): BoundedJson<
+        bookclerk_config::IntakeSettings,
+        { bookclerk_config::MAX_INTAKE_SETTINGS_BYTES },
+    >,
 ) -> Result<Json<IntakeResponse>, Response> {
     let library = state.library_snapshot().await;
     let instance_id = existing_instance(&library, &id).await?;
-    let settings = bookclerk_config::parse_intake_settings(&body)
-        .map_err(|err| events_error(bookclerk_library::LibraryError::Invalid(err.to_string())))?;
     let stored = bookclerk_library::control_plane::set_intake(
         &library,
         &operator_actor(),
@@ -3245,9 +3250,17 @@ mod tests {
 
         // Bad settings and repeated keys are refused and change nothing.
         let (status, _) = send(&app, "PUT", &uri, json!({"settle_seconds": 90})).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         let (status, _) = send(&app, "PUT", &uri, json!({"patron": 2, "colour": 1})).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _) = send(
+            &app,
+            "PUT",
+            &uri,
+            json!({"patron": 2, "ignore": ["x".repeat(16 * 1024)]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
         let (_, after) = send(&app, "GET", &uri, Value::Null).await;
         assert_eq!(after, put);
 
