@@ -80,11 +80,15 @@ viewports and in light and dark. No daemon runs behind it:
   Owner, two patrons, a branch and a few plugins, seen at a fixed time, so
   relative dates read the same on every run. Covers and store icons are
   generated plain tiles; no store artwork is used.
-- Each JSON answer is checked against the daemon's OpenAPI document
-  (`crates/bookclerkd/openapi.json`) by `ui/visual/app/openapi.ts`. A
-  request the samples don't answer, a path the document doesn't list, or an
-  answer the document doesn't allow fails the test and is named, so the
-  samples can't drift from the real API.
+- Each JSON answer, an error answer included, is checked against the
+  response the daemon's OpenAPI document (`crates/bookclerkd/openapi.json`)
+  gives for its status, by `ui/visual/app/openapi.ts`. A request the samples
+  don't answer, a path or status the document doesn't list, or an answer the
+  document doesn't allow fails the test and is named, so the samples can't
+  drift from the real API.
+- Before axe-core and the screenshot, the test waits until no API request
+  has started for half a second, so a tab or dialog that loads its data
+  after opening is shown with it.
 - The live-updates socket is held open without messages.
 
 The pages are `PAGES` in `app.spec.ts`: sign-in, Discover, Library,
@@ -107,6 +111,8 @@ app page, using a stand-in for the React DevTools hook (`ui/visual/coverage.ts`)
 A dialog that is mounted but closed draws nothing and doesn't count. When the
 run ends, `ui/visual/coverage-check.ts` fails it if any component exported
 from a module under `ui/src/components/` never rendered, and names each one.
+It reads exports declared inline (`export function Name`) and in export lists
+(`export { Name }`); `coverage-check.spec.ts` checks that reading.
 
 The builds the suite opens keep function names (they aren't minified), so a
 component is known by its name.

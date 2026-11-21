@@ -71,24 +71,29 @@ const ROUTES = Object.keys(DOC.paths).map((template) => ({
 ROUTES.sort((a, b) => b.literal - a.literal);
 
 /**
- * Finds the documented JSON schema of a successful answer.
+ * Finds the documented JSON schema of an answer with a given status.
  *
  * @param method - HTTP method.
  * @param pathname - Request path, such as `/api/library/works`.
+ * @param status - The answer's HTTP status.
  * @returns The path template and the schema of its JSON answer (null when
- *   the operation answers without JSON), or null when no documented
- *   operation matches.
+ *   the operation documents that status without JSON), or null when no
+ *   documented operation matches. `schema` is undefined when the operation
+ *   documents neither the status, its range (`4XX`) nor a default.
  */
 export function documented(
   method: string,
   pathname: string,
-): { template: string; schema: Schema | null } | null {
+  status: number,
+): { template: string; schema: Schema | null | undefined } | null {
   for (const route of ROUTES) {
     if (!route.pattern.test(pathname)) continue;
     const op = DOC.paths[route.template]?.[method.toLowerCase()];
     if (!op) continue;
-    const ok = Object.entries(op.responses ?? {}).find(([status]) => status.startsWith("2"));
-    const schema = ok?.[1].content?.["application/json"]?.schema ?? null;
+    const responses = op.responses ?? {};
+    const response =
+      responses[String(status)] ?? responses[`${String(status)[0]}XX`] ?? responses.default;
+    const schema = response ? (response.content?.["application/json"]?.schema ?? null) : undefined;
     return { template: route.template, schema };
   }
   return null;
@@ -119,26 +124,51 @@ function deref(schema: Schema): Schema {
 }
 
 /**
+ * Merges the members of object parts into the properties collected so far.
+ * A member two parts both define keeps both definitions (as an `allOf`), so
+ * every part's constraints still apply.
+ *
+ * @param into - The properties collected so far, changed in place.
+ * @param from - One part's properties.
+ */
+function addMembers(into: Record<string, Schema>, from: Record<string, Schema> | undefined): void {
+  for (const [key, member] of Object.entries(from ?? {})) {
+    const existing = into[key];
+    into[key] = existing ? { allOf: [existing, member] } : member;
+  }
+}
+
+/**
+ * Whether every part of an `allOf` describes an object by its members, the
+ * way the document extends a struct with a flattened one.
+ *
+ * @param parts - The `allOf` parts.
+ * @returns True when each part (or its own `allOf`) lists properties.
+ */
+function objectParts(parts: Schema[]): boolean {
+  return parts.every((raw) => {
+    const part = deref(raw);
+    return part.allOf ? objectParts(part.allOf) : part.properties !== undefined;
+  });
+}
+
+/**
  * Merges the parts of an `allOf` into one schema: the document uses it to
  * extend an object with more members (a flattened Rust struct).
  *
- * @param parts - The `allOf` parts.
+ * @param parts - The `allOf` parts, each one an object (see `objectParts`).
  * @returns One object schema with every part's members and requirements.
  */
 function merged(parts: Schema[]): Schema {
-  const out: Schema = { type: "object", properties: {}, required: [] };
+  const properties: Record<string, Schema> = {};
+  const required: string[] = [];
   for (const raw of parts) {
     const part = deref(raw);
-    if (part.allOf) {
-      const inner = merged(part.allOf);
-      Object.assign(out.properties ?? {}, inner.properties);
-      out.required?.push(...(inner.required ?? []));
-      continue;
-    }
-    Object.assign(out.properties ?? {}, part.properties);
-    out.required?.push(...(part.required ?? []));
+    const inner = part.allOf ? merged(part.allOf) : part;
+    addMembers(properties, inner.properties);
+    required.push(...(inner.required ?? []));
   }
-  return out;
+  return { type: "object", properties, required };
 }
 
 /**
@@ -156,13 +186,21 @@ export function mismatches(value: unknown, schema: Schema, at = "$"): string[] {
     if (!target) return [`${at}: unknown schema ${schema.$ref}`];
     return mismatches(value, target, at);
   }
-  if (schema.allOf) return mismatches(value, merged(schema.allOf), at);
+  if (schema.allOf) {
+    // Object parts are checked together, so a member one part lists is not
+    // "not in the document" for another; any other parts each apply alone.
+    if (objectParts(schema.allOf)) return mismatches(value, merged(schema.allOf), at);
+    return schema.allOf.flatMap((part) => mismatches(value, part, at));
+  }
   const alternatives = schema.oneOf ?? schema.anyOf;
   if (alternatives) {
     const results = alternatives.map((s) => mismatches(value, s, at));
-    return results.some((r) => r.length === 0)
-      ? []
-      : [`${at}: matches none of ${alternatives.length} alternatives (${results.flat()[0]})`];
+    const matched = results.filter((r) => r.length === 0).length;
+    if (matched === 0)
+      return [`${at}: matches none of ${alternatives.length} alternatives (${results.flat()[0]})`];
+    if (schema.oneOf && matched > 1)
+      return [`${at}: matches ${matched} of the oneOf alternatives, where exactly one must match`];
+    return [];
   }
   if (schema.enum && !schema.enum.includes(value))
     return [`${at}: ${JSON.stringify(value)} is not one of ${JSON.stringify(schema.enum)}`];
@@ -188,7 +226,10 @@ export function mismatches(value: unknown, schema: Schema, at = "$"): string[] {
       if (member) errors.push(...mismatches(v, member, `${at}.${key}`));
       else if (typeof schema.additionalProperties === "object")
         errors.push(...mismatches(v, schema.additionalProperties, `${at}.${key}`));
-      else if (schema.properties && schema.additionalProperties !== true)
+      else if (
+        schema.additionalProperties === false ||
+        (schema.properties && schema.additionalProperties !== true)
+      )
         errors.push(`${at}.${key}: not in the document`);
     }
     return errors;

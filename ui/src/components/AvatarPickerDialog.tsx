@@ -140,15 +140,27 @@ export function AvatarPickerDialog({
           }}
         />
         <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
-          {fields.has_avatar && onRemoveUpload ? (
-            <button
-              type="button"
-              className="text-xs font-medium text-ink/70 hover:text-ink disabled:opacity-50"
-              disabled={busy}
-              onClick={() => void onRemoveUpload()}
-            >
-              Remove uploaded picture
-            </button>
+          {fields.has_avatar ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <button
+                type="button"
+                className="text-xs font-medium text-ink/70 hover:text-ink disabled:opacity-50"
+                disabled={busy}
+                onClick={() => fileRef.current?.click()}
+              >
+                Replace uploaded picture
+              </button>
+              {onRemoveUpload ? (
+                <button
+                  type="button"
+                  className="text-xs font-medium text-ink/70 hover:text-ink disabled:opacity-50"
+                  disabled={busy}
+                  onClick={() => void onRemoveUpload()}
+                >
+                  Remove uploaded picture
+                </button>
+              ) : null}
+            </div>
           ) : (
             <span />
           )}

@@ -1496,7 +1496,18 @@ function signedIn(viewer: "owner" | "operator"): Routes {
 
 /** Answers for a visitor who has not signed in. */
 const SIGNED_OUT: Routes = {
-  "GET /api/auth/me": () => ({ status: 401, json: { error: "not signed in" } }),
+  // The daemon's signed-out answer: the same body, `authenticated` false.
+  "GET /api/auth/me": () => ({
+    status: 401,
+    json: {
+      authenticated: false,
+      default_view: "discover",
+      can_acquire: false,
+      elevated: false,
+      administers_nodes: false,
+      see_prices: false,
+    },
+  }),
   "GET /api/auth/signin": () => ({
     json: {
       operator_token: true,

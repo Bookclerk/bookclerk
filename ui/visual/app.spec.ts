@@ -1,7 +1,7 @@
 /**
  * Visual and accessibility check of the web app's full pages.
  *
- * The config serves the app's production build (ui/dist). There is no
+ * The config serves the app's production build (ui/visual-dist). There is no
  * server behind it: every `/api/` request is answered from the sample
  * library in app/fixtures.ts, each JSON answer checked against the daemon's
  * OpenAPI document first (app/openapi.ts), and the live-updates socket is
@@ -15,7 +15,7 @@
  * `app--<page>--<theme>.png`, beside the stories' baselines.
  */
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { NOW_MS, answer, type Scenario, type Viewer } from "./app/fixtures.ts";
 import { saveRecording, startRecording } from "./coverage.ts";
 import { documented, mismatches } from "./app/openapi.ts";
@@ -54,9 +54,14 @@ type AppPage = {
  */
 function settingsTab(name: string): (page: Page) => Promise<void> {
   return async (page) => {
-    await page.getByRole("tab", { name, exact: true }).click();
+    const tab = page.getByRole("tab", { name, exact: true });
+    await tab.click();
+    await expect(tab).toHaveAttribute("aria-selected", "true");
   };
 }
+
+/** How long the API must go without a request before a page counts as settled. */
+const SETTLE_MS = 500;
 
 /** Every page checked. */
 const PAGES: AppPage[] = [
@@ -161,6 +166,9 @@ const PAGES: AppPage[] = [
     prepare: async (page) => {
       await settingsTab("Library")(page);
       await page.getByRole("button", { name: "Sign in with a library card" }).click();
+      await expect(
+        page.getByRole("heading", { name: "Sign in with a library card" }),
+      ).toBeVisible();
     },
   },
   {
@@ -194,7 +202,10 @@ const PAGES: AppPage[] = [
     prepare: async (page) => {
       const search = page.getByRole("combobox", { name: "Search store catalogs" });
       await search.fill("Stevenson");
+      const sent = page.waitForRequest((r) => new URL(r.url()).pathname === "/api/discover/search");
       await search.press("Enter");
+      // The sample answers any term, so check the app asked for this one.
+      expect(new URL((await sent).url()).searchParams.get("q")).toBe("Stevenson");
       await expect(page.getByText("Kidnapped").first()).toBeVisible();
     },
   },
@@ -248,6 +259,7 @@ const PAGES: AppPage[] = [
     scenario: "fresh",
     prepare: async (page) => {
       await page.getByRole("button", { name: /^Join a library/ }).click();
+      await expect(page.getByRole("heading", { name: "Join a library" })).toBeVisible();
     },
   },
   {
@@ -310,13 +322,20 @@ async function startPlaying(page: Page): Promise<void> {
  * @param page - The browser page.
  * @param viewer - Who is signed in.
  * @param scenario - The variation of the sample library, if any.
- * @returns The problems found so far (filled in as requests arrive).
+ * @returns The problems found so far (filled in as requests arrive), and a
+ *   wait for the page's API requests to settle.
  */
-async function serveSamples(page: Page, viewer: Viewer, scenario?: Scenario): Promise<string[]> {
+async function serveSamples(
+  page: Page,
+  viewer: Viewer,
+  scenario?: Scenario,
+): Promise<{ problems: string[]; settled: () => Promise<void> }> {
   const problems: string[] = [];
+  let pending = 0;
+  let last = Date.now();
   // Live updates: accept the socket and send nothing.
   await page.routeWebSocket(/\/api\/live$/, () => {});
-  await page.route(/\/api\//, async (route) => {
+  const handle = async (route: Route): Promise<void> => {
     const request = route.request();
     const url = new URL(request.url());
     const label = `${request.method()} ${url.pathname}`;
@@ -337,15 +356,33 @@ async function serveSamples(page: Page, viewer: Viewer, scenario?: Scenario): Pr
       await route.fulfill({ status, contentType: sample.body.contentType, body: sample.body.text });
       return;
     }
-    if (status < 300) {
-      const op = documented(request.method(), url.pathname);
-      if (!op) problems.push(`${label}: not in the OpenAPI document`);
-      else if (op.schema)
-        problems.push(...mismatches(sample.json, op.schema).map((m) => `${label}: ${m}`));
+    // The value checked is the value sent: an omitted body is `{}`, an
+    // explicit null stays null.
+    const json = sample.json === undefined ? {} : sample.json;
+    const op = documented(request.method(), url.pathname, status);
+    if (!op) problems.push(`${label}: not in the OpenAPI document`);
+    else if (op.schema === undefined) problems.push(`${label}: status ${status} is not documented`);
+    else if (op.schema) problems.push(...mismatches(json, op.schema).map((m) => `${label}: ${m}`));
+    await route.fulfill({ status, json });
+  };
+  await page.route(/\/api\//, async (route) => {
+    pending += 1;
+    last = Date.now();
+    try {
+      await handle(route);
+    } finally {
+      pending -= 1;
+      last = Date.now();
     }
-    await route.fulfill({ status, json: sample.json ?? {} });
   });
-  return problems;
+  // A step's own requests (a tab's data) start after the document went
+  // idle, so `networkidle` alone would not wait for them.
+  const settled = async (): Promise<void> => {
+    await expect
+      .poll(() => pending === 0 && Date.now() - last >= SETTLE_MS, { intervals: [100] })
+      .toBe(true);
+  };
+  return { problems, settled };
 }
 
 /**
@@ -365,7 +402,7 @@ function contrast(checks: { id: string; data?: unknown }[]): string {
 for (const p of PAGES) {
   for (const theme of THEMES) {
     test(`app ${p.name} (${theme})`, async ({ page }, testInfo) => {
-      const problems = await serveSamples(page, p.viewer, p.scenario);
+      const { problems, settled } = await serveSamples(page, p.viewer, p.scenario);
       await startRecording(page);
       await page.clock.setFixedTime(NOW_MS);
       await page.emulateMedia({ colorScheme: theme });
@@ -376,7 +413,10 @@ for (const p of PAGES) {
         // A step that found nothing often means a request went unanswered.
         throw new Error(`${String(err)}\nAPI problems so far: ${problems.join("; ") || "none"}`);
       }
-      if (p.idle !== false) await page.waitForLoadState("networkidle");
+      if (p.idle !== false) {
+        await page.waitForLoadState("networkidle");
+        await settled();
+      }
       await page.evaluate(async () => {
         await document.fonts.ready;
         // Finish entrance animations (a dialog fading in) so axe and the

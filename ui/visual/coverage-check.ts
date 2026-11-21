@@ -50,21 +50,47 @@ export function componentModules(): string[] {
 }
 
 /**
- * The components a module exports: `export function Name`, `export const
- * Name =` and `export default function Name`, capitalized as React
- * components are.
+ * The component names a module's source exports, capitalized as React
+ * components are: inline exports (`export function Name`, `export const
+ * Name =`, `export default function Name`), export lists (`export { Name }`,
+ * grouped or across lines, by the local binding a `Local as Name` renames)
+ * and `export default Name;`. Re-exports from another module (`export { X }
+ * from "./x"`) belong to that module and are skipped.
+ *
+ * @param text - The module's source.
+ * @returns The component names, each once.
+ */
+export function exportedNames(text: string): string[] {
+  const names = new Set<string>();
+  const add = (name: string | undefined): void => {
+    if (name && /^[A-Z]/.test(name) && !/^[A-Z][A-Z0-9_]*$/.test(name)) names.add(name);
+  };
+  for (const m of text.matchAll(
+    /^export\s+(?:default\s+)?(?:function|const|class)\s+([A-Za-z_$][\w$]*)/gm,
+  ))
+    add(m[1]);
+  for (const m of text.matchAll(/^export\s+default\s+([A-Za-z_$][\w$]*)\s*;/gm)) add(m[1]);
+  for (const m of text.matchAll(/^export\s+(?:type\s+)?\{([^}]*)\}(\s*from\b)?/gm)) {
+    if (m[2] || /^export\s+type\b/.test(m[0])) continue;
+    for (const spec of (m[1] ?? "").split(",")) {
+      const local = spec
+        .trim()
+        .replace(/^type\s+/, "")
+        .split(/\s+as\s+/)[0];
+      if (!spec.trim().startsWith("type ")) add(local);
+    }
+  }
+  return [...names];
+}
+
+/**
+ * The components a module exports (see `exportedNames`).
  *
  * @param file - The module, relative to ui/.
  * @returns The component names.
  */
 export function exportedComponents(file: string): string[] {
-  const text = readFileSync(path.join(UI, file), "utf8");
-  const names = new Set<string>();
-  for (const m of text.matchAll(
-    /^export\s+(?:default\s+)?(?:function|const|class)\s+([A-Z][A-Za-z0-9_]*)/gm,
-  ))
-    if (m[1] && !/^[A-Z][A-Z0-9_]*$/.test(m[1])) names.add(m[1]);
-  return [...names];
+  return exportedNames(readFileSync(path.join(UI, file), "utf8"));
 }
 
 /**
