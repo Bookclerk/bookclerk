@@ -99,6 +99,7 @@ pub(crate) async fn create_download_request(
         AcquireAsk {
             titles: vec![plan.title.clone()],
             paced: true,
+            convert: None,
             ..AcquireAsk::default()
         },
         JobTrigger::Api,

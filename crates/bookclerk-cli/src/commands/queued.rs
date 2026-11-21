@@ -318,6 +318,20 @@ pub(crate) struct AcquireArgs<'a> {
     pub wait: bool,
 }
 
+/// `library convert` arguments.
+pub(crate) struct ConvertArgs<'a> {
+    /// Title ids of stored books; at least one.
+    pub titles: &'a [String],
+    /// `--account`.
+    pub account: Option<&'a str>,
+    /// `--to`: the copy to add.
+    pub copy: &'a bookclerk_config::OutputCopy,
+    /// `--force`.
+    pub force: bool,
+    /// Wait for the jobs.
+    pub wait: bool,
+}
+
 /// Queues `library scan`'s jobs and, with `wait`, waits for them.
 ///
 /// # Returns
@@ -400,6 +414,53 @@ pub(crate) async fn acquire(
     node_bound.extend(local_output_keys_from_instances(store).await?);
     let queued = admit(store, config, JobKind::Acquire, plan, &node_bound).await?;
     settle("acquire", store, queued, args.wait).await
+}
+
+/// Queues `library convert`'s jobs (acquire jobs that add a copy to each
+/// stored book) and, with `wait`, waits for them.
+///
+/// # Returns
+///
+/// As [`scan`].
+///
+/// # Errors
+///
+/// Returns an error when no title is named, the copy is `original`, and
+/// otherwise as [`scan`].
+pub(crate) async fn convert(
+    store: &LibraryStore,
+    config: &Config,
+    args: ConvertArgs<'_>,
+) -> anyhow::Result<bool> {
+    if args.titles.is_empty() {
+        anyhow::bail!("name the books to convert by title id");
+    }
+    if args.copy.format == bookclerk_config::CopyFormat::Original {
+        anyhow::bail!("a convert makes a new encoding; `original` is not one");
+    }
+    if args.wait {
+        require_live_node(store).await?;
+    }
+    let account = match args.account {
+        Some(needle) => Some(resolve_account(store, needle, None).await?),
+        None => None,
+    };
+    let mut plan = plan_acquire(
+        store,
+        ScanRequester::Operator,
+        account.as_deref(),
+        args.titles,
+        None,
+    )
+    .await?;
+    for payload in &mut plan {
+        payload.force = args.force;
+        payload.convert = Some(args.copy.clone());
+    }
+    let mut node_bound = node_bound_output_keys(config)?;
+    node_bound.extend(local_output_keys_from_instances(store).await?);
+    let queued = admit(store, config, JobKind::Acquire, plan, &node_bound).await?;
+    settle("convert", store, queued, args.wait).await
 }
 
 /// Reports `queued`, then waits (with `wait`) and reports each outcome.

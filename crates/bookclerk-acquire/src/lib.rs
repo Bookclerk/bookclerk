@@ -13,7 +13,6 @@
 )]
 
 mod chapter_claims;
-mod convert;
 mod cue;
 mod destinations;
 /// Acquire-pipeline error types (`AcquireError`) returned to host callers.
@@ -28,7 +27,6 @@ mod reconcile;
 mod record;
 mod split;
 
-pub use convert::{convert_book, ConvertRequest, ConvertSummary};
 mod storage_scan;
 pub use destinations::{AcquireDestination, AcquireDestinations};
 pub use error::{AcquireError, Result};
@@ -46,7 +44,8 @@ pub use naming::{
     swap_audio_extension, NamingContext,
 };
 pub use pipeline::{
-    acquire_book, acquire_book_indexed, acquire_pdf_only, call_number_of, planned_storage_key,
+    acquire_book, acquire_book_indexed, acquire_pdf_only, call_number_of, convert_copy,
+    planned_storage_key,
     planned_storage_key_for, planned_storage_key_with_rules, planned_title_folders,
     planned_title_names, share_acquired_sibling, AcquireMetadata, AcquireRequest, AcquireResult,
     CopyOutcome, CopyResult, CoverImages, PlannedTitleNames, NAME_WILDCARD, NUMBER_WILDCARD,

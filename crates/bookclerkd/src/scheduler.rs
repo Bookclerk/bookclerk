@@ -97,6 +97,7 @@ fn spawn_scan_loop(state: Arc<AppState>) {
                     // Auto-acquire: every download waits for its account's pace.
                     crate::jobs::AcquireAsk {
                         paced: true,
+                        convert: None,
                         ..crate::jobs::AcquireAsk::default()
                     },
                     JobTrigger::Scheduler,

@@ -150,6 +150,20 @@ impl JobTransport for InProcessJobTransport {
                 )
                 .await
             }
+            JobKind::Acquire if cmd.payload.convert.is_some() => {
+                let copy = cmd.payload.convert.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("convert job carries no copy")
+                })?;
+                crate::jobs::run_convert(
+                    &self.state,
+                    cmd.payload.title.as_deref(),
+                    cmd.payload.account.as_deref(),
+                    copy,
+                    cmd.payload.force,
+                    Some(&ctx),
+                )
+                .await
+            }
             JobKind::Acquire => {
                 run_acquire(
                     &self.state,

@@ -381,6 +381,9 @@ pub struct AcquireAsk {
     /// The host started this acquire itself, so each download waits for
     /// its store account's pace (`bookclerk_library::pacing`).
     pub paced: bool,
+    /// Instead of downloading, add this copy to each title's stored edition
+    /// from the copy the library holds (an administrator's convert).
+    pub convert: Option<bookclerk_config::OutputCopy>,
 }
 
 /// Admit acquire jobs through the acquire planner.
@@ -431,6 +434,7 @@ pub async fn enqueue_acquire(
         spec.payload.force = ask.force;
         spec.payload.pdf_only = ask.pdf_only;
         spec.payload.paced = ask.paced;
+        spec.payload.convert.clone_from(&ask.convert);
         admitted.push(admit_into(&state, &library, spec).await?);
     }
     Ok(admitted)
@@ -1476,6 +1480,134 @@ pub async fn run_acquire(
     }
     if let Some(scan_id) = index.scan_id() {
         let _ = library.storage_scan_delete(scan_id).await;
+    }
+    Ok(detail)
+}
+
+/// Adds `copy` to the stored edition of each title `title` names (an
+/// administrator's convert, queued as an acquire job carrying
+/// [`bookclerk_library::JobPayload::convert`]).
+///
+/// The copy is made from the copy the library already stores
+/// ([`bookclerk_acquire::convert_copy`]), so no store is asked and nothing
+/// is paced. Only titles that acquired their edition are converted: one
+/// per edition. `force` makes the copy again when the edition has it.
+///
+/// # Errors
+///
+/// Returns an error when the title names nothing stored, the destinations
+/// cannot be built or listed, a read fails, or every title fails.
+pub async fn run_convert(
+    state: &AppState,
+    title: Option<&str>,
+    account: Option<&str>,
+    copy: &bookclerk_config::OutputCopy,
+    force: bool,
+    ctx: Option<&JobExecCtx>,
+) -> anyhow::Result<String> {
+    let Some(title) = title else {
+        return Err(JobFailedForGood("a convert names the title to convert".into()).into());
+    };
+    let _guard = state.work_lock.lock().await;
+    let cfg = state.config.read().await.clone();
+    let paths = cfg.paths();
+    paths.ensure_dirs()?;
+    let library = state.library.read().await.clone();
+    let deployed = bookclerk_plugin_host::build_acquire_destinations(
+        &cfg,
+        &*state.destinations.read().await,
+        &std::collections::BTreeMap::new(),
+    )?;
+    let (mut destinations, unreachable) = deployed.reachable().await?;
+    for (id, error) in &unreachable {
+        warn!(destination = %id, %error, "run_convert: destination unreachable, left out of this run");
+    }
+    let destination_ids: Vec<String> = destinations
+        .items
+        .iter()
+        .map(|dest| dest.id.as_str().to_string())
+        .collect();
+    let filters = bookclerk_library::control_plane::destination_filters(
+        &library,
+        destination_ids.iter().map(String::as_str),
+    )
+    .await?;
+    destinations.set_filters(&filters);
+    let options = destinations.primary_destination().options.clone();
+    let targets = acquire_candidates(
+        &library,
+        account,
+        Some(title),
+        |t| t.status == AcquireStatus::Acquired && t.acquired_here(),
+        None,
+    )
+    .await?;
+    if targets.is_empty() {
+        return Err(JobFailedForGood(format!(
+            "nothing to convert: {title} names no stored book"
+        ))
+        .into());
+    }
+    let mut converted = 0u32;
+    let mut matched = 0u32;
+    let mut errors = Vec::new();
+    for book in targets {
+        if let Some(ctx) = ctx {
+            let progress = format!("converting {} to {copy}", book.title);
+            if !library
+                .set_job_progress(&ctx.fence, &progress)
+                .await
+                .unwrap_or(false)
+            {
+                ctx.request_cancel();
+                anyhow::bail!("convert cancelled (lease fence lost)");
+            }
+        }
+        let req = AcquireRequest {
+            asin: book.product_id.clone(),
+            holding_id: Some(book.holding_id.clone()),
+            source: book.source.clone(),
+            account_id: book.account_id.clone(),
+            title: book.title.clone(),
+            authors: book.authors.clone(),
+            narrators: book.narrators.clone(),
+            series: book.series.clone(),
+            series_index: book.series_index.clone(),
+            options: options.clone(),
+            files_dir: paths.files_dir.clone(),
+            cache_dir: cfg.download_cache_dir(),
+            force,
+            write_destinations: None,
+            placement: Some(placement_facts(&library, &book).await?),
+            job_id: ctx.map(|c| c.fence.job_id.clone()),
+            temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+            call_number: None,
+            parent_call_number: None,
+            metadata: crate::covers::acquire_metadata(state).await,
+            library_copies: bookclerk_acquire::LibraryCopySource::default(),
+            destination_keys: bookclerk_acquire::DestinationKeys::default(),
+        };
+        match bookclerk_acquire::convert_copy(&library, &destinations, req, copy).await {
+            Ok(result) if result.matched_existing => {
+                info!(asin = %book.asin_or_isbn(), %copy, key = %result.storage_key, "the copy exists already");
+                matched += 1;
+            }
+            Ok(result) => {
+                info!(asin = %book.asin_or_isbn(), %copy, key = %result.storage_key, "converted");
+                converted += 1;
+            }
+            Err(err) => {
+                warn!(asin = %book.asin_or_isbn(), %copy, error = %err, "convert failed");
+                errors.push(format!("{}: {err}", book.asin_or_isbn()));
+            }
+        }
+    }
+    if converted > 0 {
+        notify_integrations(state).await;
+    }
+    let detail = format!("converted={converted} matched={matched} failed={}", errors.len());
+    if !errors.is_empty() && converted == 0 && matched == 0 {
+        return Err(JobFailedForGood(format!("{detail}: {}", errors.join("; "))).into());
     }
     Ok(detail)
 }
