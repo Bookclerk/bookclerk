@@ -245,8 +245,8 @@ fn is_label(label: &str) -> bool {
 /// # Returns
 ///
 /// The origin, `https://` and a lowercase host name of at least two labels,
-/// at most `maxIngressOriginBytes`; the top label is not all digits, so an
-/// IP address never passes.
+/// at most `maxIngressOriginBytes`; the top label starts with a letter, so
+/// nothing a URL parser reads as an IP address passes.
 ///
 /// # Errors
 ///
@@ -267,9 +267,12 @@ pub fn parse_ingress_origin(started: &IngressStarted) -> Result<IngressOrigin> {
     if labels.len() < 2 || !labels.iter().all(|label| is_label(label)) {
         return Err(refuse());
     }
-    if labels
+    // A top label that starts with a digit could read as an IPv4 address
+    // (`10.0.0.1`, `a.0x7f`) to a URL parser; top-level domains start with
+    // a letter.
+    if !labels
         .last()
-        .is_some_and(|top| top.bytes().all(|b| b.is_ascii_digit()))
+        .is_some_and(|top| top.starts_with(|c: char| c.is_ascii_lowercase()))
     {
         return Err(refuse());
     }

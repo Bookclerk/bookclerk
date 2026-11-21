@@ -180,6 +180,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "origin_request"
+path = "fuzz_targets/origin_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "socket_broker"
 path = "fuzz_targets/socket_broker.rs"
 test = false
