@@ -82,6 +82,26 @@ pub struct Chapter {
     pub depth: u32,
 }
 
+/// One chapter as a player seeks between them: where it starts and ends
+/// on the edition's timeline ([`ChapterList::spans`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct ChapterSpan {
+    /// Chapter title.
+    #[schema(example = "Chapter 1: The Boy Who Lived")]
+    pub title: String,
+    /// Start, in milliseconds from the start of the edition's timeline.
+    #[schema(example = 33_000)]
+    pub start_ms: u64,
+    /// End, in milliseconds: the next chapter's start, or the end of the
+    /// timeline for the last chapter; never before `start_ms`.
+    #[schema(example = 1_215_000)]
+    pub end_ms: u64,
+    /// Nesting depth; 0 for a top-level chapter. A chapter at depth n + 1
+    /// is nested under the nearest earlier chapter at depth n.
+    #[schema(example = 0)]
+    pub depth: u32,
+}
+
 /// How strictly [`ChapterList::new`] reads its input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChapterCheck {
@@ -173,6 +193,41 @@ impl ChapterList {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// The chapters as spans a player can seek between: in pre-order, each
+    /// ending where the next one starts, as Audiobookshelf flattens a
+    /// tree, and the last ending at `end_ms`.
+    ///
+    /// # Arguments
+    ///
+    /// * `end_ms` - Where the timeline ends, in milliseconds. `None`, or a
+    ///   value before the last chapter's start, ends the last chapter at
+    ///   its own start.
+    ///
+    /// # Returns
+    ///
+    /// One span per chapter, starts non-decreasing, every end at or after
+    /// its start.
+    #[must_use]
+    pub fn spans(&self, end_ms: Option<u64>) -> Vec<ChapterSpan> {
+        self.0
+            .iter()
+            .enumerate()
+            .map(|(index, chapter)| {
+                let end = self
+                    .0
+                    .get(index + 1)
+                    .map_or(end_ms.unwrap_or(0), |next| next.start_ms)
+                    .max(chapter.start_ms);
+                ChapterSpan {
+                    title: chapter.title.clone(),
+                    start_ms: chapter.start_ms,
+                    end_ms: end,
+                    depth: chapter.depth,
+                }
+            })
+            .collect()
     }
 
     /// The list's digest: SHA-256 over each chapter's start (8 bytes, big

@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { BookmarkPlus, Check, ChevronDown, Trash2 } from "lucide-react";
+import { BookmarkPlus, Check, ChevronDown, SkipBack, SkipForward, Trash2 } from "lucide-react";
 import { CoverThumb } from "@/components/CoverThumb";
 import { Scrubber, SleepSelect, SpeedSelect, TransportButtons } from "@/components/PlayerControls";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { userFacingApiError } from "@/lib/api";
 import type { Player, PlayerState } from "@/lib/player";
-import { formatClock, formatRemaining } from "@/lib/playerTimeline";
+import {
+  chapterAt,
+  formatClock,
+  formatRemaining,
+  nextChapterStart,
+  previousChapterStart,
+} from "@/lib/playerTimeline";
 import { usePlayerState, webPlayer } from "@/lib/webPlayer";
 
 /** What Tab stops at inside the now-playing view. */
@@ -15,7 +21,7 @@ const TAB_STOPS =
 
 /**
  * The now-playing view: the loaded book's cover, timeline, controls and
- * the listener's bookmarks. Closes itself when the book is unloaded.
+ * the edition's chapters and the listener's bookmarks. Closes itself when the book is unloaded.
  * While it is open the keyboard stays inside it; closing it returns to
  * whatever opened it.
  *
@@ -100,6 +106,8 @@ export function NowPlayingView({
 
   const duration = state.durationMs;
   const left = duration ? Math.max(0, duration - state.positionMs) : null;
+  const current = chapterAt(state.chapters, state.positionMs);
+  const nextStart = nextChapterStart(state.chapters, state.positionMs);
 
   return (
     <div
@@ -141,6 +149,11 @@ export function NowPlayingView({
               {target.title}
             </h2>
             {target.authors ? <p className="mt-1 text-sm text-ink/70">{target.authors}</p> : null}
+            {current >= 0 ? (
+              <p className="mt-1 truncate text-sm font-medium text-ink-soft">
+                {state.chapters[current].title}
+              </p>
+            ) : null}
           </div>
 
           <div>
@@ -178,6 +191,62 @@ export function NowPlayingView({
             <p className="text-center text-sm font-medium text-brick" role="alert">
               {state.error ?? failure}
             </p>
+          ) : null}
+
+          {state.chapters.length > 0 ? (
+            <section aria-labelledby="chapters-heading" className="border-t border-ink/10 pt-4">
+              <div className="flex items-center justify-between gap-2">
+                <h3 id="chapters-heading" className="text-sm font-semibold text-ink">
+                  Chapters
+                </h3>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    className="rounded-md p-1.5 text-ink/60 transition-colors hover:bg-ink/5 hover:text-ink"
+                    onClick={() =>
+                      player.seek(previousChapterStart(state.chapters, state.positionMs))
+                    }
+                    aria-label="Previous chapter"
+                  >
+                    <SkipBack className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md p-1.5 text-ink/60 transition-colors hover:bg-ink/5 hover:text-ink disabled:opacity-40"
+                    disabled={nextStart === null}
+                    onClick={() => {
+                      if (nextStart !== null) player.seek(nextStart);
+                    }}
+                    aria-label="Next chapter"
+                  >
+                    <SkipForward className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+              <ol className="mt-2 max-h-64 overflow-y-auto">
+                {state.chapters.map((chapter, index) => (
+                  <li key={`${index}-${chapter.start_ms}`}>
+                    <button
+                      type="button"
+                      aria-current={index === current ? "true" : undefined}
+                      className={`flex w-full items-baseline gap-3 rounded-md px-1 py-1.5 text-left hover:bg-ink/5 ${
+                        index === current ? "bg-ink/5 font-semibold" : ""
+                      }`}
+                      style={{ paddingLeft: `${0.25 + Math.min(chapter.depth, 7) * 1}rem` }}
+                      onClick={() => player.seek(chapter.start_ms)}
+                    >
+                      <span className="sr-only">Go to</span>
+                      <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                        {chapter.title}
+                      </span>
+                      <span className="shrink-0 text-xs tabular-nums text-ink/70">
+                        {formatClock(chapter.start_ms)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            </section>
           ) : null}
 
           <section aria-labelledby="bookmarks-heading" className="border-t border-ink/10 pt-4">

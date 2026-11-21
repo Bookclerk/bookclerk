@@ -50063,6 +50063,44 @@
           "part_names"
         ]
       },
+      "ChapterSpan": {
+        "type": "object",
+        "description": "One chapter as a player seeks between them: where it starts and ends\non the edition's timeline ([`ChapterList::spans`]).",
+        "required": [
+          "title",
+          "start_ms",
+          "end_ms",
+          "depth"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Chapter title.",
+            "example": "Chapter 1: The Boy Who Lived"
+          },
+          "start_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Start, in milliseconds from the start of the edition's timeline.",
+            "example": 33000,
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "End, in milliseconds: the next chapter's start, or the end of the\ntimeline for the last chapter; never before `start_ms`.",
+            "example": 1215000,
+            "minimum": 0
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Nesting depth; 0 for a top-level chapter. A chapter at depth n + 1\nis nested under the nearest earlier chapter at depth n.",
+            "example": 0,
+            "minimum": 0
+          }
+        }
+      },
       "ClerkAuthorizeParams": {
         "type": "object",
         "description": "The authorization request a clerk consent is for (the query\n`/oidc/authorize` forwards to the library's `/clerk/approve` page).",
@@ -59454,7 +59492,8 @@
           "title",
           "playable",
           "tracks",
-          "bookmarks"
+          "bookmarks",
+          "chapters"
         ],
         "properties": {
           "edition_id": {
@@ -59560,6 +59599,13 @@
               "$ref": "#/components/schemas/BookmarkJson"
             },
             "description": "The caller's bookmarks, in timeline order."
+          },
+          "chapters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChapterSpan"
+            },
+            "description": "The chapters the edition plays, in pre-order, each ending where the\nnext starts and the last at `duration_ms`; empty when it has none."
           }
         }
       },

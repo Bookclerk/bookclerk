@@ -16,8 +16,8 @@ use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::{
-    facet_key, AcquireStatus, FacetValue, FacetValuesOf, MediaKind, PlayerItem, WorkFacet,
-    WorkFilter, WorkPageQuery, WorkSort,
+    facet_key, AcquireStatus, ChapterSpan, FacetValue, FacetValuesOf, MediaKind, PlayerItem,
+    WorkFacet, WorkFilter, WorkPageQuery, WorkSort,
 };
 use bookclerk_player_api::ids::{facet_id, is_entity_id, parse_facet_id, WHOLE_LIBRARY_ID};
 use bookclerk_player_api::request::{
@@ -27,10 +27,10 @@ use bookclerk_player_api::request::{
 use bookclerk_player_api::time::ms_to_secs;
 use bookclerk_player_api::wire::{
     last_first, plain_text, title_ignore_prefix, Author, AuthorSeries, Authors, BookMedia,
-    BookMetadata, EmptyPage, FilterData, ItemPage, Libraries, Library, LibraryItem, LibraryItems,
-    LibrarySettings, LibraryStats, LibraryWithFilterData, MediaProgress, NamedRef, Narrator,
-    Narrators, SearchBook, SearchResults, SearchSeries, Series, SeriesPage, SeriesProgress,
-    SeriesRef, Shelf, ShelfEntities, MEDIA_TYPE_BOOK,
+    BookMetadata, Chapter, EmptyPage, FilterData, ItemPage, Libraries, Library, LibraryItem,
+    LibraryItems, LibrarySettings, LibraryStats, LibraryWithFilterData, MediaProgress, NamedRef,
+    Narrator, Narrators, SearchBook, SearchResults, SearchSeries, Series, SeriesPage,
+    SeriesProgress, SeriesRef, Shelf, ShelfEntities, MEDIA_TYPE_BOOK,
 };
 use serde::Serialize;
 
@@ -239,6 +239,56 @@ pub(crate) fn empty_metadata(edition_id: &str) -> BookMetadata {
         explicit: false,
         abridged: false,
     }
+}
+
+/// The chapters an edition plays, as spans ending where the next starts
+/// and the last at `duration_ms` (or, when that is 0, the end of the
+/// timeline the list was measured on); empty when it has none.
+///
+/// # Errors
+///
+/// A 500 when the library cannot be read.
+pub(crate) async fn chapter_spans(
+    patron: &Patron,
+    edition_id: &str,
+    duration_ms: u64,
+    route: &str,
+) -> PlayerResult<Vec<ChapterSpan>> {
+    let resolved = patron
+        .library
+        .edition_chapters(edition_id)
+        .await
+        .map_err(|err| PlayerError::failed(route, &err))?;
+    Ok(resolved.map_or_else(Vec::new, |resolved| {
+        let end = Some(duration_ms)
+            .filter(|ms| *ms > 0)
+            .or(resolved.runtime_ms);
+        resolved.list.spans(end)
+    }))
+}
+
+/// `spans` as apps read chapters: numbered from 0, in seconds.
+pub(crate) fn chapters_wire(spans: &[ChapterSpan]) -> Vec<Chapter> {
+    spans
+        .iter()
+        .enumerate()
+        .map(|(index, span)| Chapter {
+            id: u64::try_from(index).unwrap_or(u64::MAX),
+            start: ms_to_secs(span.start_ms),
+            end: ms_to_secs(span.end_ms),
+            title: span.title.clone(),
+        })
+        .collect()
+}
+
+/// Puts `spans` on an expanded item: its chapters and their count. An
+/// item that is not expanded keeps no chapter list, as apps expect.
+pub(crate) fn with_chapters(mut item: LibraryItem, spans: &[ChapterSpan]) -> LibraryItem {
+    item.media.num_chapters = u64::try_from(spans.len()).unwrap_or(u64::MAX);
+    if item.media.chapters.is_some() {
+        item.media.chapters = Some(chapters_wire(spans));
+    }
+    item
 }
 
 /// An item as apps read it; with `planned`, expanded with its tracks and
@@ -1308,7 +1358,15 @@ pub(crate) async fn get_item(
     } else {
         None
     };
-    Ok(Json(item_wire(&item, progress, planned.as_ref())))
+    let wire = item_wire(&item, progress, planned.as_ref());
+    match planned {
+        Some(planned) => {
+            let spans =
+                chapter_spans(&patron, &item.edition_id, planned.duration_ms(), ROUTE).await?;
+            Ok(Json(with_chapters(wire, &spans)))
+        }
+        None => Ok(Json(wire)),
+    }
 }
 
 /// Reads several items at once.

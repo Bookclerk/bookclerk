@@ -21,7 +21,7 @@ use bookclerk_library::control_plane::{
     load_or_create_node_identity, plan_playback, user_may, LiveTopic, MemberControl, PlaybackPlan,
 };
 use bookclerk_library::{
-    Bookmark, NewPlaybackSession, PlaybackEvent, PlaybackMs, PlaybackProgress,
+    Bookmark, ChapterSpan, NewPlaybackSession, PlaybackEvent, PlaybackMs, PlaybackProgress,
     PlaybackProgressEdit, PlaybackSession as StoredSession, PlaybackSync, PlayerItem, PlayerKind,
 };
 use bookclerk_player_api::ids::{file_ino, is_entity_id, parse_file_ino, WHOLE_LIBRARY_ID};
@@ -39,7 +39,10 @@ use bookclerk_player_api::wire::{
 };
 use bookclerk_player_api::COMPATIBLE_SERVER_VERSION;
 
-use super::catalog::{item_wire, metadata_wire, visible_item, visible_items};
+use super::catalog::{
+    chapter_spans, chapters_wire, item_wire, metadata_wire, visible_item, visible_items,
+    with_chapters,
+};
 use super::sign_in::read_body;
 use super::{ok, Patron, PlayerError, PlayerResult};
 use crate::api::AppState;
@@ -354,6 +357,7 @@ fn session_wire(
     session: &StoredSession,
     item: Option<&PlayerItem>,
     planned: Option<&Planned>,
+    chapters: &[ChapterSpan],
 ) -> PlaybackSession {
     let metadata = item.map(metadata_wire);
     let duration_ms = planned
@@ -379,7 +383,7 @@ fn session_wire(
             .unwrap_or_default(),
         media_metadata: metadata
             .unwrap_or_else(|| super::catalog::empty_metadata(&session.edition_id)),
-        chapters: Vec::new(),
+        chapters: chapters_wire(chapters),
         cover_path: item.map(|i| format!("/api/items/{}/cover", i.edition_id)),
         duration: ms_to_secs(duration_ms),
         play_method: DIRECT_PLAY,
@@ -400,7 +404,7 @@ fn session_wire(
         audio_tracks: planned
             .map(|p| tracks_wire(&session.edition_id, p, now_ms))
             .unwrap_or_default(),
-        library_item: item.map(|i| item_wire(i, None, planned)),
+        library_item: item.map(|i| with_chapters(item_wire(i, None, planned), chapters)),
     }
 }
 
@@ -479,11 +483,13 @@ pub(crate) async fn post_play(
     }
     crate::live::poke(LiveTopic::Playback);
     tracing::info!(session_id = %session.id, edition_id = %item.edition_id, "a player app opened a play session");
+    let chapters = chapter_spans(&patron, &item.edition_id, planned.duration_ms(), ROUTE).await?;
     Ok(Json(session_wire(
         &patron,
         &session,
         Some(&item),
         Some(&planned),
+        &chapters,
     )))
 }
 
@@ -1169,7 +1175,7 @@ pub(crate) async fn get_listening_sessions(
     // in the count but shows no title.
     let sessions = sessions
         .iter()
-        .map(|session| session_wire(&patron, session, items.get(&session.edition_id), None))
+        .map(|session| session_wire(&patron, session, items.get(&session.edition_id), None, &[]))
         .collect();
     Ok(Json(SessionPage {
         total,
@@ -1240,7 +1246,7 @@ pub(crate) async fn get_listening_stats(
     let recent_sessions = sessions
         .iter()
         .take(RECENT_SESSIONS)
-        .map(|session| session_wire(&patron, session, items.get(&session.edition_id), None))
+        .map(|session| session_wire(&patron, session, items.get(&session.edition_id), None, &[]))
         .collect();
     Ok(Json(ListeningStats {
         total_time: ms_to_secs(total_ms),
