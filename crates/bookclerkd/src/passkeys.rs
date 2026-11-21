@@ -7,7 +7,6 @@ use crate::openapi::{Access, RouteGroup};
 use std::sync::Arc;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
@@ -497,22 +496,6 @@ struct AssertionFinish {
     credential: Box<PublicKeyCredential>,
 }
 
-/// Reads a ceremony's `finish` body, answering `400` for JSON whose shape
-/// is wrong (a malformed credential included), as before the credential was
-/// typed, and the extractor's own status for every other refusal (`415`
-/// without the JSON content type, `400` for bytes that are not JSON).
-///
-/// # Errors
-///
-/// Returns the status the body is refused with.
-fn finish_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, StatusCode> {
-    match body {
-        Ok(Json(body)) => Ok(body),
-        Err(JsonRejection::JsonDataError(_)) => Err(StatusCode::BAD_REQUEST),
-        Err(rejection) => Err(rejection.status()),
-    }
-}
-
 /// Completes registration, stores the passkey, and revokes elevated operator sessions.
 #[utoipa::path(
     post,
@@ -532,9 +515,8 @@ fn finish_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, StatusCode>
 async fn register_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: Result<Json<RegistrationFinish>, JsonRejection>,
+    Json(body): Json<RegistrationFinish>,
 ) -> Result<Json<OkResponse>, CallerRefusal> {
-    let body = finish_body(body)?;
     let user = require_user(&state, &headers).await?;
     let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
@@ -735,7 +717,7 @@ async fn login_begin_inner(
     request_body = AssertionFinish,
     responses(
         (status = 200, description = "Signed in; the response sets the portal session cookie.", body = PortalSessionIssued),
-        (status = 400, description = "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party."),
+        (status = 400, description = "The challenge is unknown or expired, or the daemon's origin is not a valid WebAuthn relying party."),
         (status = 401, description = "The assertion does not verify, or the credential is not one of the challenged user's."),
         (status = 403, description = "The user is disabled."),
         (status = 500, description = "The library could not be read or written."),
@@ -744,9 +726,8 @@ async fn login_begin_inner(
 async fn login_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: Result<Json<AssertionFinish>, JsonRejection>,
+    Json(body): Json<AssertionFinish>,
 ) -> Result<Response, StatusCode> {
-    let body = finish_body(body)?;
     let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let Some((Some(uid), state_json)) = library
@@ -856,7 +837,7 @@ async fn elevate_begin(
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = Elevated),
-        (status = 400, description = "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party."),
+        (status = 400, description = "The challenge is unknown or expired, or the daemon's origin is not a valid WebAuthn relying party."),
         (status = 401, description = "The caller is not signed in, the assertion does not verify or was not user-verified, or the credential is not the caller's."),
         (status = 403, description = "The caller is not an Owner, or the challenge was issued to another user."),
         (status = 500, description = "The library could not be read or written."),
@@ -866,9 +847,8 @@ async fn elevate_begin(
 async fn elevate_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: Result<Json<AssertionFinish>, JsonRejection>,
+    Json(body): Json<AssertionFinish>,
 ) -> Result<Response, CallerRefusal> {
-    let body = finish_body(body)?;
     let user = require_user(&state, &headers).await?;
     if user.role != UserRole::Owner {
         return Err(StatusCode::FORBIDDEN.into());
@@ -1076,7 +1056,8 @@ mod tests {
     /// The three `finish` routes read the browser's credential straight into
     /// WebAuthn's typed structs: a software authenticator registers, signs in
     /// and elevates through the HTTP routes, while a credential of the wrong
-    /// shape is refused `400` and a body without the JSON content type `415`.
+    /// shape is refused `422` and a body without the JSON content type `415`,
+    /// the JSON extractor's documented answers.
     #[tokio::test]
     async fn finish_routes_take_typed_credentials() {
         use crate::auth::tests::{phase2_harness, phase2_owner_password, portal_cookie_for};
@@ -1125,7 +1106,11 @@ mod tests {
             })),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "a malformed attestation");
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a malformed attestation"
+        );
         let (status, _) = post_json(
             &app,
             "/api/auth/passkeys/register/finish",
@@ -1171,7 +1156,11 @@ mod tests {
             })),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "a malformed assertion");
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a malformed assertion"
+        );
         let (status, signed_in) = post_json(
             &app,
             "/api/auth/passkeys/login/finish",

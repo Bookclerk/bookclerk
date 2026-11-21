@@ -33943,7 +33943,7 @@
             }
           },
           "400": {
-            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The challenge is unknown or expired, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -34218,7 +34218,7 @@
             }
           },
           "400": {
-            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The challenge is unknown or expired, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
