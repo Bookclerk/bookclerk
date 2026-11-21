@@ -1813,9 +1813,10 @@ mod tests {
         })
     }
 
-    /// Writes a tiny plugin archive and returns `(path, sha256)`: a zip on
-    /// Windows (the installer reads `windows-*` artifacts as zip), a
-    /// gzipped tar elsewhere, whatever `filename` says.
+    /// Writes a tiny plugin archive and returns `(path, sha256)`. It is a
+    /// zip when `filename` ends in `.zip` or on Windows (the installer reads
+    /// `windows-*` artifacts as zip whatever the name), a gzipped tar
+    /// otherwise.
     fn make_named_archive(dir: &Path, filename: &str, id: &str) -> (PathBuf, String) {
         let archive = under_tmp(dir, filename);
         let toml = format!(
@@ -1828,7 +1829,7 @@ mod tests {
             ("data/packaged.txt", b"packaged", 0o644),
         ];
         let file = fs::File::create(&archive).unwrap();
-        if cfg!(windows) {
+        if cfg!(windows) || filename.ends_with(".zip") {
             let mut zip = zip::ZipWriter::new(file);
             for (name, bytes, mode) in entries {
                 let options = zip::write::SimpleFileOptions::default()
@@ -2509,7 +2510,8 @@ mod tests {
             "echo"
         );
 
-        let (other, other_digest) = make_named_archive(tmp.path(), "other.tar.gz", "other");
+        // A zip, so the zip fixture path runs on every host.
+        let (other, other_digest) = make_named_archive(tmp.path(), "other.zip", "other");
         let other_coord = PackageCoordinate {
             source: RegistrySource::LocalArchive,
             name: other.display().to_string(),
