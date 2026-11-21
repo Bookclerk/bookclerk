@@ -5,6 +5,7 @@ import { Scrubber, SleepSelect, SpeedSelect, TransportButtons } from "@/componen
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { userFacingApiError } from "@/lib/api";
+import type { Player, PlayerState } from "@/lib/player";
 import { formatClock, formatRemaining } from "@/lib/playerTimeline";
 import { usePlayerState, webPlayer } from "@/lib/webPlayer";
 
@@ -21,8 +22,26 @@ const TAB_STOPS =
  * @param props - `onClose` returns to the player bar.
  */
 export function NowPlaying({ onClose }: { onClose: () => void }) {
-  const player = webPlayer();
-  const state = usePlayerState();
+  return <NowPlayingView player={webPlayer()} state={usePlayerState()} onClose={onClose} />;
+}
+
+/**
+ * The now-playing view drawn from `state`. {@link NowPlaying} gives it the
+ * page's player; a story gives it a fixed one.
+ *
+ * @param props - `player` takes the view's commands, `state` is what it
+ *   shows, and `onClose` returns to the player bar.
+ * @returns The view, or nothing with no book loaded.
+ */
+export function NowPlayingView({
+  player,
+  state,
+  onClose,
+}: {
+  player: Player;
+  state: PlayerState;
+  onClose: () => void;
+}) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -98,7 +117,7 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-ink/10 px-4 py-2.5">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">Now playing</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Now playing</p>
           <button
             type="button"
             onClick={onClose}
@@ -121,12 +140,12 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
             >
               {target.title}
             </h2>
-            {target.authors ? <p className="mt-1 text-sm text-ink/65">{target.authors}</p> : null}
+            {target.authors ? <p className="mt-1 text-sm text-ink/70">{target.authors}</p> : null}
           </div>
 
           <div>
             <Scrubber player={player} state={state} />
-            <div className="mt-1 flex justify-between text-xs tabular-nums text-ink/60">
+            <div className="mt-1 flex justify-between text-xs tabular-nums text-ink/70">
               <span>{formatClock(state.positionMs)}</span>
               <span>{left !== null ? `${formatRemaining(left, state.speed)} left` : ""}</span>
               <span>{duration ? formatClock(duration) : "--:--"}</span>
@@ -151,7 +170,7 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
           </div>
 
           {state.finished ? (
-            <p className="text-center text-sm text-teal" role="status">
+            <p className="text-center text-sm font-medium text-ink" role="status">
               You finished this book.
             </p>
           ) : null}
@@ -191,7 +210,7 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
               </Button>
             </form>
             {state.bookmarks.length === 0 ? (
-              <p className="mt-3 text-sm text-ink/55">
+              <p className="mt-3 text-sm text-ink/70">
                 No bookmarks yet. Add one to come back to this place.
               </p>
             ) : (
@@ -202,13 +221,9 @@ export function NowPlaying({ onClose }: { onClose: () => void }) {
                       type="button"
                       className="flex min-w-0 flex-1 items-baseline gap-3 rounded-md px-1 py-1 text-left hover:bg-ink/5"
                       onClick={() => player.seek(bookmark.position_ms)}
-                      aria-label={
-                        bookmark.title
-                          ? `Go to ${formatClock(bookmark.position_ms)}, ${bookmark.title}`
-                          : `Go to ${formatClock(bookmark.position_ms)}`
-                      }
                     >
-                      <span className="shrink-0 text-sm font-semibold tabular-nums text-teal">
+                      <span className="sr-only">Go to</span>
+                      <span className="shrink-0 text-sm font-semibold tabular-nums text-ink-soft">
                         {formatClock(bookmark.position_ms)}
                       </span>
                       <span className="truncate text-sm text-ink/75">{bookmark.title}</span>
