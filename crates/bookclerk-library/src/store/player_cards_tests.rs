@@ -311,3 +311,49 @@ async fn removing_a_password_ends_its_cards_only() {
             .is_none());
     }
 }
+
+#[tokio::test]
+async fn deleting_a_patron_deletes_their_player_rows_only() {
+    use sea_orm::{EntityTrait, PaginatorTrait};
+    for profile in Profile::ALL {
+        let store = memory(profile).await.into_store();
+        let (user, identity) = patron(&store, "Riley").await;
+        let (other, other_identity) = patron(&store, "Sam").await;
+        let password = store
+            .insert_player_password(user, "Phone", &hash_token("pw"))
+            .await
+            .unwrap()
+            .expect("stored");
+        store
+            .insert_player_password(other, "Tablet", &hash_token("pw2"))
+            .await
+            .unwrap()
+            .expect("stored");
+        mint(&store, identity, "a", Some(&password.id))
+            .await
+            .expect("minted");
+        mint(&store, other_identity, "b", None)
+            .await
+            .expect("minted");
+        store.delete_user(user).await.unwrap();
+
+        let name = profile.name();
+        let db = store.connection();
+        let cards = crate::entities::player_cards::Entity::find()
+            .count(db)
+            .await
+            .unwrap();
+        let tokens = crate::entities::player_card_tokens::Entity::find()
+            .count(db)
+            .await
+            .unwrap();
+        assert_eq!((cards, tokens), (1, 2), "{name}");
+        assert!(store.list_player_passwords(user).await.unwrap().is_empty());
+        assert_eq!(store.list_player_passwords(other).await.unwrap().len(), 1);
+        assert!(store
+            .player_card_by_access(&hash_token("b-access"))
+            .await
+            .unwrap()
+            .is_some());
+    }
+}

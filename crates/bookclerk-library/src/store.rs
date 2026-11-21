@@ -1320,6 +1320,11 @@ impl LibraryStore {
         } else {
             crate::db_atomic::delete_user(&self.db, id).await?;
         }
+        // The user's player passwords and cards are swept after the plan,
+        // which stays within the smallest adapter's `maxStatements`.
+        // Until then they cannot sign in: a card is read through its
+        // session row and a password through its user, both deleted.
+        self.sweep_ended_player_rows().await?;
         for wish in wishes {
             self.publish_wishlist_changed(&wish.uuid, wish.identity_id, "deleted")
                 .await;

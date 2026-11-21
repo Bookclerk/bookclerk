@@ -148,6 +148,42 @@ fn end_cards(cards: &str, binds: &[bookclerk_plugin_abi::DbValue]) -> [TypedDbSt
 }
 
 impl LibraryStore {
+    /// Deletes the player rows whose owner is gone: tokens and cards
+    /// whose session row was deleted, and passwords whose user was.
+    ///
+    /// Deleting a user removes its session rows and user row in one plan;
+    /// this sweep follows it so that plan stays within the smallest
+    /// adapter's `maxStatements`. A row left by an interrupted sweep
+    /// cannot sign in and is removed by the next one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub(crate) async fn sweep_ended_player_rows(&self) -> Result<()> {
+        let statements = vec![
+            batch::exec(
+                "DELETE FROM player_card_tokens WHERE session_id NOT IN \
+                 (SELECT id FROM portal_sessions)",
+                vec![],
+            ),
+            batch::exec(
+                "DELETE FROM player_cards WHERE session_id NOT IN \
+                 (SELECT id FROM portal_sessions)",
+                vec![],
+            ),
+            batch::exec(
+                "DELETE FROM player_passwords WHERE user_id NOT IN (SELECT id FROM users)",
+                vec![],
+            ),
+        ];
+        self.execute_host_batch(batch::request(
+            &format!("player-rows-sweep-{}", uuid::Uuid::new_v4()),
+            statements,
+        ))
+        .await?;
+        Ok(())
+    }
+
     /// Stores a new player password for `user_id`.
     ///
     /// # Arguments
