@@ -1942,3 +1942,92 @@ async fn the_window_keeps_a_book_only_a_branch_holds_with_its_work() {
     assert_eq!(kept.edition.formats, vec![LookupFormat::Audio]);
     assert!(kept.yours);
 }
+
+/// A branch listing wider than the plugin's `maxCellBytes` (stored before
+/// a smaller cap) leaves only that edition out of a clerk's branch pages:
+/// the listing ids are read without their metadata, the rows in chunks,
+/// and paging moves past the edition whose row could not be read.
+#[tokio::test]
+async fn a_branch_listing_wider_than_the_cell_cap_leaves_only_its_edition_out() {
+    use crate::control_plane::{ask_branches, pending_questions, record_answers, AnswersRecorded};
+    use bookclerk_node_proto::LookupAnswer;
+
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, caps) = capped_store(dir.path()).await;
+    let riley = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap()
+        .id;
+    let branch = "branch-b";
+    add_branch(&store, branch, riley).await;
+    let works = hold(
+        &store,
+        riley,
+        "riley-acct",
+        &["B0NARROW01".into(), "B0WIDE0001".into()],
+    )
+    .await;
+    drop_holdings_of(&store, "B0NARROW01").await;
+    drop_holdings_of(&store, "B0WIDE0001").await;
+    ask_branches(&store, &works).await.unwrap();
+    pending_questions(&store, branch).await.unwrap().unwrap();
+    let answers: Vec<LookupAnswer> = works
+        .iter()
+        .zip(["B0NARROW01", "B0WIDE0001"])
+        .map(|(work, asin)| LookupAnswer {
+            work: work.clone(),
+            editions: vec![LookupEdition {
+                store: "audible".into(),
+                marketplace: "us".into(),
+                product_id: asin.into(),
+                availability: Availability::Owned,
+                formats: vec![LookupFormat::Audio],
+                metadata: CatalogMetadata {
+                    title: format!("Branch {asin}"),
+                    asin: Some(asin.into()),
+                    ..CatalogMetadata::default()
+                },
+            }],
+        })
+        .collect();
+    match record_answers(&store, branch, &answers, &[]).await.unwrap() {
+        AnswersRecorded::Recorded(report) => assert_eq!(report.listings, 2),
+        other => panic!("expected the answers recorded: {other:?}"),
+    }
+    let wide = "l".repeat(2000);
+    raw(
+        &store,
+        &format!(
+            "UPDATE store_listings SET language = '{wide}' \
+             WHERE plugin_key LIKE 'branch:%' AND product_id LIKE '%B0WIDE0001'"
+        ),
+    )
+    .await;
+    caps.cell.store(1024, std::sync::atomic::Ordering::SeqCst);
+
+    let listed: Vec<String> = read_person(&store, riley)
+        .await
+        .into_iter()
+        .flat_map(|work| work.editions)
+        .map(|edition| edition.edition.product_id)
+        .collect();
+    assert_eq!(listed, vec!["B0NARROW01"]);
+
+    // One edition per read: the page that only skips the wide listing
+    // still moves the cursor past it.
+    let mut after = WindowCursor::start();
+    let mut pages = 0;
+    loop {
+        let (_, next) = person_books_page_by(&store, riley, &after, 1, BranchBooks::Include)
+            .await
+            .unwrap();
+        pages += 1;
+        assert!(pages < 10, "paging never ended");
+        match next {
+            Some(next) => after = next,
+            None => break,
+        }
+    }
+}

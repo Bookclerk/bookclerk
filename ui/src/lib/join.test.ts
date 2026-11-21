@@ -481,16 +481,30 @@ describe("window view helpers", () => {
     expect(windowEntryFormats(entry)).toEqual(["audio", "pdf"]);
   });
 
-  it("offers a request only for a book no library holds", () => {
+  it("offers a request only for a book no library holds a copy of", () => {
     const listed = {
       ...edition("https://books.example.com", "audible", []),
       library_id: "lib-1",
-      requestable_work: "work-7",
+      request: { work_id: "work-7", from: "branch" as const },
     };
     expect(windowEntryRequest({ key: "work:7", editions: [listed] })).toEqual({
       libraryId: "lib-1",
       workId: "work-7",
+      from: "branch",
       host: "books.example.com",
+    });
+    // A library's own account holds it: the library downloads it, before
+    // a branch is asked.
+    const onAccount = {
+      ...edition("https://other.example", "libro", []),
+      library_id: "lib-2",
+      request: { work_id: "work-9", from: "library" as const },
+    };
+    expect(windowEntryRequest({ key: "work:7", editions: [listed, onAccount] })).toEqual({
+      libraryId: "lib-2",
+      workId: "work-9",
+      from: "library",
+      host: "other.example",
     });
     // Another library holds a copy: nothing to request.
     const held = edition("https://other.example", "audible", ["audio"]);

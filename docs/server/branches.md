@@ -1239,6 +1239,28 @@ are answered "not listed".
 > members' books**, or the member opting out, stops it at the next sync
 > pass. Files A already received stay there.
 
+### Asking the library to download a book
+
+A clerk lists every book on A's store accounts, including ones A hasn't
+downloaded yet. For those, a patron can ask A to download the book so the
+clerk can then take A's copy. The API is `POST /api/download-requests`
+`{"work_id": "..."}`, where `work_id` is A's work id. A signed-in patron
+of A may call it, and so may a clerk with a library card for A (see
+[Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).
+The patron's member controls must allow **Request books** (403 otherwise).
+
+1. **A picks the edition.** A reads the work's editions in edition id
+   order and takes the first one a store account of A holds. A work A
+   already has a copy of is refused (409); one no account of A holds is
+   not found (404).
+2. **A queues the download.** It is an ordinary `acquire` job for that
+   edition, on the account that holds it, whoever's account that is. Like
+   other downloads A starts on someone's behalf, it waits for the
+   account's pace. Asking again while that download waits or runs returns
+   it (`already_queued`).
+3. **The clerk takes the copy.** Once A has the copy, the next read of
+   A's books states it, and the clerk uses it like any copy A holds.
+
 ### Acquiring all of a branch's members' books
 
 By default A receives B's owner's books, plus the books A requests. To

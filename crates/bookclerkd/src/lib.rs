@@ -33,6 +33,7 @@ mod destination_sync;
 mod diagnostics_lookup;
 mod discover_events;
 mod discover_jobs;
+mod download_requests;
 mod event_worker;
 mod heartbeat;
 mod http_error;

@@ -344,29 +344,41 @@ Then the daemon keeps the library's clerk socket open with the card:
   (`GET /api/config/join/window`, which lists the libraries in `cards`),
   merged with the books of any library this install is a branch of. Each
   edition there carries `yours`, and the person's own are marked **Yours**.
-  An edition only the library's branches hold also carries
-  `requestable_work`, the library's own work id.
+  An edition the library has no copy of also carries `request`: the
+  library's own work id (`work_id`) and where a copy would come from
+  (`from`): `library` when one of the library's own store accounts holds
+  it, `branch` when only one of its branches lists it.
 - A lost connection is dialed again after 5 seconds, doubling up to 5
   minutes.
 - When the library ends the card (close 4401, or 401 on connecting), the
   card and its books are dropped here, and the library stays listed as
   `signed_out` so the person can sign in again.
 
-`POST /api/config/clerk/request` `{ library_id, work_id, node_id? }`
-asks the library for a book only its branches hold, with `work_id` taken
-from `requestable_work`. The daemon sends the library's own member route,
-`POST /api/branch-requests`, with the card, as the person's browser
-session there would, so the library decides: the person's member controls
-there, whether a branch it trusts lists the work, and which branch it
-asks. The daemon reads only the status of the library's answer:
+`POST /api/config/clerk/request` `{ library_id, work_id, from, node_id? }`
+asks the library for a copy of a book it has none of, with `work_id` and
+`from` taken from the edition's `request`. The daemon sends one of the
+library's own member routes with the card, as the person's browser
+session there would:
+
+- `from` `branch`: `POST /api/branch-requests`. The library decides
+  whether a branch it trusts lists the work and which branch it asks.
+- `from` `library`: `POST /api/download-requests`. The library downloads
+  the book on the store account that holds it (see
+  [Asking the library to download a book](branches.md#asking-the-library-to-download-a-book)).
+  `node_id` is refused here.
+
+Either way the person's member controls there decide whether they may ask
+(**Request books**). The daemon reads only the status of the library's
+answer:
 
 | Answer | Means |
 | --- | --- |
-| 200 `{ library_id }` | The library took the request. It shows there with the person's other requests. |
-| 400 `invalid_request` | The work or node id is malformed. |
+| 200 `{ library_id }` | The library took the request. A branch request shows there with the person's other requests; a download shows in its jobs. |
+| 400 `invalid_request` | The work or node id is malformed, or a node id came with `from` `library`. |
 | 403 `not_allowed` | The library's member controls turn requesting books off for the person. |
 | 404 `not_found` | This install holds no active card for that library. |
-| 404 `not_listed` | No branch of the library lists the work now. |
+| 404 `not_listed` | No branch of the library lists the work now (`branch`), or none of its store accounts holds it (`library`). |
+| 409 `already_there` | The library already has a copy (`library`); it shows after the next read of its books. |
 | 502 `card_refused` | The library no longer accepts the card; sign in again. |
 | 502 `unreachable` or `library_error` | The library couldn't be reached in 15 seconds, or answered with another error. |
 | 503 `library_busy` | The library's job queue is full. |
@@ -408,9 +420,9 @@ name, and sends the browser to the library's sign-in page. The library
 sends it back to `/clerk/callback`, which posts the `code` and `state` to
 `POST /api/config/clerk/callback` and removes them from the address bar.
 Only a request that got no answer offers **Try again**; any answer ends
-the pending sign-in. In **Books in other libraries**, a book only a
-library's branches hold says "On a branch of" that library and has a
-**Request** button. Each card in the list has **Sign out** (**Remove** once
+the pending sign-in. In **Books in other libraries**, a book a library
+has no copy of has a **Request** button; one only the library's branches
+hold also says "On a branch of" that library. Each card in the list has **Sign out** (**Remove** once
 the library ended it), and for the operator **Make this server a branch**.
 A branch in Settings → Library has **Use a library card instead**. See
 [Sign in with a library card](../guide/branches.md#sign-in-with-a-library-card).

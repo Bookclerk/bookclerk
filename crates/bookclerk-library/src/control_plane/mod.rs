@@ -19,6 +19,7 @@ mod carried_accounts;
 mod catalog_lookup;
 mod clerk_links;
 mod collections;
+mod download_requests;
 mod library_links;
 pub(crate) use catalog_lookup::read_paged;
 pub(crate) use library_links::from_object;
@@ -164,6 +165,10 @@ pub use documents::{
     VerifiedLibraryOwner, VerifiedNodeOwner, VerifiedPatronAdministrator, LIBRARY_SCOPE_ID,
     LIBRARY_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES, NODE_SCOPE_TYPE,
     PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
+};
+pub use download_requests::{
+    parse_download_request, plan_download_request, DownloadRequestAsk, DownloadRequestBody,
+    DownloadRequestPlan,
 };
 pub use enrollment::{
     authorized_enrollment_link, check_redeem_request, enrollment_link_brings_accounts,
