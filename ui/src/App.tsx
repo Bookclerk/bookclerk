@@ -64,6 +64,9 @@ const WishlistPage = lazy(() =>
 const JoinApprovePage = lazy(() =>
   import("@/components/JoinApprovePage").then((m) => ({ default: m.JoinApprovePage })),
 );
+const PlayerApprovePage = lazy(() =>
+  import("@/components/PlayerApprovePage").then((m) => ({ default: m.PlayerApprovePage })),
+);
 const ClerkApprovePage = lazy(() =>
   import("@/components/ClerkApprovePage").then((m) => ({ default: m.ClerkApprovePage })),
 );
@@ -356,6 +359,20 @@ export default function App() {
     return (
       <PageSuspense>
         <ClerkApprovePage
+          onSignOut={async () => {
+            // A failure reaches the page, which says so and stays signed in.
+            await logout();
+            onLogout();
+          }}
+        />
+      </PageSuspense>
+    );
+  }
+
+  if (join === "player-approve") {
+    return (
+      <PageSuspense>
+        <PlayerApprovePage
           onSignOut={async () => {
             // A failure reaches the page, which says so and stays signed in.
             await logout();

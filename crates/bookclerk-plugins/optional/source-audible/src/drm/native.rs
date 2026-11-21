@@ -194,17 +194,44 @@ mod tests {
 
     use super::*;
 
-    const KEY: [u8; 16] = [0x3cu8; 16];
-    const IV: [u8; 16] = [0x9au8; 16];
+    /// A per-test AES-128 key and IV, drawn at random so no test carries a
+    /// fixed key: the decrypt round trip must hold for any key.
+    #[derive(Clone, Copy)]
+    struct TestKey {
+        /// The 16-byte AES key.
+        key: [u8; 16],
+        /// The 16-byte CBC initialization vector.
+        iv: [u8; 16],
+    }
+
+    impl TestKey {
+        /// Draws a fresh key and IV from the thread's random generator.
+        fn random() -> Self {
+            Self {
+                key: rand::random(),
+                iv: rand::random(),
+            }
+        }
+
+        /// The key as the hex string `decrypt_adrm_native` takes.
+        fn key_hex(self) -> String {
+            hex::encode(self.key)
+        }
+
+        /// The IV as the hex string `decrypt_adrm_native` takes.
+        fn iv_hex(self) -> String {
+            hex::encode(self.iv)
+        }
+    }
 
     /// Encrypt like an aaxc: AES-128-CBC over whole blocks, tail left clear.
-    fn encrypt_adrm(plain: &[u8]) -> Vec<u8> {
+    fn encrypt_adrm(secret: TestKey, plain: &[u8]) -> Vec<u8> {
         use cbc::cipher::{block_padding::NoPadding, BlockModeEncrypt, KeyIvInit};
         type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 
         let mut out = plain.to_vec();
         let whole = out.len() & !0x0f;
-        Aes128CbcEnc::new(&KEY.into(), &IV.into())
+        Aes128CbcEnc::new(&secret.key.into(), &secret.iv.into())
             .encrypt_padded::<NoPadding>(&mut out[..whole], whole)
             .expect("whole blocks");
         out
@@ -226,14 +253,14 @@ mod tests {
     }
 
     /// An `aavd` file whose payloads are the encrypted form of `plain`.
-    fn encrypted_fixture(plain: &[Vec<u8>]) -> ProgressiveFixture {
+    fn encrypted_fixture(secret: TestKey, plain: &[Vec<u8>]) -> ProgressiveFixture {
         ProgressiveFixture {
             timescale: 1000,
             sample_duration: 100,
             ..ProgressiveFixture::default()
         }
         .with_sample_entry(b"aavd")
-        .with_samples(plain.iter().map(|s| encrypt_adrm(s)).collect())
+        .with_samples(plain.iter().map(|s| encrypt_adrm(secret, s)).collect())
     }
 
     fn plain_samples(count: usize) -> Vec<Vec<u8>> {
@@ -246,8 +273,9 @@ mod tests {
         let input = dir.path().join("book.aaxc");
         let output = dir.path().join("book.m4b");
 
+        let secret = TestKey::random();
         let plain = plain_samples(12);
-        encrypted_fixture(&plain).write(&input).unwrap();
+        encrypted_fixture(secret, &plain).write(&input).unwrap();
         assert_ne!(
             payloads(&input),
             plain,
@@ -255,7 +283,7 @@ mod tests {
         );
 
         let outcome =
-            decrypt_adrm_native(&input, &output, &hex::encode(KEY), &hex::encode(IV), None)
+            decrypt_adrm_native(&input, &output, &secret.key_hex(), &secret.iv_hex(), None)
                 .expect("decrypt");
         assert_eq!(outcome.output, output);
 
@@ -274,14 +302,15 @@ mod tests {
         let output = dir.path().join("book.m4b");
 
         // 100 ms per sample: drop the first 300 ms and everything past 900 ms.
+        let secret = TestKey::random();
         let plain = plain_samples(12);
-        encrypted_fixture(&plain).write(&input).unwrap();
+        encrypted_fixture(secret, &plain).write(&input).unwrap();
 
         decrypt_adrm_native(
             &input,
             &output,
-            &hex::encode(KEY),
-            &hex::encode(IV),
+            &secret.key_hex(),
+            &secret.iv_hex(),
             Some(TrimRange {
                 start_ms: 300,
                 end_ms: Some(900),
@@ -301,11 +330,12 @@ mod tests {
             .write(&input)
             .unwrap();
 
+        let secret = TestKey::random();
         let err = decrypt_adrm_native(
             &input,
             &dir.path().join("out.m4b"),
-            &hex::encode(KEY),
-            &hex::encode(IV),
+            &secret.key_hex(),
+            &secret.iv_hex(),
             None,
         )
         .expect_err("enca must be refused");

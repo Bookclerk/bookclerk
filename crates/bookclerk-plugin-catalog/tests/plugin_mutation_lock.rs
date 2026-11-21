@@ -16,9 +16,6 @@ use bookclerk_plugin_catalog::{
     host_bookclerk_target, ArtifactTarget, BookclerkPackageManifest, InstallLedger, InstallOptions,
     Installer, PackageCoordinate, PluginKind, PluginMutationLock, RegistrySource, TrustPolicy,
 };
-use flate2::write::GzEncoder;
-use flate2::Compression;
-use tar::Builder;
 
 /// Env var selecting child process mode (`install`, `remove`, `hold`).
 const CHILD_ENV: &str = "BOOKCLERK_PLUGIN_MUTATION_CHILD";
@@ -150,8 +147,8 @@ fn env_path(name: &str) -> Result<PathBuf, String> {
 fn same_alias_one_winner() -> Result<(), String> {
     let tmp = tempfile::tempdir().map_err(|err| err.to_string())?;
     let files = tmp.path();
-    let (archive_a, _) = make_named_archive(files, "a.tar.gz", "foo");
-    let (archive_b, _) = make_named_archive(files, "b.tar.gz", "foo");
+    let (archive_a, _) = make_named_archive(files, "a.zip", "foo");
+    let (archive_b, _) = make_named_archive(files, "b.zip", "foo");
     let child_a = spawn_install(files, &archive_a, "foo", false)?;
     let child_b = spawn_install(files, &archive_b, "foo", false)?;
     let status_a = wait_child(child_a, "same-alias-a")?;
@@ -188,8 +185,8 @@ fn same_alias_one_winner() -> Result<(), String> {
 fn distinct_aliases_keep_both_ledger_rows() -> Result<(), String> {
     let tmp = tempfile::tempdir().map_err(|err| err.to_string())?;
     let files = tmp.path();
-    let (archive_a, _) = make_named_archive(files, "a.tar.gz", "foo");
-    let (archive_b, _) = make_named_archive(files, "b.tar.gz", "bar");
+    let (archive_a, _) = make_named_archive(files, "a.zip", "foo");
+    let (archive_b, _) = make_named_archive(files, "b.zip", "bar");
     let child_a = spawn_install(files, &archive_a, "foo", false)?;
     let child_b = spawn_install(files, &archive_b, "bar", false)?;
     let status_a = wait_child(child_a, "distinct-a")?;
@@ -223,7 +220,7 @@ fn distinct_aliases_keep_both_ledger_rows() -> Result<(), String> {
 fn update_and_remove_serialize() -> Result<(), String> {
     let tmp = tempfile::tempdir().map_err(|err| err.to_string())?;
     let files = tmp.path();
-    let (archive, digest) = make_named_archive(files, "foo.tar.gz", "foo");
+    let (archive, digest) = make_named_archive(files, "foo.zip", "foo");
     let plugins = files.join("plugins");
     let opts = InstallOptions {
         plugins_root: plugins,
@@ -272,7 +269,7 @@ fn update_and_remove_serialize() -> Result<(), String> {
 fn distinct_files_dirs_do_not_block() -> Result<(), String> {
     let node_a = tempfile::tempdir().map_err(|err| err.to_string())?;
     let node_b = tempfile::tempdir().map_err(|err| err.to_string())?;
-    let (archive, _) = make_named_archive(node_b.path(), "foo.tar.gz", "foo");
+    let (archive, _) = make_named_archive(node_b.path(), "foo.zip", "foo");
     let hold = spawn_hold(node_a.path(), 2500)?;
     std::thread::sleep(Duration::from_millis(150));
     let start = Instant::now();
@@ -294,7 +291,7 @@ fn distinct_files_dirs_do_not_block() -> Result<(), String> {
 /// An install under the same files dir waits for a held mutation lock.
 fn same_files_dir_blocks_while_held() -> Result<(), String> {
     let tmp = tempfile::tempdir().map_err(|err| err.to_string())?;
-    let (archive, _) = make_named_archive(tmp.path(), "foo.tar.gz", "foo");
+    let (archive, _) = make_named_archive(tmp.path(), "foo.zip", "foo");
     let hold = spawn_hold(tmp.path(), 1500)?;
     std::thread::sleep(Duration::from_millis(150));
     let start = Instant::now();
@@ -434,33 +431,34 @@ fn test_manifest(id: &str, digest: String, url: String, target: &str) -> Bookcle
     }
 }
 
-/// Writes a tiny gzipped plugin archive and returns `(path, sha256)`.
+/// Writes a tiny plugin zip and returns `(path, sha256)`. A zip installs on
+/// every host (the installer reads a `.zip` URL, and every `windows-*`
+/// artifact, as zip), so one fixture format serves them all.
 fn make_named_archive(dir: &Path, filename: &str, id: &str) -> (PathBuf, String) {
     let archive = dir.join(filename);
-    {
-        let file = fs::File::create(&archive).unwrap();
-        let enc = GzEncoder::new(file, Compression::default());
-        let mut tar = Builder::new(enc);
-        let toml = format!(
-            "api_version = 3\nid = \"{id}\"\ncommand = \"./echo\"\nentrypoints = [\"cli\"]\n\
-             [capabilities.network]\nmode = \"outbound\"\n"
-        );
-        let toml = toml.into_bytes();
-        let mut h = tar::Header::new_gnu();
-        h.set_size(toml.len() as u64);
-        h.set_mode(0o644);
-        h.set_cksum();
-        tar.append_data(&mut h, "plugin.toml", toml.as_slice())
-            .unwrap();
-        let bin = b"#!/bin/sh\necho ok\n";
-        let mut h2 = tar::Header::new_gnu();
-        h2.set_size(bin.len() as u64);
-        h2.set_mode(0o755);
-        h2.set_cksum();
-        tar.append_data(&mut h2, "echo", &bin[..]).unwrap();
-        let enc = tar.into_inner().unwrap();
-        enc.finish().unwrap();
-    }
+    let toml = format!(
+        "api_version = 3\nid = \"{id}\"\ncommand = \"./echo\"\nentrypoints = [\"cli\"]\n\
+         [capabilities.network]\nmode = \"outbound\"\n"
+    );
+    let entries: [(&str, &[u8], u32); 2] = [
+        ("plugin.toml", toml.as_bytes(), 0o644),
+        ("echo", b"#!/bin/sh\necho ok\n", 0o755),
+    ];
+    write_archive(&archive, &entries);
     let digest = bookclerk_plugin_catalog::sha256_file(&archive).unwrap();
     (archive, digest)
+}
+
+/// Writes `entries` (name, bytes, Unix mode) to `path` as a zip.
+fn write_archive(path: &Path, entries: &[(&str, &[u8], u32)]) {
+    use std::io::Write as _;
+    let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+    for (name, bytes, mode) in entries {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(*mode);
+        zip.start_file(*name, options).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
 }

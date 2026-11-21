@@ -71,6 +71,9 @@ a later change supersedes one, its **Status** says so.
 - [Drop folders](drop-folders.md): a storage instance can be a watched
   drop folder instead of a destination, settled by the host and added by
   the ingest job.
+- [Player API](player-api.md): the host serves apps made for
+  Audiobookshelf servers at `/player`, with player cards and no account
+  password.
 
 ## Adding a record
 

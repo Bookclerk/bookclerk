@@ -30,6 +30,11 @@ ReadWritePaths=/var/lib/bookclerk
 # Decrypt/encode/fixup/split are native Rust — no ffmpeg binary required.
 # Widevine L3 CDMs auto-provision (Android auth); optional BYO .wvd under Accounts/.
 # Prefer: BOOKCLERK_AUTH_PASSWORD (env-only).
+# systemd 256+: set [auth].key_store = "systemd-creds" in config.toml to seal
+# the library key to this machine (TPM2 when present). Sealing it yourself
+# instead (older systemd): pipe `bookclerk config master-key credential` into
+# `systemd-creds encrypt --name=bookclerk-master-key - <file>` and add:
+#LoadCredentialEncrypted=bookclerk-master-key
 # auth.allow_plaintext=true for unprotected tokens.
 
 [Install]

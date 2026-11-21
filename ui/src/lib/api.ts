@@ -1471,7 +1471,15 @@ export interface ScopeRule {
 export interface PatronScope {
   /** Visibility rules; empty means every book is visible. */
   rules: ScopeRule[];
+  /**
+   * Whether books a store or metadata file marks explicit are visible;
+   * left out means `allow`.
+   */
+  explicit?: ExplicitContent;
 }
+
+/** Whether a patron sees books marked as explicit content. */
+export type ExplicitContent = "allow" | "hide";
 
 /** A patron's scope as `GET`/`PUT /api/users/{id}/scope` report it. */
 export interface UserScope {
@@ -1523,8 +1531,11 @@ export interface ListedSession {
   client_label?: string | null;
   device_type?: string | null;
   user_agent?: string | null;
-  /** For a portal session: `browser`, or `clerk` for a clerk's library card. */
-  channel?: "browser" | "clerk" | null;
+  /**
+   * For a portal session: `browser`, `clerk` for a clerk's library card, or
+   * `player` for a player app's card.
+   */
+  channel?: "browser" | "clerk" | "player" | null;
 }
 
 /**

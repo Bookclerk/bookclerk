@@ -780,6 +780,7 @@ async fn the_routes_refuse_what_the_caller_may_not_play() {
             value: "Ben Writer".into(),
             effect: RuleEffect::Include,
         }],
+        ..Default::default()
     }))
     .await
     .unwrap();

@@ -76,6 +76,9 @@ pub use backup::{
     BACKUP_FORMAT_VERSION, BACKUP_RETENTION, LIBRARY_SKIP_TABLES,
 };
 pub use binding_schema::{apply_binding_bootstrap, binding_bootstrap_plan};
+/// The unit credential name an administrator seals the key under
+/// (`LoadCredentialEncrypted=bookclerk-master-key`).
+pub use bookclerk_keystore::CREDENTIAL_NAME as SYSTEMD_CREDENTIAL_NAME;
 pub use bookclerk_plugin_abi::{AdapterBackupOps, GuestSqlPolicy, SharedAdapterBackupOps};
 /// The data model's closed vocabularies, as the library's read types carry them.
 pub use bookclerk_resolve::{Abridgement, Entitlement, ExpressionKind, MediaKind, WorkKind};
@@ -99,12 +102,12 @@ pub use in_process_atomic::{InProcessSqlite, InProcessSqliteAtomic};
 pub use master_key::{
     configure_master_key, configure_master_key_with, discard_minted_master_key,
     encode_master_key_file, export_master_key, import_master_key, inspect_master_key,
-    install_master_key, key_store_preference, master_key_fingerprint, master_key_is_wrapped,
-    master_key_path, move_master_key, prepare_master_key_dir, require_master_key,
-    resolve_master_key_detailed, set_key_store_preference, set_keychain_vault, store_master_key,
-    uncache_master_key, warn_unwrapped_master_key, wrap_master_key, KeyStorePreference, MasterKey,
-    MasterKeyFormat, MasterKeyResolution, StoredMasterKey,
-    AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
+    install_master_key, key_store_preference, master_key_envelope, master_key_fingerprint,
+    master_key_is_wrapped, master_key_path, move_master_key, prepare_master_key_dir,
+    require_master_key, resolve_master_key_detailed, set_key_store_preference, set_keychain_vault,
+    set_systemd_creds_vault, store_master_key, uncache_master_key, warn_unwrapped_master_key,
+    wrap_master_key, KeyStorePreference, MasterKey, MasterKeyFormat, MasterKeyResolution,
+    StoredMasterKey, SystemdCredsFactory, AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
 };
 pub use master_key_recovery::{
     record_recovery_copy, recovery_copy_state, recovery_record_path, RecoveryCopyChoice,
@@ -219,6 +222,12 @@ pub use store::{
         MAX_PLAYBACK_BODY_BYTES, MAX_PLAYBACK_SYNC_BYTES, MAX_PLAYBACK_TRACKS,
         MAX_PROGRESS_CURSOR_BYTES,
     },
+    player_cards::{
+        NewPlayerCard, PlayerCard, PlayerCardTokens, PlayerPassword, MAX_PLAYER_PASSWORDS,
+        MAX_PLAYER_PASSWORD_LABEL_BYTES, PLAYER_ACCESS_TTL_SECS, PLAYER_REFRESH_GRACE_SECS,
+        PLAYER_REFRESH_TTL_DAYS,
+    },
+    player_catalog::{PlayerFacet, PlayerItem},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source,

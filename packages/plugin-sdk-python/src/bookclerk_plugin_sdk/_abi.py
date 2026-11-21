@@ -147,6 +147,22 @@ MAX_SOCKET_URL_BYTES: int = 2048
 MAX_SOCKET_HEADERS: int = 16
 """Most request headers, and separately subprotocols, on one `Sockets.connect`."""
 
+MAX_ORIGIN_HEADERS: int = 128
+"""Most header fields on one `Origin.fetch` request, and separately on its
+response.
+"""
+
+MAX_ORIGIN_HEADER_BYTES: int = 65536
+"""Largest total UTF-8 bytes of header names and values on one `Origin.fetch`
+request, and separately on its response.
+"""
+
+MAX_ORIGIN_TARGET_BYTES: int = 8192
+"""Longest `OriginRequest.target` (path and query), in bytes."""
+
+MAX_INGRESS_ORIGIN_BYTES: int = 253
+"""Longest `IngressStarted.origin`, in bytes."""
+
 MAX_KV_METADATA_BYTES: int = 1024
 """Largest `KvNamespace` metadata JSON text in bytes."""
 
@@ -221,7 +237,7 @@ code.
 Wire strings of ``PluginErrorCode`` in ordinal order (snake_case ``Text`` codes).
 """
 
-ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier")
+ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress")
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
 the default entrypoint (`event`, `job`) are declared separately.
@@ -318,7 +334,14 @@ ABRIDGEMENTS: tuple[str, ...] = ("unknown", "unabridged", "abridged")
 Ordinal-ordered ``Abridgement`` wire names (index = Cap'n Proto ordinal).
 """
 
-METADATA_FIELDS: tuple[str, ...] = ("title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration")
+EXPLICITNESSS: tuple[str, ...] = ("unknown", "clean", "explicit")
+"""Whether an edition is marked as explicit (adult) content. A patron scope
+can hide explicit editions; `unknown` and `clean` editions stay visible.
+
+Ordinal-ordered ``Explicitness`` wire names (index = Cap'n Proto ordinal).
+"""
+
+METADATA_FIELDS: tuple[str, ...] = ("title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration", "explicitness")
 """A field of a `MetadataFileRecord`. Dialects declare in the manifest which
 fields their format carries; a parsed record lists the ones its file
 states, and a render request lists the ones to write.
@@ -430,6 +453,10 @@ __all__ = [
     "MAX_SOCKET_AUTO_RESPONSE_BYTES",
     "MAX_SOCKET_URL_BYTES",
     "MAX_SOCKET_HEADERS",
+    "MAX_ORIGIN_HEADERS",
+    "MAX_ORIGIN_HEADER_BYTES",
+    "MAX_ORIGIN_TARGET_BYTES",
+    "MAX_INGRESS_ORIGIN_BYTES",
     "MAX_KV_METADATA_BYTES",
     "MAX_NETWORK_GRANT_ENTRIES",
     "MAX_PLUGIN_MIGRATION_OPS",
@@ -463,6 +490,7 @@ __all__ = [
     "CATALOG_FIELDS",
     "PRICE_LOOKUPS",
     "ABRIDGEMENTS",
+    "EXPLICITNESSS",
     "METADATA_FIELDS",
     "NOTIFICATION_SEVERITYS",
     "NOTIFICATION_AUDIENCES",

@@ -42,6 +42,7 @@ bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
 bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/optional/source-graphicaudio" }
 # plan_authz drives the scan and acquire planners over an in-memory library.
 bookclerk-library = { path = "../crates/bookclerk-library" }
+bookclerk-player-api = { path = "../crates/bookclerk-player-api" }
 bookclerk-plugin-database-sqlite = { path = "../crates/bookclerk-plugins/platform/database-sqlite", features = ["host-helpers"] }
 bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
 # s3_event and r2_event read bucket notification messages and queue
@@ -63,7 +64,7 @@ sea-orm = { version = "2.0.0", default-features = false }
 # Runtime for mux_peer: the mux is driven through tokio reader and writer tasks.
 tokio = { version = "1", features = ["rt", "time", "io-util"] }
 # Oracle for guest_sql_authz: SQLite's own authorizer callback (`hooks`).
-rusqlite = { version = "0.39", features = ["bundled", "hooks"] }
+rusqlite = { version = "0.41", features = ["bundled", "hooks"] }
 
 [workspace]
 members = ["."]
@@ -204,6 +205,13 @@ bench = false
 [[bin]]
 name = "socket_request"
 path = "fuzz_targets/socket_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "origin_request"
+path = "fuzz_targets/origin_request.rs"
 test = false
 doc = false
 bench = false
@@ -433,8 +441,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "player_request"
+path = "fuzz_targets/player_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "work_tags_request"
 path = "fuzz_targets/work_tags_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "player_socket"
+path = "fuzz_targets/player_socket.rs"
 test = false
 doc = false
 bench = false

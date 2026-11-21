@@ -19,7 +19,7 @@
  */
 
 import { ApiError } from "@/lib/api";
-import { request, type LibraryInfoView } from "@/lib/join";
+import { request, type ClerkRequestFrom, type LibraryInfoView } from "@/lib/join";
 
 /** `POST /api/config/clerk/callback`: the card this install now holds. */
 export interface ClerkSignedIn {
@@ -187,19 +187,25 @@ export interface ClerkRequestSent {
 }
 
 /**
- * Asks a library this install holds a card for to fetch a book from one of
- * its branches. The library decides, as for a request from the person's
- * browser there, and the request then shows with their other requests on
- * the library.
+ * Asks a library this install holds a card for to get a copy of a book:
+ * from one of its branches, or by downloading it on one of its own store
+ * accounts. The library decides, as for a request from the person's
+ * browser there; a branch request then shows with their other requests on
+ * the library, and a download in its jobs.
  *
  * @param libraryId - The library id.
- * @param workId - The library's own work id (`requestable_work`).
+ * @param workId - The library's own work id (`request.work_id`).
+ * @param from - Where the copy comes from (`request.from`).
  * @returns The library that took the request.
  */
-export function requestFromLibrary(libraryId: string, workId: string): Promise<ClerkRequestSent> {
+export function requestFromLibrary(
+  libraryId: string,
+  workId: string,
+  from: ClerkRequestFrom,
+): Promise<ClerkRequestSent> {
   return request("/api/config/clerk/request", {
     method: "POST",
-    body: { library_id: libraryId, work_id: workId },
+    body: { library_id: libraryId, work_id: workId, from },
   });
 }
 
@@ -213,9 +219,11 @@ export function clerkRequestFailure(err: unknown): string {
   const code = err instanceof ApiError ? err.code : undefined;
   switch (code) {
     case "not_allowed":
-      return "The library's administrator hasn't allowed you to ask its branches for books.";
+      return "The library's administrator hasn't allowed you to ask it for books.";
     case "not_listed":
-      return "No branch of that library lists this book now.";
+      return "That library can't get this book now.";
+    case "already_there":
+      return "The library already has a copy. It shows here after the next refresh.";
     case "card_refused":
       return "The library no longer accepts this server's library card. Sign in to it again.";
     case "library_busy":

@@ -1339,6 +1339,7 @@ records. Both describe a title in structured fields, following the
 | `seriesEntries` | `{ name, position?, storeSeriesId? }` entries, one per series the work belongs to. `position` is the label as the store prints it (`1`, `2.5`, `1-3`) |
 | `parentProductId` | The show's product id, on a podcast episode. Only podcasts keep it |
 | `language`, `abridgement` | Content language, and `unknown` (the default), `unabridged` or `abridged` |
+| `explicitness` | Whether the store marks the edition as explicit (adult) content: `unknown` (the default), `clean` or `explicit`. The host keeps it on the store listing, so a patron scope can hide explicit books |
 
 Every record names all three kinds. Each kind enum starts with
 `unspecified`, which is what a record that forgets the field sends, and
@@ -1381,7 +1382,7 @@ The typed methods on `MetadataProvider` and `MetadataEntrypoint` are:
 
 A `MetadataRecord` carries the same [book record](#book-records) fields as
 a `CatalogHit` (kinds, identifiers, credits, series, language,
-abridgement), plus `description`, `coverUrl`, `url`, `publisher`,
+abridgement; not `explicitness`, which comes from stores and files), plus `description`, `coverUrl`, `url`, `publisher`,
 `lengthMinutes`, `publishedAt`, `categories` and an optional rating. It has
 no store product id or price, because nothing is sold.
 
@@ -1518,7 +1519,10 @@ A `MetadataFileRecord` lists in `present` every field the file states,
 including a field it states as empty. A field the file does not mention
 stays out of `present`: absent means unknown, not cleared. `creditRoles`
 does the same for credits: it names each role the file states, so a file
-that lists only narrators says nothing about authors.
+that lists only narrators says nothing about authors. `explicitness`
+(`unknown`, `clean` or `explicit`) says whether the file marks the edition
+as explicit content, as Audiobookshelf's `metadata.json` does with
+`explicit`.
 
 The host checks both directions:
 
@@ -1696,6 +1700,71 @@ Native guests receive the binding as `Bindings.notify`.
 
 > [!NOTE]
 > The host does not hand out `NOTIFY` yet; it comes with the router.
+
+### Public addresses (`ingress`)
+
+Export `ingress` to give the library a public `https` address, so patrons
+and branches can reach it from outside the home network. The
+[`[ingress]`](manifest.md#ingress-public-address) table says how: a
+`relay` plugin carries requests from a provider such as a tunnel service,
+and a `direct` plugin keeps an address that points at the daemon current.
+The host runs at most one ingress instance at a time.
+
+The typed methods on `Ingress` and `IngressEntrypoint` are:
+
+| Method | Notes |
+| --- | --- |
+| `start` | `()` → `{ origin }`. Bring the address up and answer once it serves. `origin` is `https://` and a lowercase host name of at least two labels, with no port, path, query, user info or trailing dot or slash, at most `MAX_INGRESS_ORIGIN_BYTES` (253) bytes after the scheme. The top label starts with a letter, so nothing a URL parser reads as an IP address passes |
+| `health` | `()` → `{ serving, detail }`. Whether the address serves now; `detail` tells the operator why not |
+| `stop` | Take the address down. The host stops relying on it once this returns |
+
+A relay plugin hands each request its provider delivers to the library:
+
+```ts
+export class Ingress extends IngressEntrypoint<Env> {
+  async start(): Promise<IngressStarted> {
+    // Connect to the provider; for each request it delivers:
+    //   const response = await this.env.ORIGIN.fetch(request, {
+    //     clientAddress: providerReportedClientIp,
+    //   });
+    return { origin: "https://lib.example.net" };
+  }
+}
+```
+
+`env.ORIGIN.fetch(request, { clientAddress })` sends the path and query of
+`request.url`, its method, headers and body, and resolves with the
+library's `Response`. Both bodies stream. The host checks each request
+before the library sees it and refuses it with `invalid_params` when:
+
+- the method is not an HTTP token of at most 32 bytes;
+- the target is not a path and query (it must start with one `/`, hold
+  only visible ASCII and no `#`) or is longer than
+  `MAX_ORIGIN_TARGET_BYTES` (8192);
+- there are more than `MAX_ORIGIN_HEADERS` (128) header fields, their names
+  and values add up to more than `MAX_ORIGIN_HEADER_BYTES` (64 KiB), a name
+  is not a token, a value holds a control or non-ASCII byte, or a field
+  describes the connection (`connection`, `keep-alive`, `te`, `trailer`,
+  `transfer-encoding`, `upgrade` and the `proxy-*` fields);
+- `clientAddress` is set and is not an IP address.
+
+The TypeScript binding drops connection fields itself. `host`,
+`forwarded`, `x-forwarded-*` and `x-real-ip` are dropped rather than
+refused: the library answers on its own public origin, and the client
+address comes only from `clientAddress`. Take it from the provider's own
+connection metadata (such as `cf-connecting-ip` on a Cloudflare relay),
+never from a header the client sent. Responses follow the same header
+rules, so a library response never carries a connection field.
+
+`env.ORIGIN` is present only on a `relay` plugin while it is the active
+ingress, and only in the TypeScript SDK; the Python SDK serves `direct`
+plugins.
+
+> [!NOTE]
+> The host does not start ingress instances yet. Serving `ORIGIN`
+> requests as public `https` traffic, storing the public origin and
+> choosing the active instance come with the daemon side of the ingress
+> work.
 
 ### Storage entrypoints
 

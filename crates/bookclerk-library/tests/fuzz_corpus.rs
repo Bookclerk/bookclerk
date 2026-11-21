@@ -292,7 +292,8 @@ fn fuzz_corpus_job_cap_request_replays() {
 
 /// The `branch_request` oracle, shared with the fuzz target: an
 /// interlibrary request body is accepted exactly when it has the
-/// documented shape and well-formed ids.
+/// documented shape and well-formed ids, and a download request body
+/// exactly when it is such a body with no `node_id`.
 #[path = "../../../fuzz/oracles/branch_request.rs"]
 mod branch_request_oracle;
 

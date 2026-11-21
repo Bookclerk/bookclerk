@@ -147,6 +147,7 @@ export const NAV: NavSpec[] = [
       "server/media",
       "server/uploads",
       "server/playback",
+      "server/player-apps",
       "server/backups",
       "server/diagnostics",
       "server/cli-reference",
@@ -237,6 +238,7 @@ export const NAV: NavSpec[] = [
       "adr/ingress-plugins",
       "adr/notifications",
       "adr/drop-folders",
+      "adr/player-api",
     ],
   },
 ];

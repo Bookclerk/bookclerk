@@ -705,6 +705,9 @@ def _write_bindings(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
             s.set_cap(10, caps.export_cap(v["notify"]))
     if v.get("network") is not None:
         _network_grant_codec.write(s.init_struct(11, 1, 3), v["network"], caps)
+    if v.get("origin") is not None:
+        if v["origin"] is not None:
+            s.set_cap(12, caps.export_cap(v["origin"]))
 
 
 def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
@@ -732,11 +735,14 @@ def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
     notify = caps.import_cap(s.get_cap_index(10))
     if not (notify is None):
         out["notify"] = notify
+    origin = caps.import_cap(s.get_cap_index(12))
+    if not (origin is None):
+        out["origin"] = origin
     return out
 
 
-_bindings_codec = _Codec(0, 12, _write_bindings, _read_bindings)
-"""Wire codec for ``Bindings`` (0 data words, 12 pointers)."""
+_bindings_codec = _Codec(0, 13, _write_bindings, _read_bindings)
+"""Wire codec for ``Bindings`` (0 data words, 13 pointers)."""
 
 
 def _write_network_grant(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -836,6 +842,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("notifier") is not None:
         if v["notifier"] is not None:
             s.set_cap(14, caps.export_cap(v["notifier"]))
+    if v.get("ingress") is not None:
+        if v["ingress"] is not None:
+            s.set_cap(15, caps.export_cap(v["ingress"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -886,18 +895,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     notifier = caps.import_cap(s.get_cap_index(14))
     if not (notifier is None):
         out["notifier"] = notifier
+    ingress = caps.import_cap(s.get_cap_index(15))
+    if not (ingress is None):
+        out["ingress"] = ingress
     return out
 
 
-_entrypoints_codec = _Codec(0, 15, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 15 pointers)."""
+_entrypoints_codec = _Codec(0, 16, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 16 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 15), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 16), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -908,7 +920,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 15), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 16), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -1957,6 +1969,56 @@ _guest_database_reply_codec = _Codec(1, 1, _write_guest_database_reply, _read_gu
 """Wire codec for ``GuestDatabaseReply`` (1 data words, 1 pointers)."""
 
 
+def _write_origin_response(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16(0, v["status"])
+    items = s.init_struct_list(0, len(v["headers"]), 0, 2)
+    for item, elem in zip(items, v["headers"], strict=True):
+        _origin_header_codec.write(item, elem, caps)
+    if v.get("body") is not None:
+        if v["body"] is not None:
+            s.set_cap(1, caps.export_cap(v["body"]))
+
+
+def _read_origin_response(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "status": s.get_u16(0),
+        "headers": [_origin_header_codec.read(item, caps) for item in s.get_struct_list(0, 0, 2)],
+    }
+    body = caps.import_cap(s.get_cap_index(1))
+    if not (body is None):
+        out["body"] = body
+    return out
+
+
+_origin_response_codec = _Codec(1, 2, _write_origin_response, _read_origin_response)
+"""Wire codec for ``OriginResponse`` (1 data words, 2 pointers)."""
+
+
+def _write_origin_fetch_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _origin_response_codec.write(s.init_struct(0, 1, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown OriginFetchReply union member: {kind}")
+
+
+def _read_origin_fetch_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _origin_response_codec.read(s.get_struct(0, 1, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown OriginFetchReply union member: {disc}")
+
+
+_origin_fetch_reply_codec = _Codec(1, 1, _write_origin_fetch_reply, _read_origin_fetch_reply)
+"""Wire codec for ``OriginFetchReply`` (1 data words, 1 pointers)."""
+
+
 def _write_named_database(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["name"])
     if v.get("database") is not None:
@@ -2771,6 +2833,7 @@ def _write_scan_book(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(12, v["purchasedAt"])
     if v.get("categories") is not None:
         s.set_text(13, v["categories"])
+    s.set_u16(8, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
 
 
 def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
@@ -2785,6 +2848,7 @@ def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
         "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(7, 1, 1)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
         "abridgement": _from_ord(A.ABRIDGEMENTS, s.get_u16(7), "Abridgement"),
+        "explicitness": _from_ord(A.EXPLICITNESSS, s.get_u16(8), "Explicitness"),
     }
     marketplace = s.get_text(3)
     if not (marketplace == ""):
@@ -2816,12 +2880,12 @@ def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_scan_book_codec = _Codec(2, 14, _write_scan_book, _read_scan_book)
-"""Wire codec for ``ScanBook`` (2 data words, 14 pointers)."""
+_scan_book_codec = _Codec(3, 14, _write_scan_book, _read_scan_book)
+"""Wire codec for ``ScanBook`` (3 data words, 14 pointers)."""
 
 
 def _write_scan_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["books"]), 2, 14)
+    items = s.init_struct_list(0, len(v["books"]), 3, 14)
     for item, elem in zip(items, v["books"], strict=True):
         _scan_book_codec.write(item, elem, caps)
     s.set_text_list(1, v["removed"])
@@ -2835,7 +2899,7 @@ def _write_scan_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 
 def _read_scan_page(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 2, 14)],
+        "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 3, 14)],
         "removed": s.get_text_list(1),
         "nextCursor": s.get_text(2),
         "syncToken": s.get_text(3),
@@ -3335,6 +3399,7 @@ def _write_catalog_hit(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(16, v["parentProductId"])
     if v.get("rankHint") is not None:
         s.set_u32(10, v["rankHint"])
+    s.set_u16(22, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
 
 
 def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
@@ -3349,6 +3414,7 @@ def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
         "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(13, 1, 2)],
         "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(14, 1, 1)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(15, 0, 3)],
+        "explicitness": _from_ord(A.EXPLICITNESSS, s.get_u16(22), "Explicitness"),
     }
     url = s.get_text(2)
     if not (url == ""):
@@ -4886,6 +4952,7 @@ def _write_metadata_file_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
         _metadata_chapter_codec.write(item, elem, caps)
     if v.get("durationMs") is not None:
         s.set_u64(1, v["durationMs"])
+    s.set_u16(2, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
 
 
 def _read_metadata_file_record(s: _StructReader, caps: _CapTable) -> Any:
@@ -4900,6 +4967,7 @@ def _read_metadata_file_record(s: _StructReader, caps: _CapTable) -> Any:
         "creditRoles": [_from_ord(A.CREDIT_ROLES, v, "CreditRole") for v in s.get_u16_list(11)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(12, 0, 3)],
         "chapters": [_metadata_chapter_codec.read(item, caps) for item in s.get_struct_list(13, 3, 1)],
+        "explicitness": _from_ord(A.EXPLICITNESSS, s.get_u16(2), "Explicitness"),
     }
     title = s.get_text(1)
     if not (title == ""):
@@ -5614,6 +5682,132 @@ def _read_socket_closed(s: _StructReader, caps: _CapTable) -> Any:
 
 _socket_closed_codec = _Codec(1, 3, _write_socket_closed, _read_socket_closed)
 """Wire codec for ``SocketClosed`` (1 data words, 3 pointers)."""
+
+
+def _write_origin_header(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_text(1, v["value"])
+
+
+def _read_origin_header(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "name": s.get_text(0),
+        "value": s.get_text(1),
+    }
+
+
+_origin_header_codec = _Codec(0, 2, _write_origin_header, _read_origin_header)
+"""Wire codec for ``OriginHeader`` (0 data words, 2 pointers)."""
+
+
+def _write_origin_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["method"])
+    s.set_text(1, v["target"])
+    items = s.init_struct_list(2, len(v["headers"]), 0, 2)
+    for item, elem in zip(items, v["headers"], strict=True):
+        _origin_header_codec.write(item, elem, caps)
+    if v.get("clientAddress") is not None:
+        s.set_text(3, v["clientAddress"])
+
+
+def _read_origin_request(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "method": s.get_text(0),
+        "target": s.get_text(1),
+        "headers": [_origin_header_codec.read(item, caps) for item in s.get_struct_list(2, 0, 2)],
+    }
+    client_address = s.get_text(3)
+    if not (client_address == ""):
+        out["clientAddress"] = client_address
+    return out
+
+
+_origin_request_codec = _Codec(0, 4, _write_origin_request, _read_origin_request)
+"""Wire codec for ``OriginRequest`` (0 data words, 4 pointers)."""
+
+
+def _write_ingress_started(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["origin"])
+
+
+def _read_ingress_started(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "origin": s.get_text(0),
+    }
+
+
+_ingress_started_codec = _Codec(0, 1, _write_ingress_started, _read_ingress_started)
+"""Wire codec for ``IngressStarted`` (0 data words, 1 pointers)."""
+
+
+def _write_ingress_start_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _ingress_started_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown IngressStartReply union member: {kind}")
+
+
+def _read_ingress_start_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _ingress_started_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown IngressStartReply union member: {disc}")
+
+
+_ingress_start_reply_codec = _Codec(1, 1, _write_ingress_start_reply, _read_ingress_start_reply)
+"""Wire codec for ``IngressStartReply`` (1 data words, 1 pointers)."""
+
+
+def _write_ingress_health(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["serving"])
+    if v.get("detail") is not None:
+        s.set_text(0, v["detail"])
+
+
+def _read_ingress_health(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "serving": s.get_bool(0),
+    }
+    detail = s.get_text(0)
+    if not (detail == ""):
+        out["detail"] = detail
+    return out
+
+
+_ingress_health_codec = _Codec(1, 1, _write_ingress_health, _read_ingress_health)
+"""Wire codec for ``IngressHealth`` (1 data words, 1 pointers)."""
+
+
+def _write_ingress_health_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _ingress_health_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown IngressHealthReply union member: {kind}")
+
+
+def _read_ingress_health_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _ingress_health_codec.read(s.get_struct(0, 1, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown IngressHealthReply union member: {disc}")
+
+
+_ingress_health_reply_codec = _Codec(1, 1, _write_ingress_health_reply, _read_ingress_health_reply)
+"""Wire codec for ``IngressHealthReply`` (1 data words, 1 pointers)."""
 
 
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -7730,6 +7924,124 @@ _socket_handler_closed_results_codec = _Codec(0, 1, _write_socket_handler_closed
 """Wire codec for ``SocketHandlerClosedResults`` (0 data words, 1 pointers)."""
 
 
+def _write_origin_fetch_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("request") is not None:
+        _origin_request_codec.write(s.init_struct(0, 0, 4), v["request"], caps)
+    if v.get("body") is not None:
+        if v["body"] is not None:
+            s.set_cap(1, caps.export_cap(v["body"]))
+
+
+def _read_origin_fetch_params(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "request": _origin_request_codec.read(s.get_struct(0, 0, 4), caps),
+    }
+    body = caps.import_cap(s.get_cap_index(1))
+    if not (body is None):
+        out["body"] = body
+    return out
+
+
+_origin_fetch_params_codec = _Codec(0, 2, _write_origin_fetch_params, _read_origin_fetch_params)
+"""Wire codec for ``OriginFetchParams`` (0 data words, 2 pointers)."""
+
+
+def _write_origin_fetch_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _origin_fetch_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_origin_fetch_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _origin_fetch_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_origin_fetch_results_codec = _Codec(0, 1, _write_origin_fetch_results, _read_origin_fetch_results)
+"""Wire codec for ``OriginFetchResults`` (0 data words, 1 pointers)."""
+
+
+def _write_ingress_start_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_ingress_start_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_ingress_start_params_codec = _Codec(0, 0, _write_ingress_start_params, _read_ingress_start_params)
+"""Wire codec for ``IngressStartParams`` (0 data words, 0 pointers)."""
+
+
+def _write_ingress_start_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _ingress_start_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_ingress_start_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _ingress_start_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_ingress_start_results_codec = _Codec(0, 1, _write_ingress_start_results, _read_ingress_start_results)
+"""Wire codec for ``IngressStartResults`` (0 data words, 1 pointers)."""
+
+
+def _write_ingress_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_ingress_health_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_ingress_health_params_codec = _Codec(0, 0, _write_ingress_health_params, _read_ingress_health_params)
+"""Wire codec for ``IngressHealthParams`` (0 data words, 0 pointers)."""
+
+
+def _write_ingress_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _ingress_health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_ingress_health_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _ingress_health_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_ingress_health_results_codec = _Codec(0, 1, _write_ingress_health_results, _read_ingress_health_results)
+"""Wire codec for ``IngressHealthResults`` (0 data words, 1 pointers)."""
+
+
+def _write_ingress_stop_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_ingress_stop_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_ingress_stop_params_codec = _Codec(0, 0, _write_ingress_stop_params, _read_ingress_stop_params)
+"""Wire codec for ``IngressStopParams`` (0 data words, 0 pointers)."""
+
+
+def _write_ingress_stop_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_ingress_stop_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_ingress_stop_results_codec = _Codec(0, 1, _write_ingress_stop_results, _read_ingress_stop_results)
+"""Wire codec for ``IngressStopResults`` (0 data words, 1 pointers)."""
+
+
 def _write_content_source_login_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("params") is not None:
         _login_params_codec.write(s.init_struct(0, 2, 10), v["params"], caps)
@@ -9372,13 +9684,13 @@ def _write_plugin_worker_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -
     if v.get("invocation") is not None:
         _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
     if v.get("bindings") is not None:
-        _bindings_codec.write(s.init_struct(1, 0, 12), v["bindings"], caps)
+        _bindings_codec.write(s.init_struct(1, 0, 13), v["bindings"], caps)
 
 
 def _read_plugin_worker_open_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "invocation": _invocation_codec.read(s.get_struct(0, 1, 4), caps),
-        "bindings": _bindings_codec.read(s.get_struct(1, 0, 12), caps),
+        "bindings": _bindings_codec.read(s.get_struct(1, 0, 13), caps),
     }
 
 

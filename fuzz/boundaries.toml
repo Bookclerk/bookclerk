@@ -196,6 +196,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.origin_request]
+crate = "bookclerk-plugin-abi"
+boundary = "What a relay ingress plugin hands the host: the framed POST /origin/fetch body on the isolate bridge, the request head (method, target, headers, client address), response heads, and the public origin Ingress.start reports"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.socket_broker]
 crate = "bookclerk-workerd"
 boundary = "What the socket broker does with a remote WebSocket server's frames and closes and a guest's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting"
@@ -501,6 +508,20 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-library"
 boundary = "What a player sends the playback routes: the bodies that open a session, report or set progress and add or change a bookmark, the progress page cursor, and the stream path of GET /api/playback/sessions/{id}/tracks/{n}"
 input_from = "any signed-in patron"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.player_request]
+crate = "bookclerk-player-api"
+boundary = "What a player app sends the /player API: sign-in bodies, card tokens, list and detail queries, ids in paths, session, progress and bookmark bodies, and the browser sign-in's queries"
+input_from = "anyone who can reach the library (sign-in), any patron with a player card (the rest)"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.player_socket]
+crate = "bookclerk-player-api"
+boundary = "Text frames a player app sends on the /player/socket.io websocket (Engine.IO 4, Socket.IO 5)"
+input_from = "anyone who can reach the library"
 side = "host"
 artifacts = ["bookclerk"]
 

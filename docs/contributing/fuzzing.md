@@ -55,6 +55,7 @@ boundary extends it.
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
+| `origin_request` | What a relay ingress plugin hands the host: the framed `POST /origin/fetch` body on the isolate bridge, request heads (method, target, headers, client address), response heads, and the public origin `Ingress.start` reports | `bookclerk-plugin-abi::origin` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
 | `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
@@ -88,13 +89,15 @@ boundary extends it.
 | `instance_config` | A plugin instance's settings, table rows included: the `settings` object of `PUT /api/config/plugin-instances/{id}/config` and the row text of `bookclerk plugins config set` | `bookclerk-library::control_plane::PluginInstanceConfigV1::validate`, `parse_setting_text` |
 | `job_cap_request` | A branch's job cap for one library, the body of `POST /api/config/join/capacity` | `bookclerk-library::control_plane::parse_job_cap_request` |
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
-| `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
+| `branch_request` | An interlibrary request, the body of `POST /api/branch-requests`, and a request that the library download a book it holds, the body of `POST /api/download-requests` | `bookclerk-library::control_plane::parse_branch_request`, `parse_download_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
 | `upload_manifest` | What a patron sends to start and fill an upload: the body of `POST /api/uploads` and the `Upload-Offset` header of each `PATCH /api/uploads/{id}/files/{member_no}` | `bookclerk-library::control_plane::parse_upload_manifest`, `parse_upload_offset` |
 | `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
+| `player_request` | What a player app sends the `/player` API: the bodies of `POST /player/login`, session syncs, offline sessions, progress changes and bookmarks, card tokens (`Authorization: Bearer` or `?token=`), list and detail queries, author, series and file ids in paths, and the browser sign-in's queries | `bookclerk-player-api::request`, `ids`, `oauth` |
+| `player_socket` | Text frames a player app sends on the live socket, `GET /player/socket.io/` (Engine.IO 4 and Socket.IO 5 over a websocket) | `bookclerk-player-api::socket::parse_client_frame` |
 | `work_tags_request` | An Administrator's library tags for a work, the body of `PUT /api/library/works/{id}/tags` | `bookclerk-library::parse_work_tags_request` |
 | `collections_request` | An Administrator's collections for the library, the body of `PUT /api/library/collections` and the stored `core.collections` document | `bookclerk-library::control_plane::parse_collections_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
@@ -511,6 +514,22 @@ only that. The others check:
   restated id, frame and attachment bounds; and a decoded message
   survives `write` then `read` unchanged. The shared oracle is
   `fuzz/oracles/socket_request.rs`, replayed from `bookclerk-plugin-abi`.
+- **`origin_request`**: byte 0 modulo 4 picks a framed `POST /origin/fetch`
+  body (0), a request head's JSON (1), a response head's JSON (2) or an
+  ingress origin (3). Splitting waits for more bytes exactly while the frame
+  is incomplete, refuses exactly the declared lengths past the head cap, and
+  otherwise returns the declared head and every byte after it, so the
+  request body starts at the right byte and a plugin can't make the host
+  buffer without bound. A request head is accepted exactly when an
+  independent restatement of the method, origin-form target, header and
+  client-address rules holds; an accepted head keeps its method, target and
+  client, drops exactly `host` and the forwarding fields, and frames back to
+  itself. Response heads agree with the restated status and header rules.
+  An origin is accepted exactly when the restated host-name rules hold, and
+  a WHATWG URL parser (the `url` crate) reads every accepted origin as
+  `https` and the same host with no port, user info, path, query or
+  fragment. The shared oracle is `fuzz/oracles/origin_request.rs`, replayed
+  from `bookclerk-plugin-abi`.
 - **`socket_broker`**: the input is a script of operations on the broker's
   socket table (connect requests, handshake outcomes, frames and closes
   from the server, sends, attachments and closes from the plugin), checked
@@ -750,7 +769,10 @@ only that. The others check:
   a string), where the trimmed `work_id` is 1 to 64 ASCII letters, digits
   and `-`, and a trimmed `node_id` is 1 to 58 lowercase ASCII letters,
   digits, `.`, `_` and `-`. The parser then returns those trimmed ids,
-  and otherwise refuses it as `Invalid`. The shared oracle is
+  and otherwise refuses it as `Invalid`. The download request parser reads
+  the same bytes: it accepts exactly the bodies the branch request parser
+  accepts that have no `node_id` key at all, with the same trimmed work
+  id, and refuses the rest as `Invalid`. The shared oracle is
   `fuzz/oracles/branch_request.rs`, replayed from `bookclerk-library`.
 - **`title_meta_fill`**: the first byte declares `detailByProductId` and
   `detailByIsbn` for four fake stores; the rest is the query body, read as
@@ -846,6 +868,31 @@ only that. The others check:
   parsers refuse.
   The shared oracle is `fuzz/oracles/playback_request.rs`, replayed from
   `bookclerk-library`.
+- **`player_request`**: an input's first byte picks the part. A login
+  body is accepted only when it is one object with string `username` and
+  `password`, and comes back with the username trimmed, both at most 256
+  bytes and the password kept out of `Debug`. A card token is accepted
+  exactly when it is 43 URL-safe Base64 letters. Accepted list and detail
+  queries are at most 4,096 bytes, with a page size of at most 1,000 and a
+  search term of at most 256 bytes with no control character. An author,
+  series or narrator id writes back from its key to the same id, and a
+  file `ino` is accepted exactly when it is a canonical decimal below 512.
+  Every length a sync, progress change, batch or bookmark yields is at
+  most sixty days of milliseconds, a bookmark title at most 200 bytes, and
+  a batch at most 100 entries of entity ids. The browser sign-in's start
+  and way back name only the apps the library returns to, the start with
+  a 43-byte S256 challenge, and a typed player password normalizes to 20
+  symbols of its alphabet that format back to the same password. The
+  shared oracle is `fuzz/oracles/player_request.rs`, replayed from
+  `bookclerk-player-api`.
+- **`player_socket`**: checks each frame from its leading characters
+  rather than through the parser: a frame over 16 KiB is refused as too
+  long, `1` alone is a close, `2…` a ping, `3…` a pong, `5` or `6` alone
+  nothing, and only `40`, `41` and `42` are a connect, a disconnect and an
+  event. An `auth` event carries its first argument when that is a string
+  (else an empty token), and any other event's name is at most 64 bytes.
+  The shared oracle is `fuzz/oracles/player_socket.rs`, replayed from
+  `bookclerk-player-api`.
 - **`work_tags_request`**: reads the body as an untyped JSON value. It is
   accepted exactly when it is one object with no repeated keys and exactly
   the key `tags`, an array of strings each at most 256 bytes once trimmed,

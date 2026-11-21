@@ -284,6 +284,7 @@ function replaces(
     case "expressionKind":
     case "chapters":
     case "duration":
+    case "explicitness":
       return false;
   }
 }
