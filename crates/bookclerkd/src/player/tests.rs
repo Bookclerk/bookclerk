@@ -228,11 +228,14 @@ async fn status_and_ping_need_no_card() {
 async fn only_a_player_password_signs_in() {
     let world = world().await;
     let password = player_password(&world).await;
-    for (username, password) in [
+    for (case, (username, password)) in [
         ("someone-else", password.as_str()),
         (RILEY, "not-a-player-password"),
         (RILEY, "23456-Z2ZZB-CDEFG-HJKLM"),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let refused = send(
             &world,
             Method::POST,
@@ -242,7 +245,7 @@ async fn only_a_player_password_signs_in() {
             &[],
         )
         .await;
-        assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{username}");
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "case {case}");
     }
     let login = send(
         &world,
