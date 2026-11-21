@@ -2043,6 +2043,7 @@ name = "bookclerk-plugin-catalog"
 version = "0.1.0"
 dependencies = [
  "bookclerk-plugin-manifest",
+ "bookclerk-plugin-sdk",
  "bookclerk-tls",
  "chrono",
  "flate2",

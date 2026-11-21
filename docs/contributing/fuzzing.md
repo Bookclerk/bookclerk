@@ -66,6 +66,7 @@ boundary extends it.
 | `diagnostics_lookup_reply` | The diagnostics collector's answers to a report lookup and deletion, which the daemon and CLI show the operator with issue and pull request links | `bookclerk-config::parse_lookup_reply`, `parse_delete_reply` |
 | `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 | `audible_catalog` | Audible public catalog answers (search results, titles looked up by ASIN and a title's similar titles), which the `audible` guest turns into Discover candidates with their genres and host enrichment reads for ASINs | `bookclerk-audible-catalog::parse_catalog_products` |
+| `download_resume` | A store CDN's `Content-Range` and status when a guest resumes an interrupted download, which decide whether the body is appended to the bytes already on disk | `bookclerk-plugin-sdk::resume` (`parse_content_range`, `next_step`) |
 | `throttle_reason` | A store's refusal text, which the `audible` guest reads from a refused license request to tell throttling (which pauses the whole account) from a plain refusal | `bookclerk-storefront::is_throttle_reason` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
@@ -782,6 +783,21 @@ only that. The others check:
   86400 seconds). Only `custom` may carry a number, and it needs at least
   one. Anything else is refused as `Invalid`. The shared oracle is
   `fuzz/oracles/pace_request.rs`, replayed from `bookclerk-library`.
+- **`download_resume`**: the input is a flags byte (the length is already
+  known; the answer sent `Content-Length`; it sent `Content-Range`), the
+  resume offset, the known length and the `Content-Length` (eight bytes
+  each, big endian), the status (two bytes) and then the `Content-Range`
+  value as sent. The parser answers exactly what the oracle reads by
+  splitting the value as UTF-8 text and folding digits into a 128-bit
+  integer; and the step equals the one the oracle works out from the
+  rules: a `206` is appended only when its range starts at a non-zero
+  offset, its length agrees with a known one and its `Content-Length`
+  with its span, and the step names the range's end so the body is held
+  to it; a `200` replaces the partial; a `416` finishes it only at
+  `bytes */<offset>`; `408`, `429` and `5xx` retry; any other status fails.
+  Seeds named after a step (`append-*`, `replace-*`, `complete-*`,
+  `startover-*`, `retry-*`, `fail-*`) must take it. The shared oracle is
+  `fuzz/oracles/download_resume.rs`, replayed from `bookclerk-plugin-sdk`.
 - **`throttle_reason`**: restates the throttle words byte by byte. Refusal
   text is a throttle exactly when it contains `throttl`, `rate limit`,
   `rate-limit`, `ratelimit`, `too many requests` or `429`, ignoring ASCII

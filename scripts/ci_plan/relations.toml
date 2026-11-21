@@ -144,7 +144,12 @@ paths = ["fuzz/corpus/title_meta_fill/**", "fuzz/oracles/title_meta_fill.rs"]
 # The mux peer oracle is shared the same way with the plugin-sdk replay test.
 [[test_input]]
 package = "bookclerk-plugin-sdk"
-paths = ["fuzz/corpus/mux_peer/**", "fuzz/oracles/mux_peer.rs"]
+paths = [
+  "fuzz/corpus/mux_peer/**",
+  "fuzz/oracles/mux_peer.rs",
+  "fuzz/corpus/download_resume/**",
+  "fuzz/oracles/download_resume.rs",
+]
 
 [[test_input]]
 package = "bookclerk-db-exec"
