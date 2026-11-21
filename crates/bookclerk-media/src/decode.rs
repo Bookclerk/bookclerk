@@ -391,6 +391,23 @@ impl OpenedAudio {
     where
         F: FnMut(&[i16]) -> Result<()>,
     {
+        self.decode_while(out, |pcm| on_pcm(pcm).map(|()| true))
+    }
+
+    /// [`Self::decode_each`], stopping early once `on_pcm` returns `false`.
+    ///
+    /// # Returns
+    ///
+    /// Whether any PCM was produced.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::Native`] on a demux or fatal decode error, or what
+    /// `on_pcm` returns.
+    pub(crate) fn decode_while<F>(&mut self, out: OutChannels, mut on_pcm: F) -> Result<bool>
+    where
+        F: FnMut(&[i16]) -> Result<bool>,
+    {
         let out_channels = self.pcm_format(out).channels;
         let mut pcm = Vec::new();
         // Reused across packets so decode does not allocate per access unit.
@@ -400,7 +417,9 @@ impl OpenedAudio {
         if !primed.pcm.is_empty() {
             mix_interleaved(&primed.pcm, &primed.downmix, out_channels, &mut pcm);
             decoded_any = true;
-            on_pcm(&pcm)?;
+            if !on_pcm(&pcm)? {
+                return Ok(true);
+            }
         }
         let rate = self.sample_rate;
         loop {
@@ -414,7 +433,9 @@ impl OpenedAudio {
             append_pcm_i16(&buf, out_channels, &mut interleaved, &mut pcm);
             if !pcm.is_empty() {
                 decoded_any = true;
-                on_pcm(&pcm)?;
+                if !on_pcm(&pcm)? {
+                    break;
+                }
             }
         }
         Ok(decoded_any)

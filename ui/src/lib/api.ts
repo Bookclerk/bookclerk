@@ -4120,6 +4120,20 @@ export function editionCoverUrl(editionId: string): string {
   return `/api/library/editions/${encodeURIComponent(editionId)}/cover`;
 }
 
+/**
+ * Builds the authenticated URL of a short MP3 sample the daemon cuts from
+ * an edition this node can play. Hearing it records no listening progress
+ * and does not feed recommendations; it answers 404 or 422 (`no_sample`)
+ * when there is nothing here to cut from and 503 when cutting is
+ * unavailable.
+ *
+ * @param editionId - Edition id.
+ * @returns Relative URL under `/api/library/editions/.../sample`.
+ */
+export function editionSampleUrl(editionId: string): string {
+  return `/api/library/editions/${encodeURIComponent(editionId)}/sample`;
+}
+
 /** A processed cover size the daemon serves: thumbnail, card, or full size. */
 export type CoverSize = 128 | 360 | "full";
 
@@ -5023,6 +5037,37 @@ export async function fetchTitleReviews(body: TitleReviewsQuery): Promise<TitleR
     "Title reviews",
   );
   return (await parseJson(res)) as TitleReviewsPage;
+}
+
+/** The answer of `POST /api/discover/title-sample`. */
+export type TitleSample = {
+  /**
+   * Same-origin path of a storefront's public sample, served through this
+   * daemon; absent when no store offers one.
+   */
+  sample_path?: string | null;
+};
+
+/**
+ * Asks the storefronts that listed a title for their public audio sample.
+ *
+ * @param body - The title, as sent to title-meta.
+ * @returns The sample's same-origin path, or `null` when no store offers one.
+ */
+export async function fetchTitleSample(body: TitleMetaQuery): Promise<string | null> {
+  const res = await fetchWithTimeout(
+    "/api/discover/title-sample",
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    20_000,
+    "Title sample",
+  );
+  const answer = (await parseJson(res)) as TitleSample;
+  return answer.sample_path?.trim() || null;
 }
 
 /**

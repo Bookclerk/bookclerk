@@ -2835,6 +2835,13 @@ struct CatalogHit {
   rankHint @25 :UInt32 $optional;
   # Whether the storefront marks the edition explicit (adult) content.
   explicitness @26 :Explicitness;
+  # Absolute `https://` URL of a short audio sample of this edition that
+  # the storefront offers publicly (a few minutes, in any format the media
+  # worker decodes). The host never hands it to a client: a book's details
+  # play it through a same-origin path, fetched by a `covers` plugin with
+  # `media = audio` and re-encoded in the media worker. Empty when the store
+  # has none.
+  sampleUrl @27 :Text $optional;
 }
 
 # Success payload of the catalog list methods.
@@ -3560,6 +3567,19 @@ struct CoverFetchParams {
   # the host's cached copy. Empty, or shorter than `urls`, means the
   # remaining URLs are fetched unconditionally.
   conditions @2 :List(CoverCondition);
+  # What the URLs name: cover art (the default) or a storefront's audio
+  # sample (`CatalogHit.sampleUrl`). A fetcher sends a matching `Accept`
+  # header and refuses a body whose `Content-Type` names something else;
+  # the host checks and re-encodes either kind regardless.
+  media @3 :RemoteMedia;
+}
+
+# The kind of public media `CoverFetcher.fetchCovers` downloads.
+enum RemoteMedia {
+  # Cover art or another image.
+  image @0;
+  # A short audio sample of a book.
+  audio @1;
 }
 
 # Validators the host already holds for one URL, sent as conditional request

@@ -82,7 +82,7 @@ pub use metadata::{bookclerk_tool_tag, fixup_audiobook, FixupRequest, BOOKCLERK_
 pub use native::remux_trimmed;
 pub use opus_enc::{encode_to_opus_native, OpusEncodeOptions, MAX_OPUS_KBPS, MIN_OPUS_KBPS};
 pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};
-pub use pcm_stream::PcmStream;
+pub use pcm_stream::{EncodedSample, PcmStream, MAX_SAMPLE_BYTES, SAMPLE_TIMEOUT};
 pub use pcm_wire::{PcmHeader, PCM_WORKER_ARG};
 pub use pcm_worker::serve_pcm;
 pub use pool::{

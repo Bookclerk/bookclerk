@@ -174,6 +174,7 @@ async fn workerd_cover_fetcher_streams_bodies_into_the_host_sink() {
                         urls: urls.clone(),
                         max_bytes: 64,
                         conditions: Vec::new(),
+                        media: bookclerk_plugin_abi::RemoteMedia::Image,
                     },
                     Box::new(MemSink {
                         max: 64,

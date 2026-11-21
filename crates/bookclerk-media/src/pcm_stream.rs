@@ -14,6 +14,11 @@
 //! deadline for its format and for each round trip. A seek is a new stream:
 //! dropping a [`PcmStream`] kills its worker.
 //!
+//! A book sample takes the same path: [`crate::MediaPool::cut_sample`]
+//! opens the worker with `Sample` instead of `Open`, and gets back a short
+//! MP3 the worker encoded, capped at [`MAX_SAMPLE_BYTES`] and
+//! [`SAMPLE_TIMEOUT`].
+//!
 //! With isolation off, playback is refused rather than decoded here: the
 //! player has no reason to put a codec next to the master key.
 
@@ -30,6 +35,13 @@ use crate::error::{MediaError, Result};
 use crate::pcm_wire::{
     encode_request, PcmHeader, PcmReply, PcmRequest, ReplyOrder, ReplyReader, PCM_WORKER_ARG,
 };
+
+/// Largest sample the host takes from a worker (16 MiB): ten minutes of
+/// mono MP3 at 64 kbit/s is under 5 MiB.
+pub const MAX_SAMPLE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Longest a worker may take to cut one sample, start to end.
+pub const SAMPLE_TIMEOUT: Duration = Duration::from_secs(120);
 use crate::pool::{forward_worker_stderr, worker_env_allowed, Confinement, WorkerLaunch};
 use crate::{ByteSpan, RangeSource, WORKER_ENFORCEMENT_ENV};
 
@@ -50,6 +62,25 @@ const CHUNKS_AHEAD: usize = 16;
 /// many times over.
 const EXTRA_FETCH_BYTES: u64 = 64 * 1024 * 1024;
 
+/// One payload frame of a worker's stream.
+#[derive(Debug)]
+enum Piece {
+    /// Interleaved samples (a PCM stream).
+    Pcm(Vec<i16>),
+    /// MP3 bytes (a sample).
+    Encoded(Vec<u8>),
+}
+
+/// A short sample of a file, encoded by a worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedSample {
+    /// The encoded layout (mono), where the sample starts, and the file's
+    /// stated duration.
+    pub header: PcmHeader,
+    /// The MP3 stream: constant bit rate, no tag frames.
+    pub mp3: Vec<u8>,
+}
+
 /// Decoded samples of one file from one start position.
 ///
 /// Dropping it stops the worker.
@@ -57,8 +88,8 @@ const EXTRA_FETCH_BYTES: u64 = 64 * 1024 * 1024;
 pub struct PcmStream {
     /// The layout and start the worker stated.
     header: PcmHeader,
-    /// Chunks of interleaved samples, then the end or an error.
-    chunks: mpsc::Receiver<Result<Vec<i16>>>,
+    /// Payload frames, then the end or an error.
+    chunks: mpsc::Receiver<Result<Piece>>,
     /// The task that drives the worker; aborted (killing it) on drop.
     driver: JoinHandle<()>,
 }
@@ -90,7 +121,45 @@ impl PcmStream {
     /// [`MediaError::Worker`] when the worker died, stalled or broke the
     /// protocol. The stream ends after an error.
     pub async fn next_chunk(&mut self) -> Option<Result<Vec<i16>>> {
-        self.chunks.recv().await
+        match self.chunks.recv().await? {
+            Ok(Piece::Pcm(samples)) => Some(Ok(samples)),
+            // `ReplyOrder` admits no encoded bytes in a PCM stream.
+            Ok(Piece::Encoded(_)) => Some(Err(worker_error(
+                "pcm worker sent encoded bytes in a PCM stream".into(),
+            ))),
+            Err(err) => Some(Err(err)),
+        }
+    }
+
+    /// Reads a sample's MP3 bytes to the end.
+    ///
+    /// # Errors
+    ///
+    /// What the worker reports, or [`MediaError::Worker`] when it sends
+    /// samples instead of bytes or more than [`MAX_SAMPLE_BYTES`].
+    async fn collect_encoded(mut self) -> Result<EncodedSample> {
+        let mut mp3 = Vec::new();
+        while let Some(piece) = self.chunks.recv().await {
+            match piece? {
+                Piece::Encoded(bytes) => {
+                    if mp3.len() + bytes.len() > MAX_SAMPLE_BYTES {
+                        return Err(worker_error(format!(
+                            "pcm worker sent a sample over {MAX_SAMPLE_BYTES} bytes"
+                        )));
+                    }
+                    mp3.extend_from_slice(&bytes);
+                }
+                Piece::Pcm(_) => {
+                    return Err(worker_error(
+                        "pcm worker sent samples instead of a sample".into(),
+                    ))
+                }
+            }
+        }
+        Ok(EncodedSample {
+            header: self.header,
+            mp3,
+        })
     }
 }
 
@@ -125,19 +194,97 @@ impl PcmRunner {
                 launch,
                 confinement,
             } => {
-                let mut child = spawn(launch, *confinement)?;
-                let stdin = child
-                    .stdin
-                    .take()
-                    .ok_or_else(|| worker_error("pcm worker stdin unavailable".into()))?;
-                let stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| worker_error("pcm worker stdout unavailable".into()))?;
+                let (stdin, stdout, child) = start(launch, *confinement)?;
                 drive(stdin, stdout, Some(child), size, start_ms, source).await
             }
         }
     }
+
+    /// Cuts `length_ms` of a file of `size` bytes from `source`, starting
+    /// at `start_ms`, encoded as MP3.
+    pub(crate) async fn cut_sample<S: RangeSource + 'static>(
+        &self,
+        size: u64,
+        start_ms: u64,
+        length_ms: u64,
+        source: S,
+    ) -> Result<EncodedSample> {
+        match self {
+            Self::Refuse(detail) => Err(MediaError::NotIsolated {
+                job: LABEL,
+                detail: detail.clone(),
+            }),
+            Self::Worker {
+                launch,
+                confinement,
+            } => {
+                let (stdin, stdout, child) = start(launch, *confinement)?;
+                let request = PcmRequest::Sample {
+                    size,
+                    start_ms,
+                    length_ms,
+                };
+                sample_through(stdin, stdout, Some(child), request, size, source).await
+            }
+        }
+    }
+}
+
+/// Starts one worker and takes its pipes.
+fn start(
+    launch: &WorkerLaunch,
+    confinement: Confinement,
+) -> Result<(
+    tokio::process::ChildStdin,
+    tokio::process::ChildStdout,
+    tokio::process::Child,
+)> {
+    let mut child = spawn(launch, confinement)?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| worker_error("pcm worker stdin unavailable".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| worker_error("pcm worker stdout unavailable".into()))?;
+    Ok((stdin, stdout, child))
+}
+
+/// Opens a worker with a `Sample` request and reads the sample to its end
+/// within [`SAMPLE_TIMEOUT`].
+///
+/// # Errors
+///
+/// What the worker reports, or a [`MediaError::Worker`] when it breaks the
+/// protocol, sends too much, or misses the deadline.
+pub(crate) async fn sample_through<I, O, S>(
+    input: I,
+    output: O,
+    child: Option<tokio::process::Child>,
+    request: PcmRequest,
+    size: u64,
+    source: S,
+) -> Result<EncodedSample>
+where
+    I: AsyncWrite + Unpin + Send + 'static,
+    O: AsyncRead + Unpin + Send + 'static,
+    S: RangeSource + 'static,
+{
+    let work = async move {
+        drive_request(input, output, child, request, size, source)
+            .await?
+            .collect_encoded()
+            .await
+    };
+    tokio::time::timeout(SAMPLE_TIMEOUT, work)
+        .await
+        .map_err(|_| {
+            worker_error(format!(
+                "pcm worker did not finish a sample within {}s",
+                SAMPLE_TIMEOUT.as_secs()
+            ))
+        })?
 }
 
 /// Starts one worker in PCM mode.
@@ -201,7 +348,7 @@ fn spawn(launch: &WorkerLaunch, confinement: Confinement) -> Result<tokio::proce
 /// What the worker reports before its format, or a [`MediaError::Worker`]
 /// when it breaks the protocol or misses the deadline.
 pub(crate) async fn drive<I, O, S>(
-    mut input: I,
+    input: I,
     output: O,
     child: Option<tokio::process::Child>,
     size: u64,
@@ -213,7 +360,30 @@ where
     O: AsyncRead + Unpin + Send + 'static,
     S: RangeSource + 'static,
 {
-    let open = encode_request(&PcmRequest::Open { size, start_ms })
+    let request = PcmRequest::Open { size, start_ms };
+    drive_request(input, output, child, request, size, source).await
+}
+
+/// [`drive`] with the opening request given: `Open` or `Sample`.
+///
+/// # Errors
+///
+/// As [`drive`].
+async fn drive_request<I, O, S>(
+    mut input: I,
+    output: O,
+    child: Option<tokio::process::Child>,
+    request: PcmRequest,
+    size: u64,
+    source: S,
+) -> Result<PcmStream>
+where
+    I: AsyncWrite + Unpin + Send + 'static,
+    O: AsyncRead + Unpin + Send + 'static,
+    S: RangeSource + 'static,
+{
+    let order = ReplyOrder::for_request(&request);
+    let open = encode_request(&request)
         .map_err(|err| worker_error(format!("could not encode request: {err}")))?;
     write_frame(&mut input, &open).await?;
     let (header_tx, header_rx) = oneshot::channel();
@@ -228,7 +398,7 @@ where
             size,
             fetched: 0,
             reader: ReplyReader::default(),
-            order: ReplyOrder::default(),
+            order,
         };
         session.run(header_tx, chunk_tx).await;
     });
@@ -288,7 +458,7 @@ where
     async fn run(
         &mut self,
         header: oneshot::Sender<Result<PcmHeader>>,
-        chunks: mpsc::Sender<Result<Vec<i16>>>,
+        chunks: mpsc::Sender<Result<Piece>>,
     ) {
         let mut header: HeaderSlot = Some(header);
         let outcome = self.pump(&mut header, &chunks).await;
@@ -312,7 +482,7 @@ where
     async fn pump(
         &mut self,
         header: &mut HeaderSlot,
-        chunks: &mpsc::Sender<Result<Vec<i16>>>,
+        chunks: &mpsc::Sender<Result<Piece>>,
     ) -> Result<()> {
         let mut buf = vec![0u8; 64 * 1024];
         loop {
@@ -334,7 +504,12 @@ where
                         }
                     }
                     PcmReply::Pcm(samples) => {
-                        if chunks.send(Ok(samples)).await.is_err() {
+                        if chunks.send(Ok(Piece::Pcm(samples))).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                    PcmReply::Encoded(bytes) => {
+                        if chunks.send(Ok(Piece::Encoded(bytes))).await.is_err() {
                             return Ok(());
                         }
                     }
@@ -529,6 +704,121 @@ mod tests {
         assert_eq!(samples[1000], 0);
     }
 
+    /// Cuts a sample through the real worker loop on a thread.
+    async fn sample_on_thread(
+        file: Vec<u8>,
+        start_ms: u64,
+        length_ms: u64,
+    ) -> Result<EncodedSample> {
+        let (host_in, worker_in) = tokio::io::duplex(1 << 20);
+        let (worker_out, host_out) = tokio::io::duplex(1 << 20);
+        std::thread::spawn(move || {
+            let input = tokio_util_bridge::Reader(worker_in);
+            let output = tokio_util_bridge::Writer(worker_out);
+            let _ = crate::pcm_worker::serve_pcm(input, output);
+        });
+        let size = u64::try_from(file.len()).unwrap();
+        let request = PcmRequest::Sample {
+            size,
+            start_ms,
+            length_ms,
+        };
+        sample_through(host_in, host_out, None, request, size, Buffer(file)).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sample_is_a_mono_mp3_of_the_asked_span() {
+        let sample = sample_on_thread(wav(16_000, 12), 2_000, 5_000)
+            .await
+            .unwrap();
+        assert_eq!(sample.header.channels, 1);
+        assert_eq!(sample.header.sample_rate, 16_000);
+        // The packet boundary at or before the asked-for start.
+        assert!((1_800..=2_000).contains(&sample.header.start_ms));
+        assert_eq!(sample.header.duration_ms, Some(12_000));
+        // An MPEG audio frame sync, not the WAV's own bytes.
+        assert_eq!(sample.mp3[0], 0xff);
+        assert_eq!(sample.mp3[1] & 0xe0, 0xe0);
+        let mut frames = 0usize;
+        crate::decode_pcm_bytes(sample.mp3, crate::OutChannels::Mono, |format, pcm| {
+            assert_eq!(format.sample_rate, 16_000);
+            frames += pcm.len();
+            Ok(())
+        })
+        .unwrap();
+        // Five seconds, plus the encoder's delay and frame padding.
+        let seconds = frames as f64 / 16_000.0;
+        assert!((4.9..5.4).contains(&seconds), "{seconds} s");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sample_past_the_end_stops_at_the_end() {
+        let sample = sample_on_thread(wav(8_000, 3), 1_000, 60_000)
+            .await
+            .unwrap();
+        let mut frames = 0usize;
+        crate::decode_pcm_bytes(sample.mp3, crate::OutChannels::Mono, |_, pcm| {
+            frames += pcm.len();
+            Ok(())
+        })
+        .unwrap();
+        // The two seconds left, plus the encoder's delay and padding.
+        let seconds = frames as f64 / 8_000.0;
+        assert!((1.9..2.5).contains(&seconds), "{seconds} s");
+    }
+
+    #[tokio::test]
+    async fn a_sample_stream_refuses_samples_and_too_many_bytes() {
+        let mono = PcmHeader {
+            channels: 1,
+            ..header(1)
+        };
+        let sample = |frames: Vec<PcmReply>| async move {
+            let (host_in, _worker_in) = tokio::io::duplex(1 << 16);
+            let (mut worker_out, host_out) = tokio::io::duplex(1 << 22);
+            let mut bytes = Vec::new();
+            for frame in &frames {
+                bytes.extend(encode_reply(frame).unwrap());
+            }
+            tokio::spawn(async move {
+                let _ = worker_out.write_all(&bytes).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+            let request = PcmRequest::Sample {
+                size: 64,
+                start_ms: 0,
+                length_ms: 1,
+            };
+            sample_through(host_in, host_out, None, request, 64, Buffer(vec![0; 64])).await
+        };
+        // PCM in a sample's stream.
+        let err = sample(vec![PcmReply::Format(mono), PcmReply::Pcm(vec![1])])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MediaError::Worker { .. }), "{err:?}");
+        // More than the cap.
+        let part = PcmReply::Encoded(vec![1; crate::pcm_wire::MAX_ENCODED_BYTES]);
+        let mut frames = vec![PcmReply::Format(mono)];
+        frames.extend(std::iter::repeat_n(
+            part,
+            MAX_SAMPLE_BYTES / crate::pcm_wire::MAX_ENCODED_BYTES + 1,
+        ));
+        frames.push(PcmReply::End);
+        let err = sample(frames).await.unwrap_err();
+        assert!(matches!(err, MediaError::Worker { .. }), "{err:?}");
+        // A whole one.
+        let ok = sample(vec![
+            PcmReply::Format(mono),
+            PcmReply::Encoded(vec![1, 2]),
+            PcmReply::Encoded(vec![3]),
+            PcmReply::End,
+        ])
+        .await
+        .unwrap();
+        assert_eq!(ok.mp3, vec![1, 2, 3]);
+        assert_eq!(ok.header, mono);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn an_unreadable_file_fails_before_the_format() {
         let err = open_on_thread(vec![3; 4096], 0).await.unwrap_err();
@@ -617,6 +907,11 @@ mod tests {
     async fn a_runner_without_a_worker_refuses() {
         let runner = PcmRunner::Refuse("isolation is off".into());
         let err = runner.open(1, 0, Buffer(vec![0])).await.unwrap_err();
+        assert!(matches!(err, MediaError::NotIsolated { .. }));
+        let err = runner
+            .cut_sample(1, 0, 1, Buffer(vec![0]))
+            .await
+            .unwrap_err();
         assert!(matches!(err, MediaError::NotIsolated { .. }));
     }
 }

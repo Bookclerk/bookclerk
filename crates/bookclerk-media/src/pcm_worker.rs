@@ -9,6 +9,11 @@
 //! reads, folded to at most stereo. Samples go out in `Pcm` frames as they
 //! are decoded; the pipe's own backpressure paces the worker to the
 //! player, which reads only as fast as it plays.
+//!
+//! Asked for a `Sample` instead, the worker decodes from the start position
+//! for the sample's length only, folds it to mono and encodes it as MP3
+//! ([`crate::mp3::Mp3Stream`]), sending `Encoded` frames: the bytes a book's
+//! details play are never the stored file's own bytes.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -19,9 +24,11 @@ use symphonia::core::units::Time;
 
 use crate::decode::{open_audio, OutChannels, Primed};
 use crate::error::{MediaError, Result};
+use crate::mp3::Mp3Stream;
 use crate::pcm_wire::{
-    body_len, decode_request, encode_reply, PcmHeader, PcmReply, PcmRequest, MAX_NEED_BYTES,
-    MAX_PCM_SAMPLES, MAX_POSITION_MS, MAX_REQUEST_BODY,
+    body_len, decode_request, encode_reply, PcmHeader, PcmReply, PcmRequest, MAX_ENCODED_BYTES,
+    MAX_NEED_BYTES, MAX_PCM_SAMPLES, MAX_POSITION_MS, MAX_REQUEST_BODY, MAX_SAMPLE_MS,
+    MAX_SAMPLE_OUTPUT_HZ,
 };
 
 /// Bytes asked for at a time: large enough that a sequential read costs
@@ -159,7 +166,8 @@ impl<R: Read + Send + Sync, W: Write + Send + Sync> MediaSource for HostRanges<R
 
 /// Serves one PCM decode over `input` and `output` (the worker's stdin and
 /// stdout): reads `Open`, then streams `Format`, `Pcm` frames and `End`, or
-/// `Failed` when the file cannot be decoded.
+/// `Failed` when the file cannot be decoded. Opened with `Sample` instead,
+/// streams `Format`, `Encoded` frames and `End`.
 ///
 /// # Arguments
 ///
@@ -168,7 +176,8 @@ impl<R: Read + Send + Sync, W: Write + Send + Sync> MediaSource for HostRanges<R
 ///
 /// # Errors
 ///
-/// Why the stream broke: the host sent no `Open`, or a pipe failed. A file
+/// Why the stream broke: the host sent no `Open` or `Sample`, or a pipe
+/// failed. A file
 /// that cannot be decoded is not an error here: the host is told with
 /// `Failed`.
 pub fn serve_pcm<R, W>(input: R, output: W) -> std::result::Result<(), String>
@@ -178,10 +187,20 @@ where
 {
     let pipes = Arc::new(Mutex::new(Pipes { input, output }));
     let opening = lock(&pipes).receive().map_err(|err| err.to_string())?;
-    let PcmRequest::Open { size, start_ms } = opening else {
-        return Err("the first request was not Open".into());
+    let outcome = match opening {
+        PcmRequest::Open { size, start_ms } => decode(&pipes, size, start_ms.min(MAX_POSITION_MS)),
+        PcmRequest::Sample {
+            size,
+            start_ms,
+            length_ms,
+        } => sample(
+            &pipes,
+            size,
+            start_ms.min(MAX_POSITION_MS),
+            length_ms.min(MAX_SAMPLE_MS),
+        ),
+        PcmRequest::Data { .. } => return Err("the first request was not Open or Sample".into()),
     };
-    let outcome = decode(&pipes, size, start_ms.min(MAX_POSITION_MS));
     let last = match outcome {
         Ok(()) => PcmReply::End,
         Err(err) => PcmReply::Failed {
@@ -192,13 +211,23 @@ where
     sent
 }
 
-/// Opens the file through the host, seeks to `start_ms` and streams its
-/// samples.
+/// A file opened through the host and positioned at the asked-for start.
+struct Positioned {
+    /// The decoder, at the start.
+    opened: crate::decode::OpenedAudio,
+    /// Where decoding starts, in milliseconds: the asked-for start or the
+    /// packet boundary before it.
+    actual_ms: u64,
+    /// The file's length in milliseconds, when its container states one.
+    duration_ms: Option<u64>,
+}
+
+/// Opens the file through the host and seeks to `start_ms`.
 ///
 /// # Errors
 ///
-/// What the decode front returns, a failed seek, or a pipe failure.
-fn decode<R, W>(pipes: &Shared<R, W>, size: u64, start_ms: u64) -> Result<()>
+/// What the decode front returns, or a failed seek.
+fn open_at<R, W>(pipes: &Shared<R, W>, size: u64, start_ms: u64) -> Result<Positioned>
 where
     R: Read + Send + Sync + 'static,
     W: Write + Send + Sync + 'static,
@@ -245,6 +274,29 @@ where
             .unwrap_or(start_ms)
             .min(MAX_POSITION_MS);
     }
+    Ok(Positioned {
+        opened,
+        actual_ms,
+        duration_ms,
+    })
+}
+
+/// Opens the file through the host, seeks to `start_ms` and streams its
+/// samples.
+///
+/// # Errors
+///
+/// What the decode front returns, a failed seek, or a pipe failure.
+fn decode<R, W>(pipes: &Shared<R, W>, size: u64, start_ms: u64) -> Result<()>
+where
+    R: Read + Send + Sync + 'static,
+    W: Write + Send + Sync + 'static,
+{
+    let Positioned {
+        mut opened,
+        actual_ms,
+        duration_ms,
+    } = open_at(pipes, size, start_ms)?;
     let format = opened.pcm_format(OutChannels::SourceUpToStereo);
     let channels = u8::try_from(format.channels).unwrap_or(2);
     send(
@@ -265,6 +317,59 @@ where
         }
         Ok(())
     })?;
+    Ok(())
+}
+
+/// Opens the file through the host, seeks to `start_ms`, and streams
+/// `length_ms` of it folded to mono and encoded as MP3.
+///
+/// # Errors
+///
+/// What the decode front or the encoder returns, a failed seek, or a pipe
+/// failure.
+fn sample<R, W>(pipes: &Shared<R, W>, size: u64, start_ms: u64, length_ms: u64) -> Result<()>
+where
+    R: Read + Send + Sync + 'static,
+    W: Write + Send + Sync + 'static,
+{
+    let Positioned {
+        mut opened,
+        actual_ms,
+        duration_ms,
+    } = open_at(pipes, size, start_ms)?;
+    let source_hz = opened.pcm_format(OutChannels::Mono).sample_rate;
+    let (mut encoder, encoded_hz) = Mp3Stream::new(source_hz, MAX_SAMPLE_OUTPUT_HZ)?;
+    send(
+        pipes,
+        &PcmReply::Format(PcmHeader {
+            sample_rate: encoded_hz,
+            channels: 1,
+            start_ms: actual_ms,
+            duration_ms,
+        }),
+    )?;
+    // Frames still to encode, at the source rate.
+    let mut left = usize::try_from(length_ms.saturating_mul(u64::from(source_hz)) / 1000)
+        .unwrap_or(usize::MAX);
+    opened.decode_while(OutChannels::Mono, |pcm| {
+        let take = pcm.len().min(left);
+        left -= take;
+        send_encoded(pipes, &encoder.push(&pcm[..take])?)?;
+        Ok(left > 0)
+    })?;
+    send_encoded(pipes, &encoder.finish()?)
+}
+
+/// Sends `bytes` as `Encoded` frames of at most [`MAX_ENCODED_BYTES`];
+/// nothing when it is empty.
+///
+/// # Errors
+///
+/// [`MediaError::Io`] when the pipe to the host fails.
+fn send_encoded<R: Read, W: Write>(pipes: &Shared<R, W>, bytes: &[u8]) -> Result<()> {
+    for part in bytes.chunks(MAX_ENCODED_BYTES) {
+        send(pipes, &PcmReply::Encoded(part.to_vec()))?;
+    }
     Ok(())
 }
 

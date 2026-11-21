@@ -395,6 +395,7 @@ mod tests {
                 urls: vec!["https://a.example/1.jpg".into()],
                 max_bytes: 1,
                 conditions: Vec::new(),
+                media: bookclerk_plugin_abi::RemoteMedia::Image,
             })
             .await
             .unwrap_err();

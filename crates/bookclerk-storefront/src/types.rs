@@ -306,6 +306,11 @@ pub struct CatalogHit {
     /// store does not rank its results. Catalog search merges stores by it.
     #[serde(default)]
     pub rank_hint: Option<u32>,
+    /// Public `https` URL of a short audio sample the storefront offers for
+    /// this edition; `None` when it has none. The host plays it through a
+    /// same-origin path, never by handing the URL to a client.
+    #[serde(default)]
+    pub sample_url: Option<String>,
 }
 
 impl CatalogHit {

@@ -16,11 +16,16 @@
 //!   whose sizes come from the input. The replies it yields re-encode,
 //!   concatenated, to exactly the bytes it consumed; it never yields a
 //!   reply after an error; and every `Pcm` that `ReplyOrder` admits holds
-//!   whole frames of the `Format` it admitted first.
+//!   whole frames of the `Format` it admitted first. When `selector / 3` is
+//!   odd the stream is a sample's (opened with `Sample`): `ReplyOrder`
+//!   then admits no `Pcm` at all, `Encoded` only after a mono `Format` at
+//!   most `MAX_SAMPLE_OUTPUT_HZ`, and in a PCM stream it admits no
+//!   `Encoded`.
 
 use bookclerk_media::pcm_wire::{
     decode_reply, decode_request, encode_reply, encode_request, PcmReply, ReplyOrder, ReplyReader,
-    MAX_ERROR_BYTES, MAX_NEED_BYTES, MAX_PCM_SAMPLES, MAX_POSITION_MS,
+    MAX_ENCODED_BYTES, MAX_ERROR_BYTES, MAX_NEED_BYTES, MAX_PCM_SAMPLES, MAX_POSITION_MS,
+    MAX_SAMPLE_OUTPUT_HZ,
 };
 use bookclerk_media::MAX_SAMPLE_RATE_HZ;
 
@@ -57,7 +62,7 @@ pub fn check(data: &[u8]) {
                 assert_eq!(frame.get(4..), Some(body), "reply has two readings");
             }
         }
-        _ => stream(body),
+        _ => stream(body, (selector / 3) % 2 == 1),
     }
 }
 
@@ -82,18 +87,26 @@ fn within_limits(reply: &PcmReply) {
         }
         PcmReply::End => {}
         PcmReply::Failed { message } => assert!(message.len() <= MAX_ERROR_BYTES),
+        PcmReply::Encoded(bytes) => {
+            assert!(!bytes.is_empty() && bytes.len() <= MAX_ENCODED_BYTES);
+        }
     }
 }
 
-/// Feeds `body` (after a piece-size byte) to a reader in pieces.
-fn stream(body: &[u8]) {
+/// Feeds `body` (after a piece-size byte) to a reader in pieces, as the
+/// output of a PCM stream or, when `sample`, of a sample.
+fn stream(body: &[u8], sample: bool) {
     let Some((&piece, bytes)) = body.split_first() else {
         return;
     };
     let piece = usize::from(piece).max(1);
     let mut reader = ReplyReader::default();
-    let mut order = ReplyOrder::default();
-    let mut channels = None;
+    let mut order = if sample {
+        ReplyOrder::OpeningSample
+    } else {
+        ReplyOrder::Opening
+    };
+    let mut format = None;
     let mut reencoded = Vec::new();
     let mut broken = false;
     for part in bytes.chunks(piece) {
@@ -106,10 +119,22 @@ fn stream(body: &[u8]) {
                     reencoded.extend(encode_reply(&reply).expect("re-encode"));
                     if order.check(&reply).is_ok() {
                         match &reply {
-                            PcmReply::Format(header) => channels = Some(header.channels),
+                            PcmReply::Format(header) => {
+                                assert!(format.is_none(), "a second format admitted");
+                                if sample {
+                                    assert_eq!(header.channels, 1, "a stereo sample admitted");
+                                    assert!(header.sample_rate <= MAX_SAMPLE_OUTPUT_HZ);
+                                }
+                                format = Some(*header);
+                            }
                             PcmReply::Pcm(samples) => {
-                                let channels = channels.expect("samples admitted before a format");
-                                assert_eq!(samples.len() % usize::from(channels), 0);
+                                assert!(!sample, "samples admitted in a sample's stream");
+                                let header = format.expect("samples admitted before a format");
+                                assert_eq!(samples.len() % usize::from(header.channels), 0);
+                            }
+                            PcmReply::Encoded(_) => {
+                                assert!(sample, "encoded bytes admitted in a PCM stream");
+                                assert!(format.is_some(), "bytes admitted before a format");
                             }
                             _ => {}
                         }

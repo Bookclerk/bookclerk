@@ -361,6 +361,12 @@ OFFERED_AAC_PROFILES: tuple[str, ...] = ("unknown", "lc", "he", "heV2", "xhe")
 Ordinal-ordered ``OfferedAacProfile`` wire names (index = Cap'n Proto ordinal).
 """
 
+REMOTE_MEDIAS: tuple[str, ...] = ("image", "audio")
+"""The kind of public media `CoverFetcher.fetchCovers` downloads.
+
+Ordinal-ordered ``RemoteMedia`` wire names (index = Cap'n Proto ordinal).
+"""
+
 METADATA_FIELDS: tuple[str, ...] = ("title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration", "explicitness")
 """A field of a `MetadataFileRecord`. Dialects declare in the manifest which
 fields their format carries; a parsed record lists the ones its file
@@ -514,6 +520,7 @@ __all__ = [
     "EXPLICITNESSS",
     "OFFERED_CODECS",
     "OFFERED_AAC_PROFILES",
+    "REMOTE_MEDIAS",
     "METADATA_FIELDS",
     "NOTIFICATION_SEVERITYS",
     "NOTIFICATION_AUDIENCES",

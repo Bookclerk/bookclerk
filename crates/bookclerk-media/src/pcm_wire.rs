@@ -2,20 +2,28 @@
 //! worker's stdio.
 //!
 //! One worker process decodes one audio file, from a start position to its
-//! end, for a player. The worker opens nothing: it asks the host for the
-//! byte ranges its demuxer reads and answers with decoded PCM. Each frame is
-//! a four-byte big-endian length, then that many bytes of body, which start
-//! with a one-byte tag:
+//! end, for a player; or cuts a short sample of it, re-encoded as MP3, for a
+//! book's details. The worker opens nothing: it asks the host for the byte
+//! ranges its demuxer reads and answers with decoded PCM, or with the
+//! sample's MP3 bytes. Each frame is a four-byte big-endian length, then
+//! that many bytes of body, which start with a one-byte tag:
 //!
 //! | Direction | Frame | Body after the tag |
 //! | --- | --- | --- |
 //! | host → worker | `Open` (0) | `size: u64`, `start_ms: u64` |
 //! | host → worker | `Data` (1) | `offset: u64`, then the span's bytes |
+//! | host → worker | `Sample` (2) | `size: u64`, `start_ms: u64`, `length_ms: u64` |
 //! | worker → host | `Need` (0) | `offset: u64`, `len: u32` |
 //! | worker → host | `Format` (1) | `sample_rate: u32`, `channels: u8`, `start_ms: u64`, `duration_ms: u64` |
 //! | worker → host | `Pcm` (2) | interleaved signed 16-bit samples, little-endian |
 //! | worker → host | `End` (3) | nothing |
 //! | worker → host | `Failed` (4) | a UTF-8 message of at most [`MAX_ERROR_BYTES`] |
+//! | worker → host | `Encoded` (5) | 1 to [`MAX_ENCODED_BYTES`] bytes of MP3 |
+//!
+//! The first request is `Open` or `Sample`, and only once. After `Open` the
+//! worker streams `Pcm` frames; after `Sample` it streams `Encoded` frames,
+//! whose `Format` states the encoded layout (mono, at most
+//! [`MAX_SAMPLE_OUTPUT_HZ`]).
 //!
 //! Integers in headers are big-endian; samples are little-endian, the
 //! byte order every platform the worker ships on uses natively. A
@@ -24,7 +32,8 @@
 //! The worker parses untrusted files, so the host treats it as compromised:
 //! [`ReplyReader`] checks every length and field of each frame, and
 //! [`ReplyOrder`] checks the stream as a whole (one `Format` before any
-//! `Pcm`, whole frames of samples, nothing after `End` or `Failed`). The
+//! `Pcm` or `Encoded`, whole frames of samples, only the kind of payload the
+//! request asked for, nothing after `End` or `Failed`). The
 //! host still checks each `Need` against the file it is reading.
 
 use crate::decode::MAX_SAMPLE_RATE_HZ;
@@ -48,6 +57,20 @@ pub const MAX_REQUEST_BODY: usize = 9 + MAX_NEED_BYTES as usize;
 /// Largest reply body: a tag and a `Pcm` frame at its largest.
 pub const MAX_REPLY_BODY: usize = 1 + 2 * MAX_PCM_SAMPLES;
 
+/// Most MP3 bytes one `Encoded` frame carries (128 KiB).
+pub const MAX_ENCODED_BYTES: usize = 128 * 1024;
+
+// An `Encoded` reply (tag byte plus MP3) fits the reply body limit.
+const _: () = assert!(MAX_ENCODED_BYTES < MAX_REPLY_BODY);
+
+/// Longest sample a `Sample` request may ask for, in milliseconds (ten
+/// minutes); the worker cuts a longer request to this.
+pub const MAX_SAMPLE_MS: u64 = 10 * 60 * 1000;
+
+/// Highest sample rate a sample is encoded at, in Hz; a faster source is
+/// resampled down to it (MP3 tops out at 48 kHz).
+pub const MAX_SAMPLE_OUTPUT_HZ: u32 = 48_000;
+
 /// The `duration_ms` a `Format` frame carries when the container states
 /// no duration.
 pub const UNKNOWN_DURATION: u64 = u64::MAX;
@@ -60,6 +83,8 @@ pub const MAX_POSITION_MS: u64 = 60 * 24 * 60 * 60 * 1000;
 const OPEN: u8 = 0;
 /// Request tag of [`PcmRequest::Data`].
 const DATA: u8 = 1;
+/// Request tag of [`PcmRequest::Sample`].
+const SAMPLE: u8 = 2;
 /// Reply tag of [`PcmReply::Need`].
 const NEED: u8 = 0;
 /// Reply tag of [`PcmReply::Format`].
@@ -70,6 +95,8 @@ const PCM: u8 = 2;
 const END: u8 = 3;
 /// Reply tag of [`PcmReply::Failed`].
 const FAILED: u8 = 4;
+/// Reply tag of [`PcmReply::Encoded`].
+const ENCODED: u8 = 5;
 
 /// Why a frame, or the stream of frames, could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -126,6 +153,18 @@ pub enum PcmRequest {
         /// The span's bytes.
         bytes: Vec<u8>,
     },
+    /// Cut `length_ms` of a file of `size` bytes from `start_ms` and encode
+    /// it as MP3. The first frame on the worker's stdin, instead of `Open`.
+    Sample {
+        /// The file's size in bytes.
+        size: u64,
+        /// Where the sample starts, in milliseconds from the start of the
+        /// file.
+        start_ms: u64,
+        /// How long it runs, in milliseconds; at most [`MAX_SAMPLE_MS`] is
+        /// cut, and less when the file ends first.
+        length_ms: u64,
+    },
 }
 
 /// The layout of the PCM that follows, and where it starts.
@@ -152,7 +191,8 @@ pub enum PcmReply {
         /// Its length in bytes: 1 to [`MAX_NEED_BYTES`].
         len: u32,
     },
-    /// The PCM layout; sent once, before the first `Pcm`.
+    /// The PCM layout, or for a sample the encoded layout; sent once,
+    /// before the first `Pcm` or `Encoded`.
     Format(PcmHeader),
     /// Decoded samples, interleaved, a whole number of frames.
     Pcm(Vec<i16>),
@@ -163,6 +203,9 @@ pub enum PcmReply {
         /// Why, for logs; at most [`MAX_ERROR_BYTES`].
         message: String,
     },
+    /// The next bytes of a sample's MP3 stream: 1 to
+    /// [`MAX_ENCODED_BYTES`].
+    Encoded(Vec<u8>),
 }
 
 /// Reads a frame's length prefix.
@@ -211,6 +254,16 @@ pub fn encode_request(request: &PcmRequest) -> Result<Vec<u8>, PcmWireError> {
             body.extend_from_slice(&offset.to_be_bytes());
             body.extend_from_slice(bytes);
         }
+        PcmRequest::Sample {
+            size,
+            start_ms,
+            length_ms,
+        } => {
+            body.push(SAMPLE);
+            body.extend_from_slice(&size.to_be_bytes());
+            body.extend_from_slice(&start_ms.to_be_bytes());
+            body.extend_from_slice(&length_ms.to_be_bytes());
+        }
     }
     framed(body)
 }
@@ -235,6 +288,11 @@ pub fn decode_request(body: &[u8]) -> Result<PcmRequest, PcmWireError> {
             offset: reader.u64()?,
             bytes: reader.rest().to_vec(),
         },
+        SAMPLE => PcmRequest::Sample {
+            size: reader.u64()?,
+            start_ms: reader.u64()?,
+            length_ms: reader.u64()?,
+        },
         tag => return Err(PcmWireError::UnknownTag(tag)),
     };
     reader.finish()?;
@@ -248,7 +306,8 @@ pub fn decode_request(body: &[u8]) -> Result<PcmRequest, PcmWireError> {
 /// # Errors
 ///
 /// [`PcmWireError::BadSamples`] for a `Pcm` frame with no samples or more
-/// than [`MAX_PCM_SAMPLES`].
+/// than [`MAX_PCM_SAMPLES`], or an `Encoded` frame with no bytes or more
+/// than [`MAX_ENCODED_BYTES`].
 pub fn encode_reply(reply: &PcmReply) -> Result<Vec<u8>, PcmWireError> {
     let mut body = Vec::new();
     match reply {
@@ -278,6 +337,14 @@ pub fn encode_reply(reply: &PcmReply) -> Result<Vec<u8>, PcmWireError> {
         PcmReply::Failed { message } => {
             body.push(FAILED);
             body.extend_from_slice(cut(message, MAX_ERROR_BYTES).as_bytes());
+        }
+        PcmReply::Encoded(bytes) => {
+            if bytes.is_empty() || bytes.len() > MAX_ENCODED_BYTES {
+                return Err(PcmWireError::BadSamples);
+            }
+            body.reserve(1 + bytes.len());
+            body.push(ENCODED);
+            body.extend_from_slice(bytes);
         }
     }
     framed(body)
@@ -348,6 +415,13 @@ pub fn decode_reply(body: &[u8]) -> Result<PcmReply, PcmWireError> {
                 .map_err(|_| PcmWireError::BadMessage)?
                 .to_owned();
             PcmReply::Failed { message }
+        }
+        ENCODED => {
+            let bytes = reader.rest();
+            if bytes.is_empty() || bytes.len() > MAX_ENCODED_BYTES {
+                return Err(PcmWireError::BadSamples);
+            }
+            PcmReply::Encoded(bytes.to_vec())
         }
         tag => return Err(PcmWireError::UnknownTag(tag)),
     };
@@ -422,23 +496,43 @@ impl ReplyReader {
 /// of each frame's own checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReplyOrder {
-    /// No `Format` yet: only `Need`, `Format` or `Failed` may come.
+    /// No `Format` yet after `Open`: only `Need`, `Format` or `Failed` may
+    /// come.
     #[default]
     Opening,
+    /// No `Format` yet after `Sample`: only `Need`, `Format` or `Failed`
+    /// may come.
+    OpeningSample,
     /// Streaming samples in the stated layout.
     Streaming(PcmHeader),
+    /// Streaming a sample's MP3 bytes, encoded in the stated layout.
+    Encoding(PcmHeader),
     /// `End` or `Failed` came; nothing more may.
     Done,
 }
 
 impl ReplyOrder {
+    /// The order a stream opened by `request` starts in: [`Self::Opening`]
+    /// for `Open`, [`Self::OpeningSample`] for `Sample`, and
+    /// [`Self::Done`] (nothing may come) for `Data`, which opens nothing.
+    #[must_use]
+    pub fn for_request(request: &PcmRequest) -> Self {
+        match request {
+            PcmRequest::Open { .. } => Self::Opening,
+            PcmRequest::Sample { .. } => Self::OpeningSample,
+            PcmRequest::Data { .. } => Self::Done,
+        }
+    }
+
     /// Checks that `reply` may come next and moves past it.
     ///
     /// # Errors
     ///
-    /// [`PcmWireError::OutOfOrder`] for `Pcm` or `End` before `Format`, a
-    /// second `Format`, samples that are not a whole number of frames, or
-    /// any frame after `End` or `Failed`. The order is then
+    /// [`PcmWireError::OutOfOrder`] for `Pcm`, `Encoded` or `End` before
+    /// `Format`, a second `Format`, samples that are not a whole number of
+    /// frames, `Encoded` in a PCM stream or `Pcm` in a sample's, a sample
+    /// format that is not mono or over [`MAX_SAMPLE_OUTPUT_HZ`], or any
+    /// frame after `End` or `Failed`. The order is then
     /// [`ReplyOrder::Done`].
     pub fn check(&mut self, reply: &PcmReply) -> Result<(), PcmWireError> {
         let next = match (*self, reply) {
@@ -446,7 +540,27 @@ impl ReplyOrder {
             (_, PcmReply::Failed { .. }) => Ok(Self::Done),
             (Self::Opening, PcmReply::Need { .. }) => Ok(Self::Opening),
             (Self::Opening, PcmReply::Format(header)) => Ok(Self::Streaming(*header)),
-            (Self::Opening, PcmReply::Pcm(_) | PcmReply::End) => Err("samples before the format"),
+            (Self::Opening, PcmReply::Pcm(_) | PcmReply::Encoded(_) | PcmReply::End) => {
+                Err("samples before the format")
+            }
+            (Self::OpeningSample, PcmReply::Need { .. }) => Ok(Self::OpeningSample),
+            (Self::OpeningSample, PcmReply::Format(header)) => {
+                if header.channels == 1 && header.sample_rate <= MAX_SAMPLE_OUTPUT_HZ {
+                    Ok(Self::Encoding(*header))
+                } else {
+                    Err("a sample format that is not mono or is too fast")
+                }
+            }
+            (Self::OpeningSample, PcmReply::Pcm(_) | PcmReply::Encoded(_) | PcmReply::End) => {
+                Err("a sample before the format")
+            }
+            (Self::Encoding(_), PcmReply::Format(_)) => Err("a second format"),
+            (Self::Encoding(header), PcmReply::Need { .. } | PcmReply::Encoded(_)) => {
+                Ok(Self::Encoding(header))
+            }
+            (Self::Encoding(_), PcmReply::Pcm(_)) => Err("samples in a sample's stream"),
+            (Self::Encoding(_), PcmReply::End) => Ok(Self::Done),
+            (Self::Streaming(_), PcmReply::Encoded(_)) => Err("encoded bytes in a PCM stream"),
             (Self::Streaming(_), PcmReply::Format(_)) => Err("a second format"),
             (Self::Streaming(header), PcmReply::Need { .. }) => Ok(Self::Streaming(header)),
             (Self::Streaming(header), PcmReply::Pcm(samples)) => {
@@ -554,6 +668,11 @@ mod tests {
                 offset: 3,
                 bytes: vec![1, 2, 3],
             },
+            PcmRequest::Sample {
+                size: 9,
+                start_ms: 7,
+                length_ms: 300_000,
+            },
         ] {
             let frame = encode_request(&request).unwrap();
             assert_eq!(body_len(*frame.first_chunk().unwrap()), frame.len() - 4);
@@ -574,6 +693,8 @@ mod tests {
             PcmReply::Failed {
                 message: "nope".into(),
             },
+            PcmReply::Encoded(vec![0xff, 0xfb, 0x90]),
+            PcmReply::Encoded(vec![7; MAX_ENCODED_BYTES]),
         ] {
             let frame = encode_reply(&reply).unwrap();
             assert_eq!(decode_reply(&frame[4..]).unwrap(), reply);
@@ -621,6 +742,14 @@ mod tests {
         assert_eq!(decode_reply(&[FAILED, 0xff]), Err(PcmWireError::BadMessage));
         assert_eq!(
             encode_reply(&PcmReply::Pcm(vec![0; MAX_PCM_SAMPLES + 1])),
+            Err(PcmWireError::BadSamples)
+        );
+        assert_eq!(decode_reply(&[ENCODED]), Err(PcmWireError::BadSamples));
+        let mut long = vec![ENCODED];
+        long.resize(2 + MAX_ENCODED_BYTES, 1);
+        assert_eq!(decode_reply(&long), Err(PcmWireError::BadSamples));
+        assert_eq!(
+            encode_reply(&PcmReply::Encoded(Vec::new())),
             Err(PcmWireError::BadSamples)
         );
     }
@@ -685,5 +814,58 @@ mod tests {
             })
             .unwrap();
         assert_eq!(failed, ReplyOrder::Done);
+    }
+
+    #[test]
+    fn a_sample_stream_admits_only_mono_mp3_after_its_format() {
+        let open = PcmRequest::Open {
+            size: 1,
+            start_ms: 0,
+        };
+        let sample = PcmRequest::Sample {
+            size: 1,
+            start_ms: 0,
+            length_ms: 1,
+        };
+        assert_eq!(ReplyOrder::for_request(&open), ReplyOrder::Opening);
+        assert_eq!(ReplyOrder::for_request(&sample), ReplyOrder::OpeningSample);
+        let mono = PcmHeader {
+            channels: 1,
+            ..header()
+        };
+        // A PCM stream refuses encoded bytes.
+        let mut pcm = ReplyOrder::default();
+        pcm.check(&PcmReply::Format(header())).unwrap();
+        assert!(pcm.check(&PcmReply::Encoded(vec![1])).is_err());
+        // A sample refuses a stereo or too fast format, and bytes before it.
+        assert!(ReplyOrder::OpeningSample
+            .check(&PcmReply::Format(header()))
+            .is_err());
+        assert!(ReplyOrder::OpeningSample
+            .check(&PcmReply::Format(PcmHeader {
+                sample_rate: MAX_SAMPLE_OUTPUT_HZ + 1,
+                ..mono
+            }))
+            .is_err());
+        assert!(ReplyOrder::OpeningSample
+            .check(&PcmReply::Encoded(vec![1]))
+            .is_err());
+        let mut order = ReplyOrder::for_request(&sample);
+        order.check(&PcmReply::Need { offset: 0, len: 1 }).unwrap();
+        order.check(&PcmReply::Format(mono)).unwrap();
+        assert!(order.clone().check(&PcmReply::Pcm(vec![1])).is_err());
+        assert!(order.clone().check(&PcmReply::Format(mono)).is_err());
+        order.check(&PcmReply::Encoded(vec![1, 2, 3])).unwrap();
+        order.check(&PcmReply::Need { offset: 5, len: 1 }).unwrap();
+        order.check(&PcmReply::End).unwrap();
+        assert_eq!(order, ReplyOrder::Done);
+        // `Data` opens nothing.
+        let data = PcmRequest::Data {
+            offset: 0,
+            bytes: Vec::new(),
+        };
+        assert!(ReplyOrder::for_request(&data)
+            .check(&PcmReply::Need { offset: 0, len: 1 })
+            .is_err());
     }
 }

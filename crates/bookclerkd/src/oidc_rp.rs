@@ -2330,6 +2330,7 @@ mod http_tests {
             in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
+            samples: Arc::new(crate::samples::SampleService::detached()),
         });
         let app = crate::api::router(state.clone(), None);
         (state, app, library)

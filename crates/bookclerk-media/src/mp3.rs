@@ -194,6 +194,124 @@ pub fn encode_to_mp3_native(
     })
 }
 
+/// Frames of mono PCM handed to LAME at a time by [`Mp3Stream`].
+const ENCODE_CHUNK_FRAMES: usize = 1152 * 8;
+
+/// Bit rate of a book sample: speech in mono at 64 kbit/s, about 2.4 MB
+/// for five minutes.
+const SAMPLE_BITRATE: mp3lame_encoder::Bitrate = mp3lame_encoder::Bitrate::Kbps64;
+
+/// A mono, constant bit rate MP3 encoder fed PCM in pieces, for a book
+/// sample streamed out as it is encoded (`bookclerk-media-worker pcm` in
+/// sample mode).
+///
+/// Unlike [`encode_to_mp3_native`] it writes no Xing/Info frame, which would
+/// need a seek back to the start: a constant bit rate stream has an exact
+/// running time without one.
+pub(crate) struct Mp3Stream {
+    /// The LAME encoder.
+    encoder: Encoder,
+    /// Rate conversion when the source is faster than MP3 allows.
+    resampler: Option<LinearResampler>,
+    /// PCM at the output rate, waiting for a whole encode chunk.
+    pending: Vec<i16>,
+}
+
+impl Mp3Stream {
+    /// Encoder for mono PCM at `source_hz`, encoded at the same rate or at
+    /// `max_hz` when the source is faster.
+    ///
+    /// # Returns
+    ///
+    /// The encoder and the rate it encodes at, in Hz.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::Native`] when LAME refuses the settings.
+    pub(crate) fn new(source_hz: u32, max_hz: u32) -> Result<(Self, u32)> {
+        let target = source_hz.min(max_hz);
+        let mut builder = Builder::new()
+            .ok_or_else(|| MediaError::Native("failed to create LAME encoder (mp3lame)".into()))?;
+        builder
+            .set_num_channels(1)
+            .map_err(|err| MediaError::Native(format!("lame channels: {err:?}")))?;
+        builder
+            .set_sample_rate(target)
+            .map_err(|err| MediaError::Native(format!("lame sample rate: {err:?}")))?;
+        builder
+            .set_vbr_mode(mp3lame_encoder::VbrMode::Off)
+            .map_err(|err| MediaError::Native(format!("lame cbr mode: {err:?}")))?;
+        builder
+            .set_brate(SAMPLE_BITRATE)
+            .map_err(|err| MediaError::Native(format!("lame bitrate: {err:?}")))?;
+        builder
+            .set_to_write_vbr_tag(false)
+            .map_err(|err| MediaError::Native(format!("lame tag frame: {err:?}")))?;
+        let encoder = builder
+            .build()
+            .map_err(|err| MediaError::Native(format!("lame build: {err:?}")))?;
+        let resampler = (target != source_hz).then(|| LinearResampler::new(source_hz, target, 1));
+        Ok((
+            Self {
+                encoder,
+                resampler,
+                pending: Vec::new(),
+            },
+            target,
+        ))
+    }
+
+    /// Encodes `pcm` (mono samples at the source rate).
+    ///
+    /// # Returns
+    ///
+    /// The MP3 bytes ready so far; often empty, since LAME holds a few
+    /// frames back.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::Native`] when LAME fails.
+    pub(crate) fn push(&mut self, pcm: &[i16]) -> Result<Vec<u8>> {
+        match self.resampler.as_mut() {
+            Some(resampler) => resampler.push(pcm, &mut self.pending),
+            None => self.pending.extend_from_slice(pcm),
+        }
+        let mut out = Vec::new();
+        let whole = self.pending.len() - self.pending.len() % ENCODE_CHUNK_FRAMES;
+        if whole > 0 {
+            for chunk in self.pending[..whole].chunks(ENCODE_CHUNK_FRAMES) {
+                encode_pcm_chunk(&mut self.encoder, chunk, 1, &mut out)?;
+            }
+            self.pending.drain(..whole);
+        }
+        Ok(out)
+    }
+
+    /// Encodes what is left and flushes LAME.
+    ///
+    /// # Returns
+    ///
+    /// The last MP3 bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::Native`] when LAME fails.
+    pub(crate) fn finish(mut self) -> Result<Vec<u8>> {
+        if let Some(resampler) = self.resampler.as_mut() {
+            resampler.flush(&mut self.pending);
+        }
+        let mut out = Vec::new();
+        if !self.pending.is_empty() {
+            encode_pcm_chunk(&mut self.encoder, &self.pending, 1, &mut out)?;
+        }
+        out.reserve(mp3lame_encoder::max_required_buffer_size(0));
+        self.encoder
+            .flush_to_vec::<FlushGap>(&mut out)
+            .map_err(|err| MediaError::Native(format!("lame flush: {err:?}")))?;
+        Ok(out)
+    }
+}
+
 /// Encodes 1152×8-frame PCM chunks through LAME and appends MP3 bytes to `out_file`.
 fn drain_encode_chunks(
     encoder: &mut Encoder,

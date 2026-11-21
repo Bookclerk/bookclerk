@@ -568,7 +568,7 @@ title is **not** in the household library.
   title-meta gap-fills from storefront `catalog_detail` (narrator, runtime,
   description, publisher, genres, abridged): the request carries the title's
   `store_editions` (at most 16), and the host asks each listing store that
-  declares `catalog.detailByProductId` (Libro.fm, GraphicAudio) for its own
+  declares `catalog.detailByProductId` (Audible, Libro.fm, GraphicAudio) for its own
   product (two at most), then the stores that declare `catalog.detailByIsbn`
   (Libro.fm) for the ISBN, three lookups and 3.5 s at most. No plugin id is
   named. `POST /api/discover/title-meta/batch` answers every title within
@@ -580,6 +580,14 @@ title is **not** in the household library.
   genres/runtime without N+1 product fetches inside each store’s
   `search_catalog`. See
   [Catalog search capabilities](../plugins/abi.md#catalog-search-capabilities).
+- **Samples.** The dialog's **Sample** control plays a short preview that
+  never counts as listening. For a held edition it is cut from the file
+  (`GET /api/library/editions/{id}/sample`). Otherwise
+  `POST /api/discover/title-sample` takes the title-meta body, asks the
+  same stores in the same order for a catalog record with a `sampleUrl`
+  (10 s at most, answers cached six hours), and answers a same-origin
+  `/api/samples/{token}` path the daemon serves. See
+  [Book samples](../adr/book-samples.md).
 
 Multi-region storefronts are deferred (US default for now).
 

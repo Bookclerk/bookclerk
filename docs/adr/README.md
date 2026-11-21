@@ -74,6 +74,9 @@ a later change supersedes one, its **Status** says so.
 - [Player API](player-api.md): the host serves apps made for
   Audiobookshelf servers at `/player`, with player cards and no account
   password.
+- [Book samples](book-samples.md): a book's details play a short sample,
+  cut by the media worker from a held edition or fetched from a
+  storefront's public sample, which never counts as listening.
 
 ## Adding a record
 

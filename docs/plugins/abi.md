@@ -1302,7 +1302,8 @@ and enrichment by declaring it:
   search, expand and deals hits carry to a full record. The host then asks
   your store to fill the lean rows it listed (as above, but by your product
   id only), and a title dialog asks it for the editions it listed before
-  any ISBN store. A store that leaves it off is never woken for a detail
+  any ISBN store, for details and for a `sampleUrl` when someone presses
+  **Sample**. A store that leaves it off is never woken for a detail
   lookup.
 
 - **Price lookup by identifier.** Set `catalog.priceByIsbn` and
@@ -1371,6 +1372,7 @@ records. Both describe a title in structured fields, following the
 | `parentProductId` | The show's product id, on a podcast episode. Only podcasts keep it |
 | `language`, `abridgement` | Content language, and `unknown` (the default), `unabridged` or `abridged` |
 | `explicitness` | Whether the store marks the edition as explicit (adult) content: `unknown` (the default), `clean` or `explicit`. The host keeps it on the store listing, so a patron scope can hide explicit books |
+| `sampleUrl` | `CatalogHit` only: the absolute `https` URL of the store's public audio sample of this edition, when it publishes one. The host downloads it through a cover fetcher (`media = audio`) and cuts it into a book sample; a client never sees the URL (see [Book samples](../adr/book-samples.md)) |
 
 Every record names all three kinds. Each kind enum starts with
 `unspecified`, which is what a record that forgets the field sends, and
@@ -1471,10 +1473,15 @@ The typed methods on `CoverFetcher` and `CoverEntrypoint` are:
 | Method | Notes |
 | --- | --- |
 | `health` | Liveness and readiness |
-| `fetchCovers` | `({ urls, maxBytes, conditions }, sink)` → `CoverImage[]`. Fetch each URL and put its body into `sink` under the key `String(i)`, where `i` is the URL's index. Answer one `CoverImage` per URL, in request order: `{ url, stored, notModified, contentType?, error?, etag?, lastModified?, cacheControl?, expires?, date?, age? }` |
+| `fetchCovers` | `({ urls, maxBytes, conditions, media }, sink)` → `CoverImage[]`. Fetch each URL and put its body into `sink` under the key `String(i)`, where `i` is the URL's index. Answer one `CoverImage` per URL, in request order: `{ url, stored, notModified, contentType?, error?, etag?, lastModified?, cacheControl?, expires?, date?, age? }` |
 
 - `urls` holds 1 to `MAX_COVER_URLS` (32) absolute `https` URLs, and
   `maxBytes` is at most `MAX_COVER_BYTES` (10 MiB).
+- `media` is `image` (covers, the default) or `audio` (a storefront's
+  public sample, for [book samples](../adr/book-samples.md)). Send
+  `Accept: image/*` or `audio/*` to match, and answer a body whose
+  `Content-Type` is plainly not that kind with `stored: false` and an
+  error. The host still checks the real type of every body itself.
 - `conditions` holds the validators the host already has, by index, and
   may be shorter than `urls`. Send `conditions[i].ifNoneMatch` as
   `If-None-Match` and `conditions[i].ifModifiedSince` as

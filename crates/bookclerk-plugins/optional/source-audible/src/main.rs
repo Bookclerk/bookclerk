@@ -5,13 +5,13 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::{manifest_capabilities, manifest_media};
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogCapabilities, CatalogHit, ContentSource as ContentSourceRole,
-    Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
-    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginDescribe,
-    PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    PurchaseHintResult, PurchaseHintsParams, QualityOffersParams, QualityOffersResult,
-    RevokeAccountParams, ScalarLimits, ScanPage, ScanParams, SearchCatalogParams,
-    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, Bindings, Brand, CatalogCapabilities, CatalogDetailParams, CatalogHit,
+    ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
+    HealthOk, Invocation, ListDealsParams, LoginCompleteParams, LoginParams, LoginResult,
+    LoginStartResult, PlainFetch, PluginDescribe, PluginError, PluginWorker, PortalAuthMode,
+    PurchaseHint, PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, QualityOffersParams,
+    QualityOffersResult, RevokeAccountParams, ScalarLimits, ScanPage, ScanParams,
+    SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_source_audible::catalog;
 use bookclerk_storefront::abi::{credentials_from_bytes, expand_seed_from_params};
@@ -44,15 +44,16 @@ impl PluginWorker for AudibleRoot {
                     "https://www.google.com/s2/favicons?domain=audible.com&sz=128".into(),
                 ),
             }),
-            // Audible's catalog details take an ASIN, not an ISBN; its search
-            // hits carry `rank_hint` instead. A price lookup by ASIN prices
-            // exactly that product, with no search. Quality offers come from
-            // the content metadata endpoint, which licenses nothing.
+            // Audible's catalog details take an ASIN (its product id), not
+            // an ISBN; its search hits carry `rank_hint` instead. A price
+            // lookup by ASIN prices exactly that product, with no search.
+            // Quality offers come from the content metadata endpoint, which
+            // licenses nothing.
             catalog: CatalogCapabilities {
                 detail_by_isbn: false,
                 price_by_isbn: false,
                 price_by_asin: true,
-                detail_by_product_id: false,
+                detail_by_product_id: true,
                 quality_offers: true,
             },
             ..PluginDescribe::default()
@@ -183,6 +184,17 @@ impl ContentSourceRole for AudibleContentSource {
         catalog::search_catalog(&CatalogSearchOpts::from(params))
             .await
             .map(hits)
+            .map_err(internal)
+    }
+
+    /// The public catalog record for an ASIN, with its audio sample.
+    async fn catalog_detail(
+        &self,
+        params: CatalogDetailParams,
+    ) -> Result<Option<CatalogHit>, PluginError> {
+        catalog::catalog_detail(&params.product_id)
+            .await
+            .map(|hit| hit.map(Into::into))
             .map_err(internal)
     }
 

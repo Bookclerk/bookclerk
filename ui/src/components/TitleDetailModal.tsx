@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Bookmark, Download, ExternalLink, Play, Trash2, X } from "lucide-react";
 import { BranchRequestButtons } from "@/components/BranchRequestButtons";
+import { SampleButton } from "@/components/SampleButton";
 import { StarRating } from "@/components/StarRating";
 import { Badge } from "@/components/ui/badge";
 import { storeBadgeSources } from "@/lib/storeBadges";
@@ -1192,6 +1193,17 @@ export function TitleDetailModal({
               Wishlisted
             </Button>
           ) : null}
+          <SampleButton
+            key={`${detail.library_edition_id ?? ""}|${detail.title}`}
+            editionId={detail.library_edition_id}
+            query={{
+              title: detail.title,
+              authors: detail.authors,
+              asin: detail.asin,
+              isbn: detail.isbn,
+              store_editions: detail.store_editions ?? [],
+            }}
+          />
           {onPlay ? (
             <Button onClick={onPlay}>
               <Play className="h-4 w-4" />
