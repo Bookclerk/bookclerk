@@ -297,6 +297,8 @@ pub(crate) enum EntitlementJson {
     Loan,
     /// Given away by the store.
     Free,
+    /// The holder's own copy, uploaded rather than bought.
+    Own,
 }
 
 impl From<Entitlement> for EntitlementJson {
@@ -306,6 +308,7 @@ impl From<Entitlement> for EntitlementJson {
             Entitlement::Plus => Self::Plus,
             Entitlement::Loan => Self::Loan,
             Entitlement::Free => Self::Free,
+            Entitlement::Own => Self::Own,
         }
     }
 }
@@ -421,6 +424,12 @@ pub(crate) enum HolderJson {
         /// The node id.
         #[schema(example = "9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e")]
         node_id: String,
+    },
+    /// A patron who uploaded the book.
+    Patron {
+        /// The person's user id.
+        #[schema(example = 3)]
+        user_id: i64,
     },
 }
 
@@ -703,6 +712,7 @@ fn holding_json(holding: ListingHolding) -> HoldingJson {
                 account_id,
             },
             HoldingHolder::Node { node_id } => HolderJson::Node { node_id },
+            HoldingHolder::Patron { user_id } => HolderJson::Patron { user_id },
         },
         entitlement: holding.entitlement.into(),
         purchased_at: holding.purchased_at,

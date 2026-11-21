@@ -481,6 +481,7 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
                 j_str(&p.plugin_key),
                 j_str(&account),
                 j_opt_str(None),
+                j_opt_i64(None),
                 "EXISTS (SELECT 1 FROM accounts WHERE plugin_key = ? AND account_id = ? \
                  AND connection_status <> 'revoked')",
                 vec![j_str(&p.plugin_key), j_str(&account)],
@@ -490,14 +491,28 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
                 j_opt_str(None),
                 j_opt_str(None),
                 j_str(&node),
+                j_opt_i64(None),
                 "EXISTS (SELECT 1 FROM nodes WHERE node_id = ? AND share_books = 1) \
                  AND EXISTS (SELECT 1 FROM node_credentials \
                  WHERE node_id = ? AND revoked_at IS NULL)",
                 vec![j_str(&node), j_str(&node)],
             )),
+            // A patron holding is an upload's: written only while the
+            // person is still an active member.
+            Some(bookclerk_resolve::Holder::Patron(user)) => Some((
+                "patron",
+                j_opt_str(None),
+                j_opt_str(None),
+                j_opt_str(None),
+                j_i64(user),
+                "EXISTS (SELECT 1 FROM users WHERE id = ? AND status = 'active')",
+                vec![j_i64(user)],
+            )),
             None => None,
         };
-        if let Some((kind, plugin_key, account_id, node_id, holder_exists, holder_binds)) = typed {
+        if let Some((kind, plugin_key, account_id, node_id, user_id, holder_exists, holder_binds)) =
+            typed
+        {
             let mut binds = vec![
                 j_str(&h.holding_id),
                 j_str(&p.listing_id),
@@ -506,6 +521,7 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
                 plugin_key,
                 account_id,
                 node_id,
+                user_id,
                 j_str(&h.entitlement),
                 j_opt_str(h.purchased_at.as_deref()),
                 j_str(now),
@@ -517,8 +533,8 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
                 &format!(
                     "INSERT OR IGNORE INTO holdings \
                      (id, listing_id, holder, holder_kind, plugin_key, account_id, node_id, \
-                      entitlement, purchased_at, created_at, updated_at) \
-                     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {holder_exists} AND {is_linked}"
+                      user_id, entitlement, purchased_at, created_at, updated_at) \
+                     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {holder_exists} AND {is_linked}"
                 ),
                 binds,
             ));

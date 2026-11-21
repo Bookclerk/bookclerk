@@ -26,6 +26,7 @@ on:
       - "crates/bookclerk-node-proto/**"
       - "crates/bookclerk-cover/**"
       - "crates/bookclerk-tags/**"
+      - "crates/bookclerk-archive/**"
       - "crates/bookclerk-media/**"
       - "crates/bookclerk-config/**"
       - "crates/bookclerk-storefront/**"

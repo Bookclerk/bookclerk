@@ -18,4 +18,5 @@ pub mod plugin_installs;
 pub mod plugins;
 pub(crate) mod queued;
 pub mod queues;
+pub mod upload;
 pub mod users;

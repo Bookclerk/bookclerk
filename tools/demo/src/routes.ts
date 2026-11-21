@@ -247,6 +247,15 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/preferences", "allow"],
   ["PATCH", "/api/preferences", "allow"],
 
+  // Uploads: readable, never started; the demo stores no files.
+  ["GET", "/api/uploads", "allow"],
+  ["POST", "/api/uploads", "deny"],
+  ["GET", "/api/uploads/review", "allow"],
+  ["GET", "/api/uploads/{id}", "allow"],
+  ["DELETE", "/api/uploads/{id}", "deny"],
+  ["POST", "/api/uploads/{id}/commit", "deny"],
+  ["PATCH", "/api/uploads/{id}/files/{member_no}", "deny"],
+
   // Store accounts. Every way of starting a store sign-in is counted.
   ["GET", "/api/portal/me", "allow"],
   ["GET", "/api/portal/sources", "allow"],

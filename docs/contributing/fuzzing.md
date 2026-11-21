@@ -37,6 +37,8 @@ boundary extends it.
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
+| `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
+| `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
 | `media_decode` | Audio the media worker demuxes and decodes before it encodes or repackages it: store downloads, library copies and files on storage, recognised by their bytes, never their names | `bookclerk-media::decode_pcm_bytes` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
@@ -77,6 +79,7 @@ boundary extends it.
 | `sharing_request` | A branch's sharing and work settings for one library, the body of `POST /api/config/join/sharing` | `bookclerk-library::control_plane::parse_sharing_request` |
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests` | `bookclerk-library::control_plane::parse_branch_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
+| `upload_manifest` | What a patron sends to start and fill an upload: the body of `POST /api/uploads` and the `Upload-Offset` header of each `PATCH /api/uploads/{id}/files/{member_no}` | `bookclerk-library::control_plane::parse_upload_manifest`, `parse_upload_offset` |
 | `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
 | `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
@@ -265,6 +268,20 @@ only that. The others check:
   An accepted record passes the host's `TagRecord::validate` and survives
   the worker's `Done` frame unchanged. The shared oracle is
   `fuzz/oracles/tags_read.rs`, replayed from `bookclerk-tags`.
+- **`archive_extract`**: the input is an archive, walked twice into memory
+  under small caps. The walk is deterministic, its report validates under
+  the caps it ran with, every written path stays inside the folder by a
+  rule written apart from the crate's (relative, no empty, `.` or `..`
+  component, no `\`, `:` or control character), no two paths fold to one
+  name, and the sink holds exactly the files the report lists with the
+  sizes it states. The shared oracle is `fuzz/oracles/archive_extract.rs`,
+  replayed from `bookclerk-archive`.
+- **`archive_report`**: the input is a worker's JSON report. A report the
+  host accepts names only paths that stay inside the folder by the same
+  independent rule, in canonical form and none folding to another, with
+  sizes that sum to its total within every cap, and it re-serialises to a
+  report that reads back the same. The shared oracle is
+  `fuzz/oracles/archive_report.rs`, replayed from `bookclerk-archive`.
 - **`tags_wire`**: the first byte picks the request or the reply decoder.
   An accepted request, `Need` or `Failed` frame re-encodes to exactly its
   own bytes; a `Need` names one to 64 non-empty, non-overflowing spans; a
@@ -622,6 +639,19 @@ only that. The others check:
   `_` and `-`. The parser then returns that trimmed id and the boolean,
   and otherwise refuses it as `Invalid`. The shared oracle is
   `fuzz/oracles/members_books_request.rs`, replayed from
+  `bookclerk-library`.
+- **`upload_manifest`**: the first byte picks the input (`m` for a
+  manifest, `o` for an `Upload-Offset` value). A manifest is accepted
+  exactly when it is JSON with no repeated keys holding `files` (an object
+  with only that key, or the one-element array form serde also reads),
+  at most 10,000 files, each an object of `path` (a string), `size` (an
+  unsigned integer) and optional `sha256` (`null` or 64 hex digits) and
+  nothing else, or the two- or three-element array form, with every path
+  admitted by the archive path policy. The specs keep order, sizes and
+  lower-cased digests, and no admitted path is absolute, empty, holds a
+  `.`, `..` or empty component, a backslash or a NUL. An offset is
+  accepted exactly when it is 1 to 19 ASCII digits that fit `i64`. The
+  shared oracle is `fuzz/oracles/upload_manifest.rs`, replayed from
   `bookclerk-library`.
 - **`member_controls_request`**: the first byte picks the body (`d` for
   the default, `u` for a patron's overrides) and the oracle reads the rest

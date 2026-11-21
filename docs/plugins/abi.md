@@ -272,8 +272,9 @@ The host `EventPublisher` writes straight into the library outbox
   the library model resolver in the same batch as the store listing they
   describe, `holding_removed` in the batch that deletes the holding,
   `edition_acquire_changed` with an acquire state change other than
-  becoming acquired, `wishlist_changed` and `listening_synced` by the library
-  after a wishlist or listening write, and `playback_started`,
+  becoming acquired, `ingest_batch_finished` when an upload or storage
+  intake batch ends, `wishlist_changed` and `listening_synced` by the
+  library after a wishlist or listening write, and `playback_started`,
   `playback_progress` and `playback_finished` by the built-in player after
   a listening write. A plugin can consume them under
   `[[events.consumers]]`, but can't declare them under
@@ -911,6 +912,14 @@ with an edition (queued, downloading, failed, or reset to not acquired)
 writes `edition_acquire_changed` (`editionId`, `titleId`, `status`, one of
 `not_acquired`, `queued`, `downloading` or `error`) in the same
 transaction. Its `source` is the book's storefront plugin id too.
+
+**`ingest_batch_finished`.** When an [upload](../server/uploads.md) or a
+storage intake batch reaches a final state, the host writes
+`ingest_batch_finished` (`batchId`; `state`, one of `done`, `failed` or
+`cancelled`; `source`, `upload` or `intake`; `intakeInstance`, the storage
+instance an intake batch read, else `null`; `detail`, why it failed, else
+`null`) in the same transaction. Its `source` is `core.import`. Each file's
+outcome stays with the batch: read `GET /api/uploads/{id}`.
 
 **Library model events.** Recording a store listing publishes, in the same
 batch as its rows:
