@@ -27,24 +27,25 @@ use bookclerk_db_exec::canonical_statement;
 use crate::column_read::only_column;
 use crate::control_plane::{load_artifact_blob, put_artifact_blob};
 use crate::entities::{
-    account_credential_revisions, account_links, account_scan_state, account_shares, accounts,
-    bookclerk_receipts, bookmarks, books, catalog_listing_optouts, catalog_lookups, claim_tickets,
-    clerk_links, configuration_audit, configuration_changes, configuration_documents, contributors,
-    copy_grants, credits, domain_events, edition_acquisitions, edition_copies, edition_files,
+    account_credential_revisions, account_downloads, account_links, account_pace,
+    account_scan_state, account_shares, accounts, admin_controls, bookclerk_receipts, bookmarks,
+    books, catalog_listing_optouts, catalog_lookups, claim_tickets, clerk_links,
+    configuration_audit, configuration_changes, configuration_documents, contributors, copy_grants,
+    credits, domain_events, edition_acquisitions, edition_copies, edition_files,
     edition_identifiers, editions, embeddings, encrypted_secrets, event_deliveries,
-    event_outbox_stats, expressions, holdings, ignored_titles, job_secret_handoffs, job_temp_paths,
-    jobs, library_identity, library_links, link_imports, link_requests, listening_progress,
-    listing_offers, node_credentials, node_enrollment_links, node_upload_sessions, nodes,
-    oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
-    patron_controls, patron_scope_keys, patron_scopes, pending_joins, playback_progress,
-    playback_sessions, player_card_tokens, player_cards, player_passwords, plugin_artifacts,
-    plugin_cron_cursors, plugin_deployments, plugin_installs, plugin_instances, plugin_kv,
-    plugin_placements, plugin_schemas, plugin_versions, portal_identities, portal_sessions,
-    remote_plugin_consents, resolution_conflicts, resolution_overrides, saved_filters,
-    security_audit_events, series, series_entries, store_listings, title_request_sources,
-    title_requests, user_invites, user_preferences, user_title_state, user_work_tags, users,
-    webauthn_challenges, webauthn_credentials, window_book_parts, window_books, work_identifiers,
-    works,
+    event_outbox_stats, expressions, holdings, ignored_titles, ingest_batches, ingest_members,
+    job_secret_handoffs, job_temp_paths, jobs, library_identity, library_links, link_imports,
+    link_requests, listening_progress, listing_offers, node_credentials, node_enrollment_links,
+    node_upload_sessions, nodes, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
+    oidc_rp_states, operator_sessions, patron_controls, patron_scope_keys, patron_scopes,
+    pending_joins, playback_progress, playback_sessions, player_card_tokens, player_cards,
+    player_passwords, plugin_artifacts, plugin_cron_cursors, plugin_deployments, plugin_installs,
+    plugin_instances, plugin_kv, plugin_placements, plugin_schemas, plugin_versions,
+    portal_identities, portal_sessions, remote_plugin_consents, resolution_conflicts,
+    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
+    store_listings, title_request_sources, title_requests, user_invites, user_preferences,
+    user_title_state, user_work_tags, users, webauthn_challenges, webauthn_credentials,
+    window_book_parts, window_books, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -80,6 +81,14 @@ pub const LEFT_BEHIND_TABLES: &[(&str, &str)] = &[
     (
         "storage_scan_rows",
         "an in-progress storage scan, which starts over",
+    ),
+    (
+        "destination_objects",
+        "derived: each destination's next listing rebuilds it",
+    ),
+    (
+        "destination_feeds",
+        "derived: feed state and listing schedule, started over",
     ),
     ("library_leases", "maintenance leases, taken again"),
     (
@@ -175,6 +184,10 @@ macro_rules! copied_entities {
         $each!(node_enrollment_links);
         $each!(accounts);
         $each!(account_scan_state);
+        // Pace overrides and cool-downs, and the download ledger, so the
+        // rolling daily budget still counts downloads made before the move.
+        $each!(account_pace);
+        $each!(account_downloads);
         $each!(portal_identities);
         // Shows before their episodes (`works.parent_work_id`).
         $each!(works);
@@ -218,6 +231,7 @@ macro_rules! copied_entities {
         $each!(embeddings);
         $each!(user_preferences);
         $each!(patron_controls);
+        $each!(admin_controls);
         $each!(patron_scopes);
         $each!(patron_scope_keys);
         $each!(encrypted_secrets);
@@ -249,6 +263,9 @@ macro_rules! copied_entities {
         $each!(window_book_parts);
         $each!(node_upload_sessions);
         $each!(jobs);
+        // Uploads keep their outcomes and review list across the move.
+        $each!(ingest_batches);
+        $each!(ingest_members);
         $each!(job_temp_paths);
         $each!(job_secret_handoffs);
         $each!(domain_events);
@@ -626,6 +643,52 @@ mod tests {
             created_at: Set("2026-01-01T00:00:00Z".into()),
             updated_at: Set("2026-01-01T00:00:00Z".into()),
         }
+    }
+
+    #[tokio::test]
+    async fn the_download_ledger_copies_so_the_pace_window_survives() {
+        let source = memory_store().await;
+        let dest = memory_store().await;
+        accounts::ActiveModel {
+            id: Set(1),
+            plugin_key: Set("path:file:///tmp/store#store".into()),
+            account_id: Set("acct".into()),
+            marketplace: Set("us".into()),
+            label: Set(None),
+            scan_enabled: Set(1),
+            source: Set("store".into()),
+            connection_status: Set("active".into()),
+            created_at: Set("2026-01-01T00:00:00Z".into()),
+            updated_at: Set("2026-01-01T00:00:00Z".into()),
+        }
+        .insert(source.db())
+        .await
+        .unwrap();
+        for (id, paced) in [("d1", 1), ("d2", 0)] {
+            account_downloads::ActiveModel {
+                id: Set(id.into()),
+                plugin_key: Set("path:file:///tmp/store#store".into()),
+                account_id: Set("acct".into()),
+                started_at_ms: Set(1_767_225_600_000),
+                job_id: Set(None),
+                paced: Set(paced),
+            }
+            .insert(source.db())
+            .await
+            .unwrap();
+        }
+        let summary = migrate_library_backend(&source, &dest, &apply())
+            .await
+            .unwrap();
+        assert_eq!(summary.tables["account_downloads"], 2);
+        let copied = account_downloads::Entity::find()
+            .all(dest.db())
+            .await
+            .unwrap();
+        assert_eq!(copied.len(), 2, "the destination keeps the rolling window");
+        assert!(copied
+            .iter()
+            .any(|row| row.id == "d1" && row.paced == 1 && row.account_id == "acct"));
     }
 
     #[tokio::test]

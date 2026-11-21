@@ -434,6 +434,55 @@ export interface PortalConnection {
   connection_status: string;
   source_enabled: boolean;
   brand?: PortalBrand;
+  /** How fast Bookclerk downloads from this account when it starts the downloads itself. */
+  pace: PortalPace;
+}
+
+/**
+ * A store account's download pace from `/api/portal/connections`: the limits
+ * in force for downloads Bookclerk starts itself (auto-acquire, upgrades,
+ * requests from other libraries). Downloads a person starts are counted but
+ * never held.
+ */
+export interface PortalPace {
+  /** `default` (the store's pace), `custom` or `unlimited`. */
+  mode: PortalPaceMode;
+  /** Downloads allowed in any rolling 24 hours; `null` for no daily budget. */
+  downloads_per_day: number | null;
+  /** Seconds between two downloads. */
+  min_gap_seconds: number;
+  /** The store's declared daily budget; `null` when none or its plugin isn't deployed here. */
+  store_downloads_per_day: number | null;
+  /** The store's declared gap; `null` when its plugin isn't deployed here. */
+  store_min_gap_seconds: number | null;
+  /** The custom daily budget, when `mode` is `custom`. */
+  custom_downloads_per_day: number | null;
+  /** The custom gap, when `mode` is `custom`. */
+  custom_min_gap_seconds: number | null;
+  /** Downloads from this account in the last 24 hours. */
+  downloads_last_day: number;
+  /** End of the store's cool-down (RFC 3339), when one is running. */
+  cooldown_until: string | null;
+  /** When the next automatic download may start (RFC 3339); `null` for now. */
+  next_automatic_at: string | null;
+}
+
+/** How a store account's pace is set. */
+export type PortalPaceMode = "default" | "custom" | "unlimited";
+
+/** Body of {@link portalSetConnectionPace}. */
+export interface PortalPaceChange {
+  /**
+   * `default`, `custom` or `unlimited`. Leave it out to only end the
+   * cool-down (with `clear_cooldown: true`) and keep the stored pace.
+   */
+  mode?: PortalPaceMode;
+  /** Custom downloads per rolling 24 hours (1 to 10000); `custom` only. */
+  downloads_per_day?: number;
+  /** Custom seconds between downloads (0 to 86400); `custom` only. */
+  min_gap_seconds?: number;
+  /** Also end a cool-down the store asked for. */
+  clear_cooldown?: boolean;
 }
 
 /**
@@ -1300,34 +1349,42 @@ export async function passkeyElevateFinish(body: {
 }
 
 /**
- * Starts operator (or elevated Owner) impersonation of another user.
+ * Starts operator (or elevated Owner) impersonation of another user,
+ * after the work registered with {@link beforeSignOut}: what is playing
+ * belongs to the identity being left.
  *
  * @param userId - Target user id.
  * @returns Resolves when impersonation is active.
  */
 export async function startImpersonate(userId: number): Promise<void> {
-  const res = await fetch("/api/auth/impersonate", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId }),
+  await changeIdentity(async () => {
+    const res = await fetch("/api/auth/impersonate", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId }),
+    });
+    await parseJson(res);
   });
-  await parseJson(res);
 }
 
 /**
- * Stops the current operator impersonation session.
+ * Stops the current operator impersonation session, after the work
+ * registered with {@link beforeSignOut}: a book the impersonated person
+ * was playing is closed as them, not reported as the restored account.
  *
  * @returns Resolves when impersonation ends.
  */
 export async function stopImpersonate(): Promise<void> {
-  const res = await fetch("/api/auth/impersonate", {
-    method: "DELETE",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
+  await changeIdentity(async () => {
+    const res = await fetch("/api/auth/impersonate", {
+      method: "DELETE",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    await parseJson(res);
   });
-  await parseJson(res);
 }
 
 /**
@@ -1662,6 +1719,106 @@ export async function putDefaultControls(
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(controls),
+  });
+  return parseJson(res);
+}
+
+/** One thing an Owner may allow or refuse an Administrator. */
+export type AdminControl =
+  | "manage_members"
+  | "set_patron_limits"
+  | "library_scan"
+  | "run_jobs"
+  | "fix_catalog"
+  | "invite_branches"
+  | "approve_requests";
+
+/** A value for every Administrator switch (`true` = allowed). */
+export type AdminControls = Record<AdminControl, boolean>;
+
+/** One Administrator's overrides; a missing switch follows the library's default. */
+export type AdminControlOverrides = Partial<Record<AdminControl, boolean>>;
+
+/** An Administrator's switches as `GET /api/users/{id}/admin-controls` reports them. */
+export interface UserAdminControls {
+  /** The user. */
+  user_id: number;
+  /** The library's default for every Administrator. */
+  defaults: AdminControls;
+  /** The switches set for this Administrator alone. */
+  overrides: AdminControlOverrides;
+  /** What applies to the user now (all off for anyone who isn't an Administrator or Owner). */
+  effective: AdminControls;
+  /** True only for an Administrator; an Owner may always do everything. */
+  applies: boolean;
+}
+
+/**
+ * Reads what an Administrator may do.
+ *
+ * @param id - The user.
+ * @returns The default, the Administrator's overrides and what applies.
+ */
+export async function getUserAdminControls(id: number): Promise<UserAdminControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/admin-controls`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/** What a change does to one of an Administrator's switches. */
+export type AdminSwitchChoice = "on" | "off" | "default";
+
+/**
+ * Changes some switches for one Administrator (Owner or operator only).
+ *
+ * Only the named switches change, so a concurrent edit of another switch
+ * is kept.
+ *
+ * @param id - The user.
+ * @param changes - `on` or `off` for them alone, or `default` to follow the library's default.
+ * @returns The switches after the change.
+ */
+export async function patchUserAdminControls(
+  id: number,
+  changes: Partial<Record<AdminControl, AdminSwitchChoice>>,
+): Promise<UserAdminControls> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/admin-controls`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ changes }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Reads the library's default Administrator switches.
+ *
+ * @returns The default.
+ */
+export async function getDefaultAdminControls(): Promise<{ controls: AdminControls }> {
+  const res = await fetch("/api/users/default-admin-controls", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Changes some of the library's default Administrator switches (Owner or operator only).
+ *
+ * Only the named switches change, so a concurrent edit of another switch
+ * is kept.
+ *
+ * @param changes - The switches to change and their new values.
+ * @returns The default after the change.
+ */
+export async function patchDefaultAdminControls(
+  changes: Partial<AdminControls>,
+): Promise<{ controls: AdminControls }> {
+  const res = await fetch("/api/users/default-admin-controls", {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ changes }),
   });
   return parseJson(res);
 }
@@ -2128,6 +2285,31 @@ export interface PluginSettingsGroup {
   placement?: PluginPlacementView;
   /** Nodes whose deployment of the instance is `present`. */
   present_on?: string[];
+  /** How a storage destination follows outside changes; absent until its first sync pass. */
+  storage_sync?: StorageSyncView;
+}
+
+/**
+ * How a destination notices changes made outside Bookclerk: its change feed
+ * and its scheduled listings.
+ */
+export interface StorageSyncView {
+  /** `off` (listings alone), `healthy`, `gap` (a listing runs at once) or `failing`. */
+  feed_state: "off" | "healthy" | "gap" | "failing";
+  /** The last feed failure. */
+  feed_error?: string;
+  /** RFC 3339 time the feed was last read. */
+  feed_checked_at?: string;
+  /** RFC 3339 time the last listing finished. */
+  listed_at?: string;
+  /** RFC 3339 time the next scheduled listing is due. */
+  next_listing_at?: string;
+  /** True while a listing is in progress. */
+  listing_in_progress: boolean;
+  /** Why the last listing failed or its removals were held back. */
+  listing_error?: string;
+  /** Files the destination held after the last listing or feed page. */
+  objects: number;
 }
 
 /**
@@ -3334,6 +3516,32 @@ export async function portalConnections(): Promise<PortalConnection[]> {
 }
 
 /**
+ * Changes how fast Bookclerk downloads from one of the caller's store accounts
+ * when it starts the downloads itself.
+ *
+ * @param source - Source id or PluginKey from {@link portalConnections}.
+ * @param accountId - Store account id from {@link portalConnections}.
+ * @param change - The new pace, and whether to end the store's cool-down.
+ * @returns The account's pace as it now stands.
+ */
+export async function portalSetConnectionPace(
+  source: string,
+  accountId: string,
+  change: PortalPaceChange,
+): Promise<PortalPace> {
+  const res = await fetch(
+    `/api/portal/sources/${encodeURIComponent(source)}/connections/${encodeURIComponent(accountId)}/pace`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(change),
+    },
+  );
+  return parseJson<PortalPace>(res);
+}
+
+/**
  * Disconnects a storefront account from the current portal user.
  *
  * Does not delete library rows; only revokes the sealed credentials / link.
@@ -3357,22 +3565,127 @@ export async function portalRevokeConnection(source: string, accountId: string):
   await parseJson(res);
 }
 
+/** Work to finish while the session can still authorize it. */
+const signOutTasks = new Set<() => Promise<void>>();
+
+/** Run once the request that changes the identity has answered or failed. */
+const identityChangedTasks = new Set<() => void>();
+
 /**
- * Signs out regardless of operator vs user/portal session.
+ * How long a change of identity waits for the work registered with
+ * {@link beforeSignOut}, in milliseconds.
+ */
+export const BEFORE_SIGN_OUT_WAIT_MS = 3000;
+
+/**
+ * Registers work that must finish while the signed-in identity still
+ * holds, such as the player's last position report.
+ *
+ * @param task - Run twice at the start of every sign-out and before
+ *   impersonation starts or stops, so it must do nothing when there is
+ *   nothing left to finish, and awaited for up to
+ *   {@link BEFORE_SIGN_OUT_WAIT_MS}. A task that fails, throws or takes
+ *   longer does not stop the change.
+ * @param after - Run once the request that changes the identity has
+ *   answered or failed, to take back whatever `task` held off meanwhile
+ *   (the player starts no book in between).
+ * @returns Removes the task and `after`.
+ */
+export function beforeSignOut(task: () => Promise<void>, after?: () => void): () => void {
+  signOutTasks.add(task);
+  if (after) identityChangedTasks.add(after);
+  return () => {
+    signOutTasks.delete(task);
+    if (after) identityChangedTasks.delete(after);
+  };
+}
+
+/**
+ * Changes the signed-in identity: first the work registered with
+ * {@link beforeSignOut}, then the request, then the registered `after`
+ * callbacks whether the request succeeded or not.
+ *
+ * @param change - Sends the request that changes the identity.
+ * @returns What `change` resolved with.
+ */
+async function changeIdentity<T>(change: () => Promise<T>): Promise<T> {
+  await finishBeforeIdentityChange();
+  try {
+    return await change();
+  } finally {
+    for (const after of identityChangedTasks) {
+      try {
+        after();
+      } catch {
+        // One callback that throws does not keep the others from running.
+      }
+    }
+  }
+}
+
+/**
+ * Runs the work registered with {@link beforeSignOut} and waits for it,
+ * but no longer than {@link BEFORE_SIGN_OUT_WAIT_MS}: a request that never
+ * answers must not keep someone signed in.
+ *
+ * The tasks run twice, within the one wait: the second pass ends what
+ * started while the first was out.
+ *
+ * @returns Resolves when both passes settled or the wait ran out.
+ */
+async function finishBeforeIdentityChange(): Promise<void> {
+  /**
+   * Starts every registered task.
+   *
+   * @returns Settles when all of them have.
+   */
+  const pass = (): Promise<unknown> =>
+    Promise.all(
+      // Through `then`, so a task that throws before returning is caught too.
+      [...signOutTasks].map((task) =>
+        Promise.resolve()
+          .then(task)
+          .catch(() => undefined),
+      ),
+    );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let ranOut = false;
+  const waited = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      ranOut = true;
+      resolve();
+    }, BEFORE_SIGN_OUT_WAIT_MS);
+  });
+  await Promise.race([pass(), waited]);
+  // Something may have started during the wait (a book chosen while a
+  // close was out). It is ended too, as the identity being left: a second
+  // pass, awaited for what is left of the same wait. Once the wait has run
+  // out the pass still runs, so its requests are sent before the one that
+  // changes the identity.
+  const again = pass();
+  if (!ranOut) await Promise.race([again, waited]);
+  clearTimeout(timer);
+}
+
+/**
+ * Signs out regardless of operator vs user/portal session, after the
+ * work registered with {@link beforeSignOut}.
  *
  * @param role - Current session role; portal roles use portal logout.
  * @returns Resolves when logout completes.
  */
 export async function signOut(role?: AuthRole): Promise<void> {
-  if (role === "administrator" || role === "member") {
-    await portalLogout();
-    return;
-  }
-  try {
-    await logout();
-  } catch {
-    await portalLogout().catch(() => undefined);
-  }
+  await changeIdentity(async () => {
+    if (role === "administrator" || role === "member") {
+      await portalLogout();
+      return;
+    }
+    try {
+      await logout();
+    } catch {
+      await portalLogout().catch(() => undefined);
+    }
+  });
 }
 
 /**

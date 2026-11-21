@@ -45,15 +45,24 @@ a later change supersedes one, its **Status** says so.
 - [Patron scopes and linked sign-in](patron-scopes.md): which part of the
   library a Member sees, and how a linked server's permissions and
   suspensions follow one authority.
+- [Uploads and ingest batches](uploads-and-ingest.md): one batch per
+  upload, patron holdings for uploaded books, identification by strong
+  identifiers only, and archives expanded under caps in the media worker.
 - [Storage destinations](storage-destinations.md): every storage plugin
   instance is a destination with its own template and filter,
   opportunistic change feeds and host-held webhooks.
+- [Desktop window identity](desktop-window-identity.md): the desktop
+  window is the person signed in to the computer's OS account, whose session its
+  branch keeps sealed, and elevates like anyone else.
 - [What needs the operator](owner-and-operator.md): the rule for which
   actions need elevation, and the switches an Owner sets on each
   Administrator.
 - [Playback](playback.md): playback is a host feature with one core
   (progress, sessions, one rights check, one stream route) that the web
   player, the desktop window and app-compatible clients share.
+- [Master key store](master-key-store.md): the library key can live in
+  the OS keychain, `master.key` then only points at it, and recovery
+  copies replace copying the file.
 - [Ingress plugins](ingress-plugins.md): one action gives an install a
   stable public address, through relay or dynamic DNS plugins.
 - [Notifications](notifications.md): the host routes events into send

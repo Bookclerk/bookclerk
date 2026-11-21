@@ -133,13 +133,14 @@ the device out when the account is removed.
 
 The Audible plugin decrypts Audible's DRM itself. The host's media
 packaging (`bookclerk-media`) only remuxes, fixes metadata and encodes
-MP3.
+MP3 or Opus.
 
 | Path | When it is used |
 | --- | --- |
 | **Adrm aaxc** | The default, while `output.widevine = false` |
 | **Widevine DASH fMP4/CENC** | With `output.widevine = true`, or automatically after Audible error `000307` when a CDM is available |
 | **MP3** | With `output.format = "single_mp3"` (Symphonia and LAME) |
+| **Opus** | With `output.format = "opus"` (Symphonia and libopus) |
 | **xHE-AAC** | With `output.xhe_aac = true`, on the Widevine path |
 
 Widevine **L3** (software) covers stereo and xHE-AAC. Spatial audio and

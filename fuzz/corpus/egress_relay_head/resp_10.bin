@@ -1,0 +1,3 @@
+HTTP/1.0 302 Found
+location: http://10.0.0.1/
+

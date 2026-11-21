@@ -82,6 +82,26 @@ python3 scripts/bump-workerd-pin.py --check --cooldown-days 7
 python3 scripts/sync-workerd-pin.py --check
 ```
 
+#### The Pyodide bundle
+
+Python isolates load the Pyodide runtime bundle when they start. workerd
+would download it on its own connection, but the jail gives workerd no
+network, so the bundle is pinned too: `pyodide_bundle` in
+`workerd-pin.json` names the file and its sha256.
+
+- `cargo ensure-workerd` (and every caller of `ensure_workerd`) downloads it
+  from `pyodide-capnp-bin.edgeworker.net` into `pyodide-bundles/` beside the
+  binary and checks the digest. Platform packages carry the same directory.
+- The launcher passes that directory to workerd with
+  `--pyodide-bundle-disk-cache-dir`, and the gateway jail may only read it.
+- A Python plugin refuses to start, naming the missing path, when the bundle
+  is not there.
+
+A pin bump keeps the current bundle. When a new workerd release wants another
+one, the staged Python plugin checks fail and the plugin's error names the
+bundle URL workerd asked for. Download that file, put its name and sha256
+under `pyodide_bundle`, and run `python3 scripts/sync-workerd-pin.py --write`.
+
 ### Plugin author tools (`check` / `fmt` / `sync-embed` / `package` / `smoke`)
 
 Each language SDK bakes in the same authoring CLI, so there is no

@@ -1606,6 +1606,11 @@ pub enum JobKind {
     /// node socket (`requests.claim`) and never through the plugin job
     /// path; no node of this library runs it.
     BranchRequest,
+    /// Identify and store one ingest batch (`ingest_batch`): uploaded files
+    /// or storage references, held by the batch's patron. Pinned by
+    /// [`JobPayload::node_id`] to the node whose disk holds the staged
+    /// bytes, and run only by a node that holds the library database.
+    IngestBatch,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1613,7 +1618,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
@@ -1627,6 +1632,7 @@ impl JobKind {
         Self::SearchIndexRebuild,
         Self::LibraryIndexRebuild,
         Self::BranchRequest,
+        Self::IngestBatch,
         Self::Invalid,
     ];
 
@@ -1647,6 +1653,7 @@ impl JobKind {
             Self::SearchIndexRebuild => "search_index_rebuild",
             Self::LibraryIndexRebuild => "library_index_rebuild",
             Self::BranchRequest => "branch_request",
+            Self::IngestBatch => "ingest_batch",
             Self::Invalid => "invalid",
         }
     }
@@ -1668,6 +1675,7 @@ impl JobKind {
             "search_index_rebuild" => Some(Self::SearchIndexRebuild),
             "library_index_rebuild" => Some(Self::LibraryIndexRebuild),
             "branch_request" => Some(Self::BranchRequest),
+            "ingest_batch" => Some(Self::IngestBatch),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1704,6 +1712,11 @@ impl JobKind {
                 }
                 if payload.pdf_only {
                     key.push_str(":pdf=1");
+                }
+                // A paced acquire waits for its account's pace; a hand-started
+                // one must not be folded into it and held.
+                if payload.paced {
+                    key.push_str(":paced=1");
                 }
                 // A pinned acquire runs only that instance's plugin, so it
                 // must not stand in for an unpinned one or another pin.
@@ -1767,6 +1780,11 @@ impl JobKind {
                     .branch_request
                     .as_ref()
                     .map_or("-", |target| target.work_id.as_str()),
+            ),
+            // One queued or running job per batch.
+            Self::IngestBatch => format!(
+                "ingest_batch:batch={}",
+                payload.ingest_batch.as_deref().unwrap_or("-")
             ),
             Self::Invalid => "invalid".into(),
         }
@@ -1968,6 +1986,13 @@ pub struct JobPayload {
     /// handed such a job (`control_plane::node_may_claim_job`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pdf_only: bool,
+    /// For [`JobKind::Acquire`]: the host started this acquire itself
+    /// (auto-acquire, quality upgrades, acquire-all, a request from another
+    /// library), so each download waits for its store account's pace
+    /// (`crate::pacing`). An acquire a person starts by hand leaves it
+    /// false: its downloads are counted but never held.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paced: bool,
     /// Unix milliseconds when the requirements sweep first found this pending
     /// job's [`Self::requires`] unsettled: no node runs all of them, or one of
     /// them is no longer deployed anywhere.
@@ -1991,7 +2016,8 @@ pub struct JobPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     /// The one node that may claim this job, for work on that node's own
-    /// disk ([`JobKind::CacheSweep`], [`JobKind::SearchIndexRebuild`]).
+    /// disk ([`JobKind::CacheSweep`], [`JobKind::SearchIndexRebuild`],
+    /// [`JobKind::IngestBatch`]).
     ///
     /// `None` lets any node that meets [`Self::requires`] claim it. The
     /// routed claim (`control_plane::claim_routed_job`) skips a job pinned
@@ -2004,6 +2030,9 @@ pub struct JobPayload {
     /// listing it was asked from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_request: Option<BranchRequestTarget>,
+    /// For [`JobKind::IngestBatch`]: the `ingest_batches.id` to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingest_batch: Option<String>,
 }
 
 /// What a [`JobKind::BranchRequest`] asks its branch for: a work of this
@@ -2061,12 +2090,14 @@ impl Default for JobPayload {
             invocation_sequence: None,
             resume_pending: false,
             pdf_only: false,
+            paced: false,
             requires_unsettled_since_ms: None,
             cron: None,
             scheduled_time_ms: None,
             subject: None,
             node_id: None,
             branch_request: None,
+            ingest_batch: None,
         }
     }
 }
@@ -2379,6 +2410,11 @@ pub enum PublishDomainEventOutcome {
 /// Host event type published with an edition's acquire state change other
 /// than becoming acquired (payload `editionId`, `titleId`, `status`).
 pub const EDITION_ACQUIRE_CHANGED: &str = "edition_acquire_changed";
+
+/// Host event type published when an ingest batch (an upload or a storage
+/// intake) reaches a final state (payload `batchId`, `state`, `source`,
+/// `intakeInstance`, `detail`).
+pub const INGEST_BATCH_FINISHED: &str = "ingest_batch_finished";
 
 /// Default delivery resource class (`network`).
 pub const EVENT_RESOURCE_CLASS_NETWORK: &str = "network";

@@ -21,7 +21,7 @@ pub struct Model {
     /// The destination's plugin instance id.
     #[sea_orm(primary_key, auto_increment = false)]
     pub destination: String,
-    /// Where the copy stands (`CopyState::as_str`): `stored`, `pending` or
+    /// Where the copy stands (`CopyState::as_str`): `stored`, `pending`, `missing` or
     /// `failed`.
     pub state: String,
     /// The edition's primary audio key on this destination; set once

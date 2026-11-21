@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `metadata_file_record`, `event_read`, `socket_request` and `storage_reply` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `event_read`, `socket_request` and `storage_reply` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -1602,8 +1602,8 @@ fn an_unreadable_error_code_never_decodes_as_success() {
 
 /// Seeds for `storage_reply`: replies each validator accepts and one
 /// breaking each rule. Byte 0 is `0` for a `moveMany` page, `1` for
-/// `deleteMany`, `2` for `headMany`, `3` for `changes` and `4` for a hinted
-/// `list` page. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+/// `deleteMany`, `2` for `headMany`, `3` for `changes`, `4` for a hinted
+/// `list` page and `5` for `translateKeys`. Refresh with `UPDATE_FUZZ_SEEDS=1`.
 // Test code: failed I/O or encoding is the test failing.
 #[allow(clippy::expect_used)]
 #[test]
@@ -1745,6 +1745,24 @@ fn storage_reply_seeds_are_current() {
                 }),
             ),
         ),
+        (
+            "translate_keys.bin",
+            seed(
+                5,
+                StorageReply::TranslateKeys(vec!["a/1.m4b".into(), "a_/2_.m4b".into()]),
+            ),
+        ),
+        (
+            "translate_keys_escape.bin",
+            seed(
+                5,
+                StorageReply::TranslateKeys(vec!["a/1.m4b".into(), "a\\..\\x".into()]),
+            ),
+        ),
+        (
+            "translate_keys_short.bin",
+            seed(5, StorageReply::TranslateKeys(vec!["a/1.m4b".into()])),
+        ),
     ];
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/storage_reply");
     if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
@@ -1761,5 +1779,215 @@ fn storage_reply_seeds_are_current() {
             "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
             path.display()
         );
+    }
+}
+
+#[path = "../../../fuzz/oracles/notifier_reply.rs"]
+mod notifier_reply_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/notifier_reply.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_notifier_reply_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("notifier_reply") {
+        notifier_reply_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no notifier_reply seed");
+}
+
+/// Writes `seed` to `fuzz/corpus/<target>/<name>` under `UPDATE_FUZZ_SEEDS=1`
+/// and otherwise asserts the checked-in file matches it.
+// Test code: failed I/O is the test failing.
+#[allow(clippy::expect_used)]
+fn assert_notify_seed(target: &str, name: &str, seed: &[u8]) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus")
+        .join(target);
+    let path = dir.join(name);
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+        std::fs::write(&path, seed).expect("write seed");
+    }
+    assert_eq!(
+        std::fs::read(&path).expect("read seed"),
+        seed,
+        "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+        path.display()
+    );
+}
+
+/// Seeds for `notifier_reply`: delivered replies with and without a usable
+/// provider id, a rate limit with and past the hour cap, an unavailable
+/// service, a permanent failure with a multi-line message, and address
+/// documents that fit, repeat a key, use a bad key or a non-string value.
+/// Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn notifier_reply_seeds_are_current() {
+    use bookclerk_plugin_abi::notifications::encode_notify_send_reply_bytes;
+    use bookclerk_plugin_abi::{NotifySent, PluginError, PluginErrorCode};
+
+    let limited = |ms: u64| {
+        let mut details = serde_json::Map::new();
+        details.insert("retryAfterMs".into(), serde_json::Value::from(ms));
+        PluginError {
+            details: Some(details),
+            ..PluginError::new(PluginErrorCode::RateLimited, "slow down")
+        }
+    };
+    let replies: Vec<(&str, Result<NotifySent, PluginError>)> = vec![
+        (
+            "delivered.bin",
+            Ok(NotifySent {
+                provider_id: Some("msg-1234".into()),
+            }),
+        ),
+        ("delivered_no_id.bin", Ok(NotifySent { provider_id: None })),
+        (
+            "delivered_bad_id.bin",
+            Ok(NotifySent {
+                provider_id: Some("line\nbreak".into()),
+            }),
+        ),
+        ("rate_limited.bin", Err(limited(5_000))),
+        ("rate_limited_past_cap.bin", Err(limited(86_400_000))),
+        (
+            "unavailable.bin",
+            Err(PluginError::new(
+                PluginErrorCode::Unavailable,
+                "502 from relay",
+            )),
+        ),
+        (
+            "failed_multiline.bin",
+            Err(PluginError::new(
+                PluginErrorCode::InvalidParams,
+                format!("bad webhook\r\n{}", "x".repeat(600)),
+            )),
+        ),
+    ];
+    for (name, reply) in replies {
+        let mut seed = vec![0];
+        seed.extend(encode_notify_send_reply_bytes(&reply).expect("encode"));
+        assert_notify_seed("notifier_reply", name, &seed);
+    }
+    for (name, text) in [
+        (
+            "address_ok.bin",
+            r#"{"email":"ada@example.com","name":"Ada"}"#,
+        ),
+        (
+            "address_extra_key.bin",
+            r#"{"email":"ada@example.com","phone":"1"}"#,
+        ),
+        ("address_repeated.bin", r#"{"email":"a@x","email":"b@x"}"#),
+        ("address_bad_key.bin", r#"{"Email":"ada@example.com"}"#),
+        ("address_number.bin", r#"{"email":7}"#),
+        ("address_blank_email.bin", r#"{"email":"  "}"#),
+        ("address_array.bin", r#"["email"]"#),
+    ] {
+        let mut seed = vec![1];
+        seed.extend_from_slice(text.as_bytes());
+        assert_notify_seed("notifier_reply", name, &seed);
+    }
+}
+
+#[path = "../../../fuzz/oracles/notify_raise.rs"]
+mod notify_raise_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/notify_raise.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_notify_raise_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("notify_raise") {
+        notify_raise_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no notify_raise seed");
+}
+
+/// Seeds for `notify_raise`: a full raise and one breaking each rule, as
+/// JSON bodies and as Cap'n Proto messages. Refresh with
+/// `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn notify_raise_seeds_are_current() {
+    use bookclerk_plugin_abi::notifications::encode_notify_raise_params_bytes;
+    use bookclerk_plugin_abi::{NotificationAlertAction, NotificationField, NotifyRaiseParams};
+
+    let full = NotifyRaiseParams {
+        notification_type: "sync_failed".into(),
+        fields: vec![NotificationField {
+            name: "Account".into(),
+            value: "ada@example.com".into(),
+        }],
+        patron_id: Some("p_42".into()),
+        link_path: Some("/books/42".into()),
+        group_key: Some("sync".into()),
+        alert_action: NotificationAlertAction::Trigger,
+        alert_key: Some("sync:acct".into()),
+    };
+    let raises = [
+        ("full", full.clone()),
+        (
+            "qualified_type",
+            NotifyRaiseParams {
+                notification_type: "other:sync_failed".into(),
+                ..full.clone()
+            },
+        ),
+        (
+            "protocol_relative_link",
+            NotifyRaiseParams {
+                link_path: Some("//evil.example/x".into()),
+                ..full.clone()
+            },
+        ),
+        (
+            "alert_without_key",
+            NotifyRaiseParams {
+                alert_key: None,
+                ..full.clone()
+            },
+        ),
+        (
+            "key_without_alert",
+            NotifyRaiseParams {
+                alert_action: NotificationAlertAction::None,
+                ..full.clone()
+            },
+        ),
+        (
+            "blank_field_name",
+            NotifyRaiseParams {
+                fields: vec![NotificationField {
+                    name: " ".into(),
+                    value: "v".into(),
+                }],
+                ..full.clone()
+            },
+        ),
+        (
+            "patron_with_space",
+            NotifyRaiseParams {
+                patron_id: Some("p 42".into()),
+                ..full.clone()
+            },
+        ),
+    ];
+    for (name, raise) in raises {
+        let mut json = vec![0];
+        json.extend(serde_json::to_vec(&raise).expect("json"));
+        assert_notify_seed("notify_raise", &format!("{name}.json.bin"), &json);
+        let mut capnp = vec![1];
+        capnp.extend(encode_notify_raise_params_bytes(&raise).expect("encode"));
+        assert_notify_seed("notify_raise", &format!("{name}.capnp.bin"), &capnp);
     }
 }

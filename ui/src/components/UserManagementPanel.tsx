@@ -14,6 +14,7 @@ import { createPortal } from "react-dom";
 import { Check, Copy, Headphones, MoreHorizontal, Search, UserPlus, X } from "lucide-react";
 import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
+import { AdminControlsEditor } from "@/components/AdminControlsEditor";
 import { MemberControlsEditor } from "@/components/MemberControlsEditor";
 import { PatronScopeEditor } from "@/components/PatronScopeEditor";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
@@ -409,6 +410,9 @@ export function UserManagementPanel({
   const [avatarKey, setAvatarKey] = useState(0);
   const [branchFor, setBranchFor] = useState<ListedUser | null>(null);
   // An operator or Owner adds a branch for anyone; others for themselves.
+  // Only an Owner or the operator sets what Administrators may do.
+  const canSetAdminSwitches =
+    showOperatorChrome || session?.role === "owner" || session?.elevated === true;
   const canAddBranchFor = (u: ListedUser) =>
     u.status === "active" &&
     (showOperatorChrome || session?.role === "owner" || u.id === currentUserId);
@@ -1323,6 +1327,16 @@ export function UserManagementPanel({
                 )}
               </div>
 
+              {canSetAdminSwitches &&
+              selected.role === "administrator" &&
+              currentUserId !== selected.id ? (
+                <AdminControlsEditor
+                  key={`admin-controls-${selected.id}`}
+                  target={{ kind: "user", userId: selected.id }}
+                  disabled={busy}
+                />
+              ) : null}
+
               {selectedEditable && currentUserId !== selected.id ? (
                 <>
                   <MemberControlsEditor
@@ -1377,6 +1391,9 @@ export function UserManagementPanel({
                   <MemberControlsEditor target={{ kind: "default" }} disabled={busy} />
                   <PatronScopeEditor target={{ kind: "default" }} disabled={busy} />
                 </>
+              ) : null}
+              {canSetAdminSwitches ? (
+                <AdminControlsEditor target={{ kind: "default" }} disabled={busy} />
               ) : null}
             </div>
           )}

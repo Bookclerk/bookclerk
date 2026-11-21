@@ -8,6 +8,7 @@
 //! See `docs/adr/control-plane.md`.
 
 mod account_links;
+mod admin_controls;
 mod artifacts;
 pub(crate) mod batch;
 mod branch_catalog;
@@ -28,6 +29,7 @@ mod destination_filters;
 mod documents;
 mod enrollment;
 mod identity;
+mod ingest;
 mod instance_config;
 mod instances;
 mod job_routing;
@@ -70,6 +72,14 @@ use serde::{Deserialize, Serialize};
 
 pub use account_links::{
     account_slot, link_signed_in_account, revoke_account_link, LinkRevoked, SignInLink,
+};
+pub use admin_controls::{
+    admin_control_overrides, admin_may, administrator_switch_allows, assigned_admin_controls,
+    change_admin_control_overrides, change_default_admin_controls, default_admin_controls,
+    effective_admin_controls, load_default_admin_controls, set_admin_control_overrides,
+    set_default_admin_controls, AdminControl, AdminControlOverrides, AdminControls,
+    AdminSwitchChoice, AssignedAdminControls, DefaultSwitchChanges, OverrideSwitchChanges,
+    ADMIN_CONTROLS_NAMESPACE,
 };
 #[cfg(test)]
 pub(crate) use artifacts::chunk_bytes;
@@ -164,6 +174,17 @@ pub use identity::{
     current_process_incarnation, encode_node_identity_file, install_node_identity, list_node_ids,
     list_nodes, load_node, load_or_create_node_identity, node_identity_path, node_target,
     BranchRelationship, NodeIdentity, NodeKind, NodeRecord, NODE_IDENTITY_FILE,
+};
+pub use ingest::{
+    add_expanded_members, batch_exists, batch_members, cancel_batch, create_intake_batch,
+    create_upload_batch, delete_finished_before, final_batches_on, finish_batch,
+    first_active_owner, idle_upload_batches, load_batch, load_member, mark_committed,
+    parse_upload_manifest, parse_upload_offset, patron_holding_id, record_ingest_acquired,
+    record_received, review_items, set_member_outcomes, staged_bytes, start_batch, user_batches,
+    CreateRefusal, ExpandedEntry, IngestBatch, IngestBatchId, IngestMember, IngestSource,
+    IngestState, IntakeRef, ManifestError, ManifestFile, MemberOutcome, MemberSpec, OutcomeUpdate,
+    ReviewItem, Sha256Hex, UploadManifest, UploadQuota, MAX_BATCH_FILES, MAX_INTAKE_REF_BYTES,
+    MAX_REASON_BYTES,
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,

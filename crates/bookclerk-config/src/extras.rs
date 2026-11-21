@@ -21,11 +21,11 @@ pub struct ReplacementRule {
 #[serde(rename_all = "snake_case")]
 #[schema(example = "auto")]
 pub enum PathSanitizationMode {
-    /// Pick a profile from the storage backend and host OS.
-    ///
-    /// * `output.s3.enabled = true` → [`s3_replacement_characters`]
-    /// * Windows host + local storage → [`windows_replacement_characters`]
-    /// * otherwise → [`posix_replacement_characters`]
+    /// Leave each destination's character rules to its storage plugin:
+    /// the host only strips path separators
+    /// ([`posix_replacement_characters`]), and the plugin translates the
+    /// key into what it can store (a Windows-safe path for `local` on
+    /// Windows, an S3-safe key for an object store).
     #[default]
     Auto,
     /// NTFS / classic Libation Windows map (`: * ? " < > | / \`).
@@ -158,34 +158,29 @@ pub fn default_replacement_characters() -> Vec<ReplacementRule> {
     windows_replacement_characters()
 }
 
-/// Resolve the character-replacement map used when sanitising storage path segments.
+/// Resolve the character-replacement map the host applies to tag values
+/// when it fills a naming template.
 ///
 /// Explicit non-empty `replacement_characters` always wins. Otherwise
-/// `path_sanitization` (with `storage_is_s3` for [`PathSanitizationMode::Auto`])
-/// selects a profile.
+/// `path_sanitization` selects a profile; [`PathSanitizationMode::Auto`]
+/// strips only path separators and leaves the rest to the destination's
+/// storage plugin, which translates the host key into the path or object
+/// key it stores.
 #[must_use]
 pub fn resolve_replacement_characters(
     explicit: &[ReplacementRule],
     mode: PathSanitizationMode,
-    storage_is_s3: bool,
 ) -> Vec<ReplacementRule> {
     if !explicit.is_empty() {
         return explicit.to_vec();
     }
     match mode {
-        // Separators only — same floor as Posix — so `none` cannot inject paths.
-        PathSanitizationMode::None | PathSanitizationMode::Posix => posix_replacement_characters(),
+        // Separators only, so `none` cannot inject paths either.
+        PathSanitizationMode::Auto | PathSanitizationMode::None | PathSanitizationMode::Posix => {
+            posix_replacement_characters()
+        }
         PathSanitizationMode::Windows => windows_replacement_characters(),
         PathSanitizationMode::S3 => s3_replacement_characters(),
-        PathSanitizationMode::Auto => {
-            if storage_is_s3 {
-                s3_replacement_characters()
-            } else if cfg!(windows) {
-                windows_replacement_characters()
-            } else {
-                posix_replacement_characters()
-            }
-        }
     }
 }
 
@@ -450,27 +445,23 @@ mod tests {
             find: ":".into(),
             replace: "-".into(),
         }];
-        let got = resolve_replacement_characters(&explicit, PathSanitizationMode::Posix, false);
+        let got = resolve_replacement_characters(&explicit, PathSanitizationMode::Posix);
         assert_eq!(got, explicit);
     }
 
     #[test]
-    fn resolve_auto_local_is_posix_on_unix() {
-        let got = resolve_replacement_characters(&[], PathSanitizationMode::Auto, false);
-        if cfg!(windows) {
-            assert_eq!(got, windows_replacement_characters());
-        } else {
-            assert_eq!(got, posix_replacement_characters());
-            assert!(!got.iter().any(|r| r.find == ":"));
-        }
+    fn resolve_auto_strips_only_separators_on_every_platform() {
+        let got = resolve_replacement_characters(&[], PathSanitizationMode::Auto);
+        assert_eq!(got, posix_replacement_characters());
+        assert!(!got.iter().any(|r| r.find == ":"));
     }
 
     #[test]
-    fn resolve_auto_s3_uses_s3_profile() {
-        let got = resolve_replacement_characters(&[], PathSanitizationMode::Auto, true);
+    fn resolve_explicit_profiles_apply() {
+        let got = resolve_replacement_characters(&[], PathSanitizationMode::S3);
         assert_eq!(got, s3_replacement_characters());
-        assert!(got.iter().any(|r| r.find == "#"));
-        assert!(!got.iter().any(|r| r.find == ":"));
+        let got = resolve_replacement_characters(&[], PathSanitizationMode::Windows);
+        assert_eq!(got, windows_replacement_characters());
     }
 
     #[test]
@@ -493,7 +484,7 @@ mod tests {
 
     #[test]
     fn none_still_strips_path_separators() {
-        let got = resolve_replacement_characters(&[], PathSanitizationMode::None, false);
+        let got = resolve_replacement_characters(&[], PathSanitizationMode::None);
         assert_eq!(got, posix_replacement_characters());
         assert_eq!(apply_replacements("A/B\\C", &got), "A_B_C");
     }

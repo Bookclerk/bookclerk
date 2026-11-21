@@ -2,28 +2,30 @@
 
 use std::path::Path;
 
-use bookclerk_plugin_sdk::http::Response;
-use tokio::io::AsyncWriteExt;
+use bookclerk_plugin_sdk::download::Download;
+use bookclerk_plugin_sdk::http::RequestBuilder;
 
 use crate::error::{GraphicAudioError, Result};
 
-/// Stream a successful HTTP response body to `path`.
-pub async fn response_to_path(mut resp: Response, path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(GraphicAudioError::download(format!(
-            "download failed ({status}) for {}",
-            path.display()
-        )));
-    }
-    let mut file = tokio::fs::File::create(path).await?;
-    while let Some(chunk) = resp.chunk().await? {
-        file.write_all(&chunk).await?;
-    }
-    file.flush().await?;
+/// Streams a media URL to `path`, resuming a dropped transfer.
+///
+/// `request` builds the `GET` (URL, cookies, user agent) for each attempt;
+/// the SDK's resumable download (`bookclerk_plugin_sdk::download`) adds
+/// the range headers, so a dropped connection on a large Hi/ZIP file asks
+/// only for the missing bytes.
+///
+/// # Errors
+///
+/// Returns [`GraphicAudioError::Download`] when the store refuses the file
+/// or the transfer keeps failing.
+pub async fn download_resumable<F>(path: &Path, request: F) -> Result<()>
+where
+    F: FnMut() -> RequestBuilder,
+{
+    Download::new()
+        .to_file(path, request)
+        .await
+        .map_err(|err| GraphicAudioError::download(format!("{err} ({})", path.display())))?;
     Ok(())
 }
 

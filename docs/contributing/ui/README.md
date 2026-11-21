@@ -45,11 +45,11 @@ Override the static dist folder with `BOOKCLERK_UI_DIST`.
 The product GUI is the authenticated React UI on `bookclerkd`. Native
 wrappers are optional.
 
-| Path | Status |
-| --- | --- |
-| Web UI (`bookclerkd` + `ui/`) | Supported |
-| In-process tray (`bookclerkd` through the `bookclerk-tray` library → the system browser) | Supported on Linux (`ksni`), Windows and macOS (`tray-icon` without GTK features); skipped on headless hosts |
-| Desktop window (`bookclerk-desktop`, Tauri 2) | Early: runs the web app in its own window with no listener (below). Unsigned packages for Linux, Windows and macOS ([Packages](#packages)); no tray or uploads |
+| Path                                                                                     | Status                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web UI (`bookclerkd` + `ui/`)                                                            | Supported                                                                                                                                                      |
+| In-process tray (`bookclerkd` through the `bookclerk-tray` library → the system browser) | Supported on Linux (`ksni`), Windows and macOS (`tray-icon` without GTK features); skipped on headless hosts                                                   |
+| Desktop window (`bookclerk-desktop`, Tauri 2)                                            | Early: runs the web app in its own window with no listener (below). Unsigned packages for Linux, Windows and macOS ([Packages](#packages)); no tray or uploads |
 
 ### The desktop window
 
@@ -62,11 +62,15 @@ network can reach this host's web API.
   (`bookclerk://localhost/`; `http://bookclerk.localhost/` on Windows, where
   WebView2 requires that form). Every request on the scheme goes straight to
   the host's router in-process (`bookclerkd::embedded`).
-- Whoever runs the app is the operator, the same person the tray hands an
-  operator session to. The host adds the operator token to each request
-  itself; the page never sees it. Cookies, `Authorization`, `Origin`,
-  `Referer` and forwarding headers from the page are dropped, and so is
-  `Set-Cookie` on the way back, so the page holds no credential.
+- The window is the person signed in to the computer's OS account (see the
+  [ADR](../../adr/desktop-window-identity.md)). Until the library has an
+  active Owner it acts as the operator: the host adds the operator token to
+  each request itself. After that it acts as the patron whose session the
+  branch keeps sealed for its window, and the host adds that patron's
+  session cookie instead. Cookies, `Authorization`, `Origin`, `Referer` and forwarding
+  headers from the page are dropped, and `Set-Cookie` never reaches the
+  page: the host keeps those cookies itself, so the page holds no
+  credential.
 - The node API (`/api/node/...`) and the live socket (`/api/live`) are
   refused. A custom scheme cannot carry a WebSocket, so the window sends the
   same frames over a Tauri channel instead: the page calls the window's one
@@ -75,19 +79,34 @@ network can reach this host's web API.
   replaces the earlier feed, so a reloaded page doesn't leave one running.
 - A request a page from anywhere else sends to the scheme (its `Origin`, or
   for a write its `Referer`, is not the app's) is refused with `403`, since
-  the host would otherwise add the operator token to it.
+  the host would otherwise add its own credential to it. Because of that
+  check, the window's cookie requests skip the web app's CSRF origin check.
 - The window only shows pages from the scheme, with one exception: joining a
   library, or signing in to one with a library card, opens the library's own
   sign-in pages in the window until the library sends it back, and that
   return (to `http://localhost/join/callback` or
   `http://localhost/clerk/callback`) is handed to the app scheme. Navigation
   anywhere else is refused.
-- The page may call one Tauri command, `live`, which takes nothing from the
-  page but its channel. The capability in
-  `crates/bookclerk-desktop/capabilities/main.json` allows it for the main
-  window's own pages only, so the library's sign-in pages, which are remote,
-  can't call it, and the command itself checks the calling webview and page
-  again before it starts the feed.
+- The page may call three Tauri commands: `live`, which takes nothing from
+  the page but its channel, and `player` and `player_events` for the
+  window's own audio player (below). The capability in
+  `crates/bookclerk-desktop/capabilities/main.json` allows them for the
+  main window's own pages only, so the library's sign-in pages, which are
+  remote, can't call them, and each command checks the calling webview and
+  page again before it runs.
+- The custom scheme can't stream audio to the webview either (no `Range`),
+  so the window plays books itself (`crates/bookclerk-desktop/src/player.rs`).
+  The web app's player drives it through `ui/src/lib/nativePlayer.ts`:
+  `player` takes one checked command (load a session's track, play, pause,
+  seek, speed, stop, probe a track's length, or what the system's media
+  controls show), and `player_events` hands over a channel for the
+  position, play, pause, the end, errors and the media controls' buttons.
+  The host reads the track through the session's stream route and a
+  confined `bookclerk-media-worker pcm` process decodes it. The
+  `bookclerk-player-engine` crate changes the speed and the sample rate,
+  and `cpal` plays it on the default output device. `souvlaki` drives
+  MPRIS (over zbus), the Windows media overlay and Now Playing. See
+  [Playback](../../server/playback.md#the-desktop-window).
 - These rules (which requests are refused, the headers the router sees,
   where the window may go, who may start the live feed) live in the `bookclerk-window-policy` crate,
   which the `window_policy` fuzz target checks (see
@@ -102,14 +121,44 @@ card sign-in a server uses (see
 [Signing in with a library card](../../server/sign-in.md#signing-in-with-a-library-card)).
 The computer becomes a **clerk** of the library: it shows the library's
 books, the person's own marked, and takes none of the library's work. It
-is not a branch, so nothing the library deploys ever runs there.
-**Host a library on this computer instead** sets up a library here, as
-`bookclerkd`'s first run does.
+is not a branch, so nothing the library deploys ever runs there. A clerk
+has no patrons of its own, so the window stays the operator of its own
+install and keeps no window session.
+
+**Start a library on this computer instead** sets up a library here, as
+`bookclerkd`'s first run does. Creating the Owner there signs the window in
+as that Owner and keeps that session.
+
+#### Who the window is after setup
+
+Once the library on this computer has an active Owner, the window is a
+patron, never the operator by default:
+
+- **The kept session.** The branch seals the patron's session with the
+  library's key in its own database (`encrypted_secrets`, `kind =
+  window_session`, keyed by the branch's node id), as a clerk keeps its
+  library card. The files directory is already this OS account's own, so
+  no other file is needed, and branches sharing one database keep separate
+  rows.
+- **Each launch** swaps that session for a fresh one lasting 90 days. It is
+  listed in the patron's **Settings → Account → Sessions** as
+  **Desktop app on <computer>**; revoking it there signs the window out at
+  its next launch.
+- **No kept session, or an ended one**, opens the app's sign-in screen. A
+  password sign-in there is swapped for a window session and kept.
+- **Elevation and impersonation** work as on the web: an Owner elevates
+  with their password, and impersonates from the elevated session. Neither
+  changes the kept session.
+- **Signing out** deletes the kept session.
+
+Each person on a shared computer uses their own OS account. To share one
+library between them, one account's install is the branch and the others
+sign in to it with library cards.
 
 Not there yet: the tray, uploads (when
 they come, through the native file picker), opening external links in the
-system browser, passkeys (WebAuthn needs a real origin), impersonation (it
-needs a session cookie), and signed packages. Joining or signing in to a library whose node API uses
+system browser, passkeys and sign-in providers (WebAuthn needs a real
+origin, and a provider's sign-in leaves the app), and signed packages. Joining or signing in to a library whose node API uses
 a self-signed certificate does not work from the window yet: the webview does
 not trust that certificate for the sign-in pages. Links the host writes for other
 people, such as invite links, still name `integrations.public_origin` or the
@@ -119,10 +168,10 @@ itself.
 
 To build and run it:
 
-1. Install the webview's development files. On Debian and Ubuntu:
+1. Install the webview's and ALSA's development files. On Debian and Ubuntu:
 
    ```sh
-   sudo apt-get install libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev
+   sudo apt-get install libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev libasound2-dev
    ```
 
    Windows (WebView2) and macOS (WKWebView) need nothing extra.
@@ -149,11 +198,11 @@ development files. Without it the binary only says how to build it. CI's
 it runs on. They are **unsigned**, so the system warns before the first
 start:
 
-| Platform | Packages | Before the first start |
-| --- | --- | --- |
-| Linux | `.deb`, AppImage | The `.deb` depends on WebKitGTK 4.1, which the package manager installs; the AppImage needs FUSE 2 (`libfuse2`) |
-| Windows | NSIS installer (`.exe`), per user | SmartScreen asks to confirm an unknown publisher |
-| macOS | `.app` and `.dmg` | Gatekeeper blocks an unsigned app: try to open it once, then choose **Open Anyway** under System Settings → Privacy & Security |
+| Platform | Packages                          | Before the first start                                                                                                         |
+| -------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Linux    | `.deb`, AppImage                  | The `.deb` depends on WebKitGTK 4.1, which the package manager installs; the AppImage needs FUSE 2 (`libfuse2`)                |
+| Windows  | NSIS installer (`.exe`), per user | SmartScreen asks to confirm an unknown publisher                                                                               |
+| macOS    | `.app` and `.dmg`                 | Gatekeeper blocks an unsigned app: try to open it once, then choose **Open Anyway** under System Settings → Privacy & Security |
 
 To build them:
 
@@ -229,9 +278,9 @@ On a graphical session, `bookclerkd` can start an optional **in-process
 tray** (the library crate `bookclerk-tray`) that opens the UI in the
 system browser. There is no separate tray binary.
 
-| OS | Backend |
-| --- | --- |
-| Linux | StatusNotifierItem (`ksni`, no GTK or WebKit) |
+| OS              | Backend                                                 |
+| --------------- | ------------------------------------------------------- |
+| Linux           | StatusNotifierItem (`ksni`, no GTK or WebKit)           |
 | Windows / macOS | `tray-icon` with default features **disabled** (no GTK) |
 
 - Turn it off with `[daemon] tray = false`, `BOOKCLERK_NO_TRAY=1` or
@@ -292,6 +341,71 @@ the Linux GTK3 graph. Only the desktop window brings gtk-rs into the root
 
 > [!WARNING]
 > Don't enable the `tray-icon` or `muda` default features in the tray.
+
+## The player
+
+The web player is split so that everything with behavior is plain
+TypeScript under `ui/src/lib`, tested without a browser:
+
+| Module              | Role                                                                                    |
+| ------------------- | --------------------------------------------------------------------------------------- |
+| `playback.ts`       | The daemon's playback routes ([Playback reference](../../server/playback.md))           |
+| `player.ts`         | The engine: one audio element, one play session, position reports, the sleep timer      |
+| `playerTimeline.ts` | One timeline over an edition's files, clock text, speeds                                |
+| `playTarget.ts`     | Which edition of a work plays; the Continue listening shelf                             |
+| `mediaSession.ts`   | The browser's Media Session: lock screen, OS media panel, media keys                    |
+| `webPlayer.ts`      | The page's one engine, wired to `fetch`, `Audio` and `localStorage`, and its React hook |
+| `nativePlayer.ts` | The desktop window's engine and system media controls behind the same interfaces |
+
+`Player` takes its routes, clock and audio element as `PlayerDeps`, so
+`player.test.ts` drives it with a fake element. The components
+(`PlayerBar`, `NowPlaying`, `PlayerControls`, `ContinueListening`) only
+render `Player.state` and call its methods.
+
+Rules the engine keeps:
+
+- The audio element streams `GET /api/playback/sessions/{id}/tracks/{index}`
+  from the same origin with the session cookie. No token goes in a URL,
+  and the app's content security policy needs no exception.
+- A report goes out every 15 seconds while playing, on pause and at the
+  end of the book. Reports for one session go out one at a time, and
+  never wait on a report for an earlier session.
+- Stopping, signing out, starting or stopping impersonation, and leaving
+  the page close the session. The close on page hide is a `keepalive`
+  request. A change of identity waits up to three seconds for the close
+  (`beforeSignOut` in `api.ts`) and then goes ahead. The registered work
+  runs a second time within the same wait, or without a wait once it has
+  run out, so a book started meanwhile is closed as the identity being
+  left. From that close until the identity request has answered, the
+  player starts nothing (`Player.retire` and `Player.readmit`).
+- `409 session_ended` on a report, or a stream error, opens one new
+  session at the place the listener is, and a report the ended session
+  refused is sent once to the new one. A second stream error within a
+  minute closes the session and is shown to the listener instead; play
+  then opens a new session at the place the listener reached, whatever
+  the server last stored. A stream error while a replacement is already
+  opening joins that replacement.
+- Listened time is counted once. A report holds the time it carries until
+  the server answers: an accepted report takes it out of the count, even
+  when the session was replaced meanwhile, and a failed one gives it back
+  for the next report. A close waits up to two seconds (`CLOSE_WAIT_MS`)
+  for reports still on their way, so it carries the time of one that
+  failed; the `keepalive` close on page hide cannot wait and assumes they
+  were accepted, and a close still waiting when the page hides is sent at
+  once the same way. `stop()` also waits for closes sent earlier, so the
+  wait before a change of identity covers them.
+- Playing again a book played to its end opens a new session, because
+  only opening one marks a finished edition as in progress again. That
+  holds after a seek back from the end too: the new session goes on from
+  the place sought.
+- The next book waits for the close of the one before it, but no longer
+  than five seconds (`SWITCH_WAIT_MS`).
+- A request to play that reads first (`playWork`) asks `Player.claim()`
+  whether it is still the listener's latest choice. Choosing, playing and
+  stopping a book replace a choice; a session that fails does not.
+- An edition in several files has every file's length read from its
+  stream before a position is placed, because the server does not store
+  per-file lengths yet.
 
 ## Brand assets
 

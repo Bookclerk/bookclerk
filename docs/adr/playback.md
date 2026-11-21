@@ -85,9 +85,10 @@ A patron scope is applied before it, as on every library page: an edition
 outside the caller's scope is `404`, the same answer as an unknown id.
 
 The **Download** member control
-([patron scopes ADR](patron-scopes.md#member-controls)) covers streaming:
-`plan_playback` is the one place that reads it, so a patron who may not
-download is planned nothing to play.
+([patron scopes ADR](patron-scopes.md#member-controls)) does not cover
+streaming. It stops taking copies to keep: downloads to a branch or a
+clerk, and an app's offline downloads. A patron who can see a book may
+listen to it, which is what the apps the `/player` API serves expect.
 
 ### 5. A session is the leave to stream, checked on every request
 
@@ -150,7 +151,7 @@ refresh token), and every item, progress and stream call lands on the
 same tables and the same check as the web player. The
 [player API ADR](player-api.md) records how.
 
-### 9. The desktop window plays natively (planned)
+### 9. The desktop window plays natively
 
 The desktop window's custom scheme delivers no request headers on Linux,
 so it cannot serve `Range` to a web view. The window decodes in the
@@ -158,10 +159,23 @@ confined media worker and plays through the operating system's audio and
 media controls, reading files and writing progress through the same
 core.
 
+The host reads each block of the track through the session's own stream
+route in process, so the window gets no second path to the files. A
+`pcm` worker per track decodes them under the same rules as the tag
+worker: no path, no network, ranges only inside the file. Speed changes
+use WSOLA time-stretching and the rate conversion uses a windowed-sinc
+resampler, both in a small engine crate (`bookclerk-player-engine`) with
+no I/O. The page's stage B player drives that engine as if it were an
+audio element, so the timeline, sync and bookmark logic exist once. The
+system's media controls come from `souvlaki`. The window listens as the
+patron it is signed in as, and keeps doing so while that patron is
+elevated or impersonating someone from the elevation.
+
 ## Consequences
 
-- Stage A adds no user interface. The routes are in the Web API reference
-  and are exercised by tests; the web player arrives next.
+- The core itself has no user interface. The routes are in the Web API
+  reference and are exercised by tests; the web app's player is their
+  first caller.
 - An edition is playable only on a node that has one of its destinations
   deployed. A session is tied to the node that opened it; behind a load
   balancer without session affinity a stream request can reach another

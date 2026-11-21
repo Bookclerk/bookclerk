@@ -65,6 +65,8 @@ libc = "0.2"
 bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 chrono.workspace = true
 bookclerk-sandbox.workspace = true
+# The egress_relay_head oracle checks heads against an independent parser.
+httparse = "1"
 tempfile.workspace = true
 # The socket_route replay shares the socket_request oracle's WHATWG URL check.
 url.workspace = true

@@ -179,7 +179,7 @@ See [`docs/contributing/licensing.md`](docs/contributing/licensing.md).
 `bookclerk-jail`, `bookclerk-sandbox`, `bookclerk-workerd`,
 `bookclerk-plugin-host`, `bookclerk-plugin-abi` (`plugin.capnp`),
 `bookclerk-db-exec`, `docs/plugins/sql-contract/`, `bookclerk-media-worker`,
-`bookclerk-mp4`, secrets / `master.key` / operator-token code, and
+`bookclerk-mp4`, `bookclerk-keystore`, secrets / `master.key` / operator-token code, and
 `.github/workflows/`.
 
 ## Review guidelines

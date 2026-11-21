@@ -221,20 +221,19 @@ pub enum DbAtomicParams {
         #[serde(default)]
         deliver_after: String,
     },
-    /// Update a book row and optionally publish `book_acquired` in the same batch.
+    /// Write an edition's acquire state for the account holding that made
+    /// the write, and publish its event in the same batch.
     #[serde(rename_all = "camelCase")]
     SetAcquireStatus {
-        /// Book UUID to update.
-        book_uuid: String,
-        /// The title's edition, whose `edition_acquisitions` row is written
-        /// in the same batch; `None` when the title has no edition yet.
+        /// The account holding (`holdings.id`) that wrote the state; every
+        /// statement is gated on it still holding `edition_id`.
+        holding_id: String,
+        /// The edition whose `edition_acquisitions` row is written.
+        edition_id: String,
+        /// The flat `books` row mirrored until the table is dropped (book
+        /// model step 6); `None` when the holding has none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        edition_id: Option<String>,
-        /// The account holding (`holdings.id`) the title is held by, which
-        /// the edition's row records as the writer; the edition's row is
-        /// left alone without one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        holding_id: Option<String>,
+        book_uuid: Option<String>,
         /// Acquire status string (`acquired`, `downloading`, …).
         status: String,
         /// Object-storage key for the primary audio artifact.

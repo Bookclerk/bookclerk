@@ -37,6 +37,11 @@ The Bearer API keeps accepting the token. The sign-in link is a loopback
 `GET /api/auth/tray-handoff?code=` URL with a one-time code (180 seconds by
 default), never the durable token.
 
+The desktop window follows the same rule: it is the operator only until an
+Owner exists, then the patron whose session the branch keeps for it, who elevates
+like anyone else (see
+[the desktop window](../contributing/ui/README.md#who-the-window-is-after-setup)).
+
 ### Owners and elevation
 
 An Owner can **elevate** to operator, with an IdP step-up, a passkey or
@@ -544,9 +549,11 @@ the store unlisted and logs why.
   identity providers, and Owner elevation.
 - **Player apps**: player passwords for phone and car apps, each shown
   once (see [Player apps](player-apps.md)).
-- **Sessions**: browsers, library cards and player apps, each with
-  **Revoke**. A library card shows the name its clerk gave itself; a
-  player app shows a **Player app** badge.
+- **Sessions**: browsers, desktop windows, library cards and player apps,
+  each with **Revoke**. A library card shows the name its clerk gave
+  itself; a player app shows a **Player app** badge; a desktop window shows
+  **Desktop app on <computer>**, and revoking it signs that window out at
+  its next launch.
 
 Profile edits are self-service. Security and profile edits are hidden or
 disabled while impersonating.

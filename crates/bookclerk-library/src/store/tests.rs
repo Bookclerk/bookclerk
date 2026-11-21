@@ -90,10 +90,19 @@ async fn account_and_book_roundtrip() {
         .unwrap()
         .unwrap();
     assert_eq!(by_uuid.product_id, "B00TEST");
+    // The event names the account holding, which outlives the flat row.
+    let title = store
+        .title_holding_of_book(&updated.uuid)
+        .await
+        .unwrap()
+        .unwrap();
     let pending = next_event_of(&store, "book_acquired").await;
     assert_eq!(pending.event_type, "book_acquired");
-    assert_eq!(pending.ordering_key, updated.uuid);
-    assert_eq!(pending.dedup_key, format!("book_acquired:{}", updated.uuid));
+    assert_eq!(pending.ordering_key, title.holding_id);
+    assert_eq!(
+        pending.dedup_key,
+        format!("book_acquired:{}", title.holding_id)
+    );
     let payload: serde_json::Value = serde_json::from_str(&pending.payload).unwrap();
     let edition = store.edition_of_book(&updated.uuid).await.unwrap();
     assert!(edition.is_some(), "the stored title resolves to an edition");
@@ -125,23 +134,96 @@ async fn a_status_other_than_acquired_publishes_its_edition_change() {
             .await
             .unwrap();
         let edition = store.edition_of_book(&book.uuid).await.unwrap().unwrap();
+        let holding = store
+            .title_holding_of_book(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap()
+            .holding_id;
         for status in [AcquireStatus::Queued, AcquireStatus::Error] {
             store
                 .set_acquire_status("B00Q", "user-1", status, None, Some("x"))
                 .await
                 .unwrap();
             let event = next_event_of(&store, crate::EDITION_ACQUIRE_CHANGED).await;
-            assert_eq!(event.ordering_key, book.uuid);
+            assert_eq!(event.ordering_key, holding);
             assert_eq!(event.source, "audible");
             let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
             assert_eq!(payload["editionId"], edition.as_str());
-            assert_eq!(payload["titleId"], book.uuid.as_str());
+            assert_eq!(payload["titleId"], holding.as_str());
             assert_eq!(payload["status"], status.as_str());
             store
                 .dispatch_event_deliveries(&event.id, &[], &Uuid::new_v4().to_string())
                 .await
                 .unwrap();
         }
+    }
+}
+
+#[tokio::test]
+async fn a_holding_writes_its_edition_state_until_it_is_removed() {
+    for store in [kit_store().await, in_process_store().await] {
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let book = store
+            .upsert_book(&NewBook::minimal("B00H", "user-1", "us", "Held"))
+            .await
+            .unwrap();
+        let title = store
+            .title_holding_of_book(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .set_holding_acquire_status(
+                &title.holding_id,
+                AcquireStatus::Acquired,
+                Some("Held/Held.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+        let acquisition = store
+            .edition_acquisition(&title.edition_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acquisition.status, AcquireStatus::Acquired);
+        assert_eq!(acquisition.holding_id, title.holding_id);
+        // The flat row is mirrored while the table exists.
+        let row = store.get_book_by_uuid(&book.uuid).await.unwrap().unwrap();
+        assert_eq!(row.acquire_status, AcquireStatus::Acquired);
+        let event = next_event_of(&store, "book_acquired").await;
+        let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
+        assert_eq!(payload["titleId"], title.holding_id.as_str());
+        assert_eq!(payload["editionId"], title.edition_id.as_str());
+        store
+            .set_holding_pdf_status(
+                &title.holding_id,
+                AcquireStatus::Acquired,
+                Some("Held/Held.pdf"),
+            )
+            .await
+            .unwrap();
+        let acquisition = store
+            .edition_acquisition(&title.edition_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acquisition.pdf_status, AcquireStatus::Acquired);
+
+        // Once the holding is removed, a write naming it is not found.
+        store
+            .remove_account_holdings("audible", "user-1", crate::HoldingSelection::All)
+            .await
+            .unwrap();
+        let err = store
+            .set_holding_acquire_status(&title.holding_id, AcquireStatus::Queued, None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::LibraryError::NotFound(_)), "{err}");
     }
 }
 
@@ -2488,6 +2570,143 @@ async fn suspend_job_commits_checkpoint_and_stale_fence_cannot() {
     assert!(!store.suspend_job(&fence, &checkpoint, wake).await.unwrap());
 }
 
+/// A deferred job waits as `pending` with its reason, spends no attempt,
+/// drops any checkpoint, and a stale fence cannot defer it.
+#[tokio::test]
+async fn defer_job_parks_without_an_attempt_or_checkpoint() {
+    let store = kit_store().await;
+    let created = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Acquire,
+            payload: JobPayload {
+                paced: true,
+                trigger: JobTrigger::Scheduler,
+                checkpoint: Some(bookclerk_plugin_abi::JobCheckpoint {
+                    schema_version: 1,
+                    json: "{}".into(),
+                }),
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 8,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id } = created else {
+        panic!("expected created: {created:?}");
+    };
+    let first = claim_job(&store, "worker-defer").await;
+    let fence = fence_of(&first);
+    let wake = chrono::Utc::now() + chrono::Duration::hours(1);
+    assert!(store
+        .defer_job(&fence, wake, "waiting for the daily download budget")
+        .await
+        .unwrap());
+    let parked = store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(parked.state, JobState::Pending);
+    assert!(parked.lease_owner.is_none());
+    assert_eq!(
+        parked.progress.as_deref(),
+        Some("waiting for the daily download budget")
+    );
+    assert!(parked.payload.checkpoint.is_none());
+    assert!(parked.payload.resume_pending);
+    assert!(parked.payload.paced);
+    assert!(store
+        .claim_next_job(
+            JobResourceClass::Network,
+            "worker-early",
+            60,
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(!store.defer_job(&fence, wake, "again").await.unwrap());
+    // Another account's pace change leaves it parked; its own wakes it.
+    store
+        .upsert_account("audible", "a1", "us", None, true, "audible")
+        .await
+        .unwrap();
+    assert_eq!(store.wake_paced_acquires("other").await.unwrap(), 1);
+    let parked = store.get_job(&id).await.unwrap().unwrap();
+    assert!(parked.run_after <= chrono::Utc::now());
+    assert_eq!(store.wake_paced_acquires("a1").await.unwrap(), 0);
+    let woken = claim_job(&store, "worker-woken").await;
+    assert_eq!(woken.id, id);
+}
+
+/// Waking reads the pending jobs in pages of the database's result cap,
+/// so under every profile, even with a one-row cap, each paced acquire on
+/// the account is woken and no other.
+#[tokio::test]
+async fn waking_paced_acquires_skips_other_accounts_and_unpaced_jobs() {
+    for profile in crate::test_support::Profile::ALL {
+        for capped in [false, true] {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let store = if capped {
+                store.with_plan_limits(64, 1, 65_536)
+            } else {
+                store
+            };
+            waking_paced_acquires_on(store).await;
+        }
+    }
+}
+
+/// The body of [`waking_paced_acquires_skips_other_accounts_and_unpaced_jobs`]
+/// on one store.
+async fn waking_paced_acquires_on(store: LibraryStore) {
+    store
+        .upsert_account("audible", "a1", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let later = chrono::Utc::now() + chrono::Duration::hours(6);
+    let mut ids = Vec::new();
+    for (account, paced) in [("a1", true), ("a2", true), ("a1", false), ("a1", true)] {
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    paced,
+                    account: Some(account.into()),
+                    // Two paced acquires on a1 differ by title.
+                    title: (ids.len() == 3).then(|| "second".into()),
+                    trigger: JobTrigger::Scheduler,
+                    ..Default::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 8,
+                run_after: Some(later),
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id } = created else {
+            panic!("expected created: {created:?}");
+        };
+        ids.push(id);
+    }
+    store.clear_account_cooldown("audible", "a1").await.unwrap();
+    let now = chrono::Utc::now();
+    let run_after = |i: usize| {
+        let store = &store;
+        let id = ids[i].clone();
+        async move { store.get_job(&id).await.unwrap().unwrap().run_after }
+    };
+    assert!(run_after(0).await <= now, "a1's paced acquire is woken");
+    assert!(run_after(1).await > now, "a2's stays parked");
+    assert!(run_after(2).await > now, "an unpaced job is left alone");
+    assert!(
+        run_after(3).await <= now,
+        "every paced acquire on a1 is woken"
+    );
+}
+
 #[tokio::test]
 async fn suspend_lost_fence_does_not_commit_and_reclaim_sees_checkpoint() {
     use bookclerk_plugin_abi::JobCheckpoint;
@@ -4799,8 +5018,14 @@ async fn acquire_status_and_outbox_commit_together() {
         )
         .await
         .unwrap();
+    let holding = store
+        .title_holding_of_book(&book.uuid)
+        .await
+        .unwrap()
+        .unwrap()
+        .holding_id;
     let pending = store.next_undispatched_event().await.unwrap().unwrap();
-    assert_eq!(pending.ordering_key, book.uuid);
+    assert_eq!(pending.ordering_key, holding);
     assert_eq!(pending.event_type, "book_acquired");
     assert_eq!(pending.source, "audible");
 }

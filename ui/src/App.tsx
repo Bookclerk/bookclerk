@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { LoginPage } from "@/components/LoginPage";
 import { NotFoundPage } from "@/components/NotFoundPage";
+import { PlayerBar } from "@/components/PlayerBar";
 import { PreferencesProvider } from "@/components/PreferencesDialog";
 import { useTheme } from "@/components/ThemeProvider";
 import { Button } from "@/components/ui/button";
@@ -423,7 +424,15 @@ export default function App() {
     administersNodes: session.administers_nodes,
   };
 
-  let page = <LibraryPage onLogout={onLogout} canAcquire={canAcquire} nav={nav} role={role} />;
+  let page = (
+    <LibraryPage
+      onLogout={onLogout}
+      canAcquire={canAcquire}
+      nav={nav}
+      role={role}
+      elevated={session.elevated}
+    />
+  );
 
   if (view === "accounts") {
     page = <AccountsPage onLogout={onLogout} nav={nav} role={role} />;
@@ -501,6 +510,8 @@ export default function App() {
         <div className="min-h-0 flex-1 overflow-hidden">
           <PageSuspense>{page}</PageSuspense>
         </div>
+        {/* Below every screen, so a book keeps playing while moving between them. */}
+        <PlayerBar />
       </div>
     </PreferencesProvider>
   );

@@ -44,6 +44,89 @@ pub const TEST_CHANNEL_IDENT_HOST: &str = "bookclerk-test-channel";
 /// Port paired with [`TEST_CHANNEL_IDENT_HOST`].
 pub const TEST_CHANNEL_IDENT_PORT: u16 = 1;
 
+/// Which grants decide whether a tunnel may be dialed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelRule {
+    /// A native guest's socket: only a TCP grant for `host:port`
+    /// ([`EgressPolicy::allows_tcp`]).
+    TcpGrants,
+    /// A workerd isolate's egress, which carries both `fetch()` and
+    /// `connect()` traffic: the union the isolate may reach
+    /// ([`EgressPolicy::allows_isolate_tunnel`]).
+    IsolateEgress,
+}
+
+/// The policy one proxy link enforces: the approved egress policy and the
+/// rule that applies it to a `CONNECT` target.
+#[derive(Debug, Clone)]
+pub struct LinkPolicy {
+    /// Effective egress policy (manifest narrowed by the operator grant).
+    pub egress: EgressPolicy,
+    /// How a `CONNECT` target is judged against [`Self::egress`].
+    pub rule: TunnelRule,
+}
+
+impl LinkPolicy {
+    /// Policy for a workerd isolate's egress link.
+    ///
+    /// # Arguments
+    ///
+    /// * `egress` - Effective egress policy for the plugin.
+    ///
+    /// # Returns
+    ///
+    /// A [`LinkPolicy`] with [`TunnelRule::IsolateEgress`].
+    #[must_use]
+    pub fn isolate(egress: EgressPolicy) -> Self {
+        Self {
+            egress,
+            rule: TunnelRule::IsolateEgress,
+        }
+    }
+
+    /// Whether a tunnel to `host:port` may be dialed under this link's rule.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - `CONNECT` target host.
+    /// * `port` - `CONNECT` target port.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the rule admits the target. The resolved addresses are
+    /// checked separately.
+    #[must_use]
+    pub fn admits(&self, host: &str, port: u16) -> bool {
+        match self.rule {
+            TunnelRule::TcpGrants => self.egress.allows_tcp(host, port),
+            TunnelRule::IsolateEgress => self.egress.allows_isolate_tunnel(host, port),
+        }
+    }
+
+    /// The denial body naming the grant that was missing.
+    fn denied_body(&self) -> &'static [u8] {
+        match self.rule {
+            TunnelRule::TcpGrants => {
+                b"HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n\
+tcp connect is not in capabilities.network.tcp"
+            }
+            TunnelRule::IsolateEgress => {
+                b"HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n\
+destination is not in capabilities.network"
+            }
+        }
+    }
+}
+
+impl From<EgressPolicy> for LinkPolicy {
+    fn from(egress: EgressPolicy) -> Self {
+        Self {
+            egress,
+            rule: TunnelRule::TcpGrants,
+        }
+    }
+}
+
 /// In-flight host CONNECT proxy. Dropping it cancels accepts and handlers.
 ///
 /// The [`Self::fence`] flag is the session cancel token. Authority revocation
@@ -123,9 +206,10 @@ fn track_handler(
 #[cfg(unix)]
 pub fn spawn_unix(
     listener: std::os::unix::net::UnixListener,
-    policy: EgressPolicy,
+    policy: impl Into<LinkPolicy>,
     fence: Arc<AtomicBool>,
 ) -> Result<ProxyServer> {
+    let policy: LinkPolicy = policy.into();
     listener.set_nonblocking(true)?;
     let listener = tokio::net::UnixListener::from_std(listener)?;
     let tasks = Arc::new(Mutex::new(Vec::new()));
@@ -175,7 +259,7 @@ pub fn spawn_unix(
 
 async fn handle_client<S>(
     stream: S,
-    policy: EgressPolicy,
+    policy: LinkPolicy,
     fence: Arc<AtomicBool>,
     channel_tag: Option<Arc<str>>,
 ) -> Result<()>
@@ -220,15 +304,9 @@ where
             return Ok(());
         }
     }
-    if !policy.allows_tcp(&host, port) {
-        write_fenced(
-            &mut writer,
-            b"HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n\
-tcp connect is not in capabilities.network.tcp",
-            &fence,
-        )
-        .await?;
-        bail!("tcp grant denied for {host}:{port}");
+    if !policy.admits(&host, port) {
+        write_fenced(&mut writer, policy.denied_body(), &fence).await?;
+        bail!("grant denied for {host}:{port}");
     }
     let looked_up = tokio::select! {
         biased;
@@ -238,7 +316,7 @@ tcp connect is not in capabilities.network.tcp",
         }
     };
     let mut addrs: Vec<std::net::SocketAddr> = looked_up
-        .filter(|addr| policy.allows_ip(addr.ip()))
+        .filter(|addr| policy.egress.allows_ip(addr.ip()))
         .collect();
     if addrs.is_empty() {
         write_fenced(
@@ -439,7 +517,7 @@ where
 /// Returns an error only if the accept task cannot be spawned (it does not).
 pub fn spawn_link_with_challenge<S>(
     link: S,
-    policy: EgressPolicy,
+    policy: impl Into<LinkPolicy>,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
 ) -> Result<ProxyServer>
@@ -461,7 +539,7 @@ where
 pub fn spawn_halves<R, W>(
     reader: R,
     writer: W,
-    policy: EgressPolicy,
+    policy: impl Into<LinkPolicy>,
     fence: Arc<AtomicBool>,
 ) -> Result<ProxyServer>
 where
@@ -479,7 +557,7 @@ where
 pub fn spawn_halves_with_challenge<R, W>(
     reader: R,
     writer: W,
-    policy: EgressPolicy,
+    policy: impl Into<LinkPolicy>,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
 ) -> Result<ProxyServer>
@@ -503,7 +581,7 @@ where
 /// accept task cannot be spawned.
 pub fn spawn_link_with_challenge_tag<S>(
     link: S,
-    policy: EgressPolicy,
+    policy: impl Into<LinkPolicy>,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
     channel_tag: &str,
@@ -524,7 +602,7 @@ where
 pub fn spawn_halves_with_challenge_tag<R, W>(
     reader: R,
     writer: W,
-    policy: EgressPolicy,
+    policy: impl Into<LinkPolicy>,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
     channel_tag: &str,
@@ -557,7 +635,7 @@ fn channel_tag_is_safe(tag: &str) -> bool {
 fn spawn_halves_inner<R, W>(
     reader: R,
     writer: W,
-    policy: EgressPolicy,
+    policy: impl Into<LinkPolicy>,
     fence: Arc<AtomicBool>,
     challenge: Option<[u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN]>,
     channel_tag: Option<Arc<str>>,
@@ -566,6 +644,7 @@ where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
     W: tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
+    let policy: LinkPolicy = policy.into();
     let tasks = Arc::new(Mutex::new(Vec::new()));
     let accept_tasks = Arc::clone(&tasks);
     let accept_fence = Arc::clone(&fence);

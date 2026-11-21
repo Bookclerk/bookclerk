@@ -90,6 +90,11 @@ pub mod secret_kind {
     /// library's id, `account_id` = the same). Deleted when the card
     /// is signed out.
     pub const CLERK_CARD: &str = "clerk_card";
+    /// On a desktop branch: the portal session of the patron its window is
+    /// signed in as (`provider` and `account_id` = this node's id, so
+    /// branches sharing one database keep their own). Replaced at every
+    /// launch and deleted when the window signs out.
+    pub const WINDOW_SESSION: &str = "window_session";
 }
 
 /// Ownership namespace for `encrypted_secrets.account_type`.

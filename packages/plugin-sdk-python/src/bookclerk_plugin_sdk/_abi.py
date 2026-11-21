@@ -96,6 +96,28 @@ MAX_METADATA_FILE_LIST_ENTRIES: int = 256
 MAX_METADATA_FILE_CHAPTERS: int = 2000
 """Most chapters in a `MetadataFileRecord`."""
 
+MAX_NOTIFICATION_TITLE_BYTES: int = 256
+"""Longest `NotificationMessage.title` and `NotificationField` name, in UTF-8
+bytes.
+"""
+
+MAX_NOTIFICATION_TEXT_BYTES: int = 16384
+"""Longest `NotificationMessage.text` or `markdown`, in UTF-8 bytes."""
+
+MAX_NOTIFICATION_HTML_BYTES: int = 65536
+"""Longest `NotificationMessage.html`, in UTF-8 bytes."""
+
+MAX_NOTIFICATION_FIELDS: int = 25
+"""Most `NotificationField`s on one message or raise."""
+
+MAX_NOTIFICATION_FIELD_BYTES: int = 1024
+"""Longest `NotificationField.value`, link, group key or alert key, in UTF-8
+bytes.
+"""
+
+MAX_NOTIFIER_ADDRESS_BYTES: int = 4096
+"""Longest destination address document (`addressJson`), in UTF-8 bytes."""
+
 MAX_METADATA_AUDIO_FILES: int = 4096
 """Most entries in `MetadataFileRenderParams.audioFiles`."""
 
@@ -164,6 +186,9 @@ FEATURE_STORAGE_CONDITIONAL_WRITE: str = "storage.conditionalWrite"
 FEATURE_STORAGE_CHANGES: str = "storage.changes"
 """Guest implements `Destination.changes` (`storage.changes`)."""
 
+FEATURE_STORAGE_TRANSLATE_KEYS: str = "storage.translateKeys"
+"""Guest implements `Destination.translateKeys` (`storage.translateKeys`)."""
+
 OBJECT_CHANGE_KINDS: tuple[str, ...] = ("changed", "upserted", "removed")
 """What happened to an object in a change feed. Unknown codes are kept and
 treated as `changed`.
@@ -179,7 +204,7 @@ code.
 Wire strings of ``PluginErrorCode`` in ordinal order (snake_case ``Text`` codes).
 """
 
-ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles")
+ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier")
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
 the default entrypoint (`event`, `job`) are declared separately.
@@ -284,6 +309,32 @@ states, and a render request lists the ones to write.
 Ordinal-ordered ``MetadataField`` wire names (index = Cap'n Proto ordinal).
 """
 
+NOTIFICATION_SEVERITYS: tuple[str, ...] = ("info", "warning", "critical")
+"""How urgent a notification is. Routing rules carry a minimum severity.
+
+Ordinal-ordered ``NotificationSeverity`` wire names (index = Cap'n Proto ordinal).
+"""
+
+NOTIFICATION_AUDIENCES: tuple[str, ...] = ("operational", "patron", "account")
+"""Who a notification type is for. The account audience is reserved to the
+host; a plugin may declare only operational and patron types.
+
+Ordinal-ordered ``NotificationAudience`` wire names (index = Cap'n Proto ordinal).
+"""
+
+NOTIFICATION_ALERT_ACTIONS: tuple[str, ...] = ("none", "trigger", "resolve")
+"""Lifecycle step of an alert, for services such as PagerDuty that open and
+close incidents.
+
+Ordinal-ordered ``NotificationAlertAction`` wire names (index = Cap'n Proto ordinal).
+"""
+
+NOTIFY_DESTINATION_KINDS: tuple[str, ...] = ("channel", "personal")
+"""Kind of destination a `Notifier` sends to.
+
+Ordinal-ordered ``NotifyDestinationKind`` wire names (index = Cap'n Proto ordinal).
+"""
+
 DB_TYPES: tuple[str, ...] = ("unspecified", "bool", "int64", "float64", "text", "bytes")
 """Universal database cell/parameter domain. Engine-native arrays, enums,
 unsigned integers, and JSON text sentinels are not baseline ABI values.
@@ -347,6 +398,12 @@ __all__ = [
     "MAX_METADATA_FILE_TEXT_BYTES",
     "MAX_METADATA_FILE_LIST_ENTRIES",
     "MAX_METADATA_FILE_CHAPTERS",
+    "MAX_NOTIFICATION_TITLE_BYTES",
+    "MAX_NOTIFICATION_TEXT_BYTES",
+    "MAX_NOTIFICATION_HTML_BYTES",
+    "MAX_NOTIFICATION_FIELDS",
+    "MAX_NOTIFICATION_FIELD_BYTES",
+    "MAX_NOTIFIER_ADDRESS_BYTES",
     "MAX_METADATA_AUDIO_FILES",
     "MAX_KV_KEY_BYTES",
     "MAX_SOCKET_FRAME_BYTES",
@@ -369,6 +426,7 @@ __all__ = [
     "FEATURE_STORAGE_HEAD_MANY",
     "FEATURE_STORAGE_CONDITIONAL_WRITE",
     "FEATURE_STORAGE_CHANGES",
+    "FEATURE_STORAGE_TRANSLATE_KEYS",
     "OBJECT_CHANGE_KINDS",
     "PLUGIN_ERROR_CODES",
     "ENTRYPOINTS",
@@ -386,6 +444,10 @@ __all__ = [
     "PRICE_LOOKUPS",
     "ABRIDGEMENTS",
     "METADATA_FIELDS",
+    "NOTIFICATION_SEVERITYS",
+    "NOTIFICATION_AUDIENCES",
+    "NOTIFICATION_ALERT_ACTIONS",
+    "NOTIFY_DESTINATION_KINDS",
     "DB_TYPES",
     "DB_STATEMENT_KINDS",
     "DB_RESULT_SELECTIONS",

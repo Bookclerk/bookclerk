@@ -1,5 +1,5 @@
-//! Periodic scan / auto-acquire / listening-sync / copy-retry scheduler
-//! (queue producers).
+//! Periodic scan / auto-acquire / listening-sync / copy-retry /
+//! destination-sync scheduler (queue producers).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +17,7 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
     spawn_scan_loop(state.clone());
     spawn_listen_sync_loop(state.clone());
     spawn_copy_retry_loop(state.clone());
+    crate::destination_sync::spawn_destination_sync_loop(state.clone());
     spawn_discover_refresh_loop(state);
 }
 
@@ -92,7 +93,11 @@ fn spawn_scan_loop(state: Arc<AppState>) {
                 match enqueue_acquire(
                     state.clone(),
                     ScanRequester::Operator,
-                    crate::jobs::AcquireAsk::default(),
+                    // Auto-acquire: every download waits for its account's pace.
+                    crate::jobs::AcquireAsk {
+                        paced: true,
+                        ..crate::jobs::AcquireAsk::default()
+                    },
                     JobTrigger::Scheduler,
                 )
                 .await

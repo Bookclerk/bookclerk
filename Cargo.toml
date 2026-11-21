@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/bookclerk-acquire",
+    "crates/bookclerk-archive",
     "crates/bookclerk-audible-catalog",
     "crates/bookclerk-cli",
     "crates/bookclerk-config",
@@ -16,6 +17,7 @@ members = [
     "crates/bookclerk-enrich",
     "crates/bookclerk-integrations",
     "crates/bookclerk-jail",
+    "crates/bookclerk-keystore",
     "crates/bookclerk-library",
     "crates/bookclerk-media",
     "crates/bookclerk-media-worker",
@@ -29,6 +31,7 @@ members = [
     "crates/bookclerk-plugin-catalog",
     "crates/bookclerk-plugin-e2e",
     "crates/bookclerk-plugin-host",
+    "crates/bookclerk-player-engine",
     "crates/bookclerk-plugin-manifest",
     "crates/bookclerk-plugin-sdk",
     "crates/bookclerk-plugin-tools",
@@ -91,6 +94,7 @@ bookclerk-config = { path = "crates/bookclerk-config" }
 bookclerk-db-exec = { path = "crates/bookclerk-db-exec" }
 bookclerk-db-guest = { path = "crates/bookclerk-db-guest" }
 bookclerk-db-testkit = { path = "crates/bookclerk-db-testkit" }
+bookclerk-keystore = { path = "crates/bookclerk-keystore" }
 # First-party plugins other members link: the SQLite adapter's host helpers
 # and the Libro.fm guest the demo seed tests drive. A plugin no member links
 # stays out of this table (Cargo warns on unused workspace dependencies).
@@ -101,6 +105,7 @@ bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-mp4 = { path = "crates/bookclerk-mp4" }
 bookclerk-cover = { path = "crates/bookclerk-cover" }
 bookclerk-tags = { path = "crates/bookclerk-tags" }
+bookclerk-archive = { path = "crates/bookclerk-archive" }
 bookclerk-media = { path = "crates/bookclerk-media" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }

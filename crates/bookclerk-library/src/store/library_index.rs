@@ -1942,6 +1942,7 @@ mod tests {
             plugin_key: Some("p".into()),
             account_id: Some(id.into()),
             node_id: None,
+            user_id: None,
             entitlement: "purchase".into(),
             purchased_at: None,
             seen_pass: None,

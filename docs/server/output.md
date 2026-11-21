@@ -31,12 +31,35 @@ acquire writes to it like the built-in ones:
   destinations, and an acquire writes to both. Add one with
   `bookclerk plugins instances create s3 --name "Backup bucket"`, then
   deploy it ([plugin instances](plugins.md#instances)).
-- Destinations that name files as paths come first and the rest follow by
-  instance id. The first one is the primary destination: the library
-  records its key as the title's storage key.
-- `local` names files as paths on a file system. Every other destination
-  gets object-store keys: one key of at most 1024 bytes, with the
-  object-store character set (`output.path_sanitization = "auto"`).
+- Destinations are ordered by instance id. The first one is the primary
+  destination: the library records its key as the title's storage key.
+- Every destination receives the same name, and stores it under the key
+  it can hold (see [Keys each destination stores](#keys-each-destination-stores)).
+
+### Keys each destination stores
+
+The naming templates render one **host key** for a file: folder names
+joined by `/`, each one non-empty, never `.` or `..`, with no `\` or
+control characters, at most 1024 bytes in all. The host key doesn't change
+between destinations. Each destination's plugin then turns it into the key
+it actually stores, and that key is what Bookclerk writes, checks for and
+records for that destination:
+
+- `local` stores a path that the host's file system accepts. On Windows it
+  replaces `< > : " | ? *`, trims trailing dots and spaces, and prefixes
+  reserved device names such as `CON` with `_`. Every platform keeps each
+  folder or file name within 255 bytes (255 UTF-16 units on Windows),
+  shortening the name before its extension.
+- `s3` stores an object key without the characters S3 advises against,
+  such as `\`, `{`, `}`, `^`, `%` and `|`, and fits the whole key, its prefix
+  included, into 1024 bytes. It shortens the file name before its
+  extension first, then the longest folder names.
+- A third-party destination translates keys when it declares
+  `storage.translateKeys` ([plugin ABI](../plugins/abi.md#translating-keys)).
+  One that doesn't stores the host key as written.
+
+So the same book can sit at `Ann Author/Dune: Messiah.m4b` in a bucket and
+at `Ann Author/Dune_ Messiah.m4b` on a Windows disk.
 
 ## Local filesystem
 
@@ -94,7 +117,8 @@ deletes the original.
 With `watch` on, the plugin asks the operating system to tell it whenever a
 file in the folder is added, changed, renamed or removed, and keeps a list
 of those changes. Bookclerk reads the list instead of walking the whole
-folder, so changes made by other programs show up within seconds.
+folder, so changes made by other programs show up within minutes (see
+[Noticing changes made outside Bookclerk](#noticing-changes-made-outside-bookclerk)).
 
 ```sh
 bookclerk plugins config set local watch true
@@ -343,24 +367,30 @@ bookclerk config set output.copies "mp3:64k-mono,mp3_chapters:v4"
 | `m4b` | One M4B with tags and chapters (`enriched_m4b`) | `original` |
 | `mp3` | One MP3 (`single_mp3`) | A bitrate or a VBR level |
 | `mp3_chapters` | One MP3 per chapter (`split_mp3_by_chapter`) | A bitrate or a VBR level |
+| `opus` | One Ogg Opus file with tags and chapters (`opus`) | An Opus bitrate |
 | `original` | The store's files as delivered (`none`) | `original` |
 
 A quality is `original` (the store's audio, repackaged without
 re-encoding), a constant bitrate the MP3 encoder writes (`64k`, `96k`,
 `128k`, `160k`, `192k`, `256k` or `320k`), or a LAME VBR level from `v0`
-(best) to `v9`. A bitrate or VBR level may end in `-mono` to mix the copy
-down to one channel. The main output is a copy too: an M4B or
-as-delivered output is `original`, and an MP3 output takes its quality
+(best) to `v9`. An Opus copy takes an Opus bitrate instead: `16k`,
+`24k`, `32k`, `48k`, `64k`, `96k` or `128k`, which the encoder targets
+in variable bitrate. A bitrate or VBR level may end in `-mono` to mix the
+copy down to one channel; without it, a copy keeps the source's channels,
+up to stereo. Opus is an advanced format: fewer players open it than M4B
+and MP3.
+The main output is a copy too: an M4B or as-delivered output is
+`original`, an Opus output is `64k`, and an MP3 output takes its quality
 from the `output.lame` settings, named after the bitrate the encoder
 writes (it rounds `lame.bitrate_kbps` up to the next of those rates). A
 copy may not repeat another or the main output.
 
 Each acquire downloads the book once and makes every copy from that
 download, main output first. When a library keeps more than one copy,
-every MP3 copy is encoded at its own quality, even when the store
-delivers MP3, so each copy holds the audio its name says. A library with
-only the main output keeps storing a store's MP3 as delivered, as
-before. Every destination receives each copy its
+every MP3 or Opus copy is encoded at its own quality, even when the
+store delivers that format, so each copy holds the audio its name says. A
+library with only the main output keeps storing a store's MP3 or Opus
+file as delivered, rather than encoding lossy audio a second time. Every destination receives each copy its
 filter takes (see
 [Choosing which books a destination takes](#choosing-which-books-a-destination-takes)).
 For example, to send only the MP3 copy to a bucket a phone syncs from:
@@ -452,6 +482,65 @@ When some destinations already have a title and others don't,
 multi_destination = "sync_missing"
 ```
 
+## Noticing changes made outside Bookclerk
+
+Other programs change destinations too: a file manager renames a folder,
+a sync client removes a book, a person copies files into the bucket.
+Every few minutes each host checks the destinations it has deployed (one
+host per destination at a time), and Bookclerk keeps the last state it
+saw of every file there.
+
+Each destination is followed in one of two ways:
+
+- **A change feed**, when the destination has one turned on: the
+  [folder watch](#watching-the-folder) on a local disk, or the
+  [bucket's notification queue](#following-changes-in-the-bucket) on
+  Amazon S3. Bookclerk reads what changed since its last check, so
+  changes show up within about five minutes.
+- **A listing**, which every destination has: Bookclerk lists every file
+  and compares the list with the last one. It runs every 6 hours, or once
+  a day while the destination's feed is healthy. When the feed fails or
+  says it may have missed changes, a listing runs at once and the feed
+  takes over again after it. A long listing continues where it stopped
+  on the next check, even after a restart.
+
+When the edition's audio was moved to another key on the same
+destination that Bookclerk already recorded, the copy follows the file.
+When a file a stored copy needs is gone, `output.missing_files` decides
+what happens:
+
+| Value | What happens |
+| --- | --- |
+| `mark_missing` (default) | The copy is marked **missing** and nothing writes it again on its own. While another destination still holds the book, it stays downloaded there. Once no destination holds it, the book shows as not downloaded, so a member can ask for it again. An acquire of the whole library (or with `library.auto_acquire` on) leaves it out; an acquire of that title, or a forced one, gets it again |
+| `restore` | The copy turns **pending**, and the background retry writes it again (see [Several destinations](#several-destinations)) |
+
+```sh
+bookclerk config set output.missing_files restore
+```
+
+Change it in **Settings → Output** too. A missing copy on a destination
+while the book is still downloaded elsewhere is written again by a forced
+acquire of the title (`bookclerk library acquire --force`), like a failed
+copy.
+
+> [!NOTE]
+> A listing that misses more than a fifth of the files Bookclerk knew of
+> before it started (and more than 10), or more than a fifth of the books
+> it has stored there (and more than 10), more likely failed partway,
+> with a wrong prefix, a missing permission or an unmounted disk, than saw
+> the files really go. Bookclerk keeps those files and copies as they
+> were, and **Settings → Plugins** shows **Listing error** on the destination, with
+> the reason in its tooltip. A listing that fails outright shows the same.
+> Fix the cause, and the next listing applies what it finds. Up to 10
+> missing files always follow `output.missing_files`, so a destination
+> with only a few books never stays stuck behind the guard.
+
+**Settings → Plugins** shows each destination's state beside its name:
+**Feed healthy**, **Feed gap**, **Feed failing**, **Listing error**, **Listed** or **Not
+listed yet**. Hover over it for the number of files, the last and next
+listing, and any error. The same fields are the instance's
+`storage_sync` in the web API.
+
 ## Naming
 
 Bookclerk names files with Libation's NamingTemplate engine
@@ -522,15 +611,19 @@ Copies of one edition on several accounts (the same book bought twice)
 share their files. The edition is downloaded once, and every account's
 copy is marked acquired at its path once each destination holds it.
 
-**Path sanitization** cleans up characters a file system can't store. Set
-`output.path_sanitization` to `auto`, `windows`, `posix`, `s3` or `none`,
-or list your own `output.replacement_characters`.
+**Path sanitization** chooses which characters the templates replace
+before a name reaches any destination. `auto`, the default, replaces only
+what no key can hold (`/` inside a name, and control characters) and leaves
+the rest to each destination ([Keys each destination stores](#keys-each-destination-stores)).
+Set `output.path_sanitization` to `windows`, `posix`, `s3` or `none` to
+apply that set everywhere instead, or list your own
+`output.replacement_characters`.
 
 ## Formats and sidecars
 
 ```toml
 [output]
-format = "enriched_m4b"   # single_mp3 | split_mp3_by_chapter | …
+format = "enriched_m4b"   # single_mp3 | split_mp3_by_chapter | opus | none
 copies = []               # extra copies, see "Keeping several copies"
 download_cover = true
 download_pdf = true

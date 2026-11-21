@@ -4974,6 +4974,56 @@ impl LibraryStore {
         Ok(())
     }
 
+    /// Records the companion PDF state account holding `holding_id`
+    /// (`holdings.id`) wrote for the edition its listing sells.
+    ///
+    /// Once the PDF is acquired, only the holding that acquired it changes
+    /// it while that holding exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `holding_id` - The account holding that wrote the state.
+    /// * `status` - The new PDF state.
+    /// * `pdf_storage_key` - Object-storage key for the companion PDF.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::NotFound`] when no account holding has that
+    /// id, or the database error.
+    pub async fn set_holding_pdf_status(
+        &self,
+        holding_id: &str,
+        status: AcquireStatus,
+        pdf_storage_key: Option<&str>,
+    ) -> Result<()> {
+        let title = self
+            .acquire_title_of_holding(holding_id)
+            .await?
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, holding_id))?;
+        if let Some(uuid) = title.book_uuid.as_deref() {
+            if let Some(model) = books::Entity::find()
+                .filter(books::Column::Uuid.eq(uuid))
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?
+            {
+                let mut am: books::ActiveModel = model.into();
+                am.pdf_status = Set(status.as_str().to_string());
+                am.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
+                am.updated_at = Set(now_str());
+                self.update_book_bumped(am).await?;
+            }
+        }
+        event_outbox::update_edition_pdf_on(
+            &self.db,
+            &title.edition_id,
+            &title.holding_id,
+            status,
+            pdf_storage_key,
+        )
+        .await
+    }
+
     /// Returns whether (`title_id`, `account_id`) is on the ignore list.
     ///
     /// # Arguments
@@ -5110,40 +5160,104 @@ impl LibraryStore {
         error_message: Option<&str>,
     ) -> Result<()> {
         let model = self.resolve_book(title_id, account_id).await?;
-        let title = self.title_holding_of_book(&model.uuid).await?;
+        let Some(holding) = self.title_holding_of_book(&model.uuid).await? else {
+            // A row no account holding sells (an import or fixture that never
+            // resolved a listing): only the flat row records the state, and
+            // there is no title for an event to name.
+            let mut am: books::ActiveModel = model.into();
+            am.acquire_status = Set(status.as_str().to_string());
+            am.storage_key = Set(storage_key.map(str::to_string));
+            am.error_message = Set(error_message.map(str::to_string));
+            am.updated_at = Set(now_str());
+            self.update_book_bumped(am).await?;
+            return Ok(());
+        };
+        self.write_acquire_status(event_outbox::AcquireStatusWrite {
+            holding: &holding,
+            title: event_outbox::AcquireEventTitle::of_book(&holding.holding_id, &model),
+            book_uuid: Some(&model.uuid),
+            status,
+            storage_key,
+            error_message,
+        })
+        .await
+    }
+
+    /// Records the acquire state account holding `holding_id`
+    /// (`holdings.id`) wrote for the edition its listing sells.
+    ///
+    /// The edition's `edition_acquisitions` row (read with
+    /// [`Self::edition_acquisition`]) and the state's event, which names
+    /// the holding, are written in one batch; an edition another holding
+    /// acquired keeps its state while that holding exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `holding_id` - The account holding that wrote the state.
+    /// * `status` - The new acquire state.
+    /// * `storage_key` - Object-storage key for the primary audio artifact.
+    /// * `error_message` - Optional failure message to persist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::NotFound`] when no account holding has that
+    /// id or it no longer holds the edition, or the database error.
+    pub async fn set_holding_acquire_status(
+        &self,
+        holding_id: &str,
+        status: AcquireStatus,
+        storage_key: Option<&str>,
+        error_message: Option<&str>,
+    ) -> Result<()> {
+        let title = self
+            .acquire_title_of_holding(holding_id)
+            .await?
+            .ok_or_else(|| LibraryError::not_found(EntityKind::Book, holding_id))?;
+        let holding = TitleHolding {
+            edition_id: title.edition_id.clone(),
+            holding_id: title.holding_id.clone(),
+        };
+        self.write_acquire_status(event_outbox::AcquireStatusWrite {
+            holding: &holding,
+            title: event_outbox::AcquireEventTitle::of_title(&title),
+            book_uuid: title.book_uuid.as_deref(),
+            status,
+            storage_key,
+            error_message,
+        })
+        .await
+    }
+
+    /// Apply one acquire state write in one batch: the named atomic
+    /// operation on a host, or a local transaction for a store opened
+    /// without an atomic backend (local tools and tests).
+    async fn write_acquire_status(
+        &self,
+        write: event_outbox::AcquireStatusWrite<'_>,
+    ) -> Result<()> {
         if let Some(atomic) = &self.atomic {
             let event = event_outbox::acquire_status_event(
-                &model,
-                title.as_ref().map(|t| t.edition_id.as_str()),
-                status,
-                storage_key,
+                write.title,
+                &write.holding.edition_id,
+                write.status,
+                write.storage_key,
             )?;
             return atomic
                 .set_acquire_status(
-                    &model.uuid,
-                    title.as_ref(),
-                    status,
-                    storage_key,
-                    error_message,
+                    write.holding,
+                    write.book_uuid,
+                    write.status,
+                    write.storage_key,
+                    write.error_message,
                     event,
                 )
                 .await;
         }
-        // In-process fallback for a store opened without an atomic backend
-        // (local tools and tests). Hosts attach the database plugin's named
-        // atomic operation above; an external adapter refuses this `begin()`.
+        // Hosts attach the database plugin's named atomic operation above;
+        // an external adapter refuses this `begin()`.
         #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match event_outbox::set_acquire_status_on(
-            &txn,
-            model,
-            title.as_ref(),
-            status,
-            storage_key,
-            error_message,
-        )
-        .await
-        {
+        match event_outbox::set_acquire_status_on(&txn, write).await {
             Ok(()) => {
                 txn.commit().await.map_err(LibraryError::Orm)?;
                 Ok(())
@@ -7988,6 +8102,7 @@ impl LibraryStore {
 pub(crate) mod acquire_title;
 pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
+pub(crate) mod destination_objects;
 pub(crate) mod discover;
 pub(crate) mod edition_copies;
 pub(crate) mod edition_enrichment;
@@ -7999,6 +8114,7 @@ pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
 pub(crate) mod overrides;
+pub(crate) mod pacing;
 pub(crate) mod playback;
 pub(crate) mod playback_request;
 pub(crate) mod player_cards;
@@ -8018,6 +8134,9 @@ pub(crate) mod work_search;
 pub(crate) mod work_split;
 pub(crate) mod write_batches;
 pub use acquire_title::{AcquireTitle, AcquireTitlePage};
+pub use destination_objects::{
+    ChangedObject, DestinationFeed, FeedState, LostCopies, SeenObject, OBJECT_TOMBSTONE_DAYS,
+};
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,

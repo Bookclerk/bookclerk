@@ -28,8 +28,8 @@ A native guest implements `PluginWorker` (`describe`, and
 `open(invocation, bindings) -> Entrypoints`) and calls `serve`, the
 stdin and stdout Cap'n Proto runner. The entrypoints it returns are the
 same named entrypoints the other SDKs export as classes: storefront,
-storage, remote library, database adapter, CLI, OIDC, metadata, covers
-and metadata files. The
+storage, remote library, database adapter, CLI, OIDC, metadata, covers,
+metadata files and notifier. The
 crate root re-exports the DTOs and helpers a guest needs; prefer
 `use bookclerk_plugin_sdk::…` over reaching into submodules.
 
@@ -64,6 +64,38 @@ and multiplexes CONNECT streams over it with the `mux` module; `net`
 opens mediated TCP sockets, the equivalent of Workers `connect()`, and
 the `http` feature puts an HTTPS client on top. Only hosts the plugin's
 `[capabilities.network]` grants name are reachable.
+
+### Large downloads
+
+A storefront that writes a title into the `fetchTitle` work folder should
+download it with `bookclerk_plugin_sdk::download::Download` (feature
+`http`) rather than reading the body into memory. It streams the body to
+`<dest>.part` and, when the connection drops, stalls (no data for the idle
+timeout, 60 seconds by default) or the CDN answers `408`, `429` or `5xx`,
+asks again for only the missing bytes with `Range`, and `If-Range` when
+the CDN sent an `ETag` or `Last-Modified`. A CDN that ignores the range
+gets the whole file again; an answer for another range or a changed
+length starts over, so bytes are never spliced from two versions.
+
+```rust
+use bookclerk_plugin_sdk::download::Download;
+
+let done = Download::new()
+    .expected_size(store_size) // when the store states it
+    .to_file(&work_dir.join("book.m4b"), || http.get(&url))
+    .await?;
+```
+
+The closure builds a fresh request for each attempt (URL, auth, cookies);
+the download adds the range headers. `DownloadError::is_transient` tells a
+failure worth another `fetchTitle` from a refusal. The decisions
+themselves are the sans-IO functions in `bookclerk_plugin_sdk::resume`,
+which a guest with its own HTTP stack can reuse.
+
+> [!NOTE]
+> The host clears the work folder after every `fetchTitle`, so a download
+> resumes within one call. A partial kept across failed attempts or a
+> host restart is not supported yet.
 
 Older SDKs that only opened a pathname or named-pipe proxy cannot reach
 the host and fail closed; rebuild guests against this SDK. Pathname,

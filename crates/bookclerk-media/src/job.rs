@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::chapter_align::ChapterAlignOptions;
 use crate::error::Result;
 use crate::metadata::FixupRequest;
+use crate::opus_enc::OpusEncodeOptions;
 use crate::package_m4b::PackageM4bRequest;
 use crate::MediaOutcome;
 use bookclerk_mp4::TrimRange;
@@ -20,7 +21,7 @@ use bookclerk_mp4::TrimRange;
 /// A single codec operation.
 ///
 /// These are the CPU-bound paths that decode or encode attacker-influenced
-/// audio through LAME and FDK-AAC, both of which are C libraries.
+/// audio through LAME, FDK-AAC and libopus, all of which are C libraries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum MediaJob {
@@ -34,6 +35,18 @@ pub enum MediaJob {
         lame: Box<LameConfig>,
         /// Optional ceiling for output sample rate in Hz (`None` = leave source).
         max_sample_rate: Option<u32>,
+        /// Hard cap on bytes written to `output`. `None` does not cap the file.
+        #[serde(default)]
+        max_output_bytes: Option<u64>,
+    },
+    /// Encode audio to Ogg Opus via Symphonia and libopus.
+    EncodeOpus {
+        /// Absolute path of the source audio to encode.
+        input: PathBuf,
+        /// Absolute path where the `.opus` file should be written.
+        output: PathBuf,
+        /// Bitrate and channel choice.
+        options: OpusEncodeOptions,
         /// Hard cap on bytes written to `output`. `None` does not cap the file.
         #[serde(default)]
         max_output_bytes: Option<u64>,
@@ -66,6 +79,16 @@ pub enum MediaJob {
         /// Waveform-alignment tuning (window sizes, thresholds).
         options: ChapterAlignOptions,
     },
+    /// Expand an uploaded ZIP or tar archive into an empty folder under
+    /// caps ([`bookclerk_archive::extract`]).
+    ExtractArchive {
+        /// Absolute path of the archive.
+        input: PathBuf,
+        /// Absolute path of the empty folder the files go into.
+        output_dir: PathBuf,
+        /// The caps for this archive.
+        limits: bookclerk_archive::Limits,
+    },
 }
 
 /// What a finished job produced.
@@ -89,6 +112,11 @@ pub enum MediaJobOutput {
         /// Chapter titles paired with start offsets in milliseconds.
         chapters: Vec<(String, u64)>,
     },
+    /// What an archive expansion wrote and refused.
+    Extracted {
+        /// The walk's report; the host re-checks it before trusting it.
+        report: Box<bookclerk_archive::ExtractReport>,
+    },
 }
 
 impl MediaJobOutput {
@@ -97,7 +125,7 @@ impl MediaJobOutput {
     pub fn output(&self) -> Option<&Path> {
         match self {
             Self::File { output } | Self::FileWithChapters { output, .. } => Some(output),
-            Self::Chapters { .. } => None,
+            Self::Chapters { .. } | Self::Extracted { .. } => None,
         }
     }
 
@@ -106,7 +134,7 @@ impl MediaJobOutput {
     pub fn chapters(&self) -> Option<&[(String, u64)]> {
         match self {
             Self::FileWithChapters { chapters, .. } | Self::Chapters { chapters } => Some(chapters),
-            Self::File { .. } => None,
+            Self::File { .. } | Self::Extracted { .. } => None,
         }
     }
 }
@@ -122,7 +150,9 @@ impl MediaJob {
     #[must_use]
     pub fn read_paths(&self) -> Vec<PathBuf> {
         match self {
-            Self::EncodeMp3 { input, .. } | Self::RemuxTrimmed { input, .. } => {
+            Self::EncodeMp3 { input, .. }
+            | Self::EncodeOpus { input, .. }
+            | Self::RemuxTrimmed { input, .. } => {
                 vec![input.clone()]
             }
             Self::Fixup { request } => {
@@ -132,6 +162,7 @@ impl MediaJob {
             }
             Self::PackageM4b { request } => request.parts.clone(),
             Self::AlignChapters { path, .. } => vec![path.clone()],
+            Self::ExtractArchive { input, .. } => vec![input.clone()],
         }
     }
 
@@ -142,11 +173,16 @@ impl MediaJob {
     /// path and everything beneath it.
     #[must_use]
     pub fn write_dirs(&self) -> Vec<PathBuf> {
+        if let Self::ExtractArchive { output_dir, .. } = self {
+            return vec![output_dir.clone()];
+        }
         let output = match self {
-            Self::EncodeMp3 { output, .. } | Self::RemuxTrimmed { output, .. } => Some(output),
+            Self::EncodeMp3 { output, .. }
+            | Self::EncodeOpus { output, .. }
+            | Self::RemuxTrimmed { output, .. } => Some(output),
             Self::Fixup { request } => Some(&request.output),
             Self::PackageM4b { request } => Some(&request.output),
-            Self::AlignChapters { .. } => None,
+            Self::AlignChapters { .. } | Self::ExtractArchive { .. } => None,
         };
         output
             .and_then(|path| path.parent())
@@ -159,10 +195,12 @@ impl MediaJob {
     pub fn label(&self) -> &'static str {
         match self {
             Self::EncodeMp3 { .. } => "encode_mp3",
+            Self::EncodeOpus { .. } => "encode_opus",
             Self::RemuxTrimmed { .. } => "remux_trimmed",
             Self::Fixup { .. } => "fixup",
             Self::PackageM4b { .. } => "package_m4b",
             Self::AlignChapters { .. } => "align_chapters",
+            Self::ExtractArchive { .. } => "extract_archive",
         }
     }
 
@@ -231,6 +269,15 @@ impl MediaJob {
                 )?;
                 Ok(MediaJobOutput::File { output })
             }
+            Self::EncodeOpus {
+                input,
+                output,
+                options,
+                max_output_bytes,
+            } => {
+                crate::opus_enc::encode_to_opus_native(&input, &output, options, max_output_bytes)?;
+                Ok(MediaJobOutput::File { output })
+            }
             Self::RemuxTrimmed {
                 input,
                 output,
@@ -258,6 +305,17 @@ impl MediaJob {
                 options,
             } => Ok(MediaJobOutput::Chapters {
                 chapters: crate::chapter_align::align_chapter_starts(&path, &chapters, options),
+            }),
+            Self::ExtractArchive {
+                input,
+                output_dir,
+                limits,
+            } => Ok(MediaJobOutput::Extracted {
+                report: Box::new(crate::archive::extract_in_worker(
+                    &input,
+                    &output_dir,
+                    &limits,
+                )?),
             }),
         }
     }
@@ -317,6 +375,22 @@ mod tests {
         let job = encode_job("/cache/in.m4b", "/out/book/ch1.mp3");
         assert_eq!(job.read_paths(), vec![PathBuf::from("/cache/in.m4b")]);
         assert_eq!(job.write_dirs(), vec![PathBuf::from("/out/book")]);
+    }
+
+    #[test]
+    fn opus_encode_declares_its_input_and_output_directory() {
+        let job = MediaJob::EncodeOpus {
+            input: PathBuf::from("/cache/in.m4b"),
+            output: PathBuf::from("/out/book/book.opus"),
+            options: OpusEncodeOptions {
+                bitrate_kbps: 32,
+                mono: true,
+            },
+            max_output_bytes: None,
+        };
+        assert_eq!(job.read_paths(), vec![PathBuf::from("/cache/in.m4b")]);
+        assert_eq!(job.write_dirs(), vec![PathBuf::from("/out/book")]);
+        assert_eq!(job.label(), "encode_opus");
     }
 
     #[test]

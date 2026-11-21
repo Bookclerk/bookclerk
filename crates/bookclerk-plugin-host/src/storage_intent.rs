@@ -36,6 +36,8 @@ pub(crate) enum StorageOp {
     HeadMany(Vec<String>),
     /// `Destination.changes`.
     Changes(ChangesRequest),
+    /// `Destination.translateKeys`.
+    TranslateKeys(Vec<String>),
 }
 
 /// The guest's answer to a [`StorageOp`], already validated.
@@ -50,6 +52,8 @@ pub(crate) enum StorageOpReply {
     HeadMany(Vec<Option<ObjectMetadata>>),
     /// Answer to [`StorageOp::Changes`].
     Changes(ChangesPage),
+    /// Answer to [`StorageOp::TranslateKeys`].
+    TranslateKeys(Vec<String>),
 }
 
 /// Runs `op` against the guest's `Destination` on the vat thread.
@@ -71,6 +75,10 @@ pub(crate) async fn run_storage_op(
         StorageOp::DeleteMany(keys) => dest.delete_many(keys).await.map(StorageOpReply::DeleteMany),
         StorageOp::HeadMany(keys) => dest.head_many(keys).await.map(StorageOpReply::HeadMany),
         StorageOp::Changes(request) => dest.changes(request).await.map(StorageOpReply::Changes),
+        StorageOp::TranslateKeys(keys) => dest
+            .translate_keys(keys)
+            .await
+            .map(StorageOpReply::TranslateKeys),
     }
 }
 
@@ -87,6 +95,7 @@ pub(crate) fn capabilities_from_features(has: impl Fn(&str) -> bool) -> StorageC
         head_many: has(bookclerk_plugin_sdk::FEATURE_STORAGE_HEAD_MANY),
         conditional_write: has(bookclerk_plugin_sdk::FEATURE_STORAGE_CONDITIONAL_WRITE),
         changes: has(bookclerk_plugin_sdk::FEATURE_STORAGE_CHANGES),
+        translate_keys: has(bookclerk_plugin_sdk::FEATURE_STORAGE_TRANSLATE_KEYS),
     }
 }
 
@@ -320,6 +329,12 @@ mod tests {
         {
             Ok(keys.into_iter().map(|_| None).collect())
         }
+        async fn translate_keys(
+            &self,
+            keys: Vec<String>,
+        ) -> std::result::Result<Vec<String>, bookclerk_plugin_sdk::PluginError> {
+            Ok(keys.into_iter().map(|key| key.replace(':', "_")).collect())
+        }
         async fn changes(
             &self,
             _request: ChangesRequest,
@@ -409,6 +424,15 @@ mod tests {
         };
         assert!(probes[0].is_none());
 
+        let StorageOpReply::TranslateKeys(keys) =
+            run_storage_op(&dest, StorageOp::TranslateKeys(vec!["A: B/c.m4b".into()]))
+                .await
+                .expect("translateKeys")
+        else {
+            panic!("translateKeys reply");
+        };
+        assert_eq!(keys, ["A_ B/c.m4b"]);
+
         let StorageOpReply::Changes(feed) =
             run_storage_op(&dest, StorageOp::Changes(ChangesRequest::default()))
                 .await
@@ -460,5 +484,13 @@ mod tests {
         let caps = capabilities_from_features(|f| f == bookclerk_plugin_sdk::FEATURE_STORAGE_MOVE);
         assert!(caps.move_object);
         assert!(!caps.delete_many);
+        assert!(
+            !caps.translate_keys,
+            "no feature: host keys stored as written"
+        );
+        let caps = capabilities_from_features(|f| {
+            f == bookclerk_plugin_sdk::FEATURE_STORAGE_TRANSLATE_KEYS
+        });
+        assert!(caps.translate_keys);
     }
 }
