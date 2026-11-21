@@ -76,37 +76,37 @@ export function SharedBranchesPanel({ onSessionExpired, canRemove }: SharedBranc
     <section className="space-y-6">
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-ink">Shared branches</h2>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-ink/70">
           Shared branches share this library's database and keys, so they serve the same library as
           this server. Only an Owner can let a server join this way, and only when the database is
           PostgreSQL or Cloudflare D1. To add one, choose <strong>Join a library</strong> on an
           empty server and pick <strong>shared branch</strong> when you approve it here.
         </p>
         {canRemove ? null : (
-          <p className="text-sm text-ink/55">
+          <p className="text-sm text-ink/70">
             Only the operator can remove a shared branch, because removing one deletes its records.
             To remove one, choose <strong>Elevate to Operator</strong> under Account.
           </p>
         )}
       </div>
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
       {nodes == null ? (
         error ? null : (
-          <p className="text-sm text-ink/50">Loading…</p>
+          <p className="text-sm text-ink/70">Loading…</p>
         )
       ) : nodes.length === 0 ? (
-        <p className="text-sm text-ink/50">No shared branches.</p>
+        <p className="text-sm text-ink/70">No shared branches.</p>
       ) : (
         <ul className="divide-y divide-ink/10 rounded-md border border-ink/10">
           {nodes.map((node) => (
             <li key={node.node_id} className="flex items-center justify-between gap-3 px-4 py-3">
               <div className="min-w-0 space-y-0.5">
                 <p className="truncate font-mono text-xs text-ink">{node.node_id}</p>
-                <p className="text-xs text-ink/55">
+                <p className="text-xs text-ink/70">
                   {node.this_node ? "This server" : node.live ? "Running" : "Not running"}
                   {node.software_version ? ` · ${node.software_version}` : ""}
                 </p>

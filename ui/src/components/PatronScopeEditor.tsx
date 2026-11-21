@@ -116,15 +116,15 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
 
   return (
     <section className="space-y-2" aria-label={heading}>
-      <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">{heading}</p>
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">{heading}</p>
       {userId !== null && !applies ? (
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-ink/70">
           Owners and Administrators always see the whole library. A scope set here applies if their
           role changes to Member.
         </p>
       ) : null}
       {userId === null ? (
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-ink/70">
           Members without their own scope see this. Books they hold through their own store accounts
           are always visible.
         </p>
@@ -157,7 +157,7 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
         </div>
       )}
 
-      {!loaded && !error ? <p className="text-sm text-ink/50">Loading…</p> : null}
+      {!loaded && !error ? <p className="text-sm text-ink/70">Loading…</p> : null}
       {loaded && !own ? <p className="text-sm text-ink/70">{scopeSummary(draft)}</p> : null}
       {loaded && own ? (
         <div className="space-y-2">
@@ -171,7 +171,7 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
             Hide books marked explicit
           </label>
           {draft.rules.length === 0 ? (
-            <p className="text-sm text-ink/50">
+            <p className="text-sm text-ink/70">
               {draft.explicit === "hide"
                 ? "No rules: every book not marked explicit is visible."
                 : "No rules: every book is visible."}
@@ -227,7 +227,7 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
               ))}
             </ul>
           )}
-          <p className="text-xs text-ink/55">
+          <p className="text-xs text-ink/70">
             With any &ldquo;Show only&rdquo; rule, a book needs to match one of them. A
             &ldquo;Hide&rdquo; rule always wins. Values match without case.
           </p>
@@ -248,13 +248,13 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
             >
               Save scope
             </Button>
-            {saved && !dirty ? <span className="text-xs text-ink/55">Saved</span> : null}
+            {saved && !dirty ? <span className="text-xs text-ink/70">Saved</span> : null}
           </div>
-          {dirty && problem ? <p className="text-xs text-brick">{problem}</p> : null}
+          {dirty && problem ? <p className="text-xs text-brick-text">{problem}</p> : null}
         </div>
       ) : null}
       {error ? (
-        <p role="alert" className="text-xs text-brick">
+        <p role="alert" className="text-xs text-brick-text">
           {error}
         </p>
       ) : null}

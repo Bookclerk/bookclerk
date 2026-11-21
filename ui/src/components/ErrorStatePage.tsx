@@ -20,7 +20,7 @@ export function ErrorStatePage({
   return (
     <section className="rounded-lg border border-brick/25 bg-brick/5 p-6">
       <div className="flex items-start gap-3">
-        <AlertTriangle className="mt-0.5 h-5 w-5 text-brick" />
+        <AlertTriangle className="mt-0.5 h-5 w-5 text-brick-text" />
         <div className="space-y-2">
           <h2 className="text-lg font-semibold text-ink">{title}</h2>
           <p className="text-sm text-ink/70">{message}</p>

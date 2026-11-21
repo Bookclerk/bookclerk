@@ -13,7 +13,7 @@ export function Input({ className, ...props }: React.InputHTMLAttributes<HTMLInp
   return (
     <input
       className={cn(
-        "w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm text-ink shadow-sm placeholder:text-ink/40 focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30",
+        "w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm text-ink shadow-sm placeholder:text-ink/70 focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30",
         invalid && "border-brick focus:border-brick focus:ring-brick/30",
         className,
       )}

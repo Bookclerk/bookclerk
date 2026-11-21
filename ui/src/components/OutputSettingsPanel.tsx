@@ -195,11 +195,11 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
 
   if (!baseline) {
     return error ? (
-      <p className="text-sm font-medium text-brick" role="alert">
+      <p className="text-sm font-medium text-brick-text" role="alert">
         {error}
       </p>
     ) : (
-      <p className="text-sm text-ink/50">Loading output settings…</p>
+      <p className="text-sm text-ink/70">Loading output settings…</p>
     );
   }
 
@@ -212,21 +212,21 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
       <section className="space-y-3">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-ink">Output</h2>
-          <p className="text-sm text-ink/55">
+          <p className="text-sm text-ink/70">
             How acquired audio is packaged and named on every host. Stored in the library database
             {revision === null ? "" : ` (revision ${revision})`}; destination roots and prefixes are
             plugin settings.
           </p>
         </div>
         {error ? (
-          <p className="text-sm font-medium text-brick" role="alert">
+          <p className="text-sm font-medium text-brick-text" role="alert">
             {error}
           </p>
         ) : null}
-        {notice ? <p className="text-sm text-teal">{notice}</p> : null}
+        {notice ? <p className="text-sm text-teal-text">{notice}</p> : null}
         {unavailable ? (
           <div className="flex items-center justify-between gap-3" role="alert">
-            <p className="text-sm font-medium text-brick">
+            <p className="text-sm font-medium text-brick-text">
               Output settings are unavailable: the server could not read the shared output document.
               Editing is disabled until it can be read.
             </p>
@@ -267,7 +267,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
                   spellCheck={false}
                 />
               )}
-              {field.hint ? <p className="text-xs text-ink/50">{field.hint}</p> : null}
+              {field.hint ? <p className="text-xs text-ink/70">{field.hint}</p> : null}
             </div>
           ))}
         </div>

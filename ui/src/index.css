@@ -115,7 +115,11 @@
 @theme {
   --color-ink: #0b3553;
   --color-teal: #3d7f7a;
+  /* Teal for text and small labels: AA (4.5:1) on paper and on teal tints. */
+  --color-teal-text: #2f6b66;
   --color-brick: #c84a34;
+  /* Brick for text and small labels: AA (4.5:1) on paper and on brick tints. */
+  --color-brick-text: #a33b28;
   --color-parchment: #f3e5c6;
   --color-fold: #e7d3ac;
   --color-paper: #fbf7ee;
@@ -134,6 +138,9 @@
 
 html {
   color-scheme: light;
+  /* Under the body's gradient, and wherever a page runs past the body's
+     100% height (the gradient covers only the first screen). */
+  background-color: var(--color-paper);
 }
 
 html.dark {
@@ -144,7 +151,9 @@ html.dark {
   --color-parchment: #1a2834;
   --color-fold: #243240;
   --color-teal: #5aa8a2;
+  --color-teal-text: #5aa8a2;
   --color-brick: #e06a52;
+  --color-brick-text: #e06a52;
   --color-card: color-mix(in srgb, var(--color-ink) 8%, transparent);
   --color-card-mid: color-mix(in srgb, var(--color-ink) 12%, transparent);
   --color-card-strong: color-mix(in srgb, var(--color-ink) 18%, var(--color-paper));

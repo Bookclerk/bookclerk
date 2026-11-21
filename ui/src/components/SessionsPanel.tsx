@@ -40,7 +40,7 @@ function formatSessionWhen(iso: string | null | undefined): string {
 
 function SessionMeta({ row }: { row: ListedSession }) {
   return (
-    <p className="text-xs text-ink/50">
+    <p className="text-xs text-ink/70">
       Signed in {formatSessionWhen(row.created_at)}
       {row.last_used_at ? ` · Last active ${formatSessionWhen(row.last_used_at)}` : null}
       {" · Expires "}
@@ -62,7 +62,7 @@ function SessionBadges({ row }: { row: ListedSession }) {
         <Badge className="bg-teal/15 text-ink normal-case tracking-normal">Elevated</Badge>
       ) : null}
       {row.impersonating_user_id ? (
-        <Badge className="bg-brick/10 text-brick normal-case tracking-normal">
+        <Badge className="bg-brick/10 text-brick-text normal-case tracking-normal">
           Impersonating #{row.impersonating_user_id}
         </Badge>
       ) : null}
@@ -103,7 +103,7 @@ function OtherSessionRow({
   const Icon = sessionDeviceIcon(row.device_type);
   return (
     <li className="flex items-center gap-3 px-3 py-3">
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink/5 text-ink/60">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink/5 text-ink/70">
         <Icon className="h-4 w-4" aria-hidden />
       </div>
       <div className="min-w-0 flex-1">
@@ -160,7 +160,7 @@ export function SessionsPanel({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
             <h2 className="text-lg font-semibold text-ink">Sessions</h2>
-            <p className="text-sm text-ink/55">
+            <p className="text-sm text-ink/70">
               These are the devices and clients currently signed in to your account. Revoke any
               session you do not recognize.
             </p>
@@ -173,13 +173,13 @@ export function SessionsPanel({
       )}
 
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
 
       {sessions.length === 0 ? (
-        <p className="bg-card px-3 py-3 text-sm text-ink/50">No sessions returned.</p>
+        <p className="bg-card px-3 py-3 text-sm text-ink/70">No sessions returned.</p>
       ) : (
         <>
           {current ? (
@@ -193,7 +193,7 @@ export function SessionsPanel({
             <div className="space-y-3">
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold text-ink/80">Log out of other sessions</h3>
-                <p className="text-sm text-ink/55">
+                <p className="text-sm text-ink/70">
                   {others.length === 1
                     ? "There is 1 other session signed in to your account."
                     : `There are ${others.length} other sessions signed in to your account.`}{" "}
@@ -215,7 +215,7 @@ export function SessionsPanel({
               </ul>
             </div>
           ) : current ? (
-            <p className="text-sm text-ink/50">No other active sessions.</p>
+            <p className="text-sm text-ink/70">No other active sessions.</p>
           ) : null}
         </>
       )}

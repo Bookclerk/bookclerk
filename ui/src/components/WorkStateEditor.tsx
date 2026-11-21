@@ -41,7 +41,7 @@ type StarPickerProps = {
 function StarPicker({ label, value, disabled, onChange }: StarPickerProps) {
   const current = value == null ? 0 : Math.round(value);
   return (
-    <span className="inline-flex items-center gap-0.5" role="group" aria-label={`${label} rating`}>
+    <span className="inline-flex items-center" role="group" aria-label={`${label} rating`}>
       {[1, 2, 3, 4, 5].map((n) => (
         <button
           key={n}
@@ -50,12 +50,12 @@ function StarPicker({ label, value, disabled, onChange }: StarPickerProps) {
           aria-pressed={current === n}
           aria-label={current === n ? `Clear ${label} rating` : `${label}: ${n} of 5`}
           onClick={() => onChange(current === n ? null : n)}
-          className="rounded p-0.5 text-ink/55 hover:text-teal focus:outline-none focus-visible:ring-2 focus-visible:ring-teal/40 disabled:opacity-50"
+          className="rounded p-1 text-ink/70 hover:text-teal-text focus:outline-none focus-visible:ring-2 focus-visible:ring-teal/40 disabled:opacity-50"
         >
           <Star
             className={cn(
               "h-4 w-4 stroke-[2.25]",
-              n <= current ? "fill-teal text-teal" : "fill-transparent",
+              n <= current ? "fill-teal text-teal-text" : "fill-transparent",
             )}
           />
         </button>
@@ -105,7 +105,7 @@ export function WorkStateEditor({ workId, state, onSaved }: WorkStateEditorProps
 
   return (
     <div className="mt-5 space-y-3 border-t border-ink/10 pt-4">
-      <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">Your copy</p>
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Your copy</p>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <Button
           type="button"
@@ -149,7 +149,7 @@ export function WorkStateEditor({ workId, state, onSaved }: WorkStateEditorProps
           Save
         </Button>
       </form>
-      {error ? <p className="text-sm text-brick">{error}</p> : null}
+      {error ? <p className="text-sm text-brick-text">{error}</p> : null}
     </div>
   );
 }

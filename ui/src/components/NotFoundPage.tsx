@@ -11,7 +11,9 @@ export function NotFoundPage({ path = window.location.pathname || "/" }: { path?
     <div className="flex min-h-full items-center justify-center px-4 py-10">
       <div className="w-full max-w-md animate-[fadeUp_420ms_ease-out]">
         <BookclerkLogo className="mb-8 h-auto w-full" />
-        <p className="text-xs font-semibold uppercase tracking-wider text-brick">404 · Not Found</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-brick-text">
+          404 · Not Found
+        </p>
         <h1 className="mt-2 font-display text-3xl font-bold tracking-tight text-ink">Not Found</h1>
         <p className="mt-2 text-sm text-ink/70">
           No Bookclerk page at{" "}

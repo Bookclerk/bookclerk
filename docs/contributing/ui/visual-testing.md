@@ -1,16 +1,17 @@
 # Visual and accessibility testing
 
 CI checks every web page Bookclerk ships for layout changes and
-accessibility problems: the web app's components, the website
+accessibility problems: the web app's pages and components, the website
 (`tools/site`) and the diagnostics collector's pages
-(`tools/diagnostics-collector`). Each web app component has Storybook
-stories beside its source. CI opens every story and every Worker page in a
-browser, checks it with axe-core, and compares a screenshot with an approved
-baseline image.
+(`tools/diagnostics-collector`). CI opens every Storybook story, every web
+app page and every Worker page in a browser, checks it with axe-core, and
+compares a screenshot with an approved baseline image. It also fails when a
+web app component never appears in any of them.
 
 Nothing here ships in the app or the Workers. Storybook, Playwright, the
-stories and the Workers' local page servers are development tools, and
-`vite build` never imports a story, so `ui/dist` is unchanged.
+stories, the sample API answers and the Workers' local page servers are
+development tools, and `vite build` never imports a story, so `ui/dist` is
+unchanged.
 
 ## What runs
 
@@ -54,9 +55,66 @@ baseline of its whole length, named `<worker>--<page>--<theme>.png`.
   `tools/diagnostics-collector/visual/pages.ts`; the server refuses to
   start when that list and its renderers disagree.
 
+Each Worker also lists its building blocks beside its pages, as
+`VISUAL_COMPONENTS` in the same file: the website's header, footer, hero,
+buttons, cards, callouts, code blocks and tables, and the collector's
+header, stat cards, charts, tables, forms and event log. Each one is taken
+from a page that shows it (the first element matching its CSS selector),
+checked with axe-core on its own and compared with a screenshot of just
+that element, named `<worker>--component--<name>--<theme>.png`. A change to
+one building block then shows up as its own small image beside the full
+pages.
+
 A new collector page template gets a sample render in `visual/serve.ts`
 and an entry in `visual/pages.ts`. A new website page gets an entry in
-`audit/pages.ts`.
+`audit/pages.ts`. A new building block gets a `VISUAL_COMPONENTS` entry.
+
+## Web app pages
+
+`ui/visual/app.spec.ts` opens the web app itself, built without
+minification (`npm run build:visual`, into `ui/visual-dist/`), at the same
+viewports and in light and dark. No daemon runs behind it:
+
+- Every `/api/` request is answered from a small sample library in
+  `ui/visual/app/fixtures.ts`: public-domain books on two storefronts, an
+  Owner, two patrons, a branch and a few plugins, seen at a fixed time, so
+  relative dates read the same on every run. Covers and store icons are
+  generated plain tiles; no store artwork is used.
+- Each JSON answer is checked against the daemon's OpenAPI document
+  (`crates/bookclerkd/openapi.json`) by `ui/visual/app/openapi.ts`. A
+  request the samples don't answer, a path the document doesn't list, or an
+  answer the document doesn't allow fails the test and is named, so the
+  samples can't drift from the real API.
+- The live-updates socket is held open without messages.
+
+The pages are `PAGES` in `app.spec.ts`: sign-in, Discover, Library,
+Wishlist, Accounts, Status and every Settings tab, plus dialogs and states
+that open from a page (book details, the player, plugin consent, adding a
+branch) or appear only in some states (a fresh install's welcome screen, a
+required second factor, the join and library card pages). A page that needs
+a different library names a scenario from `SCENARIOS` in `fixtures.ts`,
+which answers a few requests differently. Each page is checked with
+axe-core and compared with a screenshot named `app--<page>--<theme>.png`.
+
+A new page, or a state a page shows only sometimes, gets a `PAGES` entry,
+with a scenario when the default samples don't produce it.
+
+## Coverage
+
+The recording run in CI sets `VISUAL_COVERAGE_CHECK=1`. The suite then
+notes which web app components put something on the page in each story and
+app page, using a stand-in for the React DevTools hook (`ui/visual/coverage.ts`).
+A dialog that is mounted but closed draws nothing and doesn't count. When the
+run ends, `ui/visual/coverage-check.ts` fails it if any component exported
+from a module under `ui/src/components/` never rendered, and names each one.
+
+The builds the suite opens keep function names (they aren't minified), so a
+component is known by its name.
+
+To cover a new component, open it from an app page (add a `PAGES` entry or
+a scenario), or write a story when no page in a browser reaches it (the
+desktop window's own first-run step, say). Remove a component nothing uses
+rather than covering it.
 
 ## Write a story
 
@@ -105,6 +163,7 @@ From `ui/`:
 npm ci
 npm run storybook                 # browse the stories at http://127.0.0.1:6006
 npm run storybook:build           # the static build the checks use
+npm run build:visual              # the unminified app build the app pages use
 npx playwright install chromium   # once per Playwright version
 npm run test:visual -- --update-snapshots=all
 ```
@@ -120,7 +179,10 @@ first:
 (cd ../tools/diagnostics-collector && npm ci)
 ```
 
-Add `workers` or `stories` after `--` to run only one of the two specs.
+Add `app`, `workers` or `stories` after `--` to run only one of the specs.
+Set `VISUAL_COVERAGE_CHECK=1` on a run of all of them to check coverage as
+CI does, and `VISUAL_COVERAGE_REPORT=1` as well to list every component and
+whether it rendered.
 
 > [!IMPORTANT]
 > Local screenshots are for looking, never for committing as baselines.
@@ -134,10 +196,11 @@ a host whose preinstalled browser isn't the one Playwright downloads.
 
 The `UI visual and accessibility` job (`ui_visual` check) runs when a file
 under `ui/`, `tools/site/`, `tools/diagnostics-collector/` or
-`assets/brand/` changes, or `SECURITY.md` (the website's security page), and
-in the full suite. A change to the host that serves the app doesn't select
-it, and neither does a change under `docs/`, because neither changes what
-the checks render.
+`assets/brand/` changes, or `SECURITY.md` (the website's security page), or
+the daemon's OpenAPI document (`crates/bookclerkd/openapi.json`, which the
+app pages' samples are checked against), and in the full suite. Any other
+change to the host that serves the app doesn't select it, and neither does
+a change under `docs/`, because neither changes what the checks render.
 Like the other jobs outside `check` and `test`, it is
 [deferred on a draft](../ci.md#draft-pull-requests). It runs on ready pull
 requests and in the merge queue.
@@ -167,8 +230,9 @@ built docs live in `Bookclerk/bookclerk-docs`.
 ### Layout
 
 - Each baseline set is one commit in the baselines repository, with one
-  folder per viewport: `desktop/<story-id>--<theme>.png` and
-  `phone/<story-id>--<theme>.png`.
+  folder per viewport: `desktop/<id>--<theme>.png` and
+  `phone/<id>--<theme>.png`, where the id is a story id, `app--<page>`, or
+  a Worker page or building block.
 - `ui/visual/baselines.lock` in this repository names the commit a
   Bookclerk commit is checked against (or `none`). So every Bookclerk
   commit, including a release tag, pins the exact images it was approved
@@ -192,8 +256,12 @@ the one in the pull request merged into its base branch. A pull request
 that leaves the lock alone is compared with the base branch's approved set,
 so it only gets a comment when its own change alters a screenshot. Without
 a merge ref (the pull request conflicts with its base), the head's lock
-stands in. Like CI, the workflow treats an untagged lock as no set at all,
-so every image needs approval.
+stands in when it names an approved set, and otherwise the base branch's
+lock does, so a branch started before the first approval isn't shown every
+image as new. Merging the base branch in still gives the exact comparison,
+and lets CI run on the merged code. Like CI, the workflow treats an
+untagged lock as no set at all, so every image needs approval. The comment
+names the approved set it compared with.
 
 ### How a pull request changes them
 
@@ -288,8 +356,8 @@ compared with that set.
 
 ### Keeping the repository small
 
-- Screenshots cover each story's own box, not the whole viewport, so most
-  images are a few kilobytes. The first sets average about 22 KB per image.
+- Screenshots cover each story's or building block's own box, not the whole
+  viewport, so most images are a few kilobytes. The first sets average about 22 KB per image.
 - Only sets that an `approved/*` tag points at need to be kept. Pending
   refs are overwritten on each proposal, so a pull request that never
   merges leaves at most one pending set behind.

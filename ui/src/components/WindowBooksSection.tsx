@@ -103,7 +103,7 @@ function WindowRow({ entry }: { entry: WindowEntryView }) {
           ))}
         </div>
         {meta ? <p className="mt-0.5 truncate text-sm text-ink/70">{meta}</p> : null}
-        <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink/50">
+        <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink/70">
           {stores.map((store) => (
             <span key={store} className="inline-flex items-center gap-1">
               <StoreLogo source={store} className="h-4 w-4" />
@@ -192,14 +192,14 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
             </label>
           ) : null}
         </div>
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-ink/70">
           Every book in {libraries.join(", ")}; the ones on your own store accounts there are marked
           Yours. A book a library has no copy of yet can be requested from it.
         </p>
       </div>
       {stale ? (
         <div
-          className="flex flex-wrap items-center gap-2 border-b border-ink/10 px-3 py-2 text-xs text-ink/60 sm:px-4"
+          className="flex flex-wrap items-center gap-2 border-b border-ink/10 px-3 py-2 text-xs text-ink/70 sm:px-4"
           role="status"
         >
           <span>Couldn&apos;t refresh this list; showing the last one read.</span>
@@ -209,11 +209,11 @@ export function WindowBooksSection({ query = "" }: { query?: string }) {
         </div>
       ) : null}
       {view.books.length === 0 ? (
-        <p className="px-4 py-6 text-center text-sm text-ink/60">
+        <p className="px-4 py-6 text-center text-sm text-ink/70">
           No books there yet, or the list hasn&apos;t been read yet.
         </p>
       ) : shown.length === 0 ? (
-        <p className="px-4 py-6 text-center text-sm text-ink/60">
+        <p className="px-4 py-6 text-center text-sm text-ink/70">
           {onlyYours
             ? "None of your books in other libraries match this search."
             : "No books in other libraries match this search."}

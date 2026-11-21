@@ -826,7 +826,7 @@ export function DiscoverPage({
 
           <div ref={searchWrapRef} className="relative">
             <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink/40" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink/70" />
               <Input
                 value={searchQ}
                 onChange={(e) => {
@@ -845,14 +845,16 @@ export function DiscoverPage({
                 }}
                 placeholder="Search Book Stores... (Enter for results)"
                 className={cn("h-11 pl-9", searchBusy || resultsBusy ? "pr-10" : null)}
+                role="combobox"
                 aria-label="Search store catalogs"
                 aria-autocomplete="list"
+                aria-controls="discover-search-suggestions"
                 aria-expanded={searchOpen}
                 aria-busy={searchBusy || resultsBusy}
               />
               {searchBusy || resultsBusy ? (
                 <Loader2
-                  className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-teal"
+                  className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-teal-text"
                   aria-hidden
                 />
               ) : null}
@@ -861,21 +863,22 @@ export function DiscoverPage({
             searchOpen &&
             (searchBusy || suggestions.length > 0 || searchQ.trim().length >= 2) ? (
               <ul
+                id="discover-search-suggestions"
                 className="absolute z-20 mt-1 max-h-80 w-full overflow-auto border border-ink/10 bg-paper shadow-lg"
                 role="listbox"
               >
                 {searchBusy && suggestions.length === 0 ? (
                   <li
-                    className="flex items-center gap-2 px-3 py-3 text-sm text-ink/55"
+                    className="flex items-center gap-2 px-3 py-3 text-sm text-ink/70"
                     role="status"
                     aria-live="polite"
                   >
-                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal" aria-hidden />
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal-text" aria-hidden />
                     Searching catalogs…
                   </li>
                 ) : null}
                 {!searchBusy && suggestions.length === 0 && searchQ.trim().length >= 2 ? (
-                  <li className="px-3 py-2 text-sm text-ink/50">
+                  <li className="px-3 py-2 text-sm text-ink/70">
                     No quick matches — press Enter for a full results page.
                   </li>
                 ) : null}
@@ -898,7 +901,7 @@ export function DiscoverPage({
                         <CoverThumb path={hit.cover_path} />
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-ink">{hit.title}</p>
-                          <p className="truncate text-xs text-ink/50">
+                          <p className="truncate text-xs text-ink/70">
                             {hit.authors ?? "Unknown author"}
                             {formatSeriesLabel(hit.series, hit.series_index)
                               ? ` · ${formatSeriesLabel(hit.series, hit.series_index)}`
@@ -929,7 +932,7 @@ export function DiscoverPage({
                   <li className="border-t border-ink/10 px-3 py-2">
                     <button
                       type="button"
-                      className="w-full text-left text-sm font-medium text-teal hover:underline"
+                      className="w-full text-left text-sm font-medium text-teal-text hover:underline"
                       onClick={() => void runResultsSearch(searchQ)}
                     >
                       See all results for “{searchQ.trim()}”
@@ -981,7 +984,7 @@ export function DiscoverPage({
                   className={cn(
                     "inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm shadow-sm",
                     sortKey === "relevance"
-                      ? "cursor-not-allowed border-ink/10 bg-card text-ink/40"
+                      ? "cursor-not-allowed border-ink/10 bg-card text-ink/70"
                       : "border-ink/15 bg-card-strong text-ink hover:bg-paper",
                   )}
                   disabled={sortKey === "relevance"}
@@ -1004,7 +1007,9 @@ export function DiscoverPage({
                   ) : (
                     <ArrowDownAZ className="h-4 w-4" />
                   )}
-                  <span className="hidden sm:inline">{sortDir === "asc" ? "Asc" : "Desc"}</span>
+                  <span className="hidden sm:inline">
+                    {sortDir === "asc" ? "Ascending" : "Descending"}
+                  </span>
                 </button>
                 <select
                   value={filterLanguage}
@@ -1049,7 +1054,7 @@ export function DiscoverPage({
                   Filters
                 </Button>
               </div>
-              <p className="text-xs text-ink/50">
+              <p className="text-xs text-ink/70">
                 Catalog browse across connected stores — shelves stay personalized.
               </p>
             </div>
@@ -1119,7 +1124,7 @@ export function DiscoverPage({
               <div className="min-w-0 flex-1 space-y-4">
                 {error ? (
                   <p
-                    className="rounded-md border border-brick/25 bg-brick/5 px-3 py-2 text-sm text-brick"
+                    className="rounded-md border border-brick/25 bg-brick/5 px-3 py-2 text-sm text-brick-text"
                     role="alert"
                   >
                     {error}
@@ -1129,7 +1134,7 @@ export function DiscoverPage({
                   <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
                     Results for “{resultsQ}”
                   </h1>
-                  <p className="flex items-center gap-2 text-sm text-ink/60">
+                  <p className="flex items-center gap-2 text-sm text-ink/70">
                     {resultsBusy ? (
                       <>
                         <WaveformThrobber size="sm" className="shrink-0" />
@@ -1154,13 +1159,13 @@ export function DiscoverPage({
                     <WaveformThrobber size="lg" />
                     <div className="space-y-1">
                       <p className="text-sm font-medium text-ink/70">Searching storefronts</p>
-                      <p className="text-xs text-ink/45">
+                      <p className="text-xs text-ink/70">
                         Querying enabled book stores — usually a few seconds
                       </p>
                     </div>
                   </div>
                 ) : resultTitles.length === 0 ? (
-                  <p className="text-sm text-ink/50">No catalog matches for this view.</p>
+                  <p className="text-sm text-ink/70">No catalog matches for this view.</p>
                 ) : (
                   <>
                     <ul className="divide-y divide-ink/10 border border-ink/10 bg-card">
@@ -1177,11 +1182,11 @@ export function DiscoverPage({
                     {resultsHasMore ? (
                       <div
                         ref={resultsSentinelRef}
-                        className="flex items-center justify-center gap-2 py-4 text-sm text-ink/50"
+                        className="flex items-center justify-center gap-2 py-4 text-sm text-ink/70"
                       >
                         {resultsLoadingMore ? (
                           <>
-                            <Loader2 className="h-4 w-4 animate-spin text-teal" aria-hidden />
+                            <Loader2 className="h-4 w-4 animate-spin text-teal-text" aria-hidden />
                             <span>Loading more…</span>
                           </>
                         ) : (
@@ -1197,7 +1202,7 @@ export function DiscoverPage({
             <>
               {error ? (
                 <p
-                  className="rounded-md border border-brick/25 bg-brick/5 px-3 py-2 text-sm text-brick"
+                  className="rounded-md border border-brick/25 bg-brick/5 px-3 py-2 text-sm text-brick-text"
                   role="alert"
                 >
                   {error}
@@ -1207,12 +1212,12 @@ export function DiscoverPage({
                 <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
                   Discover
                 </h1>
-                <p className="text-sm text-ink/60">
+                <p className="text-sm text-ink/70">
                   Personalized shelves from your library, listening, and storefront catalogs.
                 </p>
                 {feed.state === "refreshing" && feed.shelves.length > 0 ? (
                   <p
-                    className="flex items-center gap-2 text-sm text-teal"
+                    className="flex items-center gap-2 text-sm text-teal-text"
                     role="status"
                     aria-live="polite"
                   >
@@ -1225,7 +1230,7 @@ export function DiscoverPage({
               {feed.shelves.length === 0 &&
               ((!feedLoaded && !feedFailed) || feed.state === "preparing") ? (
                 <div aria-busy="true" className="space-y-3">
-                  <p className="text-sm text-ink/60" role="status">
+                  <p className="text-sm text-ink/70" role="status">
                     {feedLoaded ? "Preparing your shelves…" : "Loading your shelves…"}
                   </p>
                   {[0, 1, 2].map((row) => (
@@ -1240,7 +1245,7 @@ export function DiscoverPage({
                   ))}
                 </div>
               ) : feed.shelves.length === 0 ? (
-                <p className="text-sm text-ink/50">
+                <p className="text-sm text-ink/70">
                   No recommendations yet — finish or rate a few titles.
                 </p>
               ) : (
@@ -1301,7 +1306,7 @@ function AvailableThrough({
   const label = availableThroughLabel(through);
   if (!label) return null;
   return (
-    <p className={cn("line-clamp-1 font-medium text-teal", className)} title={label}>
+    <p className={cn("line-clamp-1 font-medium text-teal-text", className)} title={label}>
       {label}
     </p>
   );
@@ -1352,7 +1357,7 @@ function ResultRow({
           {authors}
         </p>
         {secondaryFacts.length > 0 ? (
-          <p className="mt-0.5 line-clamp-2 text-xs leading-snug text-ink/55 sm:line-clamp-1 sm:text-sm">
+          <p className="mt-0.5 line-clamp-2 text-xs leading-snug text-ink/70 sm:line-clamp-1 sm:text-sm">
             {secondaryFacts.join(" · ")}
           </p>
         ) : null}
@@ -1374,7 +1379,7 @@ function ResultRow({
               </span>
             ))}
             {extraGenres > 0 ? (
-              <span className="hidden shrink-0 text-[11px] font-medium text-ink/45 sm:inline">
+              <span className="hidden shrink-0 text-[11px] font-medium text-ink/70 sm:inline">
                 +{extraGenres}
               </span>
             ) : null}
@@ -1492,7 +1497,7 @@ function ShelfSection({
     <section ref={sectionRef} className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-ink">{shelf.title}</h2>
-        {shelf.subtitle ? <p className="text-sm text-ink/55">{shelf.subtitle}</p> : null}
+        {shelf.subtitle ? <p className="text-sm text-ink/70">{shelf.subtitle}</p> : null}
       </div>
       <div ref={scrollerRef} className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2 snap-x">
         {items.map((r, i) => (
@@ -1624,9 +1629,9 @@ function ShelfCard({
         <p className="mt-2.5 line-clamp-2 text-sm font-semibold leading-snug text-ink hover:underline">
           {title.title}
         </p>
-        <p className="mt-1 line-clamp-1 text-xs text-ink/55">{title.authors ?? "Unknown author"}</p>
+        <p className="mt-1 line-clamp-1 text-xs text-ink/70">{title.authors ?? "Unknown author"}</p>
         {seriesLabel || title.length_minutes ? (
-          <p className="mt-0.5 line-clamp-1 text-[11px] text-ink/45">
+          <p className="mt-0.5 line-clamp-1 text-[11px] text-ink/70">
             {[seriesLabel, title.length_minutes ? formatDuration(title.length_minutes) : null]
               .filter(Boolean)
               .join(" · ")}
@@ -1634,7 +1639,7 @@ function ShelfCard({
         ) : null}
         <AvailableThrough through={title.available_through} className="mt-1 text-[11px]" />
         {!title.cover_path && (blurb || rec.reasons[0]) ? (
-          <p className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-ink/45">
+          <p className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-ink/70">
             {blurb || rec.reasons[0]}
           </p>
         ) : null}
@@ -1659,7 +1664,7 @@ function ShelfCard({
           )}
         >
           <StarRating value={title.rating_overall} starClassName="h-3 w-3" />
-          <span className="text-[11px] tabular-nums text-ink/55">
+          <span className="text-[11px] tabular-nums text-ink/70">
             {title.rating_overall.toFixed(1)}
           </span>
         </div>
@@ -1676,7 +1681,7 @@ function ShelfCard({
               href={best.url}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex max-w-full items-center gap-1.5 text-[12px] font-semibold text-teal hover:underline"
+              className="inline-flex max-w-full items-center gap-1.5 text-[12px] font-semibold text-teal-text hover:underline"
               onClick={(e) => e.stopPropagation()}
               aria-label={`Best price at ${best.source}${bestPrice ? `: ${bestPrice}` : ""}`}
             >
@@ -1705,7 +1710,7 @@ function ShelfCard({
             e.stopPropagation();
             onWishlist(title);
           }}
-          aria-label={wishlisted ? "Already on your wishlist" : "Wishlist this title"}
+          aria-label={`${wishlisted ? "Wishlisted" : "Wishlist"} ${title.title}`}
         >
           <Bookmark className={`h-3.5 w-3.5 ${wishlisted ? "fill-current" : ""}`} />
           {wishlisted ? "Wishlisted" : "Wishlist"}

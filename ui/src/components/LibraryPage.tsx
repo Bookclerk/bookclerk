@@ -536,11 +536,11 @@ export function LibraryPage({
             </div>
           </div>
           {error ? (
-            <p className="text-sm font-medium text-brick" role="alert">
+            <p className="text-sm font-medium text-brick-text" role="alert">
               {error}
             </p>
           ) : (
-            <p className="text-xs text-ink/50">
+            <p className="text-xs text-ink/70">
               Showing {works.length} {works.length === 1 ? "title" : "titles"}
               {nextCursor !== null ? " · scroll for more" : ""}
               {loadingMore ? " · loading more…" : ""}
@@ -562,7 +562,7 @@ export function LibraryPage({
                 <span className="sr-only">Loading the library…</span>
               </div>
             ) : works.length === 0 && nextCursor === null ? (
-              <p className="px-4 py-16 text-center text-sm text-ink/60">
+              <p className="px-4 py-16 text-center text-sm text-ink/70">
                 No books match this view.
                 {canAcquire ? " Run a scan or adjust filters." : " Link a store under Accounts."}
               </p>

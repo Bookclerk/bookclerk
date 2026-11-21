@@ -318,7 +318,7 @@ function PluginLogo({ plugin }: { plugin: PluginSettingsGroup }) {
   const src = candidates[index];
   if (!src) {
     return (
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-fold text-[10px] font-semibold uppercase text-ink/70">
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-fold text-[10px] font-semibold uppercase text-ink">
         {plugin.id.slice(0, 2)}
       </div>
     );
@@ -355,7 +355,7 @@ function ToggleRow({
         <label htmlFor={id} className="text-sm font-medium text-ink">
           {label}
         </label>
-        {description ? <p className="text-xs text-ink/50">{description}</p> : null}
+        {description ? <p className="text-xs text-ink/70">{description}</p> : null}
       </div>
       <input
         id={id}
@@ -388,9 +388,9 @@ function FieldBlock({
         {label}
       </label>
       {children}
-      {hint && !error ? <p className="text-xs text-ink/50">{hint}</p> : null}
+      {hint && !error ? <p className="text-xs text-ink/70">{hint}</p> : null}
       {error ? (
-        <p className="text-xs text-brick" role="alert">
+        <p className="text-xs text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
@@ -1373,7 +1373,7 @@ export function SettingsPage({
               <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
                 Settings
               </h1>
-              <p className="text-sm text-ink/60">
+              <p className="text-sm text-ink/70">
                 {showOperatorChrome
                   ? "Account, users, sign-in providers, daemon, output packaging, and plugin knobs for this server."
                   : showSignInSettings
@@ -1397,7 +1397,7 @@ export function SettingsPage({
                   "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                   activeTab === "account"
                     ? "bg-ink text-paper shadow-sm"
-                    : "text-ink/60 hover:text-ink",
+                    : "text-ink/70 hover:text-ink",
                 )}
                 onClick={() => selectTab("account")}
               >
@@ -1412,7 +1412,7 @@ export function SettingsPage({
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                     activeTab === "users"
                       ? "bg-ink text-paper shadow-sm"
-                      : "text-ink/60 hover:text-ink",
+                      : "text-ink/70 hover:text-ink",
                   )}
                   onClick={() => selectTab("users")}
                 >
@@ -1428,7 +1428,7 @@ export function SettingsPage({
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                     activeTab === "signin"
                       ? "bg-ink text-paper shadow-sm"
-                      : "text-ink/60 hover:text-ink",
+                      : "text-ink/70 hover:text-ink",
                   )}
                   onClick={() => selectTab("signin")}
                 >
@@ -1445,7 +1445,7 @@ export function SettingsPage({
                       "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                       activeTab === "server"
                         ? "bg-ink text-paper shadow-sm"
-                        : "text-ink/60 hover:text-ink",
+                        : "text-ink/70 hover:text-ink",
                     )}
                     onClick={() => selectTab("server")}
                   >
@@ -1459,7 +1459,7 @@ export function SettingsPage({
                       "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                       activeTab === "plugins"
                         ? "bg-ink text-paper shadow-sm"
-                        : "text-ink/60 hover:text-ink",
+                        : "text-ink/70 hover:text-ink",
                     )}
                     onClick={() => selectTab("plugins")}
                   >
@@ -1473,7 +1473,7 @@ export function SettingsPage({
                       "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                       activeTab === "output"
                         ? "bg-ink text-paper shadow-sm"
-                        : "text-ink/60 hover:text-ink",
+                        : "text-ink/70 hover:text-ink",
                     )}
                     onClick={() => selectTab("output")}
                   >
@@ -1490,7 +1490,7 @@ export function SettingsPage({
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                     activeTab === "nodes"
                       ? "bg-ink text-paper shadow-sm"
-                      : "text-ink/60 hover:text-ink",
+                      : "text-ink/70 hover:text-ink",
                   )}
                   onClick={() => selectTab("nodes")}
                 >
@@ -1506,7 +1506,7 @@ export function SettingsPage({
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                     activeTab === "libraries"
                       ? "bg-ink text-paper shadow-sm"
-                      : "text-ink/60 hover:text-ink",
+                      : "text-ink/70 hover:text-ink",
                   )}
                   onClick={() => selectTab("libraries")}
                 >
@@ -1522,7 +1522,7 @@ export function SettingsPage({
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                     activeTab === "branches"
                       ? "bg-ink text-paper shadow-sm"
-                      : "text-ink/60 hover:text-ink",
+                      : "text-ink/70 hover:text-ink",
                   )}
                   onClick={() => selectTab("branches")}
                 >
@@ -1538,7 +1538,7 @@ export function SettingsPage({
                     "rounded px-3 py-1.5 text-sm font-medium transition-colors",
                     activeTab === "shared_branches"
                       ? "bg-ink text-paper shadow-sm"
-                      : "text-ink/60 hover:text-ink",
+                      : "text-ink/70 hover:text-ink",
                   )}
                   onClick={() => selectTab("shared_branches")}
                 >
@@ -1649,7 +1649,7 @@ export function SettingsPage({
 
           {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (
             loading ? (
-              <p className="text-sm text-ink/50">Loading operator settings…</p>
+              <p className="text-sm text-ink/70">Loading operator settings…</p>
             ) : settings ? (
               <form
                 id="operator-settings-form"
@@ -1657,7 +1657,7 @@ export function SettingsPage({
                 onSubmit={(e) => void onOperatorSave(e)}
               >
                 {error ? (
-                  <p className="text-sm font-medium text-brick" role="alert">
+                  <p className="text-sm font-medium text-brick-text" role="alert">
                     {error}
                   </p>
                 ) : null}
@@ -1667,7 +1667,7 @@ export function SettingsPage({
                     <section className="space-y-3">
                       <div className="space-y-1">
                         <h2 className="text-lg font-semibold text-ink">Daemon</h2>
-                        <p className="text-sm text-ink/55">
+                        <p className="text-sm text-ink/70">
                           How bookclerkd listens and whether operator auth is required.
                         </p>
                       </div>
@@ -1708,12 +1708,12 @@ export function SettingsPage({
                                 </Button>
                               ))}
                               {listenExposure === "custom" ? (
-                                <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
+                                <Badge className="bg-ink/5 text-ink/70 normal-case tracking-normal">
                                   Custom
                                 </Badge>
                               ) : null}
                             </div>
-                            <p className="text-xs text-ink/50">
+                            <p className="text-xs text-ink/70">
                               Localhost binds both 127.0.0.1 and ::1. All interfaces binds 0.0.0.0
                               and ::. The tray opens {"http://localhost:<port>"}.
                             </p>
@@ -1753,7 +1753,7 @@ export function SettingsPage({
                               Advanced bind addresses
                             </summary>
                             <div className="space-y-3 border-t border-ink/10 px-3 py-3">
-                              <p className="text-xs text-ink/50">
+                              <p className="text-xs text-ink/70">
                                 Bind each address separately. Editing here switches to a custom
                                 listen list.
                               </p>
@@ -1806,7 +1806,7 @@ export function SettingsPage({
                                 </div>
                               ))}
                               {daemonListenError && listenExposure === "custom" ? (
-                                <p className="text-xs text-brick" role="alert">
+                                <p className="text-xs text-brick-text" role="alert">
                                   {daemonListenError}
                                 </p>
                               ) : null}
@@ -1830,8 +1830,8 @@ export function SettingsPage({
                             </div>
                           </details>
 
-                          <p className="text-xs text-ink/45">
-                            Saves as <span className="font-mono text-ink/60">{daemonListen}</span>
+                          <p className="text-xs text-ink/70">
+                            Saves as <span className="font-mono text-ink/70">{daemonListen}</span>
                           </p>
                         </div>
                         <ToggleRow
@@ -1847,7 +1847,7 @@ export function SettingsPage({
                     <section className="space-y-3">
                       <div className="space-y-1">
                         <h2 className="text-lg font-semibold text-ink">Library</h2>
-                        <p className="text-sm text-ink/55">
+                        <p className="text-sm text-ink/70">
                           Behavior for scheduled scans and pending titles.
                         </p>
                       </div>
@@ -1890,7 +1890,7 @@ export function SettingsPage({
                     <section className="space-y-3">
                       <div className="space-y-1">
                         <h2 className="text-lg font-semibold text-ink">Diagnostics</h2>
-                        <p className="text-sm text-ink/55">
+                        <p className="text-sm text-ink/70">
                           What this install shares with the Bookclerk maintainers. Both are off
                           until you turn them on.
                         </p>
@@ -1917,7 +1917,7 @@ export function SettingsPage({
                     <section className="space-y-3">
                       <div className="space-y-1">
                         <h2 className="text-lg font-semibold text-ink">Confinement</h2>
-                        <p className="text-sm text-ink/55">
+                        <p className="text-sm text-ink/70">
                           Host isolation policy for plugins and media workers.
                         </p>
                       </div>
@@ -1982,7 +1982,7 @@ export function SettingsPage({
                             <Button
                               type="button"
                               variant="ghost"
-                              className="self-start px-0 text-xs text-ink/55"
+                              className="self-start px-0 text-xs text-ink/70"
                               onClick={() => setJailCpuCores(DEFAULT_JAIL_CPU_CORES)}
                             >
                               Reset to default (0.80)
@@ -2014,14 +2014,14 @@ export function SettingsPage({
                   <section className="space-y-5">
                     <div className="space-y-1">
                       <h2 className="text-lg font-semibold text-ink">Plugins</h2>
-                      <p className="text-sm text-ink/55">
+                      <p className="text-sm text-ink/70">
                         Settings each plugin declares in its manifest, stored per instance in the
                         database. Deployed means the instance runs on this node.
                       </p>
                     </div>
 
                     {pluginsByFamily.size === 0 ? (
-                      <p className="text-sm text-ink/50">No plugins discovered.</p>
+                      <p className="text-sm text-ink/70">No plugins discovered.</p>
                     ) : (
                       Array.from(pluginsByFamily.entries()).map(([family, plugins]) => (
                         <div key={family} className="space-y-2">
@@ -2072,9 +2072,9 @@ export function SettingsPage({
                                     >
                                       {canExpand ? (
                                         expanded ? (
-                                          <ChevronDown className="h-4 w-4 shrink-0 text-ink/45" />
+                                          <ChevronDown className="h-4 w-4 shrink-0 text-ink/70" />
                                         ) : (
-                                          <ChevronRight className="h-4 w-4 shrink-0 text-ink/45" />
+                                          <ChevronRight className="h-4 w-4 shrink-0 text-ink/70" />
                                         )
                                       ) : (
                                         <span className="inline-block h-4 w-4 shrink-0" />
@@ -2085,21 +2085,21 @@ export function SettingsPage({
                                       </span>
                                       {plugin.display_name?.trim() &&
                                       plugin.display_name.trim() !== plugin.id ? (
-                                        <span className="hidden text-xs text-ink/45 sm:inline">
+                                        <span className="hidden text-xs text-ink/70 sm:inline">
                                           {plugin.id}
                                         </span>
                                       ) : null}
-                                      <span className="hidden text-xs text-ink/45 sm:inline">
+                                      <span className="hidden text-xs text-ink/70 sm:inline">
                                         {plugin.family}
                                       </span>
                                       {instanceGroup && plugin.is_default === false ? (
-                                        <span className="text-[10px] uppercase tracking-wide text-ink/40">
+                                        <span className="text-[10px] uppercase tracking-wide text-ink/70">
                                           instance
                                         </span>
                                       ) : null}
                                       {plugin.provenance ? (
                                         <span
-                                          className="hidden max-w-[14rem] truncate font-mono text-[10px] text-ink/40 sm:inline"
+                                          className="hidden max-w-[14rem] truncate font-mono text-[10px] text-ink/70 sm:inline"
                                           title={plugin.plugin_key ?? plugin.provenance}
                                         >
                                           {plugin.provenance}
@@ -2113,7 +2113,7 @@ export function SettingsPage({
                                           className={
                                             enabled
                                               ? "bg-teal/15 text-ink normal-case tracking-normal"
-                                              : "bg-ink/5 text-ink/55 normal-case tracking-normal"
+                                              : "bg-ink/5 text-ink/70 normal-case tracking-normal"
                                           }
                                         >
                                           {instanceGroup
@@ -2128,8 +2128,8 @@ export function SettingsPage({
                                           <Badge
                                             className={
                                               deploymentStatus === "Error"
-                                                ? "bg-brick/10 text-brick normal-case tracking-normal"
-                                                : "bg-ink/5 text-ink/55 normal-case tracking-normal"
+                                                ? "bg-brick/10 text-brick-text normal-case tracking-normal"
+                                                : "bg-ink/5 text-ink/70 normal-case tracking-normal"
                                             }
                                           >
                                             <span title={plugin.deployment?.detail}>
@@ -2149,7 +2149,7 @@ export function SettingsPage({
                                             className={
                                               consent.covered
                                                 ? "bg-teal/15 text-ink normal-case tracking-normal"
-                                                : "bg-brick/10 text-brick normal-case tracking-normal"
+                                                : "bg-brick/10 text-brick-text normal-case tracking-normal"
                                             }
                                           >
                                             {consent.covered ? "Granted" : "Needs approval"}
@@ -2189,13 +2189,13 @@ export function SettingsPage({
                                             className={
                                               consent.covered
                                                 ? "bg-teal/15 text-ink normal-case tracking-normal"
-                                                : "bg-brick/10 text-brick normal-case tracking-normal"
+                                                : "bg-brick/10 text-brick-text normal-case tracking-normal"
                                             }
                                           >
                                             {consent.covered ? "Granted" : "Needs approval"}
                                           </Badge>
                                         ) : null}
-                                        <span className="text-xs text-ink/45">{plugin.family}</span>
+                                        <span className="text-xs text-ink/70">{plugin.family}</span>
                                       </div>
                                     )}
                                   </div>
@@ -2206,7 +2206,7 @@ export function SettingsPage({
                                       className="mt-3 border-t border-ink/10 pt-3"
                                     >
                                       {detailSettings.length === 0 ? (
-                                        <p className="text-xs text-ink/50">
+                                        <p className="text-xs text-ink/70">
                                           {plugin.settings.length === 0
                                             ? "No editable settings exposed for this plugin."
                                             : "No additional settings beyond Enabled."}
@@ -2269,7 +2269,9 @@ export function SettingsPage({
       (activeTab === "server" || activeTab === "plugins") ? (
         <div className="shrink-0 border-t border-ink/10 bg-paper/90 px-4 py-3 backdrop-blur-md">
           <div className={cn("flex flex-wrap items-center justify-between gap-3", pageWidthClass)}>
-            <p className={`text-xs ${operatorHasValidationErrors ? "text-brick" : "text-ink/50"}`}>
+            <p
+              className={`text-xs ${operatorHasValidationErrors ? "text-brick-text" : "text-ink/70"}`}
+            >
               {operatorHasValidationErrors
                 ? "Fix plugin field errors before saving."
                 : operatorDirty

@@ -42,7 +42,7 @@ export function BranchRequestButtons({ through }: BranchRequestButtonsProps) {
 
   return (
     <div className="space-y-2 rounded-md bg-teal/10 px-3 py-2 text-sm">
-      <p className="font-medium text-teal">{label}</p>
+      <p className="font-medium text-teal-text">{label}</p>
       {branches.map((branch) => {
         const state = asked[branch.node_id] ?? "idle";
         return (
@@ -64,12 +64,12 @@ export function BranchRequestButtons({ through }: BranchRequestButtonsProps) {
               </Button>
             )}
             {state === "gone" ? (
-              <span className="text-xs text-brick" role="alert">
+              <span className="text-xs text-brick-text" role="alert">
                 {branch.label} no longer lists this book.
               </span>
             ) : null}
             {state === "failed" ? (
-              <span className="text-xs text-brick" role="alert">
+              <span className="text-xs text-brick-text" role="alert">
                 Could not send the request. Try again later.
               </span>
             ) : null}

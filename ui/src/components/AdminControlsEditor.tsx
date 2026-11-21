@@ -96,8 +96,8 @@ export function AdminControlsEditor({ target, disabled = false }: AdminControlsE
 
   return (
     <section className="space-y-2" aria-label={heading}>
-      <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">{heading}</p>
-      <p className="text-xs text-ink/55">
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">{heading}</p>
+      <p className="text-xs text-ink/70">
         {userId === null
           ? "Administrators follow these unless a switch is set for them alone. Only an Owner can change them."
           : "Only an Owner can change these."}
@@ -107,7 +107,7 @@ export function AdminControlsEditor({ target, disabled = false }: AdminControlsE
           <li key={info.control} className="flex items-start justify-between gap-3 text-sm">
             <span>
               <span className="block text-ink">{info.label}</span>
-              <span className="block text-xs text-ink/55">{info.detail}</span>
+              <span className="block text-xs text-ink/70">{info.detail}</span>
             </span>
             {userId === null ? (
               <input
@@ -139,7 +139,7 @@ export function AdminControlsEditor({ target, disabled = false }: AdminControlsE
         ))}
       </ul>
       {error ? (
-        <p role="alert" className="text-xs text-brick">
+        <p role="alert" className="text-xs text-brick-text">
           {error}
         </p>
       ) : null}
