@@ -63,6 +63,7 @@ pub struct AppContainerLaunch {
 /// | [`Deny`](NetPolicy::Deny) | _(none)_ |
 /// | [`Outbound`](NetPolicy::Outbound) | `internetClient` |
 /// | [`OutboundListen`](NetPolicy::OutboundListen) | `internetClient`, `privateNetworkClientServer` |
+/// | [`LocalIpc`](NetPolicy::LocalIpc) | `privateNetworkClientServer` (in-container loopback bridge) |
 /// | [`Full`](NetPolicy::Full) | `internetClient`, `internetClientServer`, `privateNetworkClientServer` |
 #[must_use]
 pub fn plan_appcontainer(policy: &Policy) -> AppContainerLaunch {
@@ -138,6 +139,7 @@ fn capability_names_for(net: NetPolicy) -> Vec<&'static str> {
         NetPolicy::Deny => Vec::new(),
         NetPolicy::Outbound => vec!["internetClient"],
         NetPolicy::OutboundListen => vec!["internetClient", "privateNetworkClientServer"],
+        NetPolicy::LocalIpc => vec!["privateNetworkClientServer"],
         NetPolicy::Full => vec![
             "internetClient",
             "internetClientServer",

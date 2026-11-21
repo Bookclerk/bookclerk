@@ -265,13 +265,22 @@ impl SpawnPlan {
         reads
     }
 
-    /// Executables the gateway jail may read: `bookclerk-workerd` and `workerd`.
+    /// Paths the gateway jail may read to run: `bookclerk-workerd`, `workerd`
+    /// and, when present, the pinned Pyodide bundle directory beside
+    /// `workerd`, which Python isolates load at start because workerd has no
+    /// network of its own.
     ///
     /// Direct native uses the guest command as the (only) launcher.
     #[must_use]
     pub fn gateway_executable_reads(&self) -> Vec<PathBuf> {
         let mut reads = vec![self.launcher.clone()];
         reads.extend(self.workerd_bin.iter().cloned());
+        reads.extend(
+            self.workerd_bin
+                .iter()
+                .filter_map(|bin| bookclerk_workerd::pyodide_bundle_dir(bin))
+                .filter(|dir| dir.is_dir()),
+        );
         reads
     }
 
@@ -453,6 +462,28 @@ mode = "deny"
             .contains(&front_door.launcher));
         assert!(!plan.gateway_executable_reads().contains(&plugin.command));
         assert_eq!(plan.guest_executable_reads(), vec![plugin.command.clone()]);
+    }
+
+    #[test]
+    fn the_gateway_may_read_the_pyodide_bundle_beside_workerd_once_installed() {
+        let install = tempfile::tempdir().expect("tempdir");
+        let helpers = tempfile::tempdir().expect("tempdir");
+        let plugin = native_plugin(install.path(), "");
+        let front_door = fake_front_door(helpers.path());
+        let plan = SpawnPlan::resolve_with(&plugin, SpawnTransport::WorkerdFrontDoor, || {
+            Ok(front_door.clone())
+        })
+        .expect("plan");
+        let bundles = helpers.path().join(bookclerk_workerd::PYODIDE_BUNDLE_DIR);
+        assert!(
+            !plan.gateway_executable_reads().contains(&bundles),
+            "a missing bundle directory is not granted"
+        );
+        std::fs::create_dir(&bundles).expect("bundle dir");
+        let reads = plan.gateway_executable_reads();
+        assert!(reads.contains(&bundles), "{reads:?}");
+        assert!(plan.executable_reads().contains(&bundles));
+        assert!(!plan.guest_executable_reads().contains(&bundles));
     }
 
     #[test]

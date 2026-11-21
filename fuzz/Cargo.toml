@@ -110,6 +110,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "egress_relay_head"
+path = "fuzz_targets/egress_relay_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "egress_policy"
 path = "fuzz_targets/egress_policy.rs"
 test = false

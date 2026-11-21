@@ -77,6 +77,13 @@ input_from = "plugin package"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.egress_relay_head]
+crate = "bookclerk-workerd"
+boundary = "HTTP heads through the launcher's egress relay (plugin requests, server responses)"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.egress_policy]
 crate = "bookclerk-plugin-manifest"
 boundary = "Guest egress allowlist (EgressPolicy JSON wire form)"
