@@ -376,7 +376,10 @@ bookclerk config master-key import --from ./bookclerk-recovery.key
 `export` wraps the copy with a password read from stdin (never argv).
 `import` restores it, or a copied `master.key`, on an install that has no
 key yet, into that install's store. `bookclerk config master-key status`
-shows the store and whether the key is wrapped.
+shows the store and whether the key is wrapped. When the key's store
+can't be read (a locked keychain, or a `systemd-creds` credential that no
+longer unseals), it prints why, includes it as `read_error` in `--format
+json`, and exits non-zero, so a health check can catch it.
 
 The operator can also save a recovery copy from the web app:
 
