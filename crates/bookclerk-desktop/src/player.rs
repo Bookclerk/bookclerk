@@ -458,12 +458,18 @@ thread_local! {
 
 /// What the media controls show, kept so a state change can restate the
 /// position.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct Shown {
     /// Whether playing.
     state: Option<ControlsState>,
     /// The last position stated, in milliseconds.
     position_ms: u64,
+    /// The title shown, if any.
+    title: Option<String>,
+    /// The author shown, if any.
+    artist: Option<String>,
+    /// The length shown, in milliseconds, once a position stated it.
+    duration_ms: Option<u64>,
 }
 
 /// The window's player.
@@ -541,12 +547,36 @@ impl NativePlayer {
                 };
                 self.on_main(move |controls| set_playback(controls, state, position_ms));
             }
-            PlayerCommand::Position { position_ms, .. } => {
-                let state = {
+            PlayerCommand::Position {
+                duration_ms,
+                position_ms,
+                ..
+            } => {
+                let (state, retitle) = {
                     let mut shown = lock(&self.shown);
                     shown.position_ms = position_ms;
-                    shown.state
+                    // The length goes in the metadata, so state it again
+                    // when it first arrives or changes.
+                    let retitle = (shown.title.is_some() && shown.duration_ms != Some(duration_ms))
+                        .then(|| {
+                            shown.duration_ms = Some(duration_ms);
+                            (shown.title.clone(), shown.artist.clone())
+                        });
+                    (shown.state, retitle)
                 };
+                if let Some((title, artist)) = retitle {
+                    self.on_main(move |controls| {
+                        let metadata = MediaMetadata {
+                            title: title.as_deref(),
+                            artist: artist.as_deref(),
+                            duration: Some(Duration::from_millis(duration_ms)),
+                            ..MediaMetadata::default()
+                        };
+                        if let Err(err) = controls.set_metadata(metadata) {
+                            tracing::debug!(error = ?err, "media controls refused the length");
+                        }
+                    });
+                }
                 if let Some(state) = state {
                     self.on_main(move |controls| set_playback(controls, state, position_ms));
                 }
@@ -587,8 +617,15 @@ impl NativePlayer {
 
     /// Shows a title in the media controls, or clears them.
     fn describe(&self, title: Option<String>, artist: Option<String>) {
-        if title.is_none() {
-            *lock(&self.shown) = Shown::default();
+        {
+            let mut shown = lock(&self.shown);
+            if title.is_none() {
+                *shown = Shown::default();
+            } else {
+                shown.title.clone_from(&title);
+                shown.artist.clone_from(&artist);
+                shown.duration_ms = None;
+            }
         }
         let app = self.app.clone();
         let events = Arc::clone(&self.events);
