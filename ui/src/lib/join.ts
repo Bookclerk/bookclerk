@@ -738,11 +738,23 @@ export interface WindowEditionView {
    */
   yours: boolean;
   /**
-   * The library's work id to ask for it with (`requestFromLibrary`): set
-   * when the library holds no copy and one of its branches lists it, so a
-   * member may ask the library to fetch it from that branch.
+   * How to ask the library for a copy (`requestFromLibrary`): set when this
+   * server holds a card for the library and the library holds no copy,
+   * while one of its branches lists it (`from` is `branch`) or one of its
+   * own store accounts holds it (`from` is `library`).
    */
-  requestable_work?: string | null;
+  request?: WindowRequestView | null;
+}
+
+/** Where a request asks a library to get a copy from. */
+export type ClerkRequestFrom = "branch" | "library";
+
+/** How to ask a library for a copy of one edition. */
+export interface WindowRequestView {
+  /** The library's own work id to ask for. */
+  work_id: string;
+  /** Where the copy would come from. */
+  from: ClerkRequestFrom;
 }
 
 /** One work in the window view: every edition its libraries hold. */
@@ -875,29 +887,34 @@ export interface WindowRequest {
   libraryId: string;
   /** The library's own work id. */
   workId: string;
+  /** Where the library gets the copy from. */
+  from: ClerkRequestFrom;
   /** The library's host, for display. */
   host: string;
 }
 
 /**
- * What a window entry may be requested as: the first edition one of a
- * library's branches lists, when no library holds a copy of the entry.
+ * What a window entry may be requested as, when no library holds a copy
+ * of it: the first edition a library's own store accounts hold (the
+ * library downloads it), else the first one of its branches lists.
  *
  * @param entry - A window entry.
- * @returns The library and work to ask for, or `null` when a library
- *   already holds it or no branch lists it.
+ * @returns The library, work and source to ask for, or `null` when a
+ *   library already holds a copy or none can get one.
  */
 export function windowEntryRequest(entry: WindowEntryView): WindowRequest | null {
-  if (entry.editions.some((edition) => !edition.requestable_work)) return null;
-  const first = entry.editions[0];
-  if (!first?.requestable_work) return null;
-  let host = first.owner_origin;
+  if (entry.editions.some((edition) => !edition.request)) return null;
+  const chosen =
+    entry.editions.find((edition) => edition.request?.from === "library") ?? entry.editions[0];
+  const request = chosen?.request;
+  if (!chosen || !request) return null;
+  let host = chosen.owner_origin;
   try {
-    host = new URL(first.owner_origin).host || first.owner_origin;
+    host = new URL(chosen.owner_origin).host || chosen.owner_origin;
   } catch {
     // Not a URL: show it as it is.
   }
-  return { libraryId: first.library_id, workId: first.requestable_work, host };
+  return { libraryId: chosen.library_id, workId: request.work_id, from: request.from, host };
 }
 
 /**

@@ -86,6 +86,18 @@ pub fn note_spawn_stage(message: &str) {
     emit_structured_stage(&line);
 }
 
+/// The part of a ring line after its `bookclerk-spawn: stage N: ` prefix.
+///
+/// The ring's sequence number counts every step of every spawn in the
+/// process, so in a log line it read as a per-plugin stage ("stage 29" for a
+/// plugin's first step). Log lines carry the step alone; their timestamps
+/// order them, and the ring keeps the number for deadline dumps.
+fn step_of(line: &str) -> &str {
+    line.strip_prefix("bookclerk-spawn: stage ")
+        .and_then(|rest| rest.split_once(": "))
+        .map_or(line, |(_, step)| step)
+}
+
 /// Bounded startup log for the current process.
 ///
 /// A deadline handler prints this before exiting. The snapshot is a second
@@ -116,7 +128,7 @@ fn push_stage(message: &str) -> String {
 }
 
 fn emit_structured_stage(line: &str) {
-    tracing::info!(target: "bookclerk::spawn", "{line}");
+    tracing::info!(target: "bookclerk::spawn", "{}", step_of(line));
     if spawn_diag_stderr_enabled() {
         eprintln!("{line}");
         let _ = std::io::Write::flush(&mut std::io::stderr());
@@ -3524,6 +3536,19 @@ fn stderr_tail_text(tail: &Arc<Mutex<VecDeque<String>>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_log_lines_carry_the_step_without_the_process_wide_number() {
+        assert_eq!(
+            step_of("bookclerk-spawn: stage 29: spawn begin plugin=x"),
+            "spawn begin plugin=x"
+        );
+        assert_eq!(step_of("no prefix here"), "no prefix here");
+        assert_eq!(
+            step_of("bookclerk-spawn: stage 3"),
+            "bookclerk-spawn: stage 3"
+        );
+    }
 
     #[test]
     fn injected_endpoint_specs_reject_the_other_platform_and_collisions() {

@@ -211,10 +211,21 @@ fn redact_exact_values(input: &str) -> String {
     out
 }
 
+/// Field names that end like a secret's (`_key`) but name a public
+/// identifier, so they stay readable in logs and reports.
+const PUBLIC_ID_FIELDS: [&str; 1] = [
+    // A plugin's install identity (`pk-<hex>` or a provenance URL), already
+    // shown in plugin paths and the plugins page.
+    "plugin_key",
+];
+
 /// Returns true when a tracing field name should never be logged in cleartext.
 #[must_use]
 pub fn is_sensitive_field(name: &str) -> bool {
     let n = name.trim().to_ascii_lowercase();
+    if PUBLIC_ID_FIELDS.contains(&n.as_str()) {
+        return false;
+    }
     matches!(
         n.as_str(),
         "password"
@@ -648,6 +659,8 @@ mod tests {
         assert!(is_sensitive_field("private_key"));
         assert!(!is_sensitive_field("asin"));
         assert!(!is_sensitive_field("title"));
+        assert!(!is_sensitive_field("plugin_key"));
+        assert!(is_sensitive_field("signing_key"));
     }
 
     #[test]

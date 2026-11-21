@@ -1506,6 +1506,7 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(delete_wishlist))
         .routes(routes!(list_request_queue))
         .routes(routes!(crate::branch_requests::create_branch_request))
+        .routes(routes!(crate::download_requests::create_download_request))
         .routes(routes!(auth::logout))
         .routes(routes!(auth::list_sessions))
         .routes(routes!(auth::revoke_session))

@@ -1710,11 +1710,12 @@ async fn a_card_becomes_a_branch_and_a_branch_becomes_a_card() {
     );
 }
 
-/// A clerk asks its library for a book from the library's branches with
-/// its card: the library's own member route decides, and the clerk passes
-/// on what it said.
+/// A clerk asks its library with its card for a copy of a book, from the
+/// library's branches or downloaded on the library's own accounts: the
+/// library's own member routes decide, and the clerk passes on what they
+/// said.
 #[tokio::test]
-async fn a_card_asks_its_library_for_a_branch_book() {
+async fn a_card_asks_its_library_for_a_copy() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let library_files = tempfile::tempdir().unwrap();
     let (library_state, library_store, origin, member) = library(&library_files).await;
@@ -1728,7 +1729,7 @@ async fn a_card_asks_its_library_for_a_branch_book() {
         &clerk,
         "POST",
         "/api/config/clerk/request",
-        Some(json!({ "library_id": "lib-unknown", "work_id": work })),
+        Some(json!({ "library_id": "lib-unknown", "work_id": work, "from": "branch" })),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{refused}");
@@ -1736,11 +1737,11 @@ async fn a_card_asks_its_library_for_a_branch_book() {
     let library_id = sign_in(&clerk, &library_state, &origin, member).await;
     for (body, field) in [
         (
-            json!({ "library_id": library_id, "work_id": "not a work" }),
+            json!({ "library_id": library_id, "work_id": "not a work", "from": "branch" }),
             "work_id",
         ),
         (
-            json!({ "library_id": library_id, "work_id": work, "node_id": "no spaces" }),
+            json!({ "library_id": library_id, "work_id": work, "from": "branch", "node_id": "no spaces" }),
             "node_id",
         ),
     ] {
@@ -1755,7 +1756,7 @@ async fn a_card_asks_its_library_for_a_branch_book() {
         &clerk,
         "POST",
         "/api/config/clerk/request",
-        Some(json!({ "library_id": library_id, "work_id": work })),
+        Some(json!({ "library_id": library_id, "work_id": work, "from": "branch" })),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
@@ -1769,7 +1770,7 @@ async fn a_card_asks_its_library_for_a_branch_book() {
         &clerk,
         "POST",
         "/api/config/clerk/request",
-        Some(json!({ "library_id": library_id, "work_id": listed })),
+        Some(json!({ "library_id": library_id, "work_id": listed, "from": "branch" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{sent}");
@@ -1789,8 +1790,61 @@ async fn a_card_asks_its_library_for_a_branch_book() {
     let (status, _, view) = call(&clerk, "GET", "/api/config/join/window", None).await;
     assert_eq!(status, StatusCode::OK, "{view}");
     let edition = &view["books"][0]["editions"][0];
-    assert_eq!(edition["requestable_work"], listed.as_str(), "{view}");
+    assert_eq!(edition["request"]["work_id"], listed.as_str(), "{view}");
+    assert_eq!(edition["request"]["from"], "branch", "{view}");
     assert_eq!(edition["yours"], false);
+
+    // A book on one of the library's own accounts with no copy yet: the
+    // clerk's list offers to have the library download it, and the library
+    // queues the download on that account.
+    let held = crate::download_requests::tests::work_held_without_a_copy(&library_store).await;
+    let (pages, _) = bookclerk_library::control_plane::person_books_page(
+        &library_store,
+        member,
+        &bookclerk_node_proto::WindowCursor::start(),
+    )
+    .await
+    .unwrap();
+    let stamp = bookclerk_library::control_plane::window_read_stamp();
+    bookclerk_library::control_plane::record_window_page(&clerk_store, &library_id, &stamp, &pages)
+        .await
+        .unwrap();
+    let (status, _, view) = call(&clerk, "GET", "/api/config/join/window", None).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    let offered: Vec<&serde_json::Value> = view["books"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|book| book["editions"].as_array().unwrap())
+        .filter(|edition| edition["request"]["from"] == "library")
+        .collect();
+    assert_eq!(offered.len(), 1, "{view}");
+    assert_eq!(offered[0]["request"]["work_id"], held.as_str(), "{view}");
+    let (status, _, refused) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/request",
+        Some(json!({ "library_id": library_id, "work_id": held, "from": "library", "node_id": "branch-b" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    let (status, _, sent) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/request",
+        Some(json!({ "library_id": library_id, "work_id": held, "from": "library" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    let (status, _, missing) = call(
+        &clerk,
+        "POST",
+        "/api/config/clerk/request",
+        Some(json!({ "library_id": library_id, "work_id": work, "from": "library" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert_eq!(missing["error"], "not_listed");
 
     // The library's member controls turn requests off for the person.
     // Controls apply only with operator auth on; the card still signs in.
@@ -1815,7 +1869,7 @@ async fn a_card_asks_its_library_for_a_branch_book() {
         &clerk,
         "POST",
         "/api/config/clerk/request",
-        Some(json!({ "library_id": library_id, "work_id": work })),
+        Some(json!({ "library_id": library_id, "work_id": work, "from": "branch" })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
@@ -1827,7 +1881,7 @@ async fn a_card_asks_its_library_for_a_branch_book() {
         &as_member,
         "POST",
         "/api/config/clerk/request",
-        Some(json!({ "library_id": library_id, "work_id": work })),
+        Some(json!({ "library_id": library_id, "work_id": work, "from": "branch" })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
