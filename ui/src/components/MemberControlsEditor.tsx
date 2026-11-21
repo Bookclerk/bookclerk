@@ -105,17 +105,17 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
 
   return (
     <section className="space-y-2" aria-label={heading}>
-      <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">{heading}</p>
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">{heading}</p>
       {userId === null ? (
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-ink/70">
           Members follow these unless a control is set for them alone.
         </p>
       ) : !applies ? (
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-ink/70">
           Owners may always do everything. Controls set here apply if their role changes.
         </p>
       ) : !followsDefault ? (
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-ink/70">
           Administrators don&apos;t follow the members&apos; default. Only controls turned off here
           limit them, and only an Owner can change these.
         </p>
@@ -125,7 +125,7 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
           <li key={info.control} className="flex items-start justify-between gap-3 text-sm">
             <span>
               <span className="block text-ink">{info.label}</span>
-              <span className="block text-xs text-ink/55">{info.detail}</span>
+              <span className="block text-xs text-ink/70">{info.detail}</span>
             </span>
             {userId === null ? (
               <input
@@ -159,7 +159,7 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
         ))}
       </ul>
       {error ? (
-        <p role="alert" className="text-xs text-brick">
+        <p role="alert" className="text-xs text-brick-text">
           {error}
         </p>
       ) : null}

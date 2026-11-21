@@ -63,7 +63,7 @@ export function AvatarPickerDialog({
           <h2 id={titleId} className="font-display text-xl font-semibold text-ink">
             Profile picture
           </h2>
-          <p className="mt-1 text-sm text-ink/55">
+          <p className="mt-1 text-sm text-ink/70">
             Uploaded pictures come first. Otherwise the last sign-in provider picture is used, then
             Gravatar when an email is set.
           </p>
@@ -131,6 +131,8 @@ export function AvatarPickerDialog({
           type="file"
           accept="image/jpeg,image/png,image/webp"
           className="sr-only"
+          aria-label="Upload a picture"
+          tabIndex={-1}
           onChange={(e) => {
             const file = e.target.files?.[0];
             e.target.value = "";
@@ -138,15 +140,27 @@ export function AvatarPickerDialog({
           }}
         />
         <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
-          {fields.has_avatar && onRemoveUpload ? (
-            <button
-              type="button"
-              className="text-xs font-medium text-ink/55 hover:text-ink disabled:opacity-50"
-              disabled={busy}
-              onClick={() => void onRemoveUpload()}
-            >
-              Remove uploaded picture
-            </button>
+          {fields.has_avatar ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <button
+                type="button"
+                className="text-xs font-medium text-ink/70 hover:text-ink disabled:opacity-50"
+                disabled={busy}
+                onClick={() => fileRef.current?.click()}
+              >
+                Replace uploaded picture
+              </button>
+              {onRemoveUpload ? (
+                <button
+                  type="button"
+                  className="text-xs font-medium text-ink/70 hover:text-ink disabled:opacity-50"
+                  disabled={busy}
+                  onClick={() => void onRemoveUpload()}
+                >
+                  Remove uploaded picture
+                </button>
+              ) : null}
+            </div>
           ) : (
             <span />
           )}
@@ -204,7 +218,7 @@ function RemotePreview({ src }: { src: string }) {
   const [broken, setBroken] = useState(false);
   if (broken) {
     return (
-      <span className="flex h-16 w-16 items-center justify-center rounded-full bg-ink/10 text-ink/40">
+      <span className="flex h-16 w-16 items-center justify-center rounded-full bg-ink/10 text-ink/70">
         <ImageOff className="h-6 w-6" aria-hidden />
       </span>
     );

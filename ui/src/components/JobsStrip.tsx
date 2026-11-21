@@ -48,9 +48,9 @@ export function JobsStrip({
               <strong className="text-ink">{status.in_progress}</strong> in progress
             </span>
             <span>
-              <strong className="text-brick">{status.error}</strong> errors
+              <strong className="text-brick-text">{status.error}</strong> errors
             </span>
-            <span className="text-ink/45">{status.storage_backend}</span>
+            <span className="text-ink/70">{status.storage_backend}</span>
             {events ? (
               <span>
                 events <strong className="text-ink">{events.pending}</strong> pending
@@ -59,7 +59,7 @@ export function JobsStrip({
                 {" / "}
                 <strong className="text-ink">{events.suspended}</strong> suspended
                 {" / "}
-                <strong className="text-brick">{events.dead_letter}</strong> dead
+                <strong className="text-brick-text">{events.dead_letter}</strong> dead
                 {events.oldest_pending_age_secs != null
                   ? ` · oldest ${events.oldest_pending_age_secs}s`
                   : ""}
@@ -93,7 +93,7 @@ export function JobsStrip({
               {job.status === "pending" || job.status === "running" ? (
                 <button
                   type="button"
-                  className="shrink-0 text-brick hover:underline"
+                  className="shrink-0 text-brick-text hover:underline"
                   onClick={() => {
                     void cancelJob(job.id).then(() => onChanged?.());
                   }}
@@ -131,7 +131,7 @@ export function JobsStrip({
                     </button>
                     <button
                       type="button"
-                      className="text-brick hover:underline"
+                      className="text-brick-text hover:underline"
                       onClick={() => {
                         void ackEventDelivery(row.id).then(() => onChanged?.());
                       }}
@@ -143,7 +143,7 @@ export function JobsStrip({
                 {row.state === "running" || (row.state === "pending" && !row.hasCheckpoint) ? (
                   <button
                     type="button"
-                    className="text-brick hover:underline"
+                    className="text-brick-text hover:underline"
                     onClick={() => {
                       void cancelEventDelivery(row.id).then(() => onChanged?.());
                     }}
@@ -164,7 +164,7 @@ export function JobsStrip({
                     </button>
                     <button
                       type="button"
-                      className="text-brick hover:underline"
+                      className="text-brick-text hover:underline"
                       onClick={() => {
                         void cancelEventDelivery(row.id).then(() => onChanged?.());
                       }}

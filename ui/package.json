@@ -13,6 +13,7 @@
     "test:safe-html": "node scripts/check-safe-html.mjs",
     "storybook": "storybook dev --port 6006 --no-open",
     "storybook:build": "storybook build --quiet --output-dir storybook-static",
+    "build:visual": "vite build --minify false --outDir visual-dist",
     "test:visual": "playwright test --config visual/playwright.config.ts"
   },
   "dependencies": {

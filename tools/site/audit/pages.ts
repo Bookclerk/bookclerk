@@ -44,3 +44,40 @@ export const VISUAL_PAGES: readonly SitePage[] = [
   ...AUDIT_PAGES.filter((p) => p.name !== "docs" && p.name !== "docs-ci"),
   { name: "docs-layout", path: `/docs/${FIXTURE_PREFIX}layout`, status: 200 },
 ];
+
+/**
+ * One building block of the website, screenshotted on its own: the first
+ * element matching `selector` on the VISUAL_PAGES entry named `page`.
+ */
+export interface SiteComponent {
+  /** Short name for test titles and screenshot file names. */
+  name: string;
+  /** The VISUAL_PAGES entry it is taken from. */
+  page: string;
+  /** CSS selector for the element; the first match is used. */
+  selector: string;
+}
+
+/**
+ * The website's building blocks, each taken from a page that shows it, so a
+ * change to one shows up as its own small image beside the full pages.
+ */
+export const VISUAL_COMPONENTS: readonly SiteComponent[] = [
+  { name: "header", page: "download", selector: "header.site-header" },
+  { name: "ribbon", page: "download", selector: "aside.ribbon" },
+  { name: "footer", page: "download", selector: "footer.site-footer" },
+  { name: "hero", page: "home", selector: "section.hero" },
+  { name: "buttons", page: "home", selector: "div.btn-row" },
+  { name: "feature", page: "home", selector: "div.feature" },
+  { name: "steps", page: "home", selector: "ol.cards3" },
+  { name: "platform-card", page: "download", selector: "div.platform" },
+  { name: "status-card", page: "download", selector: "div.status-card" },
+  { name: "faq", page: "download", selector: "section.faq" },
+  { name: "docs-header", page: "docs-layout", selector: "header.docs-header" },
+  { name: "breadcrumbs", page: "docs-layout", selector: "nav.crumbs" },
+  { name: "callout-note", page: "docs-layout", selector: "div.callout-note" },
+  { name: "callout-warning", page: "docs-layout", selector: "div.callout-warning" },
+  { name: "code-block", page: "docs-layout", selector: "div.code" },
+  { name: "table", page: "docs-layout", selector: "div.table-scroll" },
+  { name: "diagram", page: "docs-layout", selector: "figure.diagram" },
+];

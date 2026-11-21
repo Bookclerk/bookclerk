@@ -77,7 +77,7 @@ function statusBadgeClass(status: string): string {
     case "active":
       return "bg-teal/15 text-ink";
     case "disabled":
-      return "bg-brick/10 text-brick";
+      return "bg-brick/10 text-brick-text";
     default:
       return "bg-ink/10 text-ink/70";
   }
@@ -170,11 +170,12 @@ function UserPresenceIndicator({ user, size = "sm" }: { user: ListedUser; size?:
     return (
       <span
         className="absolute -bottom-0.5 -right-0.5 flex items-center justify-center rounded-full bg-paper"
+        role="img"
         title={label}
         aria-label={label}
       >
         <X
-          className={cn("text-brick", size === "md" ? "h-3.5 w-3.5" : "h-3 w-3")}
+          className={cn("text-brick-text", size === "md" ? "h-3.5 w-3.5" : "h-3 w-3")}
           strokeWidth={3}
           aria-hidden
         />
@@ -185,10 +186,11 @@ function UserPresenceIndicator({ user, size = "sm" }: { user: ListedUser; size?:
     return (
       <span
         className="absolute -bottom-0.5 -right-0.5 flex items-center justify-center rounded-sm bg-paper"
+        role="img"
         title={label}
         aria-label={label}
       >
-        <WaveformThrobber size="xs" className="text-teal" />
+        <WaveformThrobber size="xs" className="text-teal-text" />
       </span>
     );
   }
@@ -199,6 +201,7 @@ function UserPresenceIndicator({ user, size = "sm" }: { user: ListedUser; size?:
           "absolute rounded-full border-2 border-dashed border-ink/40 bg-transparent",
           size === "md" ? "bottom-0 right-0 h-3.5 w-3.5" : "bottom-0 right-0 h-3 w-3",
         )}
+        role="img"
         title={label}
         aria-label={label}
       />
@@ -213,6 +216,7 @@ function UserPresenceIndicator({ user, size = "sm" }: { user: ListedUser; size?:
         kind === "idle" && "bg-brick",
         kind === "offline" && "bg-ink/25",
       )}
+      role="img"
       title={label}
       aria-label={label}
     />
@@ -730,14 +734,14 @@ export function UserManagementPanel({
     <div className="space-y-4">
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-ink">Users</h2>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-ink/70">
           Provision accounts, review store integrations, and see who is signed in or actively
           listening.
         </p>
       </div>
 
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
@@ -756,7 +760,10 @@ export function UserManagementPanel({
                 {claimTicket.inviteUrl?.trim() || claimTicket.ticket}
               </p>
               <p
-                className={cn("text-xs", inviteCopied ? "font-medium text-teal" : "text-ink/50")}
+                className={cn(
+                  "text-xs",
+                  inviteCopied ? "font-medium text-teal-text" : "text-ink/70",
+                )}
                 role="status"
                 aria-live="polite"
               >
@@ -891,7 +898,7 @@ export function UserManagementPanel({
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-[14rem] flex-1">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink/40" />
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink/70" />
           <Input
             className="pl-8"
             aria-label="Search users"
@@ -910,14 +917,14 @@ export function UserManagementPanel({
           <option value="active">Active</option>
           <option value="disabled">Disabled</option>
         </select>
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-ink/70">
           {filtered.length} of {users.length} users
         </p>
       </div>
 
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="max-h-[min(28rem,60vh)] min-w-0 self-start overflow-y-auto overflow-x-hidden rounded-md border border-ink/10 bg-card">
-          <div className="sticky top-0 z-10 hidden grid-cols-[minmax(12rem,1.4fr)_6rem_7rem_minmax(8rem,1fr)_7rem_2.5rem] gap-2 border-b border-ink/10 bg-card-strong px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink/45 backdrop-blur-sm sm:grid">
+          <div className="sticky top-0 z-10 hidden grid-cols-[minmax(12rem,1.4fr)_6rem_7rem_minmax(8rem,1fr)_7rem_2.5rem] gap-2 border-b border-ink/10 bg-card-strong px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink/70 backdrop-blur-sm sm:grid">
             <span>User</span>
             <span>Status</span>
             <span>Role</span>
@@ -927,7 +934,7 @@ export function UserManagementPanel({
           </div>
           <ul className="divide-y divide-ink/10">
             {filtered.length === 0 ? (
-              <li className="px-3 py-8 text-center text-sm text-ink/50">
+              <li className="px-3 py-8 text-center text-sm text-ink/70">
                 {loading ? "Loading users…" : "No users match this filter."}
               </li>
             ) : (
@@ -935,17 +942,12 @@ export function UserManagementPanel({
                 const selectedRow = selectedId === u.id;
                 return (
                   <li key={u.id}>
+                    {/* The whole row selects on click; the name is the keyboard and
+                        screen-reader control, so the actions menu is not
+                        nested inside another button. */}
                     <div
-                      role="button"
-                      tabIndex={0}
                       data-user-row=""
                       onClick={() => setSelectedId(u.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setSelectedId(u.id);
-                        }
-                      }}
                       className={cn(
                         "grid w-full cursor-pointer gap-2 px-3 py-3 text-left text-sm transition-colors sm:grid-cols-[minmax(12rem,1.4fr)_6rem_7rem_minmax(8rem,1fr)_7rem_2.5rem]",
                         selectedRow
@@ -965,12 +967,22 @@ export function UserManagementPanel({
                         >
                           <UserPresenceIndicator user={u} />
                         </UserAvatar>
-                        <div className="min-w-0">
-                          <p className="truncate font-medium text-ink">{userDisplayLabel(u)}</p>
-                          <p className="truncate text-xs text-ink/50">
+                        <button
+                          type="button"
+                          className="min-w-0 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
+                          aria-pressed={selectedRow}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedId(u.id);
+                          }}
+                        >
+                          <span className="block truncate font-medium text-ink">
+                            {userDisplayLabel(u)}
+                          </span>
+                          <span className="block truncate text-xs text-ink/70">
                             {u.email?.trim() || u.login_name || "no login"}
-                          </p>
-                        </div>
+                          </span>
+                        </button>
                       </div>
                       <div className="flex items-center">
                         <Badge
@@ -988,7 +1000,7 @@ export function UserManagementPanel({
                       </div>
                       <div className="flex flex-wrap items-center gap-1">
                         {(u.integrations ?? []).length === 0 ? (
-                          <span className="text-xs text-ink/40">None</span>
+                          <span className="text-xs text-ink/70">None</span>
                         ) : (
                           (u.integrations ?? []).slice(0, 3).map((i) => (
                             <Badge
@@ -1000,29 +1012,32 @@ export function UserManagementPanel({
                           ))
                         )}
                         {(u.integrations ?? []).length > 3 ? (
-                          <span className="text-xs text-ink/45">
+                          <span className="text-xs text-ink/70">
                             +{(u.integrations ?? []).length - 3}
                           </span>
                         ) : null}
                       </div>
                       <div className="min-w-0 space-y-1">
                         {u.listening ? (
-                          <div className="flex items-start gap-1.5 text-xs text-teal">
+                          <div className="flex items-start gap-1.5 text-xs text-teal-text">
                             {isPlaybackNow(u) ? (
-                              <WaveformThrobber size="xs" className="mt-0.5 shrink-0 text-teal" />
+                              <WaveformThrobber
+                                size="xs"
+                                className="mt-0.5 shrink-0 text-teal-text"
+                              />
                             ) : (
                               <Headphones className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                             )}
                             <span className="line-clamp-2">
                               {u.listening.title?.trim() || "Listening"}
-                              <span className="text-ink/45"> · {u.listening.provider}</span>
+                              <span className="text-ink/70"> · {u.listening.provider}</span>
                             </span>
                           </div>
                         ) : (
-                          <p className="text-xs text-ink/45">{presenceLabel(u)}</p>
+                          <p className="text-xs text-ink/70">{presenceLabel(u)}</p>
                         )}
                         {u.last_seen_at || u.last_active_at ? (
-                          <p className="text-[11px] text-ink/40">
+                          <p className="text-[11px] text-ink/70">
                             {formatWhen(u.last_seen_at ?? u.last_active_at)}
                           </p>
                         ) : null}
@@ -1109,7 +1124,7 @@ export function UserManagementPanel({
                         <button
                           type="button"
                           role="menuitem"
-                          className={cn(MENU_ITEM_CLASS, "text-brick hover:bg-brick/5")}
+                          className={cn(MENU_ITEM_CLASS, "text-brick-text hover:bg-brick/5")}
                           disabled={isDeleteDisabled(u)}
                           onClick={() => {
                             setMenuOpenId(null);
@@ -1132,7 +1147,7 @@ export function UserManagementPanel({
             <div className="space-y-4">
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">
                     User information
                   </p>
                   <div className="mt-2 flex items-center gap-3">
@@ -1174,7 +1189,7 @@ export function UserManagementPanel({
                     )}
                     <div>
                       <p className="font-semibold text-ink">{userDisplayLabel(selected)}</p>
-                      <p className="text-sm text-ink/55">
+                      <p className="text-sm text-ink/70">
                         {selected.email?.trim() || selected.login_name || "No email"}
                       </p>
                     </div>
@@ -1191,21 +1206,21 @@ export function UserManagementPanel({
                 <div className="rounded-md bg-teal/10 px-3 py-2 text-sm text-ink">
                   <div className="flex items-center gap-2 font-medium">
                     {isPlaybackNow(selected) ? (
-                      <WaveformThrobber size="xs" className="text-teal" />
+                      <WaveformThrobber size="xs" className="text-teal-text" />
                     ) : (
-                      <Headphones className="h-4 w-4 text-teal" />
+                      <Headphones className="h-4 w-4 text-teal-text" />
                     )}
                     {isPlaybackNow(selected) ? "Listening now" : "Recently listening"}
                   </div>
                   <p className="mt-1 text-ink/70">
                     {selected.listening.title?.trim() || "Untitled"}
-                    <span className="text-ink/45"> · {selected.listening.provider}</span>
+                    <span className="text-ink/70"> · {selected.listening.provider}</span>
                   </p>
                 </div>
               ) : null}
 
               <div className="space-y-2">
-                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Role
                 </label>
                 <select
@@ -1226,7 +1241,7 @@ export function UserManagementPanel({
                 </select>
               </div>
               <div className="space-y-2">
-                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Status
                 </label>
                 <select
@@ -1241,7 +1256,7 @@ export function UserManagementPanel({
                 </select>
               </div>
               <div className="space-y-2">
-                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Display name
                 </label>
                 <Input
@@ -1264,7 +1279,7 @@ export function UserManagementPanel({
                 />
               </div>
               <div className="space-y-2">
-                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Login name
                 </label>
                 <Input
@@ -1284,7 +1299,7 @@ export function UserManagementPanel({
               </div>
 
               <div className="space-y-2">
-                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Email
                 </label>
                 <Input
@@ -1309,11 +1324,11 @@ export function UserManagementPanel({
               </div>
 
               <div className="space-y-2">
-                <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Linked identities ({(selected.identities ?? []).length})
                 </p>
                 {(selected.identities ?? []).length === 0 ? (
-                  <p className="text-sm text-ink/50">No linked login identities.</p>
+                  <p className="text-sm text-ink/70">No linked login identities.</p>
                 ) : (
                   <ul className="flex flex-wrap gap-1.5">
                     {(selected.identities ?? []).map((i) => (
@@ -1354,11 +1369,11 @@ export function UserManagementPanel({
               ) : null}
 
               <div className="space-y-2">
-                <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Integrations ({(selected.integrations ?? []).length})
                 </p>
                 {(selected.integrations ?? []).length === 0 ? (
-                  <p className="text-sm text-ink/50">No store connections.</p>
+                  <p className="text-sm text-ink/70">No store connections.</p>
                 ) : (
                   <ul className="flex flex-wrap gap-1.5">
                     {(selected.integrations ?? []).map((i) => (
@@ -1373,7 +1388,7 @@ export function UserManagementPanel({
                 )}
               </div>
 
-              <p className="text-xs text-ink/45">
+              <p className="text-xs text-ink/70">
                 Password: {selected.has_password ? "set" : "not set"}
                 {" · "}
                 Last seen{" "}
@@ -1384,7 +1399,7 @@ export function UserManagementPanel({
             </div>
           ) : (
             <div className="space-y-4">
-              <p className="text-sm text-ink/50">
+              <p className="text-sm text-ink/70">
                 Select a user to edit role, status, and review integrations.
               </p>
               {roleChoices.length > 0 ? (

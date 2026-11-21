@@ -110,7 +110,7 @@ export function MfaEnrollDialog({
         className="w-full max-w-md rounded-lg border border-ink/10 bg-paper p-6 shadow-xl outline-none"
       >
         <div className="mb-4 flex items-start gap-3">
-          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-brick/10 text-brick">
+          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-brick/10 text-brick-text">
             <Shield className="h-4 w-4" aria-hidden />
           </span>
           <div>
@@ -125,7 +125,7 @@ export function MfaEnrollDialog({
         </div>
 
         {error ? (
-          <p className="mb-4 text-sm font-medium text-brick" role="alert">
+          <p className="mb-4 text-sm font-medium text-brick-text" role="alert">
             {error}
           </p>
         ) : null}

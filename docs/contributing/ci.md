@@ -635,7 +635,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `postgres 16/17/18` | An owning package's unit tests are affected | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite; never on a pull request | See [Windows cluster](#windows-cluster-startup-and-identity) |
 | `website + collector Workers` | See [Workers](#website-and-collector-workers) | `site_test`, `site_audit`, `collector_test`, `demo_test`; no Rust toolchain |
-| `UI visual and accessibility` | A file under `ui/`, `tools/site/`, `tools/diagnostics-collector/` or `assets/brand/` changed, `SECURITY.md` changed, or the full suite | `ui_visual` in the pinned Playwright image; see [UI visual job](#ui-visual-job) |
+| `UI visual and accessibility` | A file under `ui/`, `tools/site/`, `tools/diagnostics-collector/` or `assets/brand/` changed, `SECURITY.md` or `crates/bookclerkd/openapi.json` changed, or the full suite | `ui_visual` in the pinned Playwright image; see [UI visual job](#ui-visual-job) |
 | `CI Gate` | Always | The stable required check (see the [contract](#plan--execution-contract)) |
 
 The postgres owners are the library, the db guest, the postgres guest and
@@ -834,17 +834,20 @@ host change that breaks the window. Windows and macOS don't run it yet.
 
 ### UI visual job
 
-The web app's Storybook stories and the pages of the website and the
-diagnostics collector, each checked with axe-core and compared with a
-baseline screenshot at two viewports in light and dark. The job runs inside
-the Playwright image pinned by digest, so every run renders with the same
-browser and fonts, and needs no Rust toolchain (the image already has the
-Python the plan scripts need). It builds Storybook and the website, runs the
-checks and uploads the `ui-visual` artifact.
+The web app's Storybook stories and pages, and the pages and building
+blocks of the website and the diagnostics collector, each checked with
+axe-core and compared with a baseline screenshot at two viewports in light
+and dark. The job runs inside the Playwright image pinned by digest, so
+every run renders with the same browser and fonts, and needs no Rust
+toolchain (the image already has the Python the plan scripts need). It
+builds Storybook, an unminified copy of the web app and the website, runs
+the checks and uploads the `ui-visual` artifact. The recording run also
+fails when a web app component rendered in no story or page.
 
 A change under `ui/`, `tools/site/`, `tools/diagnostics-collector/` or
-`assets/brand/`, or to `SECURITY.md`, selects it; a change to the host that
-serves `ui/dist` or to `docs/` doesn't. Baselines live in a separate repository, named by
+`assets/brand/`, or to `SECURITY.md` or the daemon's OpenAPI document,
+selects it; any other change to the host that serves `ui/dist`, or to
+`docs/`, doesn't. Baselines live in a separate repository, named by
 `ui/visual/baselines.lock`; the job records a set every run and compares
 with the locked one when there is one. See
 [Visual and accessibility testing](ui/visual-testing.md#baselines).

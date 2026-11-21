@@ -235,7 +235,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => 
         </p>
 
         {error ? (
-          <p className="mt-4 text-sm font-medium text-brick" role="alert">
+          <p className="mt-4 text-sm font-medium text-brick-text" role="alert">
             {error}
           </p>
         ) : null}
@@ -243,7 +243,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => 
         {claimMode ? (
           <form onSubmit={onClaimSubmit} className="mt-6">
             <label className="block text-sm font-semibold" htmlFor="claim-password">
-              Password <span className="font-normal text-ink/55">(optional)</span>
+              Password <span className="font-normal text-ink/70">(optional)</span>
             </label>
             <Input
               id="claim-password"
@@ -293,7 +293,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => 
 
             <form onSubmit={onPasswordSubmit} className={operatorToken ? "mt-8" : "mt-6"}>
               {operatorToken ? (
-                <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Already have an account
                 </p>
               ) : null}
@@ -372,7 +372,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => 
 
             {otherMethods ? (
               <div className="mt-8">
-                <p className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <p className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Or continue with
                 </p>
                 <div className="flex flex-col gap-2">
@@ -447,7 +447,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => 
           </>
         )}
         <div className="mt-8 border-t border-ink/10 pt-4">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/45">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/70">
             Appearance
           </p>
           <ThemePreferenceControl compact value={themePref} onChange={setThemePreference} />

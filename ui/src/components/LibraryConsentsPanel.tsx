@@ -48,7 +48,7 @@ function StateBadge({ state }: { state: RemoteConsentState }) {
         state === "consented"
           ? "bg-teal/10 text-ink/70"
           : state === "invalid_grant"
-            ? "bg-brick/10 text-brick"
+            ? "bg-brick/10 text-brick-text"
             : "bg-fold text-ink/80",
       )}
     >
@@ -123,7 +123,7 @@ function SharingSettings({ link, onSaved }: { link: LibraryLinkView; onSaved: ()
           <span className="block font-medium">
             Share this branch&apos;s books with {libraryLabel(link.owner_origin)}
           </span>
-          <span className="block text-xs text-ink/55">
+          <span className="block text-xs text-ink/70">
             The library gets each book&apos;s details and files, as its owner&apos;s. No store
             account or user of this server is sent. When off, nothing new is sent; books the library
             already has stay there.
@@ -140,7 +140,7 @@ function SharingSettings({ link, onSaved }: { link: LibraryLinkView; onSaved: ()
         />
         <span>
           <span className="block font-medium">Include books from my own branches</span>
-          <span className="block text-xs text-ink/55">
+          <span className="block text-xs text-ink/70">
             Books this server&apos;s own branches shared with it are passed on as this
             branch&apos;s. The library never learns about those branches.
           </span>
@@ -158,7 +158,7 @@ function SharingSettings({ link, onSaved }: { link: LibraryLinkView; onSaved: ()
           <span className="block font-medium">
             List my members&apos; books to {libraryLabel(link.owner_origin)}
           </span>
-          <span className="block text-xs text-ink/55">
+          <span className="block text-xs text-ink/70">
             When {libraryLabel(link.owner_origin)} asks about a title, it hears that this branch can
             supply it if one of your members has it. Your own books are always listed, and each
             member can keep theirs out in their account settings. Turning this off can take up to
@@ -184,7 +184,7 @@ function SharingSettings({ link, onSaved }: { link: LibraryLinkView; onSaved: ()
           <span className="block font-medium">
             Download for other members of {libraryLabel(link.owner_origin)}
           </span>
-          <span className="block text-xs text-ink/55">
+          <span className="block text-xs text-ink/70">
             When off, this server downloads only the books of the person who joined it to the
             library. When on, it also takes downloads for the library&apos;s other members, where
             the library trusts it to.
@@ -201,7 +201,7 @@ function SharingSettings({ link, onSaved }: { link: LibraryLinkView; onSaved: ()
         />
         <span>
           <span className="block font-medium">Keep copies of other members&apos; books</span>
-          <span className="block text-xs text-ink/55">
+          <span className="block text-xs text-ink/70">
             Books downloaded here for other members also go to this server&apos;s own outputs. When
             off, they go only to the library.
           </span>
@@ -209,7 +209,7 @@ function SharingSettings({ link, onSaved }: { link: LibraryLinkView; onSaved: ()
       </label>
       <JobCap link={link} busy={busy} onSaved={onSaved} />
       {error ? (
-        <p className="text-xs font-medium text-brick" role="alert">
+        <p className="text-xs font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
@@ -253,7 +253,7 @@ function KeepCopiesSetting({ link, onSaved }: { link: LibraryLinkView; onSaved: 
         />
         <span>
           <span className="block font-medium">Keep copies on this computer</span>
-          <span className="block text-xs text-ink/55">
+          <span className="block text-xs text-ink/70">
             {keepCopies
               ? `Your books in ${library} are copied to this server's own storage. Turn off to leave them in ${library} only.`
               : `Off: your books stay in ${library} only. This server still runs ${library}'s work and shows its books in Library.`}
@@ -261,7 +261,7 @@ function KeepCopiesSetting({ link, onSaved }: { link: LibraryLinkView; onSaved: 
         </span>
       </label>
       {error ? (
-        <p className="text-xs font-medium text-brick" role="alert">
+        <p className="text-xs font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
@@ -308,12 +308,12 @@ function JobCap({
         <label htmlFor={id} className="block font-medium">
           Work for {libraryLabel(link.owner_origin)} on this computer
         </label>
-        <span className="block text-xs text-ink/55">
+        <span className="block text-xs text-ink/70">
           This server&apos;s own work comes first; the libraries it is a branch of share the rest
           equally. {jobShareSummary(cap, link.job_share)}.
         </span>
         {error ? (
-          <span className="block text-xs font-medium text-brick" role="alert">
+          <span className="block text-xs font-medium text-brick-text" role="alert">
             {error}
           </span>
         ) : null}
@@ -403,21 +403,21 @@ function LinkRow({
   return (
     <li className="flex flex-wrap items-center gap-2 px-4 py-3 text-sm">
       <span className="font-semibold text-ink">{link.owner_origin}</span>
-      <span className="break-all font-mono text-[11px] text-ink/45">{link.library_id}</span>
+      <span className="break-all font-mono text-[11px] text-ink/70">{link.library_id}</span>
       <Badge
         className={cn(
           "normal-case tracking-normal",
-          link.state === "active" ? "bg-teal/10 text-ink/70" : "bg-brick/10 text-brick",
+          link.state === "active" ? "bg-teal/10 text-ink/70" : "bg-brick/10 text-brick-text",
         )}
       >
         {link.state === "active" ? "Active" : link.state === "left" ? "Left" : "Revoked"}
       </Badge>
       {link.pinned ? (
-        <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
+        <Badge className="bg-ink/5 text-ink/70 normal-case tracking-normal">
           Pinned certificate
         </Badge>
       ) : null}
-      <span className="text-xs text-ink/55">
+      <span className="text-xs text-ink/70">
         node <span className="font-mono">{link.node_id}</span> · joined{" "}
         {new Date(link.enrolled_at).toLocaleString()}
       </span>
@@ -446,7 +446,7 @@ function LinkRow({
       {link.state === "active" ? <KeepCopiesSetting link={link} onSaved={onLeft} /> : null}
       {link.state === "active" ? <SharingSettings link={link} onSaved={onLeft} /> : null}
       {note ? (
-        <p className="w-full text-xs font-medium text-brick" role="status">
+        <p className="w-full text-xs font-medium text-brick-text" role="status">
           {note}
         </p>
       ) : null}
@@ -486,7 +486,7 @@ function GrantFacts({ grant }: { grant: RemoteGrantView }) {
   if (grant.extraProcesses) facts.push(`Extra processes: ${grant.extraProcesses}`);
   if (grant.diskMib) facts.push(`Disk: ${grant.diskMib} MiB`);
   return (
-    <div className="space-y-1 text-xs text-ink/55">
+    <div className="space-y-1 text-xs text-ink/70">
       {facts.length > 0 ? (
         <ul className="space-y-0.5">
           {facts.map((fact) => (
@@ -566,18 +566,18 @@ function ConsentRow({
     <li className="space-y-3 px-4 py-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-semibold text-ink">{requested.pluginId ?? row.plugin_key}</span>
-        <span className="font-mono text-[11px] text-ink/60">{row.requested_version}</span>
+        <span className="font-mono text-[11px] text-ink/70">{row.requested_version}</span>
         <StateBadge state={row.state} />
-        <span className="break-all font-mono text-[11px] text-ink/45">{row.plugin_key}</span>
+        <span className="break-all font-mono text-[11px] text-ink/70">{row.plugin_key}</span>
       </div>
-      <p className="text-xs text-ink/55">
+      <p className="text-xs text-ink/70">
         From library <span className="font-mono">{row.library_id}</span>
         {approved && row.approved_version
           ? ` · approved ${row.approved_version}${row.approved_by ? ` by ${row.approved_by}` : ""}`
           : ""}
       </p>
       {row.requested_artifact ? (
-        <p className="break-all text-xs text-ink/55">
+        <p className="break-all text-xs text-ink/70">
           Archive <span className="font-mono">{row.requested_artifact.url}</span> · sha256{" "}
           <span className="font-mono">{row.requested_artifact.archive_sha256}</span>
         </p>
@@ -616,7 +616,7 @@ function ConsentRow({
               </label>
             ) : null}
             {domains.length === 0 ? (
-              <p className="text-xs text-ink/50">No domains requested.</p>
+              <p className="text-xs text-ink/70">No domains requested.</p>
             ) : (
               domains.map((domain) => (
                 <label key={domain} className="flex items-center gap-2 text-sm">
@@ -628,7 +628,7 @@ function ConsentRow({
                       setDeniedDomains((set) => toggle(set, domain, e.target.checked))
                     }
                   />
-                  <span className="text-ink/45">Deny</span>
+                  <span className="text-ink/70">Deny</span>
                   <span className="font-mono text-[12px]">{domainLabel(domain)}</span>
                 </label>
               ))
@@ -637,7 +637,7 @@ function ConsentRow({
           <fieldset className="space-y-1" disabled={busy}>
             <legend className="text-xs font-medium text-ink/70">Bindings</legend>
             {bindings.length === 0 ? (
-              <p className="text-xs text-ink/50">No bindings requested.</p>
+              <p className="text-xs text-ink/70">No bindings requested.</p>
             ) : (
               bindings.map((binding) => (
                 <label key={binding} className="flex items-center gap-2 text-sm">
@@ -648,7 +648,7 @@ function ConsentRow({
                       setDeniedBindings((set) => toggle(set, binding, e.target.checked))
                     }
                   />
-                  <span className="text-ink/45">Deny</span>
+                  <span className="text-ink/70">Deny</span>
                   <span className="font-mono text-[12px]">{binding}</span>
                 </label>
               ))
@@ -669,7 +669,7 @@ function ConsentRow({
                       setDeniedOwnAgents((set) => toggle(set, host, e.target.checked))
                     }
                   />
-                  <span className="text-ink/45">Deny</span>
+                  <span className="text-ink/70">Deny</span>
                   <span className="font-mono text-[12px]">{host}</span>
                 </label>
               ))}
@@ -679,7 +679,7 @@ function ConsentRow({
       ) : null}
       <GrantFacts grant={requested} />
       {approved && row.grant ? (
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-ink/70">
           Granted now: network {row.grant.networkMode ?? "deny"}
           {row.grant.domains?.length ? ` (${row.grant.domains.map(domainLabel).join(", ")})` : ""};
           bindings {row.grant.bindings?.length ? row.grant.bindings.join(", ") : "none"}
@@ -690,7 +690,7 @@ function ConsentRow({
       ) : null}
 
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
@@ -833,12 +833,12 @@ export function LibraryConsentsPanel({
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-ink">Library</h2>
         {sharingOnly ? (
-          <p className="text-sm text-ink/55">
+          <p className="text-sm text-ink/70">
             Libraries this server is a branch of, and what it shares with each. Joining, leaving and
             approving a library's plugins are done by the server's operator.
           </p>
         ) : (
-          <p className="text-sm text-ink/55">
+          <p className="text-sm text-ink/70">
             Libraries this server is a branch of. A library's plugin runs here only after you
             approve what it asks for; you can leave out domains, bindings, or the network, and a
             later version that asks for more waits for approval again. Revoking stops its jobs here
@@ -870,16 +870,16 @@ export function LibraryConsentsPanel({
         </Button>
       )}
       {loadError ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {loadError}
         </p>
       ) : null}
       {libraries == null ? (
-        <p className="text-sm text-ink/50">Loading…</p>
+        <p className="text-sm text-ink/70">Loading…</p>
       ) : (
         <>
           {libraries.length === 0 ? (
-            <p className="text-sm text-ink/50">This server is not a branch of any library.</p>
+            <p className="text-sm text-ink/70">This server is not a branch of any library.</p>
           ) : (
             <ul className="divide-y divide-ink/10 bg-card">
               {libraries.map((link) => (
@@ -898,7 +898,7 @@ export function LibraryConsentsPanel({
                 Waiting for you{pending.length ? ` (${pending.length})` : ""}
               </h3>
               {pending.length === 0 ? (
-                <p className="text-sm text-ink/50">No requests waiting.</p>
+                <p className="text-sm text-ink/70">No requests waiting.</p>
               ) : (
                 <ul className="divide-y divide-ink/10 bg-card">
                   {pending.map((row) => (

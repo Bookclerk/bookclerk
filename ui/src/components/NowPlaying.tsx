@@ -121,7 +121,7 @@ export function NowPlayingView({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md p-1.5 text-ink/60 transition-colors hover:bg-ink/5 hover:text-ink"
+            className="rounded-md p-1.5 text-ink/70 transition-colors hover:bg-ink/5 hover:text-ink"
             aria-label="Close"
           >
             <ChevronDown className="h-5 w-5" />
@@ -175,7 +175,7 @@ export function NowPlayingView({
             </p>
           ) : null}
           {(state.error ?? failure) ? (
-            <p className="text-center text-sm font-medium text-brick" role="alert">
+            <p className="text-center text-sm font-medium text-brick-text" role="alert">
               {state.error ?? failure}
             </p>
           ) : null}
@@ -231,7 +231,7 @@ export function NowPlayingView({
                     </button>
                     <button
                       type="button"
-                      className="rounded-md p-1.5 text-ink/50 transition-colors hover:bg-brick/10 hover:text-brick"
+                      className="rounded-md p-1.5 text-ink/70 transition-colors hover:bg-brick/10 hover:text-brick-text"
                       disabled={busy}
                       onClick={() =>
                         void run(

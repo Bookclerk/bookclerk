@@ -14,8 +14,8 @@ export function StorageSyncBadge({ plugin }: { plugin: PluginSettingsGroup }) {
     <Badge
       className={
         trouble
-          ? "bg-brick/10 text-brick normal-case tracking-normal"
-          : "bg-ink/5 text-ink/55 normal-case tracking-normal"
+          ? "bg-brick/10 text-brick-text normal-case tracking-normal"
+          : "bg-ink/5 text-ink/70 normal-case tracking-normal"
       }
     >
       <span title={details.join("\n")}>{label}</span>

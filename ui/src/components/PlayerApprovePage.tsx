@@ -117,7 +117,7 @@ export function PlayerApprovePage({ onSignOut }: PlayerApprovePageProps) {
         </p>
       </div>
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}

@@ -495,6 +495,20 @@ select:focus-visible,
 .button.danger {
   background: var(--brick-text);
 }
+/* The lookup page's delete form: the confirm box, then the button. */
+.delete-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  margin-top: 4px;
+}
+.delete-form label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
 .banner {
   margin-top: 16px;
   border: 1px solid var(--amber);
@@ -597,6 +611,13 @@ form.inline {
   text-transform: none;
   letter-spacing: 0;
   font-weight: 600;
+}
+/* A heading that is itself a link (a stat card's) keeps the heading style. */
+.panel h2 a.quiet {
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  font-weight: inherit;
 }
 .s2 {
   grid-column: span 2;
@@ -701,6 +722,18 @@ svg.chart {
   width: 100%;
   height: auto;
 }
+/* Bar charts come drawn twice; show the one sized for the screen. */
+svg.chart.narrow {
+  display: none;
+}
+@media (max-width: 620px) {
+  svg.chart.wide {
+    display: none;
+  }
+  svg.chart.narrow {
+    display: block;
+  }
+}
 svg .grid {
   stroke: var(--grid);
   stroke-width: 1;
@@ -782,7 +815,10 @@ svg.spark .line {
 }
 
 /* Tables */
+/* Positioned, so the visually hidden labels inside a table (absolutely
+   positioned) stay in its scroll box instead of widening the page. */
 .tbl {
+  position: relative;
   overflow-x: auto;
 }
 table {
@@ -838,6 +874,81 @@ td.issue-cell a.quiet {
 }
 tbody tr:hover {
   background: var(--parchment);
+}
+
+/* On a phone a .stack table becomes one card per row, each cell a label
+   (its column, from data-label) above its value, so the page never scrolls
+   sideways. The header row stays for screen readers, visually hidden. */
+@media (max-width: 620px) {
+  .tbl.stack {
+    overflow-x: visible;
+  }
+  .tbl.stack table,
+  .tbl.stack tbody,
+  .tbl.stack tr,
+  .tbl.stack td {
+    display: block;
+  }
+  .tbl.stack thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .tbl.stack tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--fold);
+  }
+  .tbl.stack tr:last-child {
+    border-bottom: 0;
+  }
+  .tbl.stack td {
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    text-align: left;
+    overflow-wrap: break-word;
+  }
+  .tbl.stack td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font: 600 11px var(--font-sans);
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  /* Long cells take the full card width. */
+  .tbl.stack td.issue-cell,
+  .tbl.stack td.wrap-any,
+  .tbl.stack td.actions,
+  .tbl.stack td.empty {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .tbl.stack td.empty {
+    text-align: center;
+    padding: 16px 0;
+  }
+  /* Action forms wrap inside the card instead of widening the page. */
+  .tbl.stack td.actions {
+    white-space: normal;
+  }
+  .tbl.stack td.actions form.inline {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  .tbl.stack td.actions .picker-input {
+    max-width: 100%;
+  }
+  .tbl.stack tbody tr:hover {
+    background: none;
+  }
 }
 
 .chip {
@@ -1011,6 +1122,7 @@ details summary {
   border: 0;
 }
 .log {
+  position: relative;
   background: var(--code-bg);
   color: var(--code-fg);
   border-radius: 8px;
@@ -1035,7 +1147,7 @@ details summary {
 }
 .log .tg {
   color: var(--log-tag);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .log .lv-error {
   background: rgb(224 106 82 / 0.18);

@@ -98,7 +98,7 @@ export function ConnectionPace({
   return (
     <div className="w-full space-y-2 pl-10">
       <div className="flex flex-wrap items-center gap-2">
-        <p className="text-xs text-ink/60">{paceSummary(pace)}</p>
+        <p className="text-xs text-ink/70">{paceSummary(pace)}</p>
         <Button variant="ghost" disabled={busy || saving} onClick={toggle} aria-expanded={open}>
           <Gauge className="h-4 w-4" />
           Change pace
@@ -114,7 +114,7 @@ export function ConnectionPace({
           className="grid gap-2 sm:grid-cols-[auto_1fr_1fr_auto] sm:items-end"
           onSubmit={(e) => void save(e)}
         >
-          <label className="grid gap-1 text-xs text-ink/60">
+          <label className="grid gap-1 text-xs text-ink/70">
             Pace
             <select
               className="h-9 rounded border border-ink/20 bg-card px-2 text-sm text-ink"
@@ -126,7 +126,7 @@ export function ConnectionPace({
               <option value="unlimited">No limit</option>
             </select>
           </label>
-          <label className="grid gap-1 text-xs text-ink/60">
+          <label className="grid gap-1 text-xs text-ink/70">
             Downloads per day
             <Input
               type="number"
@@ -142,7 +142,7 @@ export function ConnectionPace({
               onChange={(e) => setPerDay(e.target.value)}
             />
           </label>
-          <label className="grid gap-1 text-xs text-ink/60">
+          <label className="grid gap-1 text-xs text-ink/70">
             Seconds between downloads
             <Input
               type="number"
@@ -162,7 +162,7 @@ export function ConnectionPace({
         </form>
       ) : null}
       {error ? (
-        <p className="text-xs font-medium text-brick" role="alert">
+        <p className="text-xs font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}

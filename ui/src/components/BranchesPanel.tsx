@@ -46,9 +46,9 @@ function BranchRow({
       <span className="font-semibold text-ink">
         {row.owner_name ? `${row.owner_name}'s branch` : "Branch"}
       </span>
-      <span className="break-all font-mono text-[11px] text-ink/45">{row.node_id}</span>
-      <span className="w-full text-xs text-ink/60">{branchSharingSummary(row)}</span>
-      {note ? <span className="w-full text-xs text-ink/50">{note}</span> : null}
+      <span className="break-all font-mono text-[11px] text-ink/70">{row.node_id}</span>
+      <span className="w-full text-xs text-ink/70">{branchSharingSummary(row)}</span>
+      {note ? <span className="w-full text-xs text-ink/70">{note}</span> : null}
       {row.joined ? (
         <label className="flex w-full items-start gap-2 text-xs text-ink">
           <input
@@ -62,7 +62,7 @@ function BranchRow({
             <span className="block font-medium">
               Acquire all of this branch&apos;s members&apos; books
             </span>
-            <span className="block text-ink/55">
+            <span className="block text-ink/70">
               Also receive the books the branch&apos;s members downloaded there, when the branch
               lists its members&apos; books and they haven&apos;t opted out. Otherwise only its
               owner&apos;s books arrive, plus any you request.
@@ -160,14 +160,14 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
     <section className="space-y-6">
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-ink">Branches</h2>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-ink/70">
           A branch is another Bookclerk server that runs work for this library: scans and downloads
           for the accounts of the user who owns it. It keeps its own database, and its operator
           approves each plugin before it runs there. Branches show among the nodes.
         </p>
       </div>
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
@@ -183,7 +183,7 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
             />
             <span>
               <span className="block font-medium">Let new branches join</span>
-              <span className="block text-ink/55">
+              <span className="block text-ink/70">
                 When off, no sign-in or invite can add a branch. Branches already joined keep
                 working.
               </span>
@@ -192,7 +192,7 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
           <div className="space-y-1 text-sm">
             <p className="font-medium text-ink">Address to join</p>
             <p className="font-mono text-xs text-ink/70">{view.origin}</p>
-            <p className="text-xs text-ink/50">
+            <p className="text-xs text-ink/70">
               On the new server, choose <strong>Join a library</strong> and enter this address.
             </p>
           </div>
@@ -202,7 +202,7 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
               <p className="break-all rounded bg-card px-3 py-2 font-mono text-xs text-ink">
                 {fingerprintGroups(view.spki_fingerprint).join(" ")}
               </p>
-              <p className="text-xs text-ink/50">
+              <p className="text-xs text-ink/70">
                 This library uses its own certificate. A joining server shows this fingerprint;
                 check that it matches before you continue there.
               </p>
@@ -211,7 +211,7 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
           {view.branches && view.branches.length > 0 ? (
             <div className="space-y-2">
               <p className="text-sm font-medium text-ink">Branches and their books</p>
-              <p className="text-xs text-ink/50">
+              <p className="text-xs text-ink/70">
                 A branch can share its books with this library; they arrive as its owner&apos;s.
                 Each branch&apos;s operator chooses that there. When a branch stops sharing or
                 leaves, its books stay here, marked, until you remove the entries.
@@ -244,18 +244,18 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
               <Button type="button" variant="secondary" onClick={() => setAdding(true)}>
                 Add a branch
               </Button>
-              <p className="text-xs text-ink/50">
+              <p className="text-xs text-ink/70">
                 For someone else's branch, use User management → their actions → Add a branch.
               </p>
             </div>
           ) : (
-            <p className="text-xs text-ink/50">
+            <p className="text-xs text-ink/70">
               To make a branch invite, use User management → a user's actions → Add a branch.
             </p>
           )}
         </div>
       ) : error ? null : (
-        <p className="text-sm text-ink/50">Loading…</p>
+        <p className="text-sm text-ink/70">Loading…</p>
       )}
       <AddBranchDialog open={adding} onClose={() => setAdding(false)} />
     </section>

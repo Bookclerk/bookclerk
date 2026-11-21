@@ -17,3 +17,9 @@ export const SITE_ORIGIN = `http://127.0.0.1:${SITE_PORT}`;
 
 /** Origin of the collector's page server. */
 export const COLLECTOR_ORIGIN = `http://127.0.0.1:${COLLECTOR_PORT}`;
+
+/** Port the web app's unminified production build (ui/visual-dist) is served on. */
+export const APP_PORT = 6109;
+
+/** Origin of the web app's build server. */
+export const APP_ORIGIN = `http://127.0.0.1:${APP_PORT}`;

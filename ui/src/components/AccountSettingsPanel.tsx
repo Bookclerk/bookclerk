@@ -501,12 +501,12 @@ export function AccountSettingsPanel({
   return (
     <div className="flex flex-col gap-10">
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
       {notice ? (
-        <p className="text-sm font-medium text-teal" role="status">
+        <p className="text-sm font-medium text-teal-text" role="status">
           {notice}
         </p>
       ) : null}
@@ -514,7 +514,7 @@ export function AccountSettingsPanel({
       <section className="space-y-3">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-ink">Profile</h2>
-          <p className="text-sm text-ink/55">
+          <p className="text-sm text-ink/70">
             How this session identifies you on this Bookclerk host.
           </p>
         </div>
@@ -576,11 +576,11 @@ export function AccountSettingsPanel({
                   type="button"
                   className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
                   onClick={() => setEditingField("name")}
-                  aria-label="Edit display name"
+                  aria-label={`${profileLabel}, edit display name`}
                 >
                   <span className="truncate font-semibold text-ink">{profileLabel}</span>
                   <Pencil
-                    className="h-3.5 w-3.5 shrink-0 text-ink/40 opacity-0 transition-opacity group-hover/profile:opacity-100 group-focus-within/profile:opacity-100"
+                    className="h-3.5 w-3.5 shrink-0 text-ink/70 opacity-0 transition-opacity group-hover/profile:opacity-100 group-focus-within/profile:opacity-100"
                     aria-hidden
                   />
                 </button>
@@ -620,20 +620,20 @@ export function AccountSettingsPanel({
                 type="button"
                 className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
                 onClick={() => setEditingField("email")}
-                aria-label="Edit email"
+                aria-label={`${email.trim() || "Add email"}, edit email`}
               >
                 <span
-                  className={cn("truncate text-sm", email.trim() ? "text-ink/55" : "text-ink/40")}
+                  className={cn("truncate text-sm", email.trim() ? "text-ink/70" : "text-ink/70")}
                 >
                   {email.trim() || "Add email"}
                 </span>
                 <Pencil
-                  className="h-3.5 w-3.5 shrink-0 text-ink/40 opacity-0 transition-opacity group-hover/profile:opacity-100 group-focus-within/profile:opacity-100"
+                  className="h-3.5 w-3.5 shrink-0 text-ink/70 opacity-0 transition-opacity group-hover/profile:opacity-100 group-focus-within/profile:opacity-100"
                   aria-hidden
                 />
               </button>
             ) : (
-              <p className="truncate text-sm text-ink/55">
+              <p className="truncate text-sm text-ink/70">
                 {user?.email?.trim() ||
                   (isOperatorOnly ? "Daemon operator token session" : "No email")}
               </p>
@@ -646,7 +646,7 @@ export function AccountSettingsPanel({
         <section className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">
             <h2 className="text-lg font-semibold text-ink">Security</h2>
-            <p className="text-sm text-ink/55">
+            <p className="text-sm text-ink/70">
               Password, passkeys, authenticator app, linked identity providers, and Owner elevation.
             </p>
           </div>
@@ -722,7 +722,7 @@ export function AccountSettingsPanel({
                   </div>
                 ) : null}
                 {passkeys.length === 0 ? (
-                  <p className="text-sm text-ink/55">No passkeys registered.</p>
+                  <p className="text-sm text-ink/70">No passkeys registered.</p>
                 ) : (
                   <ul className="flex flex-col gap-2">
                     {passkeys.map((pk) => (
@@ -734,7 +734,7 @@ export function AccountSettingsPanel({
                           <span className="block truncate font-medium text-ink">
                             {pk.name?.trim() || "Passkey"}
                           </span>
-                          <span className="block truncate font-mono text-xs text-ink/45">
+                          <span className="block truncate font-mono text-xs text-ink/70">
                             {pk.credential_id.slice(0, 16)}…
                           </span>
                         </span>
@@ -929,7 +929,7 @@ export function AccountSettingsPanel({
                           </Button>
                         </form>
                       ) : (
-                        <p className="text-sm text-ink/55">
+                        <p className="text-sm text-ink/70">
                           This Owner has no local password. Use SSO step-up or a passkey, or sign in
                           with the Operator token on the host.
                         </p>
@@ -944,7 +944,7 @@ export function AccountSettingsPanel({
                 title="Delete account"
                 description="Removes your wishlist, store links, and sessions. Acquired library titles stay in the library."
                 className="border-brick/20 bg-brick/5"
-                titleClassName="text-brick"
+                titleClassName="text-brick-text"
                 iconClassName="text-brick/70"
               >
                 <div className="flex flex-col gap-3">
@@ -972,7 +972,7 @@ export function AccountSettingsPanel({
               </SecurityCard>
             </div>
           ) : (
-            <div className="max-w-xl rounded-md border border-ink/10 bg-card p-4 text-sm text-ink/60">
+            <div className="max-w-xl rounded-md border border-ink/10 bg-card p-4 text-sm text-ink/70">
               <p>
                 Operator-only sessions use the daemon token. Sign in as an owner, administrator, or
                 member to manage a local password.
@@ -990,7 +990,7 @@ export function AccountSettingsPanel({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
             <h2 className="text-lg font-semibold text-ink">Sessions</h2>
-            <p className="text-sm text-ink/55">
+            <p className="text-sm text-ink/70">
               Devices signed in as you. Revoke any session you do not recognize.
             </p>
           </div>
@@ -1068,10 +1068,10 @@ function SecurityCard({
       )}
     >
       <div className="flex items-start gap-3">
-        <span className={cn("mt-0.5 shrink-0 text-ink/50", iconClassName)}>{icon}</span>
+        <span className={cn("mt-0.5 shrink-0 text-ink/70", iconClassName)}>{icon}</span>
         <div className="min-w-0 flex-1">
           <h3 className={cn("text-sm font-semibold text-ink", titleClassName)}>{title}</h3>
-          <p className="mt-0.5 text-sm text-ink/55">{description}</p>
+          <p className="mt-0.5 text-sm text-ink/70">{description}</p>
         </div>
       </div>
       {children}

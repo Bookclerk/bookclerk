@@ -81,7 +81,7 @@ export function ClerkCardsPanel({ onSessionExpired, canJoin = false }: ClerkCard
         <h3 id="library-cards-heading" className="text-base font-semibold text-ink">
           Library cards
         </h3>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-ink/70">
           Sign in to another library with your account there to see your books in it beside the
           books here. This server downloads nothing from it and runs none of its work.
         </p>
@@ -109,16 +109,16 @@ export function ClerkCardsPanel({ onSessionExpired, canJoin = false }: ClerkCard
         </Button>
       )}
       {loadError ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {loadError}
         </p>
       ) : null}
       {cards == null ? (
         loadError ? null : (
-          <p className="text-sm text-ink/50">Loading…</p>
+          <p className="text-sm text-ink/70">Loading…</p>
         )
       ) : cards.length === 0 ? (
-        <p className="text-sm text-ink/50">This server holds no library cards.</p>
+        <p className="text-sm text-ink/70">This server holds no library cards.</p>
       ) : (
         <ul className="divide-y divide-ink/10 bg-card">
           {cards.map((card) => (
@@ -202,11 +202,11 @@ function CardRow({
     <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
       <div className="min-w-0 space-y-0.5">
         <p className="text-sm font-medium text-ink">
-          {library} <span className="font-normal text-ink/50">({card.origin})</span>
+          {library} <span className="font-normal text-ink/70">({card.origin})</span>
         </p>
-        <p className="text-xs text-ink/55">{clerkCardSummary(card)}</p>
+        <p className="text-xs text-ink/70">{clerkCardSummary(card)}</p>
         {error ? (
-          <p className="text-xs font-medium text-brick" role="alert">
+          <p className="text-xs font-medium text-brick-text" role="alert">
             {error}
           </p>
         ) : null}
@@ -318,7 +318,7 @@ export function ClerkSignInForm({ defaultName, onCancel }: ClerkSignInFormProps)
             Continue
           </Button>
         </div>
-        <p className="text-xs text-ink/50">
+        <p className="text-xs text-ink/70">
           The address you use to open that library in a browser. This server reads it, not your
           browser.
         </p>
@@ -333,7 +333,7 @@ export function ClerkSignInForm({ defaultName, onCancel }: ClerkSignInFormProps)
         <div className="space-y-4 rounded-md border border-ink/10 bg-paper p-4">
           <p className="text-sm text-ink">
             Found <strong>{library.library_name}</strong>{" "}
-            <span className="text-ink/50">({library.origin})</span>
+            <span className="text-ink/70">({library.origin})</span>
           </p>
           {library.needs_fingerprint && library.fingerprint ? (
             <div className="space-y-2">
@@ -365,7 +365,7 @@ export function ClerkSignInForm({ defaultName, onCancel }: ClerkSignInFormProps)
               onChange={(e) => setName(e.target.value)}
               disabled={busy}
             />
-            <p className="text-xs text-ink/50">
+            <p className="text-xs text-ink/70">
               The library asks you to give a card to this name when you sign in.
             </p>
           </div>
@@ -376,7 +376,7 @@ export function ClerkSignInForm({ defaultName, onCancel }: ClerkSignInFormProps)
       ) : null}
 
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}

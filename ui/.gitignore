@@ -25,5 +25,6 @@ dist-ssr
 
 # Storybook build and the visual checks (docs/contributing/ui/visual-testing.md)
 storybook-static/
+visual-dist/
 visual/baselines/
 visual-results/

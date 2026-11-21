@@ -47,8 +47,8 @@ export function ContinueListening() {
                 type="button"
                 className="group block w-full text-left"
                 onClick={() => void webPlayer().play(book)}
-                aria-label={`Continue ${book.title}`}
               >
+                <span className="sr-only">Continue </span>
                 <span className="relative block">
                   <CoverThumb
                     path={book.coverPath}
@@ -72,7 +72,7 @@ export function ContinueListening() {
                 <span className="mt-1.5 block truncate text-sm font-semibold text-ink">
                   {book.title}
                 </span>
-                <span className="block truncate text-xs text-ink/55">
+                <span className="block truncate text-xs text-ink/70">
                   {target?.editionId === book.editionId ? "Playing now" : left}
                 </span>
               </button>

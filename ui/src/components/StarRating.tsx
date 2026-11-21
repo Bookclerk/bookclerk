@@ -37,7 +37,7 @@ export function StarRating({
           <span key={i} className={cn("relative inline-block shrink-0", starClassName)} aria-hidden>
             <Star
               className={cn(
-                "absolute inset-0 fill-transparent text-ink/55 stroke-[2.25]",
+                "absolute inset-0 fill-transparent text-ink/70 stroke-[2.25]",
                 starClassName,
               )}
             />
@@ -46,7 +46,7 @@ export function StarRating({
                 className="absolute inset-y-0 left-0 overflow-hidden"
                 style={{ width: `${fill * 100}%` }}
               >
-                <Star className={cn("fill-teal text-teal", starClassName)} />
+                <Star className={cn("fill-teal text-teal-text", starClassName)} />
               </span>
             ) : null}
           </span>

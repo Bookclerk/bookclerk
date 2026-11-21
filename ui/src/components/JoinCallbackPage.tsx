@@ -119,7 +119,7 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
   if (phase.kind === "working") {
     return (
       <JoinShell title="Joining…" lead="Finishing the sign-in with the library.">
-        <p className="text-sm text-ink/50">One moment.</p>
+        <p className="text-sm text-ink/70">One moment.</p>
       </JoinShell>
     );
   }
@@ -161,7 +161,7 @@ export function JoinCallbackPage({ onOpenLibrary }: JoinCallbackPageProps) {
           </>
         }
       >
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-ink/70">
           {phase.wrapped
             ? "The library's key is stored here wrapped with this server's own password."
             : "The library's key is stored here unwrapped. Set BOOKCLERK_AUTH_PASSWORD on this server to wrap it at rest."}

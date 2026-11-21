@@ -151,6 +151,7 @@ const STORED = {
     version: "0.1.0",
     os: "linux",
     arch: "x86_64",
+    trigger: "error_burst",
     events: [
       {
         ts_unix_ms: NOW - 3_600_400,

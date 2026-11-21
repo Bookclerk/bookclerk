@@ -168,7 +168,7 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
             <span>
               <span className="block">Join as a shared branch of this library</span>
               {!choice.shared_branch_available && choice.shared_branch_reason ? (
-                <span className="block text-xs text-ink/55">{choice.shared_branch_reason}</span>
+                <span className="block text-xs text-ink/70">{choice.shared_branch_reason}</span>
               ) : null}
             </span>
           </label>
@@ -236,7 +236,7 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
                     />
                     <span>Bring my store connections to this branch</span>
                   </label>
-                  <ul className="list-disc space-y-0.5 pl-11 text-xs text-ink/65">
+                  <ul className="list-disc space-y-0.5 pl-11 text-xs text-ink/70">
                     {travelling.map((c) => (
                       <li key={`${c.source}:${c.account_id}`}>
                         {c.source}: {c.label?.trim() || c.account_id}
@@ -246,14 +246,14 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
                 </>
               ) : null}
               {staying.length > 0 ? (
-                <p className={`text-xs text-ink/55 ${travelling.length > 0 ? "pl-6" : ""}`}>
+                <p className={`text-xs text-ink/70 ${travelling.length > 0 ? "pl-6" : ""}`}>
                   Stays here: {staying.map((c) => c.source).join(", ")}. Connect{" "}
                   {staying.length === 1 ? "it" : "them"} on the branch yourself if you want{" "}
                   {staying.length === 1 ? "it" : "them"} there.
                 </p>
               ) : null}
               {travelling.length > 0 ? (
-                <p className="pl-6 text-xs text-ink/55">
+                <p className="pl-6 text-xs text-ink/70">
                   The branch's administrator can turn off store connections for you; then nothing is
                   added there.
                 </p>
@@ -264,11 +264,11 @@ export function JoinApprovePage({ onSignOut }: JoinApprovePageProps) {
       )}
       <div className="space-y-2 text-sm text-ink/75">
         {!view.enrollment ? (
-          <p className="font-medium text-brick">This library isn't accepting new branches.</p>
+          <p className="font-medium text-brick-text">This library isn't accepting new branches.</p>
         ) : null}
       </div>
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}

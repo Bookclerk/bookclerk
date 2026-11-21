@@ -40,7 +40,7 @@ export function SettingsTableEditor({
     >
       <legend className="text-sm font-medium text-ink">{label}</legend>
       {rows.length === 0 ? (
-        <p className="text-xs text-ink/50">No rows yet.</p>
+        <p className="text-xs text-ink/70">No rows yet.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-sm">
@@ -50,7 +50,7 @@ export function SettingsTableEditor({
                   <th
                     key={column.key}
                     scope="col"
-                    className="px-1 pb-1 text-left text-xs font-medium text-ink/60"
+                    className="px-1 pb-1 text-left text-xs font-medium text-ink/70"
                   >
                     {column.label}
                     {column.required ? <span aria-hidden="true"> *</span> : null}
@@ -133,7 +133,7 @@ export function SettingsTableEditor({
         Add row
       </Button>
       {error ? (
-        <p id={`${id}-error`} className="text-xs text-brick" role="alert">
+        <p id={`${id}-error`} className="text-xs text-brick-text" role="alert">
           {error}
         </p>
       ) : null}

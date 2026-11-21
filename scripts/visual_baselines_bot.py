@@ -8,7 +8,8 @@ it never checks out or runs pull request code
 - ``propose`` (``workflow_run`` of CI): reads the set the pull request's
   ``ui-visual`` job recorded, validates it, compares it with the set the
   ``baselines.lock`` of the pull request merged into its base names (what
-  CI compared with), and when they differ commits it to
+  CI compared with; the base branch's own lock when the pull request
+  conflicts and has no approved set of its own), and when they differ commits it to
   ``pending/pr-<number>`` in the baselines repository and posts one review
   comment with the changes grouped by category and an approval checkbox,
   then requests a review from the ``visual-reviewers`` team. An unapproved
@@ -315,9 +316,13 @@ def compared_lock(
     CI checks out the pull request merged into its base, so the lock it
     used is the merge ref's: a pull request that leaves the lock alone
     inherits the base branch's, and one approved elsewhere and merged stops
-    showing as a change here. Without a merge ref (a conflict), the head's
-    lock stands in. A lock the approval workflow never tagged reads as
-    ``None``, so every image needs approval.
+    showing as a change here. Without a merge ref (the pull request
+    conflicts with its base), the head's lock stands in when it names an
+    approved set (one approved on this pull request), and otherwise the
+    base branch's: a branch from before the first approval still carries
+    ``none``, and comparing with nothing would show every image as new. A
+    lock the approval workflow never tagged reads as ``None``, so every
+    image needs approval.
 
     # Errors
     ``BotError`` when a read fails; ``VisualBaselinesError`` when the lock
@@ -327,9 +332,27 @@ def compared_lock(
         lock = head_lock(send, repository, f"refs/pull/{number}/merge")
     except NotFound:
         lock = head_lock(send, repository, head)
+        if not (lock and is_approved(send, baselines, lock)):
+            lock = head_lock(send, repository, pull_base(send, repository, number))
     if lock and not is_approved(send, baselines, lock):
         return None
     return lock
+
+
+def pull_base(send: Transport, repository: str, number: int) -> str:
+    """Returns the name of the branch pull request ``number`` merges into.
+
+    # Errors
+    ``BotError`` when the pull request cannot be read or names no base.
+    """
+    status, raw = send("GET", f"repos/{repository}/pulls/{number}", None)
+    if status != 200:
+        raise BotError(f"pull request #{number}: HTTP {status}")
+    base = vb._json_object(raw, "pull request").get("base")
+    ref = base.get("ref") if isinstance(base, dict) else None
+    if not isinstance(ref, str) or not ref:
+        raise BotError(f"pull request #{number} names no base branch")
+    return urllib.parse.quote(ref, safe="")
 
 
 def propose(env: dict[str, str], send: Transport, write: Transport) -> str:

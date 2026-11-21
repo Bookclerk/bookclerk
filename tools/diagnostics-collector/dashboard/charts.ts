@@ -33,6 +33,45 @@ function r2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** A chart's drawing size, in SVG units, and how many x labels fit. */
+interface Frame {
+  /** Width. */
+  w: number;
+  /** Height. */
+  h: number;
+  /** At most this many x-axis labels. */
+  labels: number;
+}
+
+/**
+ * One size the bar charts are drawn at. Each chart is drawn twice, wide and
+ * narrow, and the stylesheet shows the one that fits (`.chart.wide` above
+ * 620 px, `.chart.narrow` below), so the axis text stays legible on a phone
+ * instead of shrinking with a wide drawing.
+ */
+interface ChartSize {
+  /** The class that shows this drawing. */
+  cls: "wide" | "narrow";
+  /** The stacked bar chart's frame. */
+  bars: Frame;
+  /** The histogram's frame. */
+  histogram: Frame;
+}
+
+/** Desktop and tablet drawings. */
+const WIDE: ChartSize = {
+  cls: "wide",
+  bars: { w: 760, h: 230, labels: 8 },
+  histogram: { w: 520, h: 120, labels: 5 },
+};
+
+/** Phone drawings, about as wide as a phone panel, so one unit is one pixel. */
+const NARROW: ChartSize = {
+  cls: "narrow",
+  bars: { w: 340, h: 200, labels: 4 },
+  histogram: { w: 340, h: 120, labels: 4 },
+};
+
 /**
  * Stacked bar chart of counts per bucket.
  *
@@ -48,8 +87,26 @@ export function stackedBars(
   series: { key: string; cls: string }[],
   ariaLabel: string,
 ): SafeHtml {
-  const W = 760;
-  const H = 230;
+  return html`${stackedBarsAt(buckets, series, ariaLabel, WIDE)}${stackedBarsAt(buckets, series, ariaLabel, NARROW)}`;
+}
+
+/**
+ * One drawing of {@link stackedBars} at a given size.
+ *
+ * @param buckets - As for stackedBars.
+ * @param series - As for stackedBars.
+ * @param ariaLabel - As for stackedBars.
+ * @param size - Drawing size and the class that shows it.
+ * @returns An `<svg>`.
+ */
+function stackedBarsAt(
+  buckets: { label: string; values: Record<string, number> }[],
+  series: { key: string; cls: string }[],
+  ariaLabel: string,
+  size: ChartSize,
+): SafeHtml {
+  const W = size.bars.w;
+  const H = size.bars.h;
   const L = 40;
   const R = 8;
   const T = 16;
@@ -66,7 +123,7 @@ export function stackedBars(
       `<text class="tick" x="${L - 6}" y="${r2(y(t) + 4)}" text-anchor="end">${t}</text>`,
     );
   }
-  const labelEvery = Math.ceil(buckets.length / 8);
+  const labelEvery = Math.ceil(buckets.length / size.bars.labels);
   buckets.forEach((b, i) => {
     let acc = 0;
     const x = L + i * bw + gap;
@@ -91,7 +148,7 @@ export function stackedBars(
       );
     }
   });
-  return html`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${ariaLabel}">${raw(parts.join(""))}</svg>`;
+  return html`<svg class="chart ${size.cls}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${ariaLabel}">${raw(parts.join(""))}</svg>`;
 }
 
 /**
@@ -164,8 +221,26 @@ export function histogram(
   marker: { index: number; label: string } | null,
   ariaLabel: string,
 ): SafeHtml {
-  const W = 520;
-  const H = 120;
+  return html`${histogramAt(days, marker, ariaLabel, WIDE)}${histogramAt(days, marker, ariaLabel, NARROW)}`;
+}
+
+/**
+ * One drawing of {@link histogram} at a given size.
+ *
+ * @param days - As for histogram.
+ * @param marker - As for histogram.
+ * @param ariaLabel - As for histogram.
+ * @param size - Drawing size and the class that shows it.
+ * @returns An `<svg>`.
+ */
+function histogramAt(
+  days: { label: string; n: number; after: boolean }[],
+  marker: { index: number; label: string } | null,
+  ariaLabel: string,
+  size: ChartSize,
+): SafeHtml {
+  const W = size.histogram.w;
+  const H = size.histogram.h;
   const L = 28;
   const R = 6;
   const T = 14;
@@ -180,7 +255,7 @@ export function histogram(
       `<text class="tick" x="${L - 5}" y="${r2(y(t) + 4)}" text-anchor="end">${t}</text>`,
     );
   }
-  const labelEvery = Math.ceil(days.length / 5);
+  const labelEvery = Math.ceil(days.length / size.histogram.labels);
   days.forEach((d, i) => {
     if (d.n > 0) {
       parts.push(
@@ -201,5 +276,5 @@ export function histogram(
       `<text class="tick strong" x="${anchor === "end" ? fx - 4 : fx + 4}" y="${T + 4}" text-anchor="${anchor}">${html`${marker.label}`}</text>`,
     );
   }
-  return html`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${ariaLabel}">${raw(parts.join(""))}</svg>`;
+  return html`<svg class="chart ${size.cls}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${ariaLabel}">${raw(parts.join(""))}</svg>`;
 }

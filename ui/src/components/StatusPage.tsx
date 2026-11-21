@@ -31,9 +31,9 @@ const OPEN_REFRESH_MS = 60_000;
 function Stat({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (
     <div className="rounded-lg border border-ink/10 bg-card px-4 py-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-ink/50">{label}</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-ink/70">{label}</p>
       <p className="mt-1 font-display text-2xl font-semibold text-ink">{value}</p>
-      {detail ? <p className="mt-0.5 text-xs text-ink/55">{detail}</p> : null}
+      {detail ? <p className="mt-0.5 text-xs text-ink/70">{detail}</p> : null}
     </div>
   );
 }
@@ -51,27 +51,27 @@ function NodeCard({ node }: { node: ConfigNodeView }) {
         <Badge
           className={cn(
             "normal-case tracking-normal",
-            node.live ? "bg-teal/10 text-ink/70" : "bg-brick/10 text-brick",
+            node.live ? "bg-teal/10 text-ink/70" : "bg-brick/10 text-brick-text",
           )}
         >
           {node.live ? "Live" : "Offline"}
         </Badge>
         {!node.runtime.schedulable ? (
-          <Badge className="bg-brick/10 text-brick normal-case tracking-normal">Drained</Badge>
+          <Badge className="bg-brick/10 text-brick-text normal-case tracking-normal">Drained</Badge>
         ) : null}
-        <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
+        <Badge className="bg-ink/5 text-ink/70 normal-case tracking-normal">
           {relationshipLabel(node.relationship)}
         </Badge>
         {status?.public_origin ? (
-          <span className="font-mono text-[11px] text-ink/45">{status.public_origin}</span>
+          <span className="font-mono text-[11px] text-ink/70">{status.public_origin}</span>
         ) : null}
         {node.owner ? (
-          <span className="text-xs text-ink/55">Owned by {ownerName(node.owner)}</span>
+          <span className="text-xs text-ink/70">Owned by {ownerName(node.owner)}</span>
         ) : null}
       </div>
       {status ? (
         <>
-          <p className="text-xs text-ink/55">
+          <p className="text-xs text-ink/70">
             Heartbeat {age(status.heartbeat_at)} · {status.running_guests} guest(s) running ·{" "}
             {(status.availability_ppm / 10_000).toFixed(1)}% available recently
           </p>
@@ -80,7 +80,7 @@ function NodeCard({ node }: { node: ConfigNodeView }) {
           </div>
         </>
       ) : (
-        <p className="text-xs text-ink/55">No heartbeat yet.</p>
+        <p className="text-xs text-ink/70">No heartbeat yet.</p>
       )}
     </li>
   );
@@ -143,20 +143,24 @@ export function StatusPage({
           <AppTopBar nav={nav} onSignOut={onSignOut} />
         </div>
       </header>
-      <div className="flex-1 overflow-y-auto px-3 py-5 sm:px-5">
+      {/* Focusable, so the page scrolls from the keyboard when nothing in it takes focus. */}
+      <div
+        className="flex-1 overflow-y-auto px-3 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal/40 sm:px-5"
+        tabIndex={0}
+      >
         <main className={cn("space-y-6", pageWidthClass)}>
           <div className="space-y-1">
             <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Status</h1>
-            <p className="text-sm text-ink/60">
+            <p className="text-sm text-ink/70">
               Library health from every node's heartbeat.{" "}
               {owned
                 ? "Below are the nodes you own; change their budgets in Settings → Nodes."
                 : "Change budgets, labels, and owners in Settings → Nodes."}
             </p>
           </div>
-          {error ? <p className="text-sm text-brick">{error}</p> : null}
+          {error ? <p className="text-sm text-brick-text">{error}</p> : null}
           {library == null || status == null ? (
-            <p className="text-sm text-ink/50">Loading status…</p>
+            <p className="text-sm text-ink/70">Loading status…</p>
           ) : (
             <>
               <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -196,7 +200,7 @@ export function StatusPage({
               <section className="space-y-3">
                 <h2 className="text-lg font-semibold text-ink">{owned ? "Your nodes" : "Nodes"}</h2>
                 {status.nodes.length === 0 ? (
-                  <p className="text-sm text-ink/50">
+                  <p className="text-sm text-ink/70">
                     {owned ? "You do not own any nodes yet." : "No nodes registered."}
                   </p>
                 ) : (
