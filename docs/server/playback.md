@@ -147,7 +147,9 @@ track list never outranks a book's real chapters.
 | `PUT`, `DELETE /api/library/editions/{id}/chapters/pin` | Administrator | Pin one source's list, or remove the pin |
 
 "Administrator" here means the operator, an Owner or an Administrator, as
-for every other metadata edit. An edit is checked strictly and stored
+for every other metadata edit; an Owner can stop one Administrator
+changing chapters with the **Fix the catalog** switch (see
+[Sharing](../guide/sharing.md)), which leaves the claims readable. An edit is checked strictly and stored
 exactly as sent: at most 2,000 chapters, each title 1 to 512 bytes with no
 control character and no leading or trailing space, starts that never go
 back and are at most 60 days in, and each depth (0 to 7) at most one

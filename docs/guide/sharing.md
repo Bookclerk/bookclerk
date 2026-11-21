@@ -125,7 +125,7 @@ all are on out of the box. Owners are never limited.
 | Set patron limits | Changing a Member's scope or member controls, and the library's defaults for them |
 | Scan and acquire library-wide | Scanning or acquiring with every store account. They still reach the accounts linked to them. |
 | Run the job queue | Cancelling jobs, retrying, cancelling or resuming event deliveries, and starting a listening sync |
-| Fix the catalog | Pinning a listing to an edition, removing a pin, and splitting a work. The conflicts list stays readable. |
+| Fix the catalog | Pinning a listing to an edition, removing a pin, splitting a work, and editing or pinning an edition's chapters. The conflicts list and chapter claims stay readable. |
 | Invite branches | Creating invites that let a new branch join the library |
 | Approve interlibrary requests | Answering requests from other libraries |
 

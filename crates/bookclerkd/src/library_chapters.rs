@@ -97,18 +97,24 @@ pub(crate) struct ChapterClaimsJson {
     claims: Vec<ChapterClaimJson>,
 }
 
-/// The Administrator behind `headers`, or the refusal.
+/// The Administrator behind `headers`, or the refusal. With `fixes`, the
+/// caller is about to change an edition's chapters, which an Owner can turn
+/// off for one Administrator (the "Fix the catalog" switch).
 async fn administrator(
     state: &AppState,
     headers: &HeaderMap,
+    fixes: bool,
 ) -> Result<Option<i64>, axum::response::ErrorResponse> {
-    crate::auth::library_administrator(state, headers)
+    let control = fixes.then_some(bookclerk_library::control_plane::AdminControl::FixCatalog);
+    crate::auth::library_administrator(state, headers, control)
         .await
         .map_err(|refusal| {
             refusal
                 .answer(|status| {
                     let message = if status == StatusCode::UNAUTHORIZED {
                         "sign in first"
+                    } else if status == StatusCode::INTERNAL_SERVER_ERROR {
+                        "your permissions could not be read"
                     } else {
                         "only an Administrator can change chapters"
                     };
@@ -313,7 +319,7 @@ pub(crate) async fn list_chapter_claims(
     AxumPath(id): AxumPath<String>,
 ) -> axum::response::Result<Json<ChapterClaimsJson>> {
     const ROUTE: &str = "GET /api/library/editions/{id}/chapters/claims";
-    administrator(&state, &headers).await?;
+    administrator(&state, &headers, false).await?;
     let library = state.library_snapshot().await;
     if library
         .work_of_edition(&id)
@@ -364,7 +370,7 @@ pub(crate) async fn put_edition_chapters(
     request: Request,
 ) -> axum::response::Result<Json<EditionChaptersJson>> {
     const ROUTE: &str = "PUT /api/library/editions/{id}/chapters";
-    let user_id = administrator(&state, &headers).await?;
+    let user_id = administrator(&state, &headers, true).await?;
     let body = json_bytes(request, MAX_CHAPTER_EDIT_BYTES).await?;
     let list = parse_chapter_edit_request(&body).map_err(|err| store_failed(ROUTE, err))?;
     let library = state.library_snapshot().await;
@@ -404,7 +410,7 @@ pub(crate) async fn delete_edition_chapters(
     AxumPath(id): AxumPath<String>,
 ) -> axum::response::Result<Json<EditionChaptersJson>> {
     const ROUTE: &str = "DELETE /api/library/editions/{id}/chapters";
-    let user_id = administrator(&state, &headers).await?;
+    let user_id = administrator(&state, &headers, true).await?;
     let library = state.library_snapshot().await;
     library
         .remove_chapter_edit(&id)
@@ -440,7 +446,7 @@ pub(crate) async fn put_chapter_pin(
     request: Request,
 ) -> axum::response::Result<Json<EditionChaptersJson>> {
     const ROUTE: &str = "PUT /api/library/editions/{id}/chapters/pin";
-    let user_id = administrator(&state, &headers).await?;
+    let user_id = administrator(&state, &headers, true).await?;
     let body = json_bytes(request, MAX_CHAPTER_PIN_BYTES).await?;
     let pin = parse_chapter_pin_request(&body).map_err(|err| store_failed(ROUTE, err))?;
     let library = state.library_snapshot().await;
@@ -477,7 +483,7 @@ pub(crate) async fn delete_chapter_pin(
     AxumPath(id): AxumPath<String>,
 ) -> axum::response::Result<Json<EditionChaptersJson>> {
     const ROUTE: &str = "DELETE /api/library/editions/{id}/chapters/pin";
-    let user_id = administrator(&state, &headers).await?;
+    let user_id = administrator(&state, &headers, true).await?;
     let library = state.library_snapshot().await;
     library
         .pin_chapter_claim(&id, None, user_id)
