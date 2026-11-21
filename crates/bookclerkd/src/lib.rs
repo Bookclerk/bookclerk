@@ -86,10 +86,12 @@ use bookclerk_config::{
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
 use crate::api::{
-    bind_listen_addrs, build_operator_auth, reload_daemon_config, resolve_ui_dist,
-    revert_listen_after_bind_failure, router, start_integration_watchers, validate_daemon_listen,
-    AppState,
+    bind_listen_addrs, build_operator_auth, resolve_ui_dist, revert_listen_after_bind_failure,
+    router, start_integration_watchers, validate_daemon_listen, AppState,
 };
+// Only the Unix SIGHUP handler reloads config from a signal.
+#[cfg(unix)]
+use crate::api::reload_daemon_config;
 use crate::event_worker::start_event_runtime;
 use crate::job_worker::start_job_runtime;
 use crate::scheduler::spawn_scheduler;
