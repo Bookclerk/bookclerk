@@ -25,6 +25,7 @@ use tokio::sync::{oneshot, Semaphore};
 
 use crate::error::{MediaError, Result};
 use crate::pool::{forward_worker_stderr, worker_env_allowed, Confinement, WorkerLaunch};
+use crate::worker_pipe::{ClearOnDrop, ThreadPipe};
 use crate::WORKER_ENFORCEMENT_ENV;
 
 /// First worker argument that selects the cover server.
@@ -313,6 +314,11 @@ fn spawn(launch: &WorkerLaunch, confinement: Confinement, threads: usize) -> Res
         .ok_or_else(|| worker_error("cover worker stdout unavailable".into()))?;
     let pending: Pending = Arc::default();
     let alive = Arc::new(AtomicBool::new(true));
+    // Read on a thread of our own: on Windows a pipe read on the runtime's
+    // blocking pool would keep that runtime from shutting down for as long
+    // as this long-lived worker runs.
+    let stdout = ThreadPipe::spawn("media-cover-replies".to_owned(), stdout)
+        .map_err(|err| worker_error(format!("could not read cover worker output: {err}")))?;
     tokio::spawn(read_replies(
         stdout,
         Arc::clone(&pending),
@@ -333,6 +339,9 @@ async fn read_replies(
     pending: Pending,
     alive: Arc<AtomicBool>,
 ) {
+    // Cancelled with its runtime, the worker has no reader left: mark it dead
+    // so the next read, on whichever runtime, starts a fresh one.
+    let _dead_when_done = ClearOnDrop(Arc::clone(&alive));
     let reason = loop {
         match read_reply(&mut stdout).await {
             Ok(reply) => {
