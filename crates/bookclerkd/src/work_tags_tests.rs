@@ -160,11 +160,9 @@ async fn the_patron_limits_switch_stops_an_administrator_tagging() {
     let (status, json) = call(
         &app,
         Some(&owner),
-        "PUT",
+        "PATCH",
         "/api/users/default-admin-controls",
-        Some(
-            r#"{"manage_members":true,"set_patron_limits":false,"library_scan":true,"run_jobs":true,"fix_catalog":true,"invite_branches":true,"approve_requests":true}"#,
-        ),
+        Some(r#"{"changes":{"set_patron_limits":false}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{json}");
