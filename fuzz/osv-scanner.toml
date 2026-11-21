@@ -1,0 +1,13 @@
+# OSV-Scanner config for fuzz/Cargo.lock. The scanner reads the config beside
+# each lockfile, so the root osv-scanner.toml does not cover this one. Keep
+# entries here to the root file's accepted exceptions that the fuzz graph
+# shares, with the same expiry; the root file holds the full reasoning.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-12-23
+reason = """
+INFO / unmaintained `paste` 1.0.15, a compile-time proc-macro pulled by `lofty`
+0.25 through `bookclerk-media`. Same exception, path and expiry as the root
+osv-scanner.toml entry; the fuzz harness is CI only and never shipped.
+"""
