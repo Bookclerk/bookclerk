@@ -786,6 +786,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
 `playback_progress`, `playback_sessions`, `bookmarks`,
+`player_passwords`, `player_cards`, `player_card_tokens`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
@@ -965,6 +966,14 @@ removed with its user (see [Playback reference](playback.md)):
 runtime and finished flag), `playback_sessions` (one row per stretch of
 listening, kept as history after it closes) and `bookmarks` (places a
 user marked). `listening_progress` stays what other servers reported.
+
+Player apps ([Player apps](player-apps.md)) sign in with player cards. A
+card is a `portal_sessions` row of kind `player`, so it is listed and
+signed out with the patron's other sessions. `player_cards` names the app
+and the player password that made the card, `player_card_tokens` holds the
+SHA-256 digests of its access and refresh tokens, and `player_passwords`
+holds the digests of the passwords patrons made for their apps. Removing a
+password removes its cards.
 
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at the key the

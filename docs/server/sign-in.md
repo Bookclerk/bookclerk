@@ -178,6 +178,7 @@ than the OS hint alone:
 | Operator cookie | `bookclerk_operator_session` (`Path=/`), also used by elevated Owners |
 | Portal cookie | `bookclerk_portal_session` (`Path=/`), the session of a first-party user |
 | Library card | A clerk's session, sent as `Authorization: Bookclerk-Clerk <token>`, never as a cookie (see [Library cards](#library-cards)) |
+| Player card | A player app's sign-in at `/player`, sent as `Authorization: Bearer <token>` or `?token=`, made from a player password or a browser approval, never the account password (see [Player apps](player-apps.md)) |
 | Config | `[daemon.auth]` |
 | Preferences | Stored in the database (`user_preferences`), not `config.toml` |
 
@@ -576,10 +577,13 @@ the store unlisted and logs why.
   Escape cancels.
 - **Security**: password, named passkeys, authenticator app, linked
   identity providers, and Owner elevation.
-- **Sessions**: browsers, desktop windows and library cards, each with
-  **Revoke**. A library card shows the name its clerk gave itself; a
-  desktop window shows **Desktop app on <computer>**, and revoking it signs
-  that window out at its next launch.
+- **Player apps**: player passwords for phone and car apps, each shown
+  once (see [Player apps](player-apps.md)).
+- **Sessions**: browsers, desktop windows, library cards and player apps,
+  each with **Revoke**. A library card shows the name its clerk gave
+  itself; a player app shows a **Player app** badge; a desktop window shows
+  **Desktop app on <computer>**, and revoking it signs that window out at
+  its next launch.
 
 Profile edits are self-service. Security and profile edits are hidden or
 disabled while impersonating.

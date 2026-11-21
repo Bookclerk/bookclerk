@@ -62,6 +62,7 @@ mod passkeys;
 mod patron_scopes;
 mod placement;
 mod playback;
+mod player;
 mod plugin_installs;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
@@ -218,12 +219,8 @@ fn init_logging(config: &Config, syslog_identifier: &str, role: ProcessRole) {
     } else {
         tracing::info!("OS log facility unavailable; logging to stderr only");
     }
-    if config.diagnostics.share_reports {
-        tracing::info!(
-            url = %config.diagnostics.effective_submit_url(),
-            "diagnostics.share_reports=true — redacted reports POST to Worker /submit (B2 via Cloudflare)"
-        );
-    }
+    // `bookclerk_config::logging` already logs whether reports are shared
+    // and where they go, once, when logging starts.
     start_usage_checkins(config, &logging.diagnostics, role);
     keep_logging(logging);
 }
