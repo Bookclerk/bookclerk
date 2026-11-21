@@ -233,6 +233,32 @@ fn resolve_workerd_binary() -> Result<PathBuf> {
     )
 }
 
+/// `workerd serve` arguments that point a Python isolate at the pinned Pyodide
+/// bundle beside the binary.
+///
+/// workerd would otherwise download the bundle on its own connection, which
+/// the jail does not give it; the bundle directory is a read-only cache.
+///
+/// # Errors
+///
+/// When the pinned bundle is not beside `workerd_bin` (run
+/// `cargo ensure-workerd`, or reinstall the platform package).
+fn pyodide_bundle_args(workerd_bin: &Path) -> Result<Vec<std::ffi::OsString>> {
+    let dir = bookclerk_workerd::pyodide_bundle_dir(workerd_bin)
+        .context("locate the Pyodide bundle directory beside workerd")?;
+    let bundle = dir.join(bookclerk_workerd::PYODIDE_BUNDLE_FILE);
+    if !bundle.is_file() {
+        bail!(
+            "Python plugins need the pinned Pyodide bundle at {}; run `cargo ensure-workerd` \
+             or reinstall the platform package",
+            bundle.display()
+        );
+    }
+    let mut arg = std::ffi::OsString::from("--pyodide-bundle-disk-cache-dir=");
+    arg.push(bookclerk_sandbox::create_process_path(&dir).as_os_str());
+    Ok(vec![arg])
+}
+
 /// Builds `workerd serve` after validating the binary and session argv paths.
 fn workerd_serve_command(
     workerd_bin: &Path,
@@ -338,12 +364,18 @@ async fn run_isolate(
     } else {
         python_snapshot::SnapshotPlan::default()
     };
+    let pyodide_args = if manifest.declares_python() {
+        pyodide_bundle_args(workerd_bin)?
+    } else {
+        Vec::new()
+    };
     let (mut child, rpc_addr) = snapshot_plan
         .start_in_order(|start| {
-            let (granted_addr, bridge_token, state_dir) = (
+            let (granted_addr, bridge_token, state_dir, pyodide_args) = (
                 granted_addr.as_str(),
                 bridge_token.as_str(),
                 state_dir.as_path(),
+                pyodide_args.as_slice(),
             );
             async move {
                 let (listen, known, rpc_listener) = bridge_rpc_socket(state_dir)?;
@@ -358,6 +390,7 @@ async fn run_isolate(
                     Some(state_dir),
                 )?;
                 let (mut cmd, spawn_bin) = workerd_serve_command(workerd_bin, &generated, root)?;
+                cmd.args(pyodide_args);
                 cmd.args(start.serve_args());
                 start_isolate(
                     &mut cmd,
