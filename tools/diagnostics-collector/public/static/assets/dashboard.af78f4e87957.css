@@ -400,6 +400,48 @@ select:focus-visible {
 .signin p {
   color: var(--ink-soft);
 }
+/* Public lookup page: each label sits above a full-width field, so the long
+   report ID and the access code never squeeze onto one line. */
+.lookup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lookup-form label {
+  font-weight: 600;
+}
+.lookup-form label + input {
+  margin-bottom: 10px;
+}
+.lookup-form input {
+  width: 100%;
+  font: 400 15px var(--font-mono);
+  padding: 10px 12px;
+}
+.lookup-form .button {
+  margin-top: 4px;
+}
+/* A command shown on its own line; one click selects all of it (the public
+   pages run no script, so there is no copy button). */
+.command {
+  margin: 0;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font: 400 14px/1.5 var(--font-mono);
+  user-select: all;
+  -webkit-user-select: all;
+}
+/* Under the sign-in card, for a report's sender who landed here by mistake. */
+.lookup-cta {
+  width: min(460px, 100%);
+  margin-top: 16px;
+  padding: 14px 28px;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
 .notice {
   border: 1px dashed var(--fold);
   border-radius: 8px;

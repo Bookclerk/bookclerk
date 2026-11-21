@@ -572,7 +572,9 @@ describe("routing", () => {
     assert.equal(home.status, 200);
     assert.match(home.headers.get("content-security-policy") ?? "", /default-src 'none'/);
     assert.equal(home.headers.get("cache-control"), "no-store");
-    assert.match(await home.text(), /Sign in with GitHub/);
+    const homePage = await home.text();
+    assert.match(homePage, /Sign in with GitHub/);
+    assert.match(homePage, /Looking to view your report\? <a href="\/lookup">/);
     for (const p of ["/dash", "/reports", "/issues", `/reports/${ID1}`]) {
       const res = await call(env, new Request(ORIGIN + p));
       assert.equal(res.status, 303, p);
