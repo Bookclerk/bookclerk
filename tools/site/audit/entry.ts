@@ -1,9 +1,10 @@
-// Worker entry point for the site audit (audit.ts). It is entry.ts with one
-// change: docs are read from a local server that audit.ts runs over this
+// Worker entry point for the site audit and the visual checks (serve.ts). It
+// is entry.ts with one change: docs are read from a local server that serve.ts runs over this
 // checkout's docs/, instead of from the docs repository, so the audit needs
 // no network and covers the docs as this commit has them. It also serves every
 // catalog card at CATALOG_CARDS_PATH, which the deployed Worker never does,
-// so the audit can lay out each record. Never deployed.
+// so the audit can lay out each record, and can fix the homepage's catalog
+// sample for screenshots (AUDIT_FIXED_SAMPLE). Never deployed.
 
 import shell from "../generated/docs-shell.json" with { type: "json" };
 import { DOCS_RAW_BASE, handle } from "../worker.ts";
@@ -15,8 +16,10 @@ const CATALOG_CARDS_PATH = "/__audit/catalog-cards";
 
 /** Bindings of the audit Worker. */
 interface AuditEnv extends Env {
-  /** Origin of audit.ts's local docs server. */
+  /** Origin of serve.ts's local docs server. */
   AUDIT_DOCS_ORIGIN: string;
+  /** `1` for the same homepage catalog sample on every request (serve.ts `--fixed-sample`). */
+  AUDIT_FIXED_SAMPLE?: string;
 }
 
 export default {
@@ -45,6 +48,13 @@ export default {
       return new Response(catalogRecords.map(catalogCard).join("\n"), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
-    return handle(request, env, { shell, fetch: docsFetch, cache: null });
+    // A constant source still picks four distinct groups (catalogSample).
+    const random = env.AUDIT_FIXED_SAMPLE === "1" ? () => 0 : undefined;
+    return handle(request, env, {
+      shell,
+      fetch: docsFetch,
+      cache: null,
+      ...(random === undefined ? {} : { random }),
+    });
   },
 } satisfies ExportedHandler<AuditEnv>;

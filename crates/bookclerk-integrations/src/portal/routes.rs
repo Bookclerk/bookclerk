@@ -349,7 +349,7 @@ async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Respons
     }
     let flags = {
         let cfg = state.config.read().await;
-        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+        session_cookie_flags(cfg.integrations.effective_public_origin())
     };
     let cookie = format!("{SESSION_COOKIE}=; {flags}; Max-Age=0");
     let mut out = HeaderMap::new();
@@ -1393,7 +1393,7 @@ async fn find_source(state: &PortalState, id_or_alias: &str) -> Option<Arc<dyn C
 async fn session_response(session: String, state: &PortalState) -> Response {
     let cfg = state.config.read().await;
     let max_age = cfg.integrations.portal_session_ttl_hours * 3600;
-    let flags = session_cookie_flags(cfg.integrations.public_origin.as_deref());
+    let flags = session_cookie_flags(cfg.integrations.effective_public_origin());
     // Path=/ so the SPA (and /api/portal) can share the session cookie.
     let cookie = format!("{SESSION_COOKIE}={session}; {flags}; Max-Age={max_age}");
     (

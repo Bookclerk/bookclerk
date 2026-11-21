@@ -9,8 +9,9 @@ use bookclerk_plugin_sdk::{
     Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
     LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginDescribe,
     PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    PurchaseHintResult, PurchaseHintsParams, RevokeAccountParams, ScalarLimits, ScanPage,
-    ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    PurchaseHintResult, PurchaseHintsParams, QualityOffersParams, QualityOffersResult,
+    RevokeAccountParams, ScalarLimits, ScanPage, ScanParams, SearchCatalogParams,
+    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_source_audible::catalog;
 use bookclerk_storefront::abi::{credentials_from_bytes, expand_seed_from_params};
@@ -45,12 +46,14 @@ impl PluginWorker for AudibleRoot {
             }),
             // Audible's catalog details take an ASIN, not an ISBN; its search
             // hits carry `rank_hint` instead. A price lookup by ASIN prices
-            // exactly that product, with no search.
+            // exactly that product, with no search. Quality offers come from
+            // the content metadata endpoint, which licenses nothing.
             catalog: CatalogCapabilities {
                 detail_by_isbn: false,
                 price_by_isbn: false,
                 price_by_asin: true,
                 detail_by_product_id: false,
+                quality_offers: true,
             },
             ..PluginDescribe::default()
         })
@@ -140,6 +143,20 @@ impl ContentSourceRole for AudibleContentSource {
         )
         .await
         .map_err(fetch_error)
+    }
+
+    async fn quality_offers(
+        &self,
+        params: QualityOffersParams,
+    ) -> Result<QualityOffersResult, PluginError> {
+        let creds = params.credentials.as_deref().ok_or_else(|| {
+            PluginError::invalid_params("qualityOffers requires host credentials")
+        })?;
+        let creds = credentials_from_bytes(creds)
+            .map_err(|e| PluginError::invalid_params(e.to_string()))?;
+        bookclerk_plugin_source_audible::guest_quality_offers(&creds, &params)
+            .await
+            .map_err(fetch_error)
     }
 
     async fn revoke_account(&self, params: RevokeAccountParams) -> Result<(), PluginError> {

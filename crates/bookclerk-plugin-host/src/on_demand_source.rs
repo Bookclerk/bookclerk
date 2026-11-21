@@ -82,6 +82,8 @@ struct Identity {
     answers_price_by_isbn: bool,
     /// Whether purchase hints price by exact ASIN.
     answers_price_by_asin: bool,
+    /// Whether the store answers quality offers.
+    answers_quality_offers: bool,
     /// The declared `[acquire]` pace.
     acquire_pace: bookclerk_library::pacing::AcquirePace,
 }
@@ -103,6 +105,7 @@ impl Identity {
             answers_catalog_detail_by_product_id: guest.answers_catalog_detail_by_product_id(),
             answers_price_by_isbn: guest.answers_price_by_isbn(),
             answers_price_by_asin: guest.answers_price_by_asin(),
+            answers_quality_offers: guest.answers_quality_offers(),
             acquire_pace: guest.acquire_pace(),
         }
     }
@@ -367,6 +370,23 @@ impl ContentSource for OnDemandSource {
 
     fn acquire_pace(&self) -> bookclerk_library::pacing::AcquirePace {
         self.identity.acquire_pace
+    }
+
+    fn answers_quality_offers(&self) -> bool {
+        self.identity.answers_quality_offers
+    }
+
+    async fn quality_offers(
+        &self,
+        scope: &SourceScope,
+        account_id: &str,
+        title_ids: &[String],
+        download: &bookclerk_source::DownloadOptions,
+    ) -> bookclerk_source::Result<Vec<Option<bookclerk_library::quality::StreamQuality>>> {
+        let (guest, _busy) = self.awake().await?;
+        guest
+            .quality_offers(scope, account_id, title_ids, download)
+            .await
     }
 
     async fn catalog_detail_by_isbn(

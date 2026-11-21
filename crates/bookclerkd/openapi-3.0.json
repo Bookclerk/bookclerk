@@ -9807,6 +9807,236 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
+    "/api/config/ingress": {
+      "get": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`GET /api/config/ingress`: the library's public address settings.",
+        "operationId": "get_ingress",
+        "responses": {
+          "200": {
+            "description": "The ingress settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngressStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      },
+      "post": {
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "`POST /api/config/ingress`: turns ingress on or off, sets what it exposes, or\naccepts a reported origin. The deployment reconciler then starts or\nstops the instance.",
+        "operationId": "post_ingress",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngressChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngressStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`activate` and `deactivate` were both set, or `activate` is neither an instance id nor a plugin key with an instance. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "no plugin instance for `cloudflare-relay`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Ingress can't be turned on yet: no Owner exists, or operator auth is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "no Owner account exists yet: claim the library on this machine first, so first-run setup is never public"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: activate: invalid type: integer `1`, expected a string at line 1 column 13"
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
     "/api/config/plugins": {
       "get": {
         "tags": [
@@ -15713,6 +15943,1095 @@
                 },
                 "example": {
                   "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/library/editions/{id}/chapters/claims": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Lists every source's chapter claim for an edition, with its chapters.",
+        "operationId": "list_chapter_claims",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Edition id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The claims, most recently changed first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChapterClaimsJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change chapters"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such edition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "edition 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/library/editions/{id}/chapters": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Reads the chapters an edition plays.",
+        "description": "The list comes from the claim the resolver chose: a pinned claim, else\nan Administrator's edit, else the best machine source (Bookclerk's own\naligned chapters first).",
+        "operationId": "get_edition_chapters",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Edition id (an `id` in a work's `editions`).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The chapters; an empty list with no source when the edition has none yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditionChaptersJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The session ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in again"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such edition, or one outside the caller's scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "edition 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      },
+      "put": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Sets an edition's chapters by hand.",
+        "description": "The edit is checked strictly: what is stored is exactly what was sent.\nIt wins over every machine source until it is removed or another claim\nis pinned. An empty list clears the chapters.",
+        "operationId": "put_edition_chapters",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Edition id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChapterEditBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The chapters the edition plays now (a pinned claim still wins over the edit).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditionChaptersJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not a chapter list, or a chapter breaks a rule. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "chapter 3 starts before chapter 2"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change chapters"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such edition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "edition 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 2 MiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 2097152 bytes"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as JSON. As `text/plain`, when the request did not declare a JSON body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "send the body with Content-Type: application/json"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `chapters` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The chapters could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "delete": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Removes an Administrator's chapter edit, so the edition plays the best\nremaining claim again.",
+        "operationId": "delete_edition_chapters",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Edition id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The chapters the edition plays now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditionChaptersJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change chapters"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such edition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "edition 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The edit could not be removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/library/editions/{id}/chapters/pin": {
+      "put": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Pins one claim, so the edition plays it whatever the others say.",
+        "description": "Pinning replaces any earlier pin on the edition's chapters.",
+        "operationId": "put_chapter_pin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Edition id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChapterPinBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The chapters the edition plays now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditionChaptersJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body does not name a claim. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "pin body: unknown variant `wizard`"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change chapters"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such edition, or it has no such claim.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "metadata claim listing:plugin:audible not found"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 1 KiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 1024 bytes"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as JSON. As `text/plain`, when the request did not declare a JSON body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "send the body with Content-Type: application/json"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `source_kind` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The pin could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "delete": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Removes the pin on an edition's chapters; the resolver chooses again.",
+        "operationId": "delete_chapter_pin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Edition id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The chapters the edition plays now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditionChaptersJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change chapters"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such edition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "edition 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The pin could not be removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be changed"
                 }
               }
             }
@@ -49204,39 +50523,179 @@
       },
       "Chapter": {
         "type": "object",
-        "description": "A chapter of a book.",
+        "description": "One chapter of a checked list.",
         "required": [
-          "id",
-          "start",
-          "end",
-          "title"
+          "title",
+          "start_ms",
+          "depth"
         ],
         "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The chapter's place, from 0.",
-            "example": 1,
-            "minimum": 0
-          },
-          "start": {
-            "type": "number",
-            "format": "double",
-            "description": "Where it starts, in seconds.",
-            "example": 0.0
-          },
-          "end": {
-            "type": "number",
-            "format": "double",
-            "description": "Where it ends, in seconds.",
-            "example": 600.0
-          },
           "title": {
             "type": "string",
-            "description": "Its title.",
-            "example": "The First"
+            "description": "Chapter title; never empty, at most 512 bytes, no control\ncharacters.",
+            "example": "Chapter 1: The Boy Who Lived"
+          },
+          "start_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Start, in milliseconds from the start of the edition's timeline.",
+            "example": 33000,
+            "minimum": 0
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Nesting depth; 0 for a top-level chapter, at most 7. A chapter at\ndepth n + 1 is nested under the nearest earlier chapter at depth n.",
+            "example": 0,
+            "minimum": 0
           }
         }
+      },
+      "ChapterClaimJson": {
+        "type": "object",
+        "description": "One source's chapter claim for an edition.",
+        "required": [
+          "source_kind",
+          "source_id",
+          "quality",
+          "digest",
+          "plays",
+          "updated_at"
+        ],
+        "properties": {
+          "source_kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChapterSourceKind"
+              }
+            ],
+            "description": "The kind of source."
+          },
+          "source_id": {
+            "type": "string",
+            "description": "Which source of that kind (a PluginKey; empty for an edit or for\nBookclerk's own processing).",
+            "example": "plugin:audnexus"
+          },
+          "quality": {
+            "type": "string",
+            "description": "Where a machine source ranks within its kind: `strong_accurate`,\n`strong_estimated` or `weak` for a provider, `chapters`, `tracks` or\n`unknown` for a store listing; empty otherwise.",
+            "example": "strong_accurate"
+          },
+          "digest": {
+            "type": "string",
+            "description": "SHA-256 of the claimed list, 64 lower-case hex characters.",
+            "example": "9f2c4e6a8b0d1f3e5a7c9b1d3f5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d0f"
+          },
+          "chapters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Chapter"
+            },
+            "description": "The claimed chapters; absent while the list's write is unfinished.",
+            "nullable": true
+          },
+          "runtime_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Length of the timeline the list was measured on, in milliseconds.",
+            "example": 41400000,
+            "minimum": 0,
+            "nullable": true
+          },
+          "input_digest": {
+            "type": "string",
+            "description": "For a processed claim, the digest of the provider list it was\naligned from.",
+            "example": "4b7d9f1a3c5e7b9d0f9f2c4e6a8b0d1f3e5a7c9b1d3f5e7a9c2b4d6f8e0a1c3e",
+            "nullable": true
+          },
+          "plays": {
+            "type": "boolean",
+            "description": "Whether the edition plays this claim now.",
+            "example": true
+          },
+          "pinned_at": {
+            "type": "string",
+            "description": "When an Administrator pinned it (RFC 3339); absent when unpinned.",
+            "example": "2026-11-20T19:30:00Z",
+            "nullable": true
+          },
+          "created_by_user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The person whose edit it is; absent for a machine source or the\noperator.",
+            "example": 2,
+            "nullable": true
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "When it last changed (RFC 3339).",
+            "example": "2026-11-20T19:30:00Z"
+          }
+        }
+      },
+      "ChapterClaimsJson": {
+        "type": "object",
+        "description": "Every chapter claim for an edition.",
+        "required": [
+          "claims"
+        ],
+        "properties": {
+          "claims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChapterClaimJson"
+            },
+            "description": "The claims, most recently changed first."
+          }
+        }
+      },
+      "ChapterEditBody": {
+        "type": "object",
+        "description": "`PUT /api/library/editions/{id}/chapters` body: the edition's chapters\nas an Administrator sets them, in pre-order. An empty list clears them.",
+        "required": [
+          "chapters"
+        ],
+        "properties": {
+          "chapters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChapterEditEntry"
+            },
+            "description": "The chapters, at most 2,000.",
+            "maxItems": 2000
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChapterEditEntry": {
+        "type": "object",
+        "description": "One chapter of an edit, as JSON carries it.",
+        "required": [
+          "title",
+          "start_ms"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Chapter title: 1 to 512 bytes, no control characters, no leading or\ntrailing white space.",
+            "example": "Chapter 1: The Boy Who Lived"
+          },
+          "start_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Start, in milliseconds from the start of the edition's timeline; no\nearlier than the chapter before it.",
+            "example": 33000,
+            "minimum": 0
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Nesting depth, 0 for a top-level chapter; at most one more than the\nchapter before it, and at most 7. Left out reads as 0.",
+            "example": 0,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "ChapterJsonMode": {
         "type": "string",
@@ -49248,6 +50707,43 @@
           "both"
         ],
         "example": "off"
+      },
+      "ChapterPinBody": {
+        "type": "object",
+        "description": "`PUT /api/library/editions/{id}/chapters/pin` body: the claim to pin.",
+        "required": [
+          "source_kind"
+        ],
+        "properties": {
+          "source_kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChapterSourceKind"
+              }
+            ],
+            "description": "The claim's source kind, as the claims list names it."
+          },
+          "source_id": {
+            "type": "string",
+            "description": "The claim's source id (a PluginKey; empty for an edit or for\nBookclerk's own processing). Left out reads as empty.",
+            "example": "plugin:audible",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChapterSourceKind": {
+        "type": "string",
+        "description": "The kind of source a chapter claim came from (`source_kind`).",
+        "enum": [
+          "person",
+          "outside_edit",
+          "processed",
+          "provider",
+          "listing",
+          "file",
+          "part_names"
+        ]
       },
       "ClerkAuthorizeParams": {
         "type": "object",
@@ -51399,6 +52895,57 @@
           }
         }
       },
+      "EditionChaptersJson": {
+        "type": "object",
+        "description": "The chapters an edition plays.",
+        "required": [
+          "edition_id",
+          "chapters"
+        ],
+        "properties": {
+          "edition_id": {
+            "type": "string",
+            "description": "The edition.",
+            "example": "6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b"
+          },
+          "chapters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Chapter"
+            },
+            "description": "The chapters in pre-order, starts never decreasing; empty when the\nedition has none or an Administrator cleared them."
+          },
+          "source_kind": {
+            "description": "The kind of source the chapters came from; absent when the edition\nhas no chapters yet.",
+            "type": "string",
+            "enum": [
+              "person",
+              "outside_edit",
+              "processed",
+              "provider",
+              "listing",
+              "file",
+              "part_names",
+              null
+            ],
+            "nullable": true
+          },
+          "source_id": {
+            "type": "string",
+            "description": "Which source of that kind (a PluginKey; empty for an edit or for\nBookclerk's own processing).",
+            "example": "",
+            "nullable": true
+          },
+          "runtime_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Length of the timeline the starts were measured on, in milliseconds.",
+            "example": 41400000,
+            "minimum": 0,
+            "nullable": true
+          }
+        }
+      },
       "EditionJson": {
         "type": "object",
         "description": "One edition of a work.",
@@ -52619,6 +54166,106 @@
               }
             ],
             "description": "The user the session now acts as."
+          }
+        }
+      },
+      "IngressChange": {
+        "type": "object",
+        "description": "`POST /api/config/ingress` body: each field is one change, applied in order\n(off or on, then exposure, then accepting a reported origin).",
+        "properties": {
+          "activate": {
+            "type": "string",
+            "description": "Makes this the library's active ingress: a plugin instance UUID, or a\nplugin key for that plugin's default instance.",
+            "example": "cloudflare-relay",
+            "nullable": true
+          },
+          "deactivate": {
+            "type": "boolean",
+            "description": "Turns ingress off; the adopted origin is kept.",
+            "example": false
+          },
+          "exposure": {
+            "description": "What public traffic may reach.",
+            "type": "string",
+            "enum": [
+              "branches",
+              "library",
+              null
+            ],
+            "nullable": true
+          },
+          "accept_reported_origin": {
+            "type": "boolean",
+            "description": "Adopts the origin the active instance reported. Renaming the library\nbreaks passkeys and sign-in redirects registered under the old name.",
+            "example": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "IngressExposure": {
+        "type": "string",
+        "description": "What public traffic from the ingress may reach.",
+        "enum": [
+          "branches",
+          "library"
+        ]
+      },
+      "IngressStatus": {
+        "type": "object",
+        "description": "`GET /api/config/ingress` and the answer to `POST /api/config/ingress`: the library's\ningress settings and what they mean now.",
+        "required": [
+          "exposure",
+          "operator_override"
+        ],
+        "properties": {
+          "active_instance": {
+            "type": "string",
+            "description": "The plugin instance serving the library's public address, as its\nUUID; `null` when ingress is off.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+            "nullable": true
+          },
+          "plugin_key": {
+            "type": "string",
+            "description": "The active instance's plugin, when the instance exists.",
+            "example": "cloudflare-relay",
+            "nullable": true
+          },
+          "exposure": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/IngressExposure"
+              }
+            ],
+            "description": "What public traffic may reach."
+          },
+          "origin": {
+            "type": "string",
+            "description": "The adopted public origin, kept while ingress is off.",
+            "example": "https://relay.example.workers.dev",
+            "nullable": true
+          },
+          "reported_origin": {
+            "type": "string",
+            "description": "A different origin the active instance reported, waiting for the\noperator to accept it.",
+            "example": "https://library.example.net",
+            "nullable": true
+          },
+          "public_origin": {
+            "type": "string",
+            "description": "The origin the library serves under now: `integrations.public_origin`\nwhen set, else the ingress origin while the instance runs.",
+            "example": "https://relay.example.workers.dev",
+            "nullable": true
+          },
+          "operator_override": {
+            "type": "boolean",
+            "description": "True when `integrations.public_origin` in `config.toml` overrides the\ningress origin.",
+            "example": false
+          },
+          "blocked": {
+            "type": "string",
+            "description": "Why ingress can't run now (no Owner yet, or operator auth off);\n`null` when it can.",
+            "example": null,
+            "nullable": true
           }
         }
       },

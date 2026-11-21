@@ -1223,7 +1223,7 @@ async fn persist_operator_session_cookie_with_client(
 ) -> String {
     let flags = {
         let cfg = state.config.read().await;
-        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+        session_cookie_flags(cfg.integrations.effective_public_origin())
     };
     persist_operator_session_cookie_with_flags(state, auth, client, &flags).await
 }
@@ -1418,7 +1418,7 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     }
     let flags = {
         let cfg = state.config.read().await;
-        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+        session_cookie_flags(cfg.integrations.effective_public_origin())
     };
     let mut hdrs = HeaderMap::new();
     for cookie in [
@@ -3008,7 +3008,7 @@ pub(crate) async fn issue_elevation(
         .await;
     let flags = {
         let cfg = state.config.read().await;
-        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+        session_cookie_flags(cfg.integrations.effective_public_origin())
     };
     let max_age = ELEVATION_TTL.as_secs();
     let cookie = format!("{SESSION_COOKIE}={session_id}; {flags}; Max-Age={max_age}");
@@ -3057,7 +3057,7 @@ pub(crate) async fn issue_portal_session(
         .await;
     let flags = {
         let cfg = state.config.read().await;
-        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+        session_cookie_flags(cfg.integrations.effective_public_origin())
     };
     let max_age = ttl_hours.saturating_mul(3600);
     let cookie = format!("{PORTAL_SESSION_COOKIE}={session_raw}; {flags}; Max-Age={max_age}");
@@ -3106,7 +3106,7 @@ pub async fn elevate_end(
         .await;
     let flags = {
         let cfg = state.config.read().await;
-        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+        session_cookie_flags(cfg.integrations.effective_public_origin())
     };
     Ok((
         StatusCode::OK,
@@ -3160,7 +3160,7 @@ pub async fn impersonate(
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let flags = {
                 let cfg = state.config.read().await;
-                session_cookie_flags(cfg.integrations.public_origin.as_deref())
+                session_cookie_flags(cfg.integrations.effective_public_origin())
             };
             let max_age = auth.session_ttl.as_secs();
             let cookie = format!("{SESSION_COOKIE}={session_id}; {flags}; Max-Age={max_age}");
@@ -3197,7 +3197,7 @@ pub async fn impersonate(
         let session_raw = session_for_identity(&library, &cfg.integrations, &identity)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let flags = session_cookie_flags(cfg.integrations.public_origin.as_deref());
+        let flags = session_cookie_flags(cfg.integrations.effective_public_origin());
         let max_age = cfg.integrations.portal_session_ttl_hours * 3600;
         let portal_cookie =
             format!("{PORTAL_SESSION_COOKIE}={session_raw}; {flags}; Max-Age={max_age}");
@@ -3277,7 +3277,7 @@ pub async fn impersonate_end(
         Some(cookie) => cookie,
         None => {
             let cfg = state.config.read().await;
-            let flags = session_cookie_flags(cfg.integrations.public_origin.as_deref());
+            let flags = session_cookie_flags(cfg.integrations.effective_public_origin());
             format!("{PORTAL_SESSION_COOKIE}=; {flags}; Max-Age=0")
         }
     };
@@ -3318,7 +3318,7 @@ async fn own_portal_cookie(
     let session_raw = session_for_identity(library, &cfg.integrations, &identity)
         .await
         .ok()?;
-    let flags = session_cookie_flags(cfg.integrations.public_origin.as_deref());
+    let flags = session_cookie_flags(cfg.integrations.effective_public_origin());
     let max_age = cfg.integrations.portal_session_ttl_hours * 3600;
     Some(format!(
         "{PORTAL_SESSION_COOKIE}={session_raw}; {flags}; Max-Age={max_age}"
@@ -3791,7 +3791,7 @@ pub async fn delete_user(
             if is_self {
                 let flags = {
                     let cfg = state.config.read().await;
-                    session_cookie_flags(cfg.integrations.public_origin.as_deref())
+                    session_cookie_flags(cfg.integrations.effective_public_origin())
                 };
                 let clear = format!("{PORTAL_SESSION_COOKIE}=; {flags}; Max-Age=0");
                 if let Ok(v) = HeaderValue::from_str(&clear) {

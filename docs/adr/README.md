@@ -42,6 +42,9 @@ a later change supersedes one, its **Status** says so.
 - [Metadata claims and file sync](metadata-claims-and-file-sync.md): every
   value is a claim with its source, one resolver decides, works are grouped
   by evidence, and tags and sidecar files sync both ways.
+- [Edition chapters](edition-chapters.md): chapters belong to the
+  edition, each source's list is a claim, and Bookclerk's aligned result
+  wins unless an Administrator edits or pins.
 - [Patron scopes and linked sign-in](patron-scopes.md): which part of the
   library a Member sees, and how a linked server's permissions and
   suspensions follow one authority.

@@ -154,6 +154,12 @@ impl std::str::FromStr for KeyStoreKind {
     }
 }
 
+/// Default for [`LibraryConfig::upgrade_daily_limit`].
+pub const DEFAULT_UPGRADE_DAILY_LIMIT: u32 = 5;
+
+/// Highest [`LibraryConfig::upgrade_daily_limit`] the settings accept.
+pub const MAX_UPGRADE_DAILY_LIMIT: u32 = 100;
+
 /// Library / scan related settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -180,6 +186,14 @@ pub struct LibraryConfig {
     /// accompanying sidecars) onto the configured naming-profile layout.
     /// Default false — match in place without moving files.
     pub fix_storage_layout: bool,
+    /// Once a day, ask each store that answers quality offers whether an
+    /// account would now download a better file than the one the library
+    /// holds, and download it again when it would (`bookclerkd`). Off by
+    /// default.
+    pub upgrade_quality: bool,
+    /// Most quality upgrades queued per store account per day (at least
+    /// 1); each download also waits for the account's pace.
+    pub upgrade_daily_limit: u32,
 }
 
 /// Discovery / recommendations / embeddings settings.
@@ -244,6 +258,8 @@ impl Default for LibraryConfig {
             enrich_from_audible: true,
             enrich_min_confidence: 90,
             fix_storage_layout: false,
+            upgrade_quality: false,
+            upgrade_daily_limit: DEFAULT_UPGRADE_DAILY_LIMIT,
         }
     }
 }
@@ -322,6 +338,10 @@ pub enum NodeApiMode {
     /// The built-in TLS listener with a self-signed certificate whose SPKI
     /// pin travels in enrollment links.
     SelfSigned,
+    /// The library's active relay ingress plugin carries public traffic
+    /// through its `ORIGIN` binding; branches verify the relay's edge
+    /// certificate against the webpki roots.
+    Tunnel,
 }
 
 impl NodeApiMode {
@@ -333,6 +353,7 @@ impl NodeApiMode {
             Self::Proxy => "proxy",
             Self::Acme => "acme",
             Self::SelfSigned => "self_signed",
+            Self::Tunnel => "tunnel",
         }
     }
 }
@@ -450,7 +471,9 @@ impl NodeApiConfig {
             )),
         };
         match self.mode {
-            NodeApiMode::Loopback => Ok(()),
+            // The relay plugin reports the public origin; no listener or
+            // proxy to configure here.
+            NodeApiMode::Loopback | NodeApiMode::Tunnel => Ok(()),
             NodeApiMode::Proxy => {
                 if trusted_proxies.iter().all(|entry| entry.trim().is_empty()) {
                     return Err(

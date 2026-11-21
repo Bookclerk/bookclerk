@@ -32,6 +32,7 @@ mod documents;
 mod enrollment;
 mod identity;
 mod ingest;
+mod ingress;
 mod instance_config;
 mod instances;
 mod intake;
@@ -199,6 +200,11 @@ pub use ingest::{
     IngestState, IntakeRef, ManifestError, ManifestFile, MemberOutcome, MemberSpec, OutcomeUpdate,
     ReviewItem, Sha256Hex, UploadManifest, UploadQuota, MAX_BATCH_FILES, MAX_INTAKE_REF_BYTES,
     MAX_REASON_BYTES,
+};
+pub use ingress::{
+    accept_reported_origin, activate_ingress, deactivate_ingress, ingress_settings,
+    load_ingress_settings, record_started, set_ingress_exposure, IngressExposure, IngressSettings,
+    OriginReport, INGRESS_NAMESPACE, INGRESS_SCHEMA_VERSION,
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,

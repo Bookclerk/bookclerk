@@ -37,6 +37,7 @@ These options work with every command. Some commands have their own option of th
 - [`bookclerk daemon`](#bookclerk-daemon): Talk to a running bookclerkd control plane
 - [`bookclerk events`](#bookclerk-events): Durable domain-event outbox and deliveries
 - [`bookclerk libraries`](#bookclerk-libraries): Owner libraries this install hosts for, and consent to their plugins
+- [`bookclerk ingress`](#bookclerk-ingress): The library's public address from an ingress plugin
 - [`bookclerk nodes`](#bookclerk-nodes): Library nodes: liveness, capacity, budgets, and placement labels
 - [`bookclerk users`](#bookclerk-users): The library's people: patron scopes, member controls and Administrator switches
 - [`bookclerk queues`](#bookclerk-queues): Plugin-owned queues on the outbox: counters, consumers, messages
@@ -1956,6 +1957,70 @@ Arguments:
 Options:
 
 - `--library <LIBRARY>`: Library id (default: the only enrolled library)
+
+## `bookclerk ingress`
+
+The library's public address from an ingress plugin
+
+```text
+bookclerk ingress [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk ingress status`](#bookclerk-ingress-status): Show the active ingress, what it exposes and the public origin
+- [`bookclerk ingress activate`](#bookclerk-ingress-activate): Make a plugin instance the library's active ingress. Needs an Owner account and operator auth on
+- [`bookclerk ingress deactivate`](#bookclerk-ingress-deactivate): Turn ingress off. The adopted origin is kept for next time
+- [`bookclerk ingress exposure`](#bookclerk-ingress-exposure): Choose what public traffic may reach
+- [`bookclerk ingress accept-origin`](#bookclerk-ingress-accept-origin): Adopt the new origin the active ingress reported. Passkeys and sign-in redirects registered under the old name stop working
+
+### `bookclerk ingress status`
+
+Show the active ingress, what it exposes and the public origin
+
+```text
+bookclerk ingress status [OPTIONS]
+```
+
+### `bookclerk ingress activate`
+
+Make a plugin instance the library's active ingress. Needs an Owner account and operator auth on
+
+```text
+bookclerk ingress activate [OPTIONS] <PLUGIN>
+```
+
+Arguments:
+
+- `<PLUGIN>`: A plugin instance UUID, or a plugin key for its default instance
+
+### `bookclerk ingress deactivate`
+
+Turn ingress off. The adopted origin is kept for next time
+
+```text
+bookclerk ingress deactivate [OPTIONS]
+```
+
+### `bookclerk ingress exposure`
+
+Choose what public traffic may reach
+
+```text
+bookclerk ingress exposure [OPTIONS] <EXPOSURE>
+```
+
+Arguments:
+
+- `<EXPOSURE>`: `branches` (the default) or `library` (one of `branches`, `library`)
+
+### `bookclerk ingress accept-origin`
+
+Adopt the new origin the active ingress reported. Passkeys and sign-in redirects registered under the old name stop working
+
+```text
+bookclerk ingress accept-origin [OPTIONS]
+```
 
 ## `bookclerk nodes`
 

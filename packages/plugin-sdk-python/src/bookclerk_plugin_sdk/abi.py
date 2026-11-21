@@ -123,6 +123,9 @@ a guest sets this only when a credit departs from it.
 FetchedFileRole = Literal["unspecified", "part", "whole", "cover"]
 """What one fetched file is to the edition it belongs to."""
 
+ChapterKind = Literal["unknown", "chapters", "tracks"]
+"""What a storefront's chapter markers mark (`PlainFetch.chapterKind`)."""
+
 CatalogSort = Literal["relevance", "popularity", "rating", "title", "author"]
 """Catalog search ordering."""
 
@@ -139,6 +142,24 @@ Explicitness = Literal["unknown", "clean", "explicit"]
 """Whether an edition is marked as explicit (adult) content. A patron scope
 can hide explicit editions; `unknown` and `clean` editions stay visible.
 """
+
+OfferedCodec = Literal[
+    "unknown",
+    "aac",
+    "alac",
+    "flac",
+    "mp3",
+    "opus",
+    "vorbis",
+    "eac3",
+    "ac4",
+]
+"""Audio codec of a stream a store offers (`QualityOffer.codec`). Spelled as
+the host's probed codecs are, so an offer compares with a held file.
+"""
+
+OfferedAacProfile = Literal["unknown", "lc", "he", "heV2", "xhe"]
+"""AAC profile of an offered AAC stream (`QualityOffer.aacProfile`)."""
 
 MetadataField = Literal[
     "title",
@@ -3018,6 +3039,20 @@ class ContentSource(Protocol):
         """
         ...
 
+    async def quality_offers(self, params: QualityOffersParams) -> QualityOffersReply:
+        """The audio quality one account would download for each of several
+        titles today, so the host can tell when a better file than the one it
+        holds is on offer. Asked only of guests that declare
+        `CatalogCapabilities.qualityOffers`; it must not license or download.
+
+        Args:
+            params: Account, credentials, and title ids.
+
+        Returns:
+            ``QualityOffersReply``
+        """
+        ...
+
 
 class RemoteLibrary(Protocol):
     """`remoteLibrary` entrypoint: long-running remote-library lifecycle (start /
@@ -3390,12 +3425,16 @@ class CatalogCapabilities(TypedDict):
             result rows it listed itself, and title dialogs ask it for the editions it
             listed. A store that leaves it false is never woken for a detail lookup by
             product id.
+        qualityOffers: True when `qualityOffers` answers which audio quality an account
+            would download for a title. The host's quality-upgrade check asks only
+            stores that declare it.
     """
 
     detailByIsbn: bool
     priceByIsbn: bool
     priceByAsin: bool
     detailByProductId: bool
+    qualityOffers: bool
 
 
 class Brand(TypedDict):
@@ -4219,6 +4258,8 @@ class PlainFetch(TypedDict):
         refreshedCredentials: The account's credentials as the guest holds them after
             refreshing them during the fetch, as in `ScanPage.refreshedCredentials`.
             Empty when nothing changed. Omitted when absent (wire zero value).
+        chapterKind: What `chapters` marks. The host ranks literary chapters above track
+            boundaries when it decides an edition's chapters.
     """
 
     mediaKind: MediaKind
@@ -4226,6 +4267,7 @@ class PlainFetch(TypedDict):
     chapters: list[ChapterMarker]
     pdfUrl: NotRequired[str]
     refreshedCredentials: NotRequired[bytes]
+    chapterKind: ChapterKind
 
 
 class FetchTitleReplyOk(TypedDict):
@@ -4750,6 +4792,113 @@ PurchaseHintsReply = Union[
 ]
 """Result union of `ContentSource.purchaseHints`. A whole-batch `err` (for
 example `rateLimited`) applies to every query in it.
+"""
+
+
+class QualityOffer(TypedDict):
+    """The stream one account would download for a title today.
+
+    Attributes:
+        codec: Codec of the offered stream.
+        aacProfile: AAC profile when `codec` is `aac`; `unknown` otherwise.
+        bitrateKbps: Average bitrate in kbit/s; zero when unknown. Omitted when absent
+            (wire zero value).
+        sampleRateHz: Sample rate in Hz; zero when unknown. Omitted when absent (wire
+            zero value).
+        channels: Channel count; zero when unknown. Omitted when absent (wire zero
+            value).
+    """
+
+    codec: OfferedCodec
+    aacProfile: OfferedAacProfile
+    bitrateKbps: NotRequired[int]
+    sampleRateHz: NotRequired[int]
+    channels: NotRequired[int]
+
+
+class QualityOffersParams(TypedDict):
+    """Params of `ContentSource.qualityOffers`: the titles one account holds.
+
+    Attributes:
+        accountId: Account whose download would be made.
+        credentials: Decrypted credential blob for this account; never log it. Empty
+            when none is stored. Omitted when absent (wire zero value).
+        sourceConfig: The instance's settings as `application/json` (bitrate tier and
+            the like, which change what a download gets).
+        titleIds: Store product ids, as the account's scan listed them; at most
+            `maxListPage`.
+        fetch: The fetch options a download would carry (DRM path, xHE-AAC), so the
+            answer names what that download would get.
+    """
+
+    accountId: str
+    credentials: NotRequired[bytes]
+    sourceConfig: ExtensibleConfig
+    titleIds: list[str]
+    fetch: FetchOptions
+
+
+class TitleQualityOffer(TypedDict):
+    """One title's answer in `QualityOffersResult`.
+
+    Attributes:
+        found: False when the store could not say for this title (`offer` is empty).
+        offer: What a download would get, when `found`.
+    """
+
+    found: bool
+    offer: QualityOffer
+
+
+class QualityOffersResult(TypedDict):
+    """Success payload of `ContentSource.qualityOffers`.
+
+    Attributes:
+        offers: One answer per title id, in the order they were sent. A short list
+            leaves the rest unanswered.
+        refreshedCredentials: The account's credentials as the guest holds them after
+            refreshing them during the call, as in `ScanPage.refreshedCredentials`.
+            Empty when nothing changed. Omitted when absent (wire zero value).
+    """
+
+    offers: list[TitleQualityOffer]
+    refreshedCredentials: NotRequired[bytes]
+
+
+class QualityOffersReplyOk(TypedDict):
+    """``QualityOffersReply`` member ``ok``.
+
+    Success: an answer per title.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: an answer per title.
+    """
+
+    kind: Literal["ok"]
+    value: QualityOffersResult
+
+
+class QualityOffersReplyErr(TypedDict):
+    """``QualityOffersReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+QualityOffersReply = Union[
+    QualityOffersReplyOk,
+    QualityOffersReplyErr,
+]
+"""Result union of `ContentSource.qualityOffers`. A whole-batch `err` (for
+example `rateLimited`) applies to every title in it.
 """
 
 
@@ -8049,11 +8198,14 @@ __all__ = [
     "CreditRole",
     "CreditLevel",
     "FetchedFileRole",
+    "ChapterKind",
     "CatalogSort",
     "CatalogField",
     "PriceLookup",
     "Abridgement",
     "Explicitness",
+    "OfferedCodec",
+    "OfferedAacProfile",
     "MetadataField",
     "NotificationSeverity",
     "NotificationAudience",
@@ -8316,6 +8468,13 @@ __all__ = [
     "PurchaseHintsReplyOk",
     "PurchaseHintsReplyErr",
     "PurchaseHintsReply",
+    "QualityOffer",
+    "QualityOffersParams",
+    "TitleQualityOffer",
+    "QualityOffersResult",
+    "QualityOffersReplyOk",
+    "QualityOffersReplyErr",
+    "QualityOffersReply",
     "ScanLibraryParams",
     "AuthenticateUserParams",
     "ExternalUser",

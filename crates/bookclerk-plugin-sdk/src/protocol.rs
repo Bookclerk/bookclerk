@@ -18,16 +18,17 @@
 pub use bookclerk_plugin_abi::{
     Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogCapabilities,
     CatalogDetail, CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort,
-    ChapterMarker, CliArg, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams,
+    ChapterKind, ChapterMarker, CliArg, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams,
     CliInvokeResult, CliSchema, ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole,
     EventPollResult, ExpandCandidatesParams, Explicitness, ExpressionKind, ExternalUser,
     FetchOptions, FetchTitleParams, FetchedFile, FetchedFileRole, Identifier, IdentifierScheme,
     ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
-    LoginStartResult, MediaKind, MediaSupport, OutputLocalContextDto, OutputS3ContextDto,
-    PlainFetch, PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
-    PurchaseHintsParams, PurchaseHintsResult, RevokeAccountParams, S3CredentialsDto, ScanBook,
+    LoginStartResult, MediaKind, MediaSupport, OfferedAacProfile, OfferedCodec,
+    OutputLocalContextDto, OutputS3ContextDto, PlainFetch, PortalAuthMode, PurchaseHint,
+    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, PurchaseHintsResult, QualityOffer,
+    QualityOffersParams, QualityOffersResult, RevokeAccountParams, S3CredentialsDto, ScanBook,
     ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams, SeriesEntry, SourceAccount,
-    SourceAccounts, SyncListeningResult, WorkKind,
+    SourceAccounts, SyncListeningResult, TitleQualityOffer, WorkKind,
 };
 
 /// Logical ABI identifier for diagnostics (not a `plugin.toml` field).

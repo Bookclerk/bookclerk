@@ -41,6 +41,7 @@ pub mod operator_token;
 pub mod pacing;
 pub mod password;
 pub mod proxy_txn;
+pub mod quality;
 mod schema_state;
 mod schema_walk;
 pub mod scope;
@@ -197,6 +198,17 @@ pub use store::{
         CatalogListing, CatalogListingRecord, ListingDetail, ListingOffer, OfferAudience,
         RecordedListings, CATALOG_LISTING_REFRESH,
     },
+    chapters::{
+        resolve_chapters, Chapter, ChapterCheck, ChapterClaim, ChapterClaimWrite, ChapterDigest,
+        ChapterInput, ChapterList, ChapterSource, ChapterSourceKind, ChaptersOutcome, ClaimQuality,
+        EditionChapters, MarkerKind, ProviderQuality, MAX_CHAPTERS, MAX_CHAPTER_DEPTH,
+        MAX_CHAPTER_START_MS, MAX_CHAPTER_TITLE_BYTES,
+    },
+    chapters_request::{
+        parse_chapter_edit_request, parse_chapter_pin_request, ChapterEditBody, ChapterEditEntry,
+        ChapterPinBody, ChapterPinRequest, MAX_CHAPTER_EDIT_BYTES, MAX_CHAPTER_PIN_BYTES,
+        MAX_CHAPTER_SOURCE_ID_BYTES,
+    },
     copy_retry_delay,
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,
@@ -235,7 +247,9 @@ pub use store::{
         RecordPruneStep, AUDIT_RETENTION_DAYS, CONFIGURATION_CHANGE_RETENTION_DAYS,
         STORAGE_SCAN_STALE_DAYS, TOKEN_HISTORY_DAYS, UPLOAD_HISTORY_DAYS,
     },
-    scan_state::{plan_pass, PassStart, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL},
+    scan_state::{
+        plan_pass, PassStart, QualityCheckState, ScanState, FULL_PASS_INTERVAL, RESUME_CURSOR_TTL,
+    },
     search_feed::ListingRef,
     set_dispatch_chunk_for_test,
     user_title_state::{FieldEdit, UserStateEdit},

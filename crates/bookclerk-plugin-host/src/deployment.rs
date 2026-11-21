@@ -866,6 +866,14 @@ pub struct LiveDeploymentRuntime {
     storefront_idle: std::time::Duration,
     /// Idle time after which an on-demand storage guest is stopped.
     storage_idle: std::time::Duration,
+    /// What the daemon supplies to run the library's ingress; `None` never
+    /// spawns an ingress plugin.
+    ingress_host: std::sync::Mutex<Option<Arc<dyn crate::IngressHost>>>,
+    /// Running ingress guests keyed by plugin instance id (at most one while
+    /// the settings are consistent).
+    ingress: std::sync::Mutex<HashMap<String, Arc<crate::ingress::IngressGuest>>>,
+    /// How often a running ingress is asked whether it is serving.
+    ingress_health_interval: std::time::Duration,
 }
 
 impl LiveDeploymentRuntime {
@@ -892,7 +900,64 @@ impl LiveDeploymentRuntime {
             on_demand_idle: crate::TRIGGER_IDLE_TIMEOUT,
             storefront_idle: crate::STOREFRONT_IDLE_TIMEOUT,
             storage_idle: crate::STORAGE_IDLE_TIMEOUT,
+            ingress_host: std::sync::Mutex::new(None),
+            ingress: std::sync::Mutex::new(HashMap::new()),
+            ingress_health_interval: crate::INGRESS_HEALTH_INTERVAL,
         }
+    }
+
+    /// Stores what the daemon supplies to run the library's ingress. Until
+    /// it is set, ingress plugins are not spawned.
+    pub fn set_ingress_host(&self, host: Arc<dyn crate::IngressHost>) {
+        *self
+            .ingress_host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(host);
+    }
+
+    /// The daemon's ingress host, when set.
+    fn ingress_host(&self) -> Option<Arc<dyn crate::IngressHost>> {
+        self.ingress_host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Asks the ingress guest serving `plugin_instance_id`, if any, to stop,
+    /// and forgets it.
+    async fn stop_ingress(&self, plugin_instance_id: &str) {
+        let guest = self
+            .ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(plugin_instance_id);
+        if let Some(guest) = guest {
+            guest.stop(self.ingress_host().as_ref()).await;
+        }
+    }
+
+    /// True when an ingress guest runs for `plugin_instance_id` but the
+    /// daemon no longer admits it (another instance became active, or
+    /// ingress was turned off); that guest is stopped.
+    pub(crate) async fn ingress_withdrawn(&self, plugin_instance_id: &str) -> bool {
+        let running = self
+            .ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(plugin_instance_id);
+        if !running {
+            return false;
+        }
+        let admitted = match self.ingress_host() {
+            Some(host) => host.admit(plugin_instance_id).await.is_ok(),
+            None => false,
+        };
+        if admitted {
+            return false;
+        }
+        self.stop_ingress(plugin_instance_id).await;
+        self.forget_guest(plugin_instance_id).await;
+        true
     }
 
     /// Shortens the on-demand idle timeout so tests see a guest sleep.
@@ -957,6 +1022,7 @@ impl LiveDeploymentRuntime {
     /// only the source leaves an integration claiming events or a destination
     /// still accepting writes. Other instances of the same plugin key stay.
     pub async fn retire_plugin_instance(&self, plugin_instance_id: &str) {
+        self.stop_ingress(plugin_instance_id).await;
         let retired = self
             .integrations
             .write()
@@ -1247,6 +1313,9 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
         {
             return spawn_integration(self, &plugin, &config, services, request, prepared).await;
         }
+        if plugin.manifest.has_entrypoint(crate::Entrypoint::Ingress) {
+            return spawn_ingress(self, &plugin, &config, services, request, prepared).await;
+        }
         if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage) {
             return spawn_storage(self, &plugin, &config, &store, request, prepared).await;
         }
@@ -1264,6 +1333,9 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
     }
 
     async fn guest_still_running(&self, plugin_instance_id: &str) -> bool {
+        if self.ingress_withdrawn(plugin_instance_id).await {
+            return false;
+        }
         self.guests
             .lock()
             .expect("deployment guests")
@@ -1536,6 +1608,121 @@ async fn spawn_integration(
             detail: err.to_string(),
         },
     }
+}
+
+/// Spawns the library's active ingress: refuses an instance the daemon does
+/// not admit, hands a relay `ORIGIN`, then runs health and `start` and
+/// reports the origin. The guest stays resident; any guest it replaces is
+/// asked to stop first, so two relays never hold the same address.
+async fn spawn_ingress(
+    runtime: &LiveDeploymentRuntime,
+    plugin: &crate::DiscoveredPlugin,
+    config: &Config,
+    services: crate::SessionServices,
+    request: &DeploymentSpawn,
+    prepared: crate::PreparedOpen,
+) -> SpawnHealth {
+    let instance = request.plugin_instance_id.as_str();
+    let Some(host) = runtime.ingress_host() else {
+        return SpawnHealth::SpawnFailed {
+            detail: "this host does not run ingress plugins".into(),
+        };
+    };
+    // Whatever serves this instance now stops first: it is either replaced
+    // below or no longer admitted.
+    runtime.stop_ingress(instance).await;
+    runtime.forget_guest(instance).await;
+    if let Err(detail) = host.admit(instance).await {
+        return SpawnHealth::SpawnFailed { detail };
+    }
+    let mut services = services;
+    if plugin.manifest.sockets.is_some() {
+        services.sockets = Some(crate::SocketBroker::new(plugin.clone(), config.clone()));
+    }
+    // `connect_spawned` drops it again unless the manifest is a relay.
+    services.origin = Some(host.origin());
+    let broker = services.sockets.clone();
+    let opened_config = prepared.bindings.config.clone();
+    let opened_secrets = prepared.bindings.secrets.clone();
+    let session = match crate::PluginSession::spawn_with(
+        plugin,
+        config,
+        prepared.spawn_config_table.clone(),
+        crate::HOST_SHARED_ACCOUNT,
+        &[],
+        services,
+    )
+    .await
+    {
+        Ok(session) => Arc::new(session),
+        Err(err) => {
+            return SpawnHealth::SpawnFailed {
+                detail: err.to_string(),
+            }
+        }
+    };
+    if let Err(err) = session.open(prepared.bindings).await {
+        return SpawnHealth::SpawnFailed {
+            detail: err.to_string(),
+        };
+    }
+    let guest = Arc::new(crate::ingress::IngressGuest::new(
+        Arc::clone(&session) as Arc<dyn crate::ingress::IngressSession>,
+        instance,
+    ));
+    if let Some(broker) = &broker {
+        let sink: Arc<dyn crate::SocketSink> = guest.clone();
+        broker.set_sink(Arc::downgrade(&sink));
+    }
+    if let Err(health) = serve_ingress(runtime, &host, guest, instance).await {
+        return health;
+    }
+    runtime
+        .remember(
+            instance,
+            TrackedGuest {
+                process: GuestProcess::Resident(session),
+                root: request.plugin_root.clone(),
+                config: opened_config,
+                secrets: opened_secrets,
+            },
+        )
+        .await;
+    SpawnHealth::Healthy
+}
+
+/// Brings a spawned ingress guest up: health, then `start`, then the
+/// daemon's acceptance of the origin it reports. A refused origin stops the
+/// guest. On success the guest is watched and tracked as the instance's
+/// ingress.
+///
+/// # Errors
+///
+/// The deployment observation for the step that failed.
+pub(crate) async fn serve_ingress(
+    runtime: &LiveDeploymentRuntime,
+    host: &Arc<dyn crate::IngressHost>,
+    guest: Arc<crate::ingress::IngressGuest>,
+    instance: &str,
+) -> std::result::Result<(), SpawnHealth> {
+    if let Err(detail) = guest.health().await {
+        return Err(SpawnHealth::HealthFailed { detail });
+    }
+    let started = guest
+        .start()
+        .await
+        .map_err(|detail| SpawnHealth::HealthFailed { detail })?;
+    if let Err(detail) = host.started(instance, started).await {
+        guest.stop(Some(host)).await;
+        return Err(SpawnHealth::HealthFailed { detail });
+    }
+    guest.watch_health(runtime.ingress_health_interval);
+    runtime
+        .ingress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(instance.to_string(), guest);
+    Ok(())
 }
 
 /// Everything a woken on-demand integration needs to start again exactly as

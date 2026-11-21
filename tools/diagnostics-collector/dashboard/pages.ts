@@ -669,7 +669,7 @@ export function overviewPage(d: OverviewData): SafeHtml {
           <form method="post" action="/admin/sign-out-all"><button class="button small danger" type="submit">Sign out everyone</button></form>
           <span class="fine">${d.reindexNote}</span>
         </div>
-        <div class="tbl"><table><thead><tr><th>Time (UTC)</th><th>Member</th><th>Action</th><th>Report</th></tr></thead><tbody>${d.access.map(
+        <div class="tbl" tabindex="0"><table><thead><tr><th>Time (UTC)</th><th>Member</th><th>Action</th><th>Report</th></tr></thead><tbody>${d.access.map(
           (a) =>
             html`<tr><td class="num">${fmtTime(a.at)}</td><td>${a.login}</td><td>${a.action}</td><td>${a.report_id ? html`<a class="mono" href="/reports/${a.report_id}">${String(a.report_id).slice(0, 8)}</a>` : ""}</td></tr>`,
         )}</tbody></table></div></section>`
@@ -691,21 +691,21 @@ export function overviewPage(d: OverviewData): SafeHtml {
 
         <section class="panel s8"><h2>Reports per ${range.bucket < 86_400_000 ? "hour" : "day"}, by trigger <span class="legend">${series.map((s) => html`<span><i class="${s.cls}"></i>${s.key}</span>`)}</span></h2>
           ${stackedBars(buckets(d.now, range, byBucket), series.length ? series : TRIGGER_SERIES.slice(0, 1), "Stacked bars of reports per time bucket by trigger")}</section>
-        <section class="panel s4"><h2>Platforms</h2><div class="tbl"><table><thead><tr><th>OS / arch</th><th class="r">Reports</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.platforms.map(
+        <section class="panel s4"><h2>Platforms</h2><div class="tbl" tabindex="0"><table><thead><tr><th>OS / arch</th><th class="r">Reports</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.platforms.map(
           (p) =>
             html`<tr><td>${String(p.key).trim() || "unknown"}</td><td class="r num">${fmtInt(p.n)}</td><td class="bar-cell">${meter(Number(p.n) / platMax)}</td></tr>`,
         )}</tbody></table></div></section>
 
-        <section class="panel s7"><h2>Top error signatures <a href="/reports?range=${d.rangeId}${sourceParam}">Explore</a></h2><div class="tbl"><table><thead><tr><th>Signature</th><th class="r">${range.label}</th><th>Trend</th><th>Tracked by</th></tr></thead><tbody>${d.signatures.map(
+        <section class="panel s7"><h2>Top error signatures <a href="/reports?range=${d.rangeId}${sourceParam}">Explore</a></h2><div class="tbl" tabindex="0"><table><thead><tr><th>Signature</th><th class="r">${range.label}</th><th>Trend</th><th>Tracked by</th></tr></thead><tbody>${d.signatures.map(
           (s) =>
             html`<tr><td class="mono wrap-any"><a class="quiet" href="/reports?range=${d.rangeId}&amp;signature=${s.signature}${sourceParam}">${s.label}</a></td><td class="r num">${fmtInt(s.n)}</td><td>${sparkline(dailySeries(d.now, 14, s.days), s.issue ? "muted" : "amber")}</td><td>${issueChip(d.cfg, s.issue?.number, s.issue?.state)}</td></tr>`,
         )}</tbody></table></div></section>
-        <section class="panel s5"><h2>Versions</h2><div class="tbl"><table><thead><tr><th>Version</th><th class="r">Reports</th><th class="r">Errors + warnings / report</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.versions.map(
+        <section class="panel s5"><h2>Versions</h2><div class="tbl" tabindex="0"><table><thead><tr><th>Version</th><th class="r">Reports</th><th class="r">Errors + warnings / report</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.versions.map(
           (v) =>
             html`<tr><td class="mono">${String(v.key) || "unknown"}</td><td class="r num">${fmtInt(v.n)}</td><td class="r num">${(Number(v.errors ?? 0) + Number(v.warnings ?? 0)).toFixed(1)}</td><td class="bar-cell">${meter(Number(v.n) / verMax)}</td></tr>`,
         )}</tbody></table></div></section>
 
-        <section class="panel s12"><h2>Needs triage <a href="/reports?range=${d.rangeId}&amp;triage=needs${sourceParam}">Open the queue</a></h2><div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Top error or warning</th><th class="r">Events</th><th>Issue</th></tr></thead><tbody>${d.queue.length ? reportRows(d.cfg, d.queue, false) : html`<tr><td colspan="8" class="empty">Nothing needs triage in this range.</td></tr>`}</tbody></table></div></section>
+        <section class="panel s12"><h2>Needs triage <a href="/reports?range=${d.rangeId}&amp;triage=needs${sourceParam}">Open the queue</a></h2><div class="tbl" tabindex="0"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Top error or warning</th><th class="r">Events</th><th>Issue</th></tr></thead><tbody>${d.queue.length ? reportRows(d.cfg, d.queue, false) : html`<tr><td colspan="8" class="empty">Nothing needs triage in this range.</td></tr>`}</tbody></table></div></section>
         ${owner}
       </div></div>`,
   });
@@ -782,7 +782,7 @@ export function reportsPage(d: ReportsData): SafeHtml {
           <button class="button small" type="submit" name="state" value="noise">Mark noise</button>
           <button class="button small" type="submit" name="state" value="clear">Back to the queue</button>
         </form>
-        <div class="tbl" data-live="rows"><table><thead><tr><th class="pick"><span class="sr">Select</span></th><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Signature</th><th class="r">Errors</th><th class="r">Warnings</th><th class="r">Slowest</th><th>Issue</th></tr></thead>
+        <div class="tbl" tabindex="0" data-live="rows"><table><thead><tr><th class="pick"><span class="sr">Select</span></th><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Signature</th><th class="r">Errors</th><th class="r">Warnings</th><th class="r">Slowest</th><th>Issue</th></tr></thead>
           <tbody>${d.rows.length ? reportRows(d.cfg, d.rows, true) : html`<tr><td colspan="11" class="empty">No reports match these filters.</td></tr>`}</tbody></table></div>
         <div class="pager" data-live="pager">${d.page > 1 ? pageLink(d.page - 1, "Newer") : ""}${d.page < pages ? pageLink(d.page + 1, "Older") : ""}</div>
       </section></div>`,
@@ -1040,14 +1040,14 @@ export function reportPage(d: ReportData): SafeHtml {
         <section class="panel s12"><h2>Event log <span class="note">secrets were redacted on the client before upload</span></h2>
           ${
             d.stored
-              ? html`<div class="log-tools"><div class="filters" role="group" aria-label="Levels">${filters}</div>${log.crates.length > 1 ? html`<div class="filters crate-tools" role="group" aria-label="Crates" hidden>${log.crates.map((c) => html`<button type="button" class="lvl-toggle crate-toggle" data-crate="${c.crate}" aria-pressed="true">${c.crate} ${c.n}</button>`)}</div>` : ""}${log.problem ? html`<a class="fine" href="#first-problem">Jump to the first warning or error</a>` : ""}<div class="copy-tools" hidden><button type="button" class="log-copy" data-copy="shown">Copy shown</button><button type="button" class="log-copy" data-copy="all">Copy all</button><button type="button" class="log-copy" data-copy="issue" title="Markdown for a GitHub issue: the report's facts and the shown lines">Copy for issue</button><span class="fine" id="copy-status" role="status"></span></div></div><div class="log" id="log" role="log" aria-label="Report events" data-report="${r.report_id}" data-version="${r.version}" data-platform="${`${r.os} ${r.arch}`.trim()}" data-trigger="${r.trigger}" data-signature="${r.signature_label ?? ""}" data-route="${r.route}">${log.rows}</div>`
+              ? html`<div class="log-tools"><div class="filters" role="group" aria-label="Levels">${filters}</div>${log.crates.length > 1 ? html`<div class="filters crate-tools" role="group" aria-label="Crates" hidden>${log.crates.map((c) => html`<button type="button" class="lvl-toggle crate-toggle" data-crate="${c.crate}" aria-pressed="true">${c.crate} ${c.n}</button>`)}</div>` : ""}${log.problem ? html`<a class="fine" href="#first-problem">Jump to the first warning or error</a>` : ""}<div class="copy-tools" hidden><button type="button" class="log-copy" data-copy="shown">Copy shown</button><button type="button" class="log-copy" data-copy="all">Copy all</button><button type="button" class="log-copy" data-copy="issue" title="Markdown for a GitHub issue: the report's facts and the shown lines">Copy for issue</button><span class="fine" id="copy-status" role="status"></span></div></div><div class="log" id="log" tabindex="0" role="log" aria-label="Report events" data-report="${r.report_id}" data-version="${r.version}" data-platform="${`${r.os} ${r.arch}`.trim()}" data-trigger="${r.trigger}" data-signature="${r.signature_label ?? ""}" data-route="${r.route}">${log.rows}</div>`
               : r.deleted_at
                 ? html`<p class="banner">The report's sender deleted its stored copy on ${fmtTime(Number(r.deleted_at))} UTC. The index entry and the issue links above stay, so the report still counts.</p>`
                 : html`<p class="banner">The stored report could not be read from storage. The index entry above is all that is available.</p>`
           }
         </section>
         <section class="panel s6" data-live="sig-days"><h2>Same signature, last 14 days</h2>${r.signature ? histogram(d.sigDays, d.sigMarker, "Reports per day with this signature") : html`<p class="fine">This report has no errors or warnings to group by.</p>`}</section>
-        <section class="panel s6" data-live="similar"><h2>Similar reports</h2><div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th></tr></thead><tbody>${
+        <section class="panel s6" data-live="similar"><h2>Similar reports</h2><div class="tbl" tabindex="0"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th></tr></thead><tbody>${
           d.similar.length
             ? d.similar.map(
                 (s) =>
@@ -1144,7 +1144,7 @@ export function issuesPage(d: IssuesData): SafeHtml {
     body: html`<div class="wrap">
       <div class="toolbar"><h1>Issues and fixes</h1><nav class="picker" aria-label="Issue state">${tab("open", "Open")}${tab("closed", "Closed")}${tab("all", "All")}</nav></div>
       <section class="panel" data-live="issues"><h2>Diagnostics issues <span class="note">${d.syncedAt ? `synced from GitHub ${fmtTime(d.syncedAt)} UTC` : "not synced from GitHub yet"}</span></h2>
-        <div class="tbl"><table><thead><tr><th>Issue</th><th>State</th><th class="r">Reports</th><th>Activity, 14d</th><th>First seen</th><th>Last seen</th><th>Fix</th><th class="r">After fix</th></tr></thead><tbody>${
+        <div class="tbl" tabindex="0"><table><thead><tr><th>Issue</th><th>State</th><th class="r">Reports</th><th>Activity, 14d</th><th>First seen</th><th>Last seen</th><th>Fix</th><th class="r">After fix</th></tr></thead><tbody>${
           d.issues.length
             ? d.issues.map((i) => {
                 const fix = d.afterFix.get(Number(i.number));
@@ -1203,7 +1203,7 @@ export function issuePage(d: IssueData): SafeHtml {
     <td class="fine">${linkHow(l)}${l.source !== "excluded" && !l.tracked ? html` · <span class="chip crit" title="An older issue also lists this report, so it counts there">counts elsewhere</span>` : ""}</td>
     <td class="actions">${actions}</td></tr>`;
   const table = (rows: SafeHtml[], empty: string): SafeHtml =>
-    html`<div class="tbl"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>How</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows : html`<tr><td colspan="6" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
+    html`<div class="tbl" tabindex="0"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>How</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows : html`<tr><td colspan="6" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
   const moveForm = (l: { report_id: string }): SafeHtml | string =>
     d.openIssues.length
       ? linkForm({
@@ -1427,7 +1427,7 @@ export function demoPage(d: DemoData): SafeHtml {
         <section class="panel s12"><h2>Hours of use per day</h2>
           ${stackedBars(hourBars, [{ key: "hours", cls: "fill-teal" }], "Bars of demo hours of use per day")}</section>
 
-        <section class="panel s5"><h2>Live runs</h2><div class="tbl"><table><thead><tr><th>Started (UTC)</th><th class="r">Running</th><th class="r">Startup</th><th>Version</th></tr></thead><tbody>${
+        <section class="panel s5"><h2>Live runs</h2><div class="tbl" tabindex="0"><table><thead><tr><th>Started (UTC)</th><th class="r">Running</th><th class="r">Startup</th><th>Version</th></tr></thead><tbody>${
           d.stats.live.length
             ? d.stats.live.map(
                 (r) =>
@@ -1435,7 +1435,7 @@ export function demoPage(d: DemoData): SafeHtml {
               )
             : html`<tr><td colspan="4" class="empty">No run is open.</td></tr>`
         }</tbody></table></div></section>
-        <section class="panel s7"><h2>Last 14 days</h2><div class="tbl"><table><thead><tr><th>Day (UTC)</th><th class="r">Runs</th><th class="r">Use</th><th class="r">Average run</th><th class="r">Average startup</th><th class="r">Failed</th><th class="r">No stop</th></tr></thead><tbody>${
+        <section class="panel s7"><h2>Last 14 days</h2><div class="tbl" tabindex="0"><table><thead><tr><th>Day (UTC)</th><th class="r">Runs</th><th class="r">Use</th><th class="r">Average run</th><th class="r">Average startup</th><th class="r">Failed</th><th class="r">No stop</th></tr></thead><tbody>${
           recent.length
             ? recent.map(
                 (x) =>
@@ -1553,7 +1553,7 @@ export function lookupResultPage(v: LookupView): SafeHtml {
           v.deletedAt !== null
             ? html`<p class="banner">You deleted this report on ${fmtTime(v.deletedAt)} UTC. Its event log is gone; the issue links above stay.</p>`
             : v.stored
-              ? html`<div class="log" role="log" aria-label="Report events">${log.rows}</div>`
+              ? html`<div class="log" tabindex="0" role="log" aria-label="Report events">${log.rows}</div>`
               : html`<p class="banner">The stored report could not be read just now. Try again in a minute.</p>`
         }
       </section>

@@ -147,6 +147,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "quality_offers"
+path = "fuzz_targets/quality_offers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "scan_page"
 path = "fuzz_targets/scan_page.rs"
 test = false
@@ -387,6 +394,13 @@ bench = false
 [[bin]]
 name = "upload_part"
 path = "fuzz_targets/upload_part.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tunnel_policy"
+path = "fuzz_targets/tunnel_policy.rs"
 test = false
 doc = false
 bench = false
@@ -646,6 +660,13 @@ bench = false
 [[bin]]
 name = "title_meta_fill"
 path = "fuzz_targets/title_meta_fill.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chapter_request"
+path = "fuzz_targets/chapter_request.rs"
 test = false
 doc = false
 bench = false

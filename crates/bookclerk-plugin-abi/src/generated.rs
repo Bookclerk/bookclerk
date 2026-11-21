@@ -777,6 +777,63 @@ impl From<plugin_capnp::FetchedFileRole> for FetchedFileRole {
     }
 }
 
+/// What a storefront's chapter markers mark (`PlainFetch.chapterKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChapterKind {
+    /// The storefront does not say.
+    #[default]
+    Unknown,
+    /// Literary chapters: what a listener would call the book's chapters.
+    Chapters,
+    /// Track or part boundaries: where the store cut its files, which need
+    /// not fall on a chapter.
+    Tracks,
+}
+
+impl ChapterKind {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Chapters => "chapters",
+            Self::Tracks => "tracks",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "unknown" => Some(Self::Unknown),
+            "chapters" => Some(Self::Chapters),
+            "tracks" => Some(Self::Tracks),
+            _ => None,
+        }
+    }
+}
+
+impl From<ChapterKind> for plugin_capnp::ChapterKind {
+    fn from(value: ChapterKind) -> Self {
+        match value {
+            ChapterKind::Unknown => Self::Unknown,
+            ChapterKind::Chapters => Self::Chapters,
+            ChapterKind::Tracks => Self::Tracks,
+        }
+    }
+}
+
+impl From<plugin_capnp::ChapterKind> for ChapterKind {
+    fn from(value: plugin_capnp::ChapterKind) -> Self {
+        match value {
+            plugin_capnp::ChapterKind::Unknown => Self::Unknown,
+            plugin_capnp::ChapterKind::Chapters => Self::Chapters,
+            plugin_capnp::ChapterKind::Tracks => Self::Tracks,
+        }
+    }
+}
+
 /// Catalog search ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1094,6 +1151,167 @@ impl From<plugin_capnp::Explicitness> for Explicitness {
             plugin_capnp::Explicitness::Unknown => Self::Unknown,
             plugin_capnp::Explicitness::Clean => Self::Clean,
             plugin_capnp::Explicitness::Explicit => Self::Explicit,
+        }
+    }
+}
+
+/// Audio codec of a stream a store offers (`QualityOffer.codec`). Spelled as
+/// the host's probed codecs are, so an offer compares with a held file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OfferedCodec {
+    /// The store did not say; the host never upgrades to an unknown codec.
+    #[default]
+    Unknown,
+    /// MPEG-4 AAC, lossy.
+    Aac,
+    /// Apple Lossless.
+    Alac,
+    /// FLAC, lossless.
+    Flac,
+    /// MPEG audio layer III (or I / II), lossy.
+    Mp3,
+    /// Opus, lossy.
+    Opus,
+    /// Vorbis, lossy.
+    Vorbis,
+    /// Dolby Digital Plus (E-AC-3), lossy.
+    Eac3,
+    /// Dolby AC-4, lossy.
+    Ac4,
+}
+
+impl OfferedCodec {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Aac => "aac",
+            Self::Alac => "alac",
+            Self::Flac => "flac",
+            Self::Mp3 => "mp3",
+            Self::Opus => "opus",
+            Self::Vorbis => "vorbis",
+            Self::Eac3 => "eac3",
+            Self::Ac4 => "ac4",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "unknown" => Some(Self::Unknown),
+            "aac" => Some(Self::Aac),
+            "alac" => Some(Self::Alac),
+            "flac" => Some(Self::Flac),
+            "mp3" => Some(Self::Mp3),
+            "opus" => Some(Self::Opus),
+            "vorbis" => Some(Self::Vorbis),
+            "eac3" => Some(Self::Eac3),
+            "ac4" => Some(Self::Ac4),
+            _ => None,
+        }
+    }
+}
+
+impl From<OfferedCodec> for plugin_capnp::OfferedCodec {
+    fn from(value: OfferedCodec) -> Self {
+        match value {
+            OfferedCodec::Unknown => Self::Unknown,
+            OfferedCodec::Aac => Self::Aac,
+            OfferedCodec::Alac => Self::Alac,
+            OfferedCodec::Flac => Self::Flac,
+            OfferedCodec::Mp3 => Self::Mp3,
+            OfferedCodec::Opus => Self::Opus,
+            OfferedCodec::Vorbis => Self::Vorbis,
+            OfferedCodec::Eac3 => Self::Eac3,
+            OfferedCodec::Ac4 => Self::Ac4,
+        }
+    }
+}
+
+impl From<plugin_capnp::OfferedCodec> for OfferedCodec {
+    fn from(value: plugin_capnp::OfferedCodec) -> Self {
+        match value {
+            plugin_capnp::OfferedCodec::Unknown => Self::Unknown,
+            plugin_capnp::OfferedCodec::Aac => Self::Aac,
+            plugin_capnp::OfferedCodec::Alac => Self::Alac,
+            plugin_capnp::OfferedCodec::Flac => Self::Flac,
+            plugin_capnp::OfferedCodec::Mp3 => Self::Mp3,
+            plugin_capnp::OfferedCodec::Opus => Self::Opus,
+            plugin_capnp::OfferedCodec::Vorbis => Self::Vorbis,
+            plugin_capnp::OfferedCodec::Eac3 => Self::Eac3,
+            plugin_capnp::OfferedCodec::Ac4 => Self::Ac4,
+        }
+    }
+}
+
+/// AAC profile of an offered AAC stream (`QualityOffer.aacProfile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OfferedAacProfile {
+    /// Not AAC, or the store did not say.
+    #[default]
+    Unknown,
+    /// AAC-LC.
+    Lc,
+    /// HE-AAC (AAC-LC plus SBR).
+    He,
+    /// HE-AAC v2 (SBR plus parametric stereo).
+    HeV2,
+    /// xHE-AAC (USAC).
+    Xhe,
+}
+
+impl OfferedAacProfile {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Lc => "lc",
+            Self::He => "he",
+            Self::HeV2 => "heV2",
+            Self::Xhe => "xhe",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "unknown" => Some(Self::Unknown),
+            "lc" => Some(Self::Lc),
+            "he" => Some(Self::He),
+            "heV2" => Some(Self::HeV2),
+            "xhe" => Some(Self::Xhe),
+            _ => None,
+        }
+    }
+}
+
+impl From<OfferedAacProfile> for plugin_capnp::OfferedAacProfile {
+    fn from(value: OfferedAacProfile) -> Self {
+        match value {
+            OfferedAacProfile::Unknown => Self::Unknown,
+            OfferedAacProfile::Lc => Self::Lc,
+            OfferedAacProfile::He => Self::He,
+            OfferedAacProfile::HeV2 => Self::HeV2,
+            OfferedAacProfile::Xhe => Self::Xhe,
+        }
+    }
+}
+
+impl From<plugin_capnp::OfferedAacProfile> for OfferedAacProfile {
+    fn from(value: plugin_capnp::OfferedAacProfile) -> Self {
+        match value {
+            plugin_capnp::OfferedAacProfile::Unknown => Self::Unknown,
+            plugin_capnp::OfferedAacProfile::Lc => Self::Lc,
+            plugin_capnp::OfferedAacProfile::He => Self::He,
+            plugin_capnp::OfferedAacProfile::HeV2 => Self::HeV2,
+            plugin_capnp::OfferedAacProfile::Xhe => Self::Xhe,
         }
     }
 }
@@ -1541,6 +1759,11 @@ pub struct CatalogCapabilities {
     /// that leaves it false is never woken for a detail lookup by product id.
     #[serde(default)]
     pub detail_by_product_id: bool,
+    /// True when `qualityOffers` answers which audio quality an account would
+    /// download for a title. The host's quality-upgrade check asks only stores
+    /// that declare it.
+    #[serde(default)]
+    pub quality_offers: bool,
 }
 
 /// Portal brand crossing the RPC boundary. Distinct from `plugin.toml`
@@ -2258,6 +2481,10 @@ pub struct PlainFetch {
         with = "crate::json_bytes::opt_b64"
     )]
     pub refreshed_credentials: Option<Vec<u8>>,
+    /// What `chapters` marks. The host ranks literary chapters above track
+    /// boundaries when it decides an edition's chapters.
+    #[serde(default)]
+    pub chapter_kind: ChapterKind,
 }
 
 /// Success payload of `ContentSource.listAccounts`.
@@ -2645,6 +2872,92 @@ pub struct PurchaseHintsResult {
     /// One answer per query, in the order the queries were sent.
     #[serde(default)]
     pub results: Vec<PurchaseHintResult>,
+}
+
+/// The stream one account would download for a title today.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityOffer {
+    /// Codec of the offered stream.
+    #[serde(default)]
+    pub codec: OfferedCodec,
+    /// AAC profile when `codec` is `aac`; `unknown` otherwise.
+    #[serde(default)]
+    pub aac_profile: OfferedAacProfile,
+    /// Average bitrate in kbit/s; zero when unknown.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<u32>,
+    /// Sample rate in Hz; zero when unknown.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
+    /// Channel count; zero when unknown.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u32>,
+}
+
+/// Params of `ContentSource.qualityOffers`: the titles one account holds.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityOffersParams {
+    /// Account whose download would be made.
+    #[serde(default)]
+    pub account_id: String,
+    /// Decrypted credential blob for this account; never log it. Empty when
+    /// none is stored.
+    /// `None` when absent (wire zero value).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::json_bytes::opt_b64"
+    )]
+    pub credentials: Option<Vec<u8>>,
+    /// The instance's settings as `application/json` (bitrate tier and the
+    /// like, which change what a download gets).
+    #[serde(default)]
+    pub source_config: crate::ExtensibleConfig,
+    /// Store product ids, as the account's scan listed them; at most
+    /// `maxListPage`.
+    #[serde(default)]
+    pub title_ids: Vec<String>,
+    /// The fetch options a download would carry (DRM path, xHE-AAC), so the
+    /// answer names what that download would get.
+    #[serde(default)]
+    pub fetch: FetchOptions,
+}
+
+/// One title's answer in `QualityOffersResult`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleQualityOffer {
+    /// False when the store could not say for this title (`offer` is empty).
+    #[serde(default)]
+    pub found: bool,
+    /// What a download would get, when `found`.
+    #[serde(default)]
+    pub offer: QualityOffer,
+}
+
+/// Success payload of `ContentSource.qualityOffers`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityOffersResult {
+    /// One answer per title id, in the order they were sent. A short list
+    /// leaves the rest unanswered.
+    #[serde(default)]
+    pub offers: Vec<TitleQualityOffer>,
+    /// The account's credentials as the guest holds them after refreshing them
+    /// during the call, as in `ScanPage.refreshedCredentials`. Empty when
+    /// nothing changed.
+    /// `None` when absent (wire zero value).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::json_bytes::opt_b64"
+    )]
+    pub refreshed_credentials: Option<Vec<u8>>,
 }
 
 /// Params of `RemoteLibrary.scanLibrary` (remote library sync).
@@ -4004,6 +4317,7 @@ pub fn write_catalog_capabilities(
     b.set_price_by_isbn(v.price_by_isbn);
     b.set_price_by_asin(v.price_by_asin);
     b.set_detail_by_product_id(v.detail_by_product_id);
+    b.set_quality_offers(v.quality_offers);
     Ok(())
 }
 
@@ -4020,6 +4334,7 @@ pub fn read_catalog_capabilities(
         price_by_isbn: r.get_price_by_isbn(),
         price_by_asin: r.get_price_by_asin(),
         detail_by_product_id: r.get_detail_by_product_id(),
+        quality_offers: r.get_quality_offers(),
     })
 }
 
@@ -5341,6 +5656,7 @@ pub fn write_plain_fetch(
     if let Some(value) = &v.refreshed_credentials {
         b.set_refreshed_credentials(value);
     }
+    b.set_chapter_kind(v.chapter_kind.into());
     Ok(())
 }
 
@@ -5364,6 +5680,7 @@ pub fn read_plain_fetch(r: plugin_capnp::plain_fetch::Reader<'_>) -> capnp::Resu
             .collect::<capnp::Result<Vec<_>>>()?,
         pdf_url: opt_text(r.get_pdf_url()?)?,
         refreshed_credentials: opt_data(r.get_refreshed_credentials()?),
+        chapter_kind: r.get_chapter_kind()?.into(),
     })
 }
 
@@ -6226,6 +6543,186 @@ pub fn read_purchase_hints_reply(
     match r.which()? {
         plugin_capnp::purchase_hints_reply::Ok(ok) => Ok(Ok(read_purchase_hints_result(ok?)?)),
         plugin_capnp::purchase_hints_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`QualityOffer`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_quality_offer(
+    mut b: plugin_capnp::quality_offer::Builder<'_>,
+    v: &QualityOffer,
+) -> capnp::Result<()> {
+    b.set_codec(v.codec.into());
+    b.set_aac_profile(v.aac_profile.into());
+    if let Some(value) = v.bitrate_kbps {
+        b.set_bitrate_kbps(value);
+    }
+    if let Some(value) = v.sample_rate_hz {
+        b.set_sample_rate_hz(value);
+    }
+    if let Some(value) = v.channels {
+        b.set_channels(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`QualityOffer`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_quality_offer(
+    r: plugin_capnp::quality_offer::Reader<'_>,
+) -> capnp::Result<QualityOffer> {
+    Ok(QualityOffer {
+        codec: r.get_codec()?.into(),
+        aac_profile: r.get_aac_profile()?.into(),
+        bitrate_kbps: opt_num(r.get_bitrate_kbps()),
+        sample_rate_hz: opt_num(r.get_sample_rate_hz()),
+        channels: opt_num(r.get_channels()),
+    })
+}
+
+/// Encode a [`QualityOffersParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_quality_offers_params(
+    mut b: plugin_capnp::quality_offers_params::Builder<'_>,
+    v: &QualityOffersParams,
+) -> capnp::Result<()> {
+    b.set_account_id(&v.account_id);
+    if let Some(value) = &v.credentials {
+        b.set_credentials(value);
+    }
+    crate::rpc::write_extensible_config(b.reborrow().init_source_config(), &v.source_config);
+    {
+        let mut items = b.reborrow().init_title_ids(list_len(v.title_ids.len())?);
+        for (i, item) in v.title_ids.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    write_fetch_options(b.reborrow().init_fetch(), &v.fetch)?;
+    Ok(())
+}
+
+/// Decode a [`QualityOffersParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_quality_offers_params(
+    r: plugin_capnp::quality_offers_params::Reader<'_>,
+) -> capnp::Result<QualityOffersParams> {
+    Ok(QualityOffersParams {
+        account_id: r.get_account_id()?.to_string()?,
+        credentials: opt_data(r.get_credentials()?),
+        source_config: crate::rpc::read_extensible_config(r.get_source_config()?),
+        title_ids: read_text_list(r.get_title_ids()?)?,
+        fetch: read_fetch_options(r.get_fetch()?)?,
+    })
+}
+
+/// Encode a [`TitleQualityOffer`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_title_quality_offer(
+    mut b: plugin_capnp::title_quality_offer::Builder<'_>,
+    v: &TitleQualityOffer,
+) -> capnp::Result<()> {
+    b.set_found(v.found);
+    write_quality_offer(b.reborrow().init_offer(), &v.offer)?;
+    Ok(())
+}
+
+/// Decode a [`TitleQualityOffer`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_title_quality_offer(
+    r: plugin_capnp::title_quality_offer::Reader<'_>,
+) -> capnp::Result<TitleQualityOffer> {
+    Ok(TitleQualityOffer {
+        found: r.get_found(),
+        offer: read_quality_offer(r.get_offer()?)?,
+    })
+}
+
+/// Encode a [`QualityOffersResult`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_quality_offers_result(
+    mut b: plugin_capnp::quality_offers_result::Builder<'_>,
+    v: &QualityOffersResult,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_offers(list_len(v.offers.len())?);
+        for (i, item) in v.offers.iter().enumerate() {
+            write_title_quality_offer(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    if let Some(value) = &v.refreshed_credentials {
+        b.set_refreshed_credentials(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`QualityOffersResult`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_quality_offers_result(
+    r: plugin_capnp::quality_offers_result::Reader<'_>,
+) -> capnp::Result<QualityOffersResult> {
+    Ok(QualityOffersResult {
+        offers: r
+            .get_offers()?
+            .iter()
+            .map(|item| read_title_quality_offer(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        refreshed_credentials: opt_data(r.get_refreshed_credentials()?),
+    })
+}
+
+/// Encode a `QualityOffersReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_quality_offers_reply(
+    b: plugin_capnp::quality_offers_reply::Builder<'_>,
+    v: &Result<QualityOffersResult, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_quality_offers_result(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `QualityOffersReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_quality_offers_reply(
+    r: plugin_capnp::quality_offers_reply::Reader<'_>,
+) -> capnp::Result<Result<QualityOffersResult, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::quality_offers_reply::Ok(ok) => Ok(Ok(read_quality_offers_result(ok?)?)),
+        plugin_capnp::quality_offers_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
     }
 }
 
@@ -9340,7 +9837,7 @@ pub fn read_ingress_health_reply(
 
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 145;
+pub const READ_ANY_COUNT: u8 = 150;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -9623,391 +10120,415 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         59 => {
+            let _ =
+                read_quality_offer(reader.get_root::<plugin_capnp::quality_offer::Reader<'_>>()?)?;
+        }
+        60 => {
+            let _ = read_quality_offers_params(
+                reader.get_root::<plugin_capnp::quality_offers_params::Reader<'_>>()?,
+            )?;
+        }
+        61 => {
+            let _ = read_title_quality_offer(
+                reader.get_root::<plugin_capnp::title_quality_offer::Reader<'_>>()?,
+            )?;
+        }
+        62 => {
+            let _ = read_quality_offers_result(
+                reader.get_root::<plugin_capnp::quality_offers_result::Reader<'_>>()?,
+            )?;
+        }
+        63 => {
+            let _ = read_quality_offers_reply(
+                reader.get_root::<plugin_capnp::quality_offers_reply::Reader<'_>>()?,
+            )?;
+        }
+        64 => {
             let _ = read_scan_library_params(
                 reader.get_root::<plugin_capnp::scan_library_params::Reader<'_>>()?,
             )?;
         }
-        60 => {
+        65 => {
             let _ = read_authenticate_user_params(
                 reader.get_root::<plugin_capnp::authenticate_user_params::Reader<'_>>()?,
             )?;
         }
-        61 => {
+        66 => {
             let _ =
                 read_external_user(reader.get_root::<plugin_capnp::external_user::Reader<'_>>()?)?;
         }
-        62 => {
+        67 => {
             let _ = read_external_user_reply(
                 reader.get_root::<plugin_capnp::external_user_reply::Reader<'_>>()?,
             )?;
         }
-        63 => {
+        68 => {
             let _ = read_event_poll_result(
                 reader.get_root::<plugin_capnp::event_poll_result::Reader<'_>>()?,
             )?;
         }
-        64 => {
+        69 => {
             let _ = read_event_poll_reply(
                 reader.get_root::<plugin_capnp::event_poll_reply::Reader<'_>>()?,
             )?;
         }
-        65 => {
+        70 => {
             let _ = read_listening_progress(
                 reader.get_root::<plugin_capnp::listening_progress::Reader<'_>>()?,
             )?;
         }
-        66 => {
+        71 => {
             let _ = read_sync_listening_result(
                 reader.get_root::<plugin_capnp::sync_listening_result::Reader<'_>>()?,
             )?;
         }
-        67 => {
+        72 => {
             let _ = read_sync_listening_reply(
                 reader.get_root::<plugin_capnp::sync_listening_reply::Reader<'_>>()?,
             )?;
         }
-        68 => {
+        73 => {
             let _ =
                 read_plugin_event(reader.get_root::<plugin_capnp::plugin_event::Reader<'_>>()?)?;
         }
-        69 => {
-            let _ = read_publish_ok(reader.get_root::<plugin_capnp::publish_ok::Reader<'_>>()?)?;
-        }
-        70 => {
-            let _ =
-                read_publish_reply(reader.get_root::<plugin_capnp::publish_reply::Reader<'_>>()?)?;
-        }
-        71 => {
-            let _ = read_invocation(reader.get_root::<plugin_capnp::invocation::Reader<'_>>()?)?;
-        }
-        72 => {
-            let _ =
-                read_queue_message(reader.get_root::<plugin_capnp::queue_message::Reader<'_>>()?)?;
-        }
-        73 => {
-            let _ = read_queue_batch(reader.get_root::<plugin_capnp::queue_batch::Reader<'_>>()?)?;
-        }
         74 => {
-            let _ = read_queue_retry(reader.get_root::<plugin_capnp::queue_retry::Reader<'_>>()?)?;
+            let _ = read_publish_ok(reader.get_root::<plugin_capnp::publish_ok::Reader<'_>>()?)?;
         }
         75 => {
             let _ =
-                read_queue_result(reader.get_root::<plugin_capnp::queue_result::Reader<'_>>()?)?;
+                read_publish_reply(reader.get_root::<plugin_capnp::publish_reply::Reader<'_>>()?)?;
         }
         76 => {
+            let _ = read_invocation(reader.get_root::<plugin_capnp::invocation::Reader<'_>>()?)?;
+        }
+        77 => {
+            let _ =
+                read_queue_message(reader.get_root::<plugin_capnp::queue_message::Reader<'_>>()?)?;
+        }
+        78 => {
+            let _ = read_queue_batch(reader.get_root::<plugin_capnp::queue_batch::Reader<'_>>()?)?;
+        }
+        79 => {
+            let _ = read_queue_retry(reader.get_root::<plugin_capnp::queue_retry::Reader<'_>>()?)?;
+        }
+        80 => {
+            let _ =
+                read_queue_result(reader.get_root::<plugin_capnp::queue_result::Reader<'_>>()?)?;
+        }
+        81 => {
             let _ = read_queue_batch_ok(
                 reader.get_root::<plugin_capnp::queue_batch_ok::Reader<'_>>()?,
             )?;
         }
-        77 => {
+        82 => {
             let _ = read_queue_batch_reply(
                 reader.get_root::<plugin_capnp::queue_batch_reply::Reader<'_>>()?,
             )?;
         }
-        78 => {
+        83 => {
             let _ = read_queue_send_message(
                 reader.get_root::<plugin_capnp::queue_send_message::Reader<'_>>()?,
             )?;
         }
-        79 => {
+        84 => {
             let _ =
                 read_queue_send_ok(reader.get_root::<plugin_capnp::queue_send_ok::Reader<'_>>()?)?;
         }
-        80 => {
+        85 => {
             let _ = read_queue_send_reply(
                 reader.get_root::<plugin_capnp::queue_send_reply::Reader<'_>>()?,
             )?;
         }
-        81 => {
+        86 => {
             let _ = read_kv_put_options(
                 reader.get_root::<plugin_capnp::kv_put_options::Reader<'_>>()?,
             )?;
         }
-        82 => {
+        87 => {
             let _ = read_kv_get_ok(reader.get_root::<plugin_capnp::kv_get_ok::Reader<'_>>()?)?;
         }
-        83 => {
+        88 => {
             let _ =
                 read_kv_get_reply(reader.get_root::<plugin_capnp::kv_get_reply::Reader<'_>>()?)?;
         }
-        84 => {
+        89 => {
             let _ = read_kv_put_ok(reader.get_root::<plugin_capnp::kv_put_ok::Reader<'_>>()?)?;
         }
-        85 => {
+        90 => {
             let _ =
                 read_kv_delete_ok(reader.get_root::<plugin_capnp::kv_delete_ok::Reader<'_>>()?)?;
         }
-        86 => {
+        91 => {
             let _ =
                 read_kv_put_reply(reader.get_root::<plugin_capnp::kv_put_reply::Reader<'_>>()?)?;
         }
-        87 => {
+        92 => {
             let _ = read_kv_delete_reply(
                 reader.get_root::<plugin_capnp::kv_delete_reply::Reader<'_>>()?,
             )?;
         }
-        88 => {
+        93 => {
             let _ = read_kv_list_options(
                 reader.get_root::<plugin_capnp::kv_list_options::Reader<'_>>()?,
             )?;
         }
-        89 => {
+        94 => {
             let _ = read_kv_list_key(reader.get_root::<plugin_capnp::kv_list_key::Reader<'_>>()?)?;
         }
-        90 => {
+        95 => {
             let _ = read_kv_list_ok(reader.get_root::<plugin_capnp::kv_list_ok::Reader<'_>>()?)?;
         }
-        91 => {
+        96 => {
             let _ =
                 read_kv_list_reply(reader.get_root::<plugin_capnp::kv_list_reply::Reader<'_>>()?)?;
         }
-        92 => {
+        97 => {
             let _ = read_scheduled_controller(
                 reader.get_root::<plugin_capnp::scheduled_controller::Reader<'_>>()?,
             )?;
         }
-        93 => {
+        98 => {
             let _ = read_metadata_lookup_params(
                 reader.get_root::<plugin_capnp::metadata_lookup_params::Reader<'_>>()?,
             )?;
         }
-        94 => {
+        99 => {
             let _ = read_metadata_search_params(
                 reader.get_root::<plugin_capnp::metadata_search_params::Reader<'_>>()?,
             )?;
         }
-        95 => {
+        100 => {
             let _ = read_metadata_chapters_params(
                 reader.get_root::<plugin_capnp::metadata_chapters_params::Reader<'_>>()?,
             )?;
         }
-        96 => {
+        101 => {
             let _ = read_metadata_record(
                 reader.get_root::<plugin_capnp::metadata_record::Reader<'_>>()?,
             )?;
         }
-        97 => {
+        102 => {
             let _ = read_metadata_records(
                 reader.get_root::<plugin_capnp::metadata_records::Reader<'_>>()?,
             )?;
         }
-        98 => {
+        103 => {
             let _ = read_metadata_records_reply(
                 reader.get_root::<plugin_capnp::metadata_records_reply::Reader<'_>>()?,
             )?;
         }
-        99 => {
+        104 => {
             let _ = read_metadata_chapter(
                 reader.get_root::<plugin_capnp::metadata_chapter::Reader<'_>>()?,
             )?;
         }
-        100 => {
+        105 => {
             let _ = read_metadata_chapters(
                 reader.get_root::<plugin_capnp::metadata_chapters::Reader<'_>>()?,
             )?;
         }
-        101 => {
+        106 => {
             let _ = read_metadata_chapters_reply(
                 reader.get_root::<plugin_capnp::metadata_chapters_reply::Reader<'_>>()?,
             )?;
         }
-        102 => {
+        107 => {
             let _ = read_cover_fetch_params(
                 reader.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
             )?;
         }
-        103 => {
+        108 => {
             let _ = read_cover_condition(
                 reader.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?,
             )?;
         }
-        104 => {
+        109 => {
             let _ = read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
         }
-        105 => {
+        110 => {
             let _ =
                 read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
         }
-        106 => {
+        111 => {
             let _ = read_cover_images_reply(
                 reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
             )?;
         }
-        107 => {
+        112 => {
             let _ = read_metadata_file_record(
                 reader.get_root::<plugin_capnp::metadata_file_record::Reader<'_>>()?,
             )?;
         }
-        108 => {
+        113 => {
             let _ = read_metadata_file_parse_params(
                 reader.get_root::<plugin_capnp::metadata_file_parse_params::Reader<'_>>()?,
             )?;
         }
-        109 => {
+        114 => {
             let _ = read_metadata_file_parsed(
                 reader.get_root::<plugin_capnp::metadata_file_parsed::Reader<'_>>()?,
             )?;
         }
-        110 => {
+        115 => {
             let _ = read_metadata_file_parse_reply(
                 reader.get_root::<plugin_capnp::metadata_file_parse_reply::Reader<'_>>()?,
             )?;
         }
-        111 => {
+        116 => {
             let _ = read_metadata_audio_file(
                 reader.get_root::<plugin_capnp::metadata_audio_file::Reader<'_>>()?,
             )?;
         }
-        112 => {
+        117 => {
             let _ = read_metadata_file_render_params(
                 reader.get_root::<plugin_capnp::metadata_file_render_params::Reader<'_>>()?,
             )?;
         }
-        113 => {
+        118 => {
             let _ = read_metadata_file_rendered(
                 reader.get_root::<plugin_capnp::metadata_file_rendered::Reader<'_>>()?,
             )?;
         }
-        114 => {
+        119 => {
             let _ = read_metadata_file_render_reply(
                 reader.get_root::<plugin_capnp::metadata_file_render_reply::Reader<'_>>()?,
             )?;
         }
-        115 => {
+        120 => {
             let _ = read_notification_field(
                 reader.get_root::<plugin_capnp::notification_field::Reader<'_>>()?,
             )?;
         }
-        116 => {
+        121 => {
             let _ = read_notification_message(
                 reader.get_root::<plugin_capnp::notification_message::Reader<'_>>()?,
             )?;
         }
-        117 => {
+        122 => {
             let _ = read_notify_destination(
                 reader.get_root::<plugin_capnp::notify_destination::Reader<'_>>()?,
             )?;
         }
-        118 => {
+        123 => {
             let _ = read_notify_send_params(
                 reader.get_root::<plugin_capnp::notify_send_params::Reader<'_>>()?,
             )?;
         }
-        119 => {
+        124 => {
             let _ = read_notify_sent(reader.get_root::<plugin_capnp::notify_sent::Reader<'_>>()?)?;
         }
-        120 => {
+        125 => {
             let _ = read_notify_send_reply(
                 reader.get_root::<plugin_capnp::notify_send_reply::Reader<'_>>()?,
             )?;
         }
-        121 => {
+        126 => {
             let _ = read_notify_validate_params(
                 reader.get_root::<plugin_capnp::notify_validate_params::Reader<'_>>()?,
             )?;
         }
-        122 => {
+        127 => {
             let _ = read_notify_validated(
                 reader.get_root::<plugin_capnp::notify_validated::Reader<'_>>()?,
             )?;
         }
-        123 => {
+        128 => {
             let _ = read_notify_validate_reply(
                 reader.get_root::<plugin_capnp::notify_validate_reply::Reader<'_>>()?,
             )?;
         }
-        124 => {
+        129 => {
             let _ = read_notify_raise_params(
                 reader.get_root::<plugin_capnp::notify_raise_params::Reader<'_>>()?,
             )?;
         }
-        125 => {
+        130 => {
             let _ =
                 read_notify_raised(reader.get_root::<plugin_capnp::notify_raised::Reader<'_>>()?)?;
         }
-        126 => {
+        131 => {
             let _ = read_notify_raise_reply(
                 reader.get_root::<plugin_capnp::notify_raise_reply::Reader<'_>>()?,
             )?;
         }
-        127 => {
+        132 => {
             let _ =
                 read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
         }
-        128 => {
+        133 => {
             let _ =
                 read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
         }
-        129 => {
+        134 => {
             let _ = read_socket_auto_response(
                 reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
             )?;
         }
-        130 => {
+        135 => {
             let _ = read_socket_connect_request(
                 reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
             )?;
         }
-        131 => {
+        136 => {
             let _ = read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
         }
-        132 => {
+        137 => {
             let _ = read_socket_connect_reply(
                 reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
             )?;
         }
-        133 => {
+        138 => {
             let _ = read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
         }
-        134 => {
+        139 => {
             let _ = read_socket_list_reply(
                 reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
             )?;
         }
-        135 => {
+        140 => {
             let _ = read_socket_message_reply(
                 reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
             )?;
         }
-        136 => {
+        141 => {
             let _ = read_socket_message_ok(
                 reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
             )?;
         }
-        137 => {
+        142 => {
             let _ = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
         }
-        138 => {
+        143 => {
             let _ =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
         }
-        139 => {
+        144 => {
             let _ =
                 read_origin_header(reader.get_root::<plugin_capnp::origin_header::Reader<'_>>()?)?;
         }
-        140 => {
+        145 => {
             let _ = read_origin_request(
                 reader.get_root::<plugin_capnp::origin_request::Reader<'_>>()?,
             )?;
         }
-        141 => {
+        146 => {
             let _ = read_ingress_started(
                 reader.get_root::<plugin_capnp::ingress_started::Reader<'_>>()?,
             )?;
         }
-        142 => {
+        147 => {
             let _ = read_ingress_start_reply(
                 reader.get_root::<plugin_capnp::ingress_start_reply::Reader<'_>>()?,
             )?;
         }
-        143 => {
+        148 => {
             let _ = read_ingress_health(
                 reader.get_root::<plugin_capnp::ingress_health::Reader<'_>>()?,
             )?;
         }
-        144 => {
+        149 => {
             let _ = read_ingress_health_reply(
                 reader.get_root::<plugin_capnp::ingress_health_reply::Reader<'_>>()?,
             )?;
@@ -12570,6 +13091,223 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         59 => {
+            let first =
+                read_quality_offer(reader.get_root::<plugin_capnp::quality_offer::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_quality_offer(
+                message.init_root::<plugin_capnp::quality_offer::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_quality_offer(again.get_root::<plugin_capnp::quality_offer::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_quality_offer(
+                    message.init_root::<plugin_capnp::quality_offer::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QualityOffer value".to_string(),
+                    ));
+                }
+            }
+        }
+        60 => {
+            let first = read_quality_offers_params(
+                reader.get_root::<plugin_capnp::quality_offers_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_quality_offers_params(
+                message.init_root::<plugin_capnp::quality_offers_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_quality_offers_params(
+                    again.get_root::<plugin_capnp::quality_offers_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_quality_offers_params(
+                    message.init_root::<plugin_capnp::quality_offers_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QualityOffersParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        61 => {
+            let first = read_title_quality_offer(
+                reader.get_root::<plugin_capnp::title_quality_offer::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_title_quality_offer(
+                message.init_root::<plugin_capnp::title_quality_offer::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_title_quality_offer(
+                    again.get_root::<plugin_capnp::title_quality_offer::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_title_quality_offer(
+                    message.init_root::<plugin_capnp::title_quality_offer::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded TitleQualityOffer value".to_string(),
+                    ));
+                }
+            }
+        }
+        62 => {
+            let first = read_quality_offers_result(
+                reader.get_root::<plugin_capnp::quality_offers_result::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_quality_offers_result(
+                message.init_root::<plugin_capnp::quality_offers_result::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_quality_offers_result(
+                    again.get_root::<plugin_capnp::quality_offers_result::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_quality_offers_result(
+                    message.init_root::<plugin_capnp::quality_offers_result::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QualityOffersResult value".to_string(),
+                    ));
+                }
+            }
+        }
+        63 => {
+            let first = read_quality_offers_reply(
+                reader.get_root::<plugin_capnp::quality_offers_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_quality_offers_reply(
+                message.init_root::<plugin_capnp::quality_offers_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_quality_offers_reply(
+                    again.get_root::<plugin_capnp::quality_offers_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_quality_offers_reply(
+                    message.init_root::<plugin_capnp::quality_offers_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded QualityOffersReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        64 => {
             let first = read_scan_library_params(
                 reader.get_root::<plugin_capnp::scan_library_params::Reader<'_>>()?,
             )?;
@@ -12613,7 +13351,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        60 => {
+        65 => {
             let first = read_authenticate_user_params(
                 reader.get_root::<plugin_capnp::authenticate_user_params::Reader<'_>>()?,
             )?;
@@ -12657,7 +13395,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        61 => {
+        66 => {
             let first =
                 read_external_user(reader.get_root::<plugin_capnp::external_user::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -12698,7 +13436,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        62 => {
+        67 => {
             let first = read_external_user_reply(
                 reader.get_root::<plugin_capnp::external_user_reply::Reader<'_>>()?,
             )?;
@@ -12742,7 +13480,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        63 => {
+        68 => {
             let first = read_event_poll_result(
                 reader.get_root::<plugin_capnp::event_poll_result::Reader<'_>>()?,
             )?;
@@ -12786,7 +13524,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        64 => {
+        69 => {
             let first = read_event_poll_reply(
                 reader.get_root::<plugin_capnp::event_poll_reply::Reader<'_>>()?,
             )?;
@@ -12830,7 +13568,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        65 => {
+        70 => {
             let first = read_listening_progress(
                 reader.get_root::<plugin_capnp::listening_progress::Reader<'_>>()?,
             )?;
@@ -12874,7 +13612,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        66 => {
+        71 => {
             let first = read_sync_listening_result(
                 reader.get_root::<plugin_capnp::sync_listening_result::Reader<'_>>()?,
             )?;
@@ -12918,7 +13656,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        67 => {
+        72 => {
             let first = read_sync_listening_reply(
                 reader.get_root::<plugin_capnp::sync_listening_reply::Reader<'_>>()?,
             )?;
@@ -12962,7 +13700,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        68 => {
+        73 => {
             let first =
                 read_plugin_event(reader.get_root::<plugin_capnp::plugin_event::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13003,7 +13741,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        69 => {
+        74 => {
             let first =
                 read_publish_ok(reader.get_root::<plugin_capnp::publish_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13044,7 +13782,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        70 => {
+        75 => {
             let first =
                 read_publish_reply(reader.get_root::<plugin_capnp::publish_reply::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13085,7 +13823,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        71 => {
+        76 => {
             let first =
                 read_invocation(reader.get_root::<plugin_capnp::invocation::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13126,7 +13864,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        72 => {
+        77 => {
             let first =
                 read_queue_message(reader.get_root::<plugin_capnp::queue_message::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13167,7 +13905,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        73 => {
+        78 => {
             let first =
                 read_queue_batch(reader.get_root::<plugin_capnp::queue_batch::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13208,7 +13946,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        74 => {
+        79 => {
             let first =
                 read_queue_retry(reader.get_root::<plugin_capnp::queue_retry::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13249,7 +13987,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        75 => {
+        80 => {
             let first =
                 read_queue_result(reader.get_root::<plugin_capnp::queue_result::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13290,7 +14028,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        76 => {
+        81 => {
             let first = read_queue_batch_ok(
                 reader.get_root::<plugin_capnp::queue_batch_ok::Reader<'_>>()?,
             )?;
@@ -13332,7 +14070,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        77 => {
+        82 => {
             let first = read_queue_batch_reply(
                 reader.get_root::<plugin_capnp::queue_batch_reply::Reader<'_>>()?,
             )?;
@@ -13376,7 +14114,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        78 => {
+        83 => {
             let first = read_queue_send_message(
                 reader.get_root::<plugin_capnp::queue_send_message::Reader<'_>>()?,
             )?;
@@ -13420,7 +14158,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        79 => {
+        84 => {
             let first =
                 read_queue_send_ok(reader.get_root::<plugin_capnp::queue_send_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13461,7 +14199,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        80 => {
+        85 => {
             let first = read_queue_send_reply(
                 reader.get_root::<plugin_capnp::queue_send_reply::Reader<'_>>()?,
             )?;
@@ -13505,7 +14243,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        81 => {
+        86 => {
             let first = read_kv_put_options(
                 reader.get_root::<plugin_capnp::kv_put_options::Reader<'_>>()?,
             )?;
@@ -13547,7 +14285,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        82 => {
+        87 => {
             let first = read_kv_get_ok(reader.get_root::<plugin_capnp::kv_get_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
             write_kv_get_ok(
@@ -13587,7 +14325,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        83 => {
+        88 => {
             let first =
                 read_kv_get_reply(reader.get_root::<plugin_capnp::kv_get_reply::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13628,7 +14366,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        84 => {
+        89 => {
             let first = read_kv_put_ok(reader.get_root::<plugin_capnp::kv_put_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
             write_kv_put_ok(
@@ -13668,7 +14406,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        85 => {
+        90 => {
             let first =
                 read_kv_delete_ok(reader.get_root::<plugin_capnp::kv_delete_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13709,7 +14447,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        86 => {
+        91 => {
             let first =
                 read_kv_put_reply(reader.get_root::<plugin_capnp::kv_put_reply::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13750,7 +14488,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        87 => {
+        92 => {
             let first = read_kv_delete_reply(
                 reader.get_root::<plugin_capnp::kv_delete_reply::Reader<'_>>()?,
             )?;
@@ -13792,7 +14530,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        88 => {
+        93 => {
             let first = read_kv_list_options(
                 reader.get_root::<plugin_capnp::kv_list_options::Reader<'_>>()?,
             )?;
@@ -13834,7 +14572,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        89 => {
+        94 => {
             let first =
                 read_kv_list_key(reader.get_root::<plugin_capnp::kv_list_key::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13875,7 +14613,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        90 => {
+        95 => {
             let first =
                 read_kv_list_ok(reader.get_root::<plugin_capnp::kv_list_ok::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13916,7 +14654,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        91 => {
+        96 => {
             let first =
                 read_kv_list_reply(reader.get_root::<plugin_capnp::kv_list_reply::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13957,7 +14695,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        92 => {
+        97 => {
             let first = read_scheduled_controller(
                 reader.get_root::<plugin_capnp::scheduled_controller::Reader<'_>>()?,
             )?;
@@ -14001,7 +14739,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        93 => {
+        98 => {
             let first = read_metadata_lookup_params(
                 reader.get_root::<plugin_capnp::metadata_lookup_params::Reader<'_>>()?,
             )?;
@@ -14045,7 +14783,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        94 => {
+        99 => {
             let first = read_metadata_search_params(
                 reader.get_root::<plugin_capnp::metadata_search_params::Reader<'_>>()?,
             )?;
@@ -14089,7 +14827,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        95 => {
+        100 => {
             let first = read_metadata_chapters_params(
                 reader.get_root::<plugin_capnp::metadata_chapters_params::Reader<'_>>()?,
             )?;
@@ -14133,7 +14871,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        96 => {
+        101 => {
             let first = read_metadata_record(
                 reader.get_root::<plugin_capnp::metadata_record::Reader<'_>>()?,
             )?;
@@ -14175,7 +14913,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        97 => {
+        102 => {
             let first = read_metadata_records(
                 reader.get_root::<plugin_capnp::metadata_records::Reader<'_>>()?,
             )?;
@@ -14219,7 +14957,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        98 => {
+        103 => {
             let first = read_metadata_records_reply(
                 reader.get_root::<plugin_capnp::metadata_records_reply::Reader<'_>>()?,
             )?;
@@ -14263,7 +15001,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        99 => {
+        104 => {
             let first = read_metadata_chapter(
                 reader.get_root::<plugin_capnp::metadata_chapter::Reader<'_>>()?,
             )?;
@@ -14307,7 +15045,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        100 => {
+        105 => {
             let first = read_metadata_chapters(
                 reader.get_root::<plugin_capnp::metadata_chapters::Reader<'_>>()?,
             )?;
@@ -14351,7 +15089,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        101 => {
+        106 => {
             let first = read_metadata_chapters_reply(
                 reader.get_root::<plugin_capnp::metadata_chapters_reply::Reader<'_>>()?,
             )?;
@@ -14395,7 +15133,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        102 => {
+        107 => {
             let first = read_cover_fetch_params(
                 reader.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
             )?;
@@ -14439,7 +15177,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        103 => {
+        108 => {
             let first = read_cover_condition(
                 reader.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?,
             )?;
@@ -14481,7 +15219,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        104 => {
+        109 => {
             let first =
                 read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -14522,7 +15260,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        105 => {
+        110 => {
             let first =
                 read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -14563,7 +15301,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        106 => {
+        111 => {
             let first = read_cover_images_reply(
                 reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
             )?;
@@ -14607,7 +15345,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        107 => {
+        112 => {
             let first = read_metadata_file_record(
                 reader.get_root::<plugin_capnp::metadata_file_record::Reader<'_>>()?,
             )?;
@@ -14651,7 +15389,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        108 => {
+        113 => {
             let first = read_metadata_file_parse_params(
                 reader.get_root::<plugin_capnp::metadata_file_parse_params::Reader<'_>>()?,
             )?;
@@ -14695,7 +15433,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        109 => {
+        114 => {
             let first = read_metadata_file_parsed(
                 reader.get_root::<plugin_capnp::metadata_file_parsed::Reader<'_>>()?,
             )?;
@@ -14739,7 +15477,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        110 => {
+        115 => {
             let first = read_metadata_file_parse_reply(
                 reader.get_root::<plugin_capnp::metadata_file_parse_reply::Reader<'_>>()?,
             )?;
@@ -14783,7 +15521,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        111 => {
+        116 => {
             let first = read_metadata_audio_file(
                 reader.get_root::<plugin_capnp::metadata_audio_file::Reader<'_>>()?,
             )?;
@@ -14827,7 +15565,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        112 => {
+        117 => {
             let first = read_metadata_file_render_params(
                 reader.get_root::<plugin_capnp::metadata_file_render_params::Reader<'_>>()?,
             )?;
@@ -14871,7 +15609,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        113 => {
+        118 => {
             let first = read_metadata_file_rendered(
                 reader.get_root::<plugin_capnp::metadata_file_rendered::Reader<'_>>()?,
             )?;
@@ -14915,7 +15653,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        114 => {
+        119 => {
             let first = read_metadata_file_render_reply(
                 reader.get_root::<plugin_capnp::metadata_file_render_reply::Reader<'_>>()?,
             )?;
@@ -14959,7 +15697,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        115 => {
+        120 => {
             let first = read_notification_field(
                 reader.get_root::<plugin_capnp::notification_field::Reader<'_>>()?,
             )?;
@@ -15003,7 +15741,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        116 => {
+        121 => {
             let first = read_notification_message(
                 reader.get_root::<plugin_capnp::notification_message::Reader<'_>>()?,
             )?;
@@ -15047,7 +15785,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        117 => {
+        122 => {
             let first = read_notify_destination(
                 reader.get_root::<plugin_capnp::notify_destination::Reader<'_>>()?,
             )?;
@@ -15091,7 +15829,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        118 => {
+        123 => {
             let first = read_notify_send_params(
                 reader.get_root::<plugin_capnp::notify_send_params::Reader<'_>>()?,
             )?;
@@ -15135,7 +15873,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        119 => {
+        124 => {
             let first =
                 read_notify_sent(reader.get_root::<plugin_capnp::notify_sent::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -15176,7 +15914,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        120 => {
+        125 => {
             let first = read_notify_send_reply(
                 reader.get_root::<plugin_capnp::notify_send_reply::Reader<'_>>()?,
             )?;
@@ -15220,7 +15958,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        121 => {
+        126 => {
             let first = read_notify_validate_params(
                 reader.get_root::<plugin_capnp::notify_validate_params::Reader<'_>>()?,
             )?;
@@ -15264,7 +16002,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        122 => {
+        127 => {
             let first = read_notify_validated(
                 reader.get_root::<plugin_capnp::notify_validated::Reader<'_>>()?,
             )?;
@@ -15308,7 +16046,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        123 => {
+        128 => {
             let first = read_notify_validate_reply(
                 reader.get_root::<plugin_capnp::notify_validate_reply::Reader<'_>>()?,
             )?;
@@ -15352,7 +16090,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        124 => {
+        129 => {
             let first = read_notify_raise_params(
                 reader.get_root::<plugin_capnp::notify_raise_params::Reader<'_>>()?,
             )?;
@@ -15396,7 +16134,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        125 => {
+        130 => {
             let first =
                 read_notify_raised(reader.get_root::<plugin_capnp::notify_raised::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -15437,7 +16175,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        126 => {
+        131 => {
             let first = read_notify_raise_reply(
                 reader.get_root::<plugin_capnp::notify_raise_reply::Reader<'_>>()?,
             )?;
@@ -15481,7 +16219,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        127 => {
+        132 => {
             let first =
                 read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -15522,7 +16260,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        128 => {
+        133 => {
             let first =
                 read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -15563,7 +16301,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        129 => {
+        134 => {
             let first = read_socket_auto_response(
                 reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
             )?;
@@ -15607,7 +16345,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        130 => {
+        135 => {
             let first = read_socket_connect_request(
                 reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
             )?;
@@ -15651,7 +16389,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        131 => {
+        136 => {
             let first =
                 read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -15692,7 +16430,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        132 => {
+        137 => {
             let first = read_socket_connect_reply(
                 reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
             )?;
@@ -15736,7 +16474,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        133 => {
+        138 => {
             let first =
                 read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -15777,7 +16515,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        134 => {
+        139 => {
             let first = read_socket_list_reply(
                 reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
             )?;
@@ -15821,7 +16559,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        135 => {
+        140 => {
             let first = read_socket_message_reply(
                 reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
             )?;
@@ -15865,7 +16603,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        136 => {
+        141 => {
             let first = read_socket_message_ok(
                 reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
             )?;
@@ -15909,7 +16647,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        137 => {
+        142 => {
             let first = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
@@ -15951,7 +16689,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        138 => {
+        143 => {
             let first =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -15992,7 +16730,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        139 => {
+        144 => {
             let first =
                 read_origin_header(reader.get_root::<plugin_capnp::origin_header::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -16033,7 +16771,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        140 => {
+        145 => {
             let first = read_origin_request(
                 reader.get_root::<plugin_capnp::origin_request::Reader<'_>>()?,
             )?;
@@ -16075,7 +16813,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        141 => {
+        146 => {
             let first = read_ingress_started(
                 reader.get_root::<plugin_capnp::ingress_started::Reader<'_>>()?,
             )?;
@@ -16117,7 +16855,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        142 => {
+        147 => {
             let first = read_ingress_start_reply(
                 reader.get_root::<plugin_capnp::ingress_start_reply::Reader<'_>>()?,
             )?;
@@ -16161,7 +16899,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        143 => {
+        148 => {
             let first = read_ingress_health(
                 reader.get_root::<plugin_capnp::ingress_health::Reader<'_>>()?,
             )?;
@@ -16203,7 +16941,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        144 => {
+        149 => {
             let first = read_ingress_health_reply(
                 reader.get_root::<plugin_capnp::ingress_health_reply::Reader<'_>>()?,
             )?;

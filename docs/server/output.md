@@ -527,6 +527,58 @@ asks for the library's copy.
 > no destination receives any copy of is acquired, the acquire fails at
 > once with "no destination accepts this book".
 
+## Upgrading to better files
+
+A store sometimes offers a better file than the one a book was first
+downloaded in: a higher bitrate, or a better codec. With
+`library.upgrade_quality` on, the daemon looks for those once a day and
+downloads them again.
+
+```sh
+bookclerk config set library.upgrade_quality true
+bookclerk config set library.upgrade_daily_limit 5
+```
+
+The same switch is **Upgrade quality automatically** under
+**Settings → Library**. It is off by default.
+
+Once a day for each store account, the daemon:
+
+1. walks the account's downloaded books, up to 512 of them, starting
+   where the last day's check stopped;
+2. asks the store which file the account would download for each today,
+   without downloading anything;
+3. compares that with the original copy the library holds (the
+   `original` quality copy's codec, AAC profile and bitrate, from its
+   [probe](media.md#what-a-stored-files-row-says));
+4. queues a forced download of each book that would get a better file,
+   at most `library.upgrade_daily_limit` per account (1 to 100,
+   default 5).
+
+An offer is better when:
+
+| Held file | Offer that wins |
+| --- | --- |
+| Lossy | A lossless file (FLAC or ALAC), at any bitrate |
+| MP3 | AAC, Vorbis, xHE-AAC or Opus at the same bitrate or higher |
+| AAC-LC, HE-AAC or Vorbis | xHE-AAC or Opus at the same bitrate or higher |
+| Any lossy codec | The same class of codec at 1.15 times the bitrate or more |
+| Lossless | Nothing |
+
+A file or an offer whose bitrate is unknown is never an upgrade, and
+neither is a Dolby (E-AC-3 or AC-4) stream on either side. Only books
+this account downloaded are compared, not a sibling account's copy or an
+upload.
+
+The download follows the account's [download pace](../internals/jobs.md#download-pacing),
+like auto-acquire. The new file replaces the held one, and the library's
+other copies are made again from it (see
+[Keeping several copies](#keeping-several-copies)). When the store asks
+the daemon to slow down, that account is left alone until the next day.
+
+Only stores that can say what they would deliver take part. Audible
+does (see [Stores](stores.md)); a store that can't is skipped.
+
 ## Several destinations
 
 An acquire writes to every destination that takes the book at the same

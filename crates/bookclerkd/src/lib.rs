@@ -37,10 +37,12 @@ mod download_requests;
 mod event_worker;
 mod heartbeat;
 mod http_error;
+mod ingress;
 mod intake;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod library_chapters;
 mod library_index;
 mod library_link;
 mod library_overrides;
@@ -65,6 +67,7 @@ mod playback;
 mod player;
 mod plugin_installs;
 mod profile;
+mod quality_upgrades;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
 mod request_queue_job;
@@ -461,6 +464,9 @@ struct HostParts {
     listen_reload: Arc<Notify>,
     /// Set once the process is shutting down.
     process_shutdown: Arc<AtomicBool>,
+    /// The library's ingress host, in [`HostMode::Listening`] only: the
+    /// listeners hand it their router for tunnel requests.
+    ingress: Option<Arc<ingress::DaemonIngress>>,
 }
 
 /// Opens the control plane and starts every background runtime (deployment
@@ -639,6 +645,19 @@ async fn assemble_host(
         covers: Arc::new(open_cover_service(&paths.cache_dir)),
     });
 
+    // Only a listening daemon serves a public address: the ingress host is
+    // set before the first reconcile so an active ingress starts with it.
+    let ingress = (mode == HostMode::Listening).then(|| {
+        let ingress = Arc::new(ingress::DaemonIngress::new(
+            &state,
+            tokio::runtime::Handle::current(),
+        ));
+        state
+            .deployment_runtime()
+            .set_ingress_host(Arc::clone(&ingress) as Arc<dyn bookclerk_plugin_host::IngressHost>);
+        ingress
+    });
+
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());
     if let Err(err) = config_authority::reconcile_deployments(&state).await {
         tracing::warn!(error = %err, "initial plugin deployment reconcile failed");
@@ -673,6 +692,7 @@ async fn assemble_host(
         config,
         listen_reload,
         process_shutdown,
+        ingress,
     })
 }
 
@@ -694,6 +714,7 @@ async fn serve_listeners(host: HostParts) -> anyhow::Result<()> {
         config,
         listen_reload,
         process_shutdown,
+        ingress,
     } = host;
     // The node API's TLS listener (acme / self_signed). Until it serves a
     // certificate the node API stays unmounted on every listener.
@@ -706,6 +727,10 @@ async fn serve_listeners(host: HostParts) -> anyhow::Result<()> {
             .await
             .gate
     };
+    // Tunnel requests reach the same router, gate included.
+    if let Some(ingress) = &ingress {
+        ingress.set_router(app.clone().layer(axum::Extension(node_api_gate.clone())));
+    }
 
     loop {
         if process_shutdown.load(Ordering::SeqCst) {
