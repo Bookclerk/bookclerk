@@ -340,6 +340,52 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
 }
 
 #[tokio::test]
+async fn an_offer_for_an_operational_type_reaches_no_patron() {
+    use bookclerk_library::notifications::PatronOffer;
+
+    let (_state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
+    let member = crate::auth::tests::portal_cookie_for(&library, "test", "member-ext").await;
+    // A stored offer left behind when its type became operational (`test`
+    // is the host's operational type).
+    library
+        .set_patron_offers(
+            "test",
+            &[PatronOffer {
+                plugin_instance_id: "telegram-1".into(),
+                default_on: true,
+            }],
+        )
+        .await
+        .expect("offer stored");
+    let (status, settings) = call(&app, Some(&member), "GET", "/api/me/notifications", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(settings["types"].as_array().unwrap().is_empty());
+
+    let catalog = super::NotificationCatalog {
+        types: vec![
+            super::NotificationTypeJson {
+                id: "relay:new_book".into(),
+                audience: NotificationAudience::Patron.wire_name().into(),
+                severity: "info".into(),
+                title: "New book".into(),
+                source: "relay".into(),
+            },
+            super::NotificationTypeJson {
+                id: "relay:sync_failed".into(),
+                audience: NotificationAudience::Operational.wire_name().into(),
+                severity: "warning".into(),
+                title: "Sync failed".into(),
+                source: "relay".into(),
+            },
+        ],
+        notifiers: Vec::new(),
+    };
+    assert!(catalog.patron_type("relay:new_book").is_some());
+    assert!(catalog.patron_type("relay:sync_failed").is_none());
+    assert!(catalog.patron_type("relay:gone").is_none());
+}
+
+#[tokio::test]
 async fn a_patron_reads_their_inbox_and_keeps_to_their_own_destinations() {
     let (_state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
     let member = crate::auth::tests::portal_cookie_for(&library, "test", "member-ext").await;

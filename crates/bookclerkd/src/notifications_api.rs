@@ -205,6 +205,15 @@ impl NotificationCatalog {
         self.types.iter().find(|t| t.id == id)
     }
 
+    /// The type `id`, when it is known and patrons choose it.
+    ///
+    /// A stored offer for a type that is gone, or that a plugin update
+    /// made operational, makes no notifier eligible for patrons.
+    fn patron_type(&self, id: &str) -> Option<&NotificationTypeJson> {
+        self.notification_type(id)
+            .filter(|t| t.audience == NotificationAudience::Patron.wire_name())
+    }
+
     /// The notifier instance `id`, when it is installed.
     fn notifier(&self, id: &str) -> Option<&NotifierJson> {
         self.notifiers.iter().find(|n| n.plugin_instance_id == id)
@@ -1202,17 +1211,18 @@ pub(crate) async fn get_my_settings(
         .personal_destinations(user)
         .await
         .map_err(|err| store_error("get_my_settings", err))?;
-    // Offers for a type no plugin declares any more stay stored until an
-    // administrator clears them; they make no notifier eligible.
+    // Offers for a type no plugin declares any more, or one that is now
+    // operational, stay stored until an administrator clears them; they
+    // make no notifier eligible.
     let offered: BTreeSet<String> = offers
         .iter()
-        .filter(|(type_id, _)| catalog.notification_type(type_id).is_some())
+        .filter(|(type_id, _)| catalog.patron_type(type_id).is_some())
         .flat_map(|(_, type_offers)| type_offers)
         .map(|o| o.plugin_instance_id.clone())
         .collect();
     let mut types = Vec::new();
     for (type_id, type_offers) in offers {
-        let Some(known) = catalog.notification_type(&type_id) else {
+        let Some(known) = catalog.patron_type(&type_id) else {
             continue;
         };
         let choice = choices.get(&type_id);
@@ -1472,7 +1482,7 @@ pub(crate) async fn post_my_destination(
         .await
         .map_err(|err| store_error("post_my_destination", err))?
         .iter()
-        .filter(|(type_id, _)| catalog.notification_type(type_id).is_some())
+        .filter(|(type_id, _)| catalog.patron_type(type_id).is_some())
         .flat_map(|(_, type_offers)| type_offers)
         .any(|o| o.plugin_instance_id == body.plugin_instance_id);
     if !offered {
