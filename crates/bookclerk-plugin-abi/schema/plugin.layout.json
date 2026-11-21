@@ -12084,6 +12084,16 @@
             "kind": "data"
           },
           "offset": 3
+        },
+        {
+          "name": "chapterKind",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ChapterKind"
+          },
+          "offset": 1
         }
       ]
     },
@@ -16428,6 +16438,15 @@
         "rating",
         "title",
         "author"
+      ]
+    },
+    "ChapterKind": {
+      "name": "ChapterKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "unknown",
+        "chapters",
+        "tracks"
       ]
     },
     "CliArgKind": {

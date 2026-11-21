@@ -2534,6 +2534,17 @@ struct FetchedFile {
   durationMs @4 :UInt64 $optional;
 }
 
+# What a storefront's chapter markers mark (`PlainFetch.chapterKind`).
+enum ChapterKind {
+  # The storefront does not say.
+  unknown @0;
+  # Literary chapters: what a listener would call the book's chapters.
+  chapters @1;
+  # Track or part boundaries: where the store cut its files, which need
+  # not fall on a chapter.
+  tracks @2;
+}
+
 # One chapter marker of a fetched title.
 struct ChapterMarker {
   # Chapter title.
@@ -2560,6 +2571,9 @@ struct PlainFetch {
   # during the fetch, as in `ScanPage.refreshedCredentials`. Empty when
   # nothing changed.
   refreshedCredentials @4 :Data $optional;
+  # What `chapters` marks. The host ranks literary chapters above track
+  # boundaries when it decides an edition's chapters.
+  chapterKind @5 :ChapterKind;
 }
 
 # Result union of `ContentSource.fetchTitle`.
