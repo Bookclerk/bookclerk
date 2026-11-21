@@ -175,6 +175,13 @@ input_from = "storage"
 side = "guest"
 artifacts = ["bookclerk"]
 
+[targets.r2_event]
+crate = "bookclerk-storage"
+boundary = "Cloudflare Queues HTTP pull replies and the R2 event notifications in them, read by the r2 guest into change-feed entries"
+input_from = "storage"
+side = "guest"
+artifacts = ["bookclerk"]
+
 [targets.socket_request]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's host-brokered socket request: the Sockets.connect URL, headers, subprotocols, heartbeat pairs and attachment, and the SocketMessage the host delivers to a SocketHandler"
