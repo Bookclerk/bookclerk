@@ -92,6 +92,8 @@ pub enum Entrypoint {
     MetadataFiles,
     /// Notification delivery: `send` and `validateDestination` (`Notifier`).
     Notifier,
+    /// Public address provider: `start`, `health` and `stop` (`Ingress`).
+    Ingress,
 }
 
 impl Entrypoint {
@@ -109,6 +111,7 @@ impl Entrypoint {
             Self::Covers => "covers",
             Self::MetadataFiles => "metadataFiles",
             Self::Notifier => "notifier",
+            Self::Ingress => "ingress",
         }
     }
 
@@ -126,6 +129,7 @@ impl Entrypoint {
             "covers" => Some(Self::Covers),
             "metadataFiles" => Some(Self::MetadataFiles),
             "notifier" => Some(Self::Notifier),
+            "ingress" => Some(Self::Ingress),
             _ => None,
         }
     }
@@ -144,6 +148,7 @@ impl From<Entrypoint> for plugin_capnp::Entrypoint {
             Entrypoint::Covers => Self::Covers,
             Entrypoint::MetadataFiles => Self::MetadataFiles,
             Entrypoint::Notifier => Self::Notifier,
+            Entrypoint::Ingress => Self::Ingress,
         }
     }
 }
@@ -161,6 +166,7 @@ impl From<plugin_capnp::Entrypoint> for Entrypoint {
             plugin_capnp::Entrypoint::Covers => Self::Covers,
             plugin_capnp::Entrypoint::MetadataFiles => Self::MetadataFiles,
             plugin_capnp::Entrypoint::Notifier => Self::Notifier,
+            plugin_capnp::Entrypoint::Ingress => Self::Ingress,
         }
     }
 }
@@ -3710,6 +3716,66 @@ pub struct SocketClosed {
     /// The socket's last attachment.
     #[serde(default, with = "crate::json_bytes::b64")]
     pub attachment: Vec<u8>,
+}
+
+/// One header field on an `Origin.fetch` request or response.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OriginHeader {
+    /// Field name, an HTTP token; the host refuses hop-by-hop names.
+    #[serde(default)]
+    pub name: String,
+    /// Field value, visible ASCII, spaces and tabs. May carry a credential (a
+    /// cookie, an authorization): the host never logs it.
+    #[serde(default)]
+    pub value: String,
+}
+
+/// The head of one public request a relay `ingress` plugin carries
+/// (`Origin.fetch`). Its scheme is `https` and its authority is the library's
+/// public origin; neither is the plugin's to choose.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OriginRequest {
+    /// Request method, an HTTP token (`GET`, `PUT`, ...).
+    #[serde(default)]
+    pub method: String,
+    /// Path and query in origin form (`/api/status?x=1`), at most
+    /// `maxOriginTargetBytes`.
+    #[serde(default)]
+    pub target: String,
+    /// Request header fields in order, at most `maxOriginHeaders` and
+    /// `maxOriginHeaderBytes`. `host` and forwarding headers are ignored.
+    #[serde(default)]
+    pub headers: Vec<OriginHeader>,
+    /// IP address of the client, from the provider's own connection metadata;
+    /// empty when the provider gives none.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_address: Option<String>,
+}
+
+/// Success payload of `Ingress.start`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngressStarted {
+    /// The public origin now serving: `https://` and a host name, no port, path
+    /// or trailing slash, at most `maxIngressOriginBytes` after the scheme.
+    #[serde(default)]
+    pub origin: String,
+}
+
+/// Success payload of `Ingress.health`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngressHealth {
+    /// True when the address is serving.
+    #[serde(default)]
+    pub serving: bool,
+    /// Why it is not serving, for the operator; empty when serving.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
@@ -9002,9 +9068,200 @@ pub fn read_socket_closed(
     })
 }
 
+/// Encode a [`OriginHeader`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_origin_header(
+    mut b: plugin_capnp::origin_header::Builder<'_>,
+    v: &OriginHeader,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_value(&v.value);
+    Ok(())
+}
+
+/// Decode a [`OriginHeader`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_origin_header(
+    r: plugin_capnp::origin_header::Reader<'_>,
+) -> capnp::Result<OriginHeader> {
+    Ok(OriginHeader {
+        name: r.get_name()?.to_string()?,
+        value: r.get_value()?.to_string()?,
+    })
+}
+
+/// Encode a [`OriginRequest`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_origin_request(
+    mut b: plugin_capnp::origin_request::Builder<'_>,
+    v: &OriginRequest,
+) -> capnp::Result<()> {
+    b.set_method(&v.method);
+    b.set_target(&v.target);
+    {
+        let mut items = b.reborrow().init_headers(list_len(v.headers.len())?);
+        for (i, item) in v.headers.iter().enumerate() {
+            write_origin_header(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    if let Some(value) = &v.client_address {
+        b.set_client_address(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`OriginRequest`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_origin_request(
+    r: plugin_capnp::origin_request::Reader<'_>,
+) -> capnp::Result<OriginRequest> {
+    Ok(OriginRequest {
+        method: r.get_method()?.to_string()?,
+        target: r.get_target()?.to_string()?,
+        headers: r
+            .get_headers()?
+            .iter()
+            .map(|item| read_origin_header(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        client_address: opt_text(r.get_client_address()?)?,
+    })
+}
+
+/// Encode a [`IngressStarted`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ingress_started(
+    mut b: plugin_capnp::ingress_started::Builder<'_>,
+    v: &IngressStarted,
+) -> capnp::Result<()> {
+    b.set_origin(&v.origin);
+    Ok(())
+}
+
+/// Decode a [`IngressStarted`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ingress_started(
+    r: plugin_capnp::ingress_started::Reader<'_>,
+) -> capnp::Result<IngressStarted> {
+    Ok(IngressStarted {
+        origin: r.get_origin()?.to_string()?,
+    })
+}
+
+/// Encode a `IngressStartReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_ingress_start_reply(
+    b: plugin_capnp::ingress_start_reply::Builder<'_>,
+    v: &Result<IngressStarted, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_ingress_started(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `IngressStartReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_ingress_start_reply(
+    r: plugin_capnp::ingress_start_reply::Reader<'_>,
+) -> capnp::Result<Result<IngressStarted, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::ingress_start_reply::Ok(ok) => Ok(Ok(read_ingress_started(ok?)?)),
+        plugin_capnp::ingress_start_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`IngressHealth`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ingress_health(
+    mut b: plugin_capnp::ingress_health::Builder<'_>,
+    v: &IngressHealth,
+) -> capnp::Result<()> {
+    b.set_serving(v.serving);
+    if let Some(value) = &v.detail {
+        b.set_detail(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`IngressHealth`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ingress_health(
+    r: plugin_capnp::ingress_health::Reader<'_>,
+) -> capnp::Result<IngressHealth> {
+    Ok(IngressHealth {
+        serving: r.get_serving(),
+        detail: opt_text(r.get_detail()?)?,
+    })
+}
+
+/// Encode a `IngressHealthReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_ingress_health_reply(
+    b: plugin_capnp::ingress_health_reply::Builder<'_>,
+    v: &Result<IngressHealth, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_ingress_health(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `IngressHealthReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_ingress_health_reply(
+    r: plugin_capnp::ingress_health_reply::Reader<'_>,
+) -> capnp::Result<Result<IngressHealth, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::ingress_health_reply::Ok(ok) => Ok(Ok(read_ingress_health(ok?)?)),
+        plugin_capnp::ingress_health_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 139;
+pub const READ_ANY_COUNT: u8 = 145;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -9646,6 +9903,35 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
         138 => {
             let _ =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
+        }
+        139 => {
+            let _ =
+                read_origin_header(reader.get_root::<plugin_capnp::origin_header::Reader<'_>>()?)?;
+        }
+        140 => {
+            let _ = read_origin_request(
+                reader.get_root::<plugin_capnp::origin_request::Reader<'_>>()?,
+            )?;
+        }
+        141 => {
+            let _ = read_ingress_started(
+                reader.get_root::<plugin_capnp::ingress_started::Reader<'_>>()?,
+            )?;
+        }
+        142 => {
+            let _ = read_ingress_start_reply(
+                reader.get_root::<plugin_capnp::ingress_start_reply::Reader<'_>>()?,
+            )?;
+        }
+        143 => {
+            let _ = read_ingress_health(
+                reader.get_root::<plugin_capnp::ingress_health::Reader<'_>>()?,
+            )?;
+        }
+        144 => {
+            let _ = read_ingress_health_reply(
+                reader.get_root::<plugin_capnp::ingress_health_reply::Reader<'_>>()?,
+            )?;
         }
         _ => {
             return Err(capnp::Error::failed(format!(
@@ -15623,6 +15909,261 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
                         "round trip changed the decoded SocketClosed value".to_string(),
+                    ));
+                }
+            }
+        }
+        139 => {
+            let first =
+                read_origin_header(reader.get_root::<plugin_capnp::origin_header::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_origin_header(
+                message.init_root::<plugin_capnp::origin_header::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_origin_header(again.get_root::<plugin_capnp::origin_header::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_origin_header(
+                    message.init_root::<plugin_capnp::origin_header::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded OriginHeader value".to_string(),
+                    ));
+                }
+            }
+        }
+        140 => {
+            let first = read_origin_request(
+                reader.get_root::<plugin_capnp::origin_request::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_origin_request(
+                message.init_root::<plugin_capnp::origin_request::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_origin_request(again.get_root::<plugin_capnp::origin_request::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_origin_request(
+                    message.init_root::<plugin_capnp::origin_request::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded OriginRequest value".to_string(),
+                    ));
+                }
+            }
+        }
+        141 => {
+            let first = read_ingress_started(
+                reader.get_root::<plugin_capnp::ingress_started::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ingress_started(
+                message.init_root::<plugin_capnp::ingress_started::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ingress_started(again.get_root::<plugin_capnp::ingress_started::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ingress_started(
+                    message.init_root::<plugin_capnp::ingress_started::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded IngressStarted value".to_string(),
+                    ));
+                }
+            }
+        }
+        142 => {
+            let first = read_ingress_start_reply(
+                reader.get_root::<plugin_capnp::ingress_start_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ingress_start_reply(
+                message.init_root::<plugin_capnp::ingress_start_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ingress_start_reply(
+                    again.get_root::<plugin_capnp::ingress_start_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ingress_start_reply(
+                    message.init_root::<plugin_capnp::ingress_start_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded IngressStartReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        143 => {
+            let first = read_ingress_health(
+                reader.get_root::<plugin_capnp::ingress_health::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ingress_health(
+                message.init_root::<plugin_capnp::ingress_health::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ingress_health(again.get_root::<plugin_capnp::ingress_health::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ingress_health(
+                    message.init_root::<plugin_capnp::ingress_health::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded IngressHealth value".to_string(),
+                    ));
+                }
+            }
+        }
+        144 => {
+            let first = read_ingress_health_reply(
+                reader.get_root::<plugin_capnp::ingress_health_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ingress_health_reply(
+                message.init_root::<plugin_capnp::ingress_health_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ingress_health_reply(
+                    again.get_root::<plugin_capnp::ingress_health_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ingress_health_reply(
+                    message.init_root::<plugin_capnp::ingress_health_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded IngressHealthReply value".to_string(),
                     ));
                 }
             }

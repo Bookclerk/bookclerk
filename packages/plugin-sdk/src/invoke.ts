@@ -1118,6 +1118,29 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       okFileBytes,
     ),
   },
+  Ingress: {
+    start: withoutParams(
+      "ingress",
+      "start",
+      W.IngressStartParamsCodec,
+      W.IngressStartResultsCodec,
+      okPass,
+    ),
+    health: withoutParams(
+      "ingress",
+      "health",
+      W.IngressHealthParamsCodec,
+      W.IngressHealthResultsCodec,
+      okPass,
+    ),
+    stop: withoutParams(
+      "ingress",
+      "stop",
+      W.IngressStopParamsCodec,
+      W.IngressStopResultsCodec,
+      okEmpty,
+    ),
+  },
   Database: {
     openSession: spec<W.DatabaseOpenSessionParams, W.DatabaseOpenSessionResults["result"]>({
       params: W.DatabaseOpenSessionParamsCodec,
