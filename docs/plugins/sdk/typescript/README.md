@@ -49,6 +49,7 @@ extending its base:
 | `entrypoints = ["covers"]` | `Covers` | `CoverEntrypoint` |
 | `entrypoints = ["metadataFiles"]` | `MetadataFiles` | `MetadataFilesEntrypoint` |
 | `entrypoints = ["notifier"]` | `Notifier` | `NotifierEntrypoint` |
+| `entrypoints = ["ingress"]` | `Ingress` | `IngressEntrypoint` |
 | `entrypoints = ["ai"]` | `Ai` | `AiEntrypoint` |
 
 ```ts
@@ -133,6 +134,10 @@ resumably; see
 A storefront's `scan` can hand its paging to `scanPage(params, fetch)`,
 which slices the store's own pages into replies the host accepts; see
 [Paged scans](../../abi.md#paged-scans).
+A relay [`[ingress]`](../../manifest.md#ingress-public-address) plugin also
+gets `ORIGIN` while it is the active ingress; `ORIGIN.fetch(request, {
+clientAddress })` hands one request to the library (see
+[Public addresses](../../abi.md#public-addresses-ingress)).
 Generate the `Env` type from `plugin.toml`:
 
 ```bash
@@ -178,6 +183,25 @@ handler doesn't depend on memory a restart would lose. Without a
 A remote library whose message announced a new user returns
 `{ pollEvents: true }` from `webSocketMessage`, and the host calls
 `pollEvents` right away instead of at its next scheduled poll.
+
+## Network grant
+
+`this.env.NETWORK` is the grant in effect (see
+[Network grant](../../abi.md#network-grant-envnetwork)). A setting whose
+destination still awaits approval shows `state: "pending"`, and a refused
+`fetch()` answers `403` with an `x-bookclerk-error: network_not_granted`
+header:
+
+```ts
+const row = this.env.NETWORK?.settings.find((s) => s.key === "server_url");
+if (row?.state === "pending") {
+  throw new Error(`Approve ${row.destination} on the plugin's consent form`);
+}
+const res = await fetch(`${this.env.CONFIG.server_url}/api/libraries`);
+if (res.headers.get("x-bookclerk-error") === "network_not_granted") {
+  // The grant does not cover it: report it, don't retry.
+}
+```
 
 ## Testing database code
 

@@ -21,6 +21,8 @@ export const SCOPE_FIELDS: readonly { value: ScopeField; label: string }[] = [
   { value: "series", label: "Series" },
   { value: "author", label: "Author" },
   { value: "narrator", label: "Narrator" },
+  { value: "tag", label: "Library tag" },
+  { value: "collection", label: "Collection" },
 ];
 
 /** The rule effects, in menu order, with their labels. */

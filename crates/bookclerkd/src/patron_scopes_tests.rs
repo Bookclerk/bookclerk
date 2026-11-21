@@ -530,6 +530,23 @@ async fn discover_answers_drop_prices_for_a_patron_who_may_not_see_them() {
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
+#[tokio::test]
+async fn a_title_meta_batch_answers_one_incomplete_flag_per_query() {
+    let (_state, app, library) = phase2_harness("op-token-title-meta-batch").await;
+    let member_cookie = portal_cookie_for(&library, "test", "member-ext").await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/discover/title-meta/batch",
+        &member_cookie,
+        Some(r#"{"queries":[]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["results"], serde_json::json!([]), "{body}");
+    assert_eq!(body["incomplete"], serde_json::json!([]), "{body}");
+}
+
 #[test]
 fn a_wishlist_row_keeps_its_stores_and_loses_prices_and_links() {
     let mut row: bookclerk_library::TitleRequestRecord =

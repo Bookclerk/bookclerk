@@ -874,6 +874,29 @@
       "error": "plugin.toml: [queues.producers][0] binding collides with another binding"
     },
     {
+      "name": "relay ingress plugin",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ingress\"]\n",
+      "tables": "[ingress]\nkind = \"relay\"\n",
+      "error": null
+    },
+    {
+      "name": "direct ingress plugin",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ingress\"]\n",
+      "tables": "[ingress]\nkind = \"direct\"\n",
+      "error": null
+    },
+    {
+      "name": "ingress plugin without the table",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ingress\"]\n",
+      "error": "plugin.toml: `[ingress]` is required for a plugin with the `ingress` entrypoint (set `kind` to \"relay\" or \"direct\")"
+    },
+    {
+      "name": "ingress table without the entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[ingress]\nkind = \"relay\"\n",
+      "error": "plugin.toml: `[ingress]` needs the `ingress` entrypoint"
+    },
+    {
       "name": "model plugin serving text embeddings",
       "top": "runtime = \"workerd\"\nentrypoints = [\"ai\"]\n",
       "tables": "[ai]\nserves = [\"textEmbeddings\"]\n",

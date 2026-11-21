@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 11] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 12] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
@@ -25,6 +25,7 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 11] = [
     Entrypoint::Covers,
     Entrypoint::MetadataFiles,
     Entrypoint::Notifier,
+    Entrypoint::Ingress,
     Entrypoint::Ai,
 ];
 
@@ -33,10 +34,11 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 11] = [
 ///
 /// Crons are rejected beside these, and job triggers beside them stay on
 /// that registry's session instead of making the plugin an integration.
-pub const REGISTRY_ENTRYPOINTS: [Entrypoint; 3] = [
+pub const REGISTRY_ENTRYPOINTS: [Entrypoint; 4] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
+    Entrypoint::Ingress,
 ];
 
 /// Handler family an [`Entrypoint`] belongs to.
@@ -51,6 +53,7 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         Entrypoint::Storefront => PluginFamily::Source,
         Entrypoint::Storage => PluginFamily::Output,
         Entrypoint::DatabaseAdapter => PluginFamily::Database,
+        Entrypoint::Ingress => PluginFamily::Ingress,
         Entrypoint::RemoteLibrary
         | Entrypoint::Cli
         | Entrypoint::Oidc
@@ -67,7 +70,7 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
 ///
 /// Derived from the exported [`Entrypoint`]s and declared triggers (see
 /// [`PluginManifest::families`]); never written to `plugin.toml`. Wire values
-/// are lowercase (`source`, `integration`, `output`, `database`).
+/// are lowercase (`source`, `integration`, `output`, `database`, `ingress`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginFamily {
@@ -81,14 +84,18 @@ pub enum PluginFamily {
     Output,
     /// Library database backend (`DatabaseAdapter` entrypoint).
     Database,
+    /// Public address provider (`Ingress` entrypoint): a relay or a
+    /// dynamic DNS name for the library.
+    Ingress,
 }
 
 impl PluginFamily {
     /// Every family in settings-prefix priority order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Database,
         Self::Source,
         Self::Output,
+        Self::Ingress,
         Self::Integration,
     ];
 
@@ -96,7 +103,8 @@ impl PluginFamily {
     ///
     /// # Returns
     ///
-    /// One of `"source"`, `"integration"`, `"output"`, or `"database"`.
+    /// One of `"source"`, `"integration"`, `"output"`, `"database"`, or
+    /// `"ingress"`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -104,6 +112,7 @@ impl PluginFamily {
             Self::Integration => "integration",
             Self::Output => "output",
             Self::Database => "database",
+            Self::Ingress => "ingress",
         }
     }
 
@@ -290,6 +299,38 @@ impl AcquireManifest {
             }
         }
         Ok(())
+    }
+}
+
+/// `[ingress]`: how an `ingress` plugin gives the library its public
+/// address. Required for that entrypoint and forbidden without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngressManifest {
+    /// Whether requests arrive through `ORIGIN` or straight at the daemon.
+    pub kind: IngressKind,
+}
+
+/// How public requests reach the library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IngressKind {
+    /// The provider holds the public address and relays each request to the
+    /// plugin, which hands it to the library through the `ORIGIN` binding.
+    Relay,
+    /// The public address points at the daemon itself (port mapping or
+    /// dynamic DNS); the plugin only keeps the address current and never
+    /// receives `ORIGIN`.
+    Direct,
+}
+
+impl IngressKind {
+    /// The `plugin.toml` spelling: `"relay"` or `"direct"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Relay => "relay",
+            Self::Direct => "direct",
+        }
     }
 }
 
@@ -903,6 +944,9 @@ pub const DEFAULT_KV_BINDING: &str = "KV";
 pub const DEFAULT_EVENTS_BINDING: &str = "EVENTS";
 /// Binding name the host uses for operator config (`[vars]`).
 pub const CONFIG_BINDING: &str = "CONFIG";
+/// Binding name the host uses for the network grant (`env.NETWORK`); no
+/// declared binding may take it.
+pub const NETWORK_BINDING: &str = "NETWORK";
 
 /// Most `[triggers] crons` entries one manifest may declare.
 pub const MAX_CRON_TRIGGERS: usize = 8;
@@ -1513,6 +1557,11 @@ pub struct PluginManifest {
     /// (`[[notifications.types]]`).
     #[serde(default, skip_serializing_if = "NotificationsManifest::is_default")]
     pub notifications: NotificationsManifest,
+    /// How the plugin serves the library publicly (`[ingress]`): required
+    /// for plugins that export the `ingress` entrypoint and forbidden for
+    /// every other plugin; see [`IngressManifest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress: Option<IngressManifest>,
     /// Model tasks the plugin serves and calls (`[ai]`); see
     /// [`AiManifest`].
     #[serde(default, skip_serializing_if = "AiManifest::is_default")]
@@ -1864,13 +1913,13 @@ impl PluginManifest {
     /// Handler families this plugin belongs to, in
     /// [`PluginFamily::ALL`] priority order.
     ///
-    /// A plugin joins the `Source` / `Output` / `Database` families through
+    /// A plugin joins the `Source` / `Output` / `Database` / `Ingress` families through
     /// the matching named entrypoint and the `Integration` family through
     /// event consumers, queue consumers, crons, `RemoteLibrary`, `Cli`,
     /// `Oidc`, `Metadata`, `Covers`, `MetadataFiles`, or `Notifier`.
     ///
     /// Job triggers make a plugin an integration only when it has no
-    /// `storefront`, `storage` or `databaseAdapter` entrypoint. Beside one of
+    /// `storefront`, `storage`, `databaseAdapter` or `ingress` entrypoint. Beside one of
     /// those, jobs run on that entrypoint's session (the host's `stream_copy`
     /// job runs on the storage guest's destination session), so the plugin
     /// stays in that one family and a deployment registers it there instead
@@ -1887,6 +1936,7 @@ impl PluginManifest {
                 PluginFamily::Source => self.has_entrypoint(Entrypoint::Storefront),
                 PluginFamily::Output => self.has_entrypoint(Entrypoint::Storage),
                 PluginFamily::Database => self.has_entrypoint(Entrypoint::DatabaseAdapter),
+                PluginFamily::Ingress => self.has_entrypoint(Entrypoint::Ingress),
                 PluginFamily::Integration => {
                     self.consumes_events()
                         || self.consumes_queues()
@@ -1912,7 +1962,7 @@ impl PluginManifest {
     /// Primary handler family: the first of [`Self::families`].
     ///
     /// Picks the `config.toml` settings prefix (`database.*` > `sources.*` >
-    /// `output.*` > `integrations.*`) and the API grouping.
+    /// `output.*` > `ingress.*` > `integrations.*`) and the API grouping.
     ///
     /// # Returns
     ///
@@ -2205,6 +2255,31 @@ impl PluginManifest {
         // The wire rules are the same; run them so the two cannot drift.
         bookclerk_plugin_abi::validate_media_support(&media.to_wire(), storefront, metadata)
             .map_err(|err| Error::message(format!("plugin.toml: `[media]`: {err}")))
+    }
+
+    /// Checks the `[ingress]` table against the plugin's entrypoints.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when an `ingress` plugin has no table or
+    /// another plugin has one.
+    fn validate_ingress(&self) -> Result<()> {
+        match (
+            self.has_entrypoint(Entrypoint::Ingress),
+            self.ingress.is_some(),
+        ) {
+            (true, false) => Err(Error::message(
+                "plugin.toml: `[ingress]` is required for a plugin with the `ingress` \
+                 entrypoint (set `kind` to \"relay\" or \"direct\")",
+            )),
+            (false, true) => Err(Error::message(
+                "plugin.toml: `[ingress]` needs the `ingress` entrypoint",
+            )),
+            (true, true) | (false, false) => Ok(()),
+        }
     }
 
     /// Checks the `[metadata_files]` table against the plugin's entrypoints.
@@ -2615,6 +2690,7 @@ impl PluginManifest {
         self.validate_metadata_files()?;
         self.validate_notifier()?;
         self.validate_notification_types()?;
+        self.validate_ingress()?;
         self.validate_ai()?;
         if self.credentials.is_some() && !self.has_entrypoint(Entrypoint::Storefront) {
             return Err(Error::message(
@@ -2701,7 +2777,8 @@ impl PluginManifest {
             if crate::egress::normalize_domain_pattern(domain).is_none() {
                 return Err(Error::message(format!(
                     "plugin.toml: capabilities.network.domains entry `{domain}` is not a valid \
-                     hostname (IDNA ToASCII failed or percent-encoded host)"
+                     hostname with an optional `:port` (IDNA ToASCII failed, percent-encoded \
+                     host, a port on `*`, or a port that is not 1-65535 in plain digits)"
                 )));
             }
         }
@@ -2781,6 +2858,12 @@ impl PluginManifest {
                          `[A-Z][A-Z0-9_]*` and at most {MAX_DATABASE_BINDING_NAME_LEN} chars"
                     )));
                 }
+                if name == NETWORK_BINDING {
+                    return Err(Error::message(
+                        "plugin.toml: [[databases]] binding `NETWORK` is reserved for the network \
+                         grant",
+                    ));
+                }
                 if !seen.insert(name) {
                     return Err(Error::message(format!(
                         "plugin.toml: [[databases]] binding `{name}` is duplicated"
@@ -2837,7 +2920,7 @@ impl PluginManifest {
                         "plugin.toml: [{table}][{index}] binding collides with another binding"
                     )));
                 }
-                if name == CONFIG_BINDING || seen.contains(name) {
+                if name == CONFIG_BINDING || name == NETWORK_BINDING || seen.contains(name) {
                     return Err(Error::message(format!(
                         "plugin.toml: [{table}][{index}] binding collides with another binding"
                     )));
@@ -3126,6 +3209,7 @@ mod tests {
                 PluginFamily::Integration,
                 PluginFamily::Integration,
                 PluginFamily::Integration,
+                PluginFamily::Ingress,
                 PluginFamily::Integration,
             ]
         );
@@ -4604,6 +4688,19 @@ binding = "OAUTH"
                 && !msg.contains("OAUTH")
         });
         assert!(reserved, "{}", u8::from(reserved));
+
+        // `env.NETWORK` is the host's network grant; no binding may take it.
+        let network = PluginManifest::parse(&native(
+            r#"
+[[kv_namespaces]]
+binding = "NETWORK"
+"#,
+        ))
+        .is_err_and(|err| {
+            err.to_string()
+                .contains("[kv_namespaces][0] binding collides")
+        });
+        assert!(network, "{}", u8::from(network));
 
         let pattern = PluginManifest::parse(&native(
             r#"

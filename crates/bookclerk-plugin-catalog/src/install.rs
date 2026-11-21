@@ -1813,38 +1813,42 @@ mod tests {
         })
     }
 
+    /// Writes a tiny plugin archive and returns `(path, sha256)`. It is a
+    /// zip when `filename` ends in `.zip` or on Windows (the installer reads
+    /// `windows-*` artifacts as zip whatever the name), a gzipped tar
+    /// otherwise.
     fn make_named_archive(dir: &Path, filename: &str, id: &str) -> (PathBuf, String) {
         let archive = under_tmp(dir, filename);
-        {
-            let file = fs::File::create(&archive).unwrap();
-            let enc = GzEncoder::new(file, Compression::default());
-            let mut tar = Builder::new(enc);
-            let toml = format!(
-                "api_version = 3\nid = \"{id}\"\ncommand = \"./echo\"\nentrypoints = [\"cli\"]\n\
-                 [capabilities.network]\nmode = \"outbound\"\n"
-            );
-            let toml = toml.into_bytes();
-            let mut h = tar::Header::new_gnu();
-            h.set_size(toml.len() as u64);
-            h.set_mode(0o644);
-            h.set_cksum();
-            tar.append_data(&mut h, "plugin.toml", toml.as_slice())
-                .unwrap();
-            let bin = b"#!/bin/sh\necho ok\n";
-            let mut h2 = tar::Header::new_gnu();
-            h2.set_size(bin.len() as u64);
-            h2.set_mode(0o755);
-            h2.set_cksum();
-            tar.append_data(&mut h2, "echo", &bin[..]).unwrap();
-            let data = b"packaged";
-            let mut h3 = tar::Header::new_gnu();
-            h3.set_size(data.len() as u64);
-            h3.set_mode(0o644);
-            h3.set_cksum();
-            tar.append_data(&mut h3, "data/packaged.txt", &data[..])
-                .unwrap();
-            let enc = tar.into_inner().unwrap();
-            enc.finish().unwrap();
+        let toml = format!(
+            "api_version = 3\nid = \"{id}\"\ncommand = \"./echo\"\nentrypoints = [\"cli\"]\n\
+             [capabilities.network]\nmode = \"outbound\"\n"
+        );
+        let entries: [(&str, &[u8], u32); 3] = [
+            ("plugin.toml", toml.as_bytes(), 0o644),
+            ("echo", b"#!/bin/sh\necho ok\n", 0o755),
+            ("data/packaged.txt", b"packaged", 0o644),
+        ];
+        let file = fs::File::create(&archive).unwrap();
+        if cfg!(windows) || filename.ends_with(".zip") {
+            let mut zip = zip::ZipWriter::new(file);
+            for (name, bytes, mode) in entries {
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated)
+                    .unix_permissions(mode);
+                zip.start_file(name, options).unwrap();
+                std::io::Write::write_all(&mut zip, bytes).unwrap();
+            }
+            zip.finish().unwrap();
+        } else {
+            let mut tar = Builder::new(GzEncoder::new(file, Compression::default()));
+            for (name, bytes, mode) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(mode);
+                header.set_cksum();
+                tar.append_data(&mut header, name, bytes).unwrap();
+            }
+            tar.into_inner().unwrap().finish().unwrap();
         }
         let digest = sha256_file(&archive).unwrap();
         (archive, digest)
@@ -2506,7 +2510,8 @@ mod tests {
             "echo"
         );
 
-        let (other, other_digest) = make_named_archive(tmp.path(), "other.tar.gz", "other");
+        // A zip, so the zip fixture path runs on every host.
+        let (other, other_digest) = make_named_archive(tmp.path(), "other.zip", "other");
         let other_coord = PackageCoordinate {
             source: RegistrySource::LocalArchive,
             name: other.display().to_string(),

@@ -356,6 +356,7 @@ fn plugin_failure(plugin: &dyn Integration, err: &PluginError) -> PluginError {
         | PluginErrorCode::Cancelled
         | PluginErrorCode::Conflict
         | PluginErrorCode::LimitExceeded
+        | PluginErrorCode::NetworkNotGranted
         | PluginErrorCode::Unknown => {
             warn!(
                 plugin = plugin.plugin_key(),

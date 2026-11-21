@@ -8,9 +8,11 @@
  */
 
 import type { DatabaseBinding } from "./db-execute.js";
+import type { OriginBinding } from "./origin.js";
 import type {
   AiTextRole,
   EventReadPage,
+  NetworkGrant,
   NotificationAlertAction,
   NotificationField,
   NotifyRaised,
@@ -552,8 +554,19 @@ export interface BookclerkEnv {
   KV?: KvNamespaceBinding;
   /** `[sockets]` host-brokered WebSockets (default name). */
   SOCKETS?: SocketsBinding;
+  /**
+   * The network grant in effect: fetch hosts, TCP destinations, and each
+   * network setting's destination with its approval state (`pending` until
+   * the operator approves it). Read-only; the host enforces the grant.
+   */
+  NETWORK?: NetworkGrant;
   /** `[[notifications.types]]` raiser. */
   NOTIFY?: NotifyBinding;
+  /**
+   * The library a relay `ingress` plugin serves; present only while this
+   * instance is the active ingress.
+   */
+  ORIGIN?: OriginBinding;
   /** `[ai].calls` model runner. */
   AI?: AiBinding;
   /** `[oauth]` loopback helper; surface reserved. */
@@ -563,5 +576,11 @@ export interface BookclerkEnv {
    * renamed `binding = "..."` entries.
    */
   [binding: string]:
-    DatabaseBinding | EventPublisherBinding | QueueBinding | StorageBinding | JsonObject | unknown;
+    | DatabaseBinding
+    | EventPublisherBinding
+    | QueueBinding
+    | StorageBinding
+    | NetworkGrant
+    | JsonObject
+    | unknown;
 }

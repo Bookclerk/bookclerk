@@ -439,11 +439,22 @@ mod tests {
     fn device(renderer: &Arc<Mutex<Renderer>>) -> std::thread::JoinHandle<()> {
         let renderer = Arc::downgrade(renderer);
         std::thread::spawn(move || {
+            // 5 ms of 32 kHz mono per callback. The device keeps pace with
+            // the wall clock rather than trusting each sleep to last exactly
+            // 5 ms: a host whose timers run late (macOS runners) would
+            // otherwise play slower than real time.
+            const FRAMES: u32 = 160;
             let mut buf = vec![0.0f32; 160];
+            let start = std::time::Instant::now();
+            let mut rendered: u32 = 0;
             while let Some(renderer) = renderer.upgrade() {
-                lock(&renderer).render(&mut buf);
+                let due = start.elapsed().as_micros() * 32 / 1_000;
+                while u128::from(rendered) < due {
+                    lock(&renderer).render(&mut buf);
+                    rendered += FRAMES;
+                }
                 drop(renderer);
-                std::thread::sleep(Duration::from_millis(5));
+                std::thread::sleep(Duration::from_millis(2));
             }
         })
     }

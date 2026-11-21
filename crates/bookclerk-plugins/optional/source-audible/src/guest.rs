@@ -24,7 +24,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use bookclerk_mp4::{
     brand_durations_from_chapter_info, brand_trim_range, parse_mp4,
-    runtime_length_ms_from_chapter_info, track_duration_ms, TrimRange,
+    rebase_chapters_after_brand_trim, remux_progressive, runtime_length_ms_from_chapter_info,
+    track_duration_ms, BrandDurations, CopySamples, RemuxOptions, TrimRange,
 };
 use bookclerk_plugin_sdk::{
     scan_page, FetchOptions, FetchedFile, FetchedFileRole, LoginParams, LoginResult, PlainFetch,
@@ -585,11 +586,16 @@ pub async fn guest_fetch_title(
     let m4b_path = join_cache_component(&work_dir, &m4b_name)
         .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
 
-    let trim = if options.strip_audible_brand_audio {
+    let cut = if options.strip_audible_brand_audio {
         brand_trim(chapter_info.as_ref(), &downloaded.path, title_id).await
     } else {
         None
     };
+    let trim = cut.map(|cut| cut.range);
+    // Whether the audio handed back lost its brand intro and outro, so the
+    // chapters move with it (exactly once, here: the host never rebases a
+    // store's own chapters).
+    let mut trimmed = false;
 
     let plain_path = if downloaded.needs_decrypt {
         match downloaded.drm_kind {
@@ -610,6 +616,7 @@ pub async fn guest_fetch_title(
                 })
                 .await
                 .map_err(|e| AudibleError::Other(anyhow::anyhow!("decrypt Adrm: {e}")))?;
+                trimmed = trim.is_some();
                 outcome.output
             }
             DrmKind::Widevine => {
@@ -628,6 +635,7 @@ pub async fn guest_fetch_title(
                 })
                 .await
                 .map_err(|e| AudibleError::Other(anyhow::anyhow!("decrypt CENC: {e}")))?;
+                trimmed = trim.is_some();
                 outcome.output
             }
             DrmKind::Mpeg => downloaded.path.clone(),
@@ -638,7 +646,13 @@ pub async fn guest_fetch_title(
         }
         let from = validated_fs_path(&downloaded.path)
             .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
-        tokio::fs::copy(&from, &m4b_path).await?;
+        trimmed = match trim {
+            Some(range) => trim_clear_mp4(&from, &m4b_path, range, title_id).await?,
+            None => false,
+        };
+        if !trimmed {
+            tokio::fs::copy(&from, &m4b_path).await?;
+        }
         m4b_path
     } else {
         downloaded.path
@@ -648,6 +662,7 @@ pub async fn guest_fetch_title(
         .as_ref()
         .map(flatten_chapters)
         .unwrap_or_default();
+    let chapters = chapters_on_the_audio(chapters, cut.filter(|_| trimmed));
 
     let mut files = vec![FetchedFile {
         path: plain_path.display().to_string(),
@@ -737,6 +752,70 @@ async fn fetch_companions(
     Ok((chapter_info, cover_path))
 }
 
+/// Copies a clear (not encrypted) MP4 download from `from` to `to` without
+/// Audible's brand intro and outro.
+///
+/// # Returns
+///
+/// `true` when `to` now holds the trimmed audio; `false` when `from` is not
+/// an MP4 file (a clear MP3 keeps its branding, as nothing here can cut
+/// MPEG audio without re-encoding it), so the caller copies it as is.
+///
+/// # Errors
+///
+/// Returns an error when the MP4 cannot be remuxed (for example, the window
+/// leaves no audio).
+async fn trim_clear_mp4(from: &Path, to: &Path, range: TrimRange, title_id: &str) -> Result<bool> {
+    let (from, to) = (from.to_path_buf(), to.to_path_buf());
+    let title = title_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        if parse_mp4(&from).is_err() {
+            tracing::info!(
+                asin = %title,
+                "clear download is not MP4; keeping the brand audio, which can't be cut without re-encoding"
+            );
+            return Ok(false);
+        }
+        remux_progressive(
+            &from,
+            &to,
+            &RemuxOptions { trim: Some(range) },
+            &mut CopySamples,
+        )
+        .map(|()| true)
+        .map_err(|e| AudibleError::Other(anyhow::anyhow!("trim clear download: {e}")))
+    })
+    .await
+    .map_err(|e| AudibleError::Other(anyhow::anyhow!("trim task failed: {e}")))?
+}
+
+/// The chapters on the timeline of the audio a fetch hands back: moved by
+/// `cut` when the audio lost its brand intro and outro (chapters inside the
+/// intro fold into the first, those inside the outro go), unchanged
+/// otherwise.
+fn chapters_on_the_audio(
+    chapters: Vec<(String, u64)>,
+    cut: Option<BrandCut>,
+) -> Vec<(String, u64)> {
+    match cut {
+        Some(cut) => rebase_chapters_after_brand_trim(&chapters, cut.brand, cut.runtime_ms),
+        None => chapters,
+    }
+}
+
+/// The brand audio a fetch cuts: the remux window, and the durations and
+/// runtime it came from, which the chapters are moved by.
+#[derive(Debug, Clone, Copy)]
+struct BrandCut {
+    /// The remux window that keeps the audio between intro and outro.
+    range: TrimRange,
+    /// Brand intro and outro lengths in milliseconds.
+    brand: BrandDurations,
+    /// The untrimmed runtime in milliseconds the window was computed from;
+    /// `None` when only an intro is cut.
+    runtime_ms: Option<u64>,
+}
+
 /// The remux window that drops Audible's brand intro and outro.
 ///
 /// Durations come from `chapter_info`; when an outro is set but the runtime
@@ -751,13 +830,13 @@ async fn fetch_companions(
 ///
 /// # Returns
 ///
-/// The trim window, or `None` when there is no branding or the runtime stays
+/// The cut, or `None` when there is no branding or the runtime stays
 /// unknown (trimming only the intro would leave the outro in).
 async fn brand_trim(
     chapter_info: Option<&Value>,
     media: &Path,
     title_id: &str,
-) -> Option<TrimRange> {
+) -> Option<BrandCut> {
     let brand = chapter_info
         .map(brand_durations_from_chapter_info)
         .unwrap_or_default();
@@ -786,7 +865,11 @@ async fn brand_trim(
              outro branding is not left on while only the intro is cut"
         );
     }
-    trim
+    trim.map(|range| BrandCut {
+        range,
+        brand,
+        runtime_ms,
+    })
 }
 
 /// Build credential JSON from an authenticator (optional Widevine CDM bytes).
@@ -1094,7 +1177,15 @@ mod tests {
         .unwrap();
         assert!(chapters.is_none());
         let cover = cover.expect("cover downloaded");
-        assert_eq!(cover, dir.path().join("B0BOOK0001.cover.jpg"));
+        // The cover path comes back canonical (on macOS the temp dir sits
+        // behind the `/var` -> `/private/var` link).
+        assert_eq!(
+            cover,
+            dir.path()
+                .canonicalize()
+                .unwrap()
+                .join("B0BOOK0001.cover.jpg")
+        );
         assert_eq!(std::fs::read(&cover).unwrap(), jpeg);
     }
 
@@ -1118,7 +1209,7 @@ mod tests {
     async fn window(info: Option<&Value>, media: &Path) -> Option<(u64, Option<u64>)> {
         brand_trim(info, media, "B0BOOK0001")
             .await
-            .map(|t| (t.start_ms, t.end_ms))
+            .map(|t| (t.range.start_ms, t.range.end_ms))
     }
 
     #[tokio::test]
@@ -1140,6 +1231,56 @@ mod tests {
             window(Some(&with_runtime), missing).await,
             Some((4000, Some(57000)))
         );
+    }
+
+    #[tokio::test]
+    async fn trimmed_audio_moves_its_chapters_once() {
+        let info = json!({
+            "brand_intro_duration_ms": 4000,
+            "brand_outro_duration_ms": 3000,
+            "runtime_length_ms": 60000
+        });
+        let cut = brand_trim(Some(&info), Path::new("/nonexistent/x.aaxc"), "B0BOOK0001").await;
+        let chapters = vec![
+            ("Opening Credits".to_owned(), 0),
+            ("One".to_owned(), 30_000),
+            ("Outro".to_owned(), 58_000),
+        ];
+        assert_eq!(
+            chapters_on_the_audio(chapters.clone(), cut),
+            vec![
+                ("Opening Credits".to_owned(), 0),
+                ("One".to_owned(), 26_000)
+            ]
+        );
+        assert_eq!(chapters_on_the_audio(chapters.clone(), None), chapters);
+    }
+
+    #[tokio::test]
+    async fn a_clear_mp4_download_loses_its_brand_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("clear.m4a");
+        let fixture = bookclerk_mp4::fixture::ProgressiveFixture::with_generated_samples(87);
+        fixture.write(&from).unwrap();
+        let whole = fixture.duration_ms();
+        let to = dir.path().join("out.m4b");
+        let range = TrimRange {
+            start_ms: whole / 4,
+            end_ms: Some(whole - whole / 4),
+        };
+        assert!(trim_clear_mp4(&from, &to, range, "B0BOOK0001")
+            .await
+            .unwrap());
+        let kept = track_duration_ms(&parse_mp4(&to).unwrap().audio);
+        assert!(kept < whole, "{kept} of {whole} ms kept");
+
+        let mp3 = dir.path().join("clear.mp3");
+        std::fs::write(&mp3, b"ID3\x04\0\0\0\0\0\0").unwrap();
+        let untouched = dir.path().join("mp3.m4b");
+        assert!(!trim_clear_mp4(&mp3, &untouched, range, "B0BOOK0001")
+            .await
+            .unwrap());
+        assert!(!untouched.exists());
     }
 
     #[tokio::test]

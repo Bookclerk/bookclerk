@@ -56,6 +56,20 @@ pub const MAX_SOCKET_URL_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_URL_BYTES;
 /// Most request headers, and separately subprotocols, on one
 /// `Sockets.connect`.
 pub const MAX_SOCKET_HEADERS: u32 = crate::plugin_capnp::MAX_SOCKET_HEADERS;
+
+/// Most header fields on one `Origin.fetch` request, and separately on its
+/// response.
+pub const MAX_ORIGIN_HEADERS: u32 = crate::plugin_capnp::MAX_ORIGIN_HEADERS;
+
+/// Largest total UTF-8 bytes of header names and values on one
+/// `Origin.fetch` request, and separately on its response.
+pub const MAX_ORIGIN_HEADER_BYTES: u32 = crate::plugin_capnp::MAX_ORIGIN_HEADER_BYTES;
+
+/// Longest `OriginRequest.target` (path and query), in bytes.
+pub const MAX_ORIGIN_TARGET_BYTES: u32 = crate::plugin_capnp::MAX_ORIGIN_TARGET_BYTES;
+
+/// Longest host name in `IngressStarted.origin`, in bytes.
+pub const MAX_INGRESS_ORIGIN_BYTES: u32 = crate::plugin_capnp::MAX_INGRESS_ORIGIN_BYTES;
 /// Most URLs in one `CoverFetcher.fetchCovers` call.
 pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;
 

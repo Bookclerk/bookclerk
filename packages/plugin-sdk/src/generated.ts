@@ -15,6 +15,8 @@
 
 import type {
   ObjectChangeKind,
+  SettingNetworkKind,
+  SettingGrantState,
   PluginErrorCode,
   Entrypoint,
   PortalAuthMode,
@@ -47,6 +49,8 @@ import type {
 
 export type {
   ObjectChangeKind,
+  SettingNetworkKind,
+  SettingGrantState,
   PluginErrorCode,
   Entrypoint,
   PortalAuthMode,
@@ -583,11 +587,71 @@ export interface Bindings {
    */
   notify?: NotificationRaiser | null;
   /**
+   * `NETWORK`: what the operator granted this plugin's network, including
+   * the destination each network setting names and whether it is approved,
+   * so a guest can tell an unapproved destination from an unreachable one.
+   */
+  network: NetworkGrant;
+  /**
+   * `ORIGIN`: the library itself, for a relay `ingress` plugin to send the
+   * public requests it carries to; null unless the plugin is the library's
+   * active relay ingress.
+   * Null when the guest does not export this capability.
+   */
+  origin?: Origin | null;
+  /**
    * `AI`: runs models other plugins serve; null unless `[ai]` names the
    * tasks the plugin calls and the operator granted them.
    * Null when the guest does not export this capability.
    */
   ai?: AiRunner | null;
+}
+
+/**
+ * The network grant in effect for one `PluginWorker.open`. Read-only
+ * feedback: the host enforces the grant whatever the guest does with this.
+ */
+export interface NetworkGrant {
+  /** True when the grant allows outbound connections; false for `deny`. */
+  outbound: boolean;
+  /**
+   * Fetch destinations in effect, as `plugin.toml` `domains` entries
+   * (`host`, `*.host`, `host:port`, or `*` for any public host), including
+   * approved setting destinations; at most `maxNetworkGrantEntries`.
+   */
+  domains: string[];
+  /**
+   * Raw TCP destinations in effect, as `host:port` (IPv6 in brackets), one
+   * per granted port; at most `maxNetworkGrantEntries`.
+   */
+  tcp: string[];
+  /**
+   * One entry per `[[settings]]` entry that declares `network`, in
+   * declaration order; at most `maxNetworkGrantEntries`.
+   */
+  settings: SettingNetworkGrant[];
+}
+
+/** One network setting and the destination its value names. */
+export interface SettingNetworkGrant {
+  /** The setting key. */
+  key: string;
+  /** Whether the plugin fetches the destination or opens a socket to it. */
+  network: SettingNetworkKind;
+  /**
+   * The destination as the consent form shows it: `scheme://host:port` for
+   * a fetch, `host:port` for TCP (IPv6 in brackets); empty when `state` is
+   * `unset` or `invalid`.
+   * Omitted when absent (wire zero value).
+   */
+  destination?: string;
+  /** Where the destination stands. */
+  state: SettingGrantState;
+  /**
+   * Why the value names no destination, when `state` is `invalid`.
+   * Omitted when absent (wire zero value).
+   */
+  error?: string;
 }
 
 /**
@@ -671,6 +735,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   notifier?: Notifier | null;
+  /**
+   * `ingress` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  ingress?: Ingress | null;
   /**
    * `ai` entrypoint.
    * Null when the guest does not export this capability.
@@ -1121,6 +1190,30 @@ export interface ByteSource {
 }
 
 /**
+ * Success payload of `Origin.fetch`: the library's response head and its
+ * streamed body.
+ */
+export interface OriginResponse {
+  /** HTTP status code, 100 to 599. */
+  status: number;
+  /**
+   * Response header fields in order, at most `maxOriginHeaders` and
+   * `maxOriginHeaderBytes`; repeated names (`set-cookie`) stay separate.
+   */
+  headers: OriginHeader[];
+  /**
+   * Response body; read to `done`. Null when the response has no body.
+   * Null when the guest does not export this capability.
+   */
+  body?: ByteSource | null;
+}
+
+/** Result union of `Origin.fetch`. */
+export type OriginFetchReply =
+  | { kind: "ok"; value: OriginResponse } // Success: the library answered (any HTTP status).
+  | { kind: "err"; value: PluginError }; // Typed failure: the request was refused before the library saw it (`invalid_params`) or the library is unavailable.
+
+/**
  * Object store the host writes acquired media into (`output.*` plugins).
  * Keys are relative object paths; the plugin owns the physical layout.
  */
@@ -1522,6 +1615,51 @@ export interface SocketHandler {
    * @returns {@link EmptyReply}
    */
   closed(event: SocketClosed): Promise<EmptyReply>;
+}
+
+/**
+ * The library, as a relay `ingress` plugin reaches it (`Bindings.origin`,
+ * `ORIGIN` in the Workers idiom). The plugin turns each request its provider
+ * delivers into a `fetch` and streams the response back. The host treats
+ * every request as the `tunnel` transport: public `https`, never loopback,
+ * with the client address the plugin reports.
+ */
+export interface Origin {
+  /**
+   * Serve one request; the response body streams as the library writes it.
+   *
+   * @param request - Method, target, headers, client address.
+   * @param body - Request body; null when the request has none.
+   * @returns {@link OriginFetchReply}
+   */
+  fetch(request: OriginRequest, body: ByteSource): Promise<OriginFetchReply>;
+}
+
+/**
+ * A public address provider (`Entrypoints.ingress`): the one `ingress`
+ * family instance the library runs. A relay provider carries traffic to
+ * `Bindings.origin`; a direct provider keeps a DNS name pointing at this
+ * install.
+ */
+export interface Ingress {
+  /**
+   * Bring the public address up; answers the origin it serves.
+   *
+   * @returns {@link IngressStartReply}
+   */
+  start(): Promise<IngressStartReply>;
+  /**
+   * Whether the public address is serving now.
+   *
+   * @returns {@link IngressHealthReply}
+   */
+  health(): Promise<IngressHealthReply>;
+  /**
+   * Take the public address down; stopping a stopped one is not an error.
+   *
+   * @returns {@link EmptyReply}
+   */
+  stop(): Promise<EmptyReply>;
 }
 
 /**
@@ -4304,6 +4442,73 @@ export interface SocketClosed {
   /** The socket's last attachment. */
   attachment: Uint8Array;
 }
+
+/** One header field on an `Origin.fetch` request or response. */
+export interface OriginHeader {
+  /** Field name, an HTTP token; the host refuses hop-by-hop names. */
+  name: string;
+  /**
+   * Field value, visible ASCII, spaces and tabs. May carry a credential (a
+   * cookie, an authorization): the host never logs it.
+   */
+  value: string;
+}
+
+/**
+ * The head of one public request a relay `ingress` plugin carries
+ * (`Origin.fetch`). Its scheme is `https` and its authority is the library's
+ * public origin; neither is the plugin's to choose.
+ */
+export interface OriginRequest {
+  /** Request method, an HTTP token (`GET`, `PUT`, ...). */
+  method: string;
+  /**
+   * Path and query in origin form (`/api/status?x=1`), at most
+   * `maxOriginTargetBytes`.
+   */
+  target: string;
+  /**
+   * Request header fields in order, at most `maxOriginHeaders` and
+   * `maxOriginHeaderBytes`. `host` and forwarding headers are ignored.
+   */
+  headers: OriginHeader[];
+  /**
+   * IP address of the client, from the provider's own connection metadata;
+   * empty when the provider gives none.
+   * Omitted when absent (wire zero value).
+   */
+  clientAddress?: string;
+}
+
+/** Success payload of `Ingress.start`. */
+export interface IngressStarted {
+  /**
+   * The public origin now serving: `https://` and a host name, no port, path
+   * or trailing slash, at most `maxIngressOriginBytes` after the scheme.
+   */
+  origin: string;
+}
+
+/** Result union of `Ingress.start`. */
+export type IngressStartReply =
+  | { kind: "ok"; value: IngressStarted } // Success: the address is up.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Success payload of `Ingress.health`. */
+export interface IngressHealth {
+  /** True when the address is serving. */
+  serving: boolean;
+  /**
+   * Why it is not serving, for the operator; empty when serving.
+   * Omitted when absent (wire zero value).
+   */
+  detail?: string;
+}
+
+/** Result union of `Ingress.health`. */
+export type IngressHealthReply =
+  | { kind: "ok"; value: IngressHealth } // Success: the provider's view of the address.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** One typed SQL cell or bind parameter. */
 export type DbValue =

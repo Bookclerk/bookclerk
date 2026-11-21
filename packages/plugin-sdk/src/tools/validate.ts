@@ -80,6 +80,18 @@ export type Manifest = {
     types?: NotificationTypeToml[];
   };
   /**
+   * `[ingress]` — how an `ingress` plugin serves the library publicly.
+   * Required for that entrypoint, forbidden for others.
+   */
+  ingress?: {
+    /**
+     * `relay`: the provider relays each request to the plugin, which hands it
+     * to the library through `env.ORIGIN`. `direct`: the public address
+     * points at the daemon; the plugin only keeps it current.
+     */
+    kind?: string;
+  };
+  /**
    * `[ai]` — model tasks the plugin serves on its `ai` entrypoint and the
    * tasks it calls through `env.AI`.
    */
@@ -721,6 +733,37 @@ function isAsciiFileName(name: string): boolean {
 }
 
 /**
+ * Checks `[ingress]` against the entrypoints, with the host's rules and
+ * messages (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When an `ingress` plugin has no table, another plugin has
+ *   one, or the table has an unknown key or a `kind` other than `relay` or
+ *   `direct`.
+ */
+function validateIngress(m: Manifest): void {
+  const exported = ((m.entrypoints ?? []) as readonly string[]).includes("ingress");
+  const table = m.ingress;
+  if (table == null) {
+    if (exported) {
+      throw new Error(
+        'plugin.toml: `[ingress]` is required for a plugin with the `ingress` entrypoint (set `kind` to "relay" or "direct")',
+      );
+    }
+    return;
+  }
+  if (!exported) {
+    throw new Error("plugin.toml: `[ingress]` needs the `ingress` entrypoint");
+  }
+  for (const key of Object.keys(table)) {
+    if (key !== "kind") throw new Error(`plugin.toml: \`[ingress]\` has unknown key \`${key}\``);
+  }
+  if (table.kind !== "relay" && table.kind !== "direct") {
+    throw new Error('plugin.toml: `[ingress].kind` must be "relay" or "direct"');
+  }
+}
+
+/**
  * Checks `[metadata_files]` against the entrypoints, with the host's rules and
  * messages (`manifest-cases.json`).
  *
@@ -1155,6 +1198,7 @@ export const ENTRYPOINT_NAMES = [
   "covers",
   "metadataFiles",
   "notifier",
+  "ingress",
   "ai",
 ] as const;
 
@@ -1309,6 +1353,7 @@ export function validateManifest(m: Manifest): void {
   validateMetadataFiles(m);
   validateNotifier(m);
   validateNotificationTypes(m);
+  validateIngress(m);
   validateAi(m);
   validateSurface(m);
   validateSettings(m);
@@ -1657,6 +1702,11 @@ function validateSurface(m: Manifest): void {
         `plugin.toml: [[databases]] binding \`${name}\` must be \`[A-Z][A-Z0-9_]*\` and at most 32 chars`,
       );
     }
+    if (name === "NETWORK") {
+      throw new Error(
+        "plugin.toml: [[databases]] binding `NETWORK` is reserved for the network grant",
+      );
+    }
     if (bindings.has(name)) {
       throw new Error(`plugin.toml: [[databases]] binding \`${name}\` is duplicated`);
     }
@@ -1688,7 +1738,7 @@ function validateSurface(m: Manifest): void {
     if ((table === "kv_namespaces" || table === "queues.producers") && reserved.has(name)) {
       throw new Error(`plugin.toml: [${table}][${index}] binding collides with another binding`);
     }
-    if (name === "CONFIG" || bindings.has(name)) {
+    if (name === "CONFIG" || name === "NETWORK" || bindings.has(name)) {
       throw new Error(`plugin.toml: [${table}][${index}] binding collides with another binding`);
     }
   }

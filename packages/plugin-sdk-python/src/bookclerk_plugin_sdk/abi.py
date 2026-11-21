@@ -17,6 +17,12 @@ ObjectChangeKind = Literal["changed", "upserted", "removed"]
 treated as `changed`.
 """
 
+SettingNetworkKind = Literal["fetch", "tcp"]
+"""How a setting's destination is reached."""
+
+SettingGrantState = Literal["approved", "pending", "unset", "invalid"]
+"""Where a network setting's destination stands."""
+
 PluginErrorCode = Literal[
     "invalid_params",
     "unauthorized",
@@ -32,6 +38,7 @@ PluginErrorCode = Literal[
     "conflict",
     "limit_exceeded",
     "rate_limited",
+    "network_not_granted",
 ]
 """Stable `PluginError.code` strings. Unknown future codes are forwarded
 as-is; SDKs surface them as a local `unknown` while keeping the raw wire
@@ -49,6 +56,7 @@ Entrypoint = Literal[
     "covers",
     "metadataFiles",
     "notifier",
+    "ingress",
     "ai",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
@@ -781,6 +789,12 @@ class Bindings(TypedDict):
         notify: `NOTIFY`: raises the notification types the plugin declares in
             `[[notifications.types]]`; null when it declares none. Null when the guest
             does not export this capability.
+        network: `NETWORK`: what the operator granted this plugin's network, including
+            the destination each network setting names and whether it is approved, so a
+            guest can tell an unapproved destination from an unreachable one.
+        origin: `ORIGIN`: the library itself, for a relay `ingress` plugin to send the
+            public requests it carries to; null unless the plugin is the library's
+            active relay ingress. Null when the guest does not export this capability.
         ai: `AI`: runs models other plugins serve; null unless `[ai]` names the tasks
             the plugin calls and the operator granted them. Null when the guest does not
             export this capability.
@@ -797,7 +811,51 @@ class Bindings(TypedDict):
     kv: list[NamedKv]
     sockets: NotRequired[Sockets | None]
     notify: NotRequired[NotificationRaiser | None]
+    network: NetworkGrant
+    origin: NotRequired[Origin | None]
     ai: NotRequired[AiRunner | None]
+
+
+class NetworkGrant(TypedDict):
+    """The network grant in effect for one `PluginWorker.open`. Read-only
+    feedback: the host enforces the grant whatever the guest does with this.
+
+    Attributes:
+        outbound: True when the grant allows outbound connections; false for `deny`.
+        domains: Fetch destinations in effect, as `plugin.toml` `domains` entries
+            (`host`, `*.host`, `host:port`, or `*` for any public host), including
+            approved setting destinations; at most `maxNetworkGrantEntries`.
+        tcp: Raw TCP destinations in effect, as `host:port` (IPv6 in brackets), one per
+            granted port; at most `maxNetworkGrantEntries`.
+        settings: One entry per `[[settings]]` entry that declares `network`, in
+            declaration order; at most `maxNetworkGrantEntries`.
+    """
+
+    outbound: bool
+    domains: list[str]
+    tcp: list[str]
+    settings: list[SettingNetworkGrant]
+
+
+class SettingNetworkGrant(TypedDict):
+    """One network setting and the destination its value names.
+
+    Attributes:
+        key: The setting key.
+        network: Whether the plugin fetches the destination or opens a socket to it.
+        destination: The destination as the consent form shows it: `scheme://host:port`
+            for a fetch, `host:port` for TCP (IPv6 in brackets); empty when `state` is
+            `unset` or `invalid`. Omitted when absent (wire zero value).
+        state: Where the destination stands.
+        error: Why the value names no destination, when `state` is `invalid`. Omitted
+            when absent (wire zero value).
+    """
+
+    key: str
+    network: SettingNetworkKind
+    destination: NotRequired[str]
+    state: SettingGrantState
+    error: NotRequired[str]
 
 
 class Entrypoints(TypedDict):
@@ -834,6 +892,8 @@ class Entrypoints(TypedDict):
             this capability.
         notifier: `notifier` entrypoint. Null when the guest does not export this
             capability.
+        ingress: `ingress` entrypoint. Null when the guest does not export this
+            capability.
         ai: `ai` entrypoint. Null when the guest does not export this capability.
     """
 
@@ -852,6 +912,7 @@ class Entrypoints(TypedDict):
     socketHandler: NotRequired[SocketHandler | None]
     metadataFiles: NotRequired[MetadataFiles | None]
     notifier: NotRequired[Notifier | None]
+    ingress: NotRequired[Ingress | None]
     ai: NotRequired[AiModels | None]
 
 
@@ -2155,6 +2216,60 @@ class ByteSource(Protocol):
         ...
 
 
+class OriginResponse(TypedDict):
+    """Success payload of `Origin.fetch`: the library's response head and its
+    streamed body.
+
+    Attributes:
+        status: HTTP status code, 100 to 599.
+        headers: Response header fields in order, at most `maxOriginHeaders` and
+            `maxOriginHeaderBytes`; repeated names (`set-cookie`) stay separate.
+        body: Response body; read to `done`. Null when the response has no body. Null
+            when the guest does not export this capability.
+    """
+
+    status: int
+    headers: list[OriginHeader]
+    body: NotRequired[ByteSource | None]
+
+
+class OriginFetchReplyOk(TypedDict):
+    """``OriginFetchReply`` member ``ok``.
+
+    Success: the library answered (any HTTP status).
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the library answered (any HTTP status).
+    """
+
+    kind: Literal["ok"]
+    value: OriginResponse
+
+
+class OriginFetchReplyErr(TypedDict):
+    """``OriginFetchReply`` member ``err``.
+
+    Typed failure: the request was refused before the library saw it
+    (`invalid_params`) or the library is unavailable.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure: the request was refused before the library saw it
+            (`invalid_params`) or the library is unavailable.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+OriginFetchReply = Union[
+    OriginFetchReplyOk,
+    OriginFetchReplyErr,
+]
+"""Result union of `Origin.fetch`."""
+
+
 class Destination(Protocol):
     """Object store the host writes acquired media into (`output.*` plugins).
     Keys are relative object paths; the plugin owns the physical layout.
@@ -2688,6 +2803,59 @@ class SocketHandler(Protocol):
 
         Args:
             event: Socket, close code, and attachment.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+
+class Origin(Protocol):
+    """The library, as a relay `ingress` plugin reaches it (`Bindings.origin`,
+    `ORIGIN` in the Workers idiom). The plugin turns each request its provider
+    delivers into a `fetch` and streams the response back. The host treats
+    every request as the `tunnel` transport: public `https`, never loopback,
+    with the client address the plugin reports.
+    """
+
+    async def fetch(self, request: OriginRequest, body: ByteSource) -> OriginFetchReply:
+        """Serve one request; the response body streams as the library writes it.
+
+        Args:
+            request: Method, target, headers, client address.
+            body: Request body; null when the request has none.
+
+        Returns:
+            ``OriginFetchReply``
+        """
+        ...
+
+
+class Ingress(Protocol):
+    """A public address provider (`Entrypoints.ingress`): the one `ingress`
+    family instance the library runs. A relay provider carries traffic to
+    `Bindings.origin`; a direct provider keeps a DNS name pointing at this
+    install.
+    """
+
+    async def start(self) -> IngressStartReply:
+        """Bring the public address up; answers the origin it serves.
+
+        Returns:
+            ``IngressStartReply``
+        """
+        ...
+
+    async def health(self) -> IngressHealthReply:
+        """Whether the public address is serving now.
+
+        Returns:
+            ``IngressHealthReply``
+        """
+        ...
+
+    async def stop(self) -> EmptyReply:
+        """Take the public address down; stopping a stopped one is not an error.
 
         Returns:
             ``EmptyReply``
@@ -6658,6 +6826,135 @@ class SocketClosed(TypedDict):
     attachment: bytes
 
 
+class OriginHeader(TypedDict):
+    """One header field on an `Origin.fetch` request or response.
+
+    Attributes:
+        name: Field name, an HTTP token; the host refuses hop-by-hop names.
+        value: Field value, visible ASCII, spaces and tabs. May carry a credential (a
+            cookie, an authorization): the host never logs it.
+    """
+
+    name: str
+    value: str
+
+
+class OriginRequest(TypedDict):
+    """The head of one public request a relay `ingress` plugin carries
+    (`Origin.fetch`). Its scheme is `https` and its authority is the library's
+    public origin; neither is the plugin's to choose.
+
+    Attributes:
+        method: Request method, an HTTP token (`GET`, `PUT`, ...).
+        target: Path and query in origin form (`/api/status?x=1`), at most
+            `maxOriginTargetBytes`.
+        headers: Request header fields in order, at most `maxOriginHeaders` and
+            `maxOriginHeaderBytes`. `host` and forwarding headers are ignored.
+        clientAddress: IP address of the client, from the provider's own connection
+            metadata; empty when the provider gives none. Omitted when absent (wire zero
+            value).
+    """
+
+    method: str
+    target: str
+    headers: list[OriginHeader]
+    clientAddress: NotRequired[str]
+
+
+class IngressStarted(TypedDict):
+    """Success payload of `Ingress.start`.
+
+    Attributes:
+        origin: The public origin now serving: `https://` and a host name, no port, path
+            or trailing slash, at most `maxIngressOriginBytes` after the scheme.
+    """
+
+    origin: str
+
+
+class IngressStartReplyOk(TypedDict):
+    """``IngressStartReply`` member ``ok``.
+
+    Success: the address is up.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the address is up.
+    """
+
+    kind: Literal["ok"]
+    value: IngressStarted
+
+
+class IngressStartReplyErr(TypedDict):
+    """``IngressStartReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+IngressStartReply = Union[
+    IngressStartReplyOk,
+    IngressStartReplyErr,
+]
+"""Result union of `Ingress.start`."""
+
+
+class IngressHealth(TypedDict):
+    """Success payload of `Ingress.health`.
+
+    Attributes:
+        serving: True when the address is serving.
+        detail: Why it is not serving, for the operator; empty when serving. Omitted
+            when absent (wire zero value).
+    """
+
+    serving: bool
+    detail: NotRequired[str]
+
+
+class IngressHealthReplyOk(TypedDict):
+    """``IngressHealthReply`` member ``ok``.
+
+    Success: the provider's view of the address.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the provider's view of the address.
+    """
+
+    kind: Literal["ok"]
+    value: IngressHealth
+
+
+class IngressHealthReplyErr(TypedDict):
+    """``IngressHealthReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+IngressHealthReply = Union[
+    IngressHealthReplyOk,
+    IngressHealthReplyErr,
+]
+"""Result union of `Ingress.health`."""
+
+
 class DbValueNull(TypedDict):
     """``DbValue`` member ``null``.
 
@@ -8001,6 +8298,8 @@ class PluginWorker(Protocol):
 
 __all__ = [
     "ObjectChangeKind",
+    "SettingNetworkKind",
+    "SettingGrantState",
     "PluginErrorCode",
     "Entrypoint",
     "PortalAuthMode",
@@ -8063,6 +8362,8 @@ __all__ = [
     "OidcClientsReply",
     "ExtensibleConfig",
     "Bindings",
+    "NetworkGrant",
+    "SettingNetworkGrant",
     "Entrypoints",
     "EntrypointsReplyOk",
     "EntrypointsReplyErr",
@@ -8164,6 +8465,10 @@ __all__ = [
     "GuestDatabaseReplyErr",
     "GuestDatabaseReply",
     "ByteSource",
+    "OriginResponse",
+    "OriginFetchReplyOk",
+    "OriginFetchReplyErr",
+    "OriginFetchReply",
     "Destination",
     "Source",
     "ProgressSink",
@@ -8180,6 +8485,8 @@ __all__ = [
     "NamedKv",
     "Sockets",
     "SocketHandler",
+    "Origin",
+    "Ingress",
     "ContentSource",
     "RemoteLibrary",
     "PluginCli",
@@ -8415,6 +8722,16 @@ __all__ = [
     "SocketMessageOk",
     "SocketMessage",
     "SocketClosed",
+    "OriginHeader",
+    "OriginRequest",
+    "IngressStarted",
+    "IngressStartReplyOk",
+    "IngressStartReplyErr",
+    "IngressStartReply",
+    "IngressHealth",
+    "IngressHealthReplyOk",
+    "IngressHealthReplyErr",
+    "IngressHealthReply",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

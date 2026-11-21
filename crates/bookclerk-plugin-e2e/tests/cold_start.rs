@@ -86,6 +86,7 @@ fn family_labels(families: &[PluginFamily]) -> Vec<String> {
             PluginFamily::Integration => "integration",
             PluginFamily::Output => "output",
             PluginFamily::Database => "database",
+            PluginFamily::Ingress => "ingress",
         })
         .map(str::to_string)
         .collect()

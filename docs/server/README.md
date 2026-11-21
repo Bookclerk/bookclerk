@@ -32,6 +32,8 @@ Bookclerk on your own computer first, see
   limits and review.
 - [Playback reference](playback.md): what the daemon stores and serves
   for players.
+- [Player apps](player-apps.md): listen in apps made for Audiobookshelf
+  servers, through `/player`.
 - [Backups, updates, import and export](backups.md): native backups,
   schema backups, updating, Libation and PostgreSQL export.
 - [Diagnostics](diagnostics.md): opt-in error reports.

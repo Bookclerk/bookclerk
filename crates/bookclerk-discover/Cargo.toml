@@ -34,6 +34,7 @@ async-trait.workspace = true
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+tracing-subscriber.workspace = true
 wiremock.workspace = true
 
 [lints]

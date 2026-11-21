@@ -20,10 +20,10 @@
 //! and the show's row counts the episodes' editions and holdings.
 //!
 //! The same refresh writes the work's filter values (`library_work_facets`:
-//! authors, narrators, series, genres, publishers and sources), fenced by
-//! the row's stamp, so a page can filter by one value without joining the
-//! model. Tags and progress are per person and filter through
-//! `user_work_tags` and `user_title_state` instead.
+//! authors, narrators, series, genres, publishers, sources, library tags
+//! and collections), fenced by the row's stamp, so a page can filter by one value
+//! without joining the model. A person's own tags and progress filter
+//! through `user_work_tags` and `user_title_state` instead.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -125,17 +125,24 @@ pub enum WorkFacet {
     Publisher,
     /// Storefront plugins the work is held through.
     Source,
+    /// Library tags (`work_tags`): set by an Administrator or read from a
+    /// sidecar, the same for everyone.
+    Tag,
+    /// Collections (`core.collections`) one of the work's files is in.
+    Collection,
 }
 
 impl WorkFacet {
     /// Every facet, in the order a work's values are written.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Author,
         Self::Narrator,
         Self::Series,
         Self::Genre,
         Self::Publisher,
         Self::Source,
+        Self::Tag,
+        Self::Collection,
     ];
 
     /// The stored `facet` value.
@@ -148,6 +155,8 @@ impl WorkFacet {
             Self::Genre => "genre",
             Self::Publisher => "publisher",
             Self::Source => "source",
+            Self::Tag => "tag",
+            Self::Collection => "collection",
         }
     }
 }
@@ -466,6 +475,12 @@ pub(crate) struct WorkRowInputs {
     pub series: Option<(String, Option<String>)>,
     /// Acquire rows of the editions.
     pub acquisitions: Vec<edition_acquisitions::Model>,
+    /// The work's library tags as written (`work_tags.value`), every
+    /// source, in key order.
+    pub tags: Vec<String>,
+    /// The collections one of the work's edition files is in, in the
+    /// collections' order.
+    pub collections: Vec<String>,
 }
 
 /// Derives a work's page index row; `None` when the work is gone (the row
@@ -732,6 +747,13 @@ pub(crate) fn build_work_facets(
             values.push((WorkFacet::Source, listing.plugin_key.as_str()));
         }
     }
+    values.extend(inputs.tags.iter().map(|t| (WorkFacet::Tag, t.as_str())));
+    values.extend(
+        inputs
+            .collections
+            .iter()
+            .map(|c| (WorkFacet::Collection, c.as_str())),
+    );
     let mut seen: HashSet<(WorkFacet, String)> = HashSet::new();
     let mut out = Vec::new();
     for (facet, value) in values {
@@ -1131,6 +1153,27 @@ impl LibraryStore {
                 .map_err(LibraryError::Orm)?
                 .is_some(),
         )
+    }
+
+    /// Drops the finished build of [`LIBRARY_INDEX_LAYOUT`], so the next
+    /// heartbeat queues a rebuild of every row: for a change, such as the
+    /// library's collections, that the rows' derivation reads but no
+    /// work's events carry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a batch error when the write fails.
+    pub async fn drop_library_index_build(&self) -> Result<()> {
+        let operation_id = format!("library-index-drop-{}", Uuid::new_v4());
+        self.execute_host_batch(batch::request(
+            &operation_id,
+            vec![batch::exec(
+                "DELETE FROM library_index_builds WHERE layout = ?",
+                vec![batch::int(LIBRARY_INDEX_LAYOUT)],
+            )],
+        ))
+        .await?;
+        Ok(())
     }
 
     /// Records a finished build of [`LIBRARY_INDEX_LAYOUT`].
@@ -1559,6 +1602,91 @@ impl LibraryStore {
     }
 }
 
+impl LibraryStore {
+    /// One page of the library's works by position: `limit` rows from
+    /// `offset` in `query`'s order (reversed when `reversed`), and how
+    /// many rows the query matches in all. `query.after` and
+    /// `query.limit` are not read.
+    ///
+    /// For callers that page by number, such as player apps; the library's
+    /// own pages use [`Self::library_works_page`], whose cursors hold
+    /// still while rows are added.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - Order and filters.
+    /// * `offset` - Rows to skip.
+    /// * `limit` - Most rows to return.
+    /// * `reversed` - True to read the order backwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn library_works_at(
+        &self,
+        query: &WorkPageQuery,
+        offset: u64,
+        limit: u64,
+        reversed: bool,
+    ) -> Result<(Vec<LibraryWorkRow>, u64)> {
+        use library_work_rows::Column as C;
+        use sea_orm::{Order, PaginatorTrait as _};
+        self.ensure_scope_keys(query.scope.as_ref()).await?;
+        let total = filtered_rows(query)
+            .count(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if limit == 0 || offset >= total {
+            return Ok((Vec::new(), total));
+        }
+        let (asc, desc) = if reversed {
+            (Order::Desc, Order::Asc)
+        } else {
+            (Order::Asc, Order::Desc)
+        };
+        let columns: &[(C, &Order)] = match query.sort {
+            WorkSort::Title => &[(C::SortTitle, &asc), (C::WorkId, &asc)],
+            WorkSort::Author => &[
+                (C::SortAuthor, &asc),
+                (C::SortTitle, &asc),
+                (C::WorkId, &asc),
+            ],
+            WorkSort::Added => &[(C::AddedAt, &desc), (C::WorkId, &desc)],
+            WorkSort::Series => &[
+                (C::SortSeries, &asc),
+                (C::SortTitle, &asc),
+                (C::WorkId, &asc),
+            ],
+            WorkSort::Purchased => &[(C::PurchasedAt, &desc), (C::WorkId, &desc)],
+            WorkSort::Length => &[(C::LengthMinutes, &desc), (C::WorkId, &desc)],
+        };
+        let mut select = filtered_rows(query);
+        for (column, order) in columns {
+            select = select.order_by(*column, (*order).clone());
+        }
+        let page = u64::try_from(crate::control_plane::result_page(self)).unwrap_or(1);
+        let models = crate::control_plane::read_shrinking(page, Some(limit), |at, n| {
+            let select = select.clone();
+            async move {
+                select
+                    .offset(offset.saturating_add(at))
+                    .limit(n)
+                    .all(self.db())
+                    .await
+                    .map_err(LibraryError::Orm)
+            }
+        })
+        .await?;
+        Ok((
+            models
+                .into_iter()
+                .filter_map(LibraryWorkRow::from_model)
+                .collect(),
+            total,
+        ))
+    }
+}
+
 /// The rows a page of `query` reads from: held works that pass its media
 /// kind, kind, status and account filters (not its order or cursor).
 fn filtered_rows(query: &WorkPageQuery) -> sea_orm::Select<library_work_rows::Entity> {
@@ -1926,6 +2054,8 @@ mod tests {
                 acquisition("e1", AcquireStatus::Error),
                 acquisition("e2", AcquireStatus::Queued),
             ],
+            tags: Vec::new(),
+            collections: Vec::new(),
         };
         let row = build_work_row(&inputs, "now").unwrap();
         assert_eq!(row.sort_title, "dispossessed");

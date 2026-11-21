@@ -949,7 +949,10 @@ These run outside `CI Gate`:
   applies [`osv-scanner.toml`](../../osv-scanner.toml) `IgnoredVulns`
   means **zero unignored, actionable** findings, not that ignored
   advisories have left the dependency graph. Each ignore must record
-  reachability evidence and an `ignoreUntil` review date.
+  reachability evidence and an `ignoreUntil` review date. The scanner
+  reads the config beside each lockfile, so
+  [`fuzz/osv-scanner.toml`](../../fuzz/osv-scanner.toml) repeats, with the
+  same expiry, the root exceptions that the fuzz lockfile shares.
 - **SQL-v1 property** (`.github/workflows/sql-v1-proptest.yml`) runs a
   longer `proptest` suite (`PROPTEST_CASES=256`) on `bookclerk-plugin-abi`
   and `bookclerk-db-exec`: grammar-aware sqlite admission, plus a

@@ -3560,11 +3560,7 @@ mod tests {
                 stmt.binds.iter().map(db_value_to_rusqlite).collect();
             let mut prepared = txn.prepare(&stmt.sql).unwrap();
             let col_count = prepared.column_count();
-            let names: Vec<String> = prepared
-                .column_names()
-                .into_iter()
-                .map(str::to_string)
-                .collect();
+            let names: Vec<String> = prepared.column_names().map(str::to_string).collect();
             let mut rows_out = Vec::new();
             if col_count == 0 {
                 prepared

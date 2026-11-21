@@ -118,6 +118,41 @@ fn is_public_v6(v6: Ipv6Addr) -> bool {
         || v6.segments()[0] == 0x2001 && v6.segments()[1] == 0xdb8)
 }
 
+/// True when `ip` is a local-network address a LAN service may answer on:
+/// RFC 1918 IPv4 (`10/8`, `172.16/12`, `192.168/16`), RFC 6598 shared
+/// address space (`100.64/10`, carrier-grade NAT and overlay networks) or an
+/// IPv6 unique local address (`fc00::/7`).
+///
+/// Loopback, link-local (where cloud metadata lives), unspecified, multicast
+/// and broadcast addresses are never local-network addresses here: they
+/// always need an explicit CIDR grant. IPv4-mapped IPv6 is judged as IPv4.
+///
+/// # Arguments
+///
+/// * `ip` - Resolved destination address.
+///
+/// # Returns
+///
+/// `true` for the ranges above.
+///
+/// # Examples
+///
+/// ```
+/// use bookclerk_plugin_manifest::is_local_network;
+///
+/// assert!(is_local_network("192.168.1.20".parse().unwrap()));
+/// assert!(is_local_network("fd12:3456::1".parse().unwrap()));
+/// assert!(!is_local_network("127.0.0.1".parse().unwrap()));
+/// assert!(!is_local_network("169.254.169.254".parse().unwrap()));
+/// ```
+#[must_use]
+pub fn is_local_network(ip: IpAddr) -> bool {
+    match canonical_ip(ip) {
+        IpAddr::V4(v4) => v4.is_private() || is_cgnat(v4),
+        IpAddr::V6(v6) => v6.is_unique_local(),
+    }
+}
+
 /// RFC 6598 shared address space (`100.64.0.0/10`).
 fn is_cgnat(v4: Ipv4Addr) -> bool {
     v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 64

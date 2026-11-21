@@ -140,6 +140,7 @@ __all__ = [
     "KvNamespace",
     "CoverEntrypoint",
     "MetadataFilesEntrypoint",
+    "IngressEntrypoint",
     "MetadataEntrypoint",
     "NamedEntrypoint",
     "AiBinding",
@@ -519,6 +520,29 @@ class _EnvView:
             return default
 
 
+def _network_grant(network: Any) -> dict[str, Any]:
+    """The ``env.NETWORK`` dict: the grant in effect, with every list present.
+
+    Args:
+        network: The bridge context's ``network`` value.
+
+    Returns:
+        ``outbound``, ``domains``, ``tcp`` and ``settings`` (each setting a
+        dict with ``key``, ``network``, ``state`` and, when set,
+        ``destination`` and ``error``).
+    """
+
+    def as_list(value: Any) -> list[Any]:
+        return [py(item) for item in py(value)] if value is not None else []
+
+    return {
+        "outbound": _get(network, "outbound") is True,
+        "domains": as_list(_get(network, "domains")),
+        "tcp": as_list(_get(network, "tcp")),
+        "settings": as_list(_get(network, "settings")),
+    }
+
+
 def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
     granted: dict[str, Any] = {}
     if isinstance(raw_env, _EnvView):
@@ -531,6 +555,9 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
     secrets = _get(ctx, "secrets")
     if secrets is not None:
         granted["SECRETS"] = decode_extensible_config(secrets)
+    network = _get(ctx, "network")
+    if network is not None:
+        granted["NETWORK"] = _network_grant(network)
     storage = _get(ctx, "storage")
     if storage is not None:
         granted["WORK_FS"] = storage
@@ -2637,6 +2664,35 @@ class NotifierEntrypoint(NamedEntrypoint):
         default accepts the address as given.
         """
         return {"addressJson": params["addressJson"]}
+
+
+class IngressEntrypoint(NamedEntrypoint):
+    """``ingress`` entrypoint: gives the library a public ``https`` address.
+
+    The host starts at most one ingress instance at a time. The Python SDK
+    serves ``[ingress] kind = "direct"`` plugins (dynamic DNS, port mapping),
+    which keep the address current and never receive requests; the ``ORIGIN``
+    binding a relay plugin hands requests to is provided by the TypeScript
+    SDK only.
+    """
+
+    bookclerk_methods = ("start", "health", "stop")
+
+    async def start(self) -> abi.IngressStarted:
+        """Bring the address up and return it once it serves (``IngressStarted``).
+
+        The origin is ``https://`` and a host name, with no port, path or
+        trailing slash.
+        """
+        raise _unsupported("start")
+
+    async def health(self) -> abi.IngressHealth:
+        """Whether the address is serving (``IngressHealth``)."""
+        return {"serving": True}
+
+    async def stop(self) -> None:
+        """Take the address down; the host stops relying on it after this returns."""
+        return None
 
 
 # ---------------------------------------------------------------------------

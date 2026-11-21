@@ -55,6 +55,9 @@ function SessionBadges({ row }: { row: ListedSession }) {
       {row.channel === "clerk" ? (
         <Badge className="bg-ink/10 text-ink normal-case tracking-normal">Library card</Badge>
       ) : null}
+      {row.channel === "player" ? (
+        <Badge className="bg-ink/10 text-ink normal-case tracking-normal">Player app</Badge>
+      ) : null}
       {row.elevated ? (
         <Badge className="bg-teal/15 text-ink normal-case tracking-normal">Elevated</Badge>
       ) : null}

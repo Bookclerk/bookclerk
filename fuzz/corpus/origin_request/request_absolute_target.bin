@@ -1,0 +1,1 @@
+{"method":"POST","target":"https://evil.example/","headers":[{"name":"content-type","value":"application/json"},{"name":"cookie","value":"session=abc"},{"name":"Host","value":"evil.example"},{"name":"x-forwarded-for","value":"198.51.100.1"}],"clientAddress":"203.0.113.9"}

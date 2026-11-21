@@ -189,7 +189,7 @@ struct BridgeObject {
 }
 
 /// What an event means for the feed.
-enum Effect {
+pub(crate) enum Effect {
     /// The object now exists with these fields.
     Upserted,
     /// The object is gone.
@@ -345,18 +345,18 @@ fn bridge_events(
 }
 
 /// The listing fields an event carries about its object.
-struct ObjectFields {
+pub(crate) struct ObjectFields {
     /// Size in bytes.
-    size: Option<u64>,
+    pub(crate) size: Option<u64>,
     /// Entity tag without quotes.
-    etag: Option<String>,
+    pub(crate) etag: Option<String>,
     /// Version id.
-    version_id: Option<String>,
+    pub(crate) version_id: Option<String>,
 }
 
 /// The change for one event, or `None` when the key is outside the scope
 /// or the event is one the feed ignores.
-fn event_for(
+pub(crate) fn event_for(
     full_key: String,
     effect: Effect,
     scope: EventScope<'_>,

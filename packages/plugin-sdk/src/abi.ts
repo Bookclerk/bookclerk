@@ -174,8 +174,32 @@ export const MAX_SOCKET_URL_BYTES = 2048 as const;
 /** Most request headers, and separately subprotocols, on one `Sockets.connect`. */
 export const MAX_SOCKET_HEADERS = 16 as const;
 
+/**
+ * Most header fields on one `Origin.fetch` request, and separately on its
+ * response.
+ */
+export const MAX_ORIGIN_HEADERS = 128 as const;
+
+/**
+ * Largest total UTF-8 bytes of header names and values on one `Origin.fetch`
+ * request, and separately on its response.
+ */
+export const MAX_ORIGIN_HEADER_BYTES = 65536 as const;
+
+/** Longest `OriginRequest.target` (path and query), in bytes. */
+export const MAX_ORIGIN_TARGET_BYTES = 8192 as const;
+
+/** Longest `IngressStarted.origin`, in bytes. */
+export const MAX_INGRESS_ORIGIN_BYTES = 253 as const;
+
 /** Largest `KvNamespace` metadata JSON text in bytes. */
 export const MAX_KV_METADATA_BYTES = 1024 as const;
+
+/**
+ * Most entries in each list of a `NetworkGrant` (fetch hosts, TCP
+ * destinations, network settings).
+ */
+export const MAX_NETWORK_GRANT_ENTRIES = 256 as const;
 
 /** Maximum already-separated operations in one plugin-owned migration. */
 export const MAX_PLUGIN_MIGRATION_OPS = 256 as const;
@@ -230,13 +254,33 @@ export const OBJECT_CHANGE_KINDS = ["changed", "upserted", "removed"] as const;
 export type ObjectChangeKind = (typeof OBJECT_CHANGE_KINDS)[number];
 
 /**
+ * How a setting's destination is reached.
+ *
+ * Ordinal-ordered `SettingNetworkKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const SETTING_NETWORK_KINDS = ["fetch", "tcp"] as const;
+
+/** Union of `SETTING_NETWORK_KINDS` wire names. */
+export type SettingNetworkKind = (typeof SETTING_NETWORK_KINDS)[number];
+
+/**
+ * Where a network setting's destination stands.
+ *
+ * Ordinal-ordered `SettingGrantState` wire names (index = Cap'n Proto ordinal).
+ */
+export const SETTING_GRANT_STATES = ["approved", "pending", "unset", "invalid"] as const;
+
+/** Union of `SETTING_GRANT_STATES` wire names. */
+export type SettingGrantState = (typeof SETTING_GRANT_STATES)[number];
+
+/**
  * Stable `PluginError.code` strings. Unknown future codes are forwarded
  * as-is; SDKs surface them as a local `unknown` while keeping the raw wire
  * code.
  *
  * Wire strings of `PluginErrorCode` in ordinal order (snake_case `Text` codes).
  */
-export const PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited"] as const;
+export const PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited", "network_not_granted"] as const;
 
 /** Union of `PLUGIN_ERROR_CODES` wire names. */
 export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
@@ -248,7 +292,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ai"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];

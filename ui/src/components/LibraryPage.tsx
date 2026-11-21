@@ -3,6 +3,7 @@ import { RefreshCw, ScanSearch } from "lucide-react";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ContinueListening } from "@/components/ContinueListening";
+import { LibraryTagsEditor } from "@/components/LibraryTagsEditor";
 import { TitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDetailModal";
 import { titleDetailFromWork } from "@/lib/titleDetail";
 import { WorkRow } from "@/components/WorkRow";
@@ -598,6 +599,11 @@ export function LibraryPage({
             canListen && playableEdition(selectedDetail)
               ? () => void onPlayWork(selected, selectedDetail)
               : undefined
+          }
+          extra={
+            role === "operator" || role === "owner" || role === "administrator" ? (
+              <LibraryTagsEditor workId={selected.id} />
+            ) : undefined
           }
           onMetaSearch={(kind: TitleMetaSearchKind, value: string) => {
             setSelected(null);

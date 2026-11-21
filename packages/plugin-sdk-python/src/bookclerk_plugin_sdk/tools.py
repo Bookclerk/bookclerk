@@ -917,6 +917,35 @@ _DIALECT_KEYS = frozenset(
 """Keys a ``[[metadata_files.dialects]]`` row may carry (the host's fields)."""
 
 
+def _validate_ingress(m: dict[str, Any]) -> None:
+    """Check ``[ingress]`` against the entrypoints with the host's rules and messages.
+
+    Args:
+        m: Manifest dictionary.
+
+    Raises:
+        ValueError: If an ``ingress`` plugin has no table, another plugin has
+            one, or the table has an unknown key or a ``kind`` other than
+            ``relay`` or ``direct``.
+    """
+    exported = "ingress" in (m.get("entrypoints") or [])
+    table = m.get("ingress")
+    if table is None:
+        if exported:
+            raise ValueError(
+                "plugin.toml: `[ingress]` is required for a plugin with the `ingress` "
+                'entrypoint (set `kind` to "relay" or "direct")'
+            )
+        return
+    if not exported:
+        raise ValueError("plugin.toml: `[ingress]` needs the `ingress` entrypoint")
+    for key in table:
+        if key != "kind":
+            raise ValueError(f"plugin.toml: `[ingress]` has unknown key `{key}`")
+    if table.get("kind") not in ("relay", "direct"):
+        raise ValueError('plugin.toml: `[ingress].kind` must be "relay" or "direct"')
+
+
 def _validate_metadata_files(m: dict[str, Any]) -> None:
     """Check ``[metadata_files]`` against the entrypoints with the host's rules and messages.
 
@@ -1253,6 +1282,7 @@ def validate_manifest(m: dict[str, Any]) -> None:
     _validate_metadata_files(m)
     _validate_notifier(m)
     _validate_notification_types(m)
+    _validate_ingress(m)
     _validate_ai(m)
     _validate_surface(m)
     runtime = m.get("runtime") or "native"
@@ -1304,6 +1334,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "covers",
     "metadataFiles",
     "notifier",
+    "ingress",
     "ai",
 )
 """Entrypoint wire names accepted in ``entrypoints``."""
@@ -1395,6 +1426,10 @@ def _validate_surface(m: dict[str, Any]) -> None:
                 f"plugin.toml: [[databases]] binding `{name}` must be `[A-Z][A-Z0-9_]*` "
                 "and at most 32 chars"
             )
+        if name == "NETWORK":
+            raise ValueError(
+                "plugin.toml: [[databases]] binding `NETWORK` is reserved for the network grant"
+            )
         if name in bindings:
             raise ValueError(f"plugin.toml: [[databases]] binding `{name}` is duplicated")
         bindings.add(name)
@@ -1431,7 +1466,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
             raise ValueError(
                 f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
-        if name == "CONFIG" or name in bindings:
+        if name in ("CONFIG", "NETWORK") or name in bindings:
             raise ValueError(
                 f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
@@ -1536,6 +1571,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "covers": "Covers",
     "metadataFiles": "MetadataFiles",
     "notifier": "Notifier",
+    "ingress": "Ingress",
     "ai": "Ai",
 }
 """Exported class name the launcher binds for each ``entrypoints`` wire name."""
@@ -2152,7 +2188,7 @@ TYPES_OUTPUT_FILE = "bookclerk_configuration.py"
 """Default ``types`` output filename next to ``plugin.toml``."""
 
 _RESERVED_BINDINGS = frozenset(
-    {"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV, "SOCKETS"}
+    {"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV, "SOCKETS", "NETWORK"}
 )
 
 

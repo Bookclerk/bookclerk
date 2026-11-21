@@ -53,6 +53,13 @@ export const Fractional: Story = { args: { value: 3.6 } };
   and long text.
 - Give stories fixed data. A story must not read the clock, call the API
   or load a remote image, or its screenshot changes from run to run.
+- Don't let a story read the page's own address either. Storybook serves
+  every story from `/iframe.html`, so pass a page such as `NotFoundPage`
+  the path to show.
+- Render the component as the app lays it out, not a layout made up for
+  the story. A component that reads shared app state (the page's player,
+  say) exports a view that takes that state as props, such as
+  `PlayerBarView`, and the story renders the view.
 - A whole page uses `parameters: { layout: "fullscreen" }`, which gives it
   the viewport's height as the app's `#root` does.
 - Give a form control a label in the story, as the app does. axe-core

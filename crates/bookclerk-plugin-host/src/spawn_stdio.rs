@@ -141,6 +141,8 @@ pub(crate) struct SpawnedStdio {
     pub grant: PluginGrant,
     /// Persisted operator grant before host overlays.
     pub persisted_grant: PluginGrant,
+    /// The `NETWORK` binding every `open` of this session carries.
+    pub network: bookclerk_plugin_abi::NetworkGrant,
     /// Spawn config JSON or destination context extras.
     pub spawn_config: Value,
     /// Guest HOME / data directory.
@@ -267,8 +269,16 @@ pub(crate) async fn spawn_stdio_guest(
     tokio::task::yield_now().await;
     let alias = plugin.manifest.id.clone();
     let persisted_grant = spawn_grant(&config.paths().files_dir, plugin)?;
-    let grant = effective_spawn_grant(&persisted_grant, plugin, config, deployed_endpoint);
-    let spawn_config = spawn_config_for_grant(&grant, config_table);
+    let spawn_config = spawn_config_for_grant(&persisted_grant, config_table);
+    let mut grant = effective_spawn_grant(&persisted_grant, plugin, config, deployed_endpoint);
+    // Network settings reach the policy only once their destination is
+    // approved; the guest sees the same values in `CONFIG`.
+    let setting_statuses = crate::setting_grants::apply_setting_destinations(
+        &mut grant,
+        &plugin.manifest,
+        &spawn_config,
+    );
+    let network = crate::setting_grants::network_grant_binding(&grant, &setting_statuses);
     // Unix takes the cgroup and guest IPC directory out of the jail. Windows
     // only moves fields, so `mut` is unused there.
     #[cfg_attr(windows, allow(unused_mut))]
@@ -370,6 +380,7 @@ pub(crate) async fn spawn_stdio_guest(
         stdout: parts.stdout,
         grant,
         persisted_grant,
+        network,
         spawn_config,
         data: jail.data,
         scratch: jail.scratch,
@@ -3294,9 +3305,28 @@ where
     }
 }
 
+/// Relays one helper or guest stderr line into the host's log at the level
+/// the line names (capped at WARN, see [`bookclerk_config::parse_relayed_line`]),
+/// without the line's own timestamp and level. The host's field is
+/// `guest_ref`, since the line itself often carries a `plugin=` field.
 fn emit_guest_stderr_record(plugin: &str, tag: &str, line: &str) {
     let line = truncate_utf8(line, STDERR_TAIL_LINE_BYTES);
-    tracing::info!(target: "bookclerk::spawn", plugin, sibling = tag, "{line}");
+    let relayed = bookclerk_config::parse_relayed_line(line);
+    let text = relayed.text;
+    match relayed.level {
+        bookclerk_config::RelayedLevel::Trace => {
+            tracing::trace!(target: "bookclerk::spawn", guest_ref = plugin, sibling = tag, "{text}");
+        }
+        bookclerk_config::RelayedLevel::Debug => {
+            tracing::debug!(target: "bookclerk::spawn", guest_ref = plugin, sibling = tag, "{text}");
+        }
+        bookclerk_config::RelayedLevel::Info => {
+            tracing::info!(target: "bookclerk::spawn", guest_ref = plugin, sibling = tag, "{text}");
+        }
+        bookclerk_config::RelayedLevel::Warn => {
+            tracing::warn!(target: "bookclerk::spawn", guest_ref = plugin, sibling = tag, "{text}");
+        }
+    }
     if spawn_diag_stderr_enabled() {
         eprintln!("bookclerk-spawn: [{tag}] {line}");
         let _ = std::io::Write::flush(&mut std::io::stderr());
@@ -3772,6 +3802,49 @@ mod tests {
             !warn.contains("json-café-warn"),
             "warn filter kept an info spawn line: {warn}"
         );
+    }
+
+    #[test]
+    fn guest_stderr_keeps_its_own_level_up_to_warn() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log buf").extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&bytes);
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new("bookclerk=trace"))
+            .with_writer(move || Buf(Arc::clone(&sink)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            emit_guest_stderr_record("probe", "guest", "TRACE relay-trace");
+            emit_guest_stderr_record("probe", "guest", "2026-11-20T10:00:00Z DEBUG relay-debug");
+            emit_guest_stderr_record("probe", "guest", "ERROR relay-error");
+        });
+        let text = String::from_utf8(bytes.lock().expect("log buf").clone()).expect("utf-8 log");
+        let level_of = |token: &str| {
+            text.lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|v| v["fields"]["message"].as_str() == Some(token))
+                .and_then(|v| v["level"].as_str().map(str::to_owned))
+        };
+        assert_eq!(level_of("relay-trace").as_deref(), Some("TRACE"), "{text}");
+        assert_eq!(level_of("relay-debug").as_deref(), Some("DEBUG"), "{text}");
+        assert_eq!(level_of("relay-error").as_deref(), Some("WARN"), "{text}");
+        assert!(text.contains("\"guest_ref\":\"probe\""), "{text}");
     }
 
     fn capture_spawn_logs(filter: &str, token: &str) -> String {

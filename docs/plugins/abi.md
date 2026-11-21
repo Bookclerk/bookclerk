@@ -685,6 +685,38 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   connection dropped without one, and 1001 when the broker itself
   stopped.
 
+## Network grant (`env.NETWORK`)
+
+Every `open` carries `Bindings.network`, the network grant in effect, so a
+plugin can tell an unapproved destination from an unreachable one and
+say so. It is feedback only: the host enforces the grant whatever the
+plugin does with it.
+
+| Field | Meaning |
+| --- | --- |
+| `outbound` | False when the network is denied |
+| `domains` | Fetch entries in effect (`host`, `*.host`, `host:port`, `*`), including approved setting destinations |
+| `tcp` | Raw TCP destinations as `host:port`, one per port |
+| `settings` | One row per [network setting](capabilities.md#network-settings): `key`, `network` (`fetch` or `tcp`), `destination`, `state` (`approved`, `pending`, `unset` or `invalid`) and `error` |
+
+TypeScript and Python read it as `env.NETWORK`; Rust reads
+`Bindings::network`. No declared binding may be named `NETWORK`.
+
+A connection the grant does not cover fails with `network_not_granted`.
+`details.destination` names the `host:port`, and `details.setting` names
+the network setting whose destination awaits approval, when one does:
+
+- a refused `fetch()` answers `403` with an `x-bookclerk-error:
+  network_not_granted` header and a JSON body
+  `{"error": {"code", "message", "details"}}`;
+- a refused `connect()` or native socket fails with that code (the native
+  socket proxy answers `403` with the same body);
+- a refused pushed socket (`env.SOCKETS.connect`) rejects with the typed
+  error.
+
+Tell the operator to approve the destination on the plugin's consent
+form; don't retry until the grant changes.
+
 ## Entrypoint methods
 
 The methods each capability entrypoint answers, by capability.
@@ -1665,6 +1697,71 @@ Native guests receive the binding as `Bindings.notify`.
 > [!NOTE]
 > The host does not hand out `NOTIFY` yet; it comes with the router.
 
+### Public addresses (`ingress`)
+
+Export `ingress` to give the library a public `https` address, so patrons
+and branches can reach it from outside the home network. The
+[`[ingress]`](manifest.md#ingress-public-address) table says how: a
+`relay` plugin carries requests from a provider such as a tunnel service,
+and a `direct` plugin keeps an address that points at the daemon current.
+The host runs at most one ingress instance at a time.
+
+The typed methods on `Ingress` and `IngressEntrypoint` are:
+
+| Method | Notes |
+| --- | --- |
+| `start` | `()` → `{ origin }`. Bring the address up and answer once it serves. `origin` is `https://` and a lowercase host name of at least two labels, with no port, path, query, user info or trailing dot or slash, at most `MAX_INGRESS_ORIGIN_BYTES` (253) bytes after the scheme. The top label starts with a letter, so nothing a URL parser reads as an IP address passes |
+| `health` | `()` → `{ serving, detail }`. Whether the address serves now; `detail` tells the operator why not |
+| `stop` | Take the address down. The host stops relying on it once this returns |
+
+A relay plugin hands each request its provider delivers to the library:
+
+```ts
+export class Ingress extends IngressEntrypoint<Env> {
+  async start(): Promise<IngressStarted> {
+    // Connect to the provider; for each request it delivers:
+    //   const response = await this.env.ORIGIN.fetch(request, {
+    //     clientAddress: providerReportedClientIp,
+    //   });
+    return { origin: "https://lib.example.net" };
+  }
+}
+```
+
+`env.ORIGIN.fetch(request, { clientAddress })` sends the path and query of
+`request.url`, its method, headers and body, and resolves with the
+library's `Response`. Both bodies stream. The host checks each request
+before the library sees it and refuses it with `invalid_params` when:
+
+- the method is not an HTTP token of at most 32 bytes;
+- the target is not a path and query (it must start with one `/`, hold
+  only visible ASCII and no `#`) or is longer than
+  `MAX_ORIGIN_TARGET_BYTES` (8192);
+- there are more than `MAX_ORIGIN_HEADERS` (128) header fields, their names
+  and values add up to more than `MAX_ORIGIN_HEADER_BYTES` (64 KiB), a name
+  is not a token, a value holds a control or non-ASCII byte, or a field
+  describes the connection (`connection`, `keep-alive`, `te`, `trailer`,
+  `transfer-encoding`, `upgrade` and the `proxy-*` fields);
+- `clientAddress` is set and is not an IP address.
+
+The TypeScript binding drops connection fields itself. `host`,
+`forwarded`, `x-forwarded-*` and `x-real-ip` are dropped rather than
+refused: the library answers on its own public origin, and the client
+address comes only from `clientAddress`. Take it from the provider's own
+connection metadata (such as `cf-connecting-ip` on a Cloudflare relay),
+never from a header the client sent. Responses follow the same header
+rules, so a library response never carries a connection field.
+
+`env.ORIGIN` is present only on a `relay` plugin while it is the active
+ingress, and only in the TypeScript SDK; the Python SDK serves `direct`
+plugins.
+
+> [!NOTE]
+> The host does not start ingress instances yet. Serving `ORIGIN`
+> requests as public `https` traffic, storing the public origin and
+> choosing the active instance come with the daemon side of the ingress
+> work.
+
 ### Model plugins
 
 Export `ai` to serve models: the plugin loads them, the host and other
@@ -1954,6 +2051,16 @@ earlier. The SDKs' `translateKeys` default returns the keys unchanged. The
 `local` destination applies the host platform's file-name rules, and `s3`
 the object-store rules and 1024-byte limit including its prefix (see
 [Keys each destination stores](../server/output.md#keys-each-destination-stores)).
+
+The optional `r2` destination declares the same set as `s3` and shares its
+implementation. Its `changes` feed pulls the bucket's event notifications
+from a Cloudflare Queue's HTTP pull consumer when the instance's
+`notification_queue_id` setting names one, and otherwise every page has
+`complete` false (see
+[Following changes in an R2 bucket](../server/output.md#following-changes-in-an-r2-bucket)).
+It is an ordinary storage guest: its settings and secrets reach it in
+`CONFIG` and `SECRETS`, and its network access is its declared
+`[capabilities.network]` grant.
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming

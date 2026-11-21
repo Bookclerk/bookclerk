@@ -1,0 +1,1 @@
+{"account": "3f4b7e3dcab231cbfdaa90a6a28bd548", "action": "CompleteMultipartUpload", "bucket": "books", "object": {"key": "library/big.m4b", "size": 65536, "eTag": "\"abc-3\""}, "eventTime": "2024-05-24T19:36:44.379Z"}

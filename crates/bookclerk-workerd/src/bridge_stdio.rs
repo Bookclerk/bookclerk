@@ -33,14 +33,14 @@ use bookclerk_plugin_abi::{
     serve_plugin_stdio, Bindings, ByteRange, ContentSource, ContentSourceClient, CopyResult,
     CoverFetchParams, CoverFetcher, CoverFetcherClient, CoverImage, Database, DatabaseClient,
     Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer, EventConsumerClient,
-    ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Invocation, JobController, JobOutcome,
-    JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles, MetadataFilesClient,
-    MetadataProvider, MetadataProviderClient, Notifier, NotifierClient, ObjectMetadata, Oidc,
-    OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient, PluginClient,
-    PluginDescribe, PluginMigration, PluginWorker, PutResult, QueueConsumer, QueueConsumerClient,
-    ReadResult, RemoteLibrary, RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient,
-    SocketHandler, SocketHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
-    PRODUCT_API_VERSION,
+    ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Ingress, IngressClient, Invocation,
+    JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles,
+    MetadataFilesClient, MetadataProvider, MetadataProviderClient, Notifier, NotifierClient,
+    ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli,
+    PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult,
+    QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient,
+    ScheduledHandler, ScheduledHandlerClient, SocketHandler, SocketHandlerClient, WriteOptions,
+    MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -182,7 +182,9 @@ impl WorkerdRoot {
             queues: BTreeMap::new(),
             kv: BTreeMap::new(),
             sockets: BTreeMap::new(),
+            network: bindings.network.clone(),
             notify_token: None,
+            origin_token: None,
             ai_token: None,
         };
         let requested = self.manifest_families();
@@ -226,6 +228,10 @@ impl WorkerdRoot {
                 .filter(|_| self.capabilities.sockets)
                 .map(Arc::from),
             notify: bindings.notify.map(Arc::from),
+            origin: bindings
+                .origin
+                .filter(|_| self.exports(Entrypoint::Ingress))
+                .map(Arc::from),
             ai: bindings.ai.map(Arc::from),
         };
         let opened = client.open(&invocation, host_bindings).await?;
@@ -374,6 +380,32 @@ impl WorkerdRoot {
             }
             None => (None, None),
         };
+        // One origin-only grant token for a relay ingress plugin: the
+        // adapter isolate reaches the library over `/origin/fetch` and
+        // installs `ORIGIN` on the author's `env`.
+        let (origin_token, origin_grant) = match bindings
+            .origin
+            .filter(|_| self.exports(Entrypoint::Ingress))
+        {
+            Some(origin) => {
+                let token = format!("{:032x}", rand::random::<u128>());
+                self.table.borrow_mut().insert(
+                    token.clone(),
+                    GrantedSlot::origin_only(
+                        Rc::from(origin),
+                        grant_expiry(invocation.deadline_unix_ms),
+                    ),
+                );
+                (
+                    Some(token.clone()),
+                    Some(RevokeGrant {
+                        table: Rc::clone(&self.table),
+                        grant: token,
+                    }),
+                )
+            }
+            None => (None, None),
+        };
         // An ai-only grant token for the `AI` binding: the adapter isolate
         // runs models through `/ai/run` with it and installs `env.AI` on
         // the author's `env`.
@@ -406,7 +438,9 @@ impl WorkerdRoot {
             queues,
             kv,
             sockets,
+            network: bindings.network,
             notify_token,
+            origin_token,
             ai_token,
         };
         let ctx_json = context_header(&ctx)?;
@@ -417,6 +451,7 @@ impl WorkerdRoot {
             _kv: kv_grants,
             _sockets: sockets_grant,
             _notify: notify_grant,
+            _origin: origin_grant,
             _ai: ai_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
@@ -472,6 +507,9 @@ impl WorkerdRoot {
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::Ingress) {
+            exported.ingress = Some(Box::new(IngressClient::new(invoke.typed())));
+        }
         if self.exports(Entrypoint::Covers) {
             exported.covers = Some(Box::new(InvokeCoverFetcher {
                 typed: CoverFetcherClient::new(invoke.typed(), MAX_STREAM_WINDOW_BYTES),
@@ -510,6 +548,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         socket_handler,
         metadata_files,
         notifier,
+        ingress,
         ai,
     } = opened;
     Entrypoints {
@@ -558,6 +597,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         notifier: notifier
             .filter(|_| allow(Entrypoint::Notifier.wire_name()))
             .map(|c| Box::new(c) as Box<dyn Notifier>),
+        ingress: ingress
+            .filter(|_| allow(Entrypoint::Ingress.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn Ingress>),
         ai: ai
             .filter(|_| allow(Entrypoint::Ai.wire_name()))
             .map(|c| Box::new(c) as Box<dyn AiModels>),
@@ -610,10 +652,17 @@ struct BridgeContext {
     /// most one entry.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     sockets: BTreeMap<String, String>,
+    /// `NETWORK`: the network grant in effect, which the adapter hands the
+    /// author as `env.NETWORK`.
+    network: bookclerk_plugin_abi::NetworkGrant,
     /// Notify-only bearer for `/notify/raise`, when the manifest declares
     /// `[[notifications.types]]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     notify_token: Option<String>,
+    /// Origin-only bearer for `/origin/fetch`: the `ORIGIN` binding of the
+    /// active relay ingress plugin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin_token: Option<String>,
     /// Ai-only bearer for `/ai/run`, when the manifest declares
     /// `[ai].calls` and the operator approved it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -639,6 +688,7 @@ struct OpenGrants {
     _kv: Vec<RevokeGrant>,
     _sockets: Option<RevokeGrant>,
     _notify: Option<RevokeGrant>,
+    _origin: Option<RevokeGrant>,
     _ai: Option<RevokeGrant>,
 }
 
@@ -886,6 +936,7 @@ impl JobRunner for InvokeJobRunner {
                 kv: None,
                 sockets: None,
                 notify: None,
+                origin: None,
                 ai: None,
             },
         );
@@ -1033,7 +1084,9 @@ mod tests {
             queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
             sockets: BTreeMap::from([("SOCKETS".to_string(), "stok".to_string())]),
+            network: bookclerk_plugin_abi::NetworkGrant::default(),
             notify_token: None,
+            origin_token: Some("otok".into()),
             ai_token: None,
         };
         let json = context_header(&JobBridgeContext {
@@ -1049,6 +1102,8 @@ mod tests {
         assert_eq!(v["queues"]["NOTIFY"], "qtok");
         assert_eq!(v["kv"]["KV"], "ktok");
         assert_eq!(v["sockets"]["SOCKETS"], "stok");
+        assert_eq!(v["originToken"], "otok");
         assert!(v.get("config").is_some());
+        assert_eq!(v["network"]["outbound"], false, "{v}");
     }
 }

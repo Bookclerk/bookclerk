@@ -178,6 +178,7 @@ than the OS hint alone:
 | Operator cookie | `bookclerk_operator_session` (`Path=/`), also used by elevated Owners |
 | Portal cookie | `bookclerk_portal_session` (`Path=/`), the session of a first-party user |
 | Library card | A clerk's session, sent as `Authorization: Bookclerk-Clerk <token>`, never as a cookie (see [Library cards](#library-cards)) |
+| Player card | A player app's sign-in at `/player`, sent as `Authorization: Bearer <token>` or `?token=`, made from a player password or a browser approval, never the account password (see [Player apps](player-apps.md)) |
 | Config | `[daemon.auth]` |
 | Preferences | Stored in the database (`user_preferences`), not `config.toml` |
 
@@ -259,6 +260,13 @@ library never sends work on it.
    probed the file, `lossless` when true, and `version`, a short opaque
    string that changes when the library's file does. `copy` is left out
    for an edition the library has not downloaded.
+   After those, the pages go on with the books only the library's
+   branches hold: editions a branch it trusts listed in the last two days
+   (the ones Discover and search show as available through a branch) that
+   no store account of the library holds. Each such edition has
+   `"availability": "reachable"`, no formats, no `copy` and never `yours`,
+   and the page doesn't say which branch lists it. A branch reading the
+   library's books never gets these.
    A cursor is an opaque string of up to 64 letters, digits and `-`. The
    clerk sends it back unchanged as the next `after`.
    A frame it cannot read gets `error` with code `invalid`.
@@ -337,11 +345,32 @@ Then the daemon keeps the library's clerk socket open with the card:
   (`GET /api/config/join/window`, which lists the libraries in `cards`),
   merged with the books of any library this install is a branch of. Each
   edition there carries `yours`, and the person's own are marked **Yours**.
+  An edition only the library's branches hold also carries
+  `requestable_work`, the library's own work id.
 - A lost connection is dialed again after 5 seconds, doubling up to 5
   minutes.
 - When the library ends the card (close 4401, or 401 on connecting), the
   card and its books are dropped here, and the library stays listed as
   `signed_out` so the person can sign in again.
+
+`POST /api/config/clerk/request` `{ library_id, work_id, node_id? }`
+asks the library for a book only its branches hold, with `work_id` taken
+from `requestable_work`. The daemon sends the library's own member route,
+`POST /api/branch-requests`, with the card, as the person's browser
+session there would, so the library decides: the person's member controls
+there, whether a branch it trusts lists the work, and which branch it
+asks. The daemon reads only the status of the library's answer:
+
+| Answer | Means |
+| --- | --- |
+| 200 `{ library_id }` | The library took the request. It shows there with the person's other requests. |
+| 400 `invalid_request` | The work or node id is malformed. |
+| 403 `not_allowed` | The library's member controls turn requesting books off for the person. |
+| 404 `not_found` | This install holds no active card for that library. |
+| 404 `not_listed` | No branch of the library lists the work now. |
+| 502 `card_refused` | The library no longer accepts the card; sign in again. |
+| 502 `unreachable` or `library_error` | The library couldn't be reached in 15 seconds, or answered with another error. |
+| 503 `library_busy` | The library's job queue is full. |
 
 `GET /api/config/clerk` lists the cards. `POST /api/config/clerk/sign-out`
 `{ library_id }` ends the card at the library (`POST /api/auth/logout`
@@ -380,7 +409,9 @@ name, and sends the browser to the library's sign-in page. The library
 sends it back to `/clerk/callback`, which posts the `code` and `state` to
 `POST /api/config/clerk/callback` and removes them from the address bar.
 Only a request that got no answer offers **Try again**; any answer ends
-the pending sign-in. Each card in the list has **Sign out** (**Remove** once
+the pending sign-in. In **Books in other libraries**, a book only a
+library's branches hold says "On a branch of" that library and has a
+**Request** button. Each card in the list has **Sign out** (**Remove** once
 the library ended it), and for the operator **Make this server a branch**.
 A branch in Settings → Library has **Use a library card instead**. See
 [Sign in with a library card](../guide/branches.md#sign-in-with-a-library-card).
@@ -546,10 +577,13 @@ the store unlisted and logs why.
   Escape cancels.
 - **Security**: password, named passkeys, authenticator app, linked
   identity providers, and Owner elevation.
-- **Sessions**: browsers, desktop windows and library cards, each with
-  **Revoke**. A library card shows the name its clerk gave itself; a
-  desktop window shows **Desktop app on <computer>**, and revoking it signs
-  that window out at its next launch.
+- **Player apps**: player passwords for phone and car apps, each shown
+  once (see [Player apps](player-apps.md)).
+- **Sessions**: browsers, desktop windows, library cards and player apps,
+  each with **Revoke**. A library card shows the name its clerk gave
+  itself; a player app shows a **Player app** badge; a desktop window shows
+  **Desktop app on <computer>**, and revoking it signs that window out at
+  its next launch.
 
 Profile edits are self-service. Security and profile edits are hidden or
 disabled while impersonating.

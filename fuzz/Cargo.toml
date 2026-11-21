@@ -41,10 +41,11 @@ bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
 bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/optional/source-graphicaudio" }
 # plan_authz drives the scan and acquire planners over an in-memory library.
 bookclerk-library = { path = "../crates/bookclerk-library" }
+bookclerk-player-api = { path = "../crates/bookclerk-player-api" }
 bookclerk-plugin-database-sqlite = { path = "../crates/bookclerk-plugins/platform/database-sqlite", features = ["host-helpers"] }
 bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
-# s3_event reads S3 notification messages (no `s3` feature: the parser has
-# no AWS client).
+# s3_event and r2_event read bucket notification messages and queue
+# replies (no `s3` feature: the parsers have no network client).
 bookclerk-storage = { path = "../crates/bookclerk-storage" }
 # window_policy drives the desktop window's custom-scheme policy.
 bookclerk-window-policy = { path = "../crates/bookclerk-window-policy" }
@@ -62,7 +63,7 @@ sea-orm = { version = "2.0.0", default-features = false }
 # Runtime for mux_peer: the mux is driven through tokio reader and writer tasks.
 tokio = { version = "1", features = ["rt", "time", "io-util"] }
 # Oracle for guest_sql_authz: SQLite's own authorizer callback (`hooks`).
-rusqlite = { version = "0.39", features = ["bundled", "hooks"] }
+rusqlite = { version = "0.41", features = ["bundled", "hooks"] }
 
 [workspace]
 members = ["."]
@@ -112,6 +113,13 @@ bench = false
 [[bin]]
 name = "egress_relay_head"
 path = "fuzz_targets/egress_relay_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "setting_destination"
+path = "fuzz_targets/setting_destination.rs"
 test = false
 doc = false
 bench = false
@@ -210,6 +218,13 @@ bench = false
 [[bin]]
 name = "socket_request"
 path = "fuzz_targets/socket_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "origin_request"
+path = "fuzz_targets/origin_request.rs"
 test = false
 doc = false
 bench = false
@@ -439,6 +454,34 @@ doc = false
 bench = false
 
 [[bin]]
+name = "player_request"
+path = "fuzz_targets/player_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "work_tags_request"
+path = "fuzz_targets/work_tags_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "player_socket"
+path = "fuzz_targets/player_socket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "collections_request"
+path = "fuzz_targets/collections_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "job_cap_request"
 path = "fuzz_targets/job_cap_request.rs"
 test = false
@@ -565,6 +608,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "r2_event"
+path = "fuzz_targets/r2_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "archive_extract"
 path = "fuzz_targets/archive_extract.rs"
 test = false
@@ -595,6 +645,13 @@ bench = false
 [[bin]]
 name = "title_meta_fill"
 path = "fuzz_targets/title_meta_fill.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relayed_log_line"
+path = "fuzz_targets/relayed_log_line.rs"
 test = false
 doc = false
 bench = false

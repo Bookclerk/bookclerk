@@ -68,6 +68,9 @@ a later change supersedes one, its **Status** says so.
 - [Notifications](notifications.md): the host routes events into send
   jobs by administrator rules and patron preferences, notifier plugins
   send them, and account mail carries reset and recovery.
+- [Player API](player-api.md): the host serves apps made for
+  Audiobookshelf servers at `/player`, with player cards and no account
+  password.
 - [Model plugins and the AI binding](ai-models.md): models run in jailed
   plugins behind an `ai` entrypoint, every caller reaches them through
   one `AI` binding, and the host loads no model.

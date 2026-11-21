@@ -19,6 +19,7 @@ import {
 import { SsoSignInButton } from "@/components/SsoProviderMark";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { CatalogListingSetting } from "@/components/CatalogListingSetting";
+import { PlayerPasswordsSection } from "@/components/PlayerPasswordsSection";
 import { SessionsPanel } from "@/components/SessionsPanel";
 import { TotpSetupHint } from "@/components/TotpSetupHint";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
@@ -271,10 +272,10 @@ export function AccountSettingsPanel({
         ...result,
         name: passkeyName.trim() || undefined,
       });
-      setPasskeys(await listPasskeys());
+      const [keys] = await Promise.all([listPasskeys(), onSessionChange?.()]);
+      setPasskeys(keys);
       setPasskeyName("");
       setNotice("Passkey registered. You can use it to sign in if SSO is unavailable.");
-      await onSessionChange?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Passkey registration failed");
     } finally {
@@ -287,8 +288,8 @@ export function AccountSettingsPanel({
     setError(null);
     try {
       await deletePasskey(id, currentPassword || undefined);
-      setPasskeys(await listPasskeys());
-      await onSessionChange?.();
+      const [keys] = await Promise.all([listPasskeys(), onSessionChange?.()]);
+      setPasskeys(keys);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove passkey");
     } finally {
@@ -982,6 +983,8 @@ export function AccountSettingsPanel({
       ) : null}
 
       {canEditProfile ? <CatalogListingSetting /> : null}
+
+      {canEditProfile ? <PlayerPasswordsSection /> : null}
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">

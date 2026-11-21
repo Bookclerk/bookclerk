@@ -499,13 +499,22 @@ mod tests {
             "https://10.0.0.1/a",
             "https://169.254.169.254/a",
             "https://localhost/a",
-            "https://0177.0.0.1/a",
             "https://2130706433/a",
         ] {
             assert!(
                 resolve_through(DefaultResolver::default(), url).is_err(),
                 "{url}"
             );
+        }
+        // Resolvers disagree on a leading-zero octet: glibc reads `0177` as
+        // octal (127, refused) and macOS as decimal (177.0.0.1, public).
+        // Either way the policy judges the address the resolver gave.
+        match resolve_through(DefaultResolver::default(), "https://0177.0.0.1/a") {
+            Err(_) => {}
+            Ok(addrs) => assert!(
+                addrs.iter().all(|addr| owner_address_allowed(addr.ip())),
+                "{addrs:?}"
+            ),
         }
     }
 

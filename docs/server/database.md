@@ -286,6 +286,8 @@ Store credentials and other runtime secrets are stored in the
 - S3 destination keys, which are `secret` settings of the `s3` plugin
   instance. With none set, the guest falls back to the AWS SDK default
   provider chain.
+- R2 destination keys and its queue API token, which are `secret`
+  settings of the `r2` plugin instance.
 
 > [!NOTE]
 > Bookclerk no longer creates or reads an `Accounts/` directory.
@@ -365,6 +367,27 @@ bookclerk config master-key import --from ./bookclerk-recovery.key
 `import` restores it, or a copied `master.key`, on an install that has no
 key yet, into that install's store. `bookclerk config master-key status`
 shows the store and whether the key is wrapped.
+
+The operator can also save a recovery copy from the web app:
+
+- **The desktop window asks once.** Starting a library in the window
+  asks for a recovery password (at least 12 characters) and downloads
+  `bookclerk-recovery-key.bck`, wrapped with it. The step can be skipped
+  after a warning.
+- **Settings reminds.** While the key is in the keychain and no copy is
+  recorded as saved, Settings → Server Settings shows a reminder with the
+  same form, for the desktop window and for a server with
+  `key_store = "keychain"`. An Owner sees the reminder under Account,
+  with a pointer to **Elevate to Operator**.
+- **The answer is per key.** It is kept in `master-key-recovery.json`
+  beside `master.key`, with the key's fingerprint, so a restored or
+  replaced key asks again. The file holds no secret.
+
+The routes behind it: `GET /api/config/master-key` (the operator or an
+Owner) reads the status; `POST /api/config/master-key/recovery-copy` (the
+password goes in the body) and `PUT
+/api/config/master-key/recovery-copy/state` are the operator's. See the
+[Web API](api/README.md) reference.
 
 ### Bootstrap secrets stay outside the database
 
@@ -763,6 +786,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
 `playback_progress`, `playback_sessions`, `bookmarks`,
+`player_passwords`, `player_cards`, `player_card_tokens`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
@@ -843,7 +867,10 @@ library holds as works, expressions and editions:
   probe of the file found: its media type (`content_type`, from the
   container, not the file name), its average bitrate (`bitrate_kbps`),
   whether the encoding is lossless (`lossless`), the store the copy came
-  from (`source_store`) and when it was probed (`probed_at`). The acquire
+  from (`source_store`) and when it was probed (`probed_at`). An acquire's
+  probe also stores the encoding (`codec`), the AAC profile
+  (`aac_profile`), `channels`, `sample_rate_hz` and the running time a
+  player sees (`duration_ms`, empty when unknown, never 0). The acquire
   that writes a file probes it; an upload carries the sender's values and
   they are stored when it commits. `probed_at` is empty for a file that
   was never probed (it is not audio, the media worker was unavailable, or
@@ -896,8 +923,8 @@ library holds as works, expressions and editions:
   when `library_index_builds` has no row for the current layout; see
   [Library index](../internals/jobs.md#library-index).
 - `library_work_facets`: the page index's filter values, one row per
-  author, narrator, series, genre, publisher or source a held top-level
-  work has, keyed by the lower-cased value. Written with the work's
+  author, narrator, series, genre, publisher, source or library tag a
+  held top-level work has, keyed by the lower-cased value. Written with the work's
   `library_work_rows` row and fenced by its refresh stamp; an unheld work
   has none. A refresh's facets can span several batches, so the row's
   `facets_ready` is 0 until the last of them is written, and a patron
@@ -910,6 +937,20 @@ library holds as works, expressions and editions:
 - `user_work_tags`: one user's tags on a work, one row per tag, written
   in the same batch as `user_title_state.tags` so the library page can
   filter by a tag.
+- `work_tags`: library tags on a top-level work, which everyone sees, one
+  row per tag and source (`admin` for tags set in Bookclerk, `sidecar`
+  for tags read from a metadata file), keyed by the lower-cased tag.
+  Replacing the `admin` tags (`PUT /api/library/works/{id}/tags`) leaves
+  the sidecar ones, and refreshes the work's page index row so the
+  Library filter (facet `library_tag`) and patron scopes see the change
+  at once. A split copies them to the new work.
+
+The library's collections are not a table: they live in the
+`core.collections` configuration document (names and storage key
+prefixes). The page index stores each work's collections as facet
+`collection`, read from its editions' files (`edition_files`), so a
+change to the document drops the finished index build and the next
+rebuild recomputes every work.
 
 Per-person rows point at works instead of copying a title:
 `listening_progress` (one row per listener and work, with the edition when
@@ -925,6 +966,14 @@ removed with its user (see [Playback reference](playback.md)):
 runtime and finished flag), `playback_sessions` (one row per stretch of
 listening, kept as history after it closes) and `bookmarks` (places a
 user marked). `listening_progress` stays what other servers reported.
+
+Player apps ([Player apps](player-apps.md)) sign in with player cards. A
+card is a `portal_sessions` row of kind `player`, so it is listed and
+signed out with the patron's other sessions. `player_cards` names the app
+and the player password that made the card, `player_card_tokens` holds the
+SHA-256 digests of its access and refresh tokens, and `player_passwords`
+holds the digests of the passwords patrons made for their apps. Removing a
+password removes its cards.
 
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at the key the

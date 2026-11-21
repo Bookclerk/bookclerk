@@ -75,7 +75,7 @@ version = "0.1.0"               # required semver; pins the [[settings]] schema
 # logo = "https://example.com/icon.png"   # or "assets/logo.png" (host-served)
 runtime = "native"
 command = "./bookclerk-plugin-echo-native-rust"
-entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers | metadataFiles
+entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers | metadataFiles | notifier | ingress | ai
 
 [capabilities.network]
 mode = "deny"
@@ -359,6 +359,29 @@ title = "Library sync failed"
 At most 64 types. See [Raising notifications](abi.md#raising-notifications)
 for the binding.
 
+### `[ingress]` (public address)
+
+A plugin with the `ingress` entrypoint says how it gives the library a
+public `https` address. The table is required for that entrypoint, and
+every other plugin must leave it out.
+
+```toml
+entrypoints = ["ingress"]
+
+[ingress]
+kind = "relay"
+```
+
+- `kind = "relay"`: the provider holds the public address and delivers
+  each request to the plugin, which hands it to the library through
+  `env.ORIGIN` (a tunnel or relay service).
+- `kind = "direct"`: the public address points at the daemon itself, by
+  port mapping or dynamic DNS. The plugin only keeps the address current
+  and never gets `env.ORIGIN`.
+
+See [Public addresses](abi.md#public-addresses-ingress) for the methods
+and the rules on each request.
+
 ### `[ai]` (models)
 
 `[ai]` says which model tasks a plugin serves and which it calls.
@@ -555,6 +578,11 @@ type = "secret"              # sealed in the database, delivered in SECRETS; no 
   as `env.CONFIG`, and sealed values as `env.SECRETS`.
 - `required = true` makes a spawn fail with an `error` observation when
   neither the document nor a default supplies the key.
+- `network = "fetch"` or `"tcp"` on a top-level `string` setting says its
+  value names a server the plugin connects to. The value's destination
+  appears on the consent form and is granted only once approved; see
+  [Network settings](capabilities.md#network-settings). `default_port`
+  (1-65535, only with `network`) is the port when the value names none.
 
 ### Table settings
 

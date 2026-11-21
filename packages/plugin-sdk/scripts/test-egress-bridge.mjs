@@ -1,5 +1,5 @@
-// Corpus replay for the egress bridge's host gate (`allowsInitial`,
-// `allowsRedirect`, `allowsTcp` and `canonicalSocketHost` in
+// Corpus replay for the egress bridge's host gate (`allowsFetch`,
+// `allowsRedirectTo`, `allowsTcp` and `canonicalSocketHost` in
 // `bridge/egress.js`) against the Rust `EgressPolicy`, the reference the
 // native mediator enforces.
 //
@@ -23,7 +23,7 @@ const vectorsPath = path.join(here, "egress_bridge_vectors.json");
  * Loads the bridge's gate functions without the workerd-only socket import
  * (the source is this repository's own file).
  *
- * @returns {{ allowsInitial: Function, allowsRedirect: Function, allowsTcp: Function, canonicalSocketHost: Function }} The gate.
+ * @returns {{ allowsFetch: Function, allowsRedirectTo: Function, allowsTcp: Function, canonicalSocketHost: Function }} The gate.
  */
 function loadBridge() {
   const source = fs.readFileSync(bridgePath, "utf8");
@@ -35,7 +35,7 @@ function loadBridge() {
     .replace(importLine, "const connect = () => { throw new Error('no sockets'); };")
     .replace("export default {", "const bridgeDefault = {");
   const factory = new Function(
-    `${body}\nreturn { allowsInitial, allowsRedirect, allowsTcp, canonicalSocketHost };`,
+    `${body}\nreturn { allowsFetch, allowsRedirectTo, allowsTcp, canonicalSocketHost };`,
   );
   return factory();
 }
@@ -100,8 +100,8 @@ for (const { seed, policy, probes: list } of seeds) {
     }
     if (lenientFetch || lenientSocket) {
       const wide = {
-        initial: lenientFetch && gate.allowsInitial(node, policy),
-        redirect: lenientFetch && gate.allowsRedirect(node, p.hop, policy, maxRedirects),
+        initial: lenientFetch && gate.allowsFetch(node, p.port, policy),
+        redirect: lenientFetch && gate.allowsRedirectTo(node, p.port, p.hop, policy, maxRedirects),
         tcp: lenientSocket && gate.allowsTcp(socket, p.port, policy),
       };
       for (const key of ["initial", "redirect", "tcp"]) {
@@ -114,8 +114,9 @@ for (const { seed, policy, probes: list } of seeds) {
       }
     }
     const js = {
-      initial: p.fetch != null && gate.allowsInitial(p.fetch, policy),
-      redirect: p.fetch != null && gate.allowsRedirect(p.fetch, p.hop, policy, maxRedirects),
+      initial: p.fetch != null && gate.allowsFetch(p.fetch, p.port, policy),
+      redirect:
+        p.fetch != null && gate.allowsRedirectTo(p.fetch, p.port, p.hop, policy, maxRedirects),
       tcp: p.socket != null && gate.allowsTcp(p.socket, p.port, policy),
     };
     for (const key of ["initial", "redirect", "tcp"]) {

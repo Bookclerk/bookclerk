@@ -304,7 +304,7 @@ fn strip_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
 }
 
 /// True when `name` is an HTTP token (RFC 9110 `tchar`).
-fn is_token(name: &str) -> bool {
+pub(crate) fn is_token(name: &str) -> bool {
     !name.is_empty()
         && name.bytes().all(|b| {
             b.is_ascii_alphanumeric()

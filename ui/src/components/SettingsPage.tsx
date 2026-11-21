@@ -13,6 +13,7 @@ import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
+import { RecoveryCopyReminder } from "@/components/RecoveryCopy";
 import { StorageSyncBadge } from "@/components/StorageSyncBadge";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
@@ -1134,10 +1135,12 @@ export function SettingsPage({
     setConsentBusy(true);
     setError(null);
     try {
+      const { settingDestinations, ...grantFields } = grant;
       const approved = await approvePluginConsent(
         consentPrompt.plugin_id,
-        grant,
+        grantFields,
         consentPrompt.plugin_key,
+        settingDestinations,
       );
       setConsentCoverage((current) => ({
         ...current,
@@ -1187,8 +1190,7 @@ export function SettingsPage({
     setSessionsError(null);
     try {
       await revokeSession(id);
-      await reloadSessions();
-      await onSessionChange?.();
+      await Promise.all([reloadSessions(), onSessionChange?.()]);
     } catch (err) {
       setSessionsError(err instanceof Error ? err.message : "Session revoke failed");
     } finally {
@@ -1202,11 +1204,9 @@ export function SettingsPage({
     setSessionsBusy(true);
     setSessionsError(null);
     try {
-      for (const row of others) {
-        await revokeSession(row.id);
-      }
-      await reloadSessions();
-      await onSessionChange?.();
+      // Each revoke is its own request; none depends on another.
+      await Promise.all(others.map((row) => revokeSession(row.id)));
+      await Promise.all([reloadSessions(), onSessionChange?.()]);
     } catch (err) {
       setSessionsError(err instanceof Error ? err.message : "Session revoke failed");
     } finally {
@@ -1599,6 +1599,11 @@ export function SettingsPage({
               onSessionExpired={onSessionExpired}
               canRemove={showOperatorChrome}
             />
+          ) : null}
+
+          {activeTab === "server" && showOperatorChrome ? <RecoveryCopyReminder canSave /> : null}
+          {activeTab === "account" && role === "owner" && !isImpersonating ? (
+            <RecoveryCopyReminder canSave={false} />
           ) : null}
 
           {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (

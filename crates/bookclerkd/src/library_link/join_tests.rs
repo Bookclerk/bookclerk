@@ -984,6 +984,9 @@ async fn a_branch_join_brings_the_persons_store_connections_when_asked() {
     assert_eq!(sent, 1);
 }
 
+// Shares one plugin package between two installs through a symlink,
+// which only Unix test hosts can make without extra privileges.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere() {
     let _dek = crate::auth::tests::process_dek_lock().await;
@@ -994,14 +997,11 @@ async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere
     let plugin_key = stage_storefront(&owner_files, &owner_state, "shareable");
     // Both installs discover the same package, so its path-provenance key
     // matches on both, as a platform key does in a real install.
-    #[cfg(unix)]
     std::os::unix::fs::symlink(
         owner_files.path().join("plugins"),
         host_files.path().join("plugins"),
     )
     .unwrap();
-    #[cfg(not(unix))]
-    return;
     let host_cfg = host_state.config.read().await.clone();
     let found = bookclerk_plugin_host::discover_plugins(&host_cfg).unwrap();
     assert_eq!(found[0].identity.plugin_key.to_string(), plugin_key);
@@ -1159,6 +1159,9 @@ async fn a_branch_adds_a_connection_to_its_library_and_disconnects_it_everywhere
 /// job's refresh is saved on the branch, the branch's link pushes that
 /// newer sign-in up to the library, and a pass with nothing newer sends
 /// nothing.
+// Shares one plugin package between two installs through a symlink,
+// which only Unix test hosts can make without extra privileges.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_keeping_branch_pushes_its_newer_sign_ins_up_the_link() {
     use super::super::host_jobs::{DaemonKeeper, KeptHere, LocalKeeper as _};
@@ -1171,14 +1174,11 @@ async fn a_keeping_branch_pushes_its_newer_sign_ins_up_the_link() {
     let host_files = tempfile::tempdir().unwrap();
     let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
     let plugin_key = stage_storefront(&owner_files, &owner_state, "single_keeper");
-    #[cfg(unix)]
     std::os::unix::fs::symlink(
         owner_files.path().join("plugins"),
         host_files.path().join("plugins"),
     )
     .unwrap();
-    #[cfg(not(unix))]
-    return;
     let me = host_store
         .create_user(UserRole::Owner, Some("Riley"), None)
         .await

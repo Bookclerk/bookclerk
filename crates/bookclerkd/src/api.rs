@@ -887,6 +887,67 @@ struct PluginConsentResponse {
     /// the request's `ownUserAgentHosts`.
     #[schema(example = "bookclerk/0.1.0 (+https://bookclerk.app)")]
     host_user_agent: String,
+    /// The destination each network setting (`network = "fetch"` or
+    /// `"tcp"`) names on each instance, and whether it is approved. Empty
+    /// when the plugin declares no network setting. A `pending` row is not
+    /// reachable until it is approved; `covered` is false while one is.
+    setting_destinations: Vec<PluginSettingDestinationView>,
+}
+
+/// One network setting's destination on one plugin instance.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct PluginSettingDestinationView {
+    /// The instance whose settings name it; absent when the plugin has no
+    /// instance yet and the row shows the setting's default.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_id: Option<String>,
+    /// The setting key, the source the grant is stored under.
+    #[schema(example = "server_url")]
+    setting: String,
+    /// The setting's label (its key when it has none).
+    #[schema(example = "Server URL")]
+    label: String,
+    /// `fetch` (HTTP requests) or `tcp` (a raw socket).
+    #[schema(example = "fetch")]
+    network: String,
+    /// The destination: `scheme://host:port` for a fetch, `host:port` for
+    /// TCP (IPv6 in brackets); absent when the setting is unset or invalid.
+    #[schema(example = "http://abs.home.lan:13378")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    destination: Option<String>,
+    /// What kind of host it is: `name` (may resolve to a local-network
+    /// address, for this name only), `publicAddress`, `localAddress` (this
+    /// one local-network address) or `restricted` (loopback, link-local or
+    /// a name such as `localhost`, which also needs an address grant).
+    #[schema(example = "name")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+    /// True for an `https` fetch, whose certificate is verified; false for
+    /// plain HTTP and raw TCP, which trust the network's DNS answer.
+    #[schema(example = false)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tls: Option<bool>,
+    /// `approved`, `pending` (awaiting consent), `unset` or `invalid`.
+    #[schema(example = "pending")]
+    state: String,
+    /// Why the value names no destination, when `state` is `invalid`.
+    #[schema(example = "the URL must start with http:// or https://")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// A setting destination the operator approves.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct PluginSettingDestinationApproval {
+    /// The setting key.
+    #[schema(example = "server_url")]
+    setting: String,
+    /// The destination exactly as the consent response shows it.
+    #[schema(example = "http://abs.home.lan:13378")]
+    destination: String,
 }
 
 /// The difference between a plugin's request and its stored grant.
@@ -932,6 +993,12 @@ struct PluginConsentApproveRequest {
     #[serde(default)]
     /// Optional operator overrides applied on top of the manifest request.
     grant: Option<PluginGrantOverride>,
+    #[serde(default)]
+    /// Setting destinations to approve, from the response's
+    /// `setting_destinations`. An approved destination stays approved while
+    /// a setting still names it; one left out stays pending, and one no
+    /// setting names any more is withdrawn.
+    setting_destinations: Vec<PluginSettingDestinationApproval>,
 }
 
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
@@ -1124,6 +1191,10 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
     groups.extend(crate::passkeys::route_groups());
     // TOTP MFA + host second-factor policy.
     groups.extend(crate::totp::route_groups());
+    // The player API for audiobook apps (`/player`).
+    groups.extend(crate::player::route_groups());
+    // The library key's recovery copy (the desktop first run, Settings).
+    groups.extend(crate::master_key_recovery::route_groups());
     groups
 }
 
@@ -1295,6 +1366,16 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::library_overrides::list_conflicts))
         .routes(routes!(crate::library_overrides::post_work_split))
+        // Library tags: the handlers admit only the operator, an Owner or
+        // an Administrator.
+        .routes(routes!(
+            crate::work_tags::get_work_tags,
+            crate::work_tags::put_work_tags
+        ))
+        .routes(routes!(
+            crate::collections::get_collections,
+            crate::collections::put_collections
+        ))
         .routes(routes!(
             crate::node_api::get_node_invites,
             crate::node_api::post_node_invite
@@ -1340,6 +1421,7 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::clerk_link::api::post_clerk_start))
         .routes(routes!(crate::clerk_link::api::post_clerk_callback))
         .routes(routes!(crate::clerk_link::api::post_clerk_sign_out))
+        .routes(routes!(crate::clerk_link::requests::post_clerk_request))
         // Store connections across linked libraries: the branch's person
         // only (the handler checks).
         .routes(routes!(
@@ -1549,6 +1631,11 @@ fn guarded(
                 state,
                 crate::clerk_token::admit_clerk_token,
             )),
+        // A player card only: no session, cookie or operator token.
+        Access::Player => routes.route_layer(middleware::from_fn_with_state(
+            state,
+            crate::player::admit_player_card,
+        )),
     }
 }
 
@@ -1671,6 +1758,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 // this install's callback.
                 "/clerk/approve",
                 "/clerk/callback",
+                // A player app's browser sign-in: the consent page.
+                "/apps/approve",
             ];
             let spa_index = axum::routing::get_service(ServeFile::new(index.clone()))
                 .layer(middleware::from_fn(spa_document_csp));
@@ -3817,9 +3906,11 @@ async fn get_plugin_consent(
     let pending = existing
         .as_ref()
         .map(|grant| pending_structural(grant, &request));
+    let (setting_destinations, _) =
+        plugin_setting_destinations(&state, plugin, existing.as_ref()).await?;
     let covered = existing.as_ref().is_some_and(|grant| {
         grant_covers(grant, &request) && pending.as_ref().is_some_and(|p| p.is_empty())
-    });
+    }) && !any_setting_pending(&setting_destinations);
     let brand = plugin_consent_brand(&state, plugin).await;
     let limits = plugin_consent_limits(plugin, cfg.plugins.jail.cpu_rate_percent);
     let runtime = match plugin.manifest.runtime {
@@ -3840,7 +3931,87 @@ async fn get_plugin_consent(
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
+        setting_destinations,
     }))
+}
+
+/// The consent rows for `plugin`'s network settings, plus the destinations
+/// its instances name now, per setting key.
+///
+/// # Errors
+///
+/// 500 when the library cannot be read.
+async fn plugin_setting_destinations(
+    state: &AppState,
+    plugin: &bookclerk_plugin_host::DiscoveredPlugin,
+    grant: Option<&PluginGrant>,
+) -> Result<
+    (
+        Vec<PluginSettingDestinationView>,
+        bookclerk_plugin_host::SettingDestinationMap,
+    ),
+    StatusCode,
+> {
+    if bookclerk_plugin_host::network_settings(&plugin.manifest)
+        .next()
+        .is_none()
+    {
+        return Ok((Vec::new(), Default::default()));
+    }
+    let library = state.library_snapshot().await;
+    let rows = bookclerk_plugin_host::library_setting_statuses(
+        &library,
+        &plugin.manifest,
+        plugin.plugin_key().canonical(),
+        grant,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!(error = %err, "failed to read plugin instance settings");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let in_use = bookclerk_plugin_host::destinations_in_use(&rows);
+    let views = rows
+        .into_iter()
+        .flat_map(|row| {
+            let instance_id = row.instance_id;
+            row.statuses
+                .into_iter()
+                .map(move |status| PluginSettingDestinationView {
+                    instance_id: instance_id.clone(),
+                    setting: status.key,
+                    label: status.label,
+                    network: status.network.as_str().to_string(),
+                    destination: status.destination.as_ref().map(|d| d.display()),
+                    scope: status
+                        .destination
+                        .as_ref()
+                        .map(|d| destination_scope_name(d.scope).to_string()),
+                    tls: status.destination.as_ref().map(|d| d.tls),
+                    state: status.state.as_str().to_string(),
+                    error: status.error.map(|err| err.to_string()),
+                })
+        })
+        .collect();
+    Ok((views, in_use))
+}
+
+/// The wire name of a destination scope.
+fn destination_scope_name(scope: bookclerk_plugin_manifest::DestinationScope) -> &'static str {
+    use bookclerk_plugin_manifest::DestinationScope;
+    match scope {
+        DestinationScope::Name => "name",
+        DestinationScope::PublicAddress => "publicAddress",
+        DestinationScope::LocalAddress => "localAddress",
+        DestinationScope::Restricted => "restricted",
+    }
+}
+
+/// Whether any consent row still awaits approval.
+fn any_setting_pending(views: &[PluginSettingDestinationView]) -> bool {
+    views
+        .iter()
+        .any(|view| view.state == bookclerk_plugin_host::SettingGrantState::Pending.as_str())
 }
 
 /// Persists an approved plugin grant after validating operator overrides.
@@ -3870,11 +4041,36 @@ async fn post_plugin_consent(
     let plugin = resolve_consent_plugin(&discovered, &id, query.plugin_key.as_deref())?;
     let request = consent_request(&plugin.manifest, plugin.plugin_key());
     let summary = consent_summary(&request);
-    let approved = build_approved_grant(&request, body.grant)?;
+    let mut approved = build_approved_grant(&request, body.grant)?;
     let mut store = PluginGrantStore::load(&cfg.paths().files_dir).map_err(|err| {
         tracing::error!(error = %err, "failed to load plugin grants");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    let existing = store.get_by_plugin_key(plugin.plugin_key().canonical());
+    let (_, in_use) = plugin_setting_destinations(&state, plugin, existing).await?;
+    let mut approve = bookclerk_plugin_host::SettingDestinationMap::new();
+    for item in &body.setting_destinations {
+        // Only a destination a setting names now can be approved; a stale
+        // one (the value changed since the dialog loaded) stays out.
+        if let Some(destination) = in_use
+            .get(&item.setting)
+            .and_then(|set| set.iter().find(|d| d.display() == item.destination))
+        {
+            approve
+                .entry(item.setting.clone())
+                .or_default()
+                .insert(destination.clone());
+        }
+    }
+    let kept = existing
+        .map(|grant| grant.setting_destinations.clone())
+        .unwrap_or_default();
+    approved.setting_destinations = bookclerk_plugin_host::approve_setting_destinations(
+        &kept,
+        &plugin.manifest,
+        &in_use,
+        &approve,
+    );
     store.upsert(approved.clone());
     store.save(&cfg.paths().files_dir).map_err(|err| {
         tracing::error!(error = %err, "failed to save plugin grants");
@@ -3890,19 +4086,22 @@ async fn post_plugin_consent(
     // An approval can leave a structural capability unticked; it stays
     // pending, so the answer says so instead of claiming coverage.
     let pending = pending_structural(&approved, &request);
+    let (setting_destinations, _) =
+        plugin_setting_destinations(&state, plugin, Some(&approved)).await?;
     Ok(Json(PluginConsentResponse {
         plugin_id: plugin.alias().to_string(),
         plugin_key: plugin.plugin_key().canonical().to_string(),
         provenance: plugin.identity.provenance.to_string(),
         runtime,
         request: PluginGrantView::from_grant(&request),
-        covered: pending.is_empty(),
+        covered: pending.is_empty() && !any_setting_pending(&setting_destinations),
         summary,
         existing: Some(PluginGrantView::from_grant(&approved)),
         pending: Some(PluginConsentPending::from(&pending)),
         brand,
         limits,
         host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
+        setting_destinations,
     }))
 }
 
@@ -6081,6 +6280,54 @@ async fn check_card_recording(
     }
 }
 
+/// How long a batch's recording check may take once its stores answered.
+///
+/// One pool read for the whole batch; well under the route's budget even
+/// after a resolve that used all of `BATCH_DEADLINE`.
+const RECORDING_CHECK_BUDGET: Duration = Duration::from_millis(1500);
+
+/// [`check_card_recording`] for a whole batch, with one pool read.
+///
+/// When the read fails or does not finish by `deadline`, every response
+/// is marked incomplete (one log line for the batch), so the client shows
+/// the hints for now but asks again rather than keep them.
+///
+/// # Arguments
+///
+/// * `library` - The library holding the shared listing pool.
+/// * `sources` - Maps each hint's store to its plugin key.
+/// * `queries` - The cards, in batch order.
+/// * `responses` - Their resolved prices, filtered in place.
+/// * `deadline` - When the check must give up.
+async fn check_card_recordings(
+    library: &LibraryStore,
+    sources: &bookclerk_source::SourceRegistry,
+    queries: &[bookclerk_discover::PurchaseHintsQuery],
+    responses: &mut [bookclerk_discover::PurchaseHintsResponse],
+    deadline: tokio::time::Instant,
+) {
+    let mut checked = responses.to_vec();
+    let check = bookclerk_discover::retain_card_recordings(library, sources, queries, &mut checked);
+    match tokio::time::timeout_at(deadline, check).await {
+        Ok(Ok(())) => responses.clone_from_slice(&checked),
+        Ok(Err(err)) => {
+            tracing::debug!(
+                cards = responses.len(),
+                error = %err,
+                "purchase-hint recording check failed"
+            );
+            responses.iter_mut().for_each(|r| r.incomplete = true);
+        }
+        Err(_) => {
+            tracing::debug!(
+                cards = responses.len(),
+                "purchase-hint recording check ran past the deadline"
+            );
+            responses.iter_mut().for_each(|r| r.incomplete = true);
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 /// Body for batched purchase-hint lookups (max 24 queries).
 struct PurchaseHintsBatchBody {
@@ -6128,19 +6375,20 @@ async fn discover_purchase_hints_batch(
         q.preferred_sources = preferred.clone();
         queries.push(q);
     }
-    // One deadline covers the store lookups and the recording checks.
-    let deadline = tokio::time::Instant::now() + bookclerk_discover::BATCH_DEADLINE;
     let library = state.library_snapshot().await;
     let sources = state.sources.read().await;
     let resolved =
         bookclerk_discover::resolve_purchase_hints_batch(&sources, Some(&library), &queries, 4)
             .await;
     let mut results = Vec::with_capacity(resolved.len().min(MAX_PURCHASE_HINT_QUERIES));
-    for (item, query) in resolved.into_iter().zip(&queries) {
-        let mut response = item.map_err(internal_err)?;
-        check_card_recording(&library, &sources, query, &mut response, deadline).await;
-        results.push(response);
+    for item in resolved {
+        results.push(item.map_err(internal_err)?);
     }
+    // The resolve spends up to `BATCH_DEADLINE` on the stores; the recording
+    // check gets its own short budget after it (still far under the route's
+    // budget), so slow stores cannot leave every card unchecked.
+    let deadline = tokio::time::Instant::now() + RECORDING_CHECK_BUDGET;
+    check_card_recordings(&library, &sources, &queries, &mut results, deadline).await;
     if !caller_sees_prices(&state, &headers).await {
         for response in &mut results {
             response.hide_prices_and_links();
@@ -6235,6 +6483,11 @@ struct TitleMetaBatchBody {
 struct TitleMetaBatchResponse {
     /// One optional metadata payload per query; enrichment errors become `None`.
     results: Vec<Option<bookclerk_discover::TitleMeta>>,
+    /// Per query, in order: `true` when its `null` is a failure or a query
+    /// that ran past the batch deadline, not an answer, so the client should
+    /// not keep it and may ask again later.
+    #[schema(example = json!([false, true]))]
+    incomplete: Vec<bool>,
 }
 
 /// Resolves up to 24 title-metadata queries without failing the whole batch on one error.
@@ -6269,23 +6522,31 @@ async fn discover_title_meta_batch(
     };
     // Per-query enrichment failures must not 500 the whole batch — Discover
     // search already has hits; missing meta is optional.
-    let results = resolved
-        .into_iter()
-        .map(|item| match item {
-            Ok(meta) => meta,
-            Err(err) => {
-                tracing::debug!(error = %err, "title-meta batch item failed");
-                None
+    let mut results: Vec<Option<bookclerk_discover::TitleMeta>> =
+        Vec::with_capacity(resolved.len());
+    let mut incomplete: Vec<bool> = Vec::with_capacity(resolved.len());
+    for (index, item) in resolved.into_iter().enumerate() {
+        match item {
+            Ok(meta) => {
+                results.push(meta);
+                incomplete.push(false);
             }
-        })
-        .collect();
-    let mut results: Vec<Option<bookclerk_discover::TitleMeta>> = results;
+            Err(err) => {
+                tracing::debug!(query = index, error = %err, "title-meta batch item failed");
+                results.push(None);
+                incomplete.push(true);
+            }
+        }
+    }
     for meta in results.iter_mut().flatten() {
         state
             .covers
             .decorate(meta.cover_url.as_deref(), &mut meta.cover_path);
     }
-    Ok(Json(TitleMetaBatchResponse { results }))
+    Ok(Json(TitleMetaBatchResponse {
+        results,
+        incomplete,
+    }))
 }
 
 /// Rejects a title-metadata query that has no title, ASIN, or ISBN, or that
@@ -6727,56 +6988,98 @@ async fn create_request_inner(
     // One deadline covers every store call, leaving the rest of the route's
     // budget to save the wish.
     let deadline = tokio::time::Instant::now() + WISH_ENRICH_BUDGET;
+    // The editions the wish itself names decide which work it is for, so
+    // they are looked up at the same time as the prices instead of after
+    // them: slow price lookups can no longer leave the wish no time to find
+    // its own editions.
+    let named: Vec<(String, String)> = sources
+        .iter()
+        .map(|s| (s.source.clone(), s.product_id.clone()))
+        .collect();
     let pooled = {
         let registry = state.sources.read().await;
-        let resolve =
-            bookclerk_discover::resolve_purchase_hints(&registry, Some(&library), &hint_query);
-        let hints = match tokio::time::timeout_at(deadline, resolve).await {
-            Ok(Ok(mut resolved)) => {
-                // Keep only prices for the recording the wish names, when the
-                // listing pool already knows it.
-                // The check shares the stores' deadline; when it fails or
-                // runs out the wish keeps the resolved hints.
-                check_card_recording(&library, &registry, &hint_query, &mut resolved, deadline)
-                    .await;
-                resolved.hints
-            }
-            Ok(Err(err)) => {
-                tracing::debug!(error = %err, "wishlist purchase-hint resolve soft-failed");
-                Vec::new()
-            }
-            Err(_) => {
-                tracing::debug!("wishlist purchase-hint resolve ran out of time");
-                Vec::new()
+        let hints_lookup = async {
+            let resolve =
+                bookclerk_discover::resolve_purchase_hints(&registry, Some(&library), &hint_query);
+            match tokio::time::timeout_at(deadline, resolve).await {
+                Ok(Ok(mut resolved)) => {
+                    // Keep only prices for the recording the wish names,
+                    // when the listing pool already knows it. The check
+                    // shares the stores' deadline; when it fails or runs
+                    // out the wish keeps the resolved hints.
+                    check_card_recording(&library, &registry, &hint_query, &mut resolved, deadline)
+                        .await;
+                    resolved.hints
+                }
+                Ok(Err(err)) => {
+                    tracing::debug!(error = %err, "wishlist purchase-hint resolve soft-failed");
+                    Vec::new()
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        stores = registry.all().len(),
+                        "wishlist purchase-hint resolve ran out of time"
+                    );
+                    Vec::new()
+                }
             }
         };
-        for hint in &hints {
-            sources.push(source_from_purchase_hint(hint, &body));
-        }
         // The server asks each store about the editions the wish names and
         // keeps only the stores' answers in the shared pool; the browser's
         // text and prices stay on the wish's own rows.
-        let editions: Vec<(String, String)> = sources
-            .iter()
-            .map(|s| (s.source.clone(), s.product_id.clone()))
-            .collect();
-        let pool = bookclerk_discover::pool_wish_editions(
-            &library,
-            &registry,
-            &editions,
-            &hints,
-            WISH_REGION,
-        );
-        match tokio::time::timeout_at(deadline, pool).await {
-            Ok(pooled) => pooled,
-            Err(_) => {
-                // Each pool write is its own atomic batch, so a lookup cut
-                // off here leaves only whole store answers; the wish then
-                // names no listing and resolves by its own text.
-                tracing::debug!("wishlist edition lookup ran out of time");
-                Vec::new()
+        let named_lookup = async {
+            let pool = bookclerk_discover::pool_wish_editions(
+                &library,
+                &registry,
+                &named,
+                &[],
+                WISH_REGION,
+            );
+            match tokio::time::timeout_at(deadline, pool).await {
+                Ok(pooled) => pooled,
+                Err(_) => {
+                    // Each pool write is its own atomic batch, so a lookup
+                    // cut off here leaves only whole store answers; the wish
+                    // then names no listing and resolves by its own text.
+                    tracing::debug!(
+                        editions = named.len(),
+                        "wishlist edition lookup ran out of time"
+                    );
+                    Vec::new()
+                }
+            }
+        };
+        let (hints, mut pooled) = tokio::join!(hints_lookup, named_lookup);
+        // Member prices the stores quoted for the named editions.
+        bookclerk_discover::record_wish_member_offers(&library, &pooled, &hints).await;
+        // Editions only the price lookups found are pooled with what time
+        // is left; they add prices, not the wish's identity.
+        let mut extra: Vec<(String, String)> = Vec::new();
+        for hint in &hints {
+            let source = source_from_purchase_hint(hint, &body);
+            let pair = (source.source.clone(), source.product_id.clone());
+            if !named.contains(&pair) && !extra.contains(&pair) {
+                extra.push(pair);
+            }
+            sources.push(source);
+        }
+        if !extra.is_empty() {
+            let pool = bookclerk_discover::pool_wish_editions(
+                &library,
+                &registry,
+                &extra,
+                &hints,
+                WISH_REGION,
+            );
+            match tokio::time::timeout_at(deadline, pool).await {
+                Ok(more) => pooled.extend(more),
+                Err(_) => tracing::debug!(
+                    editions = extra.len(),
+                    "wishlist price-edition lookup ran out of time"
+                ),
             }
         }
+        pooled
     };
     for source in &mut sources {
         let source_id = source.source.trim().to_ascii_lowercase();
@@ -8157,6 +8460,7 @@ tcp = {tcp}
             Json(super::PluginConsentApproveRequest {
                 approve: true,
                 grant: None,
+                setting_destinations: Vec::new(),
             }),
         )
         .await
@@ -8164,6 +8468,202 @@ tcp = {tcp}
         let body = serde_json::to_value(&after).unwrap();
         assert_eq!(body["covered"], true, "{body}");
         assert_eq!(body["pending"]["lines"], serde_json::json!([]));
+    }
+
+    /// Stages a native plugin whose `server_url` setting names a fetch
+    /// destination (default `default_url`) and whose `db` setting names a
+    /// TCP one.
+    fn stage_setting_network_plugin(files: &std::path::Path, default_url: &str) {
+        let root = files.join("plugins").join("abs_echo");
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("guest");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            root.join("plugin.toml"),
+            format!(
+                r#"
+api_version = 3
+id = "abs_echo"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["cli"]
+
+[vars]
+
+[capabilities.network]
+mode = "outbound"
+
+[[settings]]
+key = "server_url"
+label = "Server URL"
+type = "string"
+network = "fetch"
+default = "{default_url}"
+
+[[settings]]
+key = "db"
+type = "string"
+network = "tcp"
+default_port = 5432
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// A setting's destination shows as pending, approving it stores it per
+    /// setting, a stale approval is ignored, and a changed value withdraws
+    /// the old destination.
+    #[tokio::test]
+    async fn plugin_consent_lists_and_approves_setting_destinations() {
+        use axum::extract::{Path, Query, State};
+        use axum::Json;
+        use bookclerk_library::control_plane::{
+            create_plugin_instance, import_instance_config_if_absent, ConfigActor,
+            PluginInstanceConfigV1, SettingValue,
+        };
+
+        let files = tempfile::tempdir().unwrap();
+        stage_setting_network_plugin(files.path(), "http://abs.home.lan:13378");
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        let plugin = bookclerk_plugin_host::discover_plugins(&cfg)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.manifest.id == "abs_echo")
+            .expect("staged plugin");
+        let mut store = bookclerk_plugin_host::PluginGrantStore::default();
+        store.upsert(bookclerk_plugin_host::consent_request(
+            &plugin.manifest,
+            plugin.plugin_key(),
+        ));
+        store.save(files.path()).unwrap();
+        let state = consent_test_state(cfg).await;
+        let get = || {
+            super::get_plugin_consent(
+                State(state.clone()),
+                Path("abs_echo".to_string()),
+                Query(super::PluginConsentQuery::default()),
+            )
+        };
+        let approve = |items: Vec<(&str, &str)>| {
+            super::post_plugin_consent(
+                State(state.clone()),
+                Path("abs_echo".to_string()),
+                Query(super::PluginConsentQuery::default()),
+                Json(super::PluginConsentApproveRequest {
+                    approve: true,
+                    grant: None,
+                    setting_destinations: items
+                        .into_iter()
+                        .map(
+                            |(setting, destination)| super::PluginSettingDestinationApproval {
+                                setting: setting.into(),
+                                destination: destination.into(),
+                            },
+                        )
+                        .collect(),
+                }),
+            )
+        };
+
+        // No instance yet: the default is judged, and it awaits consent.
+        let Json(before) = get().await.expect("consent");
+        let body = serde_json::to_value(&before).unwrap();
+        assert_eq!(body["covered"], false, "{body}");
+        assert_eq!(
+            body["setting_destinations"],
+            serde_json::json!([
+                {
+                    "setting": "server_url",
+                    "label": "Server URL",
+                    "network": "fetch",
+                    "destination": "http://abs.home.lan:13378",
+                    "scope": "name",
+                    "tls": false,
+                    "state": "pending",
+                },
+                { "setting": "db", "label": "db", "network": "tcp", "state": "unset" },
+            ])
+        );
+
+        // A destination no setting names is not approved.
+        let Json(stale) = approve(vec![("server_url", "https://abs.evil.example:443")])
+            .await
+            .expect("approve");
+        let body = serde_json::to_value(&stale).unwrap();
+        assert_eq!(body["covered"], false, "{body}");
+        assert_eq!(body["setting_destinations"][0]["state"], "pending");
+
+        let Json(after) = approve(vec![("server_url", "http://abs.home.lan:13378")])
+            .await
+            .expect("approve");
+        let body = serde_json::to_value(&after).unwrap();
+        assert_eq!(body["covered"], true, "{body}");
+        assert_eq!(body["setting_destinations"][0]["state"], "approved");
+        let grants = bookclerk_plugin_host::PluginGrantStore::load(files.path()).unwrap();
+        let stored = grants
+            .get_by_plugin_key(plugin.plugin_key().canonical())
+            .unwrap();
+        assert_eq!(
+            stored.setting_destinations["server_url"]
+                .iter()
+                .map(bookclerk_plugin_manifest::SettingDestination::display)
+                .collect::<Vec<_>>(),
+            vec!["http://abs.home.lan:13378".to_string()]
+        );
+
+        // The instance now names another server and an invalid database.
+        let library = state.library_snapshot().await;
+        let instance = create_plugin_instance(
+            &library,
+            &ConfigActor::Bootstrap,
+            plugin.plugin_key().canonical(),
+            "",
+        )
+        .await
+        .unwrap();
+        let mut body = PluginInstanceConfigV1::empty();
+        body.settings.insert(
+            "server_url".into(),
+            SettingValue::String("https://192.168.1.20".into()),
+        );
+        body.settings
+            .insert("db".into(), SettingValue::String("user@db.lan".into()));
+        import_instance_config_if_absent(
+            &library,
+            &ConfigActor::Bootstrap,
+            &instance.id,
+            &plugin.manifest.settings_schema(),
+            &body,
+            "test-import",
+        )
+        .await
+        .unwrap();
+        let Json(changed) = get().await.expect("consent");
+        let body = serde_json::to_value(&changed).unwrap();
+        assert_eq!(body["covered"], false, "{body}");
+        let rows = &body["setting_destinations"];
+        assert_eq!(rows[0]["instanceId"], instance.id.to_string());
+        assert_eq!(rows[0]["destination"], "https://192.168.1.20:443");
+        assert_eq!(rows[0]["scope"], "localAddress");
+        assert_eq!(rows[0]["tls"], true);
+        assert_eq!(rows[0]["state"], "pending");
+        assert_eq!(rows[1]["state"], "invalid");
+        assert!(rows[1]["error"].as_str().unwrap().contains("user name"));
+
+        // Answering the dialog again drops the old server's approval.
+        let Json(_) = approve(Vec::new()).await.expect("approve");
+        let grants = bookclerk_plugin_host::PluginGrantStore::load(files.path()).unwrap();
+        let stored = grants
+            .get_by_plugin_key(plugin.plugin_key().canonical())
+            .unwrap();
+        assert!(stored.setting_destinations.is_empty(), "{stored:?}");
     }
 
     fn write_logo_svg(root: &std::path::Path, svg: &str) {

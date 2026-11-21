@@ -91,7 +91,9 @@ mod limits;
 pub mod media;
 pub mod metadata_files;
 pub mod methods;
+pub mod network_grant;
 pub mod notifications;
+pub mod origin;
 pub mod package_version;
 mod plugin_migration;
 mod roles;
@@ -261,12 +263,13 @@ pub use limits::{
     cover_sink_slot, ScalarLimits, MAX_AI_EMBED_DIMENSIONS, MAX_AI_EMBED_TEXTS,
     MAX_AI_EMBED_TEXT_BYTES, MAX_AI_LANGUAGES, MAX_AI_MODELS, MAX_AI_MODEL_NAME_BYTES,
     MAX_COVER_BYTES, MAX_COVER_HEADER_BYTES, MAX_COVER_URLS, MAX_CRON_BYTES,
-    MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES,
-    MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_METADATA_AUDIO_FILES, MAX_METADATA_FILE_BYTES,
-    MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
+    MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_INGRESS_ORIGIN_BYTES, MAX_KV_KEY_BYTES,
+    MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_METADATA_AUDIO_FILES,
+    MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
     MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_NOTIFICATION_FIELDS,
     MAX_NOTIFICATION_FIELD_BYTES, MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES,
-    MAX_NOTIFICATION_TITLE_BYTES, MAX_NOTIFIER_ADDRESS_BYTES, MAX_PLUGIN_MIGRATION_OPS,
+    MAX_NOTIFICATION_TITLE_BYTES, MAX_NOTIFIER_ADDRESS_BYTES, MAX_ORIGIN_HEADERS,
+    MAX_ORIGIN_HEADER_BYTES, MAX_ORIGIN_TARGET_BYTES, MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
     MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
     MAX_SOCKETS_PER_INSTANCE, MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES,
@@ -283,14 +286,17 @@ pub use metadata_files::{
     encode_metadata_file_record_bytes, validate_metadata_file_record, MetadataFileDialect,
     MetadataFileError,
 };
+pub use network_grant::{
+    NetworkGrant, SettingGrantState, SettingNetworkGrant, MAX_NETWORK_GRANT_ENTRIES,
+};
 pub use roles::{
     hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, AiModels, AiRunner,
     BindingValues, Bindings, ByteRange, Cancellation, ContentSource, CoverFetcher, Database,
-    Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase, JobController,
+    Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase, Ingress, JobController,
     JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding,
-    NeverCancel, NotificationRaiser, Notifier, Oidc, PluginCli, PluginWorker, ProgressSink,
-    QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler,
-    Sockets, Source, PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
+    NeverCancel, NotificationRaiser, Notifier, Oidc, Origin, OriginReply, PluginCli, PluginWorker,
+    ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler,
+    SocketHandler, Sockets, Source, PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
@@ -300,11 +306,12 @@ pub use rpc::{
     roundtrip_socket_message, serve_plugin, serve_plugin_stdio, serve_socket_broker,
     AiModelsClient, AiRunnerClient, ContentSourceClient, CoverFetcherClient, DatabaseClient,
     DestinationClient, DestinationServer, EventConsumerClient, EventPublisherClient,
-    EventReadCodec, EventReadMessage, HostBindings, JobRunnerClient, KvNamespaceClient,
-    MetadataFilesClient, MetadataProviderClient, NotificationRaiserClient, NotifierClient,
-    OidcClient, OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer,
-    QueueConsumerClient, QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient,
-    SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient, SourceClient, SourceServer,
+    EventReadCodec, EventReadMessage, HostBindings, IngressClient, JobRunnerClient,
+    KvNamespaceClient, MetadataFilesClient, MetadataProviderClient, NoOrigin,
+    NotificationRaiserClient, NotifierClient, OidcClient, OpenedEntrypoints, OriginClient,
+    PluginCliClient, PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient,
+    RemoteLibraryClient, ScheduledHandlerClient, SocketCodec, SocketHandlerClient,
+    SocketWireMessage, SocketsClient, SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,
@@ -317,9 +324,9 @@ pub use scan_page::{
     validate_scan_page, ScanPageError,
 };
 pub use settings_schema::{
-    is_valid_setting_key, EffectiveConfig, SettingKind, SettingSpec, SettingValueSpec,
-    SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS,
-    SETTINGS_SCHEMA_VERSION,
+    is_valid_setting_key, EffectiveConfig, SettingKind, SettingNetwork, SettingSpec,
+    SettingValueSpec, SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, MAX_TABLE_COLUMNS,
+    MAX_TABLE_ROWS, SETTINGS_SCHEMA_VERSION,
 };
 pub use storage_ops::{
     decode_storage_reply_bytes, encode_storage_reply_bytes, require_batch_len,

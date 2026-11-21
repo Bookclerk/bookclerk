@@ -873,6 +873,7 @@ impl PluginSession {
         // `SOCKETS` needs the deployment's broker, a `[sockets]` declaration
         // and the `sockets` grant token.
         let sockets = crate::socket_broker::granted(services.sockets, &manifest, &grant);
+        let network = spawned.network.clone();
         // `AI` needs the node's model router, tasks under `[ai].calls` and
         // their `ai:<task>` grant tokens.
         let ai = crate::ai_binding::GrantedAi::granted(services.ai, &manifest, &grant);
@@ -972,6 +973,7 @@ impl PluginSession {
                         queues,
                         kv,
                         sockets,
+                        network,
                         ai,
                     },
                     rx,
@@ -2465,6 +2467,8 @@ struct PrimaryState {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker; `None` unless `[sockets]` is declared and granted.
     sockets: Option<crate::SocketBroker>,
+    /// `NETWORK`: the grant in effect, carried by every `open`.
+    network: bookclerk_plugin_abi::NetworkGrant,
     /// `AI` runner; `None` unless `[ai].calls` is declared and granted.
     ai: Option<Arc<crate::ai_binding::GrantedAi>>,
 }
@@ -2480,6 +2484,8 @@ struct BindingHooks {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker.
     sockets: Option<crate::SocketBroker>,
+    /// `NETWORK` grant computed at spawn.
+    network: bookclerk_plugin_abi::NetworkGrant,
     /// `AI` runner.
     ai: Option<Arc<crate::ai_binding::GrantedAi>>,
 }
@@ -2493,6 +2499,7 @@ impl PrimaryState {
             queues: hooks.queues,
             kv: hooks.kv,
             sockets: hooks.sockets,
+            network: hooks.network,
             ai: hooks.ai,
         }
     }
@@ -2532,10 +2539,13 @@ impl PrimaryState {
 
     /// Binding values of the current primary open (empty before `open`).
     fn values(&self) -> BindingValues {
-        self.open
+        let mut values = self
+            .open
             .as_ref()
             .map(|p| p.values.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        values.network = self.network.clone();
+        values
     }
 
     /// `EVENTS` publisher for `invocation`, when the outbox is granted.
@@ -2563,13 +2573,22 @@ async fn primary_entrypoints<'a>(
     primary: &'a mut PrimaryState,
     values: Option<BindingValues>,
 ) -> Result<&'a OpenedEntrypoints> {
+    // Every open carries the session's network grant, whatever the caller
+    // built its values from.
+    let values = values.map(|mut values| {
+        values.network = primary.network.clone();
+        values
+    });
     let reuse = match (&primary.open, &values) {
         (Some(_), None) => true,
         (Some(open), Some(values)) => open.values == *values,
         (None, _) => false,
     };
     if !reuse {
-        let want = values.unwrap_or_default();
+        let want = values.unwrap_or_else(|| BindingValues {
+            network: primary.network.clone(),
+            ..BindingValues::default()
+        });
         let invocation = new_invocation(account_id, uuid::Uuid::new_v4().to_string(), 0);
         let entrypoints = client
             .open(
@@ -4336,6 +4355,8 @@ async fn run_stream_copy(
                 sockets: None,
                 // Nor does it raise notifications or run models.
                 notify: None,
+                // Only the active relay ingress reaches the library.
+                origin: None,
                 ai: None,
             },
         )
