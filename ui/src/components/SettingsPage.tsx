@@ -1134,10 +1134,12 @@ export function SettingsPage({
     setConsentBusy(true);
     setError(null);
     try {
+      const { settingDestinations, ...grantFields } = grant;
       const approved = await approvePluginConsent(
         consentPrompt.plugin_id,
-        grant,
+        grantFields,
         consentPrompt.plugin_key,
+        settingDestinations,
       );
       setConsentCoverage((current) => ({
         ...current,

@@ -29,6 +29,7 @@ boundary extends it.
 | `egress_relay_head` | Request heads workerd sends the launcher's egress relay (plugin code) and response heads from the servers a plugin reached | `bookclerk-workerd::egress_relay` |
 | `egress_bridge` | The workerd egress gate (`bridge/egress.js`) every workerd guest's `fetch()` and `connect()` goes through, run in an embedded JavaScript engine against `EgressPolicy` | `bookclerk-workerd` bridge |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
+| `setting_destination` | Operator-entered values of network settings: the one destination each grants | `bookclerk-plugin-manifest::derive_setting_destination` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec, the database envelope decoders, and the reply helpers every payload-free guest reply and guest error goes through (`read_empty`, `read_error`) | `bookclerk-plugin-abi` |
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
@@ -143,13 +144,27 @@ only that. The others check:
   matches, never through a `*` entry however it is spelled, and every
   other request gets the host's agent. The isolate tunnel rule
   (`allows_isolate_tunnel`) is exactly the union of the fetch, redirect and
-  TCP rules, on any port.
+  TCP rules, on any port. A fetch entry grants only its own port, or 80
+  and 443 when it names none. A local name lets only that exact name, or
+  the identical literal, reach a local-network address, and never
+  loopback or link-local. A pending setting destination grants nothing:
+  every rule answers the same without it, and it labels only its own host
+  and port.
+- **`setting_destination`**: an accepted value derives one destination
+  with a port and a host free of wildcards, percent signs and whitespace
+  (a name within DNS limits), never from a value with credentials. Deriving its display form gives it
+  back, its grant entries are already normalized (the `domains` entry
+  names exactly its port), and its scope agrees with an independent
+  reading of the host. The shared oracle is
+  `fuzz/oracles/setting_destination.rs`, replayed from
+  `bookclerk-plugin-manifest`.
 - **`egress_bridge`**: for a policy the host can emit (every pattern
   already normalized, every CIDR in its `network/prefix` form), each probe
-  host (the grants' names and near misses, `localhost` and the metadata
-  name, and IP literals in every range and spelling) goes to
-  `allowsInitial` and `allowsRedirect` as the URL parser prints it and to
-  `allowsTcp` as `canonicalSocketHost` returns it, in QuickJS. QuickJS has
+  host (the grants' names and near misses, local names, `localhost` and
+  the metadata name, and IP literals in every range and spelling), on
+  granted, default and ungranted ports, goes to `allowsFetch` and
+  `allowsRedirectTo` as the URL parser prints it and to `allowsTcp` as
+  `canonicalSocketHost` returns it, in QuickJS. QuickJS has
   no URL parser, so the target models both with the `url` crate, and the
   Node replay checks those models against Node's parser and the bridge's
   own `canonicalSocketHost`.
@@ -165,7 +180,9 @@ only that. The others check:
   `xn--` labels through), the replay holds the gate to the Rust verdicts
   on the raw host instead.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
-  yields a deny policy.
+  yields a deny policy. No binding takes the reserved `NETWORK` name, only
+  a string setting with `network` carries `default_port`, and a destination
+  derived from a network setting's default has a host and a nonzero port.
 - **`cron_schedule`**: an accepted schedule round-trips through its
   normalized source, and `next_after` / `latest_at_or_before` agree with a
   minute-by-minute scan of `matches`. The shared oracle is

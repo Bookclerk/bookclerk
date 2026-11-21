@@ -4,7 +4,7 @@
 //!
 //! The input is the JSON wire form of a policy (what the host injects as
 //! `EGRESS_POLICY`). `egress.js` runs in an embedded QuickJS context, and
-//! its `allowsInitial`, `allowsRedirect` and `allowsTcp` are called for every
+//! its `allowsFetch`, `allowsRedirectTo` and `allowsTcp` are called for every
 //! probe host the shared oracle in `fuzz/oracles/egress_bridge.rs` derives:
 //! the JavaScript gate must never allow what the Rust policy refuses, and
 //! must agree with it exactly on hostnames. Hosts reach the gate as the
@@ -63,15 +63,20 @@ fuzz_target!(|data: &[u8]| {
                 .expect("policy JSON parses in QuickJS");
             for probe in &probes {
                 let js = oracle::Verdicts {
-                    initial: probe
-                        .fetch
-                        .as_deref()
-                        .is_some_and(|host| call_gate(&ctx, "allowsInitial", (host, wire.clone()))),
+                    initial: probe.fetch.as_deref().is_some_and(|host| {
+                        call_gate(&ctx, "allowsFetch", (host, probe.port, wire.clone()))
+                    }),
                     redirect: probe.fetch.as_deref().is_some_and(|host| {
                         call_gate(
                             &ctx,
-                            "allowsRedirect",
-                            (host, probe.hop, wire.clone(), policy.max_redirects),
+                            "allowsRedirectTo",
+                            (
+                                host,
+                                probe.port,
+                                probe.hop,
+                                wire.clone(),
+                                policy.max_redirects,
+                            ),
                         )
                     }),
                     tcp: probe.socket.as_deref().is_some_and(|host| {

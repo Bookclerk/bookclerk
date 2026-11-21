@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":["api.example.com:0","api.example.com:08443","api.example.com:65536","*:443","[2606:4700::1111","API.Example.com:8443"],"maxRedirects":1}

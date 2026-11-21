@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":["abs.home.lan:13378","api.example.com","files.example.com:8443","192.168.1.20:8080"],"localNames":["abs.home.lan","192.168.1.20","fd00::5"],"maxRedirects":2,"allowUndeclaredPublicRedirects":true,"tcp":[{"host":"db.home.lan","ports":[5432]}]}

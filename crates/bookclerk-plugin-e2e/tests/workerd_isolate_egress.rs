@@ -7,7 +7,7 @@
 //! spawns an isolate the way the daemon does and checks both halves:
 //!
 //! - granted destinations work (an HTTP fetch and a raw TCP socket), and an
-//!   ungranted port is refused;
+//!   ungranted port is refused for either;
 //! - on Linux, neither process holds an IP socket and both run under the
 //!   seccomp filter that refuses to create one.
 
@@ -44,7 +44,8 @@ async function run(params) {
   const args = cliArgs(params);
   if (params.command === "fetch") {
     const res = await fetch(args.url);
-    return `${res.status} ${await res.text()}`;
+    const refusal = res.headers.get("x-bookclerk-error");
+    return `${res.status} ${refusal ? refusal + " " : ""}${await res.text()}`;
   }
   const socket = connect({ hostname: "127.0.0.1", port: Number(args.port) }, { secureTransport: "off" });
   await socket.opened;
@@ -72,7 +73,9 @@ export default class Probe extends BookclerkEntrypoint {
 }
 "#;
 
-fn manifest(tcp_port: u16) -> String {
+/// The probe's `plugin.toml`: fetch to loopback on `http_port` and a TCP
+/// grant for `tcp_port`.
+fn manifest(http_port: u16, tcp_port: u16) -> String {
     format!(
         "api_version = 3\n\
          id = \"{PLUGIN_ID}\"\n\
@@ -93,7 +96,7 @@ fn manifest(tcp_port: u16) -> String {
          \n\
          [capabilities.network]\n\
          mode = \"outbound\"\n\
-         domains = [\"127.0.0.1\"]\n\
+         domains = [\"127.0.0.1:{http_port}\"]\n\
          tcp = [{{ host = \"127.0.0.1\", ports = [{tcp_port}] }}]\n\
          address_cidrs = [\"127.0.0.1/32\"]\n"
     )
@@ -106,13 +109,13 @@ struct Install {
 }
 
 impl Install {
-    fn new(tcp_port: u16) -> Self {
+    fn new(http_port: u16, tcp_port: u16) -> Self {
         let files = tempfile::tempdir().expect("tempdir");
         let paths = Paths::from_files_dir(files.path().to_path_buf());
         let root = paths.files_dir.join("plugins").join(PLUGIN_ID);
         std::fs::create_dir_all(root.join("modules")).expect("install dir");
         std::fs::write(root.join("modules/index.js"), MODULE).expect("module");
-        std::fs::write(root.join("plugin.toml"), manifest(tcp_port)).expect("manifest");
+        std::fs::write(root.join("plugin.toml"), manifest(http_port, tcp_port)).expect("manifest");
         let mut config = Config {
             paths: Some(paths),
             ..Default::default()
@@ -195,7 +198,7 @@ async fn a_jailed_isolate_reaches_granted_hosts_only_through_the_host() {
         }
     });
 
-    let install = Install::new(echo_port);
+    let install = Install::new(http_port, echo_port);
     let plugin = find(&install.config);
     let session = tokio::time::timeout(
         ng_harness::SPAWN_TIMEOUT,
@@ -236,6 +239,27 @@ async fn a_jailed_isolate_reaches_granted_hosts_only_through_the_host() {
             .await
             .is_err(),
         "the host must not dial an ungranted port"
+    );
+
+    // A fetch to a port the `domains` entry does not grant is refused too.
+    let (code, text) = invoke(
+        &session,
+        "fetch",
+        "url",
+        &format!("http://127.0.0.1:{refused_port}/"),
+    )
+    .await;
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.starts_with("403 network_not_granted ")
+            && text.contains(&format!("\"destination\":\"127.0.0.1:{refused_port}\"")),
+        "an ungranted fetch port gets the typed refusal: {text}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), refused.accept())
+            .await
+            .is_err(),
+        "the host must not dial an ungranted fetch port"
     );
 
     #[cfg(target_os = "linux")]

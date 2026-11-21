@@ -178,7 +178,7 @@ async fn the_host_broker_holds_a_socket_and_stops_when_it_closes() {
         .unwrap_err();
     assert_eq!(
         refused.code,
-        bookclerk_plugin_abi::PluginErrorCode::Forbidden,
+        bookclerk_plugin_abi::PluginErrorCode::NetworkNotGranted,
         "{refused:?}"
     );
     assert!(

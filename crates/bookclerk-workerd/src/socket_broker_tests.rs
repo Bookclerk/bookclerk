@@ -64,6 +64,14 @@ fn loopback_policy() -> EgressPolicy {
     }
 }
 
+/// [`loopback_policy`] with a fetch entry that also grants `port`, since an
+/// entry without a port grants only 80 and 443.
+fn loopback_policy_on(port: u16) -> EgressPolicy {
+    let mut policy = loopback_policy();
+    policy.domains.push(format!("127.0.0.1:{port}"));
+    policy
+}
+
 /// A broker over `policy` and a fresh recorder.
 fn new_broker(policy: EgressPolicy) -> (SocketBroker, Rc<Seen>) {
     let seen = Rc::new(Seen::default());
@@ -187,7 +195,7 @@ async fn heartbeats_stay_in_the_broker_and_messages_reach_the_host() {
                 log
             })
             .await;
-            let (broker, seen) = new_broker(loopback_policy());
+            let (broker, seen) = new_broker(loopback_policy_on(port));
             let info = broker.connect(request(port)).await.expect("connect");
             assert_eq!(info.protocol.as_deref(), Some("chat"));
             assert_eq!(info.attachment, b"cursor");
@@ -254,7 +262,7 @@ async fn a_remote_close_reaches_the_host_once_with_the_attachment() {
                 log
             })
             .await;
-            let (broker, seen) = new_broker(loopback_policy());
+            let (broker, seen) = new_broker(loopback_policy_on(port));
             let mut req = request(port);
             req.protocols.clear();
             let info = broker.connect(req).await.expect("connect");
@@ -350,7 +358,7 @@ async fn a_handler_that_sends_while_both_queues_are_full_still_progresses() {
             });
             let handler: Rc<dyn SocketHandler> = replier.clone();
             let broker = Rc::new(SocketBroker::new(
-                loopback_policy(),
+                loopback_policy_on(port),
                 default_tls().expect("tls"),
                 handler,
                 "t-",
@@ -412,7 +420,7 @@ async fn a_closed_socket_counts_against_the_limit_until_its_deliveries_finish() 
                 seen: Rc::clone(&seen),
             });
             let broker = SocketBroker::new(
-                loopback_policy(),
+                loopback_policy_on(port),
                 default_tls().expect("tls"),
                 handler,
                 "t-",
@@ -465,7 +473,7 @@ async fn a_cancelled_connect_frees_its_slot() {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 drop(tcp);
             });
-            let (broker, _seen) = new_broker(loopback_policy());
+            let (broker, _seen) = new_broker(loopback_policy_on(port));
             let cancelled =
                 tokio::time::timeout(Duration::from_millis(300), broker.connect(request(port)))
                     .await;
@@ -489,7 +497,7 @@ async fn oversized_messages_close_the_socket_with_1009() {
                 log
             })
             .await;
-            let (broker, seen) = new_broker(loopback_policy());
+            let (broker, seen) = new_broker(loopback_policy_on(port));
             let mut req = request(port);
             req.protocols.clear();
             broker.connect(req).await.expect("connect");
@@ -516,7 +524,7 @@ async fn a_subprotocol_the_guest_did_not_ask_for_fails_the_connect() {
         .run_until(async {
             let (port, _server) =
                 serve_once(Some("other"), |_socket| async move { ServerLog::default() }).await;
-            let (broker, _seen) = new_broker(loopback_policy());
+            let (broker, _seen) = new_broker(loopback_policy_on(port));
             let err = broker
                 .connect(request(port))
                 .await
@@ -538,18 +546,42 @@ async fn the_network_grant_decides_every_dial() {
                 domains: vec!["abs.example.com".into()],
                 ..loopback_policy()
             };
-            let (broker, _seen) = new_broker(policy);
+            let (broker, _seen) = new_broker(policy.clone());
             let err = broker.connect(request(9)).await.expect_err("not granted");
-            assert_eq!(err.code, PluginErrorCode::Forbidden);
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
+            assert!(err
+                .details
+                .as_ref()
+                .is_some_and(|d| !d.contains_key("setting")));
 
-            // Loopback named, but no address grant for it.
+            // A destination a pending setting names is refused the same way,
+            // and the refusal names the setting.
             let policy = EgressPolicy {
+                pending_settings: vec![bookclerk_plugin_manifest::PendingSettingDestination {
+                    setting: "server_url".into(),
+                    destination: "http://127.0.0.1:9".into(),
+                    host: "127.0.0.1".into(),
+                    port: 9,
+                }],
+                ..policy
+            };
+            let (broker, _seen) = new_broker(policy);
+            let err = broker.connect(request(9)).await.expect_err("pending");
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
+            let details = err.details.clone().unwrap_or_default();
+            assert_eq!(details["setting"], "server_url", "{err}");
+            assert_eq!(details["destination"], "127.0.0.1:9");
+
+            // Loopback named, but no address grant for it: a literal binds
+            // its own address, so the target itself is not granted.
+            let policy = EgressPolicy {
+                domains: vec!["127.0.0.1:9".into()],
                 address_cidrs: Vec::new(),
                 ..loopback_policy()
             };
             let (broker, _seen) = new_broker(policy);
             let err = broker.connect(request(9)).await.expect_err("no cidr");
-            assert_eq!(err.code, PluginErrorCode::Forbidden);
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
 
             // A TCP grant for the host and port covers the socket too.
             let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -593,7 +625,7 @@ async fn the_network_grant_decides_every_dial() {
             // Deny mode refuses everything.
             let (broker, _seen) = new_broker(EgressPolicy::deny());
             let err = broker.connect(request(9)).await.expect_err("deny");
-            assert_eq!(err.code, PluginErrorCode::Forbidden);
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
             assert!(broker.shared.table.borrow().is_empty(), "no pending leak");
         })
         .await;
@@ -609,7 +641,7 @@ async fn a_refused_connection_frees_its_slot() {
                 let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
                 listener.local_addr().expect("addr").port()
             };
-            let (broker, _seen) = new_broker(loopback_policy());
+            let (broker, _seen) = new_broker(loopback_policy_on(port));
             let err = broker.connect(request(port)).await.expect_err("refused");
             assert_eq!(err.code, PluginErrorCode::Unavailable);
             assert!(broker.shared.table.borrow().is_empty());
@@ -628,4 +660,20 @@ async fn a_refused_connection_frees_its_slot() {
                 .is_err());
         })
         .await;
+}
+
+#[test]
+fn a_fetch_entry_grants_its_own_port_or_the_web_ports() {
+    let target = |port| SocketTarget {
+        secure: false,
+        host: "127.0.0.1".into(),
+        port,
+    };
+    let bare = loopback_policy();
+    assert!(target_granted(&bare, &target(80)));
+    assert!(target_granted(&bare, &target(443)));
+    assert!(!target_granted(&bare, &target(8080)), "no port named");
+    let on = loopback_policy_on(8080);
+    assert!(target_granted(&on, &target(8080)));
+    assert!(!target_granted(&on, &target(8081)));
 }
