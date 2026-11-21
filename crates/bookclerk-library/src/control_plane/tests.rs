@@ -1266,6 +1266,8 @@ fn instance_schema() -> bookclerk_plugin_abi::SettingsSchema {
         required: false,
         description: None,
         columns: Vec::new(),
+        network: None,
+        default_port: None,
     }])
 }
 

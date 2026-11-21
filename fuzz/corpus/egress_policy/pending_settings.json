@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":["abs.home.lan:13378"],"localNames":["abs.home.lan"],"pendingSettings":[{"setting":"server_url","destination":"http://nas.home.lan:8080","host":"nas.home.lan","port":8080},{"setting":"tcp_host","destination":"10.0.0.5:5432","host":"10.0.0.5","port":5432}]}

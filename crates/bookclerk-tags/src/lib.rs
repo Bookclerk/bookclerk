@@ -36,9 +36,9 @@ use serde::{Deserialize, Serialize};
 
 pub use reader::{read_all, Poll, TagReader};
 pub use record::{
-    AudioCodec, Chapter, ChapterSource, Container, Duration, DurationPrecision, EmbeddedCover,
-    PictureFormat, RecordError, RegionDigest, Sha256Digest, TagEntry, TagField, TagRecord,
-    MAX_DURATION_MS,
+    AacProfile, AudioCodec, AudioFormat, Chapter, ChapterSource, Container, Duration,
+    DurationPrecision, EmbeddedCover, PictureFormat, RecordError, RegionDigest, Sha256Digest,
+    TagEntry, TagField, TagRecord, MAX_CHANNELS, MAX_DURATION_MS, MAX_SAMPLE_RATE_HZ,
 };
 
 /// Version of the region digest this reader computes ([`RegionDigest::version`]).

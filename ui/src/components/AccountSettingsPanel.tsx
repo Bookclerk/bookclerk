@@ -272,10 +272,10 @@ export function AccountSettingsPanel({
         ...result,
         name: passkeyName.trim() || undefined,
       });
-      setPasskeys(await listPasskeys());
+      const [keys] = await Promise.all([listPasskeys(), onSessionChange?.()]);
+      setPasskeys(keys);
       setPasskeyName("");
       setNotice("Passkey registered. You can use it to sign in if SSO is unavailable.");
-      await onSessionChange?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Passkey registration failed");
     } finally {
@@ -288,8 +288,8 @@ export function AccountSettingsPanel({
     setError(null);
     try {
       await deletePasskey(id, currentPassword || undefined);
-      setPasskeys(await listPasskeys());
-      await onSessionChange?.();
+      const [keys] = await Promise.all([listPasskeys(), onSessionChange?.()]);
+      setPasskeys(keys);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove passkey");
     } finally {

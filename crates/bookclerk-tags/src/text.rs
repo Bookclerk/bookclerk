@@ -4,10 +4,27 @@ use sha2::{Digest, Sha256};
 
 use crate::cache::{Source, Step};
 use crate::{
-    AudioCodec, ByteSpan, Chapter, ChapterSource, Container, Duration, EmbeddedCover,
+    AudioCodec, AudioFormat, ByteSpan, Chapter, ChapterSource, Container, Duration, EmbeddedCover,
     PictureFormat, RegionDigest, Sha256Digest, TagEntry, TagField, TagRecord, MAX_CHAPTERS,
     MAX_CHAPTER_TITLE_BYTES, MAX_ENTRIES, MAX_KEY_BYTES, MAX_VALUE_BYTES, REGION_HASH_VERSION,
 };
+
+/// `format` with each value a record may not carry dropped: channels or a
+/// rate of zero or over the limits, and an AAC profile on audio that is not
+/// AAC. A header that states nonsense states nothing.
+fn sane_format(format: AudioFormat, codec: Option<AudioCodec>) -> AudioFormat {
+    AudioFormat {
+        channels: format
+            .channels
+            .filter(|channels| (1..=crate::MAX_CHANNELS).contains(channels)),
+        sample_rate_hz: format
+            .sample_rate_hz
+            .filter(|rate| (1..=crate::MAX_SAMPLE_RATE_HZ).contains(rate)),
+        aac_profile: format
+            .aac_profile
+            .filter(|_| codec == Some(AudioCodec::Aac)),
+    }
+}
 
 /// `text` cut to at most `max` bytes at a character boundary.
 pub(crate) fn cut(text: &str, max: usize) -> &str {
@@ -57,6 +74,8 @@ pub(crate) struct RecordBuilder {
     pub(crate) duration: Option<Duration>,
     /// The audio encoding, once the parser knows it.
     pub(crate) codec: Option<AudioCodec>,
+    /// Channels, sample rate and AAC profile, as the parser finds them.
+    pub(crate) format: AudioFormat,
     /// The cover, once one is found.
     cover: Option<EmbeddedCover>,
     /// The metadata region, as spans in the order they were added.
@@ -80,6 +99,7 @@ impl RecordBuilder {
                 // Set by the parser from the stream's first header.
                 Container::Mp4 | Container::Ogg => None,
             },
+            format: AudioFormat::default(),
             cover: None,
             region: Vec::new(),
             truncated: false,
@@ -248,6 +268,7 @@ impl RecordBuilder {
                 .duration
                 .filter(|duration| duration.ms <= crate::MAX_DURATION_MS),
             codec: self.codec,
+            format: sane_format(self.format, self.codec),
             cover: self.cover,
             region: RegionDigest {
                 version: REGION_HASH_VERSION,

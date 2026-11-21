@@ -152,6 +152,36 @@ pub async fn pool_wish_editions(
     out
 }
 
+/// Stores the member prices `hints` quote for editions already pooled.
+///
+/// [`pool_wish_editions`] records these itself when it is given the hints;
+/// a wish that looks its named editions up at the same time as the prices
+/// calls this once both are in.
+///
+/// # Arguments
+///
+/// * `library` - The library whose pool holds the listings.
+/// * `pooled` - The pooled editions, as [`pool_wish_editions`] returned them.
+/// * `hints` - The purchase hints the server resolved for the wish.
+pub async fn record_wish_member_offers(
+    library: &LibraryStore,
+    pooled: &[PooledEdition],
+    hints: &[PurchaseHint],
+) {
+    let offers: Vec<(String, ListingOffer)> = pooled
+        .iter()
+        .filter_map(|p| {
+            member_offer(hints, &p.source, &p.product_id).map(|o| (p.listing_id.clone(), o))
+        })
+        .collect();
+    if offers.is_empty() {
+        return;
+    }
+    if let Err(err) = library.record_listing_offers(&offers).await {
+        tracing::debug!(error = %err, "could not store a wish's member prices");
+    }
+}
+
 /// Asks `source` to describe `product_id`, within `EDITION_LOOKUP_TIMEOUT`.
 ///
 /// # Returns
@@ -459,5 +489,40 @@ mod tests {
             assert!(record.offer(OfferAudience::Member).is_none());
             assert!(record.offer(OfferAudience::NonMember).is_some());
         }
+    }
+
+    /// Member prices quoted after the editions were pooled (the wishlist
+    /// looks both up at once) are stored on the pooled listings.
+    #[tokio::test]
+    async fn member_prices_found_later_reach_the_pooled_listing() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let (registry, _logs) =
+            registry(vec![store("libro", vec![hit("L1", "Dune", 1999)], false)]);
+        let editions = vec![(String::from("libro"), String::from("L1"))];
+        let pooled = pool_wish_editions(&library, &registry, &editions, &[], "us").await;
+        assert_eq!(pooled.len(), 1);
+        // No quoted member price: nothing to store.
+        record_wish_member_offers(&library, &pooled, &[]).await;
+        let hints = vec![PurchaseHint {
+            source: String::from("Libro"),
+            product_id: String::from("L1"),
+            member_price_cents: Some(1299),
+            currency: Some(String::from("USD")),
+            ..PurchaseHint::default()
+        }];
+        record_wish_member_offers(&library, &pooled, &hints).await;
+        let record = library
+            .catalog_listings(std::slice::from_ref(&pooled[0].listing_id))
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            record
+                .offer(OfferAudience::Member)
+                .and_then(|o| o.price_cents),
+            Some(1299)
+        );
     }
 }

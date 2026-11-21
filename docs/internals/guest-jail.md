@@ -409,8 +409,9 @@ and descendants that have called `setsid`, die with the leaf. If `cgroup.kill`
 is missing, teardown returns an error that says equivalent teardown is
 unsupported. Bookclerk does not signal pids read from `cgroup.procs`. Creating that
 leaf or writing `pids.max` is often refused inside desktop app
-cgroup scopes (browsers, IDEs). Bookclerk reports that and falls back to
-process-group SIGKILL. That fallback is a different path: a descendant that
+cgroup scopes (browsers, IDEs) and unprivileged containers. Bookclerk warns
+about it once per process (later sessions log it at debug, since the cause
+doesn't change) and falls back to process-group SIGKILL. That fallback is a different path: a descendant that
 has called `setsid` is outside the group, and without a delegated cgroup
 this path does not own it. The host
 records each leader's pid and start time (`/proc/<pid>/stat` starttime on

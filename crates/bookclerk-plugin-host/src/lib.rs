@@ -84,6 +84,7 @@ mod registry;
 mod remote_consent;
 mod rpc;
 mod rpc_session;
+mod setting_grants;
 mod socket_broker;
 mod spawn_plan;
 mod spawn_stdio;
@@ -109,7 +110,9 @@ pub use authority::{
     SessionShutdown, GRANT_WATCH_INTERVAL,
 };
 pub use bookclerk_plugin_catalog::host_bookclerk_target;
-pub use bookclerk_plugin_manifest::TcpGrant;
+pub use bookclerk_plugin_manifest::{
+    derive_setting_destination, DestinationScope, SettingDestination, TcpGrant,
+};
 pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
 pub use bundled_platform::install_bundled_platform_plugins;
 pub use callback_proxy::CallbackProxy;
@@ -127,9 +130,10 @@ pub use consent::{
     require_binding, require_grant, spawn_config_for_grant, spawn_grant, validate_approved_grant,
     validate_described_capabilities, validate_described_config_options, validate_described_media,
     windows_session_active_processes, GrantedEventConsumer, PendingStructural, PluginGrant,
-    PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION, KNOWN_HOST_BINDINGS, PENDING_HEADER,
-    PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT,
-    PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
+    PluginGrantStore, SettingNetworkOverlay, GRANTS_FILE, GRANT_SCHEMA_VERSION,
+    KNOWN_HOST_BINDINGS, PENDING_HEADER, PLUGIN_JAIL_ACTIVE_PROCESSES_MAX,
+    PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT, PLUGIN_JAIL_CPU_RATE_MAX,
+    PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
     PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
     PLUGIN_STATE_BUDGET_MIB_MAX, QUEUE_CONSUMER_BINDING_PREFIX, QUEUE_PRODUCER_BINDING_PREFIX,
     WINDOWS_SESSION_PROCESS_BASELINE, WORKERD_GRANT_CPU_MS_ENV, WORKERD_GRANT_DOMAINS_ENV,
@@ -216,6 +220,11 @@ pub use remote_consent::{
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,
     RpcBackupOps, SessionServices, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+};
+pub use setting_grants::{
+    apply_setting_destinations, approve_setting_destinations, destinations_in_use,
+    library_setting_statuses, network_grant_binding, network_settings, setting_grant_statuses,
+    InstanceSettingStatuses, SettingDestinationMap, SettingGrantState, SettingGrantStatus,
 };
 pub use socket_broker::{BrokerSockets, SocketBroker, SocketEvent, SocketSink};
 pub use spawn_plan::{

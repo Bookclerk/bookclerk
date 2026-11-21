@@ -118,6 +118,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "setting_destination"
+path = "fuzz_targets/setting_destination.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "egress_policy"
 path = "fuzz_targets/egress_policy.rs"
 test = false
@@ -433,8 +440,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "work_tags_request"
+path = "fuzz_targets/work_tags_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "player_socket"
 path = "fuzz_targets/player_socket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "collections_request"
+path = "fuzz_targets/collections_request.rs"
 test = false
 doc = false
 bench = false
@@ -596,6 +617,13 @@ bench = false
 [[bin]]
 name = "title_meta_fill"
 path = "fuzz_targets/title_meta_fill.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relayed_log_line"
+path = "fuzz_targets/relayed_log_line.rs"
 test = false
 doc = false
 bench = false

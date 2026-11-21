@@ -5,6 +5,8 @@ import { NotFoundPage } from "./NotFoundPage";
 const meta = {
   title: "Pages/NotFoundPage",
   component: NotFoundPage,
+  // A path the app could be asked for, not the story frame's own.
+  args: { path: "/shelves/sci-fi" },
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof NotFoundPage>;
 

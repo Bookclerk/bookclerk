@@ -1875,7 +1875,7 @@ fn plugin_error_status(err: &PluginError) -> u16 {
     match err.code {
         C::InvalidParams | C::InvalidCursor => 400,
         C::Unauthorized => 401,
-        C::Forbidden => 403,
+        C::Forbidden | C::NetworkNotGranted => 403,
         C::NotFound => 404,
         C::Conflict => 409,
         C::PayloadTooLarge | C::LimitExceeded => 413,

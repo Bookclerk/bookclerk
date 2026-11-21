@@ -85,24 +85,25 @@ fn plugin_root(declare: bool) -> tempfile::TempDir {
     root
 }
 
-/// The grant the host would inject: loopback by address.
-fn grant() -> String {
+/// The grant the host would inject: loopback by address, on `port` (an
+/// entry without a port grants only 80 and 443).
+fn grant(port: u16) -> String {
     serde_json::to_string(&EgressPolicy {
         mode: NetworkMode::Outbound,
-        domains: vec!["127.0.0.1".into()],
+        domains: vec![format!("127.0.0.1:{port}")],
         address_cidrs: vec!["127.0.0.1/32".into()],
         ..EgressPolicy::deny()
     })
     .expect("policy json")
 }
 
-/// The broker process for `root`.
-fn broker_command(root: &Path) -> Command {
+/// The broker process for `root`, granted loopback on `port`.
+fn broker_command(root: &Path, port: u16) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"));
     command
         .env("BOOKCLERK_PLUGIN_ROOT", root)
         .env(SOCKET_BROKER_ENV, "1")
-        .env(GRANT_POLICY_ENV, grant())
+        .env(GRANT_POLICY_ENV, grant(port))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -134,7 +135,9 @@ async fn the_broker_holds_a_socket_for_the_host() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let mut child = broker_command(root.path()).spawn().expect("spawn broker");
+            let mut child = broker_command(root.path(), port)
+                .spawn()
+                .expect("spawn broker");
             let stdin = child.stdin.take().expect("stdin");
             let stdout = child.stdout.take().expect("stdout");
             let host = Arc::new(Host::default());
@@ -186,7 +189,7 @@ async fn the_broker_holds_a_socket_for_the_host() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_plugin_without_sockets_cannot_start_a_broker() {
     let root = plugin_root(false);
-    let output = broker_command(root.path())
+    let output = broker_command(root.path(), 443)
         .stderr(Stdio::piped())
         .output()
         .await

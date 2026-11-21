@@ -1134,10 +1134,12 @@ export function SettingsPage({
     setConsentBusy(true);
     setError(null);
     try {
+      const { settingDestinations, ...grantFields } = grant;
       const approved = await approvePluginConsent(
         consentPrompt.plugin_id,
-        grant,
+        grantFields,
         consentPrompt.plugin_key,
+        settingDestinations,
       );
       setConsentCoverage((current) => ({
         ...current,
@@ -1187,8 +1189,7 @@ export function SettingsPage({
     setSessionsError(null);
     try {
       await revokeSession(id);
-      await reloadSessions();
-      await onSessionChange?.();
+      await Promise.all([reloadSessions(), onSessionChange?.()]);
     } catch (err) {
       setSessionsError(err instanceof Error ? err.message : "Session revoke failed");
     } finally {
@@ -1202,11 +1203,9 @@ export function SettingsPage({
     setSessionsBusy(true);
     setSessionsError(null);
     try {
-      for (const row of others) {
-        await revokeSession(row.id);
-      }
-      await reloadSessions();
-      await onSessionChange?.();
+      // Each revoke is its own request; none depends on another.
+      await Promise.all(others.map((row) => revokeSession(row.id)));
+      await Promise.all([reloadSessions(), onSessionChange?.()]);
     } catch (err) {
       setSessionsError(err instanceof Error ? err.message : "Session revoke failed");
     } finally {

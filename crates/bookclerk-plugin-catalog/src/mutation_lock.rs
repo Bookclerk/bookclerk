@@ -40,8 +40,12 @@ pub const PLUGIN_MUTATION_LOCK_FILE: &str = ".plugin-mutation.lock";
 pub struct PluginMutationLock {
     /// Open lock file; the OS advisory lock is released when this is dropped.
     _file: File,
-    /// Host files directory this lock serializes.
+    /// Host files directory this lock serializes, as the caller spelled it.
     files_dir: PathBuf,
+    /// `files_dir` canonicalized when the lock was taken, so a plugins root
+    /// reached through a symlinked path (macOS `/var` -> `/private/var`)
+    /// still counts as this lock's.
+    root: PathBuf,
 }
 
 impl PluginMutationLock {
@@ -95,6 +99,7 @@ impl PluginMutationLock {
         Ok(Self {
             _file: file,
             files_dir: files_dir.to_path_buf(),
+            root,
         })
     }
 
@@ -105,11 +110,17 @@ impl PluginMutationLock {
     }
 
     /// True when `plugins_root` is the `plugins/` directory under this lock.
+    ///
+    /// The parent matches either as spelled or once canonicalized, so the
+    /// same directory reached through a symlink is still covered.
     #[must_use]
     pub fn covers_plugins_root(&self, plugins_root: &Path) -> bool {
-        plugins_root
-            .parent()
-            .is_some_and(|parent| parent == self.files_dir)
+        plugins_root.parent().is_some_and(|parent| {
+            parent == self.files_dir
+                || parent
+                    .canonicalize()
+                    .is_ok_and(|canonical| canonical == self.root)
+        })
     }
 
     /// Rejects a plugins root that is not this lock's host namespace.
@@ -158,6 +169,27 @@ mod tests {
         assert!(lock.covers_plugins_root(&tmp.path().join("plugins")));
         assert!(!lock.covers_plugins_root(tmp.path()));
         assert!(PluginMutationLock::path(tmp.path()).is_file());
+    }
+
+    /// The same files dir reached through a symlink (as macOS's `/var` is)
+    /// is still this lock's, in either direction; a different dir is not.
+    #[cfg(unix)]
+    #[test]
+    fn a_plugins_root_through_a_symlink_is_covered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("plugins")).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let via_link = PluginMutationLock::acquire(&link).unwrap();
+        assert!(via_link.covers_plugins_root(&real.join("plugins")));
+        assert!(via_link.covers_plugins_root(&link.join("plugins")));
+        drop(via_link);
+        let via_real = PluginMutationLock::acquire(&real).unwrap();
+        assert!(via_real.covers_plugins_root(&link.join("plugins")));
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(other.join("plugins")).unwrap();
+        assert!(!via_real.covers_plugins_root(&other.join("plugins")));
     }
 
     #[test]

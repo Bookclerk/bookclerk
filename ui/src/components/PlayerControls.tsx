@@ -83,7 +83,7 @@ export function Scrubber({ player, state }: { player: Player; state: PlayerState
   return (
     <input
       type="range"
-      className="h-1.5 w-full cursor-pointer accent-teal disabled:cursor-default"
+      className="h-6 w-full cursor-pointer accent-teal disabled:cursor-default"
       min={0}
       max={Math.max(1, Math.round(duration / 1000))}
       step={1}

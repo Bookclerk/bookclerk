@@ -844,7 +844,10 @@ library holds as works, expressions and editions:
   probe of the file found: its media type (`content_type`, from the
   container, not the file name), its average bitrate (`bitrate_kbps`),
   whether the encoding is lossless (`lossless`), the store the copy came
-  from (`source_store`) and when it was probed (`probed_at`). The acquire
+  from (`source_store`) and when it was probed (`probed_at`). An acquire's
+  probe also stores the encoding (`codec`), the AAC profile
+  (`aac_profile`), `channels`, `sample_rate_hz` and the running time a
+  player sees (`duration_ms`, empty when unknown, never 0). The acquire
   that writes a file probes it; an upload carries the sender's values and
   they are stored when it commits. `probed_at` is empty for a file that
   was never probed (it is not audio, the media worker was unavailable, or
@@ -897,8 +900,8 @@ library holds as works, expressions and editions:
   when `library_index_builds` has no row for the current layout; see
   [Library index](../internals/jobs.md#library-index).
 - `library_work_facets`: the page index's filter values, one row per
-  author, narrator, series, genre, publisher or source a held top-level
-  work has, keyed by the lower-cased value. Written with the work's
+  author, narrator, series, genre, publisher, source or library tag a
+  held top-level work has, keyed by the lower-cased value. Written with the work's
   `library_work_rows` row and fenced by its refresh stamp; an unheld work
   has none. A refresh's facets can span several batches, so the row's
   `facets_ready` is 0 until the last of them is written, and a patron
@@ -911,6 +914,20 @@ library holds as works, expressions and editions:
 - `user_work_tags`: one user's tags on a work, one row per tag, written
   in the same batch as `user_title_state.tags` so the library page can
   filter by a tag.
+- `work_tags`: library tags on a top-level work, which everyone sees, one
+  row per tag and source (`admin` for tags set in Bookclerk, `sidecar`
+  for tags read from a metadata file), keyed by the lower-cased tag.
+  Replacing the `admin` tags (`PUT /api/library/works/{id}/tags`) leaves
+  the sidecar ones, and refreshes the work's page index row so the
+  Library filter (facet `library_tag`) and patron scopes see the change
+  at once. A split copies them to the new work.
+
+The library's collections are not a table: they live in the
+`core.collections` configuration document (names and storage key
+prefixes). The page index stores each work's collections as facet
+`collection`, read from its editions' files (`edition_files`), so a
+change to the document drops the finished index build and the next
+rebuild recomputes every work.
 
 Per-person rows point at works instead of copying a title:
 `listening_progress` (one row per listener and work, with the edition when

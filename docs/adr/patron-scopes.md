@@ -127,7 +127,9 @@ invite branches, and approve interlibrary requests. Each has a library
 default (the `core.admin_controls` configuration document) and a
 per-Administrator override in the same shape as the member controls. All
 are on by default, an Administrator can read but never change their own,
-and Owners are never limited. A route a switch guards answers `403` when
+and Owners are never limited. Because a library tag can decide what a
+scoped patron sees, setting tags, and defining collections, falls under "set patron limits". A route
+a switch guards answers `403` when
 it is off; with library-wide scan off, an Administrator scans and
 acquires like a Member, with only their own accounts.
 

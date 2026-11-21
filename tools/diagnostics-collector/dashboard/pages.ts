@@ -287,7 +287,12 @@ export function signInPage(
         '<svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.72 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.83-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z"/></svg>',
       )}Sign in with GitHub</a>
       <p class="fine">GitHub asks only to confirm who you are. Bookclerk checks your organization membership on its side and does not keep your GitHub token. Sessions last 8 hours.${policy}</p>
-    </div>`,
+    </div>
+    <section class="lookup-cta" aria-labelledby="lookup-cta-title">
+      <h2 id="lookup-cta-title">Looking for a report you sent?</h2>
+      <p>Open it with the report ID and access code Bookclerk gave you. No sign-in needed.</p>
+      <a class="button outline" href="/lookup">Look up your report</a>
+    </section>`,
   });
 }
 
@@ -813,6 +818,46 @@ function fieldText(value: unknown, max: number): string {
   }
 }
 
+/**
+ * The source commit a report names, shown after its version.
+ *
+ * @param p - The stored payload (untrusted).
+ * @returns ` (abc1234)` for a 7 to 40 digit hex commit, else nothing.
+ */
+function buildCommit(p: JsonObject): SafeHtml | string {
+  const commit = p.build_commit;
+  if (typeof commit !== "string" || !/^[0-9a-f]{7,40}$/.test(commit)) return "";
+  return html` <span class="fine">(${commit.slice(0, 12)})</span>`;
+}
+
+/**
+ * The CPU and memory limits a report's node ran under, as one row.
+ *
+ * @param p - The stored payload (untrusted).
+ * @returns A row such as "0.25 CPU, 1 GiB", or nothing when none is reported.
+ */
+function nodeLimits(p: JsonObject): SafeHtml | string {
+  const limits = asObject(p.limits);
+  const parts: string[] = [];
+  const cpu = limits.cpu_millis;
+  if (typeof cpu === "number" && Number.isSafeInteger(cpu) && cpu > 0) {
+    parts.push(`${(cpu / 1000).toFixed(2).replace(/\.?0+$/, "")} CPU`);
+  }
+  const memory = limits.memory_bytes;
+  if (typeof memory === "number" && Number.isSafeInteger(memory) && memory > 0) {
+    const mib = memory / 1024 / 1024;
+    parts.push(
+      mib >= 1024 ? `${(mib / 1024).toFixed(1).replace(/\.0$/, "")} GiB` : `${Math.round(mib)} MiB`,
+    );
+  }
+  const cpus = limits.cpus;
+  if (typeof cpus === "number" && Number.isSafeInteger(cpus) && cpus > 0) {
+    parts.push(`${cpus} visible ${cpus === 1 ? "CPU" : "CPUs"}`);
+  }
+  if (!parts.length) return "";
+  return html`<div><dt>Node limits</dt><dd>${parts.join(", ")}</dd></div>`;
+}
+
 /** Event levels the log shows, most severe first. */
 const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
 
@@ -965,8 +1010,9 @@ export function reportPage(d: ReportData): SafeHtml {
       <div class="grid">
         <section class="panel s8"><h2>Report</h2><dl class="meta">
           <div><dt>Received</dt><dd class="num">${fmtTime(r.received_at)} UTC</dd></div>
-          <div><dt>Version</dt><dd class="mono">${r.version}</dd></div>
+          <div><dt>Version</dt><dd class="mono">${r.version}${buildCommit(p)}</dd></div>
           <div><dt>Platform</dt><dd>${`${r.os} ${r.arch}`.trim()}${r.distro ? `, ${r.distro}` : ""}</dd></div>
+          ${nodeLimits(p)}
           <div><dt>rustc</dt><dd class="mono">${typeof p.rustc_release === "string" && p.rustc_release ? `${p.rustc_release.slice(0, 64)} ${typeof p.rustc_channel === "string" ? p.rustc_channel.slice(0, 32) : ""}` : "not reported"}</dd></div>
           <div><dt>Trigger</dt><dd>${r.trigger}</dd></div>
           <div><dt>Events</dt><dd class="num">${fmtInt(r.events)} (${plural(r.errors, "error")}, ${plural(r.warnings, "warning")})</dd></div>
@@ -1453,7 +1499,8 @@ export function lookupFormPage(
 ): SafeHtml {
   return publicPage(
     "Look up your report",
-    html`<p>Bookclerk gives each problem report it sends an ID and an access code. Find both in Bookclerk under Settings, Server Settings, Diagnostics, with <code>bookclerk diagnostics reports</code>, or in <code>diagnostics/reports.json</code> in Bookclerk's files folder.</p>
+    html`<p>Bookclerk gives each problem report it sends an ID and an access code. Find both in Bookclerk under Settings, Server Settings, Diagnostics, or in <code>diagnostics/reports.json</code> in Bookclerk's files folder. This command lists them too:</p>
+      <pre class="command" aria-label="Command that lists your reports"><code>bookclerk diagnostics reports</code></pre>
       ${message ? html`<p class="banner" role="alert">${message}</p>` : ""}
       <form method="post" action="/lookup" class="lookup-form">
         <label for="report_id">Report ID</label>

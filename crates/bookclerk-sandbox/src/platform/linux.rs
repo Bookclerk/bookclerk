@@ -259,13 +259,15 @@ fn apply_limits_in_child(child: &Path, limits: &crate::ResourceLimits) -> Result
 
 /// Rewrites EPERM/EACCES cgroup writes into an operator-facing explanation.
 ///
-/// Desktop app slices (browser/IDE cgroups) often allow creating a child
-/// directory but not enabling `memory`/`cpu`/`pids` on `subtree_control`.
+/// Desktop app slices (browser/IDE cgroups) and containers without a
+/// delegated cgroup often allow creating a child directory but not enabling
+/// `memory`/`cpu`/`pids` on `subtree_control`.
 /// Filesystem/syscall/network jail still apply; resource caps are best-effort.
 fn friendly_cgroup_error(detail: String) -> String {
     if cgroup_permission_denied(&detail) {
         "cgroup resource controllers are not delegated in this slice \
-         (common under desktop app scopes); filesystem/syscall/network jail still apply"
+         (common under desktop app scopes and unprivileged containers); \
+         filesystem/syscall/network jail still apply"
             .into()
     } else {
         detail

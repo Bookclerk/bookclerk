@@ -346,6 +346,11 @@ pub(crate) async fn run_library_index_rebuild(
     ctx: Option<&JobExecCtx>,
 ) -> anyhow::Result<String> {
     let library = state.library_snapshot().await;
+    // Rows derive collection membership from `core.collections`; a change
+    // during the walk leaves the rows already written stale, so the build
+    // is recorded only when the collections held still.
+    let collections_at_start =
+        bookclerk_library::control_plane::collections_revision(&library).await?;
     let mut after: Option<String> = None;
     let mut pages = 0u64;
     loop {
@@ -362,6 +367,14 @@ pub(crate) async fn run_library_index_rebuild(
                 .await;
         }
         after = Some(last);
+    }
+    if bookclerk_library::control_plane::collections_revision(&library).await?
+        != collections_at_start
+    {
+        return Ok(format!(
+            "library index walked {pages} page(s), but the collections changed; \
+             the heartbeat rebuilds it again"
+        ));
     }
     library.finish_library_index_build().await?;
     Ok(format!("library index rebuilt: {pages} page(s) of works"))

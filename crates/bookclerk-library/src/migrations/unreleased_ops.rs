@@ -1672,7 +1672,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // `copy_format` and `copy_quality` name the library copy
     // (`output.copies`) an acquire wrote an audio file for (`m4b` /
     // `original`, `mp3` / `64k-mono`); both are null for files that belong
-    // to no one copy (sidecars, the PDF) and for uploads.
+    // to no one copy (sidecars, the PDF) and for uploads. `codec`,
+    // `aac_profile`, `channels`, `sample_rate_hz` and `duration_ms` are what
+    // the same probe found about the audio stream; `duration_ms` is the
+    // running time a player sees (null when unknown, never 0), and a quality
+    // upgrade compares `codec`, `aac_profile` and `bitrate_kbps` with what a
+    // store offers now.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS edition_files (
         destination TEXT NOT NULL,
@@ -1688,6 +1693,11 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         sha256 TEXT,
         copy_format TEXT CHECK (copy_format IN ('m4b', 'mp3', 'mp3_chapters', 'original')),
         copy_quality TEXT,
+        codec TEXT,
+        aac_profile TEXT CHECK (aac_profile IN ('lc', 'he', 'he_v2', 'xhe')),
+        channels INTEGER CHECK (channels > 0),
+        sample_rate_hz INTEGER CHECK (sample_rate_hz > 0),
+        duration_ms INTEGER CHECK (duration_ms > 0),
         writer TEXT NOT NULL,
         written_at TEXT NOT NULL,
         PRIMARY KEY (destination, storage_key)
@@ -1854,13 +1864,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // The page index's filter values: one row per value a held top-level
     // work has under a facet (author, narrator, series, genre, publisher,
-    // source). `key` is the lower-cased value the filter matches; `value`
+    // source, library tag, collection). `key` is the lower-cased value the filter matches; `value`
     // is how it is shown. Written with the work's `library_work_rows` row
     // and fenced by its `refreshed_at`; an unheld work has none.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS library_work_facets (
         work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source')),
+        facet TEXT NOT NULL CHECK (facet IN ('author', 'narrator', 'series', 'genre', 'publisher', 'source', 'tag', 'collection')),
         key TEXT NOT NULL,
         value TEXT NOT NULL,
         PRIMARY KEY (work_id, facet, key)
@@ -1869,6 +1879,22 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_library_work_facets_key ON library_work_facets(facet, key, work_id)",
     ),
+    // Library tags: labels an Administrator sets on a top-level work for
+    // everyone (`source = 'admin'`), or read from a sidecar file
+    // (`source = 'sidecar'`). `key` is the lower-cased tag a filter or a
+    // patron scope matches; `value` is how it is shown. The page index
+    // refresh copies them into `library_work_facets` as facet `tag`.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS work_tags (
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        source TEXT NOT NULL CHECK (source IN ('admin', 'sidecar')),
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (work_id, source, key)
+    )",
+    ),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_work_tags_key ON work_tags(key, work_id)"),
     // One user's tags on a work, one row per tag, written with
     // `user_title_state.tags` so the library can filter by a tag. `tag_key`
     // is the lower-cased tag.
