@@ -301,8 +301,11 @@ def render_comment(
         "### Visual changes",
         "",
         (
-            f"{len(changes)} screenshot(s) differ from the approved baselines at "
-            f"`{head[:12]}`: {counts}."
+            f"{len(changes)} screenshot(s) recorded at `{head[:12]}` differ from "
+            f"the approved set `{approved_commit[:12]}`: {counts}."
+            if approved_commit
+            else f"{len(changes)} screenshot(s) recorded at `{head[:12]}`, with no "
+            f"approved set to compare them with: {counts}."
         ),
         "",
         checkbox(head, False),

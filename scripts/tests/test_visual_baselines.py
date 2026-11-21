@@ -525,7 +525,7 @@ class CategoryCommentTests(unittest.TestCase):
         body = vb.render_comment(
             "a" * 40, "b" * 40, "c" * 40, changes, "https://r", BOT
         )
-        self.assertIn("4 screenshot(s) differ", body)
+        self.assertIn("differ from the approved set `cccccccccccc`", body)
         self.assertIn("1 changed, 2 new, 1 removed", body)
         self.assertEqual(body.count("<details>"), 3)
         self.assertLess(body.index("Changed (1)"), body.index("New (2)"))
@@ -869,25 +869,81 @@ class BotTests(unittest.TestCase):
             out = self.bot.propose(self.env, FakeGitHub(answers), write)
         return out, write, pushed
 
-    def test_propose_without_a_merge_ref_reads_the_head_lock(self) -> None:
+    def test_propose_without_a_merge_ref_falls_back_to_the_base_lock(self) -> None:
+        """A conflicting branch from before the first approval compares with its base's set."""
         repo = "repos/Bookclerk/bookclerk"
+        approved = "a" * 40
         send = FakeGitHub(
             {
                 ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}"): (
                     200,
                     {"content": base64.b64encode(b"none\n").decode()},
-                )
+                ),
+                ("GET", f"{repo}/pulls/990"): (200, {"base": {"ref": "main"}}),
+                ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref=main"): (
+                    200,
+                    {"content": base64.b64encode(approved.encode() + b"\n").decode()},
+                ),
+                (
+                    "GET",
+                    f"repos/B/v/git/ref/tags/approved/{approved}",
+                ): (200, {"object": {"sha": approved}}),
+            }
+        )
+        self.assertEqual(
+            self.bot.compared_lock(send, "Bookclerk/bookclerk", "B/v", 990, "d" * 40),
+            approved,
+        )
+        self.assertEqual(
+            [p for _, p, _ in send.sent if "baselines.lock" in p],
+            [
+                f"{repo}/contents/ui/visual/baselines.lock?ref=refs/pull/990/merge",
+                f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}",
+                f"{repo}/contents/ui/visual/baselines.lock?ref=main",
+            ],
+        )
+
+    def test_propose_without_a_merge_ref_keeps_an_approved_head_lock(self) -> None:
+        """A set approved on the pull request itself stays its comparison."""
+        repo = "repos/Bookclerk/bookclerk"
+        approved = "b" * 40
+        send = FakeGitHub(
+            {
+                ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}"): (
+                    200,
+                    {"content": base64.b64encode(approved.encode() + b"\n").decode()},
+                ),
+                (
+                    "GET",
+                    f"repos/B/v/git/ref/tags/approved/{approved}",
+                ): (200, {"object": {"sha": approved}}),
+            }
+        )
+        self.assertEqual(
+            self.bot.compared_lock(send, "Bookclerk/bookclerk", "B/v", 990, "d" * 40),
+            approved,
+        )
+        self.assertNotIn(f"{repo}/pulls/990", [p for _, p, _ in send.sent])
+
+    def test_propose_without_a_merge_ref_or_any_approved_set(self) -> None:
+        """No approved set anywhere: every image is new."""
+        repo = "repos/Bookclerk/bookclerk"
+        none = {"content": base64.b64encode(b"none\n").decode()}
+        send = FakeGitHub(
+            {
+                ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}"): (
+                    200,
+                    none,
+                ),
+                ("GET", f"{repo}/pulls/990"): (200, {"base": {"ref": "main"}}),
+                ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref=main"): (
+                    200,
+                    none,
+                ),
             }
         )
         self.assertIsNone(
             self.bot.compared_lock(send, "Bookclerk/bookclerk", "B/v", 990, "d" * 40)
-        )
-        self.assertEqual(
-            [p for _, p, _ in send.sent],
-            [
-                f"{repo}/contents/ui/visual/baselines.lock?ref=refs/pull/990/merge",
-                f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}",
-            ],
         )
 
     def test_propose_is_quiet_when_the_base_already_approved_the_images(self) -> None:
