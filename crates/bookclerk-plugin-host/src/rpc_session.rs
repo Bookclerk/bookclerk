@@ -871,6 +871,7 @@ impl PluginSession {
         // `SOCKETS` needs the deployment's broker, a `[sockets]` declaration
         // and the `sockets` grant token.
         let sockets = crate::socket_broker::granted(services.sockets, &manifest, &grant);
+        let network = spawned.network.clone();
         let spawn_config = spawned.spawn_config.clone();
         #[cfg(windows)]
         let package_sid = spawned.package_sid.clone();
@@ -968,6 +969,7 @@ impl PluginSession {
                         kv,
                         sockets,
                         notify,
+                        network,
                     },
                     rx,
                     ready_tx,
@@ -2443,6 +2445,8 @@ struct PrimaryState {
     sockets: Option<crate::SocketBroker>,
     /// `NOTIFY` hook; `None` when no type is declared.
     notify: Option<NotifyOutbox>,
+    /// `NETWORK`: the grant in effect, carried by every `open`.
+    network: bookclerk_plugin_abi::NetworkGrant,
 }
 
 /// Host-served bindings every `open` of one session receives: the `EVENTS`
@@ -2458,6 +2462,8 @@ struct BindingHooks {
     sockets: Option<crate::SocketBroker>,
     /// `NOTIFY` hook; `None` when no type is declared.
     notify: Option<NotifyOutbox>,
+    /// `NETWORK` grant computed at spawn.
+    network: bookclerk_plugin_abi::NetworkGrant,
 }
 
 impl PrimaryState {
@@ -2470,6 +2476,7 @@ impl PrimaryState {
             kv: hooks.kv,
             sockets: hooks.sockets,
             notify: hooks.notify,
+            network: hooks.network,
         }
     }
 
@@ -2501,10 +2508,13 @@ impl PrimaryState {
 
     /// Binding values of the current primary open (empty before `open`).
     fn values(&self) -> BindingValues {
-        self.open
+        let mut values = self
+            .open
             .as_ref()
             .map(|p| p.values.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        values.network = self.network.clone();
+        values
     }
 
     /// `NOTIFY` raiser for `invocation`, when the manifest declares types.
@@ -2542,13 +2552,22 @@ async fn primary_entrypoints<'a>(
     primary: &'a mut PrimaryState,
     values: Option<BindingValues>,
 ) -> Result<&'a OpenedEntrypoints> {
+    // Every open carries the session's network grant, whatever the caller
+    // built its values from.
+    let values = values.map(|mut values| {
+        values.network = primary.network.clone();
+        values
+    });
     let reuse = match (&primary.open, &values) {
         (Some(_), None) => true,
         (Some(open), Some(values)) => open.values == *values,
         (None, _) => false,
     };
     if !reuse {
-        let want = values.unwrap_or_default();
+        let want = values.unwrap_or_else(|| BindingValues {
+            network: primary.network.clone(),
+            ..BindingValues::default()
+        });
         let invocation = new_invocation(account_id, uuid::Uuid::new_v4().to_string(), 0);
         let entrypoints = client
             .open(

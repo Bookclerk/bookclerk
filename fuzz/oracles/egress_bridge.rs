@@ -1,7 +1,7 @@
 //! Shared oracle for the `egress_bridge` fuzz target and its corpus replay
 //! (`crates/bookclerk-workerd/tests/fuzz_corpus.rs`): the workerd egress gate
-//! (`crates/bookclerk-workerd/bridge/egress.js`, `allowsInitial`,
-//! `allowsRedirect`, `allowsTcp`) against the Rust `EgressPolicy`
+//! (`crates/bookclerk-workerd/bridge/egress.js`, `allowsFetch`,
+//! `allowsRedirectTo`, `allowsTcp`) against the Rust `EgressPolicy`
 //! (`bookclerk-plugin-manifest`), which gates native guests and is the
 //! reference (`docs/adr/untrusted-input-fuzzing.md`).
 //!
@@ -10,8 +10,8 @@
 //! compared: every `domains` entry and `tcp` host already normalized, every
 //! `addressCidrs` entry in its `network/prefix` form. For each
 //! policy the oracle derives probe hosts (the grants' own names and their
-//! near misses, restricted names, and IP literals in every range and
-//! spelling) and hands the JavaScript gate each one as workerd would: a fetch
+//! near misses, local names, restricted names, and IP literals in every
+//! range and spelling) and ports (granted, default and ungranted), and hands the JavaScript gate each one as workerd would: a fetch
 //! host as the URL parser prints it, a `connect()` host as the bridge's own
 //! `canonicalSocketHost` returns it. Both are modelled here with the `url`
 //! crate (QuickJS has no `URL`); the Node replay checks the models against
@@ -25,8 +25,8 @@
 //! SDK's `test:egress-bridge` script checks `egress.js` against under Node.
 
 use bookclerk_plugin_manifest::{
-    normalize_domain_pattern, normalize_tcp_host, CidrGrant, EgressPolicy, NetworkMode,
-    ANY_PUBLIC_HOST,
+    normalize_domain_pattern, normalize_local_name, normalize_tcp_host, split_domain_entry,
+    CidrGrant, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
 };
 
 /// Largest policy document worth decoding.
@@ -96,9 +96,11 @@ pub const FIXED_PROBES: &[&str] = &[
 /// The JavaScript gate's verdicts, or the Rust policy's, for one probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Verdicts {
-    /// The host may be fetched directly (hop 0).
+    /// The host may be fetched directly (hop 0) on [`Probe::port`]
+    /// (`allowsFetch` / `EgressPolicy::allows_fetch`).
     pub initial: bool,
-    /// A redirect to the host is followed at [`Probe::hop`].
+    /// A redirect to the host on [`Probe::port`] is followed at
+    /// [`Probe::hop`] (`allowsRedirectTo` / `EgressPolicy::allows_redirect_to`).
     pub redirect: bool,
     /// A raw TCP `connect()` to the host at [`Probe::port`] is allowed.
     pub tcp: bool,
@@ -115,7 +117,7 @@ pub struct Probe {
     /// The `connect()` hostname `canonicalSocketHost` returns for it; `None`
     /// when the bridge refuses the authority before the gate.
     pub socket: Option<String>,
-    /// TCP port probed.
+    /// Port probed, for the fetch, redirect and TCP gates alike.
     pub port: u16,
     /// Redirect hop probed (the first redirect is hop 1).
     pub hop: u32,
@@ -155,7 +157,12 @@ pub fn decode(data: &[u8]) -> Option<EgressPolicy> {
     let cidrs_canonical = policy.address_cidrs.iter().all(|c| {
         CidrGrant::parse(c).is_ok_and(|grant| format!("{}/{}", grant.network, grant.prefix) == *c)
     });
-    (domains_canonical && tcp_canonical && cidrs_canonical).then_some(policy)
+    let local_names_canonical = policy
+        .local_names
+        .iter()
+        .all(|n| normalize_local_name(n).as_deref() == Some(n.as_str()));
+    (domains_canonical && tcp_canonical && cidrs_canonical && local_names_canonical)
+        .then_some(policy)
 }
 
 /// The policy as the bridge receives it: the `EGRESS_POLICY` JSON text.
@@ -165,8 +172,8 @@ pub fn policy_json(policy: &EgressPolicy) -> String {
 }
 
 /// The bridge source with its workerd-only parts stubbed out, as a classic
-/// script whose top-level function declarations (`allowsInitial`,
-/// `allowsRedirect`, `allowsTcp`) become globals.
+/// script whose top-level function declarations (`allowsFetch`,
+/// `allowsRedirectTo`, `allowsTcp`) become globals.
 ///
 /// # Panics
 ///
@@ -225,13 +232,16 @@ pub fn probe_hosts(policy: &EgressPolicy) -> Vec<String> {
         .chain(policy.tcp.iter().map(|g| &g.host))
         .filter(|p| p.as_str() != ANY_PUBLIC_HOST);
     for pattern in grants {
-        let bare = pattern.strip_prefix("*.").unwrap_or(pattern);
+        // A fetch entry's port is probed through `probe_ports`.
+        let host = split_domain_entry(pattern).map_or(pattern.as_str(), |(host, _)| host);
+        let bare = host.strip_prefix("*.").unwrap_or(host);
         hosts.push(bare.to_string());
         hosts.push(format!("a.{bare}"));
         hosts.push(format!("x{bare}"));
         hosts.push(format!("{bare}."));
         hosts.push(bare.to_ascii_uppercase());
     }
+    hosts.extend(policy.local_names.iter().cloned());
     for cidr in &policy.address_cidrs {
         let addr = cidr.split('/').next().unwrap_or_default().trim();
         hosts.push(addr.to_string());
@@ -253,7 +263,8 @@ pub fn probe_hop(policy: &EgressPolicy) -> u32 {
     }
 }
 
-/// The ports a TCP probe uses: each grant's first port, then 443.
+/// The ports a probe uses: each TCP grant's first port, each `domains`
+/// entry's own port, 80, 443 and 8443 (a port no bare entry grants).
 #[must_use]
 pub fn probe_ports(policy: &EgressPolicy) -> Vec<u16> {
     let mut ports: Vec<u16> = policy
@@ -261,10 +272,16 @@ pub fn probe_ports(policy: &EgressPolicy) -> Vec<u16> {
         .iter()
         .filter_map(|g| g.ports.first().copied())
         .collect();
-    ports.push(443);
+    ports.extend(
+        policy
+            .domains
+            .iter()
+            .filter_map(|d| split_domain_entry(d).and_then(|(_, port)| port)),
+    );
+    ports.truncate(4);
+    ports.extend([80, 443, 8443]);
     ports.sort_unstable();
     ports.dedup();
-    ports.truncate(4);
     ports
 }
 
@@ -279,10 +296,12 @@ pub fn probes(policy: &EgressPolicy) -> Vec<Probe> {
         let socket = socket_host(&host);
         for &port in &ports {
             let rust = Verdicts {
-                initial: fetch.as_deref().is_some_and(|h| policy.allows_initial(h)),
+                initial: fetch
+                    .as_deref()
+                    .is_some_and(|h| policy.allows_fetch(h, port)),
                 redirect: fetch
                     .as_deref()
-                    .is_some_and(|h| policy.allows_redirect(h, hop)),
+                    .is_some_and(|h| policy.allows_redirect_to(h, port, hop)),
                 tcp: socket
                     .as_deref()
                     .is_some_and(|h| policy.allows_tcp(h, port)),
@@ -298,8 +317,8 @@ pub fn probes(policy: &EgressPolicy) -> Vec<Probe> {
                 hop,
                 rust,
                 rust_raw: Verdicts {
-                    initial: policy.allows_initial(&host),
-                    redirect: policy.allows_redirect(&host, hop),
+                    initial: policy.allows_fetch(&host, port),
+                    redirect: policy.allows_redirect_to(&host, port, hop),
                     tcp: policy.allows_tcp(&host, port),
                 },
                 exact,

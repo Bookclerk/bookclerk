@@ -111,12 +111,16 @@ pub fn rebase_chapters_after_brand_trim(
         .map(|r| r.saturating_sub(brand.outro_ms))
         .unwrap_or(u64::MAX);
     let mut out = Vec::new();
-    for (title, start) in chapters {
+    for (index, (title, start)) in chapters.iter().enumerate() {
         if *start < brand.intro_ms {
             // Keep a chapter that starts before intro only if it extends past intro
             // (classic keeps opening credits but shifts its start). Represent that
-            // as a chapter at 0.
-            if out.is_empty() {
+            // as a chapter at 0. One that ends at or before the cut is all brand
+            // audio and goes with it; the last chapter runs to the end.
+            let spans_cut = chapters
+                .get(index + 1)
+                .is_none_or(|(_, next)| *next > brand.intro_ms);
+            if out.is_empty() && spans_cut {
                 out.push((title.clone(), 0));
             }
             continue;
@@ -136,6 +140,42 @@ pub fn rebase_chapters_after_brand_trim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_chapter_spanning_the_intro_cut_is_kept() {
+        let brand = BrandDurations {
+            intro_ms: 4000,
+            outro_ms: 0,
+        };
+        let chapters = |list: &[(&str, u64)]| {
+            list.iter()
+                .map(|(title, start)| ((*title).to_owned(), *start))
+                .collect::<Vec<_>>()
+        };
+        // `Brand` ends before the cut and goes; `Opening Credits` spans it.
+        assert_eq!(
+            rebase_chapters_after_brand_trim(
+                &chapters(&[("Brand", 0), ("Opening Credits", 2000), ("One", 10_000)]),
+                brand,
+                None,
+            ),
+            chapters(&[("Opening Credits", 0), ("One", 6000)])
+        );
+        // A chapter that ends exactly at the cut is all brand audio.
+        assert_eq!(
+            rebase_chapters_after_brand_trim(
+                &chapters(&[("Brand", 0), ("One", 4000)]),
+                brand,
+                None,
+            ),
+            chapters(&[("One", 0)])
+        );
+        // The last chapter runs to the end, so it spans the cut.
+        assert_eq!(
+            rebase_chapters_after_brand_trim(&chapters(&[("Only", 0)]), brand, None),
+            chapters(&[("Only", 0)])
+        );
+    }
 
     #[test]
     fn parses_brand_fields() {

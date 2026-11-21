@@ -526,6 +526,11 @@ type = "secret"              # sealed in the database, delivered in SECRETS; no 
   as `env.CONFIG`, and sealed values as `env.SECRETS`.
 - `required = true` makes a spawn fail with an `error` observation when
   neither the document nor a default supplies the key.
+- `network = "fetch"` or `"tcp"` on a top-level `string` setting says its
+  value names a server the plugin connects to. The value's destination
+  appears on the consent form and is granted only once approved; see
+  [Network settings](capabilities.md#network-settings). `default_port`
+  (1-65535, only with `network`) is the port when the value names none.
 
 ### Table settings
 

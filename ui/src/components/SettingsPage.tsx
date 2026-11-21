@@ -13,6 +13,7 @@ import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
+import { StorageSyncBadge } from "@/components/StorageSyncBadge";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
   PluginConsentDialog,
@@ -1133,10 +1134,12 @@ export function SettingsPage({
     setConsentBusy(true);
     setError(null);
     try {
+      const { settingDestinations, ...grantFields } = grant;
       const approved = await approvePluginConsent(
         consentPrompt.plugin_id,
-        grant,
+        grantFields,
         consentPrompt.plugin_key,
+        settingDestinations,
       );
       setConsentCoverage((current) => ({
         ...current,
@@ -2066,6 +2069,7 @@ export function SettingsPage({
                                           </Badge>
                                         ) : null}
                                         <PlacementBadge plugin={plugin} />
+                                        <StorageSyncBadge plugin={plugin} />
                                         {loaded ? (
                                           <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
                                             Loaded

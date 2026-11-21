@@ -8064,6 +8064,7 @@ impl LibraryStore {
 pub(crate) mod acquire_title;
 pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
+pub(crate) mod destination_objects;
 pub(crate) mod discover;
 pub(crate) mod edition_copies;
 pub(crate) mod edition_enrichment;
@@ -8094,6 +8095,9 @@ pub(crate) mod work_search;
 pub(crate) mod work_split;
 pub(crate) mod write_batches;
 pub use acquire_title::{AcquireTitle, AcquireTitlePage};
+pub use destination_objects::{
+    ChangedObject, DestinationFeed, FeedState, LostCopies, SeenObject, OBJECT_TOMBSTONE_DAYS,
+};
 pub use discover::{
     CandidateRef, DiscoverSubject, SeedScope, StoreCallHit, StoredCandidate, StoredDiscoverTaste,
     StoredFeed,
@@ -8106,7 +8110,8 @@ pub use edition_enrichment::{
     EditionAsin, EditionEnrichment, EnrichCandidate, EnrichCandidatePage,
 };
 pub use edition_files::{
-    EditionAcquisition, EditionFile, FileOwner, FileProbe, FileRole, TitleHolding, ACQUIRE_WRITER,
+    AudioStream, EditionAcquisition, EditionFile, FileOwner, FileProbe, FileRole, ProbedAudioFile,
+    TitleHolding, ACQUIRE_WRITER,
 };
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};

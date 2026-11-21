@@ -9,8 +9,10 @@
 use std::path::{Path, PathBuf};
 
 use bookclerk_plugin_manifest::{
-    consent_domains_for, format_manifest, host_matches, normalize_domain_pattern,
-    normalize_hostname, normalize_tcp_host, parse, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
+    canonical_ip, consent_domains_for, derive_setting_destination, format_manifest, host_matches,
+    is_local_network, normalize_domain_pattern, normalize_hostname, normalize_local_name,
+    normalize_tcp_host, parse, split_domain_entry, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
+    NETWORK_BINDING,
 };
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
@@ -107,6 +109,31 @@ fn fuzz_corpus_plugin_manifest_round_trips() {
             assert_eq!(policy.mode, NetworkMode::Deny, "{}", path.display());
         }
         let _ = policy.to_policy_json();
+        assert!(
+            !manifest
+                .binding_names()
+                .iter()
+                .any(|n| n == NETWORK_BINDING),
+            "{}",
+            path.display()
+        );
+        for setting in &manifest.settings {
+            if setting.default_port.is_some() {
+                assert!(setting.network.is_some(), "{}", path.display());
+            }
+            let (Some(network), Some(value)) = (
+                setting.network,
+                setting.default.as_ref().and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            if let Ok(destination) =
+                derive_setting_destination(network, setting.default_port, value)
+            {
+                assert_eq!(destination.network, network);
+                assert_ne!(destination.port, 0, "{}", path.display());
+            }
+        }
     }
     assert!(parsed > 0, "no plugin_manifest seed parsed");
 }
@@ -212,8 +239,135 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
             }
         }
         check_user_agent(&policy);
+        check_ports(&policy);
+        check_local_names(&policy);
+        check_pending_settings(&policy);
     }
     assert!(parsed > 0, "no egress_policy seed parsed");
+}
+
+/// Pending setting destinations grant nothing and label only their own host
+/// and port (the fuzz target's pending oracle).
+fn check_pending_settings(policy: &EgressPolicy) {
+    let without = EgressPolicy {
+        pending_settings: Vec::new(),
+        ..policy.clone()
+    };
+    for pending in &policy.pending_settings {
+        let (host, port) = (pending.host.as_str(), pending.port);
+        assert_eq!(
+            policy.allows_fetch(host, port),
+            without.allows_fetch(host, port)
+        );
+        assert_eq!(
+            policy.allows_tcp(host, port),
+            without.allows_tcp(host, port)
+        );
+        let Some(found) = policy.pending_setting_for(host, port) else {
+            panic!("pending entry {host}:{port} does not label its own destination");
+        };
+        assert_eq!(found.port, port);
+        assert!(policy
+            .pending_setting_for(host, port.wrapping_add(1))
+            .is_none_or(|other| other.port == port.wrapping_add(1)));
+    }
+}
+
+/// The port an entry names, parsed without the crate's splitter (mirrors the
+/// target): `Some(None)` when it names none, `None` when malformed.
+fn oracle_entry_port(entry: &str) -> Option<Option<u16>> {
+    let text = if entry.starts_with('[') {
+        match entry.find("]:") {
+            Some(at) => &entry[at + 2..],
+            None if entry.ends_with(']') => return Some(None),
+            None => return None,
+        }
+    } else if entry.matches(':').count() == 1 {
+        entry.rsplit(':').next().unwrap_or("")
+    } else {
+        return Some(None);
+    };
+    let digits_ok = !text.is_empty()
+        && !text.starts_with('0')
+        && text.len() <= 5
+        && text.bytes().all(|b| b.is_ascii_digit());
+    if !digits_ok {
+        return None;
+    }
+    let port: u32 = text.parse().ok()?;
+    Some(Some(u16::try_from(port).ok()?))
+}
+
+/// Whether `entry` grants `port`: its own port, else 80 and 443.
+fn oracle_entry_grants(entry: &str, port: u16) -> bool {
+    match oracle_entry_port(entry) {
+        Some(Some(granted)) => granted == port,
+        Some(None) => port == 80 || port == 443,
+        None => false,
+    }
+}
+
+/// Fetch and redirect reach exactly the ports their entry grants, and the
+/// isolate tunnel rule is their union with TCP on each port (mirrors the
+/// target).
+fn check_ports(policy: &EgressPolicy) {
+    let mut hosts: Vec<String> = Vec::new();
+    for entry in &policy.domains {
+        let host = split_domain_entry(entry).map_or(entry.as_str(), |(host, _)| host);
+        let bare = host.strip_prefix("*.").unwrap_or(host);
+        hosts.push(host.to_string());
+        hosts.push(bare.to_string());
+        hosts.push(format!("a.{bare}"));
+        if bare.contains(':') {
+            hosts.push(format!("[{bare}]"));
+        }
+    }
+    let mut ports = vec![1_u16, 80, 443, 8443, 65535];
+    ports.extend(
+        policy
+            .domains
+            .iter()
+            .filter_map(|d| oracle_entry_port(d).flatten()),
+    );
+    for host in &hosts {
+        let initial = policy.allows_initial(host);
+        let redirect = policy.allows_redirect(host, 0);
+        for &port in &ports {
+            let some_grants = policy.domains.iter().any(|d| oracle_entry_grants(d, port));
+            let plainly_granted = policy.domains.iter().any(|d| {
+                normalize_domain_pattern(d).as_deref() == Some(d.as_str())
+                    && host_matches(host, d)
+                    && oracle_entry_grants(d, port)
+            });
+            let fetch = policy.allows_fetch(host, port);
+            assert!(
+                !fetch || (initial && some_grants),
+                "fetch widened {host}:{port}"
+            );
+            assert!(
+                fetch || !(initial && plainly_granted),
+                "fetch refused a granted {host}:{port}"
+            );
+            let hop = policy.allows_redirect_to(host, port, 0);
+            let undeclared_web =
+                policy.allow_undeclared_public_redirects && (port == 80 || port == 443);
+            assert!(
+                !hop || (redirect && (some_grants || undeclared_web)),
+                "redirect widened {host}:{port}"
+            );
+            assert!(
+                hop || !(redirect && (plainly_granted || undeclared_web)),
+                "redirect refused a granted {host}:{port}"
+            );
+            let expected =
+                policy.allows_tcp(host, port) || fetch || (policy.max_redirects > 0 && hop);
+            assert_eq!(
+                policy.allows_isolate_tunnel(host, port),
+                expected,
+                "isolate tunnel rule is not the union for {host}:{port}"
+            );
+        }
+    }
 }
 /// Plain lowercase ASCII form of `raw` (trimmed, trailing dots dropped), or
 /// `None` when it holds anything an IDNA step could reinterpret.
@@ -336,4 +490,76 @@ fn fuzz_corpus_table_setting_seed_parses_and_round_trips() {
     assert_eq!(spec.columns.len(), 4);
     let formatted = format_manifest(&manifest).expect("format");
     assert_eq!(parse(&formatted).expect("reparse"), manifest);
+}
+
+/// A name widens the address check only to local-network addresses, and only
+/// for a name listed (in normalized form) in `local_names`; a listed literal
+/// widens only to itself; loopback, link-local and other special addresses
+/// are never widened.
+fn check_local_names(policy: &EgressPolicy) {
+    let addresses: Vec<std::net::IpAddr> = [
+        "192.168.1.20",
+        "10.0.0.1",
+        "172.16.0.1",
+        "100.64.0.1",
+        "fd00::1",
+        "::ffff:10.0.0.1",
+        "127.0.0.1",
+        "::1",
+        "169.254.169.254",
+        "fe80::1",
+        "0.0.0.0",
+        "224.0.0.1",
+        "1.1.1.1",
+    ]
+    .iter()
+    .filter_map(|text| text.parse().ok())
+    .collect();
+    let mut names: Vec<String> = policy.local_names.clone();
+    names.extend(policy.local_names.iter().map(|n| format!("a.{n}")));
+    names.extend(
+        [
+            "localhost",
+            "example.com",
+            "10.0.0.1",
+            "[fd00::1]",
+            "192.168.1.20",
+        ]
+        .map(String::from),
+    );
+    for name in &names {
+        let listed = normalize_local_name(name).is_some_and(|normalized| {
+            policy
+                .local_names
+                .iter()
+                .any(|entry| normalize_local_name(entry).as_deref() == Some(normalized.as_str()))
+        });
+        for &ip in &addresses {
+            let allowed = policy.allows_ip_for(name, ip);
+            // A literal entry binds exactly its own address.
+            let same_address = name
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .map_or(true, |literal| canonical_ip(literal) == canonical_ip(ip));
+            let expected = policy.allows_ip(ip)
+                || (policy.mode == NetworkMode::Outbound
+                    && listed
+                    && same_address
+                    && is_local_network(ip));
+            assert_eq!(allowed, expected, "allows_ip_for({name:?}, {ip})");
+        }
+    }
+}
+
+#[path = "../../../fuzz/oracles/setting_destination.rs"]
+mod setting_destination_oracle;
+
+// Test code: an unreadable corpus file is a failed test.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_setting_destination_holds_the_oracle() {
+    for path in corpus_files("setting_destination") {
+        let data = std::fs::read(&path).expect("read");
+        setting_destination_oracle::check(&data);
+    }
 }

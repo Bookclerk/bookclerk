@@ -685,6 +685,38 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   connection dropped without one, and 1001 when the broker itself
   stopped.
 
+## Network grant (`env.NETWORK`)
+
+Every `open` carries `Bindings.network`, the network grant in effect, so a
+plugin can tell an unapproved destination from an unreachable one and
+say so. It is feedback only: the host enforces the grant whatever the
+plugin does with it.
+
+| Field | Meaning |
+| --- | --- |
+| `outbound` | False when the network is denied |
+| `domains` | Fetch entries in effect (`host`, `*.host`, `host:port`, `*`), including approved setting destinations |
+| `tcp` | Raw TCP destinations as `host:port`, one per port |
+| `settings` | One row per [network setting](capabilities.md#network-settings): `key`, `network` (`fetch` or `tcp`), `destination`, `state` (`approved`, `pending`, `unset` or `invalid`) and `error` |
+
+TypeScript and Python read it as `env.NETWORK`; Rust reads
+`Bindings::network`. No declared binding may be named `NETWORK`.
+
+A connection the grant does not cover fails with `network_not_granted`.
+`details.destination` names the `host:port`, and `details.setting` names
+the network setting whose destination awaits approval, when one does:
+
+- a refused `fetch()` answers `403` with an `x-bookclerk-error:
+  network_not_granted` header and a JSON body
+  `{"error": {"code", "message", "details"}}`;
+- a refused `connect()` or native socket fails with that code (the native
+  socket proxy answers `403` with the same body);
+- a refused pushed socket (`env.SOCKETS.connect`) rejects with the typed
+  error.
+
+Tell the operator to approve the destination on the plugin's consent
+form; don't retry until the grant changes.
+
 ## Entrypoint methods
 
 The methods each capability entrypoint answers, by capability.
@@ -1790,7 +1822,10 @@ returns the current position and no changes. A feed drained from a queue
 treats a call's cursor as the receipt for the pages up to it: their
 messages are deleted then, and pages handed out after it are offered again,
 so a retried cursor gets those changes once more. Such a feed has one
-reader, so the host calls it from one place. A page with `complete` false
+reader, so the host calls it from one place: the destination's sync pass,
+every five minutes, on the one node holding the destination's sync lease.
+It records each page before it sends that page's cursor back, and probes
+(`head`) a changed key whose entry carries no size or signature. A page with `complete` false
 means the guest may have missed changes since the cursor (a watcher
 restarted, a queue dropped messages), and the host backs it with a full
 listing. A change kind added after an SDK was built reads as `changed`. A scheduled listing stays the backstop either way.

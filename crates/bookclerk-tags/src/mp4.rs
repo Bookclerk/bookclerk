@@ -12,8 +12,8 @@ use std::cell::Cell;
 use crate::cache::{Miss, Source, Step};
 use crate::text::{latin1, utf16be, utf8, RecordBuilder};
 use crate::{
-    AudioCodec, ByteSpan, ChapterSource, Container, Duration, DurationPrecision, TagError,
-    TagField, TagRecord, MAX_CHAPTERS,
+    AacProfile, AudioCodec, AudioFormat, ByteSpan, ChapterSource, Container, Duration,
+    DurationPrecision, TagError, TagField, TagRecord, MAX_CHAPTERS,
 };
 
 /// Container name in errors.
@@ -196,7 +196,9 @@ fn read_moov(walker: &Walker<'_, '_>, moov: &BoxHeader) -> Step<TagRecord> {
         }
     }
 
-    builder.codec = audio_codec(walker, &tracks)?;
+    let (codec, format) = audio_stream(walker, &tracks)?;
+    builder.codec = codec;
+    builder.format = format;
     read_chapter_track(walker, &tracks, moov, &mut builder)?;
     if !builder.has_chapters() {
         for (start_ms, title) in &nero {
@@ -258,21 +260,25 @@ fn read_trak(walker: &Walker<'_, '_>, trak: &BoxHeader) -> Step<Track> {
     Ok(track)
 }
 
-/// The encoding of the first audio track: the type of the first sample
+/// The encoding and format of the first audio track, from the first sample
 /// entry in its `stsd`.
 ///
 /// # Returns
 ///
-/// `None` when there is no audio track, its `stsd` is missing, empty or
+/// No codec when there is no audio track, its `stsd` is missing, empty or
 /// larger than a sample description can honestly be, or the entry is of a
-/// type the reader does not know.
-fn audio_codec(walker: &Walker<'_, '_>, tracks: &[Track]) -> Step<Option<AudioCodec>> {
+/// type the reader does not know; the format is then unknown too.
+fn audio_stream(
+    walker: &Walker<'_, '_>,
+    tracks: &[Track],
+) -> Step<(Option<AudioCodec>, AudioFormat)> {
+    let unknown = (None, AudioFormat::default());
     let Some(stbl) = tracks
         .iter()
         .find(|track| &track.handler == b"soun")
         .and_then(|track| track.stbl.as_ref())
     else {
-        return Ok(None);
+        return Ok(unknown);
     };
     // Walked one header at a time and stopped at `stsd`, which comes first:
     // the tables after it are megabytes apart in a long book, and reading
@@ -286,20 +292,306 @@ fn audio_codec(walker: &Walker<'_, '_>, tracks: &[Track]) -> Step<Option<AudioCo
             continue;
         }
         if child.body_len() > MAX_SMALL_BOX {
-            return Ok(None);
+            return Ok(unknown);
         }
         // Version and flags, the entry count, then the first entry: its
         // size and its four-character type.
         let body = walker.body(&child, MAX_SMALL_BOX)?;
         let entries = be32(body, 4).unwrap_or_default();
-        let format = body
+        let codec = body
             .get(12..16)
-            .and_then(|kind| <[u8; 4]>::try_from(kind).ok());
-        return Ok(format
+            .and_then(|kind| <[u8; 4]>::try_from(kind).ok())
             .filter(|_| entries > 0)
-            .and_then(AudioCodec::from_sample_entry));
+            .and_then(AudioCodec::from_sample_entry);
+        let Some(codec) = codec else {
+            return Ok(unknown);
+        };
+        let entry_len = be32(body, 8)
+            .and_then(|len| usize::try_from(len).ok())
+            .unwrap_or_default();
+        let entry = body
+            .get(8..)
+            .map(|rest| rest.get(..entry_len).unwrap_or(rest))
+            .unwrap_or_default();
+        return Ok((Some(codec), sample_entry_format(codec, entry)));
     }
-    Ok(None)
+    Ok(unknown)
+}
+
+/// What an audio sample entry (header included) states about its stream.
+///
+/// The entry carries a channel count and a 16.16 sample rate of its own;
+/// for AAC the `esds` child's `AudioSpecificConfig` is better (it names the
+/// profile, and the rate after spectral band replication), so its values
+/// win where it states them.
+fn sample_entry_format(codec: AudioCodec, entry: &[u8]) -> AudioFormat {
+    // Sound entry version 0 ends its fixed fields at 36 bytes; QuickTime's
+    // version 1 adds 16 more. Version 2 keeps constants where the channel
+    // count and rate were, so nothing is read from it.
+    let children_at = match entry.get(16..18) {
+        Some([0, 0]) => 36,
+        Some([0, 1]) => 52,
+        _ => return AudioFormat::default(),
+    };
+    let channels = entry
+        .get(24..26)
+        .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
+        .map(u16::from_be_bytes)
+        .and_then(|channels| u8::try_from(channels).ok())
+        .filter(|&channels| channels > 0);
+    let sample_rate_hz = be32(entry, 32)
+        .map(|rate| rate >> 16)
+        .filter(|&rate| rate > 0);
+    let mut format = AudioFormat {
+        channels,
+        sample_rate_hz,
+        aac_profile: None,
+    };
+    let child = |kind: &[u8; 4]| {
+        entry.get(children_at..).and_then(|children| {
+            slice_children(children)
+                .into_iter()
+                .find(|(found, _, _)| found == kind)
+                .map(|(_, _, body)| body)
+        })
+    };
+    match codec {
+        AudioCodec::Aac => {}
+        AudioCodec::Flac => {
+            // The legacy field cannot hold rates above 65,535 Hz (a 96 kHz
+            // stream states 48,000 there), so `dfLa`'s STREAMINFO wins:
+            // version and flags, a block header, then the block.
+            let streaminfo = child(b"dfLa")
+                .and_then(|dfla| dfla.get(8..))
+                .map(crate::flac::streaminfo_format)
+                .unwrap_or_default();
+            format.channels = streaminfo.channels.or(format.channels);
+            format.sample_rate_hz = streaminfo.sample_rate_hz.or(format.sample_rate_hz);
+            return format;
+        }
+        AudioCodec::Alac
+        | AudioCodec::Mp3
+        | AudioCodec::Opus
+        | AudioCodec::Vorbis
+        | AudioCodec::Eac3
+        | AudioCodec::Ac4 => return format,
+    }
+    let Some(config) = child(b"esds")
+        .and_then(|esds| esds.get(4..))
+        .and_then(decoder_specific_info)
+        .and_then(AudioSpecificConfig::parse)
+    else {
+        return format;
+    };
+    format.aac_profile = AacProfile::from_object_type(config.object_type);
+    // The configuration wins where it states a value.
+    format.sample_rate_hz = config.sample_rate_hz.or(format.sample_rate_hz);
+    format.channels = config.channels.or(format.channels);
+    // Parametric stereo plays a mono core as stereo.
+    if format.aac_profile == Some(AacProfile::HeV2) {
+        format.channels = format.channels.map(|channels| channels.max(2));
+    }
+    format
+}
+
+/// The decoder-specific info (for AAC, the `AudioSpecificConfig`) inside
+/// an `esds` box's `ES_Descriptor`, the box's version and flags stripped.
+fn decoder_specific_info(es: &[u8]) -> Option<&[u8]> {
+    let (tag, body, _) = descriptor(es)?;
+    if tag != 0x03 {
+        return None;
+    }
+    // ES_ID, then flags naming the optional fields that follow.
+    let flags = *body.get(2)?;
+    let mut at = 3usize;
+    if flags & 0x80 != 0 {
+        at += 2;
+    }
+    if flags & 0x40 != 0 {
+        at += 1 + usize::from(*body.get(at)?);
+    }
+    if flags & 0x20 != 0 {
+        at += 2;
+    }
+    let mut rest = body.get(at..)?;
+    while !rest.is_empty() {
+        let (tag, inner, after) = descriptor(rest)?;
+        if tag == 0x04 {
+            // Object type, stream type, buffer size and two bit rates.
+            let mut nested = inner.get(13..)?;
+            while !nested.is_empty() {
+                let (tag, info, after) = descriptor(nested)?;
+                if tag == 0x05 {
+                    return Some(info);
+                }
+                nested = after;
+            }
+            return None;
+        }
+        rest = after;
+    }
+    None
+}
+
+/// One MPEG-4 descriptor at the start of `bytes`: its tag, its body, and
+/// what follows it. The length takes one to four bytes of seven bits each.
+fn descriptor(bytes: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+    let (&tag, mut rest) = bytes.split_first()?;
+    let mut len = 0usize;
+    for _ in 0..4 {
+        let (&byte, after) = rest.split_first()?;
+        rest = after;
+        len = (len << 7) | usize::from(byte & 0x7F);
+        if byte & 0x80 == 0 {
+            let (body, after) = rest.split_at_checked(len)?;
+            return Some((tag, body, after));
+        }
+    }
+    None
+}
+
+/// The fields of an MPEG-4 `AudioSpecificConfig` a library cares about.
+struct AudioSpecificConfig {
+    /// The audio object type; for explicitly signalled HE-AAC, 5 or 29.
+    object_type: u8,
+    /// The output sample rate in hertz: for HE-AAC, the extension rate.
+    sample_rate_hz: Option<u32>,
+    /// Channels from the channel configuration, when it names a layout.
+    channels: Option<u8>,
+}
+
+impl AudioSpecificConfig {
+    /// Parses the start of an `AudioSpecificConfig` (ISO/IEC 14496-3
+    /// 1.6.2.1): object type, rate, channel configuration and, for
+    /// explicit HE-AAC, the extension rate.
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        let mut bits = Bits::new(bytes);
+        let mut object_type = bits.object_type()?;
+        let mut sample_rate_hz = bits.sampling_frequency()?;
+        let channel_config = bits.take(4)?;
+        let channels = match channel_config {
+            config @ 1..=6 => u8::try_from(config).ok(),
+            7 => Some(8),
+            _ => None,
+        };
+        if matches!(object_type, 5 | 29) {
+            sample_rate_hz = bits.sampling_frequency()?.or(sample_rate_hz);
+        } else if let Some((extended, rate)) =
+            Self::sync_extension(&mut bits, object_type, channel_config)
+        {
+            // Backward-compatible HE-AAC signalling after an LC config.
+            object_type = extended;
+            sample_rate_hz = rate.or(sample_rate_hz);
+        }
+        Some(Self {
+            object_type,
+            sample_rate_hz,
+            channels,
+        })
+    }
+
+    /// HE-AAC signalled after a plain AAC config (ISO/IEC 14496-3
+    /// 1.6.2.1, the `0x2b7` sync extension), with `bits` just past the
+    /// channel configuration.
+    ///
+    /// # Returns
+    ///
+    /// The object type the stream decodes as (5 with band replication, 29
+    /// with parametric stereo too) and the output rate, or `None` when the
+    /// config carries no such extension or its `GASpecificConfig` is one
+    /// this reader does not step over (anything but AAC Main, LC, SSR and
+    /// LTP with a channel configuration and no extension flag).
+    fn sync_extension(
+        bits: &mut Bits<'_>,
+        object_type: u8,
+        channel_config: u32,
+    ) -> Option<(u8, Option<u32>)> {
+        if !matches!(object_type, 1..=4) || channel_config == 0 {
+            return None;
+        }
+        // frameLengthFlag, dependsOnCoreCoder (and its delay), extensionFlag.
+        bits.take(1)?;
+        if bits.take(1)? == 1 {
+            bits.take(14)?;
+        }
+        if bits.take(1)? != 0 {
+            return None;
+        }
+        if bits.remaining() < 16 || bits.take(11)? != 0x2B7 {
+            return None;
+        }
+        if bits.object_type()? != 5 || bits.take(1)? != 1 {
+            return None;
+        }
+        let rate = bits.sampling_frequency()?;
+        let mut extended = 5;
+        if bits.remaining() >= 12 && bits.take(11)? == 0x548 && bits.take(1)? == 1 {
+            extended = 29;
+        }
+        Some((extended, rate))
+    }
+}
+
+/// Reads big-endian bit fields from a byte slice.
+struct Bits<'a> {
+    /// The bytes being read.
+    bytes: &'a [u8],
+    /// Bits consumed so far.
+    at: usize,
+}
+
+impl<'a> Bits<'a> {
+    /// A reader at the first bit of `bytes`.
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, at: 0 }
+    }
+
+    /// Bits left to read.
+    fn remaining(&self) -> usize {
+        (self.bytes.len() * 8).saturating_sub(self.at)
+    }
+
+    /// The next `count` bits (at most 32), or `None` past the end.
+    fn take(&mut self, count: usize) -> Option<u32> {
+        let mut value = 0u32;
+        for _ in 0..count {
+            let byte = *self.bytes.get(self.at / 8)?;
+            let bit = (byte >> (7 - self.at % 8)) & 1;
+            value = (value << 1) | u32::from(bit);
+            self.at += 1;
+        }
+        Some(value)
+    }
+
+    /// An audio object type: five bits, with 31 escaping to six more.
+    fn object_type(&mut self) -> Option<u8> {
+        let short = self.take(5)?;
+        let object_type = if short == 31 {
+            32 + self.take(6)?
+        } else {
+            short
+        };
+        u8::try_from(object_type).ok()
+    }
+
+    /// A sampling frequency: a four-bit index into the standard table, or
+    /// 15 followed by the rate in 24 bits. The outer `None` is the end of
+    /// the bytes; the inner one a reserved index.
+    fn sampling_frequency(&mut self) -> Option<Option<u32>> {
+        const RATES: [u32; 13] = [
+            96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025,
+            8_000, 7_350,
+        ];
+        let index = self.take(4)?;
+        if index == 15 {
+            return Some(Some(self.take(24)?).filter(|&rate| rate > 0));
+        }
+        Some(
+            usize::try_from(index)
+                .ok()
+                .and_then(|index| RATES.get(index).copied()),
+        )
+    }
 }
 
 /// Reads the chapter titles from the text track the audio track's
@@ -850,6 +1142,118 @@ pub(crate) mod tests {
         let mut empty = file.clone();
         empty[at - 8..at - 4].copy_from_slice(&0u32.to_be_bytes());
         assert_eq!(crate::read_all(&empty).expect("record").codec, None);
+    }
+
+    #[test]
+    fn reads_the_aac_profile_rate_and_channels() {
+        use crate::fixtures::tagged_m4b_with_audio_config;
+        use crate::{AacProfile, AudioFormat};
+        let format = |asc: &[u8]| {
+            let file = tagged_m4b_with_audio_config(asc);
+            let record = crate::read_all(&file).expect("record");
+            record
+                .validate(u64::try_from(file.len()).expect("len"))
+                .expect("valid");
+            record.format
+        };
+        let expect = |channels, rate, profile| AudioFormat {
+            channels: Some(channels),
+            sample_rate_hz: Some(rate),
+            aac_profile: profile,
+        };
+        // LC, 44.1 kHz, stereo: the plain fixture.
+        assert_eq!(
+            crate::read_all(&tagged_m4b()).expect("record").format,
+            expect(2, 44_100, Some(AacProfile::Lc))
+        );
+        // HE-AAC: 22.05 kHz core, 44.1 kHz after SBR, mono; the
+        // configuration's channels win over the entry's two.
+        assert_eq!(
+            format(&[0x2B, 0x8A, 0x08]),
+            expect(1, 44_100, Some(AacProfile::He))
+        );
+        // HE-AAC signalled by a sync extension after an LC config: 24 kHz
+        // core, 48 kHz out.
+        assert_eq!(
+            format(&[0x13, 0x08, 0x56, 0xE5, 0x98]),
+            expect(1, 48_000, Some(AacProfile::He))
+        );
+        // HE-AAC v2 with a mono core plays as stereo at 48 kHz.
+        assert_eq!(
+            format(&[0xEB, 0x09, 0x88]),
+            expect(2, 48_000, Some(AacProfile::HeV2))
+        );
+        // xHE-AAC through the escaped object type, 48 kHz.
+        assert_eq!(
+            format(&[0xF9, 0x46, 0x40]),
+            expect(2, 48_000, Some(AacProfile::Xhe))
+        );
+        // An explicit 24-bit rate.
+        assert_eq!(
+            format(&[0x17, 0x80, 0x2E, 0xE0, 0x10]),
+            expect(2, 24_000, Some(AacProfile::Lc))
+        );
+        // An object type the record does not name, and a config cut
+        // short: the entry's own values stand.
+        assert_eq!(format(&[0x0A, 0x10]), expect(2, 44_100, None));
+        assert_eq!(format(&[0x12]), expect(2, 44_100, None));
+    }
+
+    #[test]
+    fn reads_flac_from_dfla_and_skips_version_2_entries() {
+        use crate::fixtures::tagged_m4b_with_sample_entry;
+        // A 96 kHz, 6-channel STREAMINFO; the entry itself says 44.1 kHz
+        // stereo, as the legacy field cannot hold 96,000.
+        let mut streaminfo = vec![0u8; 34];
+        let packed: u64 = (96_000u64 << 44) | (5u64 << 41) | (23u64 << 36) | 96_000;
+        streaminfo[10..18].copy_from_slice(&packed.to_be_bytes());
+        let mut dfla = vec![0u8, 0, 0, 0, 0x80, 0, 0, 34];
+        dfla.extend_from_slice(&streaminfo);
+        let file = tagged_m4b_with_sample_entry(b"fLaC", &mp4_box(b"dfLa", &dfla));
+        let record = crate::read_all(&file).expect("record");
+        assert_eq!(record.codec, Some(AudioCodec::Flac));
+        assert_eq!(record.format.sample_rate_hz, Some(96_000));
+        assert_eq!(record.format.channels, Some(6));
+        // Without dfLa the entry's own values stand.
+        let bare = tagged_m4b_with_sample_entry(b"fLaC", &[]);
+        let record = crate::read_all(&bare).expect("record");
+        assert_eq!(record.format.sample_rate_hz, Some(44_100));
+        // A version 2 entry keeps constants where the values were.
+        let mut v2 = tagged_m4b();
+        let at = v2.windows(4).position(|w| w == b"mp4a").expect("mp4a");
+        v2[at + 12..at + 14].copy_from_slice(&2u16.to_be_bytes());
+        let record = crate::read_all(&v2).expect("record");
+        assert_eq!(record.codec, Some(AudioCodec::Aac));
+        assert!(record.format.is_unknown());
+    }
+
+    #[test]
+    fn a_record_with_an_impossible_format_is_refused() {
+        let file = tagged_m4b();
+        let size = u64::try_from(file.len()).expect("len");
+        let record = crate::read_all(&file).expect("record");
+        let refused = |edit: &dyn Fn(&mut TagRecord)| {
+            let mut forged = record.clone();
+            edit(&mut forged);
+            forged.validate(size)
+        };
+        let format_error = Err(crate::RecordError::Format);
+        assert_eq!(refused(&|r| r.format.channels = Some(0)), format_error);
+        assert_eq!(refused(&|r| r.format.channels = Some(33)), format_error);
+        assert_eq!(
+            refused(&|r| r.format.sample_rate_hz = Some(0)),
+            format_error
+        );
+        assert_eq!(
+            refused(&|r| r.format.sample_rate_hz = Some(768_001)),
+            format_error
+        );
+        // A profile on audio that is not AAC.
+        assert_eq!(refused(&|r| r.codec = Some(AudioCodec::Alac)), format_error);
+        assert_eq!(
+            refused(&|r| r.format.channels = Some(crate::MAX_CHANNELS)),
+            Ok(())
+        );
     }
 
     #[test]

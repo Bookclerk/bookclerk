@@ -1078,7 +1078,7 @@ Commands:
 - [`bookclerk config set`](#bookclerk-config-set): Set a configuration value and write `config.toml`
 - [`bookclerk config show`](#bookclerk-config-show): Print the effective configuration as TOML-ish summary
 - [`bookclerk config paths`](#bookclerk-config-paths): Print resolved filesystem paths
-- [`bookclerk config master-key`](#bookclerk-config-master-key): Inspect or wrap `{files_dir}/master.key` (BCK1 ↔ BCK2)
+- [`bookclerk config master-key`](#bookclerk-config-master-key): Inspect, wrap, move, export or import the library's data-encryption key
 - [`bookclerk config template`](#bookclerk-config-template): Naming template helpers
 - [`bookclerk config database`](#bookclerk-config-database): Database backend helpers (plugin switch / migration)
 
@@ -1129,7 +1129,7 @@ bookclerk config paths [OPTIONS]
 
 ### `bookclerk config master-key`
 
-Inspect or wrap `{files_dir}/master.key` (BCK1 ↔ BCK2)
+Inspect, wrap, move, export or import the library's data-encryption key
 
 ```text
 bookclerk config master-key [OPTIONS] <COMMAND>
@@ -1137,12 +1137,15 @@ bookclerk config master-key [OPTIONS] <COMMAND>
 
 Commands:
 
-- [`bookclerk config master-key status`](#bookclerk-config-master-key-status): Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2)
-- [`bookclerk config master-key wrap`](#bookclerk-config-master-key-wrap): Wrap a BCK1 `master.key` with a passphrase (no-op unlock if already BCK2)
+- [`bookclerk config master-key status`](#bookclerk-config-master-key-status): Show where the key is kept (the file or the OS keychain) and whether it is raw (BCK1) or wrapped (BCK2)
+- [`bookclerk config master-key wrap`](#bookclerk-config-master-key-wrap): Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in `master.key` or in its OS keychain item
+- [`bookclerk config master-key move`](#bookclerk-config-master-key-move): Move the key to the OS keychain or back into `master.key`, and record the choice as `[auth].key_store` in config.toml
+- [`bookclerk config master-key export`](#bookclerk-config-master-key-export): Write a recovery copy of the key, wrapped with a password read from stdin (never argv)
+- [`bookclerk config master-key import`](#bookclerk-config-master-key-import): Restore the key from a recovery copy (or a copied `master.key`) on an install that has no `master.key`. A wrapped copy's password is read from stdin
 
 #### `bookclerk config master-key status`
 
-Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2)
+Show where the key is kept (the file or the OS keychain) and whether it is raw (BCK1) or wrapped (BCK2)
 
 ```text
 bookclerk config master-key status [OPTIONS]
@@ -1150,13 +1153,53 @@ bookclerk config master-key status [OPTIONS]
 
 #### `bookclerk config master-key wrap`
 
-Wrap a BCK1 `master.key` with a passphrase (no-op unlock if already BCK2).
+Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in `master.key` or in its OS keychain item.
 
 Password from `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — never argv.
 
 ```text
 bookclerk config master-key wrap [OPTIONS]
 ```
+
+#### `bookclerk config master-key move`
+
+Move the key to the OS keychain or back into `master.key`, and record the choice as `[auth].key_store` in config.toml.
+
+The key itself doesn't change, so every sealed secret stays readable. Stop `bookclerkd` first.
+
+```text
+bookclerk config master-key move [OPTIONS] <TO>
+```
+
+Arguments:
+
+- `<TO>`: Where to keep the key: `keychain` or `file`
+
+#### `bookclerk config master-key export`
+
+Write a recovery copy of the key, wrapped with a password read from stdin (never argv).
+
+Keep it apart from the server's files: with it and its password, the library's sealed secrets can be read.
+
+```text
+bookclerk config master-key export [OPTIONS] --out <OUT>
+```
+
+Options:
+
+- `--out <OUT>`: File to write (created with mode 0600; never overwritten) (required)
+
+#### `bookclerk config master-key import`
+
+Restore the key from a recovery copy (or a copied `master.key`) on an install that has no `master.key`. A wrapped copy's password is read from stdin
+
+```text
+bookclerk config master-key import [OPTIONS] --from <FROM>
+```
+
+Options:
+
+- `--from <FROM>`: The recovery copy to read (required)
 
 ### `bookclerk config template`
 

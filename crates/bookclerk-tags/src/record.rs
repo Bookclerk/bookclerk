@@ -15,6 +15,14 @@ use crate::{
 /// Far beyond any real audiobook; a larger value means a corrupt header.
 pub const MAX_DURATION_MS: u64 = 10_000 * 3_600 * 1_000;
 
+/// Most channels a record may claim: above any layout an audiobook or a
+/// surround mix uses, so a larger value means a corrupt header.
+pub const MAX_CHANNELS: u8 = 32;
+
+/// Highest sample rate a record may claim, in hertz (768 kHz, the top of
+/// any PCM or FLAC stream).
+pub const MAX_SAMPLE_RATE_HZ: u32 = 768_000;
+
 /// The metadata one file carries in its own container.
 ///
 /// Values are reported as the file holds them, without normalisation: the
@@ -38,6 +46,10 @@ pub struct TagRecord {
     /// in another encoding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codec: Option<AudioCodec>,
+    /// Channels, sample rate and AAC profile of the audio, as far as the
+    /// stream's headers state them.
+    #[serde(default, skip_serializing_if = "AudioFormat::is_unknown")]
+    pub format: AudioFormat,
     /// The embedded cover picture, when there is one.
     pub cover: Option<EmbeddedCover>,
     /// Digest of the bytes that hold the metadata.
@@ -107,6 +119,24 @@ impl AudioCodec {
         }
     }
 
+    /// The codec [`Self::as_str`] spells `name`, or `None` for a name this
+    /// build does not know.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [
+            Self::Aac,
+            Self::Alac,
+            Self::Flac,
+            Self::Mp3,
+            Self::Opus,
+            Self::Vorbis,
+            Self::Eac3,
+            Self::Ac4,
+        ]
+        .into_iter()
+        .find(|codec| codec.as_str() == name)
+    }
+
     /// True when decoding gives back the source audio bit for bit.
     #[must_use]
     pub fn is_lossless(self) -> bool {
@@ -128,6 +158,87 @@ impl AudioCodec {
             b"Opus" => Some(Self::Opus),
             b"ec-3" => Some(Self::Eac3),
             b"ac-4" => Some(Self::Ac4),
+            _ => None,
+        }
+    }
+}
+
+/// What a stream's headers state about its audio, besides the codec.
+///
+/// Each value is `None` when the headers do not state it. Nothing is
+/// decoded to find these, so an AAC stream that signals HE-AAC only
+/// implicitly (in its first frames) reads as [`AacProfile::Lc`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioFormat {
+    /// Output channels: 1 for mono, 2 for stereo; at most [`MAX_CHANNELS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u8>,
+    /// Output sample rate in hertz (for HE-AAC, the rate after spectral
+    /// band replication; for Opus, the encoder's input rate when the stream
+    /// states it); at most [`MAX_SAMPLE_RATE_HZ`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
+    /// The AAC profile, for an AAC stream whose decoder configuration names
+    /// one the reader knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aac_profile: Option<AacProfile>,
+}
+
+impl AudioFormat {
+    /// True when the headers stated none of the values.
+    #[must_use]
+    pub fn is_unknown(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The AAC profiles a library tells apart, from the audio object type of
+/// an MPEG-4 `AudioSpecificConfig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AacProfile {
+    /// AAC Low Complexity (object type 2), what most stores sell.
+    Lc,
+    /// HE-AAC: AAC with spectral band replication (object type 5).
+    He,
+    /// HE-AAC v2: HE-AAC with parametric stereo (object type 29).
+    HeV2,
+    /// Extended HE-AAC, the USAC codec (object type 42).
+    Xhe,
+}
+
+impl AacProfile {
+    /// The profile's name as records and the web API spell it (`lc`, `he`,
+    /// `he_v2`, `xhe`), the same as its serialized form.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lc => "lc",
+            Self::He => "he",
+            Self::HeV2 => "he_v2",
+            Self::Xhe => "xhe",
+        }
+    }
+
+    /// The profile [`Self::as_str`] spells `name`, or `None` for a name
+    /// this build does not know.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [Self::Lc, Self::He, Self::HeV2, Self::Xhe]
+            .into_iter()
+            .find(|profile| profile.as_str() == name)
+    }
+
+    /// The profile of MPEG-4 audio object type `object_type`, when it is
+    /// one of the four.
+    #[must_use]
+    pub fn from_object_type(object_type: u8) -> Option<Self> {
+        match object_type {
+            2 => Some(Self::Lc),
+            5 => Some(Self::He),
+            29 => Some(Self::HeV2),
+            42 => Some(Self::Xhe),
             _ => None,
         }
     }
@@ -425,6 +536,10 @@ pub enum RecordError {
     /// its own).
     #[error("codec does not match the container")]
     Codec,
+    /// Channels or a sample rate of zero or over the limits, or an AAC
+    /// profile on audio that is not AAC.
+    #[error("audio format is out of range")]
+    Format,
     /// A cover span outside the file or of the wrong length.
     #[error("cover span is outside the file")]
     CoverSpan,
@@ -520,6 +635,17 @@ impl TagRecord {
             };
         if !codec_fits {
             return Err(RecordError::Codec);
+        }
+        let format = self.format;
+        if format
+            .channels
+            .is_some_and(|channels| channels == 0 || channels > MAX_CHANNELS)
+            || format
+                .sample_rate_hz
+                .is_some_and(|rate| rate == 0 || rate > MAX_SAMPLE_RATE_HZ)
+            || (format.aac_profile.is_some() && self.codec != Some(AudioCodec::Aac))
+        {
+            return Err(RecordError::Format);
         }
         if self.region.version != REGION_HASH_VERSION {
             return Err(RecordError::RegionVersion(self.region.version));

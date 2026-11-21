@@ -48555,6 +48555,15 @@
           }
         }
       },
+      "MissingFileAction": {
+        "type": "string",
+        "description": "What happens to a stored copy whose file disappears from its destination\noutside Bookclerk (noticed by the destination's change feed or listing).",
+        "enum": [
+          "mark_missing",
+          "restore"
+        ],
+        "example": "mark_missing"
+      },
       "MultiDestinationMode": {
         "type": "string",
         "description": "Behavior when some output destinations already have a title and others do not.",
@@ -50640,6 +50649,10 @@
             "$ref": "#/components/schemas/MultiDestinationMode",
             "description": "Policy when only some enabled destinations have a title."
           },
+          "missing_files": {
+            "$ref": "#/components/schemas/MissingFileAction",
+            "description": "What happens to a stored copy whose file disappears from its\ndestination outside Bookclerk. Absent in documents written before\nthe setting existed, which read as the default."
+          },
           "bad_book_action": {
             "$ref": "#/components/schemas/BadBookAction",
             "description": "Operator action when a title fails to acquire."
@@ -52028,6 +52041,13 @@
                 "type": "null"
               }
             ]
+          },
+          "setting_destinations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingDestinationApproval"
+            },
+            "description": "Setting destinations to approve, from the response's\n`setting_destinations`. An approved destination stays approved while\na setting still names it; one left out stays pending, and one no\nsetting names any more is withdrawn."
           }
         }
       },
@@ -52272,7 +52292,8 @@
           "covered",
           "summary",
           "limits",
-          "host_user_agent"
+          "host_user_agent",
+          "setting_destinations"
         ],
         "properties": {
           "plugin_id": {
@@ -52358,6 +52379,13 @@
             "type": "string",
             "description": "The `User-Agent` this host sends for the plugin's requests, except to\nthe request's `ownUserAgentHosts`.",
             "example": "bookclerk/0.1.0 (+https://bookclerk.app)"
+          },
+          "setting_destinations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingDestinationView"
+            },
+            "description": "The destination each network setting (`network = \"fetch\"` or\n`\"tcp\"`) names on each instance, and whether it is approved. Empty\nwhen the plugin declares no network setting. A `pending` row is not\nreachable until it is approved; `covered` is false while one is."
           }
         }
       },
@@ -53196,6 +53224,17 @@
                 "type": "null"
               }
             ]
+          },
+          "storage_sync": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StorageSyncView",
+                "description": "How outside changes at this destination are followed; absent until\na storage instance's first sync pass."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -53326,6 +53365,98 @@
             "type": "boolean",
             "description": "True when every row must have a value in this column.",
             "example": true
+          }
+        }
+      },
+      "PluginSettingDestinationApproval": {
+        "type": "object",
+        "description": "A setting destination the operator approves.",
+        "required": [
+          "setting",
+          "destination"
+        ],
+        "properties": {
+          "setting": {
+            "type": "string",
+            "description": "The setting key.",
+            "example": "server_url"
+          },
+          "destination": {
+            "type": "string",
+            "description": "The destination exactly as the consent response shows it.",
+            "example": "http://abs.home.lan:13378"
+          }
+        }
+      },
+      "PluginSettingDestinationView": {
+        "type": "object",
+        "description": "One network setting's destination on one plugin instance.",
+        "required": [
+          "setting",
+          "label",
+          "network",
+          "state"
+        ],
+        "properties": {
+          "instanceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instance whose settings name it; absent when the plugin has no\ninstance yet and the row shows the setting's default.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "setting": {
+            "type": "string",
+            "description": "The setting key, the source the grant is stored under.",
+            "example": "server_url"
+          },
+          "label": {
+            "type": "string",
+            "description": "The setting's label (its key when it has none).",
+            "example": "Server URL"
+          },
+          "network": {
+            "type": "string",
+            "description": "`fetch` (HTTP requests) or `tcp` (a raw socket).",
+            "example": "fetch"
+          },
+          "destination": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The destination: `scheme://host:port` for a fetch, `host:port` for\nTCP (IPv6 in brackets); absent when the setting is unset or invalid.",
+            "example": "http://abs.home.lan:13378"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What kind of host it is: `name` (may resolve to a local-network\naddress, for this name only), `publicAddress`, `localAddress` (this\none local-network address) or `restricted` (loopback, link-local or\na name such as `localhost`, which also needs an address grant).",
+            "example": "name"
+          },
+          "tls": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True for an `https` fetch, whose certificate is verified; false for\nplain HTTP and raw TCP, which trust the network's DNS answer.",
+            "example": false
+          },
+          "state": {
+            "type": "string",
+            "description": "`approved`, `pending` (awaiting consent), `unset` or `invalid`.",
+            "example": "pending"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the value names no destination, when `state` is `invalid`.",
+            "example": "the URL must start with http:// or https://"
           }
         }
       },
@@ -53490,6 +53621,17 @@
               {
                 "$ref": "#/components/schemas/PlacementView",
                 "description": "Scheduler placement; absent when the instance is hand-managed (the\nEnabled switch applies only then)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "storage_sync": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StorageSyncView",
+                "description": "How outside changes at this destination are followed; absent for\nother plugins and before a destination's first sync pass."
               },
               {
                 "type": "null"
@@ -57159,6 +57301,83 @@
           }
         ],
         "description": "A fresh second factor for a shared branch consent. `Debug` prints no code."
+      },
+      "StorageFeedState": {
+        "type": "string",
+        "description": "The state of a destination's change feed, as the API reports it.",
+        "enum": [
+          "off",
+          "healthy",
+          "gap",
+          "failing"
+        ]
+      },
+      "StorageSyncView": {
+        "type": "object",
+        "description": "How a destination notices changes made outside Bookclerk: its change\nfeed's state and its listings (storage destinations ADR, decision 5).",
+        "required": [
+          "feed_state",
+          "listing_in_progress",
+          "objects"
+        ],
+        "properties": {
+          "feed_state": {
+            "$ref": "#/components/schemas/StorageFeedState",
+            "description": "The change feed's state: `off` (no feed; listings alone), `healthy`,\n`gap` (the feed may have missed changes; a listing runs at once) or\n`failing` (reading the feed failed; listings cover it)."
+          },
+          "feed_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last feed failure.",
+            "example": "the notification queue refused the request: access denied"
+          },
+          "feed_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 time the feed was last read.",
+            "example": "2026-11-20T21:00:00Z"
+          },
+          "listed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 time the last listing finished.",
+            "example": "2026-11-20T18:00:00Z"
+          },
+          "next_listing_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 time the next scheduled listing is due.",
+            "example": "2026-11-21T00:00:00Z"
+          },
+          "listing_in_progress": {
+            "type": "boolean",
+            "description": "True while a listing is in progress (it continues on the next\npass).",
+            "example": false
+          },
+          "listing_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last listing failed or its removals were held back.",
+            "example": "the listing missed 412 of 1832 known files; removals were not applied"
+          },
+          "objects": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Files the destination held after the last listing or feed page.",
+            "example": 1832,
+            "minimum": 0
+          }
+        }
       },
       "StoreEdition": {
         "type": "object",

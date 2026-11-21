@@ -83,6 +83,14 @@ pub const LEFT_BEHIND_TABLES: &[(&str, &str)] = &[
         "storage_scan_rows",
         "an in-progress storage scan, which starts over",
     ),
+    (
+        "destination_objects",
+        "derived: each destination's next listing rebuilds it",
+    ),
+    (
+        "destination_feeds",
+        "derived: feed state and listing schedule, started over",
+    ),
     ("library_leases", "maintenance leases, taken again"),
     (
         "node_status",

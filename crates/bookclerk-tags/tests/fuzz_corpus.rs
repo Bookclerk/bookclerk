@@ -11,7 +11,8 @@
 use std::path::{Path, PathBuf};
 
 use bookclerk_tags::fixtures::{
-    mp4_box, ogg_page, tagged_flac, tagged_m4b, tagged_mp3, tagged_ogg_opus, vorbis_comments,
+    mp4_box, ogg_page, tagged_flac, tagged_m4b, tagged_m4b_with_audio_config, tagged_mp3,
+    tagged_ogg_opus, vorbis_comments,
 };
 use bookclerk_tags::wire::{encode_reply, encode_request, Reply, Request};
 use bookclerk_tags::{read_all, ByteSpan};
@@ -101,6 +102,21 @@ fn read_seeds() -> Vec<(&'static str, Vec<u8>)> {
     page_in_page.extend(ogg_page(0x04, 480_312, 9, &[&body]));
     vec![
         ("tagged.m4b", m4b.clone()),
+        // HE-AAC v2 signalled explicitly (24 kHz core, 48 kHz out, mono
+        // core), and xHE-AAC through the escaped object type.
+        (
+            "he_aac_v2.m4b",
+            tagged_m4b_with_audio_config(&[0xEB, 0x09, 0x88]),
+        ),
+        (
+            "xhe_aac.m4b",
+            tagged_m4b_with_audio_config(&[0xF9, 0x46, 0x40]),
+        ),
+        // HE-AAC behind the 0x2b7 sync extension of an LC config.
+        (
+            "he_aac_sync.m4b",
+            tagged_m4b_with_audio_config(&[0x13, 0x08, 0x56, 0xE5, 0x98]),
+        ),
         ("cropped.opus", cropped),
         ("page_in_page.opus", page_in_page),
         ("tagged.mp3", mp3.clone()),
@@ -165,6 +181,13 @@ fn wire_seeds() -> Vec<(&'static str, Vec<u8>)> {
             reply(Reply::Done {
                 id: 1,
                 record: Box::new(record),
+            }),
+        ),
+        (
+            "done_aac.bin",
+            reply(Reply::Done {
+                id: 1,
+                record: Box::new(read_all(&tagged_m4b()).unwrap()),
             }),
         ),
         (
