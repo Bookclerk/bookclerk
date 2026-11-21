@@ -72,7 +72,7 @@ impl KeptPart {
 /// # Errors
 ///
 /// A read or write error once packaging has started.
-pub(crate) fn package_keeping_codec(
+pub fn package_keeping_codec(
     parts: &[std::path::PathBuf],
     output: &Path,
     titles: &[String],
