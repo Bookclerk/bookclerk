@@ -55,10 +55,11 @@ concurrency:
 jobs:
   pr:
     name: fuzz changed code (${{ matrix.sanitizer }})
-    # Pull request runs take turns in one slot, so they leave runners for the
-    # merge queue (docs/contributing/ci.md#pull-request-lanes).
+    # Pull request runs take turns in two slots, each run in the one its run
+    # id's parity picks, so they leave runners for the merge queue
+    # (docs/contributing/ci.md#pull-request-lanes).
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && 'cflite-pr-slot' || format('cflite-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.sanitizer) }}
+      group: ${{ github.event_name == 'pull_request' && format('cflite-pr-slot-{0}', (endsWith(format('{0}', github.run_id), '0') || endsWith(format('{0}', github.run_id), '2') || endsWith(format('{0}', github.run_id), '4') || endsWith(format('{0}', github.run_id), '6') || endsWith(format('{0}', github.run_id), '8')) && 'even' || 'odd') || format('cflite-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.sanitizer) }}
       queue: max
     # Deferred on a draft pull request until it is ready for review.
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
