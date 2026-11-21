@@ -451,6 +451,7 @@ export function TitleDetailModal({
   onPlay,
   onMetaSearch,
   showAcquire = false,
+  extra,
 }: {
   detail: TitleDetail;
   busy?: boolean;
@@ -463,6 +464,8 @@ export function TitleDetailModal({
   /** Open an author / narrator / series / genre search on the parent surface. */
   onMetaSearch?: (kind: TitleMetaSearchKind, value: string) => void;
   showAcquire?: boolean;
+  /** Shown under the details, such as the library tag editor. */
+  extra?: ReactNode;
 }) {
   const [detail, setDetail] = useState(initial);
   const [hints, setHints] = useState<PurchaseHint[]>(initial.purchase_hints ?? []);
@@ -978,6 +981,7 @@ export function TitleDetailModal({
                 <MetaRow label="Added" value={formatDate(detail.created_at ?? null)} />
                 <MetaRow label="Updated" value={formatDate(detail.updated_at ?? null)} />
               </dl>
+              {extra}
               <BranchRequestButtons through={detail.available_through} />
               {(() => {
                 const reason = displayReasons(detail.reasons)[0];

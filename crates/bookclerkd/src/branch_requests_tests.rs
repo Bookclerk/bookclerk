@@ -46,7 +46,7 @@ async fn send(app: &axum::Router, body: Value) -> (StatusCode, Value) {
 }
 
 /// Adds branch [`BRANCH`] owned by `owner`, trusted (live credential).
-async fn add_branch(store: &bookclerk_library::LibraryStore, owner: i64) {
+pub(crate) async fn add_branch(store: &bookclerk_library::LibraryStore, owner: i64) {
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
         node_id: Set(BRANCH.into()),
@@ -78,6 +78,84 @@ async fn add_branch(store: &bookclerk_library::LibraryStore, owner: i64) {
     .insert(store.db())
     .await
     .unwrap();
+}
+
+/// A work branch [`BRANCH`] (owned by `owner`, trusted) lists while no
+/// store account of the library holds it: the library knows the book only
+/// through the branch. Answers the work id.
+pub(crate) async fn work_only_a_branch_holds(
+    store: &bookclerk_library::LibraryStore,
+    owner: i64,
+) -> String {
+    use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter as _};
+
+    add_branch(store, owner).await;
+    store
+        .upsert_account(PLUGIN, "acct", "us", None, true, "test")
+        .await
+        .unwrap();
+    let book = store
+        .scope(PLUGIN, "audible")
+        .upsert_book(&NewBook {
+            uuid: None,
+            product_id: ASIN.into(),
+            plugin_key: PLUGIN.into(),
+            source: "audible".into(),
+            account_id: "acct".into(),
+            asin: Some(ASIN.into()),
+            isbn: None,
+            marketplace: "us".into(),
+            title: "Route Title".into(),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            series_asin: None,
+            purchased_at: None,
+            publisher: None,
+            length_minutes: None,
+            is_abridged: false,
+            content_kind: "book".into(),
+            categories: None,
+            subtitle: None,
+            published_at: None,
+        })
+        .await
+        .unwrap();
+    let work = store.work_id_for_book(&book.uuid).await.unwrap().unwrap();
+    // The account's holding goes; the edition and work stay.
+    bookclerk_library::entities::holdings::Entity::delete_many()
+        .filter(bookclerk_library::entities::holdings::Column::HolderKind.eq("account"))
+        .exec(store.db())
+        .await
+        .unwrap();
+    ask_branches(store, std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    pending_questions(store, BRANCH).await.unwrap().unwrap();
+    record_answers(
+        store,
+        BRANCH,
+        &[LookupAnswer {
+            work: work.clone(),
+            editions: vec![LookupEdition {
+                store: "audible".into(),
+                marketplace: "us".into(),
+                product_id: ASIN.into(),
+                availability: Availability::Owned,
+                formats: Vec::new(),
+                metadata: CatalogMetadata {
+                    title: "Route Title".into(),
+                    asin: Some(ASIN.into()),
+                    ..CatalogMetadata::default()
+                },
+            }],
+        }],
+        &[],
+    )
+    .await
+    .unwrap();
+    work
 }
 
 #[tokio::test]

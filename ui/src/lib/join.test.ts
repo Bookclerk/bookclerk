@@ -28,6 +28,7 @@ import {
   shownWindowBooks,
   windowEntryIsYours,
   windowEntryLibraries,
+  windowEntryRequest,
   setMembersListing,
   setBranchSharing,
   startJoin,
@@ -478,6 +479,31 @@ describe("window view helpers", () => {
       "not a url",
     ]);
     expect(windowEntryFormats(entry)).toEqual(["audio", "pdf"]);
+  });
+
+  it("offers a request only for a book no library holds", () => {
+    const listed = {
+      ...edition("https://books.example.com", "audible", []),
+      library_id: "lib-1",
+      requestable_work: "work-7",
+    };
+    expect(windowEntryRequest({ key: "work:7", editions: [listed] })).toEqual({
+      libraryId: "lib-1",
+      workId: "work-7",
+      host: "books.example.com",
+    });
+    // Another library holds a copy: nothing to request.
+    const held = edition("https://other.example", "audible", ["audio"]);
+    expect(windowEntryRequest({ key: "work:7", editions: [listed, held] })).toBeNull();
+    expect(windowEntryRequest({ key: "work:8", editions: [held] })).toBeNull();
+    expect(windowEntryRequest({ key: "work:9", editions: [] })).toBeNull();
+    // An origin that is not a URL is shown as it is.
+    expect(
+      windowEntryRequest({
+        key: "work:7",
+        editions: [{ ...listed, owner_origin: "not a url" }],
+      })?.host,
+    ).toBe("not a url");
   });
 
   it("narrows to the entries matching a Library search", () => {

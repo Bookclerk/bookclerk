@@ -149,7 +149,8 @@ pub enum ScopeCommand {
         #[arg(long)]
         default: bool,
         /// Show only books with this value (`genre=Kids`); fields are
-        /// genre, series, author and narrator. Repeatable: a book needs
+        /// genre, series, author, narrator, tag (a library tag) and
+        /// collection. Repeatable: a book needs
         /// one.
         #[arg(long, value_name = "FIELD=VALUE")]
         include: Vec<String>,
@@ -549,8 +550,13 @@ fn parse_field(field: &str) -> anyhow::Result<ScopeField> {
         "series" => Ok(ScopeField::Series),
         "author" => Ok(ScopeField::Author),
         "narrator" => Ok(ScopeField::Narrator),
+        "tag" => Ok(ScopeField::Tag),
+        "collection" => Ok(ScopeField::Collection),
         other => {
-            anyhow::bail!("unknown scope field `{other}`: use genre, series, author or narrator")
+            anyhow::bail!(
+                "unknown scope field `{other}`: use genre, series, author, narrator, tag or \
+                 collection"
+            )
         }
     }
 }
@@ -566,6 +572,8 @@ fn rule_line(rule: &ScopeRule) -> String {
         ScopeField::Series => "series",
         ScopeField::Author => "author",
         ScopeField::Narrator => "narrator",
+        ScopeField::Tag => "tag",
+        ScopeField::Collection => "collection",
     };
     format!("{effect} {field}={}", rule.value)
 }

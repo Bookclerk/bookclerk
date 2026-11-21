@@ -215,7 +215,11 @@ a window on `main`.
      and a copy from another store), then turning a clerk into a branch
      and back (implemented: a branch join from a card, or of a library this
      install holds a card for, signs the card out; a card sign-in from a
-     branch leaves the branch once the library hands over the card).
+     branch leaves the branch once the library hands over the card), then
+     requests from a clerk (implemented: a clerk's pages go on with the
+     books only the library's branches hold, without naming the branch,
+     and the clerk asks for one through the library's member request
+     route with the card).
   7. Capacity shares between a branch's own work and each link
      (implemented).
 - Steps 2 to 7 add node-socket frames. Each ships with a fuzz target, a

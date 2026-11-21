@@ -467,6 +467,16 @@ pub enum FillLookup {
 }
 
 impl FillLookup {
+    /// What kind of lookup this is (`product` or `isbn`), for logs that
+    /// must not name the title.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Product(_) => "product",
+            Self::Isbn(_) => "isbn",
+        }
+    }
+
     /// The id this lookup asks the store for (a product id or an ISBN).
     #[must_use]
     pub fn key(&self) -> &str {
@@ -632,18 +642,35 @@ async fn fill_from_source_catalog(
     sources: Option<&SourceRegistry>,
 ) -> Option<TitleMeta> {
     let plan = store_fill_plan(query, sources?);
-    match tokio::time::timeout(STORE_FILL_TIMEOUT, fill_in_order(plan)).await {
+    let planned: Vec<String> = plan
+        .iter()
+        .map(|(store, lookup)| format!("{}:{}", store.id(), lookup.kind()))
+        .collect();
+    // Which lookup of the plan was running when time ran out, so a timeout
+    // names the slow store; the title itself is redacted from uploads.
+    let step = std::sync::atomic::AtomicUsize::new(0);
+    match tokio::time::timeout(STORE_FILL_TIMEOUT, fill_in_order(plan, &step)).await {
         Ok(found) => found,
         Err(_) => {
-            tracing::debug!(title = %query.title, "title-meta store fill timed out");
+            let at = step.load(std::sync::atomic::Ordering::Relaxed);
+            tracing::debug!(
+                title = %query.title,
+                waiting_on = planned.get(at).map_or("", String::as_str),
+                plan = %planned.join(","),
+                "title-meta store fill timed out"
+            );
             None
         }
     }
 }
 
 /// Runs a fill plan in order and returns the first record found.
-async fn fill_in_order(plan: Vec<(Arc<dyn ContentSource>, FillLookup)>) -> Option<TitleMeta> {
-    for (store, lookup) in plan {
+async fn fill_in_order(
+    plan: Vec<(Arc<dyn ContentSource>, FillLookup)>,
+    step: &std::sync::atomic::AtomicUsize,
+) -> Option<TitleMeta> {
+    for (index, (store, lookup)) in plan.into_iter().enumerate() {
+        step.store(index, std::sync::atomic::Ordering::Relaxed);
         let (result, key) = match &lookup {
             FillLookup::Product(product_id) => {
                 (store.catalog_detail(product_id).await, product_id.as_str())
@@ -911,61 +938,84 @@ pub async fn resolve_title_reviews(query: &TitleReviewsQuery) -> Result<TitleRev
     Ok(out)
 }
 
+/// Longest a title-meta batch waits before answering with what resolved.
+///
+/// A query still working then answers as failed (the route shows no
+/// metadata for it, and the browser asks again later), and keeps running in
+/// the background so its answer is cached for that next ask.
+pub const TITLE_META_BATCH_DEADLINE: Duration = Duration::from_secs(6);
+
 /// Resolve many title-meta queries with bounded concurrency (order preserved).
+///
+/// At most `max_concurrent` queries run at once, and each finished query
+/// frees its slot for the next one at once (no query waits for the slowest
+/// of a group). The batch answers within [`TITLE_META_BATCH_DEADLINE`].
 ///
 /// # Arguments
 ///
-/// * `queries` - Batch of purchase-hint or title-meta queries.
-/// * `max_concurrent` - Numeric `max_concurrent` value for this call.
+/// * `queries` - Batch of title-meta queries.
+/// * `max_concurrent` - Most queries resolving at once (clamped to 1..=8).
 /// * `providers` - Deployed metadata providers asked for records.
-/// * `sources` - String `sources` for this call.
+/// * `sources` - The deployed storefronts, for gap-filling from their
+///   catalogs.
 ///
 /// # Returns
 ///
-/// On success, `Vec<Result<Option<TitleMeta>>>`.
-///
-/// # Errors
-///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
+/// One result per query, in order. A query that failed, was cancelled or
+/// did not finish by the deadline is an error.
 pub async fn resolve_title_meta_batch(
     queries: &[TitleMetaQuery],
     max_concurrent: usize,
     providers: Arc<dyn MetadataProviders>,
     sources: Option<&SourceRegistry>,
 ) -> Vec<Result<Option<TitleMeta>>> {
-    let limit = max_concurrent.clamp(1, 8);
+    let deadline = tokio::time::Instant::now() + TITLE_META_BATCH_DEADLINE;
+    let slots = Arc::new(tokio::sync::Semaphore::new(max_concurrent.clamp(1, 8)));
     let sources = sources.cloned();
-    let mut out = Vec::with_capacity(queries.len());
-    for chunk in queries.chunks(limit) {
-        let mut set = tokio::task::JoinSet::new();
-        for (offset, q) in chunk.iter().enumerate() {
-            let q = q.clone();
-            let sources = sources.clone();
-            let providers = Arc::clone(&providers);
-            set.spawn(async move {
-                (
-                    offset,
-                    resolve_title_meta(&q, providers, sources.as_ref()).await,
-                )
-            });
-        }
-        let mut slot: Vec<Option<Result<Option<TitleMeta>>>> =
-            (0..chunk.len()).map(|_| None).collect();
+    let mut set = tokio::task::JoinSet::new();
+    for (index, q) in queries.iter().enumerate() {
+        let q = q.clone();
+        let sources = sources.clone();
+        let providers = Arc::clone(&providers);
+        let slots = Arc::clone(&slots);
+        set.spawn(async move {
+            // The semaphore is never closed, so a slot always comes.
+            let _slot = slots.acquire_owned().await.ok();
+            (
+                index,
+                resolve_title_meta(&q, providers, sources.as_ref()).await,
+            )
+        });
+    }
+    let mut slot: Vec<Option<Result<Option<TitleMeta>>>> =
+        (0..queries.len()).map(|_| None).collect();
+    let collect = async {
         while let Some(joined) = set.join_next().await {
             match joined {
-                Ok((offset, result)) => slot[offset] = Some(result),
+                Ok((index, result)) => slot[index] = Some(result),
                 Err(err) => tracing::debug!(error = %err, "title-meta batch task failed"),
             }
         }
-        for result in slot {
-            out.push(result.unwrap_or_else(|| {
-                Err(crate::error::DiscoverError::message(
-                    "title-meta batch task cancelled",
-                ))
-            }));
-        }
+    };
+    if tokio::time::timeout_at(deadline, collect).await.is_err() {
+        let late = set.len();
+        // The late queries finish on their own and fill the caches.
+        set.detach_all();
+        tracing::debug!(
+            queries = queries.len(),
+            late,
+            "title-meta batch answered at its deadline"
+        );
     }
-    out
+    slot.into_iter()
+        .map(|result| {
+            result.unwrap_or_else(|| {
+                Err(crate::error::DiscoverError::message(
+                    "title-meta query did not finish before the batch deadline",
+                ))
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -997,6 +1047,60 @@ mod tests {
             listed: Vec::new(),
         };
         (Arc::new(store), calls)
+    }
+
+    /// Providers whose lookup of `B0SLOW0001` never answers in time and
+    /// that answer everything else at once with nothing.
+    struct SlowAsin;
+
+    #[async_trait::async_trait]
+    impl MetadataProviders for SlowAsin {
+        async fn lookup(
+            &self,
+            params: &bookclerk_plugin_sdk::MetadataLookupParams,
+        ) -> bookclerk_enrich::MetadataAnswer {
+            if params.identifiers.iter().any(|id| id.value == "B0SLOW0001") {
+                tokio::time::sleep(Duration::from_secs(600)).await;
+            }
+            bookclerk_enrich::MetadataAnswer::default()
+        }
+
+        async fn search(
+            &self,
+            _params: &bookclerk_plugin_sdk::MetadataSearchParams,
+        ) -> bookclerk_enrich::MetadataAnswer {
+            bookclerk_enrich::MetadataAnswer::default()
+        }
+
+        async fn chapters(
+            &self,
+            _params: &bookclerk_plugin_sdk::MetadataChaptersParams,
+        ) -> bookclerk_enrich::ChaptersAnswer {
+            bookclerk_enrich::ChaptersAnswer::default()
+        }
+    }
+
+    /// A batch answers at its deadline: the query still waiting on a slow
+    /// provider is an error (not a cached "no metadata"), and the quick one
+    /// keeps its answer.
+    #[tokio::test(start_paused = true)]
+    async fn a_batch_answers_at_its_deadline() {
+        let mut slow = query(&[], None);
+        slow.title = "Deadline Slow".into();
+        slow.asin = Some("B0SLOW0001".into());
+        let mut quick = query(&[], None);
+        // An ASIN-shaped title is looked up at the providers directly, so
+        // the quick query makes no catalog search over the network.
+        quick.title = "B0QUICK001".into();
+        let started = tokio::time::Instant::now();
+        let results = resolve_title_meta_batch(&[slow, quick], 4, Arc::new(SlowAsin), None).await;
+        assert!(started.elapsed() <= TITLE_META_BATCH_DEADLINE + Duration::from_millis(50));
+        assert!(results[0].is_err(), "the slow query timed out");
+        assert!(
+            matches!(results[1], Ok(None)),
+            "the quick query answered: {:?}",
+            results[1]
+        );
     }
 
     /// A query for "Mistborn" naming `editions` and carrying `isbn`.

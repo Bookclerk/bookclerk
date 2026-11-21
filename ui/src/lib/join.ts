@@ -737,6 +737,12 @@ export interface WindowEditionView {
    * of their own; false for a book only other people there hold.
    */
   yours: boolean;
+  /**
+   * The library's work id to ask for it with (`requestFromLibrary`): set
+   * when the library holds no copy and one of its branches lists it, so a
+   * member may ask the library to fetch it from that branch.
+   */
+  requestable_work?: string | null;
 }
 
 /** One work in the window view: every edition its libraries hold. */
@@ -861,6 +867,37 @@ export function windowEntryLibraries(entry: WindowEntryView): string[] {
     if (!hosts.includes(host)) hosts.push(host);
   }
   return hosts;
+}
+
+/** What a Request button on a window entry asks for. */
+export interface WindowRequest {
+  /** The library (library id) to ask. */
+  libraryId: string;
+  /** The library's own work id. */
+  workId: string;
+  /** The library's host, for display. */
+  host: string;
+}
+
+/**
+ * What a window entry may be requested as: the first edition one of a
+ * library's branches lists, when no library holds a copy of the entry.
+ *
+ * @param entry - A window entry.
+ * @returns The library and work to ask for, or `null` when a library
+ *   already holds it or no branch lists it.
+ */
+export function windowEntryRequest(entry: WindowEntryView): WindowRequest | null {
+  if (entry.editions.some((edition) => !edition.requestable_work)) return null;
+  const first = entry.editions[0];
+  if (!first?.requestable_work) return null;
+  let host = first.owner_origin;
+  try {
+    host = new URL(first.owner_origin).host || first.owner_origin;
+  } catch {
+    // Not a URL: show it as it is.
+  }
+  return { libraryId: first.library_id, workId: first.requestable_work, host };
 }
 
 /**

@@ -27,6 +27,8 @@ var MAX_KV_VALUE_BYTES = 1048576;
 var MAX_KV_KEY_BYTES = 512;
 var MAX_SOCKET_FRAME_BYTES = 262144;
 var MAX_SOCKET_ATTACHMENT_BYTES = 2048;
+var MAX_ORIGIN_HEADER_BYTES = 65536;
+var MAX_ORIGIN_TARGET_BYTES = 8192;
 var MAX_KV_METADATA_BYTES = 1024;
 var MAX_PLUGIN_MIGRATION_OPS = 256;
 var MAX_PLUGIN_MIGRATION_TOTAL_OPS = 2048;
@@ -5717,6 +5719,108 @@ var SocketClosedCodec = {
     return out;
   }
 };
+var IngressStartedCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.origin ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      origin: s.getText(0)
+    };
+  }
+};
+var IngressStartReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          IngressStartedCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("IngressStartReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: IngressStartedCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("IngressStartReply", disc);
+    }
+  }
+};
+var IngressHealthCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.serving ?? false);
+    if (v.detail !== void 0) {
+      s.setText(0, v.detail ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      serving: s.getBool(0)
+    };
+    const detailValue = s.getText(0);
+    if (!(detailValue === "")) {
+      out.detail = detailValue;
+    }
+    return out;
+  }
+};
+var IngressHealthReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          IngressHealthCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("IngressHealthReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: IngressHealthCodec.read(s.getStruct(0, 1, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("IngressHealthReply", disc);
+    }
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -7323,6 +7427,90 @@ var SocketHandlerClosedParamsCodec = {
   }
 };
 var SocketHandlerClosedResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var IngressStartParamsCodec = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  }
+};
+var IngressStartResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      IngressStartReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: IngressStartReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var IngressHealthParamsCodec = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  }
+};
+var IngressHealthResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      IngressHealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: IngressHealthReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var IngressStopParamsCodec = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  }
+};
+var IngressStopResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -10885,6 +11073,11 @@ var METHODS = {
     parse: withParams("metadataFiles", "parse", MetadataFilesParseParamsCodec, MetadataFilesParseResultsCodec, okFileRecord),
     render: withParams("metadataFiles", "render", MetadataFilesRenderParamsCodec, MetadataFilesRenderResultsCodec, okFileBytes)
   },
+  Ingress: {
+    start: withoutParams("ingress", "start", IngressStartParamsCodec, IngressStartResultsCodec, okPass),
+    health: withoutParams("ingress", "health", IngressHealthParamsCodec, IngressHealthResultsCodec, okPass),
+    stop: withoutParams("ingress", "stop", IngressStopParamsCodec, IngressStopResultsCodec, okEmpty)
+  },
   Database: {
     openSession: spec({
       params: DatabaseOpenSessionParamsCodec,
@@ -11271,6 +11464,205 @@ function socketsBinding(transport) {
   });
 }
 
+// dist/origin.js
+var ORIGIN_FRAME_PREFIX_BYTES = 4;
+var MAX_ORIGIN_FRAME_HEAD_BYTES = 2 * (MAX_ORIGIN_HEADER_BYTES + MAX_ORIGIN_TARGET_BYTES) + 16 * 1024;
+var HOP_BY_HOP = /* @__PURE__ */ new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade"
+]);
+var IGNORED = /* @__PURE__ */ new Set([
+  "host",
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-real-ip"
+]);
+function originTarget(url) {
+  const parsed = new URL(url);
+  return `${parsed.pathname}${parsed.search}`;
+}
+function requestHeaders(headers) {
+  const out = [];
+  headers.forEach((value, name) => {
+    const lower = name.toLowerCase();
+    if (HOP_BY_HOP.has(lower) || IGNORED.has(lower))
+      return;
+    out.push({ name: lower, value });
+  });
+  return out;
+}
+function originBinding(transport) {
+  return Object.freeze({
+    async fetch(request, options) {
+      const head = {
+        method: request.method,
+        target: originTarget(request.url),
+        headers: requestHeaders(request.headers),
+        ...options?.clientAddress ? { clientAddress: options.clientAddress } : {}
+      };
+      const reply = await transport.fetch(head, request.body);
+      if ("err" in reply)
+        throw PluginError.fromWire(reply.err.code, reply.err.message);
+      const headers = new Headers();
+      for (const field of reply.ok.headers)
+        headers.append(field.name, field.value);
+      const nullBody = [101, 204, 205, 304].includes(reply.ok.status);
+      return new Response(nullBody ? null : reply.ok.body, { status: reply.ok.status, headers });
+    }
+  });
+}
+function encodeOriginFrame(head) {
+  const json = new TextEncoder().encode(JSON.stringify(head));
+  if (json.length > MAX_ORIGIN_FRAME_HEAD_BYTES) {
+    throw PluginError.fromWire("invalid_params", "origin request head is too large");
+  }
+  const out = new Uint8Array(ORIGIN_FRAME_PREFIX_BYTES + json.length);
+  new DataView(out.buffer).setUint32(0, json.length, false);
+  out.set(json, ORIGIN_FRAME_PREFIX_BYTES);
+  return out;
+}
+function framedBody(frame2, body) {
+  const reader = body?.getReader();
+  let sentHead = false;
+  return new ReadableStream({
+    async pull(controller) {
+      if (!sentHead) {
+        sentHead = true;
+        controller.enqueue(frame2);
+        return;
+      }
+      if (!reader) {
+        controller.close();
+        return;
+      }
+      const { done, value } = await reader.read();
+      if (done)
+        controller.close();
+      else
+        controller.enqueue(value);
+    },
+    async cancel(reason) {
+      await reader?.cancel(reason);
+    }
+  });
+}
+async function readOriginResponse(body) {
+  const reader = body.getReader();
+  let buffered = new Uint8Array(0);
+  let need = -1;
+  for (; ; ) {
+    if (need < 0 && buffered.length >= ORIGIN_FRAME_PREFIX_BYTES) {
+      need = new DataView(buffered.buffer, buffered.byteOffset, buffered.length).getUint32(0, false);
+      if (need > MAX_ORIGIN_FRAME_HEAD_BYTES) {
+        await reader.cancel();
+        throw PluginError.fromWire("internal", "origin response head is too large");
+      }
+    }
+    if (need >= 0 && buffered.length >= ORIGIN_FRAME_PREFIX_BYTES + need)
+      break;
+    const { done, value } = await reader.read();
+    if (done)
+      throw PluginError.fromWire("internal", "origin response ended inside its head");
+    const next = new Uint8Array(buffered.length + value.length);
+    next.set(buffered);
+    next.set(value, buffered.length);
+    buffered = next;
+  }
+  const end = ORIGIN_FRAME_PREFIX_BYTES + need;
+  const head = parseResponseHead(new TextDecoder().decode(buffered.subarray(4, end)));
+  const rest = buffered.slice(end);
+  const out = new ReadableStream({
+    start(controller) {
+      if (rest.length > 0)
+        controller.enqueue(rest);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done)
+        controller.close();
+      else
+        controller.enqueue(value);
+    },
+    async cancel(reason) {
+      await reader.cancel(reason);
+    }
+  });
+  return { ...head, body: out };
+}
+function parseResponseHead(text) {
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw PluginError.fromWire("internal", "origin response head is not JSON");
+  }
+  const record = value ?? {};
+  const status = record.status;
+  if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
+    throw PluginError.fromWire("internal", "origin response head has no valid status");
+  }
+  const headers = [];
+  for (const field of Array.isArray(record.headers) ? record.headers : []) {
+    const f = field ?? {};
+    if (typeof f.name !== "string" || typeof f.value !== "string") {
+      throw PluginError.fromWire("internal", "origin response head has a malformed header");
+    }
+    headers.push({ name: f.name, value: f.value });
+  }
+  return { status, headers };
+}
+async function grantedOriginFetch(granted, auth, head, body) {
+  let frame2;
+  try {
+    frame2 = encodeOriginFrame(head);
+  } catch (err) {
+    return { err: errorOf(err) };
+  }
+  let resp;
+  try {
+    resp = await granted.fetch("http://granted/origin/fetch", {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/octet-stream" },
+      body: framedBody(frame2, body),
+      // Node's fetch needs this for a streamed body; workerd ignores it.
+      duplex: "half"
+    });
+  } catch (err) {
+    return { err: { code: "unavailable", message: `origin fetch: ${messageOf(err)}` } };
+  }
+  if (resp.status !== 200 || !resp.body) {
+    const value = await resp.json().catch(() => null);
+    return {
+      err: {
+        code: value?.error?.code || "internal",
+        message: value?.error?.message || `origin fetch HTTP ${resp.status}`
+      }
+    };
+  }
+  try {
+    return { ok: await readOriginResponse(resp.body) };
+  } catch (err) {
+    return { err: errorOf(err) };
+  }
+}
+function errorOf(err) {
+  if (err instanceof PluginError)
+    return { code: err.code, message: err.message };
+  return { code: "internal", message: messageOf(err) };
+}
+function messageOf(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+
 // dist/plugin.js
 function unsupported(method) {
   return PluginError.fromWire("unsupported", `${method} not implemented`);
@@ -11641,6 +12033,8 @@ function invocationEnv(rawEnv, context) {
     const sockets = socketsTransportOf(context);
     if (sockets)
       merged[sockets.name] = socketsBinding(sockets.sockets);
+    if (context.origin)
+      merged.ORIGIN = originBinding(context.origin);
     if (context.network && typeof context.network === "object") {
       merged.NETWORK = Object.freeze(normalizeNetworkGrant(context.network));
     }
@@ -13032,6 +13426,35 @@ var NotifierEntrypoint = class extends NamedEntrypoint {
     return Promise.resolve({ addressJson: params.addressJson });
   }
 };
+var IngressEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["start", "health", "stop"]);
+  /**
+   * Brings the public address up and returns it once it serves.
+   *
+   * @returns The public origin: `https://` and a host name, no port, path
+   *   or trailing slash.
+   */
+  start() {
+    return Promise.reject(unsupported("start"));
+  }
+  /**
+   * Reports whether the address is serving.
+   *
+   * @returns `serving`, plus a detail for the operator when it is not.
+   */
+  health() {
+    return Promise.resolve({ serving: true });
+  }
+  /**
+   * Takes the public address down. The host stops sending requests after
+   * this returns.
+   *
+   * @returns Resolves once the address no longer serves.
+   */
+  stop() {
+    return Promise.resolve();
+  }
+};
 var ENTRYPOINT_BINDINGS = Object.freeze({
   storefront: "PLUGIN_STOREFRONT",
   storage: "PLUGIN_STORAGE",
@@ -13042,7 +13465,8 @@ var ENTRYPOINT_BINDINGS = Object.freeze({
   metadata: "PLUGIN_METADATA",
   covers: "PLUGIN_COVERS",
   metadataFiles: "PLUGIN_METADATA_FILES",
-  notifier: "PLUGIN_NOTIFIER"
+  notifier: "PLUGIN_NOTIFIER",
+  ingress: "PLUGIN_INGRESS"
 });
 var ENTRYPOINT_CLASSES = Object.freeze({
   storefront: "Storefront",
@@ -13054,7 +13478,8 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   metadata: "Metadata",
   covers: "Covers",
   metadataFiles: "MetadataFiles",
-  notifier: "Notifier"
+  notifier: "Notifier",
+  ingress: "Ingress"
 });
 function exactLengthBody(body, expected) {
   if (body == null || expected == null || !Number.isFinite(expected)) {
@@ -13590,6 +14015,31 @@ var GrantedSockets = class extends RpcTarget {
     return { ok: value };
   }
 };
+var GrantedOrigin = class extends RpcTarget {
+  /** Granted reverse channel that serves `POST /origin/fetch`. */
+  #granted;
+  /** `Authorization` header carrying the origin-only grant token. */
+  #auth;
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the origin grant.
+   */
+  constructor(granted, auth) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+  /**
+   * Hands one request to the library.
+   *
+   * @param head - Method, target, header fields and client address.
+   * @param body - Request body, or `null`.
+   * @returns The library's response, or a typed failure; never throws.
+   */
+  fetch(head, body) {
+    return grantedOriginFetch(this.#granted, this.#auth, head, body);
+  }
+};
 var GrantedDatabase = class extends RpcTarget {
   #granted;
   #auth;
@@ -13941,7 +14391,7 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx) {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, notifyToken, databases, queues, kv, sockets, ...rest } = source;
+      const { eventsToken, notifyToken, databases, queues, kv, sockets, originToken, ...rest } = source;
       const bound = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -14002,6 +14452,9 @@ function createInvocationAdapter() {
         }
         if (named2.length > 0)
           bound.sockets = named2.slice(0, 1);
+      }
+      if (typeof originToken === "string" && originToken && granted) {
+        bound.origin = new GrantedOrigin(granted, { Authorization: `Bearer ${originToken}` });
       }
       return bound;
     }
@@ -14557,6 +15010,7 @@ export {
   GUEST_RECEIPT_STUB_SUFFIX,
   GUEST_RECEIPT_WRAP_PREFIX,
   GUEST_REPLAY_PAYLOAD_MAX_BYTES,
+  IngressEntrypoint,
   InvokeError,
   JobController,
   MAX_BATCH_KEYS,

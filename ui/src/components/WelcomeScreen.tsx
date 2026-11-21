@@ -3,6 +3,7 @@ import { ClerkSignInForm } from "@/components/ClerkCardsPanel";
 import { DiagnosticsSetupStep } from "@/components/DiagnosticsSettings";
 import { JoinShell } from "@/components/JoinShell";
 import { JoinWizard } from "@/components/JoinWizard";
+import { RecoveryCopySetupStep } from "@/components/RecoveryCopy";
 import { Button } from "@/components/ui/button";
 import { isDesktopWindow } from "@/lib/desktop";
 
@@ -23,6 +24,12 @@ export interface WelcomeScreenProps {
  * join an existing one as a branch. Either way the install then asks what
  * diagnostics it may share (both switches start off) before carrying on.
  *
+ * Starting a library in the desktop window then asks for a recovery copy
+ * of the library key, which the window keeps in the OS keychain where no
+ * backup of the library folder reaches it. The step can be skipped after a
+ * warning; Settings → Server Settings reminds the operator until a copy is
+ * saved.
+ *
  * In the desktop window joining comes first: the window opens on signing
  * in to the library with a library card (the library's address, then
  * signing in as a patron there), and starting a library on this computer is
@@ -40,6 +47,18 @@ export function WelcomeScreen({
   const [joinedTo, setJoinedTo] = useState<string | null>(null);
   const [startingNew, setStartingNew] = useState(false);
   const [diagnosticsDone, setDiagnosticsDone] = useState(false);
+  const [askingRecovery, setAskingRecovery] = useState(false);
+
+  if (startingNew && askingRecovery) {
+    return (
+      <JoinShell
+        title="Save a recovery copy of your library key"
+        lead="This computer keeps the key that protects your store sign-ins and secrets in its keychain, so backups of the library folder don't include it. Save a copy, wrapped with a password, somewhere off this computer."
+      >
+        <RecoveryCopySetupStep onDone={onStartNew} />
+      </JoinShell>
+    );
+  }
 
   if (startingNew) {
     return (
@@ -47,7 +66,10 @@ export function WelcomeScreen({
         title="Help improve Bookclerk"
         lead="Choose what this server may share with the Bookclerk maintainers. Nothing is shared unless you turn it on."
       >
-        <DiagnosticsSetupStep continueLabel="Continue to set up the Owner" onDone={onStartNew} />
+        <DiagnosticsSetupStep
+          continueLabel={desktop ? "Continue" : "Continue to set up the Owner"}
+          onDone={desktop ? () => setAskingRecovery(true) : onStartNew}
+        />
       </JoinShell>
     );
   }

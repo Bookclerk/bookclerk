@@ -347,7 +347,7 @@ impl Oracle {
 
     /// Opens the database and installs the recording authorizer.
     fn new() -> rusqlite::Result<Self> {
-        let conn = oracle_connection()?;
+        let mut conn = oracle_connection()?;
         let seen: Arc<Mutex<Vec<Access>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {

@@ -23,6 +23,7 @@ mod cache_policy;
 mod catalog_lookup;
 mod clerk_link;
 mod clerk_token;
+mod collections;
 mod config_authority;
 mod covers;
 mod cron_worker;
@@ -45,6 +46,7 @@ mod library_overrides;
 mod library_works;
 mod live;
 mod maintenance;
+mod master_key_recovery;
 mod media_capabilities;
 mod node_api;
 mod node_queue;
@@ -73,6 +75,7 @@ mod startup_tests;
 mod totp;
 mod tray_companion;
 mod uploads;
+mod work_tags;
 
 pub mod embedded;
 

@@ -2,10 +2,11 @@ import { BookclerkLogo } from "@/components/BookclerkLogo";
 
 /**
  * Client-side unknown-path screen (Vite SPA fallback / in-app navigation).
+ *
+ * @param props - `path` is the unknown path to name; the page's own path
+ *   when left out.
  */
-export function NotFoundPage() {
-  const path = window.location.pathname || "/";
-
+export function NotFoundPage({ path = window.location.pathname || "/" }: { path?: string }) {
   return (
     <div className="flex min-h-full items-center justify-center px-4 py-10">
       <div className="w-full max-w-md animate-[fadeUp_420ms_ease-out]">

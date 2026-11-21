@@ -129,6 +129,15 @@ install and keeps no window session.
 `bookclerkd`'s first run does. Creating the Owner there signs the window in
 as that Owner and keeps that session.
 
+Before the Owner, the window asks for a recovery copy of the library key,
+which it keeps in the OS keychain where no backup of the library folder
+reaches it (`RecoveryCopySetupStep`). The operator picks a recovery
+password and the window downloads `bookclerk-recovery-key.bck`, usually
+into the Downloads folder. **Skip for now** shows a warning first; Settings
+then reminds the operator (Server Settings) or an Owner (Account) until a
+copy is saved. See
+[Database → The key in the OS keychain](../../server/database.md#the-key-in-the-os-keychain).
+
 #### Who the window is after setup
 
 Once the library on this computer has an active Owner, the window is a
