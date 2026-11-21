@@ -360,7 +360,7 @@ mod tests {
             None
         );
         // A handshake signature is never an artifact signature.
-        let nonce = [1u8; NONCE_LEN];
+        let nonce = random_nonce();
         let auth = sign_auth(&key, &ctx(&nonce, "https://owner.example"));
         assert!(verify_artifact_request(&public, &request, &auth, 1_000).is_err());
     }

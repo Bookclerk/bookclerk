@@ -38109,7 +38109,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CeremonyFinish"
+                "$ref": "#/components/schemas/RegistrationFinish"
               }
             }
           },
@@ -38650,7 +38650,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CeremonyFinish"
+                "$ref": "#/components/schemas/AssertionFinish"
               }
             }
           },
@@ -38668,7 +38668,7 @@
             }
           },
           "400": {
-            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The challenge is unknown or expired, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -38925,7 +38925,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CeremonyFinish"
+                "$ref": "#/components/schemas/AssertionFinish"
               }
             }
           },
@@ -38943,7 +38943,7 @@
             }
           },
           "400": {
-            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The challenge is unknown or expired, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -43842,6 +43842,34 @@
         },
         "additionalProperties": false
       },
+      "AssertionFinish": {
+        "type": "object",
+        "description": "`POST /api/auth/passkeys/login/finish` and `elevate/finish` body: the\nbrowser's assertion plus the challenge id from the matching `begin`.\n\nThe credential is read straight into WebAuthn's typed assertion, so the\nhandler never decodes caller JSON itself.",
+        "required": [
+          "challenge_id",
+          "credential"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "description": "Server-issued challenge id (consumed once; 5-minute TTL).",
+            "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
+          },
+          "credential": {
+            "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+            "example": {
+              "extensions": {},
+              "id": "pQECAyYgASFYIE",
+              "rawId": "pQECAyYgASFYIE",
+              "response": {
+                "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+              },
+              "type": "public-key"
+            }
+          }
+        }
+      },
       "AuthMeImpersonating": {
         "type": "object",
         "description": "Target user shown while an operator session is impersonating.",
@@ -45427,40 +45455,6 @@
             "type": "string",
             "description": "Ascending or descending order for [`Self::sort`].",
             "example": "desc"
-          }
-        }
-      },
-      "CeremonyFinish": {
-        "type": "object",
-        "description": "Browser attestation/assertion plus the challenge id from `begin`.",
-        "required": [
-          "challenge_id",
-          "credential"
-        ],
-        "properties": {
-          "challenge_id": {
-            "type": "string",
-            "description": "Server-issued challenge id (consumed once; 5-minute TTL).",
-            "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
-          },
-          "credential": {
-            "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
-            "example": {
-              "extensions": {},
-              "id": "pQECAyYgASFYIE",
-              "rawId": "pQECAyYgASFYIE",
-              "response": {
-                "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
-                "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
-              },
-              "type": "public-key"
-            }
-          },
-          "name": {
-            "type": "string",
-            "description": "Label stored with the credential (`Passkey` when empty).",
-            "example": "YubiKey 5C",
-            "nullable": true
           }
         }
       },
@@ -58253,6 +58247,40 @@
             "type": "string",
             "description": "Required when the linked local user has no password (invite / reset).",
             "example": "correct horse battery staple",
+            "nullable": true
+          }
+        }
+      },
+      "RegistrationFinish": {
+        "type": "object",
+        "description": "`POST /api/auth/passkeys/register/finish` body: the browser's attestation\nplus the challenge id from `register/begin`.\n\nThe credential is read straight into WebAuthn's typed attestation, so the\nhandler never decodes caller JSON itself.",
+        "required": [
+          "challenge_id",
+          "credential"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "description": "Server-issued challenge id (consumed once; 5-minute TTL).",
+            "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
+          },
+          "credential": {
+            "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+            "example": {
+              "extensions": {},
+              "id": "pQECAyYgASFYIE",
+              "rawId": "pQECAyYgASFYIE",
+              "response": {
+                "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+              },
+              "type": "public-key"
+            }
+          },
+          "name": {
+            "type": "string",
+            "description": "Label stored with the credential (`Passkey` when empty).",
+            "example": "YubiKey 5C",
             "nullable": true
           }
         }
