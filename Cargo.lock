@@ -2228,6 +2228,7 @@ dependencies = [
  "bookclerk-workerd",
  "bytes",
  "chrono",
+ "flate2",
  "fs4 1.1.0",
  "futures",
  "hex",
@@ -2236,6 +2237,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -2248,6 +2250,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "wiremock",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

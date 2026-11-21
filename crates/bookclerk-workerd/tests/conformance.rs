@@ -74,14 +74,20 @@ fn find_workerd() -> Option<PathBuf> {
 fn find_echo_guest() -> Option<PathBuf> {
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd"));
     let dir = launcher.parent()?;
-    let candidate = dir.join("bookclerk-plugin-echo-native-rust");
+    let candidate = dir.join(format!(
+        "bookclerk-plugin-echo-native-rust{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     bookclerk_sandbox::require_spawn_executable(&candidate).ok()
 }
 
 fn find_local_guest() -> Option<PathBuf> {
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd"));
     let dir = launcher.parent()?;
-    let candidate = dir.join("bookclerk-plugin-destination-local");
+    let candidate = dir.join(format!(
+        "bookclerk-plugin-destination-local{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     bookclerk_sandbox::require_spawn_executable(&candidate).ok()
 }
 
@@ -854,7 +860,10 @@ supports_suspend = true
 fn find_sqlite_guest() -> Option<PathBuf> {
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd"));
     let dir = launcher.parent()?;
-    let candidate = dir.join("bookclerk-plugin-database-sqlite");
+    let candidate = dir.join(format!(
+        "bookclerk-plugin-database-sqlite{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     bookclerk_sandbox::require_spawn_executable(&candidate).ok()
 }
 
