@@ -37,7 +37,7 @@ static PUBLIC_ORIGIN: RwLock<Option<String>> = RwLock::new(None);
 /// Sets the origin webhook URLs are built on.
 ///
 /// The daemon calls this once it knows its public origin and that webhooks
-/// are on (`webhooks.public = "auto"`), and with `None` to stop handing URLs
+/// are on (`plugins.webhooks = "auto"`), and with `None` to stop handing URLs
 /// out. A trailing `/` is dropped.
 pub fn set_webhook_public_origin(origin: Option<&str>) {
     let origin = origin
@@ -189,3 +189,7 @@ impl Webhooks for HostWebhooks {
         .map_err(unavailable)
     }
 }
+
+#[cfg(test)]
+#[path = "webhook_binding_tests.rs"]
+mod tests;
