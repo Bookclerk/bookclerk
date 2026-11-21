@@ -154,6 +154,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.notify_cursor]
+crate = "bookclerk-library"
+boundary = "The cursor query parameter of the notification delivery log and a patron's inbox: a token the caller sends back"
+input_from = "signed-in patron"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.event_read]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's EVENTS.read request: the /events/read JSON body, its opaque cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds"
