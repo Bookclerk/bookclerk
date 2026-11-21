@@ -132,3 +132,82 @@ impl AsyncWrite for BridgeStream {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[allow(clippy::missing_panics_doc, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Writes `ping` on `stream`, reads the peer's `pong`, then shuts the
+    /// write half down, driving every `AsyncRead` / `AsyncWrite` arm.
+    async fn exchange(mut stream: BridgeStream) {
+        stream.write_all(b"ping").await.expect("write");
+        stream.flush().await.expect("flush");
+        let mut reply = [0u8; 4];
+        stream.read_exact(&mut reply).await.expect("read");
+        assert_eq!(&reply, b"pong");
+        stream.shutdown().await.expect("shutdown");
+    }
+
+    /// Answers one `ping` with `pong` on a std Unix stream.
+    fn answer(mut server: std::os::unix::net::UnixStream) {
+        use std::io::{Read, Write};
+        let mut got = [0u8; 4];
+        server.read_exact(&mut got).expect("server read");
+        assert_eq!(&got, b"ping");
+        server.write_all(b"pong").expect("server write");
+    }
+
+    #[test]
+    fn every_address_names_its_host_and_form() {
+        let tcp = BridgeAddr::Tcp(8123);
+        assert_eq!(tcp.host_header(), "127.0.0.1:8123");
+        assert_eq!(tcp.to_string(), "127.0.0.1:8123");
+        let abstract_name = BridgeAddr::Abstract("bc-r-1".into());
+        assert_eq!(abstract_name.host_header(), "localhost");
+        assert_eq!(abstract_name.to_string(), "unix-abstract:bc-r-1");
+        let path = BridgeAddr::Path("/run/x/rpc.sock".into());
+        assert_eq!(path.host_header(), "localhost");
+        assert_eq!(path.to_string(), "unix:/run/x/rpc.sock");
+    }
+
+    #[tokio::test]
+    async fn tcp_bridge_carries_bytes_both_ways() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut got = [0u8; 4];
+            socket.read_exact(&mut got).await.expect("server read");
+            assert_eq!(&got, b"ping");
+            socket.write_all(b"pong").await.expect("server write");
+        });
+        exchange(BridgeAddr::Tcp(port).connect().await.expect("connect")).await;
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn abstract_and_path_bridges_carry_bytes_both_ways() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let (addr, listener) = crate::unix_bind::bind_rpc(dir.path()).expect("bind rpc");
+        let stream = addr.connect().await.expect("connect abstract");
+        let (server, _) = listener.accept().expect("accept abstract");
+        let task = tokio::task::spawn_blocking(move || answer(server));
+        exchange(stream).await;
+        task.await.expect("server task");
+
+        let sock = dir.path().join("rpc.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind path");
+        let stream = BridgeAddr::Path(sock)
+            .connect()
+            .await
+            .expect("connect path");
+        let (server, _) = listener.accept().expect("accept path");
+        let task = tokio::task::spawn_blocking(move || answer(server));
+        exchange(stream).await;
+        task.await.expect("server task");
+    }
+}
