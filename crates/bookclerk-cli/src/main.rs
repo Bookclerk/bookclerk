@@ -223,6 +223,14 @@ async fn cli_main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // New keys (a first mint, a joined shared branch's key, an import) go
+    // where `[auth].key_store` says; the CLI's default is the file.
+    bookclerk_library::set_key_store_preference(
+        bookclerk_library::KeyStorePreference::from_config(
+            config.auth.key_store,
+            bookclerk_config::KeyStoreKind::File,
+        ),
+    );
 
     let default_level = match verbose {
         0 => "off",

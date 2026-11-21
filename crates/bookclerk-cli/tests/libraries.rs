@@ -377,6 +377,38 @@ async fn join_takes_the_link_only_from_stdin_and_refuses_a_non_link() {
         .is_empty());
 }
 
+/// The path of the slave side of the pseudo-terminal whose master is `fd`.
+///
+/// Linux has the reentrant `ptsname_r`; macOS doesn't export it, so it reads
+/// `ptsname`'s static buffer and copies it out at once (nextest runs each
+/// test in its own process, so nothing else shares that buffer).
+///
+/// # Safety
+///
+/// `fd` must be an open pseudo-terminal master that `grantpt` and
+/// `unlockpt` have prepared.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+unsafe fn pty_slave_path(fd: libc::c_int) -> String {
+    #[cfg(target_os = "linux")]
+    let name = {
+        let mut buf = [0 as libc::c_char; 128];
+        assert_eq!(libc::ptsname_r(fd, buf.as_mut_ptr(), buf.len()), 0);
+        std::ffi::CStr::from_ptr(buf.as_ptr()).to_owned()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let name = {
+        let ptr = libc::ptsname(fd);
+        assert!(
+            !ptr.is_null(),
+            "ptsname: {}",
+            std::io::Error::last_os_error()
+        );
+        std::ffi::CStr::from_ptr(ptr).to_owned()
+    };
+    name.into_string().unwrap()
+}
+
 /// `bookclerk libraries join` running with stdin on a pseudo-terminal.
 #[cfg(unix)]
 struct PtyJoin {
@@ -412,12 +444,7 @@ impl PtyJoin {
             let master = std::fs::File::from_raw_fd(fd);
             assert_eq!(libc::grantpt(fd), 0);
             assert_eq!(libc::unlockpt(fd), 0);
-            let mut name = [0 as libc::c_char; 128];
-            assert_eq!(libc::ptsname_r(fd, name.as_mut_ptr(), name.len()), 0);
-            let path = std::ffi::CStr::from_ptr(name.as_ptr())
-                .to_str()
-                .unwrap()
-                .to_string();
+            let path = pty_slave_path(fd);
             let slave = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)

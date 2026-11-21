@@ -62,6 +62,7 @@ others go deeper.
 - [How it works](internals/README.md): the shelf for contributors reading the code
 - [Architecture](internals/architecture.md): how the pieces fit
 - [Discovery design](internals/discovery.md): how suggestions are found and ranked
+- [Embedding model benchmarks](internals/embedding-benchmarks.md): how candidate models match taste across languages, and what they cost to run
 - [Durable job queue](internals/jobs.md): admission, leases and crash recovery
 - [Bounded storage](internals/storage-bounds.md): size caps, streams, paged scans and checkpoints
 - [The guest jail](internals/guest-jail.md): why plugins run as jailed processes, and how each platform confines them
@@ -113,6 +114,7 @@ Build and agent conventions for this repository live in
 - [Desktop window identity](adr/desktop-window-identity.md): the window is the person signed in to the computer, named by a per-account profile
 - [Playback](adr/playback.md): playback is a host feature with one core that the web player, the desktop window and app-compatible clients share
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks
+- [Master key store](adr/master-key-store.md): the library key can live in the OS keychain, with `master.key` as a pointer and recovery copies
 - [Uploads and ingest batches](adr/uploads-and-ingest.md): one batch per upload, patron holdings for uploaded books, strong identifiers only, archives expanded under caps
 - [What needs the operator](adr/owner-and-operator.md): the rule for which actions need elevation, and the switches an Owner sets on each Administrator
 - [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins

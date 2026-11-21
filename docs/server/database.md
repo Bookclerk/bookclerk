@@ -296,35 +296,84 @@ All new writes use **`sealed-v1`**: XChaCha20-Poly1305 with a process-wide
 **Data Encryption Key (DEK)** and a random 24-byte nonce. There is **no
 per-row key derivation** (Argon2) for new rows.
 
-The DEK is stored in `$BOOKCLERK_FILES_DIR/master.key` and loaded at
-startup by `bookclerk_library::configure_master_key`. The file has one of
-two formats:
+The DEK is loaded at startup by `bookclerk_library::configure_master_key`
+from `$BOOKCLERK_FILES_DIR/master.key`, or from the OS keychain item that
+file names. `master.key` has one of three formats:
 
 | Header | Contents |
 | --- | --- |
 | `BCK1` | The raw 32-byte DEK, unprotected. For development and testing only |
 | `BCK2` | The DEK wrapped with `BOOKCLERK_AUTH_PASSWORD`, through Argon2id and XChaCha20-Poly1305 |
+| `BCK3` | No key: a pointer to the OS keychain item that holds the `BCK1` or `BCK2` envelope, and the DEK's SHA-256 fingerprint |
 
 > [!IMPORTANT]
 > Set `BOOKCLERK_AUTH_PASSWORD` (or `[auth].password`) in production, so
 > `master.key` is wrapped at rest.
 
-When a password is set and `master.key` holds a raw `BCK1` key, Bookclerk
-re-wraps it as `BCK2`. That happens at startup, on
-`bookclerk config master-key wrap` or `config set auth.password`, or on a
+When a password is set and the key is a raw `BCK1` (in `master.key` or in
+its keychain item), Bookclerk re-wraps it as `BCK2` in the same place.
+That happens at startup, on `bookclerk config master-key wrap` or `config set auth.password`, or on a
 daemon reload (SIGHUP or `POST /api/config/reload`).
 
 **Fail-closed:** if a record exists but can't be unsealed (a wrong master
 key, a corrupt nonce, or a missing DEK), Bookclerk returns an error rather
 than falling through to an unencrypted fallback.
 
+### The key in the OS keychain
+
+`[auth].key_store` chooses where a new key is kept:
+
+| Value | Where | Default for |
+| --- | --- | --- |
+| `keychain` | macOS Keychain, Windows Credential Manager, or the Secret Service on a Linux desktop | The desktop window |
+| `file` | `master.key` itself | `bookclerkd` and the CLI |
+
+On a keychain install `master.key` only names the item, so a copy of the
+files directory no longer carries the key. The item holds the same
+`BCK1`/`BCK2` envelope, so a password still wraps it when set.
+
+- **Loading follows `master.key`.** A `BCK3` file reads the keychain item
+  and checks the key against the fingerprint. A missing item, a locked
+  keychain or a different key is an error; Bookclerk never mints a new key
+  in its place.
+- **The desktop window moves its key.** On start it moves a key still in
+  `master.key` into the keychain, unless `[auth].key_store` is set. If the
+  keychain can't take it, the key stays in the file and the window starts.
+- **Servers move only when asked:**
+  `bookclerk config master-key move keychain` (or `move file` to go back).
+  The key itself doesn't change, so sealed secrets stay readable. The
+  command also sets `[auth].key_store`. Stop `bookclerkd` first.
+- **A set `key_store` is required.** With `keychain` configured, a keychain
+  that can't be reached stops a first start instead of writing the file.
+  A config reload applies a changed `key_store` to the next key placed (a
+  shared-branch join); it does not move an existing key.
+
+> [!NOTE]
+> A headless Linux server usually has no Secret Service (no session
+> D-Bus, nothing to unlock a collection at boot). Keep the file there,
+> wrapped with a password; see
+> [Running Bookclerk → systemd](operations.md#systemd).
+
+Back up a keychain key with a recovery copy:
+
+```sh
+bookclerk config master-key export --out ./bookclerk-recovery.key
+bookclerk config master-key import --from ./bookclerk-recovery.key
+```
+
+`export` wraps the copy with a password read from stdin (never argv).
+`import` restores it, or a copied `master.key`, on an install that has no
+key yet, into that install's store. `bookclerk config master-key status`
+shows the store and whether the key is wrapped.
+
 ### Bootstrap secrets stay outside the database
 
 These are needed to open the database or unwrap the master key, so they
 can't be stored in it:
 
-- `BOOKCLERK_AUTH_PASSWORD` or `[auth].password`, which wraps `master.key`
-  at rest (the environment is preferred);
+- `BOOKCLERK_AUTH_PASSWORD` or `[auth].password`, which wraps the key at
+  rest (the environment is preferred), and `[auth].key_store`, which says
+  where new keys go;
 - `BOOKCLERK_DATABASE_POSTGRES_URL` and `BOOKCLERK_D1_API_TOKEN` (or
   `CLOUDFLARE_API_TOKEN`), the database connection;
 - `BOOKCLERK_OPERATOR_TOKEN`, an optional override for the durable
@@ -808,12 +857,24 @@ library holds as works, expressions and editions:
   sidecars, the PDF and uploads.
 - `edition_copies`: each edition's copy on each destination: `stored`
   with the edition's primary audio key there, `pending` with the last
-  error and when the next background attempt is due, or `failed` after 8
-  failed attempts in a row. An acquire records each destination's outcome
+  error and when the next background attempt is due, `failed` after 8
+  failed attempts in a row, or `missing` when its file disappeared from
+  the destination and `output.missing_files` is `mark_missing`. An acquire records each destination's outcome
   when it returns, and a branch's upload records the destinations it
   wrote when it commits. Acquire runs read it to visit an acquired
   edition a destination still lacks (see [Several
   destinations](output.md#several-destinations)).
+- `destination_objects`: the last state Bookclerk saw of each file at
+  each destination (size, change signature, modification time), with the
+  destination's change sequence when it last changed. A removed file
+  stays as a tombstone for 30 days so readers can page what changed. It
+  is not copied by a database migration; the next listing rebuilds it
+  (see [Noticing changes made outside
+  Bookclerk](output.md#noticing-changes-made-outside-bookclerk)).
+- `destination_feeds`: each destination's change sequence, change feed
+  state (`off`, `healthy`, `gap`, `failing`) and cursor, its listing in
+  progress and schedule, and the number of files it held. Not copied by
+  a database migration either.
 - `edition_acquisitions`: each edition's acquire state (status, primary
   storage key, last error) and the account holding (`holding_id`) whose
   title's write set it, written with the title's own status. Only that

@@ -289,6 +289,17 @@ test("diagrams keep their ids apart and leave the source's styling out", () => {
   assert.ok(!/<style|@import|googleapis| style="| class="(?!mono")| data-/.test(svgs));
 });
 
+test("charts draw with their chart classes and no stylesheet or literal colors", () => {
+  const source =
+    '```mermaid\nxychart-beta horizontal\n  title "Peak RAM (MB)"\n  x-axis [a, b]\n  y-axis "MB" 0 --> 800\n  bar [471, 155]\n```\n';
+  const out = renderDoc(source, "branches", { blobBase: BLOB });
+  assert.match(out.html, /<figure class="diagram" tabindex="0" role="group" aria-label="Chart"/);
+  const svg = out.html.slice(out.html.indexOf("<svg"));
+  assert.equal((svg.match(/ class="xychart-bar xychart-color-0"/g) ?? []).length, 2);
+  assert.match(svg, / class="xychart-title"/);
+  assert.ok(!/<style|@import| style="| data-|#[0-9a-fA-F]{3,6}\b/.test(svg));
+});
+
 test("a page draws at most twelve diagrams, and fences it cannot draw spend none of its budget", () => {
   const small = (n: number): string => `\`\`\`mermaid\nflowchart LR\n  A${n} --> B\n\`\`\`\n\n`;
   const many = renderDoc(Array.from({ length: 14 }, (_, n) => small(n)).join(""), "branches", {

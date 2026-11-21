@@ -28,6 +28,7 @@ mod covers;
 mod cron_worker;
 mod cross_origin;
 mod csrf;
+mod destination_sync;
 mod diagnostics_lookup;
 mod discover_events;
 mod discover_jobs;
@@ -86,10 +87,12 @@ use bookclerk_config::{
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
 use crate::api::{
-    bind_listen_addrs, build_operator_auth, reload_daemon_config, resolve_ui_dist,
-    revert_listen_after_bind_failure, router, start_integration_watchers, validate_daemon_listen,
-    AppState,
+    bind_listen_addrs, build_operator_auth, resolve_ui_dist, revert_listen_after_bind_failure,
+    router, start_integration_watchers, validate_daemon_listen, AppState,
 };
+// Only the Unix SIGHUP handler reloads config from a signal.
+#[cfg(unix)]
+use crate::api::reload_daemon_config;
 use crate::event_worker::start_event_runtime;
 use crate::job_worker::start_job_runtime;
 use crate::scheduler::spawn_scheduler;
@@ -370,6 +373,75 @@ enum HostMode {
     Embedded,
 }
 
+/// Sets where this host writes new keys, and moves the desktop app's key
+/// into the OS keychain.
+///
+/// `[auth].key_store` wins when set. Otherwise the desktop window defaults
+/// to the OS keychain and `bookclerkd` to `master.key`. On the desktop
+/// default, a key still in `master.key` is moved into the keychain; if the
+/// keychain can't take it, the key stays in the file and the start goes on.
+fn apply_key_store(config: &Config, mode: HostMode) {
+    use bookclerk_config::KeyStoreKind;
+    use bookclerk_library::MasterKeyFormat;
+    let default = match mode {
+        HostMode::Listening => KeyStoreKind::File,
+        HostMode::Embedded => KeyStoreKind::Keychain,
+    };
+    if let Ok(mut slot) = KEY_STORE_HOST_DEFAULT.write() {
+        *slot = default;
+    }
+    let preference = refresh_key_store_preference(config);
+    if preference.kind != KeyStoreKind::Keychain || preference.required {
+        return;
+    }
+    let files_dir = &config.paths().files_dir;
+    match bookclerk_library::inspect_master_key(files_dir) {
+        Ok(Some(MasterKeyFormat::Raw | MasterKeyFormat::Wrapped)) => {}
+        Ok(Some(MasterKeyFormat::Keychain) | None) => return,
+        Err(err) => {
+            tracing::warn!("not moving master.key into the OS keychain: {err}");
+            return;
+        }
+    }
+    let password = config.auth_password();
+    match bookclerk_library::move_master_key(files_dir, KeyStoreKind::Keychain, password.as_deref())
+    {
+        Ok(_) => tracing::info!(
+            "moved the data-encryption key into the OS keychain; save a recovery copy with \
+             `bookclerk config master-key export --out <file>`"
+        ),
+        Err(err) => tracing::warn!(
+            "the data-encryption key stays in master.key: the OS keychain could not take it ({err})"
+        ),
+    }
+}
+
+/// Where this host puts new keys when `[auth].key_store` is unset: the
+/// file for `bookclerkd`, the OS keychain for the desktop window. Set by
+/// [`apply_key_store`] at start.
+static KEY_STORE_HOST_DEFAULT: std::sync::RwLock<bookclerk_config::KeyStoreKind> =
+    std::sync::RwLock::new(bookclerk_config::KeyStoreKind::File);
+
+/// Sets where new keys go from `config`'s `[auth].key_store` and this
+/// host's default, as at start; a config reload calls it so a changed
+/// setting applies to the next key placed (a shared-branch join).
+///
+/// # Returns
+///
+/// The preference now in effect.
+pub(crate) fn refresh_key_store_preference(
+    config: &Config,
+) -> bookclerk_library::KeyStorePreference {
+    let default = KEY_STORE_HOST_DEFAULT
+        .read()
+        .map(|slot| *slot)
+        .unwrap_or(bookclerk_config::KeyStoreKind::File);
+    let preference =
+        bookclerk_library::KeyStorePreference::from_config(config.auth.key_store, default);
+    bookclerk_library::set_key_store_preference(preference);
+    preference
+}
+
 /// What [`start_host`] hands back: the running host and its router.
 struct HostParts {
     /// Shared daemon state the background runtimes already hold.
@@ -426,6 +498,7 @@ async fn start_host(config: Config, mode: HostMode) -> anyhow::Result<HostParts>
         };
     }
     bookclerk_plugin_host::retry_abandoned_acl_journals(&paths.files_dir);
+    apply_key_store(&config, mode);
 
     let opened = match pending_join {
         None => bookclerk_plugin_host::open_host_control_plane(&config).await?,
@@ -944,5 +1017,142 @@ mod checkin_tests {
             dir.path(),
             super::unix_now_ms()
         ));
+    }
+}
+
+#[cfg(test)]
+mod key_store_tests {
+    use super::{apply_key_store, Config, HostMode};
+    use bookclerk_config::KeyStoreKind;
+    use bookclerk_keystore::{KeystoreErrorKind, MemoryVault, OsKeychain};
+    use bookclerk_library::{inspect_master_key, KeyStorePreference, MasterKeyFormat};
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+    /// Serializes tests that swap the process-wide keychain and preference.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// An in-memory keychain for one test; the OS keychain and the file
+    /// default come back on drop.
+    struct Scope {
+        /// Held for the scope's lifetime.
+        _guard: MutexGuard<'static, ()>,
+        /// The in-memory keychain the scope installed.
+        vault: Arc<MemoryVault>,
+    }
+
+    impl Scope {
+        fn new() -> Self {
+            let guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+            let vault = Arc::new(MemoryVault::new());
+            bookclerk_library::set_keychain_vault(vault.clone());
+            Self {
+                _guard: guard,
+                vault,
+            }
+        }
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            bookclerk_library::set_keychain_vault(Arc::new(OsKeychain::new()));
+            bookclerk_library::set_key_store_preference(KeyStorePreference::from_config(
+                None,
+                KeyStoreKind::File,
+            ));
+        }
+    }
+
+    /// A config for a fresh files directory holding a raw key.
+    fn config_with_raw_key(files: &std::path::Path, key_store: Option<KeyStoreKind>) -> Config {
+        bookclerk_library::set_key_store_preference(KeyStorePreference::from_config(
+            None,
+            KeyStoreKind::File,
+        ));
+        bookclerk_library::install_master_key(files, &[4u8; 32], None).unwrap();
+        let mut config = Config::load(Some(files.to_path_buf()), None).unwrap();
+        config.auth.password = None;
+        config.auth.key_store = key_store;
+        config
+    }
+
+    #[test]
+    fn the_desktop_default_moves_a_file_key_into_the_keychain() {
+        let scope = Scope::new();
+        let files = tempfile::tempdir().unwrap();
+        let config = config_with_raw_key(files.path(), None);
+        apply_key_store(&config, HostMode::Embedded);
+        let preference = bookclerk_library::key_store_preference();
+        assert_eq!(preference.kind, KeyStoreKind::Keychain);
+        assert!(!preference.required);
+        assert_eq!(
+            inspect_master_key(files.path()).unwrap(),
+            Some(MasterKeyFormat::Keychain)
+        );
+        assert_eq!(scope.vault.len(), 1);
+        // A second start finds the pointer and leaves it alone.
+        apply_key_store(&config, HostMode::Embedded);
+        assert_eq!(scope.vault.len(), 1);
+
+        // A reload that sets the store makes it required; unsetting it
+        // returns to this host's default.
+        let mut reloaded = config.clone();
+        reloaded.auth.key_store = Some(KeyStoreKind::File);
+        let preference = super::refresh_key_store_preference(&reloaded);
+        assert_eq!(preference.kind, KeyStoreKind::File);
+        assert!(preference.required);
+        let preference = super::refresh_key_store_preference(&config);
+        assert_eq!(preference.kind, KeyStoreKind::Keychain);
+        assert!(!preference.required);
+    }
+
+    #[test]
+    fn the_desktop_keeps_the_file_when_the_keychain_refuses() {
+        let scope = Scope::new();
+        let files = tempfile::tempdir().unwrap();
+        let config = config_with_raw_key(files.path(), None);
+        scope.vault.fail_with(Some(KeystoreErrorKind::Unavailable));
+        apply_key_store(&config, HostMode::Embedded);
+        assert_eq!(
+            inspect_master_key(files.path()).unwrap(),
+            Some(MasterKeyFormat::Raw)
+        );
+    }
+
+    #[test]
+    fn the_daemon_and_a_configured_store_never_move_the_key() {
+        let scope = Scope::new();
+        let files = tempfile::tempdir().unwrap();
+        let config = config_with_raw_key(files.path(), None);
+        apply_key_store(&config, HostMode::Listening);
+        assert_eq!(
+            bookclerk_library::key_store_preference().kind,
+            KeyStoreKind::File
+        );
+
+        let configured = config_with_raw_key(files.path(), Some(KeyStoreKind::Keychain));
+        apply_key_store(&configured, HostMode::Embedded);
+        let preference = bookclerk_library::key_store_preference();
+        assert_eq!(preference.kind, KeyStoreKind::Keychain);
+        assert!(preference.required);
+        assert_eq!(
+            inspect_master_key(files.path()).unwrap(),
+            Some(MasterKeyFormat::Raw)
+        );
+        assert!(scope.vault.is_empty());
+
+        // No key yet: nothing to move.
+        let empty = tempfile::tempdir().unwrap();
+        let mut fresh = Config::load(Some(empty.path().to_path_buf()), None).unwrap();
+        fresh.auth.key_store = None;
+        apply_key_store(&fresh, HostMode::Embedded);
+        assert_eq!(inspect_master_key(empty.path()).unwrap(), None);
+
+        // An unreadable master.key is reported and left alone.
+        let broken = tempfile::tempdir().unwrap();
+        std::fs::write(broken.path().join("master.key"), b"nope").unwrap();
+        let mut odd = Config::load(Some(broken.path().to_path_buf()), None).unwrap();
+        odd.auth.key_store = None;
+        apply_key_store(&odd, HostMode::Embedded);
+        assert!(scope.vault.is_empty());
     }
 }

@@ -559,6 +559,10 @@ struct PluginSettingsGroup {
     /// Enabled switch applies only then).
     #[serde(skip_serializing_if = "Option::is_none")]
     placement: Option<crate::config_authority::PlacementView>,
+    /// How outside changes at this destination are followed; absent for
+    /// other plugins and before a destination's first sync pass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    storage_sync: Option<crate::config_authority::StorageSyncView>,
     /// Nodes whose deployment of the instance is `present`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schema(example = json!(["6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"]))]
@@ -2314,6 +2318,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     }
 
     refresh_tray_after_reload(state, &new_cfg).await;
+    // A changed `[auth].key_store` applies to the next key placed.
+    crate::refresh_key_store_preference(&new_cfg);
 
     let mut detail = format!(
         "reloaded {} (master.key wrap={})",
@@ -3058,6 +3064,7 @@ fn build_database_settings_group(
         config_revision: None,
         deployment: None,
         placement: None,
+        storage_sync: None,
         present_on: Vec::new(),
     }
 }
@@ -3266,6 +3273,7 @@ fn instance_settings_group(
             .find(|deployment| deployment.node_id == node_id)
             .cloned(),
         placement: view.placement.clone(),
+        storage_sync: view.storage_sync.clone(),
         present_on: view
             .deployments
             .iter()
@@ -9627,6 +9635,7 @@ mod instance_settings_tests {
             config: None,
             deployments: Vec::new(),
             placement: None,
+            storage_sync: None,
         }
     }
 
