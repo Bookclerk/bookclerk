@@ -1191,6 +1191,8 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
     groups.extend(crate::passkeys::route_groups());
     // TOTP MFA + host second-factor policy.
     groups.extend(crate::totp::route_groups());
+    // The library key's recovery copy (the desktop first run, Settings).
+    groups.extend(crate::master_key_recovery::route_groups());
     groups
 }
 
@@ -1448,6 +1450,7 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::clerk_link::api::post_clerk_start))
         .routes(routes!(crate::clerk_link::api::post_clerk_callback))
         .routes(routes!(crate::clerk_link::api::post_clerk_sign_out))
+        .routes(routes!(crate::clerk_link::requests::post_clerk_request))
         // Store connections across linked libraries: the branch's person
         // only (the handler checks).
         .routes(routes!(

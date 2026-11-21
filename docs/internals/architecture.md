@@ -53,7 +53,7 @@ Bookclerk uses four first-class plugin roles (in-process and/or external):
 | Kind | Trait / host | Examples |
 | --- | --- | --- |
 | **Source** | `ContentSource` | `audible`, `libro`, `chirp`, `graphicaudio` |
-| **Output / destination** | storage backends under `[output.*]` | `local`, `s3` |
+| **Output / destination** | storage backends under `[output.*]` | `local`, `s3`, `r2` |
 | **Database** | SeaORM connection under `[database]` | `sqlite` (default), `d1` |
 | **Integration** | `Integration` | `audiobookshelf`, SPA portal claim helpers |
 
@@ -96,7 +96,7 @@ PostgreSQL 16+, or Cloudflare D1
 | Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |
 | Search | `bookclerk-search` |
 | Discovery / recommendations | `bookclerk-discover` (via registered `ContentSource` catalog APIs) |
-| Storage backends | `bookclerk-storage` (local; the S3 backend sits behind its `s3` feature, which only the `s3` destination plugin enables, so the hosts do not link the AWS SDK) |
+| Storage backends | `bookclerk-storage` (local; the S3 backend sits behind its `s3` feature, which only the `s3` and `r2` destination plugins enable, so the hosts do not link the AWS SDK) |
 | TLS provider and HTTP client | `bookclerk-tls` (one rustls provider, aws-lc-rs; see [tls.md](tls.md)) |
 | OS keychain | `bookclerk-keystore` (the item that holds the library key on a keychain install; see [Master key store](../adr/master-key-store.md)) |
 | Public Audible catalog | `bookclerk-audible-catalog` (unauthenticated search, genres, ratings and reviews; linked by the Audible guest and `bookclerk-enrich`) |

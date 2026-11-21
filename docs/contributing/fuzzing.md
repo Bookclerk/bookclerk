@@ -54,7 +54,9 @@ boundary extends it.
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
+| `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
+| `origin_request` | What a relay ingress plugin hands the host: the framed `POST /origin/fetch` body on the isolate bridge, request heads (method, target, headers, client address), response heads, and the public origin `Ingress.start` reports | `bookclerk-plugin-abi::origin` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
 | `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
@@ -465,6 +467,22 @@ only that. The others check:
   bucket does not fail the message. The
   shared oracle is `fuzz/oracles/s3_event.rs`, replayed from
   `bookclerk-storage`.
+- **`r2_event`**: byte 0 picks the boundary (even: one R2 event
+  notification, odd: a Queues pull reply) and, with bit 1, the
+  destination's key prefix (clear: none, set: `library/`). Parsing never
+  panics and answers the same twice; an input over its cap (1 MiB for an
+  event, 24 MiB for a reply) is refused as too large. An accepted event
+  yields at most one change, with a non-empty key without NUL, within
+  1,024 bytes, listing fields only on an upsert and no version or
+  sequencer, and an independent walk of the same JSON finds exactly that
+  change; events for another account or bucket, or keys outside the
+  prefix, are skipped before the key is checked. An accepted reply says
+  `success: true`, lists at most 100 deliveries, one per message, each
+  with the message's own non-empty lease id within 4,096 bytes and a body
+  that is either the text as sent or, read by the oracle's own base64
+  decoder, JSON; each body is then checked as an event. The reply, each
+  message, an event and its object must be JSON objects. The shared oracle
+  is `fuzz/oracles/r2_event.rs`, replayed from `bookclerk-storage`.
 - **`socket_request`**: byte 0 modulo 3 picks a socket URL (0), a Cap'n
   Proto `SocketConnectRequest` (1) or a `SocketMessage` (2). Every URL the
   parser accepts is one a WHATWG URL parser (the `url` crate) reads as the
@@ -477,6 +495,22 @@ only that. The others check:
   restated id, frame and attachment bounds; and a decoded message
   survives `write` then `read` unchanged. The shared oracle is
   `fuzz/oracles/socket_request.rs`, replayed from `bookclerk-plugin-abi`.
+- **`origin_request`**: byte 0 modulo 4 picks a framed `POST /origin/fetch`
+  body (0), a request head's JSON (1), a response head's JSON (2) or an
+  ingress origin (3). Splitting waits for more bytes exactly while the frame
+  is incomplete, refuses exactly the declared lengths past the head cap, and
+  otherwise returns the declared head and every byte after it, so the
+  request body starts at the right byte and a plugin can't make the host
+  buffer without bound. A request head is accepted exactly when an
+  independent restatement of the method, origin-form target, header and
+  client-address rules holds; an accepted head keeps its method, target and
+  client, drops exactly `host` and the forwarding fields, and frames back to
+  itself. Response heads agree with the restated status and header rules.
+  An origin is accepted exactly when the restated host-name rules hold, and
+  a WHATWG URL parser (the `url` crate) reads every accepted origin as
+  `https` and the same host with no port, user info, path, query or
+  fragment. The shared oracle is `fuzz/oracles/origin_request.rs`, replayed
+  from `bookclerk-plugin-abi`.
 - **`socket_broker`**: the input is a script of operations on the broker's
   socket table (connect requests, handshake outcomes, frames and closes
   from the server, sends, attachments and closes from the plugin), checked
@@ -538,8 +572,9 @@ only that. The others check:
   a `requests.finish` that passes its validator names a plain job id
   and a positive generation. A
   `window.page` that passes its validator carries at most 100 works, each
-  once, with plain identifiers, 1 to 8 distinct owned editions with a
-  title, a copy (where one is stated) with a lowercase media type, a
+  once, with plain identifiers, 1 to 8 distinct editions with a title,
+  each owned, or reachable and then neither the person's nor with a copy,
+  a copy (where one is stated) with a lowercase media type, a
   bitrate of 1 to 20000 kbit/s, a short lowercase source store and a
   plain version, and a plain next cursor (up to 64 letters, digits and `-`)
   sorting past the one asked with. A `scan.removed` or

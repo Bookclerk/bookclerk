@@ -286,6 +286,8 @@ Store credentials and other runtime secrets are stored in the
 - S3 destination keys, which are `secret` settings of the `s3` plugin
   instance. With none set, the guest falls back to the AWS SDK default
   provider chain.
+- R2 destination keys and its queue API token, which are `secret`
+  settings of the `r2` plugin instance.
 
 > [!NOTE]
 > Bookclerk no longer creates or reads an `Accounts/` directory.
@@ -365,6 +367,27 @@ bookclerk config master-key import --from ./bookclerk-recovery.key
 `import` restores it, or a copied `master.key`, on an install that has no
 key yet, into that install's store. `bookclerk config master-key status`
 shows the store and whether the key is wrapped.
+
+The operator can also save a recovery copy from the web app:
+
+- **The desktop window asks once.** Starting a library in the window
+  asks for a recovery password (at least 12 characters) and downloads
+  `bookclerk-recovery-key.bck`, wrapped with it. The step can be skipped
+  after a warning.
+- **Settings reminds.** While the key is in the keychain and no copy is
+  recorded as saved, Settings → Server Settings shows a reminder with the
+  same form, for the desktop window and for a server with
+  `key_store = "keychain"`. An Owner sees the reminder under Account,
+  with a pointer to **Elevate to Operator**.
+- **The answer is per key.** It is kept in `master-key-recovery.json`
+  beside `master.key`, with the key's fingerprint, so a restored or
+  replaced key asks again. The file holds no secret.
+
+The routes behind it: `GET /api/config/master-key` (the operator or an
+Owner) reads the status; `POST /api/config/master-key/recovery-copy` (the
+password goes in the body) and `PUT
+/api/config/master-key/recovery-copy/state` are the operator's. See the
+[Web API](api/README.md) reference.
 
 ### Bootstrap secrets stay outside the database
 

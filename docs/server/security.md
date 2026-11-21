@@ -26,8 +26,8 @@ store sign-ins, the operator token and plugin secrets.
 > [!WARNING]
 > Back up the key together with the database: a copy of `master.key`, or
 > for a key in the keychain a recovery copy from
-> `bookclerk config master-key export`. Without the key, sealed values
-> cannot be read.
+> `bookclerk config master-key export` or Settings → Server Settings.
+> Without the key, sealed values cannot be read.
 
 Details: [Database](database.md) and
 [Configuration → Bootstrap files](configuration.md#bootstrap-files).
