@@ -107,8 +107,13 @@ pub fn scanned_title(plugin_id: &str, book: abi::ScanBook) -> Option<ScannedTitl
             None
         }
     };
+    let is_explicit = bookclerk_storefront::abi::explicitness_to_flag(book.explicitness);
     let book = scan_book_to_new(plugin_id, book)?;
-    Some(ScannedTitle { book, listing })
+    Some(ScannedTitle {
+        book,
+        listing,
+        is_explicit,
+    })
 }
 
 /// Maps a guest scan row onto the [`NewBook`] fields the library records
@@ -290,6 +295,26 @@ mod tests {
         );
         assert_eq!(new.purchased_at, None);
         assert_eq!(new.categories.as_deref(), Some("Fantasy"));
+    }
+
+    /// A scan record's explicit flag reaches the scanned title.
+    #[test]
+    fn a_scanned_title_carries_the_explicit_flag() {
+        for (explicitness, flag) in [
+            (abi::Explicitness::Unknown, None),
+            (abi::Explicitness::Clean, Some(false)),
+            (abi::Explicitness::Explicit, Some(true)),
+        ] {
+            let book = abi::ScanBook {
+                account_id: "a".into(),
+                product_id: "p".into(),
+                title: "T".into(),
+                explicitness,
+                ..audio_book()
+            };
+            let title = scanned_title("echo", book).expect("title");
+            assert_eq!(title.is_explicit, flag);
+        }
     }
 
     #[test]

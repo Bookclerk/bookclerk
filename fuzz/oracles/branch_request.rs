@@ -4,7 +4,10 @@
 //!
 //! The boundary is the body of `POST /api/branch-requests`, which any
 //! signed-in user of a library sends to ask a branch for a book it listed
-//! ([`parse_branch_request`]). The invariant, checked against this file's
+//! ([`parse_branch_request`]), and its sibling `POST /api/download-requests`,
+//! which asks the library to download a book it holds on one of its own
+//! store accounts ([`parse_download_request`]). Both read the same bytes
+//! here. The invariant for the first, checked against this file's
 //! own reading of the bytes as an untyped JSON value rather than the typed
 //! body: a body is accepted exactly when it is one JSON object with no
 //! repeated keys and no keys besides `work_id` (a string, required) and
@@ -12,9 +15,10 @@
 //! to 64 ASCII letters, digits and `-`, and a trimmed `node_id` is 1 to 58
 //! lowercase ASCII letters, digits, `.`, `_` and `-`. An accepted body
 //! yields those trimmed ids; a refused one is `Invalid`, never another
-//! error.
+//! error. The second accepts exactly the bodies the first accepts that
+//! have no `node_id` key at all, with the same trimmed work id.
 
-use bookclerk_library::control_plane::parse_branch_request;
+use bookclerk_library::control_plane::{parse_branch_request, parse_download_request};
 use bookclerk_library::LibraryError;
 use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
 use serde_json::Value;
@@ -46,17 +50,19 @@ enum Expected {
 ///
 /// # Returns
 ///
-/// True when the parser accepted the body.
+/// True when the branch request parser accepted the body.
 ///
 /// # Panics
 ///
-/// When the parser disagrees with the oracle.
+/// When either parser disagrees with the oracle.
 pub fn check(data: &[u8]) -> bool {
     if data.len() > MAX_INPUT_BYTES {
         return false;
     }
+    let expected = expected(data);
+    check_download(data, &expected);
     let got = parse_branch_request(data);
-    match expected(data) {
+    match expected {
         Expected::Refused => {
             assert!(
                 matches!(got, Err(LibraryError::Invalid(_))),
@@ -74,6 +80,42 @@ pub fn check(data: &[u8]) -> bool {
             true
         }
     }
+}
+
+/// Checks the download request parser against `expected`, the branch
+/// request reading of the same bytes: accepted only without a `node_id`
+/// key, with the same work id.
+///
+/// # Panics
+///
+/// When the parser disagrees.
+fn check_download(data: &[u8], expected: &Expected) {
+    let got = parse_download_request(data);
+    match expected {
+        Expected::Accepted(work_id, _) if !has_node_id_key(data) => {
+            let ask = got.unwrap_or_else(|err| {
+                panic!(
+                    "download {:?} refused: {err:?}",
+                    String::from_utf8_lossy(data)
+                )
+            });
+            assert_eq!(&ask.work_id, work_id);
+        }
+        _ => assert!(
+            matches!(got, Err(LibraryError::Invalid(_))),
+            "download {:?}: {got:?}",
+            String::from_utf8_lossy(data)
+        ),
+    }
+}
+
+/// True when the top-level JSON object in `data` has a `node_id` key, of
+/// any value (`null` included).
+fn has_node_id_key(data: &[u8]) -> bool {
+    matches!(
+        serde_json::from_slice::<Value>(data),
+        Ok(Value::Object(fields)) if fields.contains_key("node_id")
+    )
 }
 
 /// True for a documented work id, checked byte by byte.

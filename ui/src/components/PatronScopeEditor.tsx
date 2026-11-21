@@ -78,8 +78,8 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
     void load();
   }, [load]);
 
-  function edit(rules: ScopeRule[]) {
-    setDraft({ rules });
+  function edit(rules: ScopeRule[], explicit: PatronScope["explicit"] = draft.explicit) {
+    setDraft({ rules, explicit });
     setDirty(true);
     setSaved(false);
   }
@@ -161,8 +161,21 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
       {loaded && !own ? <p className="text-sm text-ink/70">{scopeSummary(draft)}</p> : null}
       {loaded && own ? (
         <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={draft.explicit === "hide"}
+              disabled={!editable}
+              onChange={(e) => edit(draft.rules, e.target.checked ? "hide" : "allow")}
+            />
+            Hide books marked explicit
+          </label>
           {draft.rules.length === 0 ? (
-            <p className="text-sm text-ink/50">No rules: every book is visible.</p>
+            <p className="text-sm text-ink/50">
+              {draft.explicit === "hide"
+                ? "No rules: every book not marked explicit is visible."
+                : "No rules: every book is visible."}
+            </p>
           ) : (
             <ul className="space-y-1.5">
               {draft.rules.map((rule, index) => (

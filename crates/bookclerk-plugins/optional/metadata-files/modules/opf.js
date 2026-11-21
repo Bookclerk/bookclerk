@@ -244,6 +244,7 @@ function replaces(kids, element, field, roles) {
         case "expressionKind":
         case "chapters":
         case "duration":
+        case "explicitness":
             return false;
     }
 }

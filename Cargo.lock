@@ -1953,6 +1953,7 @@ dependencies = [
  "apple-native-keyring-store",
  "futures",
  "keyring-core",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "uuid",
@@ -2131,6 +2132,18 @@ dependencies = [
  "url",
  "utoipa",
  "zeroize",
+]
+
+[[package]]
+name = "bookclerk-player-api"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "url",
+ "utoipa",
 ]
 
 [[package]]
@@ -2781,6 +2794,7 @@ dependencies = [
  "bookclerk-media",
  "bookclerk-node-client",
  "bookclerk-node-proto",
+ "bookclerk-player-api",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",

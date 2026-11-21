@@ -55,6 +55,9 @@ pub struct Model {
     pub rating_count: Option<i64>,
     /// `1` when the store marks it abridged, `0` unabridged, null unknown.
     pub is_abridged: Option<i64>,
+    /// `1` when the store marks it explicit (adult) content, `0` clean,
+    /// null unknown.
+    pub is_explicit: Option<i64>,
     /// RFC 3339 time of the latest scan or catalog answer that reported it.
     pub observed_at: String,
     /// RFC 3339 timestamp when the row was inserted.

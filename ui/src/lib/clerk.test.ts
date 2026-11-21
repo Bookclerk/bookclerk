@@ -138,11 +138,11 @@ describe("card requests", () => {
     expect(done.library_signed_out).toBe(false);
   });
 
-  it("ask a library for a book its branches hold", async () => {
+  it("ask a library for a copy of a book", async () => {
     const fetchMock = stubFetch({ library_id: "lib-1" });
-    const sentBack = await requestFromLibrary("lib-1", "work-7");
+    const sentBack = await requestFromLibrary("lib-1", "work-7", "library");
     expect(fetchMock.mock.calls[0][0]).toBe("/api/config/clerk/request");
-    expect(sent(fetchMock)).toEqual({ library_id: "lib-1", work_id: "work-7" });
+    expect(sent(fetchMock)).toEqual({ library_id: "lib-1", work_id: "work-7", from: "library" });
     expect(sentBack.library_id).toBe("lib-1");
   });
 
@@ -163,7 +163,8 @@ describe("clerkRequestFailure", () => {
   it("says what the library answered", () => {
     const failed = (code: string) => clerkRequestFailure(new ApiError(400, "x", { code }));
     expect(failed("not_allowed")).toMatch(/hasn't allowed you/);
-    expect(failed("not_listed")).toMatch(/No branch/);
+    expect(failed("not_listed")).toMatch(/can't get this book/);
+    expect(failed("already_there")).toMatch(/already has a copy/);
     expect(failed("card_refused")).toMatch(/Sign in to it again/);
     expect(failed("library_busy")).toMatch(/busy/);
     expect(failed("not_found")).toMatch(/no longer holds a library card/);

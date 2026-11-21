@@ -288,7 +288,7 @@ credit_roles = ["author", "narrator"]
 - `fields`: what the format carries, by wire name (`title`, `subtitle`,
   `description`, `publisher`, `publishedAt`, `language`, `genres`,
   `tags`, `abridgement`, `expressionKind`, `identifiers`, `credits`,
-  `series`, `chapters`, `duration`). Never empty, no repeats.
+  `series`, `chapters`, `duration`, `explicitness`). Never empty, no repeats.
 - `credit_roles`: the roles the format carries. Required exactly when
   `fields` names `credits`.
 - `writes`: whether `render` can write the format. Defaults to false, for

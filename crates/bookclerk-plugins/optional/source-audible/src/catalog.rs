@@ -765,6 +765,7 @@ fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
         price_label: p.price_label,
         rating_overall: p.rating_overall,
         rating_count: p.rating_count,
+        is_explicit: p.is_explicit,
         work_kind: bookclerk_storefront::records::WorkKind::Book,
         expression_kind: bookclerk_storefront::records::ExpressionKind::Narration,
         media_kind: bookclerk_storefront::records::MediaKind::Audio,
@@ -1103,6 +1104,7 @@ mod tests {
             price_label: None,
             rating_overall: None,
             rating_count: None,
+            is_explicit: None,
         }
     }
 

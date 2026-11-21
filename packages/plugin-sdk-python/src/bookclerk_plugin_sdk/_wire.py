@@ -2833,6 +2833,7 @@ def _write_scan_book(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(12, v["purchasedAt"])
     if v.get("categories") is not None:
         s.set_text(13, v["categories"])
+    s.set_u16(8, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
 
 
 def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
@@ -2847,6 +2848,7 @@ def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
         "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(7, 1, 1)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
         "abridgement": _from_ord(A.ABRIDGEMENTS, s.get_u16(7), "Abridgement"),
+        "explicitness": _from_ord(A.EXPLICITNESSS, s.get_u16(8), "Explicitness"),
     }
     marketplace = s.get_text(3)
     if not (marketplace == ""):
@@ -2878,12 +2880,12 @@ def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_scan_book_codec = _Codec(2, 14, _write_scan_book, _read_scan_book)
-"""Wire codec for ``ScanBook`` (2 data words, 14 pointers)."""
+_scan_book_codec = _Codec(3, 14, _write_scan_book, _read_scan_book)
+"""Wire codec for ``ScanBook`` (3 data words, 14 pointers)."""
 
 
 def _write_scan_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["books"]), 2, 14)
+    items = s.init_struct_list(0, len(v["books"]), 3, 14)
     for item, elem in zip(items, v["books"], strict=True):
         _scan_book_codec.write(item, elem, caps)
     s.set_text_list(1, v["removed"])
@@ -2897,7 +2899,7 @@ def _write_scan_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 
 def _read_scan_page(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 2, 14)],
+        "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 3, 14)],
         "removed": s.get_text_list(1),
         "nextCursor": s.get_text(2),
         "syncToken": s.get_text(3),
@@ -3397,6 +3399,7 @@ def _write_catalog_hit(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(16, v["parentProductId"])
     if v.get("rankHint") is not None:
         s.set_u32(10, v["rankHint"])
+    s.set_u16(22, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
 
 
 def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
@@ -3411,6 +3414,7 @@ def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
         "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(13, 1, 2)],
         "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(14, 1, 1)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(15, 0, 3)],
+        "explicitness": _from_ord(A.EXPLICITNESSS, s.get_u16(22), "Explicitness"),
     }
     url = s.get_text(2)
     if not (url == ""):
@@ -4948,6 +4952,7 @@ def _write_metadata_file_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
         _metadata_chapter_codec.write(item, elem, caps)
     if v.get("durationMs") is not None:
         s.set_u64(1, v["durationMs"])
+    s.set_u16(2, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
 
 
 def _read_metadata_file_record(s: _StructReader, caps: _CapTable) -> Any:
@@ -4962,6 +4967,7 @@ def _read_metadata_file_record(s: _StructReader, caps: _CapTable) -> Any:
         "creditRoles": [_from_ord(A.CREDIT_ROLES, v, "CreditRole") for v in s.get_u16_list(11)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(12, 0, 3)],
         "chapters": [_metadata_chapter_codec.read(item, caps) for item in s.get_struct_list(13, 3, 1)],
+        "explicitness": _from_ord(A.EXPLICITNESSS, s.get_u16(2), "Explicitness"),
     }
     title = s.get_text(1)
     if not (title == ""):

@@ -131,6 +131,8 @@ pub struct ListingDetail {
     pub rating_count: Option<i64>,
     /// Abridged (`true`), unabridged (`false`) or unknown.
     pub is_abridged: Option<bool>,
+    /// Explicit (adult) content (`true`), clean (`false`) or unknown.
+    pub is_explicit: Option<bool>,
 }
 
 impl ListingDetail {
@@ -184,6 +186,7 @@ impl ListingDetail {
             rating_overall: hit.rating_overall,
             rating_count: hit.rating_count,
             is_abridged: hit.is_abridged,
+            is_explicit: hit.is_explicit,
         }
     }
 
@@ -225,6 +228,9 @@ impl ListingDetail {
             || self
                 .is_abridged
                 .is_some_and(|v| row.is_abridged != Some(i64::from(v)))
+            || self
+                .is_explicit
+                .is_some_and(|v| row.is_explicit != Some(i64::from(v)))
     }
 }
 
@@ -344,7 +350,8 @@ fn detail_update(listing_id: &str, detail: &ListingDetail, now: &str) -> TypedDb
          length_minutes = COALESCE(?, length_minutes), language = COALESCE(?, language), \
          cover_url = COALESCE(?, cover_url), url = COALESCE(?, url), \
          rating_overall = COALESCE(?, rating_overall), rating_count = COALESCE(?, rating_count), \
-         is_abridged = COALESCE(?, is_abridged), observed_at = ?, updated_at = ? \
+         is_abridged = COALESCE(?, is_abridged), is_explicit = COALESCE(?, is_explicit), \
+         observed_at = ?, updated_at = ? \
          WHERE id = ?",
         vec![
             text_trim(detail.subtitle.as_deref()),
@@ -363,6 +370,7 @@ fn detail_update(listing_id: &str, detail: &ListingDetail, now: &str) -> TypedDb
             real_opt(detail.rating_overall),
             batch::int_opt(detail.rating_count),
             batch::int_opt(detail.is_abridged.map(i64::from)),
+            batch::int_opt(detail.is_explicit.map(i64::from)),
             batch::text(now),
             batch::text(now),
             batch::text(listing_id),
@@ -427,6 +435,7 @@ fn record_of(m: store_listings::Model) -> CatalogListingRecord {
             rating_overall: m.rating_overall,
             rating_count: m.rating_count,
             is_abridged: m.is_abridged.map(|v| v != 0),
+            is_explicit: m.is_explicit.map(|v| v != 0),
         },
         id: m.id,
         plugin_key: m.plugin_key,

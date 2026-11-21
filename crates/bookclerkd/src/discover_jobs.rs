@@ -330,6 +330,7 @@ pub async fn run_discover_feed(
         bytes = report.stored_bytes,
         "stored discover feed"
     );
+    warm_feed_covers(state, &library, &subject).await;
     // Open Discover pages on this node re-read at once; other nodes see the
     // new `computed_at` on their next revision read.
     crate::live::poke(bookclerk_library::control_plane::LiveTopic::Discover);
@@ -340,6 +341,41 @@ pub async fn run_discover_feed(
         report.shelves,
         report.candidates
     ))
+}
+
+/// Starts downloading the covers of the feed just stored, first shelves
+/// first, so the page that opens next finds them cached.
+///
+/// Without this, the first page load asked for every cover at once, and each
+/// one waited on its download and then on the media worker, which a small
+/// machine runs one job at a time (the hosted demo took 0.8 to 1.7 s per
+/// cover). The page's own request still prefetches what this left out; a
+/// cover already cached or downloading is skipped.
+///
+/// # Arguments
+///
+/// * `state` - Daemon state holding the cover service.
+/// * `library` - Store the feed was written to.
+/// * `subject` - Whose feed it is.
+async fn warm_feed_covers(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    subject: &DiscoverSubject,
+) {
+    match bookclerk_discover::stored_subject_feed(library, subject, &[]).await {
+        Ok(Some(stored)) => crate::covers::prefetch(
+            state,
+            stored
+                .feed
+                .shelves
+                .iter()
+                .flat_map(|shelf| shelf.items.iter().filter_map(|item| item.cover_url.clone())),
+        ),
+        Ok(None) => {}
+        Err(err) => {
+            tracing::debug!(error = %err, "could not read the stored feed to warm its covers")
+        }
+    }
 }
 
 /// True when a fetch or ranking for `subject` is waiting or running, so the

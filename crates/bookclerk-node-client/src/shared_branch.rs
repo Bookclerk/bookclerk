@@ -896,8 +896,9 @@ pub fn apply_shared_branch_bootstrap(
     // that is the store), so `master.key` is either the envelope or the
     // pointer to it. A join that fails before publishing deletes the new
     // item again; the old `master.key` still names the old key.
-    let master_key = bookclerk_library::store_master_key(bootstrap.dek.expose(), password)
-        .map_err(|err| record("master.key", &err))?;
+    let master_key =
+        bookclerk_library::store_master_key(files_dir, bootstrap.dek.expose(), password)
+            .map_err(|err| record("master.key", &err))?;
     let publish = || -> Result<(), JoinError> {
         // `0700`, as for a minted key; done before any target changes.
         bookclerk_library::prepare_master_key_dir(files_dir)
@@ -952,7 +953,7 @@ pub fn apply_shared_branch_bootstrap(
         }
         return Err(err);
     }
-    if password.is_none() && !master_key.in_keychain() {
+    if password.is_none() && master_key.store() == bookclerk_config::KeyStoreKind::File {
         bookclerk_library::warn_unwrapped_master_key(&bookclerk_library::master_key_path(
             files_dir,
         ));

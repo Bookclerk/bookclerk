@@ -5701,12 +5701,12 @@ export const SeriesEntryCodec: StructCodec<T.SeriesEntry> = {
 };
 
 /**
- * Wire codec for `ScanBook` (2 data words, 14 pointers).
+ * Wire codec for `ScanBook` (3 data words, 14 pointers).
  *
  * @internal
  */
 export const ScanBookCodec: StructCodec<T.ScanBook> = {
-  dataWords: 2,
+  dataWords: 3,
   pointerCount: 14,
   write(s, v, caps) {
     s.setText(0, v.accountId ?? "");
@@ -5764,6 +5764,7 @@ export const ScanBookCodec: StructCodec<T.ScanBook> = {
     if (v.categories !== undefined) {
       s.setText(13, v.categories ?? "");
     }
+    s.setUint16(8, ord(A.EXPLICITNESSS, v.explicitness ?? A.EXPLICITNESSS[0]!, "Explicitness"));
   },
   read(s, caps) {
     const out: T.ScanBook = {
@@ -5777,6 +5778,7 @@ export const ScanBookCodec: StructCodec<T.ScanBook> = {
       credits: s.getStructList(7, 1, 1).map((item) => CreditCodec.read(item, caps)),
       seriesEntries: s.getStructList(8, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
       abridgement: fromOrd(A.ABRIDGEMENTS, s.getUint16(7), "Abridgement"),
+      explicitness: fromOrd(A.EXPLICITNESSS, s.getUint16(8), "Explicitness"),
     };
     const marketplaceValue = s.getText(3);
     if (!(marketplaceValue === "")) {
@@ -5829,7 +5831,7 @@ export const ScanPageCodec: StructCodec<T.ScanPage> = {
   write(s, v, caps) {
     {
       const list = v.books ?? [];
-      const items = s.initStructList(0, list.length, 2, 14);
+      const items = s.initStructList(0, list.length, 3, 14);
       for (let i = 0; i < items.length; i++) {
         ScanBookCodec.write(items[i]!, list[i]!, caps);
       }
@@ -5845,7 +5847,7 @@ export const ScanPageCodec: StructCodec<T.ScanPage> = {
   },
   read(s, caps) {
     const out: T.ScanPage = {
-      books: s.getStructList(0, 2, 14).map((item) => ScanBookCodec.read(item, caps)),
+      books: s.getStructList(0, 3, 14).map((item) => ScanBookCodec.read(item, caps)),
       removed: s.getTextList(1),
       nextCursor: s.getText(2),
       syncToken: s.getText(3),
@@ -6547,6 +6549,7 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
     if (v.rankHint !== undefined) {
       s.setUint32(10, v.rankHint ?? 0);
     }
+    s.setUint16(22, ord(A.EXPLICITNESSS, v.explicitness ?? A.EXPLICITNESSS[0]!, "Explicitness"));
   },
   read(s, caps) {
     const out: T.CatalogHit = {
@@ -6560,6 +6563,7 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
       identifiers: s.getStructList(13, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
       credits: s.getStructList(14, 1, 1).map((item) => CreditCodec.read(item, caps)),
       seriesEntries: s.getStructList(15, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
+      explicitness: fromOrd(A.EXPLICITNESSS, s.getUint16(22), "Explicitness"),
     };
     const urlValue = s.getText(2);
     if (!(urlValue === "")) {
@@ -8781,6 +8785,7 @@ export const MetadataFileRecordCodec: StructCodec<T.MetadataFileRecord> = {
     if (v.durationMs !== undefined) {
       s.setUint64(1, BigInt(v.durationMs ?? 0));
     }
+    s.setUint16(2, ord(A.EXPLICITNESSS, v.explicitness ?? A.EXPLICITNESSS[0]!, "Explicitness"));
   },
   read(s, caps) {
     const out: T.MetadataFileRecord = {
@@ -8794,6 +8799,7 @@ export const MetadataFileRecordCodec: StructCodec<T.MetadataFileRecord> = {
       creditRoles: s.getUint16List(11).map((v) => fromOrd(A.CREDIT_ROLES, v, "CreditRole")),
       seriesEntries: s.getStructList(12, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
       chapters: s.getStructList(13, 3, 1).map((item) => MetadataChapterCodec.read(item, caps)),
+      explicitness: fromOrd(A.EXPLICITNESSS, s.getUint16(2), "Explicitness"),
     };
     const titleValue = s.getText(1);
     if (!(titleValue === "")) {

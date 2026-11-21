@@ -94,7 +94,8 @@ fn listing_identities() -> sea_orm::Select<store_listings::Entity> {
             | store_listings::Column::Url
             | store_listings::Column::RatingOverall
             | store_listings::Column::RatingCount
-            | store_listings::Column::IsAbridged => {
+            | store_listings::Column::IsAbridged
+            | store_listings::Column::IsExplicit => {
                 select.column_as(Expr::cust("NULL"), sea_orm::IdenStatic::as_str(&column))
             }
         };

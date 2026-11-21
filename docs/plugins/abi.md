@@ -1339,6 +1339,7 @@ records. Both describe a title in structured fields, following the
 | `seriesEntries` | `{ name, position?, storeSeriesId? }` entries, one per series the work belongs to. `position` is the label as the store prints it (`1`, `2.5`, `1-3`) |
 | `parentProductId` | The show's product id, on a podcast episode. Only podcasts keep it |
 | `language`, `abridgement` | Content language, and `unknown` (the default), `unabridged` or `abridged` |
+| `explicitness` | Whether the store marks the edition as explicit (adult) content: `unknown` (the default), `clean` or `explicit`. The host keeps it on the store listing, so a patron scope can hide explicit books |
 
 Every record names all three kinds. Each kind enum starts with
 `unspecified`, which is what a record that forgets the field sends, and
@@ -1381,7 +1382,7 @@ The typed methods on `MetadataProvider` and `MetadataEntrypoint` are:
 
 A `MetadataRecord` carries the same [book record](#book-records) fields as
 a `CatalogHit` (kinds, identifiers, credits, series, language,
-abridgement), plus `description`, `coverUrl`, `url`, `publisher`,
+abridgement; not `explicitness`, which comes from stores and files), plus `description`, `coverUrl`, `url`, `publisher`,
 `lengthMinutes`, `publishedAt`, `categories` and an optional rating. It has
 no store product id or price, because nothing is sold.
 
@@ -1518,7 +1519,10 @@ A `MetadataFileRecord` lists in `present` every field the file states,
 including a field it states as empty. A field the file does not mention
 stays out of `present`: absent means unknown, not cleared. `creditRoles`
 does the same for credits: it names each role the file states, so a file
-that lists only narrators says nothing about authors.
+that lists only narrators says nothing about authors. `explicitness`
+(`unknown`, `clean` or `explicit`) says whether the file marks the edition
+as explicit content, as Audiobookshelf's `metadata.json` does with
+`explicit`.
 
 The host checks both directions:
 

@@ -1237,6 +1237,11 @@ impl LibraryStore {
         } else {
             crate::db_atomic::delete_user(&self.db, id).await?;
         }
+        // The user's player passwords and cards are swept after the plan,
+        // which stays within the smallest adapter's `maxStatements`.
+        // Until then they cannot sign in: a card is read through its
+        // session row and a password through its user, both deleted.
+        self.sweep_ended_player_rows().await?;
         for wish in wishes {
             self.publish_wishlist_changed(&wish.uuid, wish.identity_id, "deleted")
                 .await;
@@ -1280,6 +1285,24 @@ impl LibraryStore {
                 .map_err(LibraryError::Orm)?;
             claim_tickets::Entity::delete_many()
                 .filter(claim_tickets::Column::IdentityId.eq(identity.id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let card_sessions = sea_orm::sea_query::Query::select()
+                .column(portal_sessions::Column::Id)
+                .from(portal_sessions::Entity)
+                .and_where(portal_sessions::Column::IdentityId.eq(identity.id))
+                .to_owned();
+            crate::entities::player_card_tokens::Entity::delete_many()
+                .filter(
+                    crate::entities::player_card_tokens::Column::SessionId
+                        .in_subquery(card_sessions.clone()),
+                )
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            crate::entities::player_cards::Entity::delete_many()
+                .filter(crate::entities::player_cards::Column::SessionId.in_subquery(card_sessions))
                 .exec(txn)
                 .await
                 .map_err(LibraryError::Orm)?;
@@ -1370,6 +1393,11 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)?;
         crate::entities::bookmarks::Entity::delete_many()
             .filter(crate::entities::bookmarks::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        crate::entities::player_passwords::Entity::delete_many()
+            .filter(crate::entities::player_passwords::Column::UserId.eq(id))
             .exec(txn)
             .await
             .map_err(LibraryError::Orm)?;
@@ -2622,6 +2650,21 @@ impl LibraryStore {
         else {
             return Ok(None);
         };
+        self.touch_session_identity(session, slide).await
+    }
+
+    /// The identity of a live session row, touching the row at most once a
+    /// minute and, with `slide`, moving its expiry to `slide` from now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or the touch fails.
+    pub(crate) async fn touch_session_identity(
+        &self,
+        session: portal_sessions::Model,
+        slide: Option<chrono::Duration>,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
+        let now = now_str();
         let identity_id = session.identity_id;
         let should_touch = match parse_dt_opt(session.last_used_at.as_deref()) {
             None => true,
@@ -4222,7 +4265,7 @@ impl LibraryStore {
         let book = decoded_book(book);
         require_plugin_key(&book)?;
         let listing = listing_from_book(&book).map_err(|err| invalid_listing(&book, &err))?;
-        self.record_held_title(&listing, &book).await
+        self.record_held_title(&listing, &book, None).await
     }
 
     /// Updates a title's store text and the fields it offers its work,
@@ -4266,14 +4309,18 @@ impl LibraryStore {
     ///
     /// As [`Self::upsert_book`].
     pub async fn upsert_scanned_title(&self, title: &ScannedTitle) -> Result<AcquireTitle> {
-        let Some(listing) = &title.listing else {
-            return self.upsert_book(&title.book).await;
-        };
         let book = decoded_book(&title.book);
         require_plugin_key(&book)?;
-        let mut listing = listing.clone();
-        listing.key.plugin_key.clone_from(&book.plugin_key);
-        self.record_held_title(&listing, &book).await
+        let listing = match &title.listing {
+            Some(listing) => {
+                let mut listing = listing.clone();
+                listing.key.plugin_key.clone_from(&book.plugin_key);
+                listing
+            }
+            None => listing_from_book(&book).map_err(|err| invalid_listing(&book, &err))?,
+        };
+        self.record_held_title(&listing, &book, title.is_explicit)
+            .await
     }
 
     /// Records a page of scanned titles as [`Self::upsert_scanned_title`]
@@ -4323,7 +4370,9 @@ impl LibraryStore {
                 holding_from_book(&book),
                 WorkEnrichment::of_new_book(&book),
             ));
-            details.push(crate::ListingDetail::of_new_book(&book));
+            let mut detail = crate::ListingDetail::of_new_book(&book);
+            detail.is_explicit = title.is_explicit;
+            details.push(detail);
         }
         Ok(self
             .record_listing_page_with_details(&items, &details)
@@ -4332,6 +4381,8 @@ impl LibraryStore {
 
     /// Records `listing` as held by `book`'s account, with `book`'s store
     /// text and the fields it offers its work, and reads the title back.
+    /// `is_explicit` is the store's explicit flag for the listing, when the
+    /// caller knows it (`Some(true)` explicit, `Some(false)` clean).
     ///
     /// # Errors
     ///
@@ -4341,11 +4392,14 @@ impl LibraryStore {
         &self,
         listing: &bookclerk_resolve::Listing,
         book: &NewBook,
+        is_explicit: Option<bool>,
     ) -> Result<AcquireTitle> {
         let plan = self
             .record_listing(listing, &holding_from_book(book))
             .await?;
-        self.record_listing_detail(&plan.listing.id, &crate::ListingDetail::of_new_book(book))
+        let mut detail = crate::ListingDetail::of_new_book(book);
+        detail.is_explicit = is_explicit;
+        self.record_listing_detail(&plan.listing.id, &detail)
             .await?;
         self.fill_work_from_book(&plan.listing.edition_id, &WorkEnrichment::of_new_book(book))
             .await?;
@@ -6352,6 +6406,10 @@ pub struct ScannedTitle {
     /// The listing the plugin's structured record describes; `None` when
     /// only `book` is known.
     pub listing: Option<bookclerk_resolve::Listing>,
+    /// Whether the store marks the edition explicit (adult) content:
+    /// `Some(true)` explicit, `Some(false)` clean, `None` unknown. Kept on
+    /// the listing (`store_listings.is_explicit`).
+    pub is_explicit: Option<bool>,
 }
 
 impl From<NewBook> for ScannedTitle {
@@ -6359,6 +6417,7 @@ impl From<NewBook> for ScannedTitle {
         Self {
             book,
             listing: None,
+            is_explicit: None,
         }
     }
 }
@@ -7231,6 +7290,8 @@ pub(crate) mod overrides;
 pub(crate) mod pacing;
 pub(crate) mod playback;
 pub(crate) mod playback_request;
+pub(crate) mod player_cards;
+pub(crate) mod player_catalog;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod request_queue;

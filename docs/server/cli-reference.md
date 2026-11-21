@@ -1213,15 +1213,16 @@ bookclerk config master-key [OPTIONS] <COMMAND>
 
 Commands:
 
-- [`bookclerk config master-key status`](#bookclerk-config-master-key-status): Show where the key is kept (the file or the OS keychain) and whether it is raw (BCK1) or wrapped (BCK2)
+- [`bookclerk config master-key status`](#bookclerk-config-master-key-status): Show where the key is kept (the file, the OS keychain or systemd-creds) and whether it is raw (BCK1) or wrapped (BCK2)
 - [`bookclerk config master-key wrap`](#bookclerk-config-master-key-wrap): Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in `master.key` or in its OS keychain item
-- [`bookclerk config master-key move`](#bookclerk-config-master-key-move): Move the key to the OS keychain or back into `master.key`, and record the choice as `[auth].key_store` in config.toml
+- [`bookclerk config master-key move`](#bookclerk-config-master-key-move): Move the key to the OS keychain, into a systemd-creds credential, or back into `master.key`, and record the choice as `[auth].key_store` in config.toml
 - [`bookclerk config master-key export`](#bookclerk-config-master-key-export): Write a recovery copy of the key, wrapped with a password read from stdin (never argv)
+- [`bookclerk config master-key credential`](#bookclerk-config-master-key-credential): Write the key's envelope, exactly as stored (BCK1, or BCK2 under the auth password), to stdout for `systemd-creds encrypt`
 - [`bookclerk config master-key import`](#bookclerk-config-master-key-import): Restore the key from a recovery copy (or a copied `master.key`) on an install that has no `master.key`. A wrapped copy's password is read from stdin
 
 #### `bookclerk config master-key status`
 
-Show where the key is kept (the file or the OS keychain) and whether it is raw (BCK1) or wrapped (BCK2)
+Show where the key is kept (the file, the OS keychain or systemd-creds) and whether it is raw (BCK1) or wrapped (BCK2)
 
 ```text
 bookclerk config master-key status [OPTIONS]
@@ -1239,7 +1240,7 @@ bookclerk config master-key wrap [OPTIONS]
 
 #### `bookclerk config master-key move`
 
-Move the key to the OS keychain or back into `master.key`, and record the choice as `[auth].key_store` in config.toml.
+Move the key to the OS keychain, into a systemd-creds credential, or back into `master.key`, and record the choice as `[auth].key_store` in config.toml.
 
 The key itself doesn't change, so every sealed secret stays readable. Stop `bookclerkd` first.
 
@@ -1249,7 +1250,7 @@ bookclerk config master-key move [OPTIONS] <TO>
 
 Arguments:
 
-- `<TO>`: Where to keep the key: `keychain` or `file`
+- `<TO>`: Where to keep the key: `keychain`, `systemd-creds` or `file`
 
 #### `bookclerk config master-key export`
 
@@ -1264,6 +1265,16 @@ bookclerk config master-key export [OPTIONS] --out <OUT>
 Options:
 
 - `--out <OUT>`: File to write (created with mode 0600; never overwritten) (required)
+
+#### `bookclerk config master-key credential`
+
+Write the key's envelope, exactly as stored (BCK1, or BCK2 under the auth password), to stdout for `systemd-creds encrypt`.
+
+For administrators who seal the key into a unit credential themselves (systemd older than 256, or a system credential store): pipe it into `systemd-creds encrypt --name=bookclerk-master-key - <file>`, load that file with `LoadCredentialEncrypted=` in the unit, and set `[auth].key_store = "systemd-creds"`. The next start adopts the credential. Refuses to write to a terminal.
+
+```text
+bookclerk config master-key credential [OPTIONS]
+```
 
 #### `bookclerk config master-key import`
 
@@ -2085,6 +2096,7 @@ Options:
 - `--default`: Set the library's default scope instead of one patron's
 - `--include <FIELD=VALUE>`: Show only books with this value (`genre=Kids`); fields are genre, series, author, narrator, tag (a library tag) and collection. Repeatable: a book needs one
 - `--exclude <FIELD=VALUE>`: Hide books with this value, whatever `--include` says. Repeatable
+- `--hide-explicit`: Hide books a store or metadata file marks as explicit content
 - `--follow-default`: Drop the patron's own scope so they follow the library's default
 
 ### `bookclerk users controls`

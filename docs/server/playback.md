@@ -8,9 +8,8 @@ calls and the rules behind them. The decisions are in the
 
 > [!NOTE]
 > The web app's player and the desktop window's player use this core
-> (see [Listen in the web app](../guide/listening.md)). The
-> app-compatible `/player` API is being built on it and is not in this
-> release.
+> (see [Listen in the web app](../guide/listening.md)). Phone and car
+> apps reach it through the [player API](player-apps.md).
 
 ## What is stored
 

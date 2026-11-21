@@ -130,11 +130,15 @@ pub enum WorkFacet {
     Tag,
     /// Collections (`core.collections`) one of the work's files is in.
     Collection,
+    /// Whether a store marks one of the work's listings explicit (adult)
+    /// content: the single value `explicit`, which a patron scope that
+    /// hides explicit books excludes. Not offered as a Library filter.
+    Explicit,
 }
 
 impl WorkFacet {
     /// Every facet, in the order a work's values are written.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Author,
         Self::Narrator,
         Self::Series,
@@ -143,6 +147,7 @@ impl WorkFacet {
         Self::Source,
         Self::Tag,
         Self::Collection,
+        Self::Explicit,
     ];
 
     /// The stored `facet` value.
@@ -157,6 +162,7 @@ impl WorkFacet {
             Self::Source => "source",
             Self::Tag => "tag",
             Self::Collection => "collection",
+            Self::Explicit => "explicit",
         }
     }
 }
@@ -745,6 +751,12 @@ pub(crate) fn build_work_facets(
         );
         if held_listings.contains(listing.id.as_str()) {
             values.push((WorkFacet::Source, listing.plugin_key.as_str()));
+        }
+        if listing.is_explicit == Some(1) {
+            values.push((
+                WorkFacet::Explicit,
+                crate::control_plane::EXPLICIT_FACET_KEY,
+            ));
         }
     }
     values.extend(inputs.tags.iter().map(|t| (WorkFacet::Tag, t.as_str())));
@@ -1602,6 +1614,91 @@ impl LibraryStore {
     }
 }
 
+impl LibraryStore {
+    /// One page of the library's works by position: `limit` rows from
+    /// `offset` in `query`'s order (reversed when `reversed`), and how
+    /// many rows the query matches in all. `query.after` and
+    /// `query.limit` are not read.
+    ///
+    /// For callers that page by number, such as player apps; the library's
+    /// own pages use [`Self::library_works_page`], whose cursors hold
+    /// still while rows are added.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - Order and filters.
+    /// * `offset` - Rows to skip.
+    /// * `limit` - Most rows to return.
+    /// * `reversed` - True to read the order backwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn library_works_at(
+        &self,
+        query: &WorkPageQuery,
+        offset: u64,
+        limit: u64,
+        reversed: bool,
+    ) -> Result<(Vec<LibraryWorkRow>, u64)> {
+        use library_work_rows::Column as C;
+        use sea_orm::{Order, PaginatorTrait as _};
+        self.ensure_scope_keys(query.scope.as_ref()).await?;
+        let total = filtered_rows(query)
+            .count(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if limit == 0 || offset >= total {
+            return Ok((Vec::new(), total));
+        }
+        let (asc, desc) = if reversed {
+            (Order::Desc, Order::Asc)
+        } else {
+            (Order::Asc, Order::Desc)
+        };
+        let columns: &[(C, &Order)] = match query.sort {
+            WorkSort::Title => &[(C::SortTitle, &asc), (C::WorkId, &asc)],
+            WorkSort::Author => &[
+                (C::SortAuthor, &asc),
+                (C::SortTitle, &asc),
+                (C::WorkId, &asc),
+            ],
+            WorkSort::Added => &[(C::AddedAt, &desc), (C::WorkId, &desc)],
+            WorkSort::Series => &[
+                (C::SortSeries, &asc),
+                (C::SortTitle, &asc),
+                (C::WorkId, &asc),
+            ],
+            WorkSort::Purchased => &[(C::PurchasedAt, &desc), (C::WorkId, &desc)],
+            WorkSort::Length => &[(C::LengthMinutes, &desc), (C::WorkId, &desc)],
+        };
+        let mut select = filtered_rows(query);
+        for (column, order) in columns {
+            select = select.order_by(*column, (*order).clone());
+        }
+        let page = u64::try_from(crate::control_plane::result_page(self)).unwrap_or(1);
+        let models = crate::control_plane::read_shrinking(page, Some(limit), |at, n| {
+            let select = select.clone();
+            async move {
+                select
+                    .offset(offset.saturating_add(at))
+                    .limit(n)
+                    .all(self.db())
+                    .await
+                    .map_err(LibraryError::Orm)
+            }
+        })
+        .await?;
+        Ok((
+            models
+                .into_iter()
+                .filter_map(LibraryWorkRow::from_model)
+                .collect(),
+            total,
+        ))
+    }
+}
+
 /// The rows a page of `query` reads from: held works that pass its media
 /// kind, kind, status and account filters (not its order or cursor).
 fn filtered_rows(query: &WorkPageQuery) -> sea_orm::Select<library_work_rows::Entity> {
@@ -2045,6 +2142,7 @@ mod tests {
             rating_overall: None,
             rating_count: None,
             is_abridged: None,
+            is_explicit: None,
             observed_at: "2026-01-01T00:00:00Z".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),

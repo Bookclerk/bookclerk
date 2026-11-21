@@ -416,7 +416,8 @@ The same refresh writes the work's filter values to
 listings), series, genres (the work's and listings' categories, split on
 commas, semicolons and bars), publishers, the storefronts it is held
 through, its library tags (`work_tags`) and the collections whose
-storage prefixes hold one of its editions' files (`core.collections`), each under its lower-cased key. The row write, the removal of
+storage prefixes hold one of its editions' files (`core.collections`),
+and `explicit` when a store marks one of its listings explicit, each under its lower-cased key. The row write, the removal of
 the old values and as many new values as fit share one atomic batch; the
 rest follow in further batches, each checking that the row still carries
 this refresh's stamp, so a later refresh's values are never mixed with an

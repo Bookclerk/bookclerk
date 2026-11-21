@@ -328,13 +328,15 @@ than falling through to an unencrypted fallback.
 | Value | Where | Default for |
 | --- | --- | --- |
 | `keychain` | macOS Keychain, Windows Credential Manager, or the Secret Service on a Linux desktop | The desktop window |
+| `systemd-creds` | Sealed with `systemd-creds` (TPM2, or the host key) beside `master.key`, or a unit credential the administrator sealed | Nothing (set it on a Linux server) |
 | `file` | `master.key` itself | `bookclerkd` and the CLI |
 
-On a keychain install `master.key` only names the item, so a copy of the
-files directory no longer carries the key. The item holds the same
-`BCK1`/`BCK2` envelope, so a password still wraps it when set.
+On a keychain or `systemd-creds` install `master.key` only names the
+item (`BCK3` for the keychain, `BCK4` for `systemd-creds`), so a copy of
+the files directory no longer carries a usable key. The item holds the
+same `BCK1`/`BCK2` envelope, so a password still wraps it when set.
 
-- **Loading follows `master.key`.** A `BCK3` file reads the keychain item
+- **Loading follows `master.key`.** A `BCK3` or `BCK4` file reads the item
   and checks the key against the fingerprint. A missing item, a locked
   keychain or a different key is an error; Bookclerk never mints a new key
   in its place.
@@ -345,18 +347,26 @@ files directory no longer carries the key. The item holds the same
   `bookclerk config master-key move keychain` (or `move file` to go back).
   The key itself doesn't change, so sealed secrets stay readable. The
   command also sets `[auth].key_store`. Stop `bookclerkd` first.
-- **A set `key_store` is required.** With `keychain` configured, a keychain
-  that can't be reached stops a first start instead of writing the file.
+- **`systemd-creds` seals on start.** With `key_store = "systemd-creds"`,
+  `bookclerkd` moves a key still in `master.key` into a `systemd-creds`
+  credential when it starts, and seals a new key there. It always falls
+  back: if sealing fails for any reason, the key stays in the file with a
+  warning. See
+  [Running Bookclerk → Sealing the key with systemd-creds](operations.md#sealing-the-key-with-systemd-creds),
+  which also covers sealing it yourself on an older systemd.
+- **A set `key_store = "keychain"` is required.** With `keychain`
+  configured, a keychain that can't be reached stops a first start
+  instead of writing the file.
   A config reload applies a changed `key_store` to the next key placed (a
   shared-branch join); it does not move an existing key.
 
 > [!NOTE]
 > A headless Linux server usually has no Secret Service (no session
-> D-Bus, nothing to unlock a collection at boot). Keep the file there,
-> wrapped with a password; see
+> D-Bus, nothing to unlock a collection at boot). Use `systemd-creds`
+> there, or keep the file wrapped with a password; see
 > [Running Bookclerk → systemd](operations.md#systemd).
 
-Back up a keychain key with a recovery copy:
+Back up a keychain or `systemd-creds` key with a recovery copy:
 
 ```sh
 bookclerk config master-key export --out ./bookclerk-recovery.key
@@ -374,10 +384,10 @@ The operator can also save a recovery copy from the web app:
   asks for a recovery password (at least 12 characters) and downloads
   `bookclerk-recovery-key.bck`, wrapped with it. The step can be skipped
   after a warning.
-- **Settings reminds.** While the key is in the keychain and no copy is
-  recorded as saved, Settings → Server Settings shows a reminder with the
-  same form, for the desktop window and for a server with
-  `key_store = "keychain"`. An Owner sees the reminder under Account,
+- **Settings reminds.** While the key is in the keychain or sealed with
+  `systemd-creds` and no copy is recorded as saved, Settings → Server
+  Settings shows a reminder with the same form, for the desktop window and
+  for a server with `key_store = "keychain"` or `"systemd-creds"`. An Owner sees the reminder under Account,
   with a pointer to **Elevate to Operator**.
 - **The answer is per key.** It is kept in `master-key-recovery.json`
   beside `master.key`, with the key's fingerprint, so a restored or
@@ -786,6 +796,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
 `playback_progress`, `playback_sessions`, `bookmarks`,
+`player_passwords`, `player_cards`, `player_card_tokens`,
 `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
@@ -833,7 +844,8 @@ library holds as works, expressions and editions:
   ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance));
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, series and
-  the store's own series or show product id, ratings; a scan fills it from
+  the store's own series or show product id, ratings, and `is_explicit`
+  when the store marks the edition as explicit or clean; a scan fills it from
   the title it lists, writing only a field that changed; a cover in a
   store's text also becomes the cover of the edition the listing sells
   when that edition has none, so the first store to report one sets it),
@@ -946,7 +958,9 @@ library holds as works, expressions and editions:
 
 The library's collections are not a table: they live in the
 `core.collections` configuration document (names and storage key
-prefixes). The page index stores each work's collections as facet
+prefixes). A work with a store listing marked explicit
+(`store_listings.is_explicit`) carries facet `explicit`, which a patron
+scope that hides explicit books excludes. The page index stores each work's collections as facet
 `collection`, read from its editions' files (`edition_files`), so a
 change to the document drops the finished index build and the next
 rebuild recomputes every work.
@@ -965,6 +979,14 @@ removed with its user (see [Playback reference](playback.md)):
 runtime and finished flag), `playback_sessions` (one row per stretch of
 listening, kept as history after it closes) and `bookmarks` (places a
 user marked). `listening_progress` stays what other servers reported.
+
+Player apps ([Player apps](player-apps.md)) sign in with player cards. A
+card is a `portal_sessions` row of kind `player`, so it is listed and
+signed out with the patron's other sessions. `player_cards` names the app
+and the player password that made the card, `player_card_tokens` holds the
+SHA-256 digests of its access and refresh tokens, and `player_passwords`
+holds the digests of the passwords patrons made for their apps. Removing a
+password removes its cards.
 
 A book is acquired once per edition: the account rows of one edition share
 its files, and an acquire of one is marked acquired at the key the

@@ -19,8 +19,9 @@ mod carried_accounts;
 mod catalog_lookup;
 mod clerk_links;
 mod collections;
+mod download_requests;
 mod library_links;
-pub(crate) use catalog_lookup::read_paged;
+pub(crate) use catalog_lookup::{read_paged, read_shrinking, result_page};
 pub(crate) use library_links::from_object;
 mod connections_request;
 mod copies;
@@ -165,6 +166,10 @@ pub use documents::{
     LIBRARY_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES, NODE_SCOPE_TYPE,
     PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
 };
+pub use download_requests::{
+    parse_download_request, plan_download_request, DownloadRequestAsk, DownloadRequestBody,
+    DownloadRequestPlan,
+};
 pub use enrollment::{
     authorized_enrollment_link, check_redeem_request, enrollment_link_brings_accounts,
     format_enrollment_token, list_enrollment_links, load_branch_enrollment, load_node_credential,
@@ -273,8 +278,9 @@ pub use patron_scope::{
     assigned_patron_scope, default_patron_scope, default_work_scope, load_default_patron_scope,
     parse_patron_scope, parse_user_scope_request, role_is_scoped, scope_for_user,
     set_default_patron_scope, set_patron_scope, verify_patron_administrator, work_scope_for_user,
-    AssignedScope, PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule,
-    MAX_SCOPE_JSON_BYTES, MAX_SCOPE_RULES, MAX_SCOPE_VALUE_BYTES, PATRON_SCOPE_NAMESPACE,
+    AssignedScope, ExplicitContent, PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule,
+    EXPLICIT_FACET_KEY, MAX_SCOPE_JSON_BYTES, MAX_SCOPE_RULES, MAX_SCOPE_VALUE_BYTES,
+    PATRON_SCOPE_NAMESPACE,
 };
 pub use pending_joins::{
     create_pending_join, finish_pending_join, open_pending_join, purge_expired_pending_joins,
