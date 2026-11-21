@@ -69,7 +69,6 @@ pub(crate) async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) 
 
 pub(crate) fn book(account: &str, asin: &str) -> NewBook {
     NewBook {
-        uuid: None,
         product_id: asin.into(),
         plugin_key: PLUGIN.into(),
         source: "audible".into(),
@@ -117,7 +116,13 @@ pub(crate) async fn hold(
     let mut works = Vec::new();
     for asin in asins {
         let record = store.upsert_book(&book(account, asin)).await.unwrap();
-        works.push(store.work_id_for_book(&record.uuid).await.unwrap().unwrap());
+        works.push(
+            store
+                .work_of_holding(&record.holding_id)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
     }
     works
 }
@@ -770,8 +775,12 @@ async fn a_page_states_the_copy_the_library_holds() {
                 .set_acquire_status(asin, "riley-acct", AcquireStatus::Acquired, Some(key), None)
                 .await
                 .unwrap();
-            let book = store.get_book(asin, "riley-acct").await.unwrap().unwrap();
-            let owner = store.file_owner_of_book(&book.uuid).await.unwrap().unwrap();
+            let book = store.held_title(asin, "riley-acct").await.unwrap().unwrap();
+            let owner = store
+                .file_owner_of_holding(&book.holding_id)
+                .await
+                .unwrap()
+                .unwrap();
             if recorded {
                 assert!(store
                     .record_edition_file("local", key, &owner, FileRole::Audio)

@@ -50,14 +50,13 @@ async fn account_and_book_roundtrip() {
     book.authors = Some("Author".into());
     let book = store.upsert_book(&book).await.unwrap();
     assert_eq!(book.title, "Test Book");
-    assert!(!book.uuid.is_empty());
+    assert!(!book.holding_id.is_empty());
     assert_eq!(book.product_id, "B00TEST");
     assert_eq!(book.asin.as_deref(), Some("B00TEST"));
     assert!(book.isbn.is_none());
     assert_eq!(book.source, "audible");
-    assert_eq!(book.title_id(), book.uuid.as_str());
     assert_eq!(book.asin_or_isbn(), "B00TEST");
-    assert_eq!(book.acquire_status, AcquireStatus::NotAcquired);
+    assert_eq!(book.status, AcquireStatus::NotAcquired);
 
     store
         .set_acquire_status(
@@ -70,29 +69,25 @@ async fn account_and_book_roundtrip() {
         .await
         .unwrap();
 
-    let updated = store.get_book("B00TEST", "user-1").await.unwrap().unwrap();
-    assert_eq!(updated.acquire_status, AcquireStatus::Acquired);
+    let updated = store
+        .held_title("B00TEST", "user-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.status, AcquireStatus::Acquired);
     assert_eq!(
         updated.storage_key.as_deref(),
         Some("Author/Test Book/book.m4b")
     );
-    assert_eq!(
-        store
-            .count_by_status(AcquireStatus::Acquired)
-            .await
-            .unwrap(),
-        1
-    );
-
     let by_uuid = store
-        .get_book_by_uuid(&updated.uuid)
+        .acquire_title_of_holding(&updated.holding_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(by_uuid.product_id, "B00TEST");
-    // The event names the account holding, which outlives the flat row.
+    // The event names the account holding.
     let title = store
-        .title_holding_of_book(&updated.uuid)
+        .acquire_title_of_holding(&updated.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -104,7 +99,7 @@ async fn account_and_book_roundtrip() {
         format!("book_acquired:{}", title.holding_id)
     );
     let payload: serde_json::Value = serde_json::from_str(&pending.payload).unwrap();
-    let edition = store.edition_of_book(&updated.uuid).await.unwrap();
+    let edition = store.edition_of_holding(&updated.holding_id).await.unwrap();
     assert!(edition.is_some(), "the stored title resolves to an edition");
     assert_eq!(payload["editionId"].as_str(), edition.as_deref());
     let acquisition = store
@@ -114,7 +109,7 @@ async fn account_and_book_roundtrip() {
         .unwrap();
     assert_eq!(acquisition.status, AcquireStatus::Acquired);
     let holding = store
-        .title_holding_of_book(&updated.uuid)
+        .acquire_title_of_holding(&updated.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -133,9 +128,13 @@ async fn a_status_other_than_acquired_publishes_its_edition_change() {
             .upsert_book(&NewBook::minimal("B00Q", "user-1", "us", "Queued"))
             .await
             .unwrap();
-        let edition = store.edition_of_book(&book.uuid).await.unwrap().unwrap();
+        let edition = store
+            .edition_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         let holding = store
-            .title_holding_of_book(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap()
@@ -172,7 +171,7 @@ async fn a_holding_writes_its_edition_state_until_it_is_removed() {
             .await
             .unwrap();
         let title = store
-            .title_holding_of_book(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
@@ -192,9 +191,13 @@ async fn a_holding_writes_its_edition_state_until_it_is_removed() {
             .unwrap();
         assert_eq!(acquisition.status, AcquireStatus::Acquired);
         assert_eq!(acquisition.holding_id, title.holding_id);
-        // The flat row is mirrored while the table exists.
-        let row = store.get_book_by_uuid(&book.uuid).await.unwrap().unwrap();
-        assert_eq!(row.acquire_status, AcquireStatus::Acquired);
+        // The title reads the edition's state back.
+        let row = store
+            .acquire_title_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, AcquireStatus::Acquired);
         let event = next_event_of(&store, "book_acquired").await;
         let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
         assert_eq!(payload["titleId"], title.holding_id.as_str());
@@ -233,7 +236,7 @@ async fn status_counts_come_from_one_grouped_read_under_every_profile() {
         let kit = crate::test_support::sqlite::memory(profile).await;
         let store = kit.store();
         assert_eq!(
-            store.count_books_by_status().await.unwrap(),
+            store.count_works_by_status().await.unwrap(),
             crate::models::AcquireStatusCounts::default()
         );
         store
@@ -261,12 +264,15 @@ async fn status_counts_come_from_one_grouped_read_under_every_profile() {
                     .unwrap();
             }
         }
-        // A status written by a newer build is counted in the total only.
-        kit.connection()
-            .execute_unprepared("UPDATE books SET acquire_status = 'future' WHERE asin = 'B008'")
+        let mut after = None;
+        while let Some(last) = store
+            .rebuild_library_index_page(after.as_deref())
             .await
-            .unwrap();
-        let counts = store.count_books_by_status().await.unwrap();
+            .unwrap()
+        {
+            after = Some(last);
+        }
+        let counts = store.count_works_by_status().await.unwrap();
         assert_eq!(
             counts,
             crate::models::AcquireStatusCounts {
@@ -275,14 +281,8 @@ async fn status_counts_come_from_one_grouped_read_under_every_profile() {
                 queued: 1,
                 downloading: 1,
                 acquired: 1,
-                error: 2,
+                error: 3,
             },
-            "{}",
-            profile.name()
-        );
-        assert_eq!(
-            counts.total,
-            store.count_books(None).await.unwrap(),
             "{}",
             profile.name()
         );
@@ -314,7 +314,6 @@ async fn same_isbn_multi_account_and_source() {
     store.upsert_book(&a2).await.unwrap();
 
     let libro = NewBook {
-        uuid: None,
         product_id: "9781234567890".into(),
         plugin_key: "libro".into(),
         source: "libro".into(),
@@ -339,17 +338,18 @@ async fn same_isbn_multi_account_and_source() {
     };
     store.upsert_book(&libro).await.unwrap();
 
-    let by_isbn = store.find_books_by_isbn("9781234567890").await.unwrap();
+    let by_isbn = store
+        .acquire_titles_named(None, "9781234567890")
+        .await
+        .unwrap();
     assert_eq!(by_isbn.len(), 3);
-    let uuids: std::collections::HashSet<_> = by_isbn.iter().map(|b| b.uuid.as_str()).collect();
-    assert_eq!(uuids.len(), 3);
-
-    let preferred = prefer_enrichment_source(&by_isbn).unwrap();
-    assert_eq!(preferred.source, "audible");
+    let holdings: std::collections::HashSet<_> =
+        by_isbn.iter().map(|b| b.holding_id.as_str()).collect();
+    assert_eq!(holdings.len(), 3);
 }
 
 #[tokio::test]
-async fn libro_rescan_preserves_audible_enrichment() {
+async fn libro_rescan_keeps_the_editions_asin() {
     let store = kit_store().await;
     store
         .upsert_account("libro", "libro-1", "us", None, true, "libro")
@@ -358,7 +358,6 @@ async fn libro_rescan_preserves_audible_enrichment() {
 
     let isbn = "9781234567890";
     let initial = NewBook {
-        uuid: None,
         product_id: isbn.into(),
         plugin_key: "libro".into(),
         source: "libro".into(),
@@ -385,7 +384,6 @@ async fn libro_rescan_preserves_audible_enrichment() {
 
     // Simulate Audible catalog enrichment.
     let enriched = NewBook {
-        uuid: Some(row.uuid.clone()),
         asin: Some("B00ENRICHED".into()),
         title: "Rich Audible Title".into(),
         authors: Some("Audible Author".into()),
@@ -401,7 +399,8 @@ async fn libro_rescan_preserves_audible_enrichment() {
     assert_eq!(after_enrich.title, "Rich Audible Title");
     assert_eq!(after_enrich.narrators.as_deref(), Some("Audible Narrator"));
 
-    // Libro rescan without asin must not wipe enrichment.
+    // A Libro rescan without the ASIN keeps the edition's ASIN; the
+    // listing carries the store's own latest text.
     let rescan = NewBook {
         title: "Sparse Libro Title Again".into(),
         authors: Some("Libro Author".into()),
@@ -414,16 +413,12 @@ async fn libro_rescan_preserves_audible_enrichment() {
         ..initial
     };
     let after_rescan = store.upsert_book(&rescan).await.unwrap();
-    assert_eq!(after_rescan.uuid, row.uuid);
+    assert_eq!(after_rescan.holding_id, row.holding_id);
     assert_eq!(after_rescan.asin.as_deref(), Some("B00ENRICHED"));
-    assert_eq!(after_rescan.title, "Rich Audible Title");
-    assert_eq!(after_rescan.authors.as_deref(), Some("Audible Author"));
-    assert_eq!(after_rescan.narrators.as_deref(), Some("Audible Narrator"));
-    assert_eq!(after_rescan.series.as_deref(), Some("Audible Series"));
-    assert_eq!(after_rescan.publisher.as_deref(), Some("Publisher"));
-    assert_eq!(after_rescan.length_minutes, Some(420));
-    assert_eq!(after_rescan.subtitle.as_deref(), Some("A Subtitle"));
-    assert_eq!(after_rescan.download_product_id(), isbn);
+    assert_eq!(after_rescan.title, "Sparse Libro Title Again");
+    assert_eq!(after_rescan.authors.as_deref(), Some("Libro Author"));
+    assert_eq!(after_rescan.length_minutes, Some(400));
+    assert_eq!(after_rescan.product_id, isbn);
 }
 
 #[tokio::test]
@@ -435,7 +430,6 @@ async fn download_product_id_is_source_native() {
         .unwrap();
     let book = store
         .upsert_book(&NewBook {
-            uuid: None,
             product_id: "9789999999999".into(),
             plugin_key: "libro".into(),
             source: "libro".into(),
@@ -460,8 +454,8 @@ async fn download_product_id_is_source_native() {
         })
         .await
         .unwrap();
-    assert_eq!(book.download_product_id(), "9789999999999");
-    assert_eq!(book.audible_asin(), Some("B00FROMAD"));
+    assert_eq!(book.product_id, "9789999999999");
+    assert_eq!(book.asin.as_deref(), Some("B00FROMAD"));
 }
 
 #[tokio::test]
@@ -535,10 +529,10 @@ async fn remap_account_moves_books() {
         .remap_account_id("audible", "email@example.com", "amzn1.account.CID")
         .await
         .unwrap();
-    // One moved title bumps once, and its holding's move once more; the
-    // leftover delete finds nothing and does not bump.
+    // The holding's move bumps once; the leftover delete finds nothing and
+    // does not bump.
     let after = crate::control_plane::live_revisions(&store).await.unwrap();
-    assert_eq!(library(&after), library(&before) + 2);
+    assert_eq!(library(&after), library(&before) + 1);
 
     assert!(store
         .get_account("audible", "email@example.com")
@@ -551,7 +545,7 @@ async fn remap_account_moves_books() {
         .unwrap()
         .is_some());
     assert!(store
-        .get_book("B00TEST", "amzn1.account.CID")
+        .held_title("B00TEST", "amzn1.account.CID")
         .await
         .unwrap()
         .is_some());
@@ -582,7 +576,7 @@ async fn ignored_titles_roundtrip() {
 }
 
 #[tokio::test]
-async fn revoke_keeps_books_and_portal_tickets_work() {
+async fn revoke_drops_holdings_and_portal_tickets_work() {
     let store = kit_store().await;
     store
         .upsert_account("audible", "user-1", "us", Some("Main"), true, "audible")
@@ -600,7 +594,12 @@ async fn revoke_keeps_books_and_portal_tickets_work() {
         .unwrap();
     assert!(!acct.scan_enabled);
     assert_eq!(acct.connection_status, "revoked");
-    assert!(store.get_book("B00TEST", "user-1").await.unwrap().is_some());
+    // The account's holdings go with its credentials, so it holds no title.
+    assert!(store
+        .held_title("B00TEST", "user-1")
+        .await
+        .unwrap()
+        .is_none());
 
     let identity = store
         .upsert_portal_identity("audiobookshelf", "usr_1", Some("bob"))
@@ -2289,7 +2288,7 @@ async fn list_jobs_waits_out_a_peer_sqlite_lock() {
 }
 
 #[tokio::test]
-async fn count_books_waits_out_a_peer_sqlite_lock() {
+async fn has_held_titles_waits_out_a_peer_sqlite_lock() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("library.db");
     let db = bookclerk_plugin_database_sqlite::open(&path)
@@ -2316,19 +2315,19 @@ async fn count_books_waits_out_a_peer_sqlite_lock() {
 
     let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
     let counted = tokio::spawn(async move {
-        let result = store.count_books(None).await;
+        let result = store.has_held_titles().await;
         let _ = done_tx.send(());
         result
     });
     tokio::time::sleep(std::time::Duration::from_millis(120)).await;
     assert!(
         done_rx.try_recv().is_err(),
-        "count_books returned while the peer still held the database file"
+        "has_held_titles returned while the peer still held the database file"
     );
     holder.execute_batch("COMMIT").expect("unlock");
 
-    let count = counted.await.expect("join").expect("count after unlock");
-    assert_eq!(count, 1);
+    let held = counted.await.expect("join").expect("read after unlock");
+    assert!(held);
 }
 
 #[tokio::test]
@@ -2344,7 +2343,7 @@ async fn completed_acquire_is_not_repeated_unsafely() {
         .unwrap();
     store
         .set_acquire_status(
-            &book.uuid,
+            &book.holding_id,
             "user-1",
             AcquireStatus::Acquired,
             Some("Safe/book.m4b"),
@@ -2354,7 +2353,7 @@ async fn completed_acquire_is_not_repeated_unsafely() {
         .unwrap();
 
     let created = store
-        .enqueue_job(acquire_spec(Some(&book.uuid), Some("user-1"), 8))
+        .enqueue_job(acquire_spec(Some(&book.holding_id), Some("user-1"), 8))
         .await
         .unwrap();
     let EnqueueOutcome::Created { id } = created else {
@@ -2367,12 +2366,16 @@ async fn completed_acquire_is_not_repeated_unsafely() {
         .await
         .unwrap();
     let again = store
-        .enqueue_job(acquire_spec(Some(&book.uuid), Some("user-1"), 8))
+        .enqueue_job(acquire_spec(Some(&book.holding_id), Some("user-1"), 8))
         .await
         .unwrap();
     assert!(matches!(again, EnqueueOutcome::Created { .. }));
-    let still = store.get_book_by_uuid(&book.uuid).await.unwrap().unwrap();
-    assert_eq!(still.acquire_status, AcquireStatus::Acquired);
+    let still = store
+        .acquire_title_of_holding(&book.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still.status, AcquireStatus::Acquired);
 }
 
 #[tokio::test]
@@ -2387,15 +2390,30 @@ async fn orphaned_downloading_book_is_reconciled() {
         .await
         .unwrap();
     store
-        .set_acquire_status(&book.uuid, "user-1", AcquireStatus::Downloading, None, None)
+        .set_acquire_status(
+            &book.holding_id,
+            "user-1",
+            AcquireStatus::Downloading,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let n = store.reconcile_orphaned_acquire_rows().await.unwrap();
     assert_eq!(n, 1);
-    let updated = store.get_book_by_uuid(&book.uuid).await.unwrap().unwrap();
-    assert_eq!(updated.acquire_status, AcquireStatus::Error);
+    let updated = store
+        .acquire_title_of_holding(&book.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.status, AcquireStatus::Error);
+    let acquisition = store
+        .edition_acquisition(&updated.edition_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        updated.error_message.as_deref(),
+        acquisition.error_message.as_deref(),
         Some("orphaned_after_restart")
     );
 }
@@ -5004,8 +5022,8 @@ async fn acquire_status_and_outbox_commit_together() {
         err.to_string().contains("injected event publish fault"),
         "unexpected error: {err}"
     );
-    let still = store.get_book("B00EVT", "user-1").await.unwrap().unwrap();
-    assert_eq!(still.acquire_status, AcquireStatus::NotAcquired);
+    let still = store.held_title("B00EVT", "user-1").await.unwrap().unwrap();
+    assert_eq!(still.status, AcquireStatus::NotAcquired);
     assert!(store.next_undispatched_event().await.unwrap().is_none());
 
     store
@@ -5019,7 +5037,7 @@ async fn acquire_status_and_outbox_commit_together() {
         .await
         .unwrap();
     let holding = store
-        .title_holding_of_book(&book.uuid)
+        .acquire_title_of_holding(&book.holding_id)
         .await
         .unwrap()
         .unwrap()
@@ -7140,7 +7158,7 @@ async fn execute_guest_atomic_deny_all_does_not_run_sql() {
 }
 
 #[tokio::test]
-async fn execute_guest_atomic_allow_tables_selects_books() {
+async fn execute_guest_atomic_allow_tables_selects_listings() {
     let store = kit_store()
         .await
         .with_db_capabilities(bookclerk_plugin_abi::DbCapabilities::advertised_sqlite());
@@ -7154,8 +7172,8 @@ async fn execute_guest_atomic_allow_tables_selects_books() {
 
     let reply = store
         .execute_guest_atomic(
-            guest_select("SELECT product_id FROM books WHERE product_id = 'B00GUEST'"),
-            &crate::GuestSqlPolicy::allow_tables(["books"])
+            guest_select("SELECT product_id FROM store_listings WHERE product_id = 'B00GUEST'"),
+            &crate::GuestSqlPolicy::allow_tables(["store_listings"])
                 .with_sql_types(crate::migrations::host_sql_type_env()),
         )
         .await
@@ -7876,8 +7894,8 @@ async fn works_page_by_id_and_embedding_hashes_read_in_bulk_under_every_profile(
     }
 }
 
-/// The fields of a stored row a scan writes, without its ids and times.
-fn scanned_fields(r: &BookRecord) -> String {
+/// The fields of a stored title a scan writes, without its ids and times.
+fn scanned_fields(r: &crate::AcquireTitle) -> String {
     format!(
         "{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         r.plugin_key,
@@ -7889,12 +7907,12 @@ fn scanned_fields(r: &BookRecord) -> String {
         r.authors,
         r.series,
         r.length_minutes,
-        r.acquire_status,
+        r.status,
     )
 }
 
 #[tokio::test]
-async fn a_page_of_rows_stores_what_row_by_row_upserts_store_under_every_profile() {
+async fn a_page_of_titles_stores_what_title_by_title_upserts_store_under_every_profile() {
     use crate::test_support::Profile;
     for profile in Profile::ALL {
         let one = crate::test_support::sqlite::memory(profile)
@@ -7912,7 +7930,6 @@ async fn a_page_of_rows_stores_what_row_by_row_upserts_store_under_every_profile
         let mut audible = NewBook::minimal("B1", "a1", "us", "Dune");
         audible.authors = Some("Frank Herbert".into());
         audible.length_minutes = Some(1260);
-        let mut seeded = Vec::new();
         for store in [&one, &paged] {
             for account in ["a1", "a2"] {
                 store
@@ -7920,182 +7937,64 @@ async fn a_page_of_rows_stores_what_row_by_row_upserts_store_under_every_profile
                     .await
                     .unwrap();
             }
-            seeded.push(store.upsert_book(&audible).await.unwrap());
+            store.upsert_book(&audible).await.unwrap();
         }
 
-        // A rescan without the ASIN keeps the stored title and authors.
-        let mut no_asin = NewBook::minimal("B1", "a1", "us", "DUNE (abridged)");
-        no_asin.asin = None;
-        no_asin.isbn = Some("9780441013593".into());
-        let mut page = vec![no_asin];
+        let mut page = Vec::new();
         for i in 0..10 {
             let mut book = NewBook::minimal(format!("N{i}"), "a1", "us", format!("New &amp; {i}"));
             book.series = Some("Saga".into());
-            page.push(book);
+            page.push(ScannedTitle::from(book));
         }
-        // The same title twice: the second listing wins, as row by row.
-        page.push(NewBook::minimal("N3", "a1", "us", "N3 again"));
-        page.push(NewBook::minimal("B1", "a2", "us", "Dune"));
+        page.push(ScannedTitle::from(NewBook::minimal(
+            "B1", "a2", "us", "Dune",
+        )));
 
-        let mut row_by_row = Vec::new();
-        for book in &page {
-            row_by_row.push(one.upsert_book_row(book).await.unwrap());
+        for title in &page {
+            one.upsert_scanned_title(title).await.unwrap();
         }
-        let refs: Vec<&NewBook> = page.iter().collect();
-        let library = |revisions: &crate::control_plane::LiveRevisions| {
-            revisions
-                .iter()
-                .find(|(topic, _)| *topic == crate::control_plane::LiveTopic::Library)
-                .map(|(_, revision)| revision.0)
+        let written = paged.upsert_scanned_titles(&page).await.unwrap();
+        assert_eq!(written, page.len(), "{profile:?}");
+
+        for title in &page {
+            let book = &title.book;
+            let a = one
+                .held_title(&book.product_id, &book.account_id)
+                .await
                 .unwrap()
-        };
-        let before = library(&crate::control_plane::live_revisions(&paged).await.unwrap());
-        let by_page = paged.upsert_book_rows(&refs).await.unwrap();
-        // Every batch bumps the library topic with the rows it writes, so
-        // the web app hears about a scanned page.
-        let after = library(&crate::control_plane::live_revisions(&paged).await.unwrap());
-        assert!(after > before + 1, "{profile:?}: {before} -> {after}");
-
-        assert_eq!(by_page.len(), page.len(), "{profile:?}");
-        for (a, b) in row_by_row.iter().zip(&by_page) {
-            // Both entries of a title listed twice return its final row.
-            let a = one.get_book_by_uuid(&a.uuid).await.unwrap().unwrap();
-            assert_eq!(scanned_fields(&a), scanned_fields(b), "{profile:?}");
-            let stored = paged.get_book_by_uuid(&b.uuid).await.unwrap().unwrap();
-            assert_eq!(stored.id, b.id, "{profile:?}");
-            assert_eq!(scanned_fields(&stored), scanned_fields(b), "{profile:?}");
+                .unwrap();
+            let b = paged
+                .held_title(&book.product_id, &book.account_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(scanned_fields(&a), scanned_fields(&b), "{profile:?}");
         }
-        assert_eq!(by_page[0].uuid, seeded[1].uuid, "{profile:?}");
-        assert_eq!(by_page[0].title, "Dune", "{profile:?}");
-        assert_eq!(by_page[1].title, "New & 0", "{profile:?}");
-        assert_eq!(by_page[4].uuid, by_page[11].uuid, "{profile:?}");
-        assert_eq!(by_page[11].title, "N3 again", "{profile:?}");
-        let count = |store: &LibraryStore| {
-            let db = store.connection().clone();
-            async move { books::Entity::find().count(&db).await.unwrap() }
-        };
-        assert_eq!(count(&one).await, count(&paged).await, "{profile:?}");
-        assert_eq!(count(&paged).await, 12, "{profile:?}");
-
-        // A uuid the plugin sends that another row holds is refused, as row
-        // by row, rather than silently dropped.
-        let mut clash = NewBook::minimal("X1", "a1", "us", "Clash");
-        clash.uuid = Some(seeded[0].uuid.clone());
-        assert!(one.upsert_book_row(&clash).await.is_err(), "{profile:?}");
-        clash.uuid = Some(seeded[1].uuid.clone());
-        assert!(
-            paged.upsert_book_rows(&[&clash]).await.is_err(),
-            "{profile:?}"
-        );
-    }
-}
-
-/// A title another writer inserts between the page's read and its write,
-/// with the same plugin-supplied uuid, is merged onto that writer's row as a
-/// row-by-row upsert would, not taken for the page's own insert.
-#[tokio::test]
-async fn a_same_uuid_insert_won_by_another_writer_is_merged_under_every_profile() {
-    use crate::test_support::Profile;
-    for profile in Profile::ALL {
-        let store = crate::test_support::sqlite::memory(profile)
-            .await
-            .into_store();
-        store
-            .upsert_account("audible", "a1", "us", None, true, "audible")
-            .await
-            .unwrap();
-        let uuid = Uuid::new_v4().to_string();
-        let mut theirs = NewBook::minimal("B1", "a1", "us", "Dune");
-        theirs.uuid = Some(uuid.clone());
-        theirs.authors = Some("Frank Herbert".into());
-        let mut ours = NewBook::minimal("B1", "a1", "us", "Dune (Unabridged)");
-        ours.uuid = Some(uuid.clone());
-        ours.isbn = Some("9780593288368".into());
-        // The page read found nothing; the other writer then stored the title.
-        store.upsert_book_row(&theirs).await.unwrap();
-        let page = [std::borrow::Cow::Borrowed(&ours)];
-        let records = store
-            .write_book_rows(&page, std::collections::HashMap::new())
-            .await
-            .unwrap();
-
-        let one = crate::test_support::sqlite::memory(profile)
-            .await
-            .into_store();
-        one.upsert_account("audible", "a1", "us", None, true, "audible")
-            .await
-            .unwrap();
-        one.upsert_book_row(&theirs).await.unwrap();
-        let expected = one.upsert_book_row(&ours).await.unwrap();
-        assert_eq!(records.len(), 1, "{profile:?}");
-        assert_eq!(records[0].uuid, uuid, "{profile:?}");
-        assert_eq!(records[0].title, "Dune (Unabridged)", "{profile:?}");
+        let dune = paged.held_title("B1", "a2").await.unwrap().unwrap();
         assert_eq!(
-            scanned_fields(&records[0]),
-            scanned_fields(&expected),
+            dune.authors.as_deref(),
+            Some("Frank Herbert"),
+            "{profile:?}"
+        );
+        let first = paged.held_title("N0", "a1").await.unwrap().unwrap();
+        assert_eq!(first.title, "New & 0", "{profile:?}");
+        // A rescan of the same page finds every title it stored.
+        assert_eq!(
+            paged.upsert_scanned_titles(&page).await.unwrap(),
+            page.len(),
+            "{profile:?}"
+        );
+        assert_eq!(
+            paged
+                .held_title("N0", "a1")
+                .await
+                .unwrap()
+                .unwrap()
+                .holding_id,
+            first.holding_id,
             "{profile:?}"
         );
     }
-}
-
-/// A page of long product ids fits every profile's payload cap, not only its
-/// bind cap: on D1 a 90-id lookup of UUIDs is past the statement payload limit.
-#[tokio::test]
-async fn a_page_of_uuid_product_ids_upserts_under_every_profile() {
-    use crate::test_support::Profile;
-    for profile in Profile::ALL {
-        let store = crate::test_support::sqlite::memory(profile)
-            .await
-            .into_store();
-        store
-            .upsert_account("libro", "a1", "us", None, true, "libro")
-            .await
-            .unwrap();
-        let page: Vec<NewBook> = (0..120)
-            .map(|n| {
-                let mut book = NewBook::minimal(
-                    uuid::Uuid::new_v4().to_string(),
-                    "a1",
-                    "us",
-                    format!("Title {n}"),
-                );
-                book.plugin_key = "libro".into();
-                book
-            })
-            .collect();
-        let refs: Vec<&NewBook> = page.iter().collect();
-        let first = store.upsert_book_rows(&refs).await.unwrap();
-        assert_eq!(first.len(), 120, "{profile:?}");
-        // The rescan finds every row through the chunked keyed read.
-        let again = store.upsert_book_rows(&refs).await.unwrap();
-        for (a, b) in first.iter().zip(&again) {
-            assert_eq!(a.id, b.id, "{profile:?}");
-        }
-    }
-}
-
-#[test]
-fn a_scan_merge_sets_only_the_columns_a_scan_owns() {
-    use sea_orm::ActiveValue;
-    let now = "2026-11-11T00:00:00+00:00";
-    let mut existing = super::new_book_row(&NewBook::minimal("B1", "a1", "us", "Dune"), now);
-    existing.id = 7;
-    existing.acquire_status = "acquired".into();
-    let mut rescan = NewBook::minimal("B1", "a1", "us", "Dune (Unabridged)");
-    rescan.authors = Some("Frank Herbert".into());
-    let merged = super::merged_book_row(&existing, &rescan, "2026-11-12T00:00:00+00:00");
-    let am = super::scan_update(existing, merged);
-    // Scan-owned columns are written; columns other writers own (acquire
-    // state, ratings, tags, enrichment) are left for the row as stored.
-    assert!(am.title.is_set());
-    assert!(am.authors.is_set());
-    assert!(am.updated_at.is_set());
-    assert!(matches!(am.acquire_status, ActiveValue::Unchanged(_)));
-    assert!(matches!(am.storage_key, ActiveValue::Unchanged(_)));
-    assert!(matches!(am.rating_overall, ActiveValue::Unchanged(_)));
-    assert!(matches!(am.tags, ActiveValue::Unchanged(_)));
-    assert!(matches!(am.description, ActiveValue::Unchanged(_)));
-    assert!(matches!(am.id, ActiveValue::Unchanged(7)));
 }
 
 /// A pending delivery that is never leased expires once it has waited past
@@ -8853,7 +8752,7 @@ async fn missing_rows_name_their_kind() {
     );
     assert_missing(
         store
-            .update_catalog_enrichment("no-such-book", &CatalogEnrichmentFields::default())
+            .set_pdf_status("no-such-book", "nobody", AcquireStatus::Queued, None)
             .await,
         EntityKind::Book,
     );
@@ -9003,33 +8902,37 @@ async fn a_pdf_status_is_recorded_on_the_titles_edition_under_every_profile() {
                 .unwrap();
         }
         let first = store
-            .get_book("B0PDF0001", "acct-a")
+            .held_title("B0PDF0001", "acct-a")
             .await
             .unwrap()
             .unwrap();
         let second = store
-            .get_book("B0PDF0001", "acct-b")
+            .held_title("B0PDF0001", "acct-b")
             .await
             .unwrap()
             .unwrap();
-        let edition = store.edition_of_book(&first.uuid).await.unwrap().unwrap();
+        let edition = store
+            .edition_of_holding(&first.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         let held_by = |uuid: String| {
             let store = store.clone();
             async move {
                 store
-                    .title_holding_of_book(&uuid)
+                    .acquire_title_of_holding(&uuid)
                     .await
                     .unwrap()
                     .unwrap()
                     .holding_id
             }
         };
-        let first_holding = held_by(first.uuid.clone()).await;
-        let second_holding = held_by(second.uuid.clone()).await;
+        let first_holding = held_by(first.holding_id.clone()).await;
+        let second_holding = held_by(second.holding_id.clone()).await;
         assert_ne!(first_holding, second_holding);
         assert_eq!(
             store
-                .edition_of_book(&second.uuid)
+                .edition_of_holding(&second.holding_id)
                 .await
                 .unwrap()
                 .as_deref(),
@@ -9118,7 +9021,11 @@ async fn a_scanned_title_fills_its_listings_store_text_under_every_profile() {
         book.publisher = Some("First House".into());
         book.is_abridged = true;
         let stored = store.upsert_book(&book).await.unwrap();
-        let edition = store.edition_of_book(&stored.uuid).await.unwrap().unwrap();
+        let edition = store
+            .edition_of_holding(&stored.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         let listing = crate::entities::store_listings::Entity::find()
             .filter(crate::entities::store_listings::Column::EditionId.eq(edition.as_str()))
             .one(store.db())

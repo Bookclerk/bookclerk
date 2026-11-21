@@ -1,6 +1,6 @@
 //! The library's works as Discover reads them: one [`TasteTitle`] per work
 //! the library holds, built from holdings, listings, editions and works
-//! rather than from the flat `books` row.
+//! rather than from per-account title rows.
 //!
 //! A work held through several accounts, stores or editions is one title.
 //! Its bibliographic fields come from the work (credits, series, subjects,
@@ -21,8 +21,8 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use super::library_model::{find_chunked, find_chunked_paged};
 use super::{parse_dt, LibraryStore};
 use crate::entities::{
-    accounts, books, credits, edition_files, edition_identifiers, editions, expressions, holdings,
-    series, series_entries, store_listings, user_title_state,
+    accounts, credits, edition_files, edition_identifiers, editions, expressions, holdings, series,
+    series_entries, store_listings, user_title_state,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{TasteHolder, TasteTitle, UserTitleState};
@@ -153,7 +153,6 @@ impl LibraryStore {
             .collect();
         let identifiers = self.edition_ids_by_scheme(&rep_editions).await?;
         let publishers = self.edition_publishers(&rep_editions).await?;
-        let series_store_ids = self.series_store_ids(reps.values()).await?;
 
         let mut out = Vec::with_capacity(reps.len());
         for (work_id, rep) in reps {
@@ -182,12 +181,11 @@ impl LibraryStore {
                 .iter()
                 .find(|h| h.plugin_key == rep.listing.plugin_key)
                 .map_or_else(|| rep.listing.plugin_key.clone(), |h| h.source.clone());
-            let series_store_id = series_store_ids
-                .get(&(
-                    rep.listing.plugin_key.clone(),
-                    rep.listing.product_id.clone(),
-                ))
-                .cloned();
+            let series_store_id = rep
+                .listing
+                .series_product_id
+                .clone()
+                .filter(|id| !id.trim().is_empty());
             out.push(TasteTitle {
                 work_id: work_id.clone(),
                 edition_id,
@@ -521,45 +519,6 @@ impl LibraryStore {
         }
         Ok(out)
     }
-
-    /// The store's own series id of each representative listing, by
-    /// plugin key and product id.
-    ///
-    /// The library model has no home for a store's series id yet, so it is
-    /// read from the scanned title rows until `books` retires (book model
-    /// step 6), which moves it onto the model.
-    async fn series_store_ids<'a>(
-        &self,
-        reps: impl Iterator<Item = &'a HeldListing>,
-    ) -> Result<BTreeMap<(String, String), String>> {
-        let wanted: BTreeSet<(String, String)> = reps
-            .map(|r| (r.listing.plugin_key.clone(), r.listing.product_id.clone()))
-            .collect();
-        let products: Vec<String> = wanted
-            .iter()
-            .map(|(_, product)| product.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let rows = find_chunked_paged(self, &products, |part| {
-            books::Entity::find()
-                .filter(books::Column::ProductId.is_in(part.iter().cloned()))
-                .filter(books::Column::SeriesAsin.is_not_null())
-                .order_by_asc(books::Column::Id)
-        })
-        .await?;
-        let mut out = BTreeMap::new();
-        for row in rows {
-            let key = (row.plugin_key, row.product_id);
-            if !wanted.contains(&key) {
-                continue;
-            }
-            if let Some(id) = row.series_asin.filter(|s| !s.trim().is_empty()) {
-                out.entry(key).or_insert(id);
-            }
-        }
-        Ok(out)
-    }
 }
 
 /// Applies the state of `users` to `titles`, merged per work.
@@ -846,7 +805,11 @@ mod tests {
         book.series_index = Some("1".into());
         book.series_asin = Some("B0SERIES".into());
         let row = store.upsert_book(&book).await.unwrap();
-        store.work_id_for_book(&row.uuid).await.unwrap().unwrap()
+        store
+            .work_of_holding(&row.holding_id)
+            .await
+            .unwrap()
+            .unwrap()
     }
 
     #[tokio::test]

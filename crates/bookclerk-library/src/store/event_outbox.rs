@@ -15,13 +15,13 @@ use sea_orm::{
 };
 use uuid::Uuid;
 
-use super::books_page::is_result_too_large;
 use super::edition_files::TitleHolding;
+use super::result_cap::is_result_too_large;
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::column_read::SelectColumnExt;
 use crate::control_plane::{bump_if_stamped, bump_on, exec_bumped_via, sea_probe, Bump, LiveTopic};
 use crate::entities::{
-    books, domain_events, edition_acquisitions, event_deliveries, event_outbox_stats,
+    domain_events, edition_acquisitions, event_deliveries, event_outbox_stats,
     event_subscriber_nodes, holdings, plugin_instances, store_listings,
 };
 use crate::error::{LibraryError, Result};
@@ -3010,8 +3010,7 @@ pub fn prepare_publish_domain_event(
 
 /// What an acquire event says about the title it reports.
 ///
-/// Events name a title by its account holding (`holdings.id`), which
-/// outlives the flat `books` row (book model step 6).
+/// Events name a title by its account holding (`holdings.id`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AcquireEventTitle<'a> {
     /// The account holding (`titleId` in the payload, and the event's
@@ -3040,18 +3039,6 @@ impl<'a> AcquireEventTitle<'a> {
             isbn: title.isbn.as_deref(),
             account_id: &title.account_id,
             storage_key: title.storage_key.as_deref(),
-        }
-    }
-
-    /// The event view of flat row `book`, held by holding `holding_id`.
-    pub(crate) fn of_book(holding_id: &'a str, book: &'a books::Model) -> Self {
-        Self {
-            title_id: holding_id,
-            source: &book.source,
-            asin: book.asin.as_deref(),
-            isbn: book.isbn.as_deref(),
-            account_id: &book.account_id,
-            storage_key: book.storage_key.as_deref(),
         }
     }
 }
@@ -3158,9 +3145,6 @@ pub(crate) struct AcquireStatusWrite<'a> {
     pub(crate) holding: &'a TitleHolding,
     /// The title the event reports (its `titleId` is the holding).
     pub(crate) title: AcquireEventTitle<'a>,
-    /// The flat `books` row mirrored until the table is dropped (book
-    /// model step 6); `None` when the holding has none.
-    pub(crate) book_uuid: Option<&'a str>,
     /// The new state.
     pub(crate) status: AcquireStatus,
     /// Object-storage key for the primary audio artifact.
@@ -3171,8 +3155,8 @@ pub(crate) struct AcquireStatusWrite<'a> {
 
 /// Apply an acquire state write and publish its outbox row
 /// ([`acquire_status_event`]): the edition's `edition_acquisitions` row
-/// ([`update_edition_acquisition_on`]), the mirrored `books` row, and the
-/// event, all only while the holding still holds the edition.
+/// ([`update_edition_acquisition_on`]) and the event, both only while the
+/// holding still holds the edition.
 ///
 /// # Errors
 ///
@@ -3205,25 +3189,7 @@ pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
         write.error_message,
     )
     .await?;
-    if let Some(uuid) = write.book_uuid {
-        if let Some(model) = books::Entity::find()
-            .filter(books::Column::Uuid.eq(uuid))
-            .one(db)
-            .await
-            .map_err(LibraryError::Orm)?
-        {
-            update_acquire_status_on(
-                db,
-                model,
-                write.status,
-                write.storage_key,
-                write.error_message,
-            )
-            .await?;
-        }
-    } else {
-        crate::control_plane::bump_on(db, crate::control_plane::LiveTopic::Library).await?;
-    }
+    crate::control_plane::bump_on(db, crate::control_plane::LiveTopic::Library).await?;
     publish_domain_event_on(db, spec).await?;
     Ok(())
 }
@@ -3242,7 +3208,7 @@ async fn holding_exists<C: ConnectionTrait>(db: &C, holding_id: &str) -> Result<
 /// edition `edition_id`, read when the write runs.
 ///
 /// The holding a write names was read before the write (from the title's
-/// books row); a revoke or rescan in between deletes or replaces it, and
+/// title's holding); a revoke or rescan in between deletes or replaces it, and
 /// such a write must not name a holding that no longer holds the edition.
 ///
 /// # Errors
@@ -3378,23 +3344,6 @@ pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
         }
     }
     Ok(())
-}
-
-/// Update acquire columns without publishing.
-pub(crate) async fn update_acquire_status_on<C: ConnectionTrait>(
-    db: &C,
-    model: books::Model,
-    status: AcquireStatus,
-    storage_key: Option<&str>,
-    error_message: Option<&str>,
-) -> Result<()> {
-    let mut am: books::ActiveModel = model.into();
-    am.acquire_status = Set(status.as_str().to_string());
-    am.storage_key = Set(storage_key.map(str::to_string));
-    am.error_message = Set(error_message.map(str::to_string));
-    am.updated_at = Set(now_str());
-    am.update(db).await.map_err(LibraryError::Orm)?;
-    crate::control_plane::bump_on(db, crate::control_plane::LiveTopic::Library).await
 }
 
 /// Insert an outbox row or return the existing id for the same namespaced key.

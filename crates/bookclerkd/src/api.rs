@@ -350,19 +350,19 @@ struct StatusResponse {
     /// Count of configured store accounts.
     #[schema(example = 2)]
     accounts: usize,
-    /// Total title rows in the library.
+    /// Held works in the library (the works page index).
     #[schema(example = 412)]
     books: usize,
-    /// Titles whose `acquire_status` is `acquired`.
+    /// Held works whose furthest acquire state is `acquired`.
     #[schema(example = 380)]
     acquired: i64,
-    /// Titles still needing acquire (`not_acquired`).
+    /// Held works still needing acquire (`not_acquired`).
     #[schema(example = 27)]
     pending: i64,
-    /// Titles stuck in `error` after a failed acquire.
+    /// Held works stuck in `error` after a failed acquire.
     #[schema(example = 1)]
     error: i64,
-    /// Titles currently `queued` or `downloading`.
+    /// Held works currently `queued` or `downloading`.
     #[schema(example = 4)]
     in_progress: i64,
     /// Comma-joined `daemon.listen` addresses from live config.
@@ -4737,7 +4737,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
     let counts = library
-        .count_books_by_status()
+        .count_works_by_status()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let books = usize::try_from(counts.total).unwrap_or(0);
@@ -6153,7 +6153,7 @@ async fn discover_recommendations(
     let library = state.library_snapshot().await;
 
     // Nothing to recommend from: answer at once, queue nothing.
-    let has_books = library.count_books(None).await.map_err(internal_err)? > 0;
+    let has_books = library.has_held_titles().await.map_err(internal_err)?;
     let has_open_requests = !library
         .list_title_requests(Some(RequestStatus::Open))
         .await

@@ -23,7 +23,7 @@ mod integration {
         let b1 = store.upsert_book(&b1).await.unwrap();
         store
             .update_user_fields(
-                &b1.uuid,
+                &b1.holding_id,
                 "acct",
                 &bookclerk_library::UserBookFields {
                     is_finished: Some(true),

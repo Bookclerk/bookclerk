@@ -47,9 +47,9 @@ async fn library_with_a_copy(store: &LibraryStore) -> i64 {
         )
         .await
         .unwrap();
-    let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+    let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
     let owner = store
-        .file_owner_of_book(&record.uuid)
+        .file_owner_of_holding(&record.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -694,9 +694,9 @@ async fn a_destination_with_its_own_naming_is_planned_from_its_own_primary() {
     let store = memory(Profile::ALL[0]).await.into_store();
     let riley = library_with_a_copy(&store).await;
     add_branch(&store, BRANCH, riley).await;
-    let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+    let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
     let owner = store
-        .file_owner_of_book(&record.uuid)
+        .file_owner_of_holding(&record.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -755,9 +755,9 @@ async fn only_the_primary_audios_own_copy_is_offered() {
     let store = memory(Profile::ALL[0]).await.into_store();
     let riley = library_with_a_copy(&store).await;
     add_branch(&store, BRANCH, riley).await;
-    let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+    let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
     let owner = store
-        .file_owner_of_book(&record.uuid)
+        .file_owner_of_holding(&record.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -839,9 +839,9 @@ async fn a_person_is_planned_an_editions_audio_to_play_under_every_profile() {
     for profile in Profile::ALL {
         let store = memory(profile).await.into_store();
         let riley = library_with_a_copy(&store).await;
-        let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+        let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
         let edition = store
-            .edition_of_book(&record.uuid)
+            .edition_of_holding(&record.holding_id)
             .await
             .unwrap()
             .expect("an edition");
@@ -923,7 +923,7 @@ async fn a_person_is_planned_an_editions_audio_to_play_under_every_profile() {
         // A second part joins the edition: it is a track after the
         // primary, and the earlier digest no longer matches.
         let owner = store
-            .file_owner_of_book(&record.uuid)
+            .file_owner_of_holding(&record.holding_id)
             .await
             .unwrap()
             .unwrap();

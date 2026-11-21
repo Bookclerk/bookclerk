@@ -9,11 +9,10 @@ use sea_orm::{
     QueryFilter, QueryOrder, QuerySelect,
 };
 
-use super::{map_book, LibraryStore};
+use super::LibraryStore;
 use crate::control_plane::batch;
-use crate::entities::{books, storage_scan_generations, storage_scan_rows};
+use crate::entities::{storage_scan_generations, storage_scan_rows};
 use crate::error::{LibraryError, Result};
-use crate::models::BookRecord;
 
 /// Fields for one idempotent scan-row insert.
 struct ScanInsert<'a> {
@@ -459,80 +458,6 @@ impl LibraryStore {
             removed += 1;
         }
         Ok((removed, next))
-    }
-
-    /// Pages books by surrogate id so a scan does not load the catalog at once.
-    ///
-    /// `limit` is clamped to 1..=64. A full page of enriched `books` rows is
-    /// larger than the inline result cap (256 KiB); an adapter that streams
-    /// results returns it as one read. When the guest result would exceed
-    /// the byte budget it is read under (`maxResultBytes` on an adapter that
-    /// only answers inline, or `maxStreamedResultBytes`), the read halves,
-    /// and the smaller width that fits is reused until `limit` rows are
-    /// collected or the catalog ends.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
-    /// than a result byte cap, or when a single row still exceeds it.
-    pub async fn list_books_page(
-        &self,
-        account_id: Option<&str>,
-        after_id: Option<i64>,
-        limit: u64,
-    ) -> Result<Vec<BookRecord>> {
-        let want = limit.clamp(1, 64);
-        let mut books = Vec::new();
-        let mut cursor = after_id;
-        let mut width = want;
-        while u64::try_from(books.len()).unwrap_or(u64::MAX) < want {
-            let have = u64::try_from(books.len()).unwrap_or(0);
-            let mut take = (want - have).min(width).max(1);
-            let rows = loop {
-                match self.fetch_books_page(account_id, cursor, take).await {
-                    Ok(rows) => break rows,
-                    Err(err) if super::books_page::is_result_too_large(&err) && take > 1 => {
-                        take /= 2;
-                        width = take;
-                    }
-                    Err(err) => return Err(err),
-                }
-            };
-            let n = u64::try_from(rows.len()).unwrap_or(0);
-            let last = rows.last().map(|row| row.id);
-            books.extend(rows);
-            if n < take {
-                break;
-            }
-            cursor = last;
-        }
-        let cap = usize::try_from(want).unwrap_or(usize::MAX);
-        if books.len() > cap {
-            books.truncate(cap);
-        }
-        Ok(books)
-    }
-
-    /// One catalog slice of at most `limit` books after `after_id`.
-    async fn fetch_books_page(
-        &self,
-        account_id: Option<&str>,
-        after_id: Option<i64>,
-        limit: u64,
-    ) -> Result<Vec<BookRecord>> {
-        let mut query = books::Entity::find().order_by_asc(books::Column::Id);
-        if let Some(account_id) = account_id {
-            query = query.filter(books::Column::AccountId.eq(account_id));
-        }
-        if let Some(after_id) = after_id {
-            query = query.filter(books::Column::Id.gt(after_id));
-        }
-        let rows = query
-            .limit(limit.max(1))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        rows.into_iter().map(map_book).collect()
     }
 
     /// Inserts one scan row when that primary key is absent.
