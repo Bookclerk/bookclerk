@@ -808,6 +808,7 @@ mod tests {
                 value: "Kids".into(),
                 effect: RuleEffect::Include,
             }],
+            ..Default::default()
         };
         let default_scope = set_default_patron_scope(&source, &actor, kids.clone())
             .await
