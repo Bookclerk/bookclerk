@@ -653,17 +653,24 @@ impl CoverService {
         }
         self.recent_failure(&key)?;
 
+        let started = std::time::Instant::now();
         let flight = self.flight(&key);
         let guard = flight.lock().await;
+        let waited = started.elapsed();
         // Whoever held the lock may have just written it.
         if let Some(bytes) = read_cached(&dir, &key, size).await {
             drop(guard);
             self.land(&key, &flight);
+            tracing::debug!(
+                wait_ms = millis(waited),
+                "cover served after another request fetched it"
+            );
             return Ok(bytes);
         }
         let outcome = match self.recent_failure(&key) {
             Err(failure) => Err(failure),
             Ok(()) => {
+                let fetch_started = std::time::Instant::now();
                 let fetched = backend
                     .fetch(vec![FetchRequest::plain(url)])
                     .await
@@ -675,8 +682,26 @@ impl CoverService {
                         )),
                         None => Err(CoverFailure::Refused("no answer".into())),
                     });
+                let fetch_time = fetch_started.elapsed();
                 match fetched {
-                    Ok((bytes, policy)) => self.store(&**backend, &dir, &key, bytes, policy).await,
+                    Ok((bytes, policy)) => {
+                        let input_bytes = bytes.len();
+                        let process_started = std::time::Instant::now();
+                        let stored = self.store(&**backend, &dir, &key, bytes, policy).await;
+                        // The split a slow cover response can't show: time
+                        // waiting for another request's fetch of the same
+                        // cover, the download, and the media worker
+                        // (including its queue).
+                        tracing::debug!(
+                            wait_ms = millis(waited),
+                            fetch_ms = millis(fetch_time),
+                            process_ms = millis(process_started.elapsed()),
+                            input_bytes,
+                            ok = stored.is_ok(),
+                            "cover fetched and processed"
+                        );
+                        stored
+                    }
                     Err(failure) => Err(failure),
                 }
             }
@@ -914,6 +939,8 @@ impl CoverService {
                 .iter()
                 .map(|(url, _)| FetchRequest::plain(url.clone()))
                 .collect();
+            let started = std::time::Instant::now();
+            let asked = todo.len();
             let outcomes: Vec<Result<(Vec<u8>, UpstreamPolicy), CoverFailure>> =
                 match backend.fetch(requests).await {
                     Ok(downloads) => downloads
@@ -928,6 +955,8 @@ impl CoverService {
                         .collect(),
                     Err(failure) => vec![Err(failure); todo.len()],
                 };
+            let fetch_ms = millis(started.elapsed());
+            let downloaded = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
             let mut work = tokio::task::JoinSet::new();
             for ((_, key), fetched) in todo.into_iter().zip(outcomes) {
                 let service = Arc::clone(&service);
@@ -957,6 +986,13 @@ impl CoverService {
             }
             while work.join_next().await.is_some() {}
             drop(reserved);
+            tracing::debug!(
+                asked,
+                downloaded,
+                fetch_ms,
+                total_ms = millis(started.elapsed()),
+                "cover prefetch batch done"
+            );
         });
     }
 
@@ -1480,6 +1516,11 @@ pub(crate) async fn get_cover(
         Admission::Signed,
     )
     .await
+}
+
+/// Whole milliseconds in `elapsed`, for log fields.
+fn millis(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// `Cache-Control` for a cover path, which always names the same image.

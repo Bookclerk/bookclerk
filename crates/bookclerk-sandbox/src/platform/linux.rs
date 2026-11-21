@@ -265,7 +265,7 @@ fn apply_limits_in_child(child: &Path, limits: &crate::ResourceLimits) -> Result
 fn friendly_cgroup_error(detail: String) -> String {
     if cgroup_permission_denied(&detail) {
         "cgroup resource controllers are not delegated in this slice \
-         (common under desktop app scopes); filesystem/syscall/network jail still apply"
+         (common in containers and desktop app scopes); filesystem/syscall/network jail still apply"
             .into()
     } else {
         detail

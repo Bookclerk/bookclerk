@@ -155,6 +155,9 @@ events, so they follow that filter and stay inside the JSON daemon sink.
 - Raw `bookclerk-spawn:` lines are written only when
   `BOOKCLERK_SPAWN_DIAG` is `1`, `true` or `stderr` (gateway CI sets
   this).
+- Each spawn step is logged as its own text (`spawn begin plugin=…`).
+  The process-wide stage ring numbers every step of every spawn, and
+  only the raw `bookclerk-spawn: stage N:` lines carry that number.
 - The process-wide stage ring and the per-session stderr tail are
   byte-capped. Plugin stderr isn't kept in the stage ring after the
   session exits.
@@ -165,7 +168,10 @@ Reports are redacted before they leave the machine:
 
 - Secrets are redacted by exact value, and an upload is aborted if a
   registered secret remains. The Worker applies its own heuristics too.
-- Titles, paths, account ids and secrets are fully redacted.
+- Titles, paths, account ids and secrets are fully redacted. A field whose
+  name looks like a secret's (`password`, `*_token`, `*_key` and similar)
+  is redacted by name, except `plugin_key`, which is a public plugin
+  identity.
 - Emails are **partially** masked, not fully `[REDACTED]`:
   `address@sub.domain.tld` becomes `a*****s@***.d****n.tld`. The local
   part and the registrable domain label keep their first and last
