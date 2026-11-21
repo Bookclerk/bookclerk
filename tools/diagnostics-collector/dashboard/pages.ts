@@ -963,7 +963,7 @@ export function eventLog(events: unknown): {
   });
   const out: SafeHtml[] = [];
   let prevMs: number | null = null;
-  for (let i = 0; i < parsed.length; ) {
+  for (let i = 0; i < parsed.length;) {
     const head = parsed[i];
     if (!head) break;
     if (head.ms !== null && prevMs !== null && head.ms - prevMs > GAP_MS) {

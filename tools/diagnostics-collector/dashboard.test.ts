@@ -3447,12 +3447,16 @@ describe("issue page and ledger corrections", () => {
     assert.match(body, /<h1>#400 \[diagnostics\] issue 400<\/h1>/);
     assert.match(
       body,
-      new RegExp(`href="/reports/${ID1}">7c1e4a90</a>[^]*?<td class="fine" data-label="How">filed<`),
+      new RegExp(
+        `href="/reports/${ID1}">7c1e4a90</a>[^]*?<td class="fine" data-label="How">filed<`,
+      ),
       "the filed report with its source",
     );
     assert.match(
       body,
-      new RegExp(`href="/reports/${ID2}">d2b80f13</a>[^]*?<td class="fine" data-label="How">signature<`),
+      new RegExp(
+        `href="/reports/${ID2}">d2b80f13</a>[^]*?<td class="fine" data-label="How">signature<`,
+      ),
       "the signature link",
     );
     assert.match(
