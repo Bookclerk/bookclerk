@@ -1362,6 +1362,16 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::library_overrides::list_conflicts))
         .routes(routes!(crate::library_overrides::post_work_split))
+        // Library tags: the handlers admit only the operator, an Owner or
+        // an Administrator.
+        .routes(routes!(
+            crate::work_tags::get_work_tags,
+            crate::work_tags::put_work_tags
+        ))
+        .routes(routes!(
+            crate::collections::get_collections,
+            crate::collections::put_collections
+        ))
         .routes(routes!(
             crate::node_api::get_node_invites,
             crate::node_api::post_node_invite

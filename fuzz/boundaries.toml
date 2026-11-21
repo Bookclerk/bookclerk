@@ -483,6 +483,20 @@ input_from = "any signed-in patron"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.work_tags_request]
+crate = "bookclerk-library"
+boundary = "An Administrator's library tags for a work, from PUT /api/library/works/{id}/tags"
+input_from = "Administrator, Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.collections_request]
+crate = "bookclerk-library"
+boundary = "An Administrator's collections for the library, from PUT /api/library/collections and the stored core.collections document"
+input_from = "Administrator, Owner or operator"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.connections_request]
 crate = "bookclerk-library"
 boundary = "A branch Owner's store connections to add to one library, or one to disconnect, from POST /api/config/join/connections and POST /api/config/join/connections/disconnect"

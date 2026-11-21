@@ -17,6 +17,7 @@ import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { AdminControlsEditor } from "@/components/AdminControlsEditor";
 import { MemberControlsEditor } from "@/components/MemberControlsEditor";
 import { PatronScopeEditor } from "@/components/PatronScopeEditor";
+import { CollectionsEditor } from "@/components/CollectionsEditor";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1390,6 +1391,7 @@ export function UserManagementPanel({
                 <>
                   <MemberControlsEditor target={{ kind: "default" }} disabled={busy} />
                   <PatronScopeEditor target={{ kind: "default" }} disabled={busy} />
+                  <CollectionsEditor disabled={busy} />
                 </>
               ) : null}
               {canSetAdminSwitches ? (
