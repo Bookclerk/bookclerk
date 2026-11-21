@@ -33,6 +33,7 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "graphicaudio",
     "audiobookshelf",
     "s3",
+    "r2",
     "d1",
     "postgres",
     "metadata_files",

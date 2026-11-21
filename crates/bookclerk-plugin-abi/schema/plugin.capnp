@@ -2420,6 +2420,8 @@ struct ScanBook {
   purchasedAt @17 :Text $optional;
   # Category / genre labels as a single string when known.
   categories @18 :Text $optional;
+  # Whether the storefront marks the edition explicit (adult) content.
+  explicitness @19 :Explicitness;
 }
 
 # One page of an account's scan pass, the result of `ContentSource.scan`.
@@ -2746,6 +2748,17 @@ enum Abridgement {
   abridged @2;
 }
 
+# Whether an edition is marked as explicit (adult) content. A patron scope
+# can hide explicit editions; `unknown` and `clean` editions stay visible.
+enum Explicitness {
+  # The storefront or file did not say.
+  unknown @0;
+  # Marked as not explicit.
+  clean @1;
+  # Marked as explicit (adult) content.
+  explicit @2;
+}
+
 # One catalog / candidate hit returned by `searchCatalog`,
 # `expandCandidates`, `listDeals`, and `catalogDetail`.
 struct CatalogHit {
@@ -2806,6 +2819,8 @@ struct CatalogHit {
   # merges stores by it for relevance and popularity sorts and puts unranked
   # hits after ranked ones. Other catalog methods leave it 0.
   rankHint @25 :UInt32 $optional;
+  # Whether the storefront marks the edition explicit (adult) content.
+  explicitness @26 :Explicitness;
 }
 
 # Success payload of the catalog list methods.
@@ -3622,6 +3637,8 @@ enum MetadataField {
   chapters @13;
   # `MetadataFileRecord.durationMs`.
   duration @14;
+  # `MetadataFileRecord.explicitness`.
+  explicitness @15;
 }
 
 # What one metadata file says about the edition it sits beside. A field the
@@ -3669,6 +3686,9 @@ struct MetadataFileRecord {
   chapters @15 :List(MetadataChapter);
   # Running time in milliseconds.
   durationMs @16 :UInt64 $optional;
+  # Whether the edition is explicit (adult) content; `unknown` when the
+  # file does not say.
+  explicitness @17 :Explicitness;
 }
 
 # Params of `MetadataFiles.parse`.

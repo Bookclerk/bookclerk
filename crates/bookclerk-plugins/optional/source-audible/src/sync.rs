@@ -5,7 +5,7 @@ use audible_rs::api::paginator;
 use audible_rs::library_sync::DEFAULT_RESPONSE_GROUPS;
 use audible_rs::models::library as lib_model;
 use bookclerk_plugin_sdk::http::Method;
-use bookclerk_plugin_sdk::{Abridgement, ScanBook, SeriesEntry};
+use bookclerk_plugin_sdk::{Abridgement, Explicitness, ScanBook, SeriesEntry};
 use bookclerk_storefront::abi::rfc3339;
 use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -193,6 +193,11 @@ fn item_to_scan_book(
         Some(false) => Abridgement::Unabridged,
         Some(true) => Abridgement::Abridged,
     };
+    let explicitness = match item.get("is_adult_product").and_then(|v| v.as_bool()) {
+        None => Explicitness::Unknown,
+        Some(false) => Explicitness::Clean,
+        Some(true) => Explicitness::Explicit,
+    };
     let language = item
         .get("language")
         .and_then(|v| v.as_str())
@@ -259,6 +264,7 @@ fn item_to_scan_book(
         published_at: published_at.map(rfc3339),
         purchased_at: purchased_at.map(rfc3339),
         categories,
+        explicitness,
     };
     Some(book)
 }

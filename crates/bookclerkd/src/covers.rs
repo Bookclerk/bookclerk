@@ -653,17 +653,24 @@ impl CoverService {
         }
         self.recent_failure(&key)?;
 
+        let started = std::time::Instant::now();
         let flight = self.flight(&key);
         let guard = flight.lock().await;
+        let waited = started.elapsed();
         // Whoever held the lock may have just written it.
         if let Some(bytes) = read_cached(&dir, &key, size).await {
             drop(guard);
             self.land(&key, &flight);
+            tracing::debug!(
+                wait_ms = millis(waited),
+                "cover served after another request fetched it"
+            );
             return Ok(bytes);
         }
         let outcome = match self.recent_failure(&key) {
             Err(failure) => Err(failure),
             Ok(()) => {
+                let fetch_started = std::time::Instant::now();
                 let fetched = backend
                     .fetch(vec![FetchRequest::plain(url)])
                     .await
@@ -675,8 +682,33 @@ impl CoverService {
                         )),
                         None => Err(CoverFailure::Refused("no answer".into())),
                     });
+                let fetch_time = fetch_started.elapsed();
                 match fetched {
-                    Ok((bytes, policy)) => self.store(&**backend, &dir, &key, bytes, policy).await,
+                    Ok((bytes, policy)) => {
+                        let input_bytes = bytes.len();
+                        let process_started = std::time::Instant::now();
+                        let processed = backend.process(bytes).await;
+                        let process_time = process_started.elapsed();
+                        let write_started = std::time::Instant::now();
+                        let stored = match processed {
+                            Ok(set) => Ok(self.keep(&dir, &key, set, policy).await),
+                            Err(failure) => Err(failure),
+                        };
+                        // The split a slow cover response can't show: time
+                        // waiting for another request's fetch of the same
+                        // cover, the download, the media worker (including
+                        // its queue), and the cache write.
+                        tracing::debug!(
+                            wait_ms = millis(waited),
+                            fetch_ms = millis(fetch_time),
+                            process_ms = millis(process_time),
+                            write_ms = millis(write_started.elapsed()),
+                            input_bytes,
+                            ok = stored.is_ok(),
+                            "cover fetched and processed"
+                        );
+                        stored
+                    }
                     Err(failure) => Err(failure),
                 }
             }
@@ -914,6 +946,8 @@ impl CoverService {
                 .iter()
                 .map(|(url, _)| FetchRequest::plain(url.clone()))
                 .collect();
+            let started = std::time::Instant::now();
+            let asked = todo.len();
             let outcomes: Vec<Result<(Vec<u8>, UpstreamPolicy), CoverFailure>> =
                 match backend.fetch(requests).await {
                     Ok(downloads) => downloads
@@ -928,6 +962,8 @@ impl CoverService {
                         .collect(),
                     Err(failure) => vec![Err(failure); todo.len()],
                 };
+            let fetch_ms = millis(started.elapsed());
+            let downloaded = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
             let mut work = tokio::task::JoinSet::new();
             for ((_, key), fetched) in todo.into_iter().zip(outcomes) {
                 let service = Arc::clone(&service);
@@ -957,6 +993,13 @@ impl CoverService {
             }
             while work.join_next().await.is_some() {}
             drop(reserved);
+            tracing::debug!(
+                asked,
+                downloaded,
+                fetch_ms,
+                total_ms = millis(started.elapsed()),
+                "cover prefetch batch done"
+            );
         });
     }
 
@@ -980,10 +1023,29 @@ impl CoverService {
         policy: UpstreamPolicy,
     ) -> Result<CoverSet, CoverFailure> {
         let set = backend.process(bytes).await?;
+        Ok(self.keep(dir, key, set, policy).await)
+    }
+
+    /// Writes processed images as the entry for `key`, unless upstream said
+    /// `no-store`, replacing any older copy, and indexes it. With
+    /// `no-store`, any older copy is deleted instead. A failed write is
+    /// logged and not returned, so the request still gets its image.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Cover cache directory.
+    /// * `key` - Cache key of the cover's URL.
+    /// * `set` - The processed images.
+    /// * `policy` - Upstream's caching headers for this download.
+    ///
+    /// # Returns
+    ///
+    /// `set`, whether or not it was written.
+    async fn keep(&self, dir: &Path, key: &str, set: CoverSet, policy: UpstreamPolicy) -> CoverSet {
         let fresh_for = match policy.storage {
             Storage::DoNotStore => {
                 self.forget(dir, key).await;
-                return Ok(set);
+                return set;
             }
             Storage::Store { fresh_for } => fresh_for,
         };
@@ -1029,7 +1091,7 @@ impl CoverService {
             // Still serve this request; the next one tries the write again.
             Err(err) => tracing::warn!(error = %err, "could not cache a cover"),
         }
-        Ok(set)
+        set
     }
 
     /// The retention limits in force on this node.
@@ -1480,6 +1542,11 @@ pub(crate) async fn get_cover(
         Admission::Signed,
     )
     .await
+}
+
+/// Whole milliseconds in `elapsed`, for log fields.
+fn millis(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// `Cache-Control` for a cover path, which always names the same image.

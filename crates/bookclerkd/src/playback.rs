@@ -214,7 +214,7 @@ async fn edition_in_scope(
 
 /// The first of this node's destinations, in its own order, that `plan`
 /// lists tracks on.
-fn playable_here<'a>(
+pub(crate) fn playable_here<'a>(
     plan: &'a PlaybackPlan,
     destinations: &'a [OwnerDestination],
 ) -> Option<(&'a OwnerDestination, &'a [PlaybackTrack])> {
@@ -242,7 +242,7 @@ const TRACK_MEDIA_TYPES: [&str; 7] = [
 /// [`TRACK_MEDIA_TYPES`], else one read from the key's extension, else
 /// `application/octet-stream`. Never a value taken from stored data as
 /// is.
-fn track_content_type(track: &PlaybackTrack) -> HeaderValue {
+pub(crate) fn track_content_type(track: &PlaybackTrack) -> HeaderValue {
     let probed = track.content_type.as_deref().and_then(|probed| {
         let essence = probed.split(';').next().unwrap_or_default().trim();
         TRACK_MEDIA_TYPES

@@ -35,6 +35,9 @@ use zeroize::Zeroizing;
     not(any(target_os = "macos", target_os = "ios", target_os = "android"))
 ))]
 mod secret_service;
+mod systemd_creds;
+
+pub use systemd_creds::{SystemdCredsVault, CREDENTIAL_NAME};
 
 /// Keychain service name every Bookclerk master-key item is stored under.
 ///
@@ -43,8 +46,13 @@ mod secret_service;
 /// separate items.
 pub const KEYCHAIN_SERVICE: &str = "app.bookclerk.master-key";
 
-/// Four-byte header of a `master.key` pointer record (`BCK3`).
+/// Four-byte header of a `master.key` pointer record for an OS keychain
+/// item (`BCK3`).
 pub const POINTER_MAGIC: &[u8; 4] = b"BCK3";
+
+/// Four-byte header of a `master.key` pointer record for a key sealed with
+/// `systemd-creds` (`BCK4`): the same layout as [`POINTER_MAGIC`]'s.
+pub const CREDS_POINTER_MAGIC: &[u8; 4] = b"BCK4";
 
 /// Length in bytes of a key fingerprint (SHA-256 of the DEK).
 pub const FINGERPRINT_LEN: usize = 32;
@@ -147,11 +155,49 @@ impl std::fmt::Display for KeychainItemId {
     }
 }
 
-/// What `master.key` holds on a keychain install: which item carries the
-/// key, and the fingerprint the key inside must match. No key material.
+/// Which store a pointer record names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerStore {
+    /// The OS keychain ([`OsKeychain`]); the record starts `BCK3`.
+    Keychain,
+    /// A credential sealed with `systemd-creds` ([`SystemdCredsVault`]); the
+    /// record starts `BCK4`.
+    SystemdCreds,
+}
+
+impl PointerStore {
+    /// The record header for this store.
+    #[must_use]
+    pub fn magic(self) -> &'static [u8; 4] {
+        match self {
+            Self::Keychain => POINTER_MAGIC,
+            Self::SystemdCreds => CREDS_POINTER_MAGIC,
+        }
+    }
+
+    /// The store whose records start with `raw`'s first four bytes, if any.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - the start of `master.key`.
+    #[must_use]
+    pub fn for_header(raw: &[u8]) -> Option<Self> {
+        match raw.get(..4) {
+            Some(head) if head == POINTER_MAGIC.as_slice() => Some(Self::Keychain),
+            Some(head) if head == CREDS_POINTER_MAGIC.as_slice() => Some(Self::SystemdCreds),
+            _ => None,
+        }
+    }
+}
+
+/// What `master.key` holds on a keychain or `systemd-creds` install: which
+/// store and item carry the key, and the fingerprint the key inside must
+/// match. No key material.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeychainPointer {
-    /// The keychain item that holds the key envelope.
+    /// The store that holds the item.
+    pub store: PointerStore,
+    /// The item that holds the key envelope.
     pub item: KeychainItemId,
     /// SHA-256 of the unwrapped DEK, the same value `library_identity`
     /// stores. A key read from the item must hash to this.
@@ -161,20 +207,22 @@ pub struct KeychainPointer {
 /// Why a byte string is not a pointer record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PointerError {
-    /// The bytes don't start with [`POINTER_MAGIC`].
-    #[error("not a BCK3 pointer record")]
+    /// The bytes start with neither [`POINTER_MAGIC`] nor
+    /// [`CREDS_POINTER_MAGIC`].
+    #[error("not a BCK3 or BCK4 pointer record")]
     NotAPointer,
     /// The header is right but the record is not exactly [`POINTER_LEN`] bytes.
-    #[error("BCK3 pointer record is {0} bytes, expected {POINTER_LEN}")]
+    #[error("pointer record is {0} bytes, expected {POINTER_LEN}")]
     BadLength(usize),
 }
 
 impl KeychainPointer {
-    /// Encodes the record: `BCK3`, the item id, the fingerprint.
+    /// Encodes the record: the store's header (`BCK3` or `BCK4`), the item
+    /// id, the fingerprint.
     #[must_use]
     pub fn encode(&self) -> [u8; POINTER_LEN] {
         let mut out = [0u8; POINTER_LEN];
-        out[..4].copy_from_slice(POINTER_MAGIC);
+        out[..4].copy_from_slice(self.store.magic());
         out[4..20].copy_from_slice(self.item.as_bytes());
         out[20..].copy_from_slice(&self.fingerprint);
         out
@@ -188,13 +236,11 @@ impl KeychainPointer {
     ///
     /// # Errors
     ///
-    /// [`PointerError::NotAPointer`] when the header is not `BCK3`, and
-    /// [`PointerError::BadLength`] when the length is not exactly
-    /// [`POINTER_LEN`].
+    /// [`PointerError::NotAPointer`] when the header is neither `BCK3` nor
+    /// `BCK4`, and [`PointerError::BadLength`] when the length is not
+    /// exactly [`POINTER_LEN`].
     pub fn parse(raw: &[u8]) -> std::result::Result<Self, PointerError> {
-        if raw.get(..4) != Some(POINTER_MAGIC.as_slice()) {
-            return Err(PointerError::NotAPointer);
-        }
+        let store = PointerStore::for_header(raw).ok_or(PointerError::NotAPointer)?;
         let item: [u8; 16] = raw
             .get(4..20)
             .and_then(|s| s.try_into().ok())
@@ -204,6 +250,7 @@ impl KeychainPointer {
             .and_then(|s| s.try_into().ok())
             .ok_or(PointerError::BadLength(raw.len()))?;
         Ok(Self {
+            store,
             item: KeychainItemId::from_bytes(item),
             fingerprint,
         })
@@ -524,14 +571,23 @@ mod tests {
 
     #[test]
     fn a_pointer_round_trips() {
-        let pointer = KeychainPointer {
-            item: KeychainItemId::random(),
-            fingerprint: [7u8; FINGERPRINT_LEN],
-        };
-        let encoded = pointer.encode();
-        assert_eq!(encoded.len(), POINTER_LEN);
-        assert_eq!(&encoded[..4], b"BCK3");
-        assert_eq!(KeychainPointer::parse(&encoded), Ok(pointer));
+        for (store, magic) in [
+            (PointerStore::Keychain, b"BCK3"),
+            (PointerStore::SystemdCreds, b"BCK4"),
+        ] {
+            let pointer = KeychainPointer {
+                store,
+                item: KeychainItemId::random(),
+                fingerprint: [7u8; FINGERPRINT_LEN],
+            };
+            let encoded = pointer.encode();
+            assert_eq!(encoded.len(), POINTER_LEN);
+            assert_eq!(&encoded[..4], magic);
+            assert_eq!(KeychainPointer::parse(&encoded), Ok(pointer));
+            assert_eq!(PointerStore::for_header(&encoded), Some(store));
+        }
+        assert_eq!(PointerStore::for_header(b"BCK"), None);
+        assert_eq!(PointerStore::for_header(b"BCK2...."), None);
     }
 
     #[test]
@@ -550,6 +606,7 @@ mod tests {
     #[test]
     fn a_pointer_of_the_wrong_length_is_refused() {
         let encoded = KeychainPointer {
+            store: PointerStore::Keychain,
             item: KeychainItemId::random(),
             fingerprint: [1u8; FINGERPRINT_LEN],
         }

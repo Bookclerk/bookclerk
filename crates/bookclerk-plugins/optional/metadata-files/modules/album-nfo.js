@@ -71,6 +71,7 @@ function replaces(element, field, authors) {
         case "series":
         case "chapters":
         case "duration":
+        case "explicitness":
             return false;
     }
 }

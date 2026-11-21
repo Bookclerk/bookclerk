@@ -1320,6 +1320,11 @@ impl LibraryStore {
         } else {
             crate::db_atomic::delete_user(&self.db, id).await?;
         }
+        // The user's player passwords and cards are swept after the plan,
+        // which stays within the smallest adapter's `maxStatements`.
+        // Until then they cannot sign in: a card is read through its
+        // session row and a password through its user, both deleted.
+        self.sweep_ended_player_rows().await?;
         for wish in wishes {
             self.publish_wishlist_changed(&wish.uuid, wish.identity_id, "deleted")
                 .await;
@@ -1363,6 +1368,24 @@ impl LibraryStore {
                 .map_err(LibraryError::Orm)?;
             claim_tickets::Entity::delete_many()
                 .filter(claim_tickets::Column::IdentityId.eq(identity.id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let card_sessions = sea_orm::sea_query::Query::select()
+                .column(portal_sessions::Column::Id)
+                .from(portal_sessions::Entity)
+                .and_where(portal_sessions::Column::IdentityId.eq(identity.id))
+                .to_owned();
+            crate::entities::player_card_tokens::Entity::delete_many()
+                .filter(
+                    crate::entities::player_card_tokens::Column::SessionId
+                        .in_subquery(card_sessions.clone()),
+                )
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            crate::entities::player_cards::Entity::delete_many()
+                .filter(crate::entities::player_cards::Column::SessionId.in_subquery(card_sessions))
                 .exec(txn)
                 .await
                 .map_err(LibraryError::Orm)?;
@@ -1453,6 +1476,11 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)?;
         crate::entities::bookmarks::Entity::delete_many()
             .filter(crate::entities::bookmarks::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        crate::entities::player_passwords::Entity::delete_many()
+            .filter(crate::entities::player_passwords::Column::UserId.eq(id))
             .exec(txn)
             .await
             .map_err(LibraryError::Orm)?;
@@ -2705,6 +2733,21 @@ impl LibraryStore {
         else {
             return Ok(None);
         };
+        self.touch_session_identity(session, slide).await
+    }
+
+    /// The identity of a live session row, touching the row at most once a
+    /// minute and, with `slide`, moving its expiry to `slide` from now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or the touch fails.
+    pub(crate) async fn touch_session_identity(
+        &self,
+        session: portal_sessions::Model,
+        slide: Option<chrono::Duration>,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
+        let now = now_str();
         let identity_id = session.identity_id;
         let should_touch = match parse_dt_opt(session.last_used_at.as_deref()) {
             None => true,
@@ -4295,7 +4338,7 @@ impl LibraryStore {
     ///
     /// Returns an error when the flat row cannot be read or written.
     pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
-        self.upsert_book_with(book, Some(&holding_from_book(book)))
+        self.upsert_book_with(book, Some(&holding_from_book(book)), None)
             .await
     }
 
@@ -4310,19 +4353,21 @@ impl LibraryStore {
     /// Returns an error when the flat row cannot be read or written; a
     /// listing that cannot be resolved is logged, not returned.
     pub async fn update_book_metadata(&self, book: &NewBook) -> Result<BookRecord> {
-        self.upsert_book_with(book, None).await
+        self.upsert_book_with(book, None, None).await
     }
 
-    /// [`Self::upsert_book`], recording `holding` when one is given.
+    /// [`Self::upsert_book`], recording `holding` when one is given and the
+    /// store's explicit flag on the listing when known.
     async fn upsert_book_with(
         &self,
         book: &NewBook,
         holding: Option<&bookclerk_resolve::HoldingDraft>,
+        is_explicit: Option<bool>,
     ) -> Result<BookRecord> {
         let record = self.upsert_book_row(book).await?;
         match listing_from_book(book) {
             Ok(listing) => {
-                self.record_listing_after_row(&listing, holding, &record)
+                self.record_listing_after_row(&listing, holding, &record, is_explicit)
                     .await;
             }
             Err(err) => tracing::warn!(
@@ -4348,13 +4393,24 @@ impl LibraryStore {
     /// listing that cannot be resolved is logged, not returned.
     pub async fn upsert_scanned_title(&self, title: &ScannedTitle) -> Result<BookRecord> {
         let Some(listing) = &title.listing else {
-            return self.upsert_book(&title.book).await;
+            return self
+                .upsert_book_with(
+                    &title.book,
+                    Some(&holding_from_book(&title.book)),
+                    title.is_explicit,
+                )
+                .await;
         };
         let record = self.upsert_book_row(&title.book).await?;
         let mut listing = listing.clone();
         listing.key.plugin_key.clone_from(&title.book.plugin_key);
-        self.record_listing_after_row(&listing, Some(&holding_from_book(&title.book)), &record)
-            .await;
+        self.record_listing_after_row(
+            &listing,
+            Some(&holding_from_book(&title.book)),
+            &record,
+            title.is_explicit,
+        )
+        .await;
         Ok(record)
     }
 
@@ -4405,7 +4461,9 @@ impl LibraryStore {
                     holding_from_book(&title.book),
                     WorkEnrichment::of_book(record),
                 ));
-                details.push(crate::ListingDetail::of_book(record));
+                let mut detail = crate::ListingDetail::of_book(record);
+                detail.is_explicit = title.is_explicit;
+                details.push(detail);
             }
         }
         self.record_listing_page_with_details(&listings, &details)
@@ -4425,12 +4483,14 @@ impl LibraryStore {
     /// The work the listing reaches also takes the row's description,
     /// subjects, categories and cover where it has none yet. `holding` is
     /// recorded when given; without one the listing is linked as a catalog
-    /// listing and no holding is added.
+    /// listing and no holding is added. `is_explicit` is the store's
+    /// explicit flag for the listing, when the caller knows it.
     async fn record_listing_after_row(
         &self,
         listing: &bookclerk_resolve::Listing,
         holding: Option<&bookclerk_resolve::HoldingDraft>,
         record: &BookRecord,
+        is_explicit: Option<bool>,
     ) {
         let linked = match holding {
             Some(holding) => self.record_listing(listing, holding).await,
@@ -4438,7 +4498,8 @@ impl LibraryStore {
         };
         let result = match linked {
             Ok(plan) => {
-                let detail = crate::ListingDetail::of_book(record);
+                let mut detail = crate::ListingDetail::of_book(record);
+                detail.is_explicit = is_explicit;
                 match self.record_listing_detail(&plan.listing.id, &detail).await {
                     Ok(()) => {
                         self.fill_work_from_book(
@@ -6923,6 +6984,10 @@ pub struct ScannedTitle {
     /// The listing the plugin's structured record describes; `None` when
     /// only the flat row is known.
     pub listing: Option<bookclerk_resolve::Listing>,
+    /// Whether the store marks the edition explicit (adult) content:
+    /// `Some(true)` explicit, `Some(false)` clean, `None` unknown. Kept on
+    /// the listing (`store_listings.is_explicit`).
+    pub is_explicit: Option<bool>,
 }
 
 impl From<NewBook> for ScannedTitle {
@@ -6930,6 +6995,7 @@ impl From<NewBook> for ScannedTitle {
         Self {
             book,
             listing: None,
+            is_explicit: None,
         }
     }
 }
@@ -8079,6 +8145,8 @@ pub(crate) mod overrides;
 pub(crate) mod pacing;
 pub(crate) mod playback;
 pub(crate) mod playback_request;
+pub(crate) mod player_cards;
+pub(crate) mod player_catalog;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod request_queue;

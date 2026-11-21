@@ -422,6 +422,17 @@ export const ABRIDGEMENTS = ["unknown", "unabridged", "abridged"] as const;
 export type Abridgement = (typeof ABRIDGEMENTS)[number];
 
 /**
+ * Whether an edition is marked as explicit (adult) content. A patron scope
+ * can hide explicit editions; `unknown` and `clean` editions stay visible.
+ *
+ * Ordinal-ordered `Explicitness` wire names (index = Cap'n Proto ordinal).
+ */
+export const EXPLICITNESSS = ["unknown", "clean", "explicit"] as const;
+
+/** Union of `EXPLICITNESSS` wire names. */
+export type Explicitness = (typeof EXPLICITNESSS)[number];
+
+/**
  * Audio codec of a stream a store offers (`QualityOffer.codec`). Spelled as
  * the host's probed codecs are, so an offer compares with a held file.
  *
@@ -449,7 +460,7 @@ export type OfferedAacProfile = (typeof OFFERED_AAC_PROFILES)[number];
  *
  * Ordinal-ordered `MetadataField` wire names (index = Cap'n Proto ordinal).
  */
-export const METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration"] as const;
+export const METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publishedAt", "language", "genres", "tags", "abridgement", "expressionKind", "identifiers", "credits", "series", "chapters", "duration", "explicitness"] as const;
 
 /** Union of `METADATA_FIELDS` wire names. */
 export type MetadataField = (typeof METADATA_FIELDS)[number];

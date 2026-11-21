@@ -186,6 +186,26 @@ pub fn abridgement_to_flag(abridgement: abi::Abridgement) -> Option<bool> {
     }
 }
 
+/// Tri-state explicit flag ↔ the host's `Option<bool>`.
+#[must_use]
+pub fn explicitness_from_flag(is_explicit: Option<bool>) -> abi::Explicitness {
+    match is_explicit {
+        None => abi::Explicitness::Unknown,
+        Some(false) => abi::Explicitness::Clean,
+        Some(true) => abi::Explicitness::Explicit,
+    }
+}
+
+/// Host `Option<bool>` view of the wire tri-state explicit flag.
+#[must_use]
+pub fn explicitness_to_flag(explicitness: abi::Explicitness) -> Option<bool> {
+    match explicitness {
+        abi::Explicitness::Unknown => None,
+        abi::Explicitness::Clean => Some(false),
+        abi::Explicitness::Explicit => Some(true),
+    }
+}
+
 impl From<CatalogHit> for abi::CatalogHit {
     fn from(hit: CatalogHit) -> Self {
         Self {
@@ -215,6 +235,7 @@ impl From<CatalogHit> for abi::CatalogHit {
             series_entries: hit.series_entries,
             parent_product_id: hit.parent_product_id,
             rank_hint: hit.rank_hint.filter(|rank| *rank > 0),
+            explicitness: explicitness_from_flag(hit.is_explicit),
         }
     }
 }
@@ -240,6 +261,7 @@ impl From<abi::CatalogHit> for CatalogHit {
             rating_overall: hit.rating_overall,
             rating_count: hit.rating_count,
             is_abridged: abridgement_to_flag(hit.abridgement),
+            is_explicit: explicitness_to_flag(hit.explicitness),
             work_kind: hit.work_kind,
             expression_kind: hit.expression_kind,
             media_kind: hit.media_kind,

@@ -66,6 +66,9 @@ pub(crate) enum MasterKeyStore {
     PasswordFile,
     /// In the OS keychain; `master.key` only names the item (`BCK3`).
     Keychain,
+    /// Sealed with `systemd-creds` (TPM2 or the host key); `master.key`
+    /// only names the credential (`BCK4`).
+    SystemdCreds,
 }
 
 /// What the operator recorded about a recovery copy of the key in use.
@@ -94,7 +97,9 @@ pub(crate) struct MasterKeyStatus {
     #[schema(example = "2026-11-21T09:30:00+00:00")]
     recorded_at: Option<String>,
     /// Whether the web app should remind the operator to save a copy: the
-    /// key is in the OS keychain and no copy was recorded as saved.
+    /// key is in the OS keychain or sealed with `systemd-creds` (so backups
+    /// of the files directory don't include it) and no copy was recorded as
+    /// saved.
     #[schema(example = true)]
     needs_recovery_copy: bool,
 }
@@ -163,6 +168,7 @@ fn status_for(files_dir: &Path) -> Result<MasterKeyStatus, String> {
         Ok(Some(MasterKeyFormat::Raw)) => MasterKeyStore::File,
         Ok(Some(MasterKeyFormat::Wrapped)) => MasterKeyStore::PasswordFile,
         Ok(Some(MasterKeyFormat::Keychain)) => MasterKeyStore::Keychain,
+        Ok(Some(MasterKeyFormat::SystemdCreds)) => MasterKeyStore::SystemdCreds,
         Ok(None) => return Err("this install has no master.key".into()),
         Err(err) => return Err(err.to_string()),
     };
@@ -196,8 +202,10 @@ fn status_from(store: MasterKeyStore, state: RecoveryCopyState) -> MasterKeyStat
         store,
         recovery_copy,
         recorded_at,
-        needs_recovery_copy: store == MasterKeyStore::Keychain
-            && recovery_copy != RecoveryCopyAnswer::Saved,
+        needs_recovery_copy: matches!(
+            store,
+            MasterKeyStore::Keychain | MasterKeyStore::SystemdCreds
+        ) && recovery_copy != RecoveryCopyAnswer::Saved,
     }
 }
 
