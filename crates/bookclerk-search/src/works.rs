@@ -554,7 +554,7 @@ mod tests {
             let saved = library.upsert_book(&book).await.unwrap();
             works.push(
                 library
-                    .work_id_for_book(&saved.uuid)
+                    .work_of_holding(&saved.holding_id)
                     .await
                     .unwrap()
                     .unwrap(),

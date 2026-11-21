@@ -61,7 +61,6 @@ async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
 
 fn book(account: &str, asin: &str, title: &str) -> NewBook {
     NewBook {
-        uuid: None,
         product_id: asin.into(),
         plugin_key: PLUGIN.into(),
         source: "audible".into(),
@@ -105,7 +104,11 @@ async fn hold(store: &LibraryStore, user: i64, account: &str, asin: &str) -> Str
         .upsert_book(&book(account, asin, &format!("Title {asin}")))
         .await
         .unwrap();
-    store.work_id_for_book(&record.uuid).await.unwrap().unwrap()
+    store
+        .work_of_holding(&record.holding_id)
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 /// A library with a member who owns branch node [`BRANCH`].
@@ -453,7 +456,13 @@ async fn many_works_are_asked_and_answered_within_every_profiles_limits() {
                 .upsert_book(&book("owner-acct", &asin, &format!("Title {asin}")))
                 .await
                 .unwrap();
-            works.push(store.work_id_for_book(&record.uuid).await.unwrap().unwrap());
+            works.push(
+                store
+                    .work_of_holding(&record.holding_id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
         }
 
         let asked = ask_branches(&store, &works).await.unwrap();

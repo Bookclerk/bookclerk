@@ -766,6 +766,7 @@ pub fn merge_candidate_metadata(into: &mut StorefrontCandidate, from: &Storefron
     if into.is_abridged.is_none() {
         into.is_abridged = from.is_abridged;
     }
+    into.is_explicit = merged_explicit(into.is_explicit, from.is_explicit);
     if into.work_id.is_none() {
         into.work_id = from.work_id.clone();
     }
@@ -778,6 +779,16 @@ pub fn merge_candidate_metadata(into: &mut StorefrontCandidate, from: &Storefron
     }
     if !from.origin.is_empty() && !into.origin.contains(&from.origin) {
         into.origin = format!("{}; {}", into.origin, from.origin);
+    }
+}
+
+/// Two stores' explicit flags for one title: explicit when either says
+/// so, clean when one says clean and none says explicit, else unknown.
+fn merged_explicit(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+    match (a, b) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (None, None) => None,
     }
 }
 
@@ -844,6 +855,7 @@ pub fn merge_recommendation(into: &mut Recommendation, mut from: Recommendation)
     fill_opt_string(&mut into.published_at, from.published_at.as_deref());
     fill_opt_string(&mut into.genres, from.genres.as_deref());
     fill_opt_string(&mut into.language, from.language.as_deref());
+    into.is_explicit = merged_explicit(into.is_explicit, from.is_explicit);
     // The card keeps the seed and genre of the edition it was first found
     // through; a merge only fills a blank.
     if into.seed_title.is_none() {
@@ -1051,6 +1063,7 @@ mod tests {
             rating_overall: rating,
             rating_count: count,
             is_abridged: None,
+            is_explicit: None,
             store_rank: None,
             work_id: None,
             expression_id: None,

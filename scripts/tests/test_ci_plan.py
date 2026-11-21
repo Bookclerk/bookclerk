@@ -187,18 +187,18 @@ class ScenarioTests(unittest.TestCase):
     def test_site_only_runs_the_site_checks(self) -> None:
         p = plan("tools/site/worker.ts", "tools/site/src/site.css")
         self.assertFalse(p.full_suite, p.reasons)
-        self.assertEqual(sorted(p.checks), ["lint", "site_audit", "site_test"])
-        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check", "site"})
+        self.assertEqual(sorted(p.checks), ["lint", "site_audit", "site_test", "ui_visual"])
+        self.assertEqual({j for j, on in p.jobs.items() if on}, {"check", "site", "ui-visual"})
 
     def test_brand_assets_run_the_site_checks(self) -> None:
         p = plan("assets/brand/README.md")
         self.assertFalse(p.full_suite, p.reasons)
-        self.assertEqual(sorted(p.checks), ["lint", "site_audit", "site_test"])
+        self.assertEqual(sorted(p.checks), ["lint", "site_audit", "site_test", "ui_visual"])
 
     def test_collector_only_runs_its_tests(self) -> None:
         p = plan("tools/diagnostics-collector/worker.ts")
         self.assertFalse(p.full_suite, p.reasons)
-        self.assertEqual(sorted(p.checks), ["collector_test", "lint"])
+        self.assertEqual(sorted(p.checks), ["collector_test", "lint", "ui_visual"])
 
     def test_collector_test_type_checks_before_testing(self) -> None:
         art = artifact(plan("tools/diagnostics-collector/worker.ts"))
@@ -299,6 +299,27 @@ class ScenarioTests(unittest.TestCase):
         p = plan("crates/bookclerkd/src/lib.rs")
         self.assertTrue(p.selected("ui"))
         self.assertFalse(p.selected("ui_visual"))
+
+    def test_ui_visual_follows_worker_pages(self) -> None:
+        """The website's and the collector's sources change pages the check screenshots; docs do not."""
+        for path in (
+            "tools/site/src/site.css",
+            "tools/site/audit/visual-docs/layout.md",
+            "assets/brand/svg/bookclerk-mark.svg",
+            "SECURITY.md",
+            "tools/diagnostics-collector/dashboard/pages.ts",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(plan(path).selected("ui_visual"))
+        for path in ("docs/guide/getting-started.md", "scripts/worker_startup.py", "tools/demo/worker.ts"):
+            with self.subTest(path=path):
+                self.assertFalse(plan(path).selected("ui_visual"))
+
+    def test_ui_visual_builds_the_website_from_a_fixed_commit(self) -> None:
+        cmds = [c for key, c in planned_commands(artifact(plan("tools/site/src/site.css")), "ui_visual", CTX) if not key]
+        build = next(c for c in cmds if c.label == "npm run build (tools/site)")
+        self.assertEqual(build.env, {"SITE_COMMIT": "0000000", "SITE_BUILT_ON": "2026-01-01"})
+        self.assertIn("npm ci (tools/diagnostics-collector)", [c.label for c in cmds])
 
     def test_ui_visual_records_then_compares_with_baselines(self) -> None:
         p = plan("ui/src/App.tsx")

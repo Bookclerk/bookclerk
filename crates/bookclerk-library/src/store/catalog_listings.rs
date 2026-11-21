@@ -138,13 +138,11 @@ pub struct ListingDetail {
 impl ListingDetail {
     /// The store text a scanned library title carries, for its listing.
     ///
-    /// Only the fields a scan reports are taken: the flat row's synopsis,
-    /// language, cover and rating can come from metadata enrichment rather
-    /// than the store, so they are left out. A title the store marks
-    /// unabridged is left unknown, since the flat row cannot tell
+    /// Only the fields a scan reports are taken. A title the store marks
+    /// unabridged is left unknown, since a scan record cannot tell
     /// unabridged from unreported.
     #[must_use]
-    pub fn of_book(book: &crate::models::BookRecord) -> Self {
+    pub fn of_new_book(book: &crate::NewBook) -> Self {
         Self {
             subtitle: book.subtitle.clone(),
             authors: book.authors.clone(),
@@ -881,7 +879,7 @@ impl LibraryStore {
                         rows.insert(m.id.clone(), record_of(m));
                     }
                 }
-                Err(err) if super::books_page::is_result_too_large(&err) && chunk.len() > 1 => {
+                Err(err) if super::result_cap::is_result_too_large(&err) && chunk.len() > 1 => {
                     let (a, b) = chunk.split_at(chunk.len() / 2);
                     pending.push(a.to_vec());
                     pending.push(b.to_vec());

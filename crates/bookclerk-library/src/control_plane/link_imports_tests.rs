@@ -34,25 +34,13 @@ async fn connect(store: &LibraryStore, account: &str, user: Option<i64>) {
     }
 }
 
-/// The library's title `product` on `account`, as the branch is handed it:
-/// written to a store of its own (the library's), under that library's
-/// uuid.
-async fn library_row(profile: Profile, account: &str, product: &str) -> NewBook {
-    let library = kit(profile).await;
-    library
-        .upsert_account(PLUGIN, account, "us", Some(account), true, PLUGIN)
-        .await
-        .unwrap();
-    let new = NewBook::minimal(product, account, "us", format!("Title {product}"));
-    let row = library.upsert_book(&new).await.unwrap();
-    NewBook {
-        uuid: Some(row.uuid),
-        ..new
-    }
+/// The library's title `product` on `account`, as the branch is handed it.
+fn library_row(account: &str, product: &str) -> NewBook {
+    NewBook::minimal(product, account, "us", format!("Title {product}"))
 }
 
 /// The branch owner's book acquired for a library joins the branch's own
-/// library: the flat row (under the branch's own uuid) acquired at the
+/// library: the branch's own holding of the title acquired at the
 /// copy's key, its file recorded, and the book recorded as imported from
 /// that library. A book on an account the branch does not have for its
 /// Owner, or on a branch with no single Owner, stays out.
@@ -61,7 +49,7 @@ async fn the_owners_book_from_a_library_joins_the_branch() {
     for profile in Profile::ALL {
         let store = kit(profile).await;
         let name = profile.name();
-        let row = library_row(profile, "own-acct", "P1").await;
+        let row = library_row("own-acct", "P1");
         let import = LinkImport {
             library_id: "lib-a",
             book: &row,
@@ -93,18 +81,17 @@ async fn the_owners_book_from_a_library_joins_the_branch() {
         else {
             panic!("{name}: the owner's book is imported");
         };
-        assert_ne!(
-            Some(&book.uuid),
-            row.uuid.as_ref(),
-            "{name}: the branch's own uuid"
-        );
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired, "{name}");
+        assert_eq!(book.status, AcquireStatus::Acquired, "{name}");
         assert_eq!(
             book.storage_key.as_deref(),
             Some("Author/Title P1/Title P1.m4b"),
             "{name}"
         );
-        let owner_of = store.file_owner_of_book(&book.uuid).await.unwrap().unwrap();
+        let owner_of = store
+            .file_owner_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             store
                 .edition_file("local", "Author/Title P1/Title P1.m4b")
@@ -135,7 +122,7 @@ async fn the_owners_book_from_a_library_joins_the_branch() {
             .unwrap()
             .id;
         connect(&store, "sam-acct", Some(member)).await;
-        let sams = library_row(profile, "sam-acct", "P2").await;
+        let sams = library_row("sam-acct", "P2");
         assert!(
             matches!(
                 import_link_title(
@@ -200,7 +187,7 @@ async fn only_the_owners_own_books_are_shared_upward() {
                 .await
                 .unwrap();
         }
-        let imported = library_row(profile, "own-acct", "FROM-A").await;
+        let imported = library_row("own-acct", "FROM-A");
         let LinkImportOutcome::Imported(_) = import_link_title(
             &store,
             LinkImport {
@@ -287,7 +274,7 @@ async fn imports_are_kept_per_library_and_read_in_pages() {
 
         let mut rows = Vec::new();
         for product in ["P1", "P2", "P3"] {
-            rows.push(library_row(profile, "own-acct", product).await);
+            rows.push(library_row("own-acct", product));
         }
         for (library_id, row) in rows
             .iter()
@@ -309,7 +296,7 @@ async fn imports_are_kept_per_library_and_read_in_pages() {
                 panic!("{name}: {library_id} {} imported", row.product_id);
             };
             assert_eq!(book.plugin_key, PLUGIN, "{name}");
-            assert_eq!(book.acquire_status, AcquireStatus::Acquired, "{name}");
+            assert_eq!(book.status, AcquireStatus::Acquired, "{name}");
         }
 
         let key = |product: &str| {
@@ -352,7 +339,7 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
             .await
             .unwrap();
         let other_owner = store
-            .file_owner_of_book(&other.uuid)
+            .file_owner_of_holding(&other.holding_id)
             .await
             .unwrap()
             .unwrap();
@@ -364,7 +351,7 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
             "{name}"
         );
 
-        let row = library_row(profile, "own-acct", "P9").await;
+        let row = library_row("own-acct", "P9");
         assert!(
             matches!(
                 import_link_title(
@@ -438,7 +425,7 @@ async fn a_primary_key_another_edition_holds_is_not_imported() {
         .unwrap() else {
             panic!("{name}: imported");
         };
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired, "{name}");
+        assert_eq!(book.status, AcquireStatus::Acquired, "{name}");
         assert_ne!(book.pdf_status, AcquireStatus::Acquired, "{name}");
         assert_eq!(book.pdf_storage_key, None, "{name}");
     }

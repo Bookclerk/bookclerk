@@ -23,10 +23,10 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
-    extract_archive, fetch_artifact, fetch_owner_artifact, host_bookclerk_target,
-    is_platform_plugin_key, payload_root_sha256, require_mutable_child, safe_join, select_target,
-    sha256_file, ArchiveFormat, ArtifactTarget, BookclerkPackageManifest, Installer,
-    PackageCoordinate, PluginKey, PluginMutationLock, RegistrySource,
+    detect_archive_format, extract_archive, fetch_artifact, fetch_owner_artifact,
+    host_bookclerk_target, is_platform_plugin_key, payload_root_sha256, require_mutable_child,
+    safe_join, select_target, sha256_file, ArchiveFormat, ArtifactTarget, BookclerkPackageManifest,
+    Installer, PackageCoordinate, PluginKey, PluginMutationLock, RegistrySource,
 };
 
 use crate::consent::PluginGrant;
@@ -149,20 +149,13 @@ struct Inspected {
     payload_root_sha256: String,
     /// SHA-256 of the archive bytes.
     archive_sha256: String,
+    /// The archive's format, read from its bytes.
+    format: ArchiveFormat,
 }
 
 /// Archive format recorded on a version artifact.
 fn format_name(format: ArchiveFormat) -> &'static str {
     format.extension()
-}
-
-/// Parses a recorded archive format.
-fn parse_format(name: &str) -> ArchiveFormat {
-    if name == "zip" {
-        ArchiveFormat::Zip
-    } else {
-        ArchiveFormat::TarGz
-    }
 }
 
 /// Extracts `archive` into a scratch directory and reads the plugin tree.
@@ -183,7 +176,8 @@ fn inspect_archive(
     let result = (|| {
         let archive_sha256 = sha256_file(archive).map_err(cat)?;
         let tree = scratch.join("tree");
-        extract_archive(archive, artifact.archive_format(), &tree).map_err(cat)?;
+        let format = detect_archive_format(archive).map_err(cat)?;
+        extract_archive(archive, format, &tree).map_err(cat)?;
         let root = safe_join(&tree, Path::new(&artifact.archive_root)).map_err(cat)?;
         let manifest_toml = std::fs::read_to_string(root.join("plugin.toml"))
             .map_err(|err| PluginError::message(format!("archive has no plugin.toml: {err}")))?;
@@ -202,6 +196,7 @@ fn inspect_archive(
             manifest,
             payload_root_sha256,
             archive_sha256,
+            format,
         })
     })();
     let _ = std::fs::remove_dir_all(&scratch);
@@ -324,7 +319,7 @@ pub async fn add_package_version(
         artifacts.push(PluginArtifact {
             target: artifact.bookclerk_target(),
             url,
-            format: format_name(artifact.archive_format()).to_string(),
+            format: format_name(tree.format).to_string(),
             archive_root: artifact.archive_root.clone(),
             archive_sha256: tree.archive_sha256.clone(),
             payload_root_sha256: tree.payload_root_sha256.clone(),
@@ -598,7 +593,9 @@ fn materialize_blocking(
             return Ok(cache.to_path_buf());
         }
         let tree = staging.join("tree");
-        extract_archive(&archive, parse_format(&artifact.format), &tree).map_err(cat)?;
+        // The bytes, not the recorded format, pick the parser.
+        let format = detect_archive_format(&archive).map_err(cat)?;
+        extract_archive(&archive, format, &tree).map_err(cat)?;
         let root = safe_join(&tree, Path::new(&artifact.archive_root)).map_err(cat)?;
         let payload = payload_root_sha256(&root).map_err(cat)?;
         if payload != artifact.payload_root_sha256 {

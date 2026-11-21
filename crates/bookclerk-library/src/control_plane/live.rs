@@ -93,7 +93,8 @@ impl LiveTopic {
     /// The table behind the topic and its change-stamp column, which every
     /// write to the table sets to the time of the write.
     ///
-    /// `None` for `library_links`, which has no change stamp, for
+    /// `None` for `library`, whose writes span the library model's tables,
+    /// for `library_links`, which has no change stamp, for
     /// `configuration_changes`, an append-only log whose stamp is not
     /// indexed, and for `playback`, which has two tables and moves only
     /// on some of their writes; their writes bump on a probe or outright
@@ -101,7 +102,7 @@ impl LiveTopic {
     #[must_use]
     pub fn stamp_column(self) -> Option<(&'static str, &'static str)> {
         match self {
-            Self::Library => Some(("books", "updated_at")),
+            Self::Library => None,
             Self::Jobs => Some(("jobs", "updated_at")),
             Self::Deliveries => Some(("event_deliveries", "updated_at")),
             Self::Nodes => Some(("node_status", "heartbeat_at")),
@@ -865,10 +866,9 @@ mod tests {
         assert_eq!(changed_topics(&before, &after), vec![LiveTopic::Config]);
     }
 
-    /// Under every database profile the counters read back, and a book
-    /// write (too large for one batch statement under the smallest
-    /// profile, so it takes the oversized-write path there) bumps only the
-    /// library topic.
+    /// Under every database profile the counters read back: a scanned
+    /// title moves no topic until the library's page index takes it, and
+    /// that refresh bumps only the library topic.
     #[tokio::test]
     async fn counters_work_under_every_profile() {
         use crate::NewBook;
@@ -880,13 +880,26 @@ mod tests {
                 .await
                 .unwrap();
             let before = live_revisions(store).await.unwrap();
-            store
+            let title = store
                 .upsert_book(&NewBook::minimal("B00001", "a1", "us", "Title"))
                 .await
                 .unwrap();
+            let scanned = live_revisions(store).await.unwrap();
+            assert_eq!(
+                changed_topics(&before, &scanned),
+                Vec::<LiveTopic>::new(),
+                "{}",
+                profile.name()
+            );
+            let work = store
+                .work_of_holding(&title.holding_id)
+                .await
+                .unwrap()
+                .unwrap();
+            store.refresh_library_works(&[work]).await.unwrap();
             let after = live_revisions(store).await.unwrap();
             assert_eq!(
-                changed_topics(&before, &after),
+                changed_topics(&scanned, &after),
                 vec![LiveTopic::Library],
                 "{}",
                 profile.name()

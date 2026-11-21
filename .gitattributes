@@ -1,3 +1,15 @@
+# Check text out with LF on every platform. Golden files, generated
+# references and fuzz seeds are compared byte for byte, so a Windows checkout
+# that rewrote them to CRLF would fail the tests that keep them current.
+* text=auto eol=lf
+
 # Shell scripts run inside Linux containers built from Windows checkouts too;
 # CRLF endings break their shebang and `set -o pipefail`.
 *.sh text eol=lf
+
+# Inputs whose line endings are the point (CRLF fuzz seeds and corpora) and
+# third-party licence texts stay exactly as committed.
+**/fuzz/** -text
+**/corpus/** -text
+**/*_corpus/** -text
+**/fonts/OFL-*.txt -text

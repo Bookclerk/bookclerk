@@ -239,7 +239,9 @@ p {
 }
 button:focus-visible,
 a:focus-visible,
-select:focus-visible {
+select:focus-visible,
+.tbl:focus-visible,
+.log:focus-visible {
   outline: 2px solid var(--teal);
   outline-offset: 2px;
 }
@@ -828,6 +830,12 @@ td.issue-cell a {
 td.issue-cell a:hover {
   text-decoration: underline;
 }
+/* At least 24 px tall, so the small GitHub link is an easy touch target. */
+td.issue-cell a.quiet {
+  display: inline-block;
+  min-height: 24px;
+  line-height: 24px;
+}
 tbody tr:hover {
   background: var(--parchment);
 }
@@ -1023,7 +1031,7 @@ details summary {
 }
 .log .t,
 .log .fields {
-  opacity: 0.7;
+  opacity: 0.8;
 }
 .log .tg {
   color: var(--log-tag);
@@ -1043,7 +1051,7 @@ details summary {
 }
 .log .lv-debug,
 .log .lv-trace {
-  opacity: 0.75;
+  opacity: 0.85;
 }
 .log.hide-error .lv-error,
 .log.hide-warn .lv-warn,
@@ -1072,7 +1080,7 @@ details summary {
 .log .gap {
   padding: 0 12px 0 118px;
   min-width: 760px;
-  opacity: 0.55;
+  opacity: 0.8;
   font-size: 11px;
   border-top: 1px dashed rgb(243 229 198 / 0.25);
 }

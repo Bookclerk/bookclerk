@@ -1,13 +1,16 @@
 # Visual and accessibility testing
 
-CI checks the web app's components for layout changes and accessibility
-problems. Each component has Storybook stories beside its source. CI opens
-every story in a browser, checks it with axe-core, and compares a screenshot
-with an approved baseline image.
+CI checks every web page Bookclerk ships for layout changes and
+accessibility problems: the web app's components, the website
+(`tools/site`) and the diagnostics collector's pages
+(`tools/diagnostics-collector`). Each web app component has Storybook
+stories beside its source. CI opens every story and every Worker page in a
+browser, checks it with axe-core, and compares a screenshot with an approved
+baseline image.
 
-Nothing here ships in the app. Storybook, Playwright and the stories are
-development tools, and `vite build` never imports a story, so `ui/dist` is
-unchanged.
+Nothing here ships in the app or the Workers. Storybook, Playwright, the
+stories and the Workers' local page servers are development tools, and
+`vite build` never imports a story, so `ui/dist` is unchanged.
 
 ## What runs
 
@@ -25,6 +28,35 @@ For every story in the static Storybook build, the check:
 
 The story list comes from the build's `index.json`, so a new story is
 checked without any other change. A story tagged `skip-visual` is left out.
+
+## Website and collector pages
+
+`ui/visual/workers.spec.ts` checks the pages the two Cloudflare Workers
+serve, in the same run and at the same viewports. Each page is opened in
+light and in dark (both follow `prefers-color-scheme`), must answer with its
+expected status, passes the same axe-core rules, and is compared with a
+baseline of its whole length, named `<worker>--<page>--<theme>.png`.
+
+- **Website**: `tools/site/audit/serve.ts` serves the built site through its
+  real Worker under `wrangler dev`, as the [website audit](../automation.md#website-checks)
+  does. The pages are `VISUAL_PAGES` in `tools/site/audit/pages.ts`: the
+  home, download, privacy and security pages, the 404 and
+  docs-unavailable pages, and one docs page. That docs page is the fixture
+  `tools/site/audit/visual-docs/layout.md`, which holds one of each kind of
+  docs block. Real docs pages aren't screenshotted, because their words
+  change far more often than their layout. CI builds the site from a fixed
+  commit and date, and the homepage's catalog sample is fixed, so nothing
+  but the layout changes the images.
+- **Collector**: `tools/diagnostics-collector/visual/serve.ts` renders every
+  page template in `dashboard/pages.ts` from fixed sample data and a fixed
+  clock, with the dashboard's static files. No database, GitHub App or
+  session is involved. The pages are `VISUAL_PAGES` in
+  `tools/diagnostics-collector/visual/pages.ts`; the server refuses to
+  start when that list and its renderers disagree.
+
+A new collector page template gets a sample render in `visual/serve.ts`
+and an entry in `visual/pages.ts`. A new website page gets an entry in
+`audit/pages.ts`.
 
 ## Write a story
 
@@ -80,6 +112,16 @@ npm run test:visual -- --update-snapshots=all
 The last command records screenshots into `ui/visual/baselines/` and fails
 on any axe-core violation. That folder is ignored by git.
 
+The run also starts the Workers' page servers, so install and build them
+first:
+
+```bash
+(cd ../tools/site && npm ci && SITE_COMMIT=0000000 SITE_BUILT_ON=2026-01-01 npm run build)
+(cd ../tools/diagnostics-collector && npm ci)
+```
+
+Add `workers` or `stories` after `--` to run only one of the two specs.
+
 > [!IMPORTANT]
 > Local screenshots are for looking, never for committing as baselines.
 > Fonts, anti-aliasing and the browser build differ between machines.
@@ -91,8 +133,11 @@ a host whose preinstalled browser isn't the one Playwright downloads.
 ## The CI job
 
 The `UI visual and accessibility` job (`ui_visual` check) runs when a file
-under `ui/` changes, and in the full suite. A change to the host that serves
-the app doesn't select it, because it doesn't change what a story renders.
+under `ui/`, `tools/site/`, `tools/diagnostics-collector/` or
+`assets/brand/` changes, or `SECURITY.md` (the website's security page), and
+in the full suite. A change to the host that serves the app doesn't select
+it, and neither does a change under `docs/`, because neither changes what
+the checks render.
 Like the other jobs outside `check` and `test`, it is
 [deferred on a draft](../ci.md#draft-pull-requests). It runs on ready pull
 requests and in the merge queue.

@@ -867,6 +867,9 @@ class _Surfaces:
 
     def __init__(self) -> None:
         self.ui: list[str] = []
+        # Paths that change a page the `ui_visual` check screenshots: the
+        # SPA's, the website's and the diagnostics collector's.
+        self.visual: list[str] = []
         self.ts_sdk: list[str] = []
         self.python_sdk: list[str] = []
         self.abi: list[str] = []
@@ -984,6 +987,7 @@ def build_plan(
 
         if path.startswith(UI_PREFIX):
             surf.ui.append(path)
+            surf.visual.append(path)
             classified = True
         if path.startswith(TS_SDK_PREFIX):
             surf.ts_sdk.append(path)
@@ -996,9 +1000,11 @@ def build_plan(
             classified = True
         if path.startswith(SITE_PREFIX) or path.startswith(BRAND_PREFIX) or path in SITE_SOURCE_FILES:
             surf.site.append(path)
+            surf.visual.append(path)
             classified = True
         if path.startswith(COLLECTOR_PREFIX):
             surf.collector.append(path)
+            surf.visual.append(path)
             classified = True
         if path.startswith(DEMO_PREFIX):
             surf.demo.append(path)
@@ -1215,9 +1221,11 @@ def _select_checks(
         ui_why.append(f"{UI_HOST_PACKAGE} serves ui/dist")
     if ui_why:
         _select(plan, "ui", ui_why)
-    if surf.ui:
-        # Only the SPA's own sources change what a story renders.
-        _select(plan, "ui_visual", [f"path {p}" for p in surf.ui])
+    if surf.visual:
+        # Only the SPA's own sources change what a story renders, and only the
+        # website's and the collector's sources what their pages render (the
+        # website's docs pages are screenshotted from a fixture, not docs/).
+        _select(plan, "ui_visual", [f"path {p}" for p in surf.visual])
 
     doc_pkgs = plan.doc_packages()
     if doc_pkgs or surf.ts_sdk or surf.ui or surf.python_sdk:

@@ -8,7 +8,7 @@ use std::io::{Cursor, Write};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
+use zip::{CompressionMethod, System, ZipWriter};
 
 /// How a fixture ZIP entry is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,13 @@ pub enum ZipEntry<'a> {
     Dir(&'a str),
 }
 
+/// Entry options that write the same bytes on every host: the zip crate
+/// otherwise stamps entries as made by DOS on Windows, which changes the
+/// checked-in seeds.
+fn unix_options() -> SimpleFileOptions {
+    SimpleFileOptions::default().system(System::Unix)
+}
+
 /// A ZIP archive of `entries`, names written exactly as given.
 #[must_use]
 pub fn zip_of(entries: &[ZipEntry<'_>]) -> Vec<u8> {
@@ -30,26 +37,22 @@ pub fn zip_of(entries: &[ZipEntry<'_>]) -> Vec<u8> {
     for entry in entries {
         match *entry {
             ZipEntry::Stored(name, data) => {
-                let options =
-                    SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+                let options = unix_options().compression_method(CompressionMethod::Stored);
                 writer.start_file(name, options).expect("start");
                 writer.write_all(data).expect("write");
             }
             ZipEntry::Deflated(name, data) => {
-                let options =
-                    SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+                let options = unix_options().compression_method(CompressionMethod::Deflated);
                 writer.start_file(name, options).expect("start");
                 writer.write_all(data).expect("write");
             }
             ZipEntry::Symlink(name, target) => {
                 writer
-                    .add_symlink(name, target, SimpleFileOptions::default())
+                    .add_symlink(name, target, unix_options())
                     .expect("symlink");
             }
             ZipEntry::Dir(name) => {
-                writer
-                    .add_directory(name, SimpleFileOptions::default())
-                    .expect("dir");
+                writer.add_directory(name, unix_options()).expect("dir");
             }
         }
     }

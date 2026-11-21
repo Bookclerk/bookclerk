@@ -53,7 +53,7 @@ async fn scan(library: &LibraryStore, asin: &str, title: &str, key: &str) -> Str
         .await
         .expect("book");
     let owner = library
-        .file_owner_of_book(&saved.uuid)
+        .file_owner_of_holding(&saved.holding_id)
         .await
         .expect("owner read")
         .expect("owner");
@@ -62,7 +62,7 @@ async fn scan(library: &LibraryStore, asin: &str, title: &str, key: &str) -> Str
         .await
         .expect("file");
     let work = library
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .expect("work read")
         .expect("work");

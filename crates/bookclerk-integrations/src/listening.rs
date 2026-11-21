@@ -426,7 +426,7 @@ mod tests {
             .await
             .expect("book");
         let work = library
-            .work_id_for_book(&dune.uuid)
+            .work_of_holding(&dune.holding_id)
             .await
             .expect("work")
             .expect("a work");
