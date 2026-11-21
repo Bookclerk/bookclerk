@@ -192,6 +192,15 @@ file's row in the database (`edition_files`):
 | Lossless | Whether the audio track's encoding is lossless (FLAC, or ALAC in an MP4 file) |
 | Source store | The store the copy was downloaded from, such as `audible` or `libro` |
 | Copy | Which of the library's copies the file belongs to, by format and quality (`mp3` and `64k-mono`); see [Keeping several copies](output.md#keeping-several-copies) |
+| Codec | The audio encoding: `aac`, `alac`, `flac`, `mp3`, `opus`, `vorbis`, `eac3` or `ac4` |
+| AAC profile | For AAC, the profile the decoder configuration names: `lc`, `he`, `he_v2` or `xhe`. HE-AAC that is signalled only inside the audio frames reads as `lc` |
+| Channels and sample rate | As the stream's headers state them; for HE-AAC, the rate after band replication |
+| Duration | The running time a player sees, in milliseconds: an MP4's movie duration (which edit lists shape), an Opus stream's samples past its pre-skip, an MP3's frame count. Empty when the file states none, never 0 |
+
+Nothing is decoded to find these values. The codec, profile, channels,
+sample rate and duration are stored only for files an acquire on this
+node probed; an upload's row carries the sender's media type, bitrate,
+lossless flag and store, and the rest stays empty.
 
 The row answers "what copy do we hold?" without opening the file again,
 so comparing two copies of one edition, or telling another install what

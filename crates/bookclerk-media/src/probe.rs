@@ -30,6 +30,16 @@ pub struct AudioProbe {
     /// True when the audio encoding is lossless (FLAC, ALAC). An MP4 file
     /// whose encoding the reader does not know counts as lossy.
     pub lossless: bool,
+    /// The audio encoding, when the tag reader knows it.
+    pub codec: Option<bookclerk_tags::AudioCodec>,
+    /// Channels, sample rate and AAC profile, as far as the headers state
+    /// them.
+    pub format: bookclerk_tags::AudioFormat,
+    /// The running time a player sees, in milliseconds, as the container
+    /// states it (an MP4's movie duration, which edit lists shape; an Opus
+    /// stream's samples past its pre-skip). `None` when the file states
+    /// none, never zero.
+    pub duration_ms: Option<u64>,
 }
 
 impl AudioProbe {
@@ -50,6 +60,12 @@ impl AudioProbe {
             lossless: record
                 .codec
                 .is_some_and(bookclerk_tags::AudioCodec::is_lossless),
+            codec: record.codec,
+            format: record.format,
+            duration_ms: record
+                .duration
+                .map(|duration| duration.ms)
+                .filter(|&ms| ms > 0),
         }
     }
 }
@@ -114,6 +130,13 @@ mod tests {
         assert_eq!(probe.content_type, "audio/mp4");
         assert_eq!(probe.bitrate_kbps, Some(88));
         assert!(!probe.lossless);
+        assert_eq!(probe.codec, Some(bookclerk_tags::AudioCodec::Aac));
+        assert_eq!(
+            probe.format.aac_profile,
+            Some(bookclerk_tags::AacProfile::Lc)
+        );
+        assert_eq!(probe.format.channels, Some(2));
+        assert_eq!(probe.duration_ms, Some(90_000));
         // A tiny file still reports at least 1 kbit/s.
         assert_eq!(AudioProbe::from_record(1, &record).bitrate_kbps, Some(1));
 

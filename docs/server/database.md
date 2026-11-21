@@ -789,7 +789,10 @@ library holds as works, expressions and editions:
   probe of the file found: its media type (`content_type`, from the
   container, not the file name), its average bitrate (`bitrate_kbps`),
   whether the encoding is lossless (`lossless`), the store the copy came
-  from (`source_store`) and when it was probed (`probed_at`). The acquire
+  from (`source_store`) and when it was probed (`probed_at`). An acquire's
+  probe also stores the encoding (`codec`), the AAC profile
+  (`aac_profile`), `channels`, `sample_rate_hz` and the running time a
+  player sees (`duration_ms`, empty when unknown, never 0). The acquire
   that writes a file probes it; an upload carries the sender's values and
   they are stored when it commits. `probed_at` is empty for a file that
   was never probed (it is not audio, the media worker was unavailable, or

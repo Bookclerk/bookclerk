@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use crate::cache::{Miss, Source, Step};
 use crate::text::{utf8, RecordBuilder};
 use crate::{
-    ByteSpan, ChapterSource, Container, Duration, DurationPrecision, TagError, TagField, TagRecord,
+    AudioFormat, ByteSpan, ChapterSource, Container, Duration, DurationPrecision, TagError,
+    TagField, TagRecord,
 };
 
 /// Container name in errors.
@@ -54,6 +55,7 @@ pub(crate) fn read(src: &Source<'_>) -> Step<TagRecord> {
             STREAMINFO => {
                 let body = src.bytes(body_at, len, NAME)?;
                 builder.duration = streaminfo_duration(body);
+                builder.format = streaminfo_format(body);
             }
             VORBIS_COMMENT | PICTURE | CUESHEET => {
                 let body = src.bytes(body_at, len, NAME)?;
@@ -96,6 +98,25 @@ pub(crate) fn read(src: &Source<'_>) -> Step<TagRecord> {
         }
     }
     Err(malformed("too many metadata blocks"))
+}
+
+/// The channel count and sample rate a `STREAMINFO` body states.
+///
+/// After the block sizes and frame sizes come 20 bits of rate, then the
+/// channel count less one in 3 bits.
+fn streaminfo_format(body: &[u8]) -> AudioFormat {
+    let Some(bits) = body
+        .get(10..18)
+        .and_then(|bits| <[u8; 8]>::try_from(bits).ok())
+    else {
+        return AudioFormat::default();
+    };
+    let packed = u64::from_be_bytes(bits);
+    AudioFormat {
+        channels: u8::try_from(((packed >> 41) & 0b111) + 1).ok(),
+        sample_rate_hz: u32::try_from(packed >> 44).ok().filter(|&rate| rate > 0),
+        aac_profile: None,
+    }
 }
 
 /// The running time from a `STREAMINFO` body: total samples over the rate.
@@ -320,6 +341,14 @@ pub(crate) mod tests {
         let file = tagged_flac();
         let record = drive(&file).expect("read");
         assert_eq!(record, read_all(&file).expect("read all"));
+        assert_eq!(
+            record.format,
+            crate::AudioFormat {
+                channels: Some(2),
+                sample_rate_hz: Some(44_100),
+                aac_profile: None,
+            }
+        );
         assert_eq!(record.entries.len(), 3);
         assert_eq!(record.entries[1].field, TagField::Artist);
         assert_eq!(

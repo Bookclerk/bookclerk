@@ -389,7 +389,10 @@ download, main output first. When a library keeps more than one copy,
 every MP3 or Opus copy is encoded at its own quality, even when the
 store delivers that format, so each copy holds the audio its name says. A
 library with only the main output keeps storing a store's MP3 or Opus
-file as delivered, rather than encoding lossy audio a second time. Every destination receives each copy its
+file as delivered, rather than encoding lossy audio a second time. A
+book matched to Audible is encoded again only when Audible's chapter list
+is laid onto it; when Audible has no chapters for it, the file is kept as
+delivered too. Every destination receives each copy its
 filter takes (see
 [Choosing which books a destination takes](#choosing-which-books-a-destination-takes)).
 For example, to send only the MP3 copy to a bucket a phone syncs from:
