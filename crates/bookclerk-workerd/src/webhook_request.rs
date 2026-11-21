@@ -188,7 +188,7 @@ fn kept_value(value: &[u8]) -> Result<String, WebhookRefusal> {
 /// # Errors
 ///
 /// [`WebhookRefusal::PayloadTooLarge`] for a body over `max_body_bytes`;
-/// the [`check_hmac`] refusals for a signed row; and
+/// the `check_hmac` refusals for a signed row; and
 /// [`WebhookRefusal::BadRequest`] for a kept header that repeats, is over
 /// the value cap or holds a control character.
 pub fn verify_webhook_request(
