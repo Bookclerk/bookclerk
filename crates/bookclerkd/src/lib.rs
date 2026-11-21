@@ -45,6 +45,7 @@ mod library_overrides;
 mod library_works;
 mod live;
 mod maintenance;
+mod master_key_recovery;
 mod media_capabilities;
 mod node_api;
 mod node_queue;

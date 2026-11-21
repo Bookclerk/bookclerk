@@ -116,6 +116,10 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/config/libraries/{library_id}/scan", "deny"],
   ["GET", "/api/config/branch-enrollment", "allow"],
   ["PUT", "/api/config/branch-enrollment", "deny"],
+  // The library key: the status may show; a recovery copy carries the key.
+  ["GET", "/api/config/master-key", "allow"],
+  ["POST", "/api/config/master-key/recovery-copy", "deny"],
+  ["PUT", "/api/config/master-key/recovery-copy/state", "deny"],
   ["GET", "/api/config/join", "allow"],
   ["POST", "/api/config/join/callback", "deny"],
   ["POST", "/api/config/join/connections", "deny"],
