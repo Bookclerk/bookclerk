@@ -193,10 +193,21 @@ async fn an_operational_notification_goes_to_the_routes_its_severity_reaches_und
             .unwrap();
         assert!(!warning.inboxed, "{name}");
         assert_eq!(warning.deliveries.len(), 1, "{name}");
-        assert_eq!(
-            warning.deliveries[0].plugin_instance_id, "slack-1",
-            "{name}"
-        );
+        // `ops` and the paused `quiet` share `slack-1`: check the channel.
+        let to = |id: String| {
+            let store = &store;
+            async move {
+                store
+                    .notify_send_work(&id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .destination
+                    .unwrap()
+                    .id
+            }
+        };
+        assert_eq!(to(warning.deliveries[0].id.clone()).await, ops, "{name}");
 
         let critical = store
             .route_notification(
@@ -212,6 +223,14 @@ async fn an_operational_notification_goes_to_the_routes_its_severity_reaches_und
             .collect();
         instances.sort();
         assert_eq!(instances, ["pagerduty-1", "slack-1"], "{name}");
+        let mut targets = Vec::new();
+        for d in &critical.deliveries {
+            targets.push(to(d.id.clone()).await);
+        }
+        targets.sort();
+        let mut expected = vec![ops.clone(), pager.clone()];
+        expected.sort();
+        assert_eq!(targets, expected, "{name}");
 
         // Each delivery has its send job, pinned to its notifier instance.
         for delivery in &critical.deliveries {

@@ -426,7 +426,8 @@ only that. The others check:
 - **`notify_cursor`**: the input is the token. It is accepted exactly
   when it is at most 512 bytes of unpadded base64url whose bytes are one
   JSON object with exactly the keys `created_at` and `id`, each written
-  once, each a string of at most 128 bytes, as the oracle's own base64url
+  once, each a string of at most 128 bytes with no U+0000, as the
+  oracle's own base64url
   decoder and an untyped reading of the JSON agree. An accepted token
   re-encodes to one that decodes to the same cursor. The shared oracle is
   `fuzz/oracles/notify_cursor.rs`, replayed from `bookclerk-library`.

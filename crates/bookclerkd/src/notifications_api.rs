@@ -349,7 +349,7 @@ pub(crate) struct DestinationJson {
     /// destination, resets it to 0. It pauses at 5.
     #[schema(example = 0)]
     failure_count: i64,
-    /// When repeated failures paused it (RFC 3339); absent while active.
+    /// When repeated failures paused it (RFC 3339); `null` while active.
     #[schema(example = "2026-11-21T10:00:00+00:00")]
     paused_at: Option<String>,
     /// Why it was paused.
@@ -618,6 +618,11 @@ pub(crate) async fn post_channel_test(
     AxumPath(id): AxumPath<String>,
 ) -> Result<(StatusCode, Json<TestSent>), ApiError> {
     administrator(&state, &headers).await?;
+    // Hold job admission from the snapshot through routing, so a database
+    // reload cannot leave the test's job on a superseded store.
+    let _permit = crate::jobs::admission_permit(&state)
+        .await
+        .map_err(|err| store_error("post_channel_test", LibraryError::Other(err)))?;
     let library = state.library_snapshot().await;
     let destination = channel(&library, &id).await?;
     if destination.paused_at.is_some() {
@@ -646,7 +651,8 @@ pub(crate) async fn post_channel_test(
             "A test from Bookclerk to {}. If you can read this, the channel works.",
             destination.label
         ),
-        link_path: Some("/settings/notifications".into()),
+        // No settings screen in the web app links here yet.
+        link_path: None,
         fields: Vec::new(),
         group_key: None,
         alert_action: NotificationAlertAction::None,
@@ -1064,7 +1070,7 @@ pub(crate) struct DeliveryPage {
     params(DeliveryQuery),
     responses(
         (status = 200, description = "One page of deliveries.", body = DeliveryPage),
-        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).", content(
+        (status = 400, description = "The cursor is not a valid cursor; pass back this route's own `next_cursor` (JSON). Or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).", content(
             (ErrorMessage = "application/json", example = json!({"error": "invalid page cursor"})),
             (String = "text/plain", example = json!("Failed to deserialize query string: limit: invalid digit found in string")),
         )),
@@ -1138,7 +1144,10 @@ pub(crate) struct PatronTypeJson {
     /// the offers' defaults pick where it goes.
     #[schema(example = true)]
     enabled: bool,
-    /// The patron's destinations it goes to, when chosen.
+    /// The destinations the patron saved for it, when chosen. These are
+    /// saved choices, not live targets: routing skips one whose notifier is
+    /// no longer offered for the type, so check `offers` before showing one
+    /// as eligible or sending the list back.
     #[schema(example = json!([]))]
     destination_ids: Vec<String>,
 }
@@ -1193,9 +1202,12 @@ pub(crate) async fn get_my_settings(
         .personal_destinations(user)
         .await
         .map_err(|err| store_error("get_my_settings", err))?;
+    // Offers for a type no plugin declares any more stay stored until an
+    // administrator clears them; they make no notifier eligible.
     let offered: BTreeSet<String> = offers
-        .values()
-        .flatten()
+        .iter()
+        .filter(|(type_id, _)| catalog.notification_type(type_id).is_some())
+        .flat_map(|(_, type_offers)| type_offers)
         .map(|o| o.plugin_instance_id.clone())
         .collect();
     let mut types = Vec::new();
@@ -1332,6 +1344,46 @@ pub(crate) async fn delete_my_choice(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Reads an address object, refusing a key written twice: the address
+/// checks only ever see the map, where the last value would silently win.
+///
+/// # Errors
+///
+/// When the value is not an object of strings or repeats a key.
+fn unique_address<'de, D>(de: D) -> Result<std::collections::BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    /// Collects the entries, failing on a repeat.
+    struct Fields;
+
+    impl<'de> serde::de::Visitor<'de> for Fields {
+        type Value = std::collections::BTreeMap<String, String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an object of strings")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = std::collections::BTreeMap::new();
+            while let Some((key, value)) = map.next_entry::<String, String>()? {
+                if out.contains_key(&key) {
+                    return Err(serde::de::Error::custom(format!(
+                        "the address repeats the key `{key}`"
+                    )));
+                }
+                out.insert(key, value);
+            }
+            Ok(out)
+        }
+    }
+
+    de.deserialize_map(Fields)
+}
+
 /// Body of `POST /api/me/notifications/destinations`.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -1341,7 +1393,9 @@ pub(crate) struct NewPersonalBody {
     plugin_instance_id: String,
     /// The address, as the notifier's `address_fields` describe it: a flat
     /// object of strings.
+    /// A key written twice is refused (`422`) rather than one value kept.
     #[schema(example = json!({"chat_id": "123456789"}))]
+    #[serde(deserialize_with = "unique_address")]
     address: std::collections::BTreeMap<String, String>,
     /// Name shown in pickers; the notifier's own label for the address,
     /// or the notifier's name, when absent.
@@ -1390,7 +1444,7 @@ pub(crate) fn personal_address(
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep notification settings for"})),
         (status = 409, description = "The notifier is not running on this server.", body = ErrorMessage, example = json!({"error": "the notifier is not running on this server"})),
-        (status = 502, description = "The notifier could not be reached.", body = ErrorMessage, example = json!({"error": "the notifier could not check the address"})),
+        (status = 502, description = "The notifier could not be reached, or the host could not use its reply (for example a normalised address missing a required field).", body = ErrorMessage, example = json!({"error": "the notifier could not check the address"})),
         (status = 500, description = "The destination could not be written.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
     ),
 )]
@@ -1417,8 +1471,9 @@ pub(crate) async fn post_my_destination(
         .patron_offers()
         .await
         .map_err(|err| store_error("post_my_destination", err))?
-        .values()
-        .flatten()
+        .iter()
+        .filter(|(type_id, _)| catalog.notification_type(type_id).is_some())
+        .flat_map(|(_, type_offers)| type_offers)
         .any(|o| o.plugin_instance_id == body.plugin_instance_id);
     if !offered {
         return Err(bad(format!(
@@ -1677,7 +1732,7 @@ pub(crate) struct InboxEntryJson {
     /// When it arrived (RFC 3339).
     #[schema(example = "2026-11-21T10:00:00+00:00")]
     created_at: String,
-    /// When the patron read it (RFC 3339); absent while unread.
+    /// When the patron read it (RFC 3339); `null` while unread.
     #[schema(example = "2026-11-21T10:05:00+00:00")]
     read_at: Option<String>,
 }
@@ -1729,7 +1784,7 @@ pub(crate) struct InboxPage {
     params(InboxQuery),
     responses(
         (status = 200, description = "One page of the inbox.", body = InboxPage),
-        (status = 400, description = "The cursor is not one this route made (JSON), or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).", content(
+        (status = 400, description = "The cursor is not a valid cursor; pass back this route's own `next_cursor` (JSON). Or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).", content(
             (ErrorMessage = "application/json", example = json!({"error": "invalid page cursor"})),
             (String = "text/plain", example = json!("Failed to deserialize query string: limit: invalid digit found in string")),
         )),
@@ -1777,7 +1832,8 @@ pub(crate) async fn get_my_inbox(
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReadBody {
-    /// One notification to mark read; absent marks the whole inbox read.
+    /// One notification to mark read; absent or `null` marks the whole inbox
+    /// read.
     #[schema(example = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e")]
     notification_id: Option<String>,
 }

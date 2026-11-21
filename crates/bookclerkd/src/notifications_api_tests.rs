@@ -195,6 +195,7 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // A test goes to the one channel and lands in the log.
+    let mut sent_ids = Vec::new();
     for _ in 0..3 {
         let (status, sent) = call(
             &app,
@@ -205,6 +206,12 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
         )
         .await;
         assert_eq!(status, StatusCode::ACCEPTED, "{sent}");
+        sent_ids.push(
+            sent["delivery_id"]
+                .as_str()
+                .expect("a delivery id")
+                .to_string(),
+        );
     }
     let (status, page) = call(
         &app,
@@ -227,6 +234,18 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
     )
     .await;
     assert_eq!(rest["deliveries"].as_array().unwrap().len(), 1);
+    assert!(rest["next_cursor"].is_null(), "{rest}");
+    // Each test's delivery shows exactly once across the two pages.
+    let mut listed: Vec<String> = page["deliveries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(rest["deliveries"].as_array().unwrap())
+        .map(|d| d["id"].as_str().unwrap().to_string())
+        .collect();
+    listed.sort();
+    sent_ids.sort();
+    assert_eq!(listed, sent_ids);
     let (status, _) = call(
         &app,
         None,
@@ -514,7 +533,7 @@ fn a_notifier_answer_keeps_its_address_and_gets_a_safe_label() {
         super::accept_validated(answer(Some("@ada")), &rules, None, "Telegram").expect("accepted");
     assert_eq!(label, "@ada");
     let (_, label) = super::accept_validated(
-        answer(Some("two\nlines")),
+        answer(Some("@ada")),
         &rules,
         Some("My phone".into()),
         "Telegram",
@@ -564,4 +583,20 @@ fn a_personal_address_must_fit_the_declared_fields() {
     ] {
         assert!(address(refused.clone()).is_err(), "{refused}");
     }
+}
+
+#[test]
+fn a_personal_address_with_a_repeated_key_is_refused() {
+    let body = |address: &str| {
+        serde_json::from_str::<super::NewPersonalBody>(&format!(
+            r#"{{"plugin_instance_id":"telegram-1","address":{address}}}"#
+        ))
+    };
+    let err = body(r#"{"chat_id":"111","chat_id":"222"}"#).unwrap_err();
+    assert!(
+        err.to_string().contains("repeats the key `chat_id`"),
+        "{err}"
+    );
+    let ok = body(r#"{"chat_id":"111","thread":"7"}"#).expect("unique keys");
+    assert_eq!(ok.address.len(), 2);
 }

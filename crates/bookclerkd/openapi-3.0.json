@@ -16660,7 +16660,7 @@
             }
           },
           "400": {
-            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).",
+            "description": "The cursor is not a valid cursor; pass back this route's own `next_cursor` (JSON). Or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).",
             "content": {
               "application/json": {
                 "schema": {
@@ -17399,7 +17399,7 @@
             }
           },
           "502": {
-            "description": "The notifier could not be reached.",
+            "description": "The notifier could not be reached, or the host could not use its reply (for example a normalised address missing a required field).",
             "content": {
               "application/json": {
                 "schema": {
@@ -17809,7 +17809,7 @@
             }
           },
           "400": {
-            "description": "The cursor is not one this route made (JSON), or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).",
+            "description": "The cursor is not a valid cursor; pass back this route's own `next_cursor` (JSON). Or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).",
             "content": {
               "application/json": {
                 "schema": {
@@ -47094,7 +47094,7 @@
           },
           "paused_at": {
             "type": "string",
-            "description": "When repeated failures paused it (RFC 3339); absent while active.",
+            "description": "When repeated failures paused it (RFC 3339); `null` while active.",
             "example": "2026-11-21T10:00:00+00:00",
             "nullable": true
           },
@@ -48824,7 +48824,7 @@
           },
           "read_at": {
             "type": "string",
-            "description": "When the patron read it (RFC 3339); absent while unread.",
+            "description": "When the patron read it (RFC 3339); `null` while unread.",
             "example": "2026-11-21T10:05:00+00:00",
             "nullable": true
           }
@@ -50546,7 +50546,7 @@
           },
           "address": {
             "type": "object",
-            "description": "The address, as the notifier's `address_fields` describe it: a flat\nobject of strings.",
+            "description": "The address, as the notifier's `address_fields` describe it: a flat\nobject of strings.\nA key written twice is refused (`422`) rather than one value kept.",
             "additionalProperties": {
               "type": "string"
             },
@@ -53745,7 +53745,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The patron's destinations it goes to, when chosen.",
+            "description": "The destinations the patron saved for it, when chosen. These are\nsaved choices, not live targets: routing skips one whose notifier is\nno longer offered for the type, so check `offers` before showing one\nas eligible or sending the list back.",
             "example": []
           }
         }
@@ -57925,7 +57925,7 @@
         "properties": {
           "notification_id": {
             "type": "string",
-            "description": "One notification to mark read; absent marks the whole inbox read.",
+            "description": "One notification to mark read; absent or `null` marks the whole inbox\nread.",
             "example": "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
             "nullable": true
           }
