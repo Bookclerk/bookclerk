@@ -196,6 +196,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.origin_request]
+crate = "bookclerk-plugin-abi"
+boundary = "What a relay ingress plugin hands the host: the framed POST /origin/fetch body on the isolate bridge, the request head (method, target, headers, client address), response heads, and the public origin Ingress.start reports"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.socket_broker]
 crate = "bookclerk-workerd"
 boundary = "What the socket broker does with a remote WebSocket server's frames and closes and a guest's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting"

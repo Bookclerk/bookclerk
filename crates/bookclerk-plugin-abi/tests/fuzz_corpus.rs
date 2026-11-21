@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `event_read`, `socket_request`, `webhook_message` and `storage_reply` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_raise`, `event_read`, `socket_request`, `webhook_message`, `storage_reply` and `origin_request` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -2121,6 +2121,122 @@ fn webhook_message_seeds_are_current() {
     if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
         std::fs::create_dir_all(&dir).expect("corpus dir");
     }
+
+    for (name, seed) in seeds {
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
+#[path = "../../../fuzz/oracles/origin_request.rs"]
+mod origin_request_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/origin_request.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_origin_request_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("origin_request") {
+        origin_request_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no origin_request seed");
+}
+
+/// Seeds for `origin_request`: framed bodies, request and response heads
+/// and ingress origins, accepted and refused. Byte 0 is `0` for a framed
+/// `POST /origin/fetch` body, `1` for request JSON, `2` for response JSON
+/// and `3` for an origin. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O or encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn origin_request_seeds_are_current() {
+    use bookclerk_plugin_abi::origin::encode_origin_frame;
+    use bookclerk_plugin_abi::{OriginHeader, OriginRequest};
+
+    let tagged = |tag: u8, bytes: &[u8]| {
+        let mut seed = vec![tag];
+        seed.extend_from_slice(bytes);
+        seed
+    };
+    let header = |name: &str, value: &str| OriginHeader {
+        name: name.into(),
+        value: value.into(),
+    };
+    let request = OriginRequest {
+        method: "POST".into(),
+        target: "/api/library/works?page=2".into(),
+        headers: vec![
+            header("content-type", "application/json"),
+            header("cookie", "session=abc"),
+            header("Host", "evil.example"),
+            header("x-forwarded-for", "198.51.100.1"),
+        ],
+        client_address: Some("203.0.113.9".into()),
+    };
+    let framed = |request: &OriginRequest, body: &[u8]| {
+        let mut out = encode_origin_frame(request).expect("frame");
+        out.extend_from_slice(body);
+        tagged(0, &out)
+    };
+    let json = |request: &OriginRequest| tagged(1, &serde_json::to_vec(request).expect("json"));
+    let mut hop = request.clone();
+    hop.headers.push(header("Transfer-Encoding", "chunked"));
+    let mut absolute = request.clone();
+    absolute.target = "https://evil.example/".into();
+    let mut scheme_relative = request.clone();
+    scheme_relative.target = "//evil.example/".into();
+    let mut crlf = request.clone();
+    crlf.headers[1].value = "a\r\nset-cookie: x=1".into();
+    let mut v6 = request.clone();
+    v6.client_address = Some("2001:db8::1".into());
+    let mut bad_client = request.clone();
+    bad_client.client_address = Some("203.0.113.9:443".into());
+    let whole = framed(&request, b"{\"a\":1}");
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        ("frame_post_with_body.bin", whole.clone()),
+        ("frame_partial_head.bin", whole[..12].to_vec()),
+        ("frame_oversized_length.bin", tagged(0, &[0xff, 0xff, 0xff, 0xff, b'{'])),
+        ("frame_hop_by_hop.bin", framed(&hop, b"")),
+        ("request_json.bin", json(&request)),
+        ("request_absolute_target.bin", json(&absolute)),
+        ("request_scheme_relative.bin", json(&scheme_relative)),
+        ("request_crlf_value.bin", json(&crlf)),
+        ("request_v6_client.bin", json(&v6)),
+        ("request_client_with_port.bin", json(&bad_client)),
+        ("request_not_json.bin", tagged(1, b"GET / HTTP/1.1")),
+        (
+            "response_ok.bin",
+            tagged(
+                2,
+                br#"{"status":200,"headers":[{"name":"set-cookie","value":"a=1"},{"name":"set-cookie","value":"b=2"}]}"#,
+            ),
+        ),
+        ("response_bad_status.bin", tagged(2, br#"{"status":42,"headers":[]}"#)),
+        (
+            "response_upgrade.bin",
+            tagged(2, br#"{"status":101,"headers":[{"name":"upgrade","value":"websocket"}]}"#),
+        ),
+        ("origin_ok.bin", tagged(3, b"https://lib.example.net")),
+        ("origin_punycode.bin", tagged(3, b"https://xn--bcher-kva.example")),
+        ("origin_port.bin", tagged(3, b"https://lib.example.net:8443")),
+        ("origin_ipv4.bin", tagged(3, b"https://10.0.0.1")),
+        ("origin_hex_top.bin", tagged(3, b"https://a.0x7f")),
+        ("origin_uppercase.bin", tagged(3, b"https://Lib.Example.net")),
+        ("origin_userinfo.bin", tagged(3, b"https://user@lib.example.net")),
+        ("origin_http.bin", tagged(3, b"http://lib.example.net")),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/origin_request");
+    std::fs::create_dir_all(&dir).expect("corpus dir");
     for (name, seed) in seeds {
         let path = dir.join(name);
         if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {

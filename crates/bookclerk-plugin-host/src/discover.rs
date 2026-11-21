@@ -876,7 +876,8 @@ pub fn settings_table_for(
         crate::PluginFamily::Database => database_settings_table(config, plugin),
         crate::PluginFamily::Source
         | crate::PluginFamily::Integration
-        | crate::PluginFamily::Output => toml::Table::new(),
+        | crate::PluginFamily::Output
+        | crate::PluginFamily::Ingress => toml::Table::new(),
     }
 }
 

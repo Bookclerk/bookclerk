@@ -30,7 +30,7 @@ use bookclerk_plugin_abi::{
     encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher, EventReadPage,
     EventReadRequest, ExecuteStreamLimits, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk,
     KvListOptions, KvNamespace, KvPutOk, KvPutOptions, NotificationRaiser, NotifyRaiseParams,
-    NotifyRaised, ObjectMetadata, PluginEvent, ProgressSink, PublishOk, QueueProducer,
+    NotifyRaised, ObjectMetadata, Origin, PluginEvent, ProgressSink, PublishOk, QueueProducer,
     QueueSendMessage, QueueSendOk, Sockets, Source, Webhooks, WriteOptions,
     MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
@@ -130,9 +130,47 @@ pub struct GrantedSlot {
     /// Host notification router entry, when this grant is the `NOTIFY`
     /// binding.
     pub notify: Option<Rc<dyn NotificationRaiser>>,
+    /// The library, when this grant is a relay ingress plugin's `ORIGIN`
+    /// binding.
+    pub origin: Option<Rc<dyn Origin>>,
 }
 
 impl GrantedSlot {
+    /// A grant that only reaches the library over `/origin/fetch` (no
+    /// streams, no database, no events, no KV, no sockets).
+    #[must_use]
+    pub fn origin_only(origin: Rc<dyn Origin>, expires: std::time::Instant) -> Self {
+        Self {
+            origin: Some(origin),
+            ..Self::sockets_free(expires)
+        }
+    }
+
+    /// A grant that reaches nothing: the base the narrow constructors fill.
+    fn sockets_free(expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
+            sockets: None,
+            webhooks: None,
+            notify: None,
+            origin: None,
+        }
+    }
+
     /// A grant that only reaches the instance's socket broker over
     /// `/sockets/*` (no streams, no database, no events, no KV).
     #[must_use]
@@ -156,6 +194,7 @@ impl GrantedSlot {
             sockets: Some(sockets),
             webhooks: None,
             notify: None,
+            origin: None,
         }
     }
 
@@ -182,6 +221,7 @@ impl GrantedSlot {
             sockets: None,
             webhooks: Some(webhooks),
             notify: None,
+            origin: None,
         }
     }
 
@@ -208,6 +248,7 @@ impl GrantedSlot {
             sockets: None,
             webhooks: None,
             notify: None,
+            origin: None,
         }
     }
 
@@ -234,6 +275,7 @@ impl GrantedSlot {
             sockets: None,
             webhooks: None,
             notify: None,
+            origin: None,
         }
     }
 
@@ -257,6 +299,7 @@ impl GrantedSlot {
             queue: Some(producer),
             kv: None,
             sockets: None,
+            origin: None,
             webhooks: None,
             notify: None,
         }
@@ -285,6 +328,7 @@ impl GrantedSlot {
             sockets: None,
             webhooks: None,
             notify: Some(notify),
+            origin: None,
         }
     }
 
@@ -310,6 +354,7 @@ impl GrantedSlot {
             sockets: None,
             webhooks: None,
             notify: None,
+            origin: None,
         }
     }
 
@@ -337,6 +382,7 @@ impl GrantedSlot {
             sockets: None,
             webhooks: None,
             notify: None,
+            origin: None,
         }
     }
 }
@@ -401,6 +447,14 @@ enum GrantedCmd {
     Limits {
         invocation: String,
         resp: oneshot::Sender<Result<Vec<u8>, (u16, String)>>,
+    },
+    /// `env.ORIGIN.fetch` through the grant: the checked head and the
+    /// request body as it arrives.
+    OriginFetch {
+        invocation: String,
+        request: bookclerk_plugin_abi::origin::CheckedOriginRequest,
+        body_rx: mpsc::Receiver<Result<Vec<u8>, String>>,
+        resp: oneshot::Sender<Result<origin_route::OriginOpened, PluginError>>,
     },
     /// `env.SOCKETS` calls through the grant.
     Sockets {
@@ -620,6 +674,21 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                     resp,
                 } => {
                     let _ = resp.send(dispatch_sockets(&table, invocation, call).await);
+                }
+                GrantedCmd::OriginFetch {
+                    invocation,
+                    request,
+                    body_rx,
+                    resp,
+                } => {
+                    // The library may take a while to answer; serve other
+                    // grants meanwhile.
+                    let table = Rc::clone(&table);
+                    tokio::task::spawn_local(async move {
+                        let _ = resp.send(
+                            origin_route::dispatch(&table, invocation, request, body_rx).await,
+                        );
+                    });
                 }
                 GrantedCmd::Webhooks {
                     invocation,
@@ -1937,6 +2006,9 @@ where
         return Ok(());
     }
 
+    if method == "POST" && path_only == "/origin/fetch" {
+        return origin_route::serve(reader, &mut writer, headers, prefix, invocation, cmds).await;
+    }
     if method == "POST" && path_only.starts_with("/webhooks/") {
         let op = &path_only["/webhooks/".len()..];
         if !WEBHOOK_ROUTE_OPS.contains(&op) {
@@ -1992,6 +2064,9 @@ where
     write_status(&mut writer, 404, "not found").await?;
     Ok(())
 }
+
+#[path = "granted_origin.rs"]
+mod origin_route;
 
 /// `POST /queues/send` body: one or more messages plus the batch delay.
 #[derive(serde::Deserialize)]
@@ -2232,6 +2307,7 @@ mod tests {
                 sockets: None,
                 webhooks: None,
                 notify: None,
+                origin: None,
             },
         );
         let err = match take_slot_source(&table, "g1") {
@@ -2283,6 +2359,7 @@ mod tests {
                 sockets: None,
                 webhooks: None,
                 notify: None,
+                origin: None,
             },
         );
         table.borrow_mut().remove("g-live");
@@ -2321,6 +2398,7 @@ mod tests {
                 sockets: None,
                 webhooks: None,
                 notify: None,
+                origin: None,
             },
         );
         let req = ExecuteRequest {
@@ -2394,6 +2472,7 @@ mod tests {
                 sockets: None,
                 webhooks: None,
                 notify: None,
+                origin: None,
             },
         );
         let req = ExecuteRequest {
@@ -2490,6 +2569,7 @@ mod tests {
                 sockets: None,
                 webhooks: None,
                 notify: None,
+                origin: None,
             },
         );
         let request = |sql: &str| ExecuteRequest {
@@ -2551,6 +2631,7 @@ mod tests {
                 sockets: None,
                 webhooks: None,
                 notify: None,
+                origin: None,
             },
         );
         table
@@ -3028,6 +3109,7 @@ mod tests {
                 sockets: None,
                 webhooks: None,
                 notify: None,
+                origin: None,
             },
         );
 
@@ -3232,6 +3314,7 @@ mod tests {
             sockets: None,
             webhooks: None,
             notify: None,
+            origin: None,
         }
     }
 
@@ -3525,6 +3608,7 @@ mod tests {
                 sockets: None,
                 webhooks: None,
                 notify: None,
+                origin: None,
             },
         );
         (table, session)

@@ -56,6 +56,7 @@ Entrypoint = Literal[
     "covers",
     "metadataFiles",
     "notifier",
+    "ingress",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
@@ -780,6 +781,9 @@ class Bindings(TypedDict):
         network: `NETWORK`: what the operator granted this plugin's network, including
             the destination each network setting names and whether it is approved, so a
             guest can tell an unapproved destination from an unreachable one.
+        origin: `ORIGIN`: the library itself, for a relay `ingress` plugin to send the
+            public requests it carries to; null unless the plugin is the library's
+            active relay ingress. Null when the guest does not export this capability.
         webhooks: `WEBHOOKS`: the instance's inbound webhooks, their URLs and the
             deliveries the host stored; null unless `[[webhooks]]` is declared and
             granted. Null when the guest does not export this capability.
@@ -797,6 +801,7 @@ class Bindings(TypedDict):
     sockets: NotRequired[Sockets | None]
     notify: NotRequired[NotificationRaiser | None]
     network: NetworkGrant
+    origin: NotRequired[Origin | None]
     webhooks: NotRequired[Webhooks | None]
 
 
@@ -876,6 +881,8 @@ class Entrypoints(TypedDict):
             this capability.
         notifier: `notifier` entrypoint. Null when the guest does not export this
             capability.
+        ingress: `ingress` entrypoint. Null when the guest does not export this
+            capability.
         webhookHandler: `[[webhooks]]` handler: called after the host stores deliveries.
             Null when the guest does not export this capability.
     """
@@ -895,6 +902,7 @@ class Entrypoints(TypedDict):
     socketHandler: NotRequired[SocketHandler | None]
     metadataFiles: NotRequired[MetadataFiles | None]
     notifier: NotRequired[Notifier | None]
+    ingress: NotRequired[Ingress | None]
     webhookHandler: NotRequired[WebhookHandler | None]
 
 
@@ -2198,6 +2206,60 @@ class ByteSource(Protocol):
         ...
 
 
+class OriginResponse(TypedDict):
+    """Success payload of `Origin.fetch`: the library's response head and its
+    streamed body.
+
+    Attributes:
+        status: HTTP status code, 100 to 599.
+        headers: Response header fields in order, at most `maxOriginHeaders` and
+            `maxOriginHeaderBytes`; repeated names (`set-cookie`) stay separate.
+        body: Response body; read to `done`. Null when the response has no body. Null
+            when the guest does not export this capability.
+    """
+
+    status: int
+    headers: list[OriginHeader]
+    body: NotRequired[ByteSource | None]
+
+
+class OriginFetchReplyOk(TypedDict):
+    """``OriginFetchReply`` member ``ok``.
+
+    Success: the library answered (any HTTP status).
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the library answered (any HTTP status).
+    """
+
+    kind: Literal["ok"]
+    value: OriginResponse
+
+
+class OriginFetchReplyErr(TypedDict):
+    """``OriginFetchReply`` member ``err``.
+
+    Typed failure: the request was refused before the library saw it
+    (`invalid_params`) or the library is unavailable.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure: the request was refused before the library saw it
+            (`invalid_params`) or the library is unavailable.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+OriginFetchReply = Union[
+    OriginFetchReplyOk,
+    OriginFetchReplyErr,
+]
+"""Result union of `Origin.fetch`."""
+
+
 class Destination(Protocol):
     """Object store the host writes acquired media into (`output.*` plugins).
     Keys are relative object paths; the plugin owns the physical layout.
@@ -2731,6 +2793,59 @@ class SocketHandler(Protocol):
 
         Args:
             event: Socket, close code, and attachment.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+
+class Origin(Protocol):
+    """The library, as a relay `ingress` plugin reaches it (`Bindings.origin`,
+    `ORIGIN` in the Workers idiom). The plugin turns each request its provider
+    delivers into a `fetch` and streams the response back. The host treats
+    every request as the `tunnel` transport: public `https`, never loopback,
+    with the client address the plugin reports.
+    """
+
+    async def fetch(self, request: OriginRequest, body: ByteSource) -> OriginFetchReply:
+        """Serve one request; the response body streams as the library writes it.
+
+        Args:
+            request: Method, target, headers, client address.
+            body: Request body; null when the request has none.
+
+        Returns:
+            ``OriginFetchReply``
+        """
+        ...
+
+
+class Ingress(Protocol):
+    """A public address provider (`Entrypoints.ingress`): the one `ingress`
+    family instance the library runs. A relay provider carries traffic to
+    `Bindings.origin`; a direct provider keeps a DNS name pointing at this
+    install.
+    """
+
+    async def start(self) -> IngressStartReply:
+        """Bring the public address up; answers the origin it serves.
+
+        Returns:
+            ``IngressStartReply``
+        """
+        ...
+
+    async def health(self) -> IngressHealthReply:
+        """Whether the public address is serving now.
+
+        Returns:
+            ``IngressHealthReply``
+        """
+        ...
+
+    async def stop(self) -> EmptyReply:
+        """Take the public address down; stopping a stopped one is not an error.
 
         Returns:
             ``EmptyReply``
@@ -6507,6 +6622,87 @@ class SocketClosed(TypedDict):
     attachment: bytes
 
 
+class OriginHeader(TypedDict):
+    """One header field on an `Origin.fetch` request or response.
+
+    Attributes:
+        name: Field name, an HTTP token; the host refuses hop-by-hop names.
+        value: Field value, visible ASCII, spaces and tabs. May carry a credential (a
+            cookie, an authorization): the host never logs it.
+    """
+
+    name: str
+    value: str
+
+
+class OriginRequest(TypedDict):
+    """The head of one public request a relay `ingress` plugin carries
+    (`Origin.fetch`). Its scheme is `https` and its authority is the library's
+    public origin; neither is the plugin's to choose.
+
+    Attributes:
+        method: Request method, an HTTP token (`GET`, `PUT`, ...).
+        target: Path and query in origin form (`/api/status?x=1`), at most
+            `maxOriginTargetBytes`.
+        headers: Request header fields in order, at most `maxOriginHeaders` and
+            `maxOriginHeaderBytes`. `host` and forwarding headers are ignored.
+        clientAddress: IP address of the client, from the provider's own connection
+            metadata; empty when the provider gives none. Omitted when absent (wire zero
+            value).
+    """
+
+    method: str
+    target: str
+    headers: list[OriginHeader]
+    clientAddress: NotRequired[str]
+
+
+class IngressStarted(TypedDict):
+    """Success payload of `Ingress.start`.
+
+    Attributes:
+        origin: The public origin now serving: `https://` and a host name, no port, path
+            or trailing slash, at most `maxIngressOriginBytes` after the scheme.
+    """
+
+    origin: str
+
+
+class IngressStartReplyOk(TypedDict):
+    """``IngressStartReply`` member ``ok``.
+
+    Success: the address is up.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the address is up.
+    """
+
+    kind: Literal["ok"]
+    value: IngressStarted
+
+
+class IngressStartReplyErr(TypedDict):
+    """``IngressStartReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+IngressStartReply = Union[
+    IngressStartReplyOk,
+    IngressStartReplyErr,
+]
+"""Result union of `Ingress.start`."""
+
+
 class WebhookUrl(TypedDict):
     """Success payload of `Webhooks.url`.
 
@@ -6647,6 +6843,54 @@ WebhookPullReply = Union[
     WebhookPullReplyErr,
 ]
 """Result union of `Webhooks.pull`."""
+
+
+class IngressHealth(TypedDict):
+    """Success payload of `Ingress.health`.
+
+    Attributes:
+        serving: True when the address is serving.
+        detail: Why it is not serving, for the operator; empty when serving. Omitted
+            when absent (wire zero value).
+    """
+
+    serving: bool
+    detail: NotRequired[str]
+
+
+class IngressHealthReplyOk(TypedDict):
+    """``IngressHealthReply`` member ``ok``.
+
+    Success: the provider's view of the address.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the provider's view of the address.
+    """
+
+    kind: Literal["ok"]
+    value: IngressHealth
+
+
+class IngressHealthReplyErr(TypedDict):
+    """``IngressHealthReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+IngressHealthReply = Union[
+    IngressHealthReplyOk,
+    IngressHealthReplyErr,
+]
+"""Result union of `Ingress.health`."""
 
 
 class WebhookAckRequest(TypedDict):
@@ -8183,6 +8427,10 @@ __all__ = [
     "GuestDatabaseReplyErr",
     "GuestDatabaseReply",
     "ByteSource",
+    "OriginResponse",
+    "OriginFetchReplyOk",
+    "OriginFetchReplyErr",
+    "OriginFetchReply",
     "Destination",
     "Source",
     "ProgressSink",
@@ -8199,6 +8447,8 @@ __all__ = [
     "NamedKv",
     "Sockets",
     "SocketHandler",
+    "Origin",
+    "Ingress",
     "Webhooks",
     "WebhookHandler",
     "ContentSource",
@@ -8419,6 +8669,12 @@ __all__ = [
     "SocketMessageOk",
     "SocketMessage",
     "SocketClosed",
+    "OriginHeader",
+    "OriginRequest",
+    "IngressStarted",
+    "IngressStartReplyOk",
+    "IngressStartReplyErr",
+    "IngressStartReply",
     "WebhookUrl",
     "WebhookUrlReplyOk",
     "WebhookUrlReplyErr",
@@ -8430,6 +8686,10 @@ __all__ = [
     "WebhookPullReplyOk",
     "WebhookPullReplyErr",
     "WebhookPullReply",
+    "IngressHealth",
+    "IngressHealthReplyOk",
+    "IngressHealthReplyErr",
+    "IngressHealthReply",
     "WebhookAckRequest",
     "WebhookDelivered",
     "DbValueNull",

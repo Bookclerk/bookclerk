@@ -15,6 +15,7 @@ from bookclerk_plugin_sdk.workerd import (
     DatabaseAdapterEntrypoint,
     EventBatch,
     EventMessage,
+    IngressEntrypoint,
     JobController,
     MetadataEntrypoint,
     MetadataFilesEntrypoint,
@@ -448,6 +449,22 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
 
         images = await Covers().bookclerkInvoke({}, "fetchCovers", {"urls": ["https://a/"]}, "sink")
         self.assertEqual(images, [{"url": "https://a/", "stored": False, "error": "'sink'"}])
+
+    async def test_ingress_defaults_and_dispatch(self) -> None:
+        """IngressEntrypoint refuses start, reports serving, stops, and dispatches overrides."""
+        ingress = IngressEntrypoint()
+        with self.assertRaises(PluginError) as ctx:
+            await ingress.start()
+        self.assertEqual(ctx.exception.code, "unsupported")
+        self.assertEqual(await ingress.health(), {"serving": True})
+        self.assertIsNone(await ingress.stop())
+
+        class Ddns(IngressEntrypoint):
+            async def start(self) -> dict:
+                return {"origin": "https://lib.example.net"}
+
+        started = await Ddns().bookclerkInvoke({}, "start")
+        self.assertEqual(started, {"origin": "https://lib.example.net"})
 
     async def test_metadata_files_defaults_and_dispatch(self) -> None:
         """MetadataFilesEntrypoint reports healthy, refuses parse/render, and dispatches overrides."""

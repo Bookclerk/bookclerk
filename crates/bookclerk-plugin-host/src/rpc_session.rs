@@ -4362,6 +4362,8 @@ async fn run_stream_copy(
                 webhooks: None,
                 // Nor does it raise notifications.
                 notify: None,
+                // Only the active relay ingress reaches the library.
+                origin: None,
             },
         )
         .await

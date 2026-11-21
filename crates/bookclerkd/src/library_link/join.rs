@@ -1797,6 +1797,13 @@ pub struct WindowEditionView {
     /// hold.
     #[schema(example = true)]
     pub yours: bool,
+    /// The library's own work id to ask it for this edition with
+    /// (`POST /api/config/clerk/request`): set when this install holds a
+    /// card for the library, the library holds no copy, and one of its
+    /// branches lists it. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b")]
+    pub requestable_work: Option<String>,
 }
 
 /// One work in [`WindowBooks`]: every edition its libraries hold for the person.
@@ -1863,6 +1870,12 @@ pub async fn get_join_window(
         Ok(entries) => entries,
         Err(err) => return crate::config_authority::events_error(err),
     };
+    // Only a library this install holds a card for is asked with the card.
+    let carded: std::collections::BTreeSet<&str> = cards
+        .iter()
+        .filter(|card| card.is_active())
+        .map(|card| card.library_id.as_str())
+        .collect();
     let books = entries
         .into_iter()
         .map(|entry| WindowEntryView {
@@ -1873,6 +1886,11 @@ pub async fn get_join_window(
                 .into_iter()
                 .map(|held| {
                     let edition = held.edition;
+                    let requestable_work = (edition.availability
+                        == bookclerk_node_proto::Availability::Reachable
+                        && carded.contains(held.parent_library_id.as_str())
+                        && !held.work_ref.starts_with("edition-"))
+                    .then_some(held.work_ref);
                     let meta = edition.metadata;
                     WindowEditionView {
                         library_id: held.parent_library_id,
@@ -1896,6 +1914,7 @@ pub async fn get_join_window(
                         series_index: meta.series_index,
                         length_minutes: meta.length_minutes,
                         yours: held.yours,
+                        requestable_work,
                     }
                 })
                 .collect(),

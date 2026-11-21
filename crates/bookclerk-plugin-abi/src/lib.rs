@@ -91,6 +91,7 @@ pub mod metadata_files;
 pub mod methods;
 pub mod network_grant;
 pub mod notifications;
+pub mod origin;
 pub mod package_version;
 mod plugin_migration;
 mod roles;
@@ -259,19 +260,21 @@ pub use features::{
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
     cover_sink_slot, ScalarLimits, MAX_COVER_BYTES, MAX_COVER_HEADER_BYTES, MAX_COVER_URLS,
-    MAX_CRON_BYTES, MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES,
-    MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_METADATA_AUDIO_FILES,
-    MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
-    MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_NOTIFICATION_FIELDS,
-    MAX_NOTIFICATION_FIELD_BYTES, MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES,
-    MAX_NOTIFICATION_TITLE_BYTES, MAX_NOTIFIER_ADDRESS_BYTES, MAX_PLUGIN_MIGRATION_OPS,
-    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
-    MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
-    MAX_SOCKETS_PER_INSTANCE, MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES,
-    MAX_SOCKET_AUTO_RESPONSE_BYTES, MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS,
-    MAX_SOCKET_URL_BYTES, MAX_STREAM_WINDOW_BYTES, MAX_WEBHOOK_BODY_BYTES, MAX_WEBHOOK_HEADERS,
-    MAX_WEBHOOK_HEADER_VALUE_BYTES, MAX_WEBHOOK_LEASE_ID_BYTES, MAX_WEBHOOK_NAME_BYTES,
-    MAX_WEBHOOK_PULL_BATCH, MAX_WEBHOOK_VISIBILITY_MS, PRODUCT_API_VERSION,
+    MAX_CRON_BYTES, MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_INGRESS_ORIGIN_BYTES,
+    MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE,
+    MAX_METADATA_AUDIO_FILES, MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS,
+    MAX_METADATA_FILE_DESCRIPTION_BYTES, MAX_METADATA_FILE_LIST_ENTRIES,
+    MAX_METADATA_FILE_TEXT_BYTES, MAX_NOTIFICATION_FIELDS, MAX_NOTIFICATION_FIELD_BYTES,
+    MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES, MAX_NOTIFICATION_TITLE_BYTES,
+    MAX_NOTIFIER_ADDRESS_BYTES, MAX_ORIGIN_HEADERS, MAX_ORIGIN_HEADER_BYTES,
+    MAX_ORIGIN_TARGET_BYTES, MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
+    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES,
+    MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_SOCKETS_PER_INSTANCE,
+    MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES, MAX_SOCKET_AUTO_RESPONSE_BYTES,
+    MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS, MAX_SOCKET_URL_BYTES, MAX_STREAM_WINDOW_BYTES,
+    MAX_WEBHOOK_BODY_BYTES, MAX_WEBHOOK_HEADERS, MAX_WEBHOOK_HEADER_VALUE_BYTES,
+    MAX_WEBHOOK_LEASE_ID_BYTES, MAX_WEBHOOK_NAME_BYTES, MAX_WEBHOOK_PULL_BATCH,
+    MAX_WEBHOOK_VISIBILITY_MS, PRODUCT_API_VERSION,
 };
 pub use media::{
     check_record_kinds, decode_plain_fetch_bytes, encode_plain_fetch_bytes, media_support_is_empty,
@@ -289,11 +292,11 @@ pub use network_grant::{
 pub use roles::{
     hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,
     ByteRange, Cancellation, ContentSource, CoverFetcher, Database, Destination, Entrypoints,
-    EventConsumer, EventPublisher, GuestDatabase, JobController, JobRunner, KvNamespace,
+    EventConsumer, EventPublisher, GuestDatabase, Ingress, JobController, JobRunner, KvNamespace,
     MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel,
-    NotificationRaiser, Notifier, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer,
-    QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler, Sockets, Source,
-    WebhookHandler, Webhooks, PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
+    NotificationRaiser, Notifier, Oidc, Origin, OriginReply, PluginCli, PluginWorker, ProgressSink,
+    QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler,
+    Sockets, Source, WebhookHandler, Webhooks, PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
@@ -303,12 +306,13 @@ pub use rpc::{
     roundtrip_socket_message, roundtrip_webhook_message, serve_plugin, serve_plugin_stdio,
     serve_socket_broker, ContentSourceClient, CoverFetcherClient, DatabaseClient,
     DestinationClient, DestinationServer, EventConsumerClient, EventPublisherClient,
-    EventReadCodec, EventReadMessage, HostBindings, JobRunnerClient, KvNamespaceClient,
-    MetadataFilesClient, MetadataProviderClient, NotificationRaiserClient, NotifierClient,
-    OidcClient, OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer,
-    QueueConsumerClient, QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient,
-    SocketCodec, SocketHandlerClient, SocketWireMessage, SocketsClient, SourceClient, SourceServer,
-    WebhookCodec, WebhookHandlerClient, WebhookWireMessage, WebhooksClient,
+    EventReadCodec, EventReadMessage, HostBindings, IngressClient, JobRunnerClient,
+    KvNamespaceClient, MetadataFilesClient, MetadataProviderClient, NoOrigin,
+    NotificationRaiserClient, NotifierClient, OidcClient, OpenedEntrypoints, OriginClient,
+    PluginCliClient, PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient,
+    RemoteLibraryClient, ScheduledHandlerClient, SocketCodec, SocketHandlerClient,
+    SocketWireMessage, SocketsClient, SourceClient, SourceServer, WebhookCodec,
+    WebhookHandlerClient, WebhookWireMessage, WebhooksClient,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

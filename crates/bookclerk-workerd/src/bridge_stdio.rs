@@ -32,14 +32,15 @@ use bookclerk_plugin_abi::{
     serve_plugin_stdio, Bindings, ByteRange, ContentSource, ContentSourceClient, CopyResult,
     CoverFetchParams, CoverFetcher, CoverFetcherClient, CoverImage, Database, DatabaseClient,
     Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer, EventConsumerClient,
-    ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Invocation, JobController, JobOutcome,
-    JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles, MetadataFilesClient,
-    MetadataProvider, MetadataProviderClient, Notifier, NotifierClient, ObjectMetadata, Oidc,
-    OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient, PluginClient,
-    PluginDescribe, PluginMigration, PluginWorker, PutResult, QueueConsumer, QueueConsumerClient,
-    ReadResult, RemoteLibrary, RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient,
-    SocketHandler, SocketHandlerClient, WebhookHandler, WebhookHandlerClient, WriteOptions,
-    MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Ingress, IngressClient, Invocation,
+    JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles,
+    MetadataFilesClient, MetadataProvider, MetadataProviderClient, Notifier, NotifierClient,
+    ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli,
+    PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult,
+    QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient,
+    ScheduledHandler, ScheduledHandlerClient, SocketHandler, SocketHandlerClient, WebhookHandler,
+    WebhookHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
+    PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -189,6 +190,7 @@ impl WorkerdRoot {
             webhooks_token: None,
             network: bindings.network.clone(),
             notify_token: None,
+            origin_token: None,
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -235,6 +237,10 @@ impl WorkerdRoot {
                 .filter(|_| self.capabilities.webhooks)
                 .map(Arc::from),
             notify: bindings.notify.map(Arc::from),
+            origin: bindings
+                .origin
+                .filter(|_| self.exports(Entrypoint::Ingress))
+                .map(Arc::from),
         };
         let opened = client.open(&invocation, host_bindings).await?;
         Ok(native_entrypoints(opened, &allowed))
@@ -407,6 +413,32 @@ impl WorkerdRoot {
             }
             None => (None, None),
         };
+        // One origin-only grant token for a relay ingress plugin: the
+        // adapter isolate reaches the library over `/origin/fetch` and
+        // installs `ORIGIN` on the author's `env`.
+        let (origin_token, origin_grant) = match bindings
+            .origin
+            .filter(|_| self.exports(Entrypoint::Ingress))
+        {
+            Some(origin) => {
+                let token = format!("{:032x}", rand::random::<u128>());
+                self.table.borrow_mut().insert(
+                    token.clone(),
+                    GrantedSlot::origin_only(
+                        Rc::from(origin),
+                        grant_expiry(invocation.deadline_unix_ms),
+                    ),
+                );
+                (
+                    Some(token.clone()),
+                    Some(RevokeGrant {
+                        table: Rc::clone(&self.table),
+                        grant: token,
+                    }),
+                )
+            }
+            None => (None, None),
+        };
         let ctx = BridgeContext {
             invocation,
             config: bindings.config,
@@ -419,6 +451,7 @@ impl WorkerdRoot {
             webhooks_token,
             network: bindings.network,
             notify_token,
+            origin_token,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
@@ -429,6 +462,7 @@ impl WorkerdRoot {
             _sockets: sockets_grant,
             _webhooks: webhooks_grant,
             _notify: notify_grant,
+            _origin: origin_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
             Some(Rc::clone(&grants) as Rc<dyn std::any::Any>);
@@ -480,6 +514,9 @@ impl WorkerdRoot {
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::Ingress) {
+            exported.ingress = Some(Box::new(IngressClient::new(invoke.typed())));
+        }
         if self.capabilities.webhooks {
             exported.webhook_handler = Some(Box::new(WebhookHandlerClient::new(invoke.typed())));
         }
@@ -522,6 +559,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         webhook_handler,
         metadata_files,
         notifier,
+        ingress,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -572,6 +610,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         notifier: notifier
             .filter(|_| allow(Entrypoint::Notifier.wire_name()))
             .map(|c| Box::new(c) as Box<dyn Notifier>),
+        ingress: ingress
+            .filter(|_| allow(Entrypoint::Ingress.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn Ingress>),
     }
 }
 
@@ -632,6 +673,10 @@ struct BridgeContext {
     /// `[[notifications.types]]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     notify_token: Option<String>,
+    /// Origin-only bearer for `/origin/fetch`: the `ORIGIN` binding of the
+    /// active relay ingress plugin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin_token: Option<String>,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -654,6 +699,7 @@ struct OpenGrants {
     _sockets: Option<RevokeGrant>,
     _webhooks: Option<RevokeGrant>,
     _notify: Option<RevokeGrant>,
+    _origin: Option<RevokeGrant>,
 }
 
 /// Grant expiry for an `open`: the invocation deadline when it has one,
@@ -901,6 +947,7 @@ impl JobRunner for InvokeJobRunner {
                 sockets: None,
                 webhooks: None,
                 notify: None,
+                origin: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -1050,6 +1097,7 @@ mod tests {
             webhooks_token: Some("wtok".into()),
             network: bookclerk_plugin_abi::NetworkGrant::default(),
             notify_token: None,
+            origin_token: Some("otok".into()),
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,
@@ -1064,6 +1112,7 @@ mod tests {
         assert_eq!(v["queues"]["NOTIFY"], "qtok");
         assert_eq!(v["kv"]["KV"], "ktok");
         assert_eq!(v["sockets"]["SOCKETS"], "stok");
+        assert_eq!(v["originToken"], "otok");
         assert_eq!(v["webhooksToken"], "wtok");
         assert!(v.get("config").is_some());
         assert_eq!(v["network"]["outbound"], false, "{v}");
