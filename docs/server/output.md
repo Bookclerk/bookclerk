@@ -21,6 +21,7 @@ files.
 | --- | --- | --- | --- |
 | Local filesystem | `local` (platform) | none | Yes, on every host at enrollment |
 | S3 / MinIO | `s3` (optional) | Sealed keys, or the AWS SDK chain | No, until `bookclerk plugins deploy s3` |
+| Cloudflare R2 | `r2` (optional) | Sealed R2 keys | No, until `bookclerk plugins deploy r2` |
 
 Any other plugin with a `storage` entrypoint is a destination too, and an
 acquire writes to it like the built-in ones:
@@ -54,6 +55,7 @@ records for that destination:
   such as `\`, `{`, `}`, `^`, `%` and `|`, and fits the whole key, its prefix
   included, into 1024 bytes. It shortens the file name before its
   extension first, then the longest folder names.
+- `r2` follows the same object-key rules as `s3`.
 - A third-party destination translates keys when it declares
   `storage.translateKeys` ([plugin ABI](../plugins/abi.md#translating-keys)).
   One that doesn't stores the host key as written.
@@ -296,6 +298,95 @@ gone, the account whose acquire recorded it marks the book not acquired.
 `bookclerk library convert` also converts each edition once, through that
 account.
 
+## Cloudflare R2
+
+The `r2` plugin writes to a Cloudflare R2 bucket through R2's S3 API. It
+stores, moves and checks objects the way the `s3` plugin does (see
+[Moves and conditional writes](#moves-and-conditional-writes)), and follows
+the bucket's changes through a Cloudflare Queue instead of Amazon SQS.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `account_id` | none | Required. The Cloudflare account that owns the bucket (32 hex digits) |
+| `jurisdiction` | `default` | `default`, `eu` or `fedramp`: where the bucket was created, which picks its endpoint |
+| `bucket` | none | Required |
+| `prefix` | `library/` | |
+| `notification_queue_id` | none | Id of the Cloudflare Queue that receives the bucket's events (see [Following changes in an R2 bucket](#following-changes-in-an-r2-bucket)) |
+| `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | from `core.output` | Naming for this destination only |
+| `access_key_id`, `secret_access_key` | none | Required secrets: an R2 API token's S3 keys |
+| `queue_api_token` | none | Secret: a Cloudflare API token, needed only with a queue |
+
+### Set up an R2 bucket
+
+1. In the Cloudflare dashboard, create an R2 API token with **Object Read
+   & Write** on the bucket, and note its access key ID and secret access
+   key.
+2. Set the account and bucket:
+
+   ```sh
+   bookclerk plugins config set r2 account_id 3f4b7e3dcab231cbfdaa90a6a28bd548
+   bookclerk plugins config set r2 bucket my-audiobooks
+   ```
+
+   For a bucket created in a jurisdiction, also set
+   `bookclerk plugins config set r2 jurisdiction eu`.
+
+3. Enter the keys. Each command reads the value from stdin:
+
+   ```sh
+   bookclerk plugins config set r2 access_key_id --secret
+   bookclerk plugins config set r2 secret_access_key --secret
+   ```
+
+4. Approve the plugin's network access when you enable it. It reaches
+   `*.r2.cloudflarestorage.com` for the bucket and `api.cloudflare.com` for
+   the queue, both on port 443.
+5. Deploy the plugin:
+
+   ```sh
+   bookclerk plugins deploy r2
+   ```
+
+### Following changes in an R2 bucket
+
+Without a queue, Bookclerk lists the bucket on a schedule to find files
+that other programs add, change or remove. With one, it reads only what
+changed.
+
+1. Create a Cloudflare Queue, and turn on **HTTP pull** as its consumer.
+2. Add an event notification rule to the bucket that sends object-create
+   and object-delete events to the queue. A rule can be limited to the
+   destination's `prefix`.
+3. Create a Cloudflare API token with **Queues Read** and **Queues Write**
+   on the account, and enter it:
+
+   ```sh
+   bookclerk plugins config set r2 queue_api_token --secret
+   ```
+
+4. Give the plugin the queue's id (the 32-hex-digit id on the queue's
+   page, not its name):
+
+   ```sh
+   bookclerk plugins config set r2 notification_queue_id 0123456789abcdef0123456789abcdef
+   ```
+
+The queue works like an SQS queue for the `s3` plugin (see
+[Following changes in the bucket](#following-changes-in-the-bucket)):
+
+- **One reader per queue.** Nothing else may consume it, and only one
+  destination on one node should name it. Events for other accounts,
+  buckets, or keys outside the `prefix` are skipped.
+- **Messages wait for Bookclerk.** The plugin acknowledges a message only
+  after Bookclerk has taken the changes in it. Until then it stays leased
+  for 12 hours, after which the queue offers it again. The plugin keeps
+  its lease ids under its `HOME`.
+- **Listing stays the backstop.** After the queue is first set, after the
+  plugin loses its lease ids, or when a message cannot be read, Bookclerk
+  lists the bucket once and carries on from there. Messages the queue
+  drops when its retention runs out are found by the next scheduled
+  listing.
+
 ## Choosing which books a destination takes
 
 Every destination takes every book until you give it a filter. A filter
@@ -495,7 +586,8 @@ Each destination is followed in one of two ways:
 - **A change feed**, when the destination has one turned on: the
   [folder watch](#watching-the-folder) on a local disk, or the
   [bucket's notification queue](#following-changes-in-the-bucket) on
-  Amazon S3. Bookclerk reads what changed since its last check, so
+  Amazon S3, or the [Cloudflare Queue](#following-changes-in-an-r2-bucket)
+  on R2. Bookclerk reads what changed since its last check, so
   changes show up within about five minutes.
 - **A listing**, which every destination has: Bookclerk lists every file
   and compares the list with the last one. It runs every 6 hours, or once

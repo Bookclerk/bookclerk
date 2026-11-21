@@ -286,6 +286,8 @@ Store credentials and other runtime secrets are stored in the
 - S3 destination keys, which are `secret` settings of the `s3` plugin
   instance. With none set, the guest falls back to the AWS SDK default
   provider chain.
+- R2 destination keys and its queue API token, which are `secret`
+  settings of the `r2` plugin instance.
 
 > [!NOTE]
 > Bookclerk no longer creates or reads an `Accounts/` directory.

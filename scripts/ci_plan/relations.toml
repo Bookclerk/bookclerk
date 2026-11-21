@@ -224,10 +224,12 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-storage"
-# The S3 notification oracle is shared with the replay test through `#[path]`.
+# The S3 and R2 notification oracles are shared with the replay test through `#[path]`.
 paths = [
     "fuzz/corpus/s3_event/**",
     "fuzz/oracles/s3_event.rs",
+    "fuzz/corpus/r2_event/**",
+    "fuzz/oracles/r2_event.rs",
 ]
 
 [[test_input]]
