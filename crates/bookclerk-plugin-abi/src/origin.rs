@@ -276,6 +276,104 @@ pub fn parse_ingress_origin(started: &IngressStarted) -> Result<IngressOrigin> {
     Ok(IngressOrigin(started.origin.clone()))
 }
 
+/// The head of the library's response to one origin request, as the
+/// isolate bridge frames it ([`encode_origin_frame`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OriginResponseHead {
+    /// HTTP status code, 100 to 599.
+    pub status: u16,
+    /// Response header fields in order.
+    pub headers: Vec<OriginHeader>,
+}
+
+/// Bytes of the length prefix in front of a framed head.
+pub const ORIGIN_FRAME_PREFIX_BYTES: usize = 4;
+
+/// Largest framed head on the isolate bridge's origin route: the JSON of a
+/// head at its limits, with room for escaping every header byte and the
+/// target.
+pub const MAX_ORIGIN_FRAME_HEAD_BYTES: usize =
+    2 * (MAX_ORIGIN_HEADER_BYTES as usize + MAX_ORIGIN_TARGET_BYTES as usize) + 16 * 1024;
+
+/// Frames `head` for the isolate bridge: a 4-byte big-endian length, then
+/// the head as JSON. The body follows the frame on the same stream.
+///
+/// # Errors
+///
+/// `internal` when the head does not encode or is larger than
+/// [`MAX_ORIGIN_FRAME_HEAD_BYTES`].
+pub fn encode_origin_frame<T: serde::Serialize>(head: &T) -> Result<Vec<u8>> {
+    let json = serde_json::to_vec(head)
+        .map_err(|err| PluginError::internal(format!("origin head did not encode: {err}")))?;
+    if json.len() > MAX_ORIGIN_FRAME_HEAD_BYTES {
+        return Err(PluginError::internal("origin head is too large to frame"));
+    }
+    let len = u32::try_from(json.len())
+        .map_err(|_| PluginError::internal("origin head is too large to frame"))?;
+    let mut out = Vec::with_capacity(ORIGIN_FRAME_PREFIX_BYTES + json.len());
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(&json);
+    Ok(out)
+}
+
+/// Splits a framed head off the front of `buf`.
+///
+/// # Returns
+///
+/// `Ok(None)` while `buf` holds less than the whole frame; otherwise the
+/// head's JSON and the bytes after it (the start of the body).
+///
+/// # Errors
+///
+/// `invalid_params` when the declared length exceeds
+/// [`MAX_ORIGIN_FRAME_HEAD_BYTES`], so a guest cannot make the host buffer
+/// without bound.
+pub fn split_origin_frame(buf: &[u8]) -> Result<Option<(&[u8], &[u8])>> {
+    let Some(prefix) = buf.get(..ORIGIN_FRAME_PREFIX_BYTES) else {
+        return Ok(None);
+    };
+    let mut len_bytes = [0u8; ORIGIN_FRAME_PREFIX_BYTES];
+    len_bytes.copy_from_slice(prefix);
+    let len = usize::try_from(u32::from_be_bytes(len_bytes))
+        .map_err(|_| PluginError::invalid_params("origin head length does not fit"))?;
+    if len > MAX_ORIGIN_FRAME_HEAD_BYTES {
+        return Err(PluginError::invalid_params(format!(
+            "origin head of {len} bytes exceeds {MAX_ORIGIN_FRAME_HEAD_BYTES}"
+        )));
+    }
+    let end = ORIGIN_FRAME_PREFIX_BYTES + len;
+    if buf.len() < end {
+        return Ok(None);
+    }
+    Ok(Some((&buf[ORIGIN_FRAME_PREFIX_BYTES..end], &buf[end..])))
+}
+
+/// Decodes and checks a framed request head from an isolate.
+///
+/// # Errors
+///
+/// `invalid_params` when the JSON is not an [`OriginRequest`] or the head
+/// fails [`check_origin_request`].
+pub fn decode_origin_request_frame(json: &[u8]) -> Result<CheckedOriginRequest> {
+    let request: OriginRequest = serde_json::from_slice(json)
+        .map_err(|_| PluginError::invalid_params("origin request head is not valid JSON"))?;
+    check_origin_request(&request)
+}
+
+/// Decodes and checks a framed response head (the isolate side reads these;
+/// the host only writes them, so this is for tests and fuzzing).
+///
+/// # Errors
+///
+/// `invalid_params` when the JSON is not a head or fails
+/// [`check_origin_response`].
+pub fn decode_origin_response_frame(json: &[u8]) -> Result<OriginResponseHead> {
+    let head: OriginResponseHead = serde_json::from_slice(json)
+        .map_err(|_| PluginError::invalid_params("origin response head is not valid JSON"))?;
+    check_origin_response(head.status, &head.headers)?;
+    Ok(head)
+}
+
 #[cfg(test)]
 #[path = "origin_tests.rs"]
 mod tests;

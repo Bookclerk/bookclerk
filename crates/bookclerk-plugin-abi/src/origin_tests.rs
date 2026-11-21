@@ -147,3 +147,35 @@ fn only_an_https_host_name_is_an_ingress_origin() {
     let label = format!("https://{}.example", "a".repeat(64));
     assert!(origin(&label).is_err());
 }
+
+#[test]
+fn frames_round_trip_and_wait_for_the_whole_head() {
+    let req = request("/api/status", vec![header("Accept", "*/*")]);
+    let mut framed = encode_origin_frame(&req).unwrap();
+    framed.extend_from_slice(b"body bytes");
+    for cut in 0..ORIGIN_FRAME_PREFIX_BYTES + 10 {
+        assert_eq!(split_origin_frame(&framed[..cut]).unwrap(), None, "{cut}");
+    }
+    let (json, rest) = split_origin_frame(&framed).unwrap().unwrap();
+    assert_eq!(rest, b"body bytes");
+    let checked = decode_origin_request_frame(json).unwrap();
+    assert_eq!(checked.target, "/api/status");
+
+    let head = OriginResponseHead {
+        status: 204,
+        headers: vec![header("Set-Cookie", "a=b")],
+    };
+    let framed = encode_origin_frame(&head).unwrap();
+    let (json, rest) = split_origin_frame(&framed).unwrap().unwrap();
+    assert!(rest.is_empty());
+    assert_eq!(decode_origin_response_frame(json).unwrap(), head);
+}
+
+#[test]
+fn oversized_or_malformed_frames_are_refused() {
+    let len = u32::try_from(MAX_ORIGIN_FRAME_HEAD_BYTES + 1).unwrap();
+    assert!(split_origin_frame(&len.to_be_bytes()).is_err());
+    assert!(decode_origin_request_frame(b"not json").is_err());
+    assert!(decode_origin_request_frame(br#"{"method":"GET","target":"x"}"#).is_err());
+    assert!(decode_origin_response_frame(br#"{"status":42,"headers":[]}"#).is_err());
+}

@@ -181,6 +181,7 @@ impl WorkerdRoot {
             queues: BTreeMap::new(),
             kv: BTreeMap::new(),
             sockets: BTreeMap::new(),
+            origin_token: None,
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -350,6 +351,32 @@ impl WorkerdRoot {
             }
             None => (BTreeMap::new(), None),
         };
+        // One origin-only grant token for a relay ingress plugin: the
+        // adapter isolate reaches the library over `/origin/fetch` and
+        // installs `ORIGIN` on the author's `env`.
+        let (origin_token, origin_grant) = match bindings
+            .origin
+            .filter(|_| self.exports(Entrypoint::Ingress))
+        {
+            Some(origin) => {
+                let token = format!("{:032x}", rand::random::<u128>());
+                self.table.borrow_mut().insert(
+                    token.clone(),
+                    GrantedSlot::origin_only(
+                        Rc::from(origin),
+                        grant_expiry(invocation.deadline_unix_ms),
+                    ),
+                );
+                (
+                    Some(token.clone()),
+                    Some(RevokeGrant {
+                        table: Rc::clone(&self.table),
+                        grant: token,
+                    }),
+                )
+            }
+            None => (None, None),
+        };
         let ctx = BridgeContext {
             invocation,
             config: bindings.config,
@@ -359,6 +386,7 @@ impl WorkerdRoot {
             queues,
             kv,
             sockets,
+            origin_token,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
@@ -367,6 +395,7 @@ impl WorkerdRoot {
             _queues: queue_grants,
             _kv: kv_grants,
             _sockets: sockets_grant,
+            _origin: origin_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
             Some(Rc::clone(&grants) as Rc<dyn std::any::Any>);
@@ -552,6 +581,10 @@ struct BridgeContext {
     /// most one entry.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     sockets: BTreeMap<String, String>,
+    /// Origin-only bearer for `/origin/fetch`: the `ORIGIN` binding of the
+    /// active relay ingress plugin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin_token: Option<String>,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -572,6 +605,7 @@ struct OpenGrants {
     _queues: Vec<RevokeGrant>,
     _kv: Vec<RevokeGrant>,
     _sockets: Option<RevokeGrant>,
+    _origin: Option<RevokeGrant>,
 }
 
 /// Grant expiry for an `open`: the invocation deadline when it has one,
@@ -817,6 +851,7 @@ impl JobRunner for InvokeJobRunner {
                 queue: None,
                 kv: None,
                 sockets: None,
+                origin: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -963,6 +998,7 @@ mod tests {
             queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
             kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
             sockets: BTreeMap::from([("SOCKETS".to_string(), "stok".to_string())]),
+            origin_token: Some("otok".into()),
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,
@@ -977,6 +1013,7 @@ mod tests {
         assert_eq!(v["queues"]["NOTIFY"], "qtok");
         assert_eq!(v["kv"]["KV"], "ktok");
         assert_eq!(v["sockets"]["SOCKETS"], "stok");
+        assert_eq!(v["originToken"], "otok");
         assert!(v.get("config").is_some());
     }
 }
