@@ -305,7 +305,7 @@ daemon restart.
 trusted_proxies = ["10.0.0.2"]   # peers allowed to set X-Forwarded-*
 
 [daemon.node_api]
-mode = "loopback"                # loopback | proxy | acme | self_signed
+mode = "loopback"                # loopback | proxy | acme | self_signed | tunnel
 # acme_contact = "mailto:ops@example.com"  # required for acme
 # tls_listen = "0.0.0.0:8443"              # required for acme and self_signed
 # acme_directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -320,6 +320,7 @@ mode = "loopback"                # loopback | proxy | acme | self_signed
 | `proxy` | Plain HTTP from a trusted proxy that sends exactly one `X-Forwarded-Proto: https` | An https `public_origin` and at least one entry in `daemon.trusted_proxies` |
 | `acme` | The built-in TLS listener, with a certificate issued over TLS-ALPN-01 | `acme_contact`, `tls_listen`, and an https `public_origin` with a DNS name |
 | `self_signed` | The built-in TLS listener, with a generated P-256 certificate whose pin travels in each link | `tls_listen`, and an https `public_origin` naming that listener |
+| `tunnel` | Requests the library's active relay [ingress plugin](ingress.md) carries | An active relay ingress; its reported origin, or `public_origin`, names the library |
 
 Notes on each mode:
 
@@ -340,6 +341,11 @@ Notes on each mode:
   invite link, and the host trusts exactly that key. Until the daemon has
   written the pin, minting an invite fails rather than make an unpinned
   link.
+- **`tunnel`** has no listener or certificate of its own: the relay's
+  edge terminates TLS, and every request it carries is public `https`
+  traffic, never loopback. Requests on the relay are refused in every
+  other mode, and loopback is still allowed. See
+  [Public address](ingress.md).
 
 Everything else gets `403 {"error": "transport_insecure"}`. Plain HTTP
 from a LAN address is refused, and forwarding headers from a peer that

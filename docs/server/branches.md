@@ -59,7 +59,9 @@ same wizard.
 1. **Pick a transport.** Branches reach the node API over TLS, except on
    loopback. Set `integrations.public_origin` to the address branches will
    use (the same one people open the library at), and choose a
-   `[daemon.node_api]` mode: `acme`, `proxy`, `self_signed` or `loopback`.
+   `[daemon.node_api]` mode: `acme`, `proxy`, `self_signed`, `tunnel` or
+   `loopback`. With an [ingress plugin](ingress.md) (`tunnel` mode) the
+   plugin reports the address, so `public_origin` can stay unset.
    The modes, their required settings and what each refuses are in
    [Configuration → Branch nodes](configuration.md#branch-nodes).
 2. **Let new branches join.** **Settings → Branches** (operator or Owner)
