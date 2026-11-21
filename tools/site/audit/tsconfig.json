@@ -25,5 +25,5 @@
     "useUnknownInCatchVariables": true,
     "skipLibCheck": true
   },
-  "include": ["audit.ts", "audit.test.ts"]
+  "include": ["audit.ts", "audit.test.ts", "catalog.ts", "pages.ts", "serve.ts"]
 }

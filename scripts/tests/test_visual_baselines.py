@@ -67,7 +67,7 @@ def oracle_png(data: bytes) -> tuple[int, int] | Exception:
     if be32(data, 8) != 13 or data[12:16] != b"IHDR":
         return ValueError()
     w, h = be32(data, 16), be32(data, 20)
-    if w == 0 or h == 0 or w > 8192 or h > 8192:
+    if w == 0 or h == 0 or w > 16384 or h > 16384:
         return ValueError()
     return (w, h)
 
