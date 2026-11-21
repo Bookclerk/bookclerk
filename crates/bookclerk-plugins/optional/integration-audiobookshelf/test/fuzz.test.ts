@@ -162,6 +162,7 @@ function valued(r: MetadataFileRecord): MetadataField[] {
   add("series", r.seriesEntries.length > 0);
   add("chapters", r.chapters.length > 0);
   add("duration", r.durationMs !== undefined);
+  add("explicitness", r.explicitness !== "unknown");
   return out;
 }
 
@@ -385,6 +386,7 @@ function cleanRecord(rand: () => number, row: Row): MetadataFileRecord {
     abridgement:
       (["unknown", "unabridged", "abridged"] as const)[Math.floor(rand() * 3)] ?? "unknown",
     expressionKind: "unspecified",
+    explicitness: (["unknown", "clean", "explicit"] as const)[Math.floor(rand() * 3)] ?? "unknown",
     identifiers: [
       ...(rand() < 0.6
         ? [{ scheme: "isbn" as const, value: `978${Math.floor(rand() * 1e9)}` }]

@@ -218,6 +218,7 @@ function empty(): MetadataFileRecord {
     tags: [],
     abridgement: "unknown",
     expressionKind: "unspecified",
+    explicitness: "unknown",
     identifiers: [],
     credits: [],
     creditRoles: [],

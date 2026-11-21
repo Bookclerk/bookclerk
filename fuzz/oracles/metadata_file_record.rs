@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use bookclerk_plugin_abi::{
     check_record_against_dialect, decode_metadata_file_record_bytes,
     encode_metadata_file_record_bytes, validate_metadata_file_record, Abridgement, CreditRole,
-    ExpressionKind, MetadataField, MetadataFileDialect, MetadataFileRecord,
+    Explicitness, ExpressionKind, MetadataField, MetadataFileDialect, MetadataFileRecord,
 };
 
 /// Largest input worth decoding; the RPC caps a record far below this.
@@ -47,6 +47,7 @@ fn dialect() -> MetadataFileDialect {
             MetadataField::Genres,
             MetadataField::Tags,
             MetadataField::Abridgement,
+            MetadataField::Explicitness,
             MetadataField::Identifiers,
             MetadataField::Credits,
             MetadataField::Series,
@@ -140,6 +141,10 @@ fn keeps_every_rule(r: &MetadataFileRecord) -> bool {
         (MetadataField::Series, !r.series_entries.is_empty()),
         (MetadataField::Chapters, !r.chapters.is_empty()),
         (MetadataField::Duration, r.duration_ms.is_some()),
+        (
+            MetadataField::Explicitness,
+            r.explicitness != Explicitness::Unknown,
+        ),
     ];
     if has_values
         .iter()

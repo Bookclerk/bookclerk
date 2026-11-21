@@ -51646,6 +51646,14 @@
           }
         }
       },
+      "ExplicitContent": {
+        "type": "string",
+        "description": "Whether a patron sees books marked as explicit (adult) content.",
+        "enum": [
+          "allow",
+          "hide"
+        ]
+      },
       "ExpressionKindJson": {
         "type": "string",
         "description": "How an expression realises its work (`expressions.kind`).",
@@ -57800,6 +57808,14 @@
             },
             "description": "Visibility rules, at most 16 and 1,024 bytes as JSON. Empty means\nevery book is visible.",
             "maxItems": 16
+          },
+          "explicit": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ExplicitContent"
+              }
+            ],
+            "description": "Whether books marked explicit are visible; left out means `allow`."
           }
         },
         "additionalProperties": false
@@ -62506,6 +62522,14 @@
                 },
                 "description": "Visibility rules, at most 16 and 1,024 bytes as JSON. Empty means\nevery book is visible.",
                 "maxItems": 16
+              },
+              "explicit": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ExplicitContent"
+                  }
+                ],
+                "description": "Whether books marked explicit are visible; left out means `allow`."
               }
             },
             "additionalProperties": false,

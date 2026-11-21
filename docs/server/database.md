@@ -834,7 +834,8 @@ library holds as works, expressions and editions:
   ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance));
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, series and
-  the store's own series or show product id, ratings; a scan fills it from
+  the store's own series or show product id, ratings, and `is_explicit`
+  when the store marks the edition as explicit or clean; a scan fills it from
   the title it lists, writing only a field that changed; a cover in a
   store's text also becomes the cover of the edition the listing sells
   when that edition has none, so the first store to report one sets it),
@@ -947,7 +948,9 @@ library holds as works, expressions and editions:
 
 The library's collections are not a table: they live in the
 `core.collections` configuration document (names and storage key
-prefixes). The page index stores each work's collections as facet
+prefixes). A work with a store listing marked explicit
+(`store_listings.is_explicit`) carries facet `explicit`, which a patron
+scope that hides explicit books excludes. The page index stores each work's collections as facet
 `collection`, read from its editions' files (`edition_files`), so a
 change to the document drops the finished index build and the next
 rebuild recomputes every work.

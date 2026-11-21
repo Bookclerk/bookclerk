@@ -11,24 +11,27 @@
 //! The invariant, checked against this file's own reading of the bytes as
 //! an untyped JSON value rather than the typed body:
 //!
-//! - A scope is one JSON object with no repeated keys and at most the key
-//!   `rules`, an array (missing means no rules) of at most 16 rules. Each
+//! - A scope is one JSON object with no repeated keys and at most the keys
+//!   `rules`, an array (missing means no rules) of at most 16 rules, and
+//!   `explicit`, the string `allow` or `hide` (missing means `allow`). Each
 //!   rule is an object with no repeated keys and exactly the keys `field`
 //!   (`genre`, `series`, `author`, `narrator`, `tag` or `collection`), `value` (a string) and
 //!   `effect` (`include` or `exclude`). Each value, trimmed, is 1 to 256
 //!   bytes with no NUL, no two rules share field, effect and trimmed
-//!   lowercase value, and the rules with trimmed values come to at most
-//!   1,024 bytes as compact JSON.
+//!   lowercase value, and the rules with trimmed values (plus
+//!   `"explicit":"hide"` when hiding) come to at most 1,024 bytes as
+//!   compact JSON.
 //! - A user's body is one object with no repeated keys and at most the key
 //!   `scope`, which is `null` (or missing) or such a scope.
 //!
-//! An accepted body yields the rules in order with trimmed values (or no
-//! scope); a refused one is `Invalid`, never another error.
+//! An accepted body yields the rules in order with trimmed values and the
+//! explicit choice (or no scope); a refused one is `Invalid`, never another error.
 
 use std::collections::BTreeSet;
 
 use bookclerk_library::control_plane::{
-    parse_patron_scope, parse_user_scope_request, PatronScope, RuleEffect, ScopeField,
+    parse_patron_scope, parse_user_scope_request, ExplicitContent, PatronScope, RuleEffect,
+    ScopeField,
 };
 use bookclerk_library::LibraryError;
 use serde::de::{Deserializer as _, MapAccess, SeqAccess, Visitor};
@@ -50,14 +53,17 @@ const DOCUMENTED_MAX_SCOPE_JSON_BYTES: usize = 1024;
 /// One rule as the oracle reads it: field, trimmed value, effect.
 type Rule = (ScopeField, String, RuleEffect);
 
+/// A scope as the oracle reads it: its rules and the explicit choice.
+type Scope = (Vec<Rule>, ExplicitContent);
+
 /// What the oracle expects from one body.
 #[derive(Debug, PartialEq, Eq)]
 enum Expected {
     /// Refused as `Invalid`.
     Refused,
-    /// Accepted with these rules, or no scope at all for a user's body
+    /// Accepted with this scope, or no scope at all for a user's body
     /// that returns them to the default.
-    Accepted(Option<Vec<Rule>>),
+    Accepted(Option<Scope>),
 }
 
 /// Runs the oracle on one input.
@@ -94,23 +100,26 @@ pub fn check(data: &[u8]) -> bool {
             );
             false
         }
-        Expected::Accepted(rules) => {
+        Expected::Accepted(expected) => {
             let scope = got.unwrap_or_else(|err| {
                 panic!("{:?} refused: {err:?}", String::from_utf8_lossy(data))
             });
-            assert_eq!(scope.as_ref().map(rules_of), rules);
+            assert_eq!(scope.as_ref().map(scope_of), expected);
             true
         }
     }
 }
 
-/// The parser's scope as oracle rules.
-fn rules_of(scope: &PatronScope) -> Vec<Rule> {
-    scope
-        .rules
-        .iter()
-        .map(|rule| (rule.field, rule.value.clone(), rule.effect))
-        .collect()
+/// The parser's scope as the oracle reads one.
+fn scope_of(scope: &PatronScope) -> Scope {
+    (
+        scope
+            .rules
+            .iter()
+            .map(|rule| (rule.field, rule.value.clone(), rule.effect))
+            .collect(),
+        scope.explicit,
+    )
 }
 
 /// The expected outcome for a default-scope body.
@@ -122,7 +131,7 @@ fn expected_default(body: &[u8]) -> Expected {
         return Expected::Refused;
     };
     match scope_rules(&fields) {
-        Some(rules) => Expected::Accepted(Some(rules)),
+        Some(scope) => Expected::Accepted(Some(scope)),
         None => Expected::Refused,
     }
 }
@@ -141,21 +150,31 @@ fn expected_user(body: &[u8]) -> Expected {
     match fields.get("scope") {
         None | Some(Value::Null) => Expected::Accepted(None),
         Some(Value::Object(scope)) => match scope_rules(scope) {
-            Some(rules) => Expected::Accepted(Some(rules)),
+            Some(scope) => Expected::Accepted(Some(scope)),
             None => Expected::Refused,
         },
         Some(_) => Expected::Refused,
     }
 }
 
-/// The rules of one scope object, or `None` when the documented rules
-/// refuse it.
-fn scope_rules(fields: &Map<String, Value>) -> Option<Vec<Rule>> {
-    if fields.keys().any(|key| key != "rules") {
+/// One scope object as the oracle reads it, or `None` when the documented
+/// rules refuse it.
+fn scope_rules(fields: &Map<String, Value>) -> Option<Scope> {
+    if fields.keys().any(|key| key != "rules" && key != "explicit") {
         return None;
     }
+    let explicit = match fields.get("explicit") {
+        None => ExplicitContent::Allow,
+        Some(Value::String(name)) => match name.as_str() {
+            "allow" => ExplicitContent::Allow,
+            "hide" => ExplicitContent::Hide,
+            _ => return None,
+        },
+        Some(_) => return None,
+    };
+    let empty = Vec::new();
     let items = match fields.get("rules") {
-        None => return Some(Vec::new()),
+        None => &empty,
         Some(Value::Array(items)) => items,
         Some(_) => return None,
     };
@@ -209,13 +228,16 @@ fn scope_rules(fields: &Map<String, Value>) -> Option<Vec<Rule>> {
         }));
         rules.push((field, value.to_string(), effect));
     }
-    let size = serde_json::to_vec(&serde_json::json!({ "rules": written }))
-        .ok()?
-        .len();
+    let compact = if explicit == ExplicitContent::Hide {
+        serde_json::json!({ "rules": written, "explicit": "hide" })
+    } else {
+        serde_json::json!({ "rules": written })
+    };
+    let size = serde_json::to_vec(&compact).ok()?.len();
     if size > DOCUMENTED_MAX_SCOPE_JSON_BYTES {
         return None;
     }
-    Some(rules)
+    Some((rules, explicit))
 }
 
 /// True when any JSON object in `data`, at any depth, writes a key twice.

@@ -32,6 +32,7 @@ import type {
   CatalogField,
   PriceLookup,
   Abridgement,
+  Explicitness,
   MetadataField,
   NotificationSeverity,
   NotificationAudience,
@@ -64,6 +65,7 @@ export type {
   CatalogField,
   PriceLookup,
   Abridgement,
+  Explicitness,
   MetadataField,
   NotificationSeverity,
   NotificationAudience,
@@ -2559,6 +2561,8 @@ export interface ScanBook {
    * Omitted when absent (wire zero value).
    */
   categories?: string;
+  /** Whether the storefront marks the edition explicit (adult) content. */
+  explicitness: Explicitness;
 }
 
 /**
@@ -3011,6 +3015,8 @@ export interface CatalogHit {
    * Omitted when absent (wire zero value).
    */
   rankHint?: number;
+  /** Whether the storefront marks the edition explicit (adult) content. */
+  explicitness: Explicitness;
 }
 
 /** Success payload of the catalog list methods. */
@@ -3882,6 +3888,11 @@ export interface MetadataFileRecord {
    * Omitted when absent (wire zero value).
    */
   durationMs?: number;
+  /**
+   * Whether the edition is explicit (adult) content; `unknown` when the
+   * file does not say.
+   */
+  explicitness: Explicitness;
 }
 
 /** Params of `MetadataFiles.parse`. */
