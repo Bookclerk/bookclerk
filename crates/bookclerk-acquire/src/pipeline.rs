@@ -2837,6 +2837,10 @@ async fn store_plain_fetch(
             parts: plain.parts.iter().map(|p| p.path.clone()).collect(),
             output: out,
             chapter_titles: titles,
+            // Only an M4B output keeps the source codec; an MP3 or Opus
+            // output decodes this file again, so it gets AAC it can read.
+            keep_codec: req.options.keep_codec_in_m4b
+                && req.options.effective_output() == bookclerk_config::OutputFormat::EnrichedM4b,
         })
         .await?;
         if chapters.is_empty() {
@@ -6486,7 +6490,12 @@ mod tests {
 
     /// A request for `product_id` on `account` named by `<title>`
     /// alone, so two editions of one title plan the same key.
-    pub(super) fn edition_req(cache: &Path, job: String, product_id: &str, account: &str) -> AcquireRequest {
+    pub(super) fn edition_req(
+        cache: &Path,
+        job: String,
+        product_id: &str,
+        account: &str,
+    ) -> AcquireRequest {
         let mut req = dummy_req(cache, Some(job), None);
         req.asin = product_id.into();
         req.account_id = account.into();

@@ -49,6 +49,11 @@ pub struct PackageM4bRequest {
     pub output: PathBuf,
     /// Optional chapter titles (length may match `parts`).
     pub chapter_titles: Vec<String>,
+    /// Keep Opus, FLAC, ALAC, E-AC-3 or AC-4 audio as it is inside the
+    /// M4B instead of encoding it to AAC (`output.keep_codec_in_m4b`).
+    /// Parts that cannot be kept together are encoded to AAC as usual.
+    #[serde(default)]
+    pub keep_codec: bool,
 }
 
 /// Decode/remux ordered parts → progressive M4B.
@@ -230,6 +235,23 @@ pub(crate) fn package_m4b_from_parts_native(
 ) -> Result<(MediaOutcome, Vec<(String, u64)>)> {
     if req.parts.iter().all(|p| is_clear_aac_mp4_part(p)) {
         return package_m4b_remux_aac_parts(req);
+    }
+    if req.keep_codec {
+        tracing::info!(
+            parts = req.parts.len(),
+            output = %req.output.display(),
+            "package m4b keeping the source codec"
+        );
+        if let Some(chapters) =
+            crate::mux_keep::package_keeping_codec(&req.parts, &req.output, &req.chapter_titles)?
+        {
+            return Ok((
+                MediaOutcome {
+                    output: req.output.clone(),
+                },
+                chapters,
+            ));
+        }
     }
     package_m4b_transcode_parts(req)
 }
@@ -789,6 +811,7 @@ mod tests {
             parts: vec![part_a.clone(), part_b.clone()],
             output: out.clone(),
             chapter_titles: vec!["A".into(), "B".into()],
+            keep_codec: false,
         })
         .unwrap();
 
@@ -826,6 +849,7 @@ mod tests {
                 parts,
                 output: out.clone(),
                 chapter_titles: titles,
+                keep_codec: false,
             })
             .unwrap();
             assert_eq!(chapters.len(), n);
@@ -836,5 +860,82 @@ mod tests {
             let want = 250 * u64::try_from(n).unwrap();
             assert!(ms.abs_diff(want) < 150, "{ms} ms for {n} parts");
         }
+    }
+
+    #[test]
+    fn keep_codec_copies_opus_flac_and_alac_into_m4b() {
+        // Each seed is copied into an M4B with its own sample entry, plays
+        // as long as the source, and decodes; parts that differ fall back
+        // to AAC.
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/media_decode");
+        let dir = tempfile::tempdir().unwrap();
+        for (seed, kind) in [
+            ("tone_2ch.opus", *b"Opus"),
+            ("tone_1ch.opus", *b"Opus"),
+            ("tone_2ch.flac", *b"fLaC"),
+            ("tone_2ch_alac.m4a", *b"alac"),
+        ] {
+            let part = dir.path().join(seed);
+            std::fs::copy(corpus.join(seed), &part).unwrap();
+            let out = dir.path().join(format!("{seed}.m4b"));
+            let (_outcome, chapters) = package_m4b_from_parts_native(&PackageM4bRequest {
+                parts: vec![part.clone(), part.clone()],
+                output: out.clone(),
+                chapter_titles: vec!["One".into(), "Two".into()],
+                keep_codec: true,
+            })
+            .unwrap();
+            assert_eq!(chapters.len(), 2, "{seed}");
+            assert_eq!(chapters[0], ("One".into(), 0));
+            let mp4 = parse_mp4(&out).unwrap();
+            assert_eq!(
+                mp4.audio.sample_entry_kind,
+                SampleEntryKind::Other(bookclerk_mp4::boxutil::FourCC(kind)),
+                "{seed}"
+            );
+            let mut decoded = 0usize;
+            let mut rate = 0u32;
+            crate::decode::open_audio_file(&out, false)
+                .and_then(|mut opened| {
+                    rate = opened.sample_rate;
+                    opened.decode_each(crate::decode::OutChannels::SourceUpToStereo, |pcm| {
+                        decoded += pcm.len();
+                        Ok(())
+                    })
+                })
+                .unwrap_or_else(|err| panic!("{seed}: {err}"));
+            assert!(decoded > 0, "{seed} decodes");
+            let mut source_frames = 0usize;
+            let mut source = crate::decode::open_audio_file(&part, false).unwrap();
+            let source_channels = source.channels.min(2);
+            source
+                .decode_each(crate::decode::OutChannels::SourceUpToStereo, |pcm| {
+                    source_frames += pcm.len();
+                    Ok(())
+                })
+                .unwrap();
+            let source_frames = source_frames / source_channels;
+            let ms = track_duration_ms(&mp4.audio);
+            let want = u64::try_from(source_frames * 2 * 1000).unwrap() / u64::from(rate.max(1));
+            assert!(
+                ms.abs_diff(want) < 60,
+                "{seed}: {ms} ms, source twice is {want} ms"
+            );
+        }
+
+        let flac = dir.path().join("tone_2ch.flac");
+        let alac = dir.path().join("tone_2ch_alac.m4a");
+        let out = dir.path().join("mixed.m4b");
+        package_m4b_from_parts_native(&PackageM4bRequest {
+            parts: vec![flac, alac],
+            output: out.clone(),
+            chapter_titles: vec![],
+            keep_codec: true,
+        })
+        .unwrap();
+        assert!(
+            is_clear_aac_mp4_part(&out),
+            "mixed parts are encoded to AAC"
+        );
     }
 }

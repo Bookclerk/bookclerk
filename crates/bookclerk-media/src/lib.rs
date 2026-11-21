@@ -48,6 +48,7 @@ mod moov;
 mod mp3;
 pub use mp3::write_output_within_budget;
 mod mux_aac;
+mod mux_keep;
 mod native;
 mod opus_dec;
 mod opus_enc;

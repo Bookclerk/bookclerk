@@ -12,7 +12,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::{
     cleanup_work_dir, placed_destinations, prepare_work_dir, record_copies, remaining_for_new_file,
-    resolve_title, status_key, stored_copies, store_copies, AcquireRequest, AcquireResult,
+    resolve_title, status_key, store_copies, stored_copies, AcquireRequest, AcquireResult,
     CopyOutcome, CopyResult, CopyTarget,
 };
 use crate::destinations::AcquireDestinations;
@@ -110,7 +110,12 @@ pub async fn convert_copy(
     let existing: Vec<&ProbedAudioFile> = files
         .iter()
         .filter(|file| file.copy.as_ref() == Some(copy))
-        .filter(|file| target_set.items.iter().any(|dest| dest.id.as_str() == file.destination))
+        .filter(|file| {
+            target_set
+                .items
+                .iter()
+                .any(|dest| dest.id.as_str() == file.destination)
+        })
         .collect();
     if !req.force {
         if let Some(found) = existing.iter().find(|file| file.role == FileRole::Audio) {
@@ -233,9 +238,14 @@ fn source_copy<'a>(
     destinations: &'a AcquireDestinations,
     main: Option<&OutputCopy>,
     wanted: &OutputCopy,
-) -> Option<(&'a crate::destinations::AcquireDestination, Vec<&'a ProbedAudioFile>)> {
-    let mut groups: Vec<(&crate::destinations::AcquireDestination, Option<&OutputCopy>)> =
-        Vec::new();
+) -> Option<(
+    &'a crate::destinations::AcquireDestination,
+    Vec<&'a ProbedAudioFile>,
+)> {
+    let mut groups: Vec<(
+        &crate::destinations::AcquireDestination,
+        Option<&OutputCopy>,
+    )> = Vec::new();
     for file in files {
         if file.copy.as_ref() == Some(wanted) {
             continue;
@@ -248,14 +258,14 @@ fn source_copy<'a>(
             continue;
         };
         let key = (dest, file.copy.as_ref());
-        if !groups
-            .iter()
-            .any(|(d, c)| d.id == key.0.id && *c == key.1)
-        {
+        if !groups.iter().any(|(d, c)| d.id == key.0.id && *c == key.1) {
             groups.push(key);
         }
     }
-    let rank = |(dest, copy): &(&crate::destinations::AcquireDestination, Option<&OutputCopy>)| {
+    let rank = |(dest, copy): &(
+        &crate::destinations::AcquireDestination,
+        Option<&OutputCopy>,
+    )| {
         let encoded = copy.is_some_and(|copy| copy.format.is_encoded());
         let not_main = copy != &main;
         let not_primary = dest.id != destinations.primary;

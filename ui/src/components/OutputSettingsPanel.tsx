@@ -5,7 +5,7 @@ import { fetchSettings, isApiError, patchSettings, type SettingsResponse } from 
 
 /** One editable `output.*` key of the `core.output` document. */
 type OutputField =
-  | { key: string; label: string; kind: "toggle"; hint?: string }
+  | { key: string; label: string; kind: "toggle"; hint?: string; advanced?: boolean }
   | { key: string; label: string; kind: "select"; options: [string, string][]; hint?: string }
   | { key: string; label: string; kind: "text"; hint?: string };
 
@@ -96,6 +96,13 @@ const FIELDS: OutputField[] = [
     key: "output.overwrite_existing",
     label: "Re-acquire titles a destination already has",
     kind: "toggle",
+  },
+  {
+    key: "output.keep_codec_in_m4b",
+    label: "Keep Opus, FLAC, ALAC, E-AC-3 and AC-4 audio unchanged in M4B",
+    kind: "toggle",
+    hint: "Off re-encodes them to AAC, which every player plays. On keeps the delivered audio bit for bit, but some players cannot play it.",
+    advanced: true,
   },
 ];
 
@@ -205,7 +212,26 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
 
   const set = (key: string, value: string) => setValues((prev) => ({ ...prev, [key]: value }));
   const selects = FIELDS.filter((field) => field.kind !== "toggle");
-  const toggles = FIELDS.filter((field) => field.kind === "toggle");
+  const toggles = FIELDS.filter((field) => field.kind === "toggle" && !field.advanced);
+  const advanced = FIELDS.filter((field) => field.kind === "toggle" && field.advanced);
+  const toggleRow = (field: OutputField) => (
+    <div key={field.key} className="flex items-start justify-between gap-4 py-3">
+      <div className="space-y-0.5">
+        <label htmlFor={field.key} className="text-sm font-medium text-ink">
+          {field.label}
+        </label>
+        {field.hint ? <p className="text-xs text-ink/50">{field.hint}</p> : null}
+      </div>
+      <input
+        id={field.key}
+        type="checkbox"
+        className="mt-1 h-4 w-4 shrink-0 accent-teal"
+        checked={values[field.key] === "true"}
+        onChange={(e) => set(field.key, String(e.target.checked))}
+        disabled={locked}
+      />
+    </div>
+  );
 
   return (
     <form className="flex flex-col gap-6" onSubmit={(e) => void onSave(e)}>
@@ -271,23 +297,11 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
             </div>
           ))}
         </div>
-        <div className="divide-y divide-ink/10 bg-card px-3">
-          {toggles.map((field) => (
-            <div key={field.key} className="flex items-start justify-between gap-4 py-3">
-              <label htmlFor={field.key} className="text-sm font-medium text-ink">
-                {field.label}
-              </label>
-              <input
-                id={field.key}
-                type="checkbox"
-                className="mt-1 h-4 w-4 shrink-0 accent-teal"
-                checked={values[field.key] === "true"}
-                onChange={(e) => set(field.key, String(e.target.checked))}
-                disabled={locked}
-              />
-            </div>
-          ))}
-        </div>
+        <div className="divide-y divide-ink/10 bg-card px-3">{toggles.map(toggleRow)}</div>
+        <details className="bg-card px-3 py-2">
+          <summary className="cursor-pointer text-sm font-medium text-ink">Advanced</summary>
+          <div className="divide-y divide-ink/10">{advanced.map(toggleRow)}</div>
+        </details>
       </section>
       <div className="flex justify-end gap-2">
         <Button

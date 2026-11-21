@@ -1543,10 +1543,9 @@ pub async fn run_convert(
     )
     .await?;
     if targets.is_empty() {
-        return Err(JobFailedForGood(format!(
-            "nothing to convert: {title} names no stored book"
-        ))
-        .into());
+        return Err(
+            JobFailedForGood(format!("nothing to convert: {title} names no stored book")).into(),
+        );
     }
     let mut converted = 0u32;
     let mut matched = 0u32;
@@ -1605,7 +1604,10 @@ pub async fn run_convert(
     if converted > 0 {
         notify_integrations(state).await;
     }
-    let detail = format!("converted={converted} matched={matched} failed={}", errors.len());
+    let detail = format!(
+        "converted={converted} matched={matched} failed={}",
+        errors.len()
+    );
     if !errors.is_empty() && converted == 0 && matched == 0 {
         return Err(JobFailedForGood(format!("{detail}: {}", errors.join("; "))).into());
     }

@@ -75,10 +75,7 @@ async fn a_convert_adds_the_copy_beside_the_original() {
         Some(copy.clone())
     );
     assert_eq!(
-        store
-            .edition_file_copy("local", &main_key)
-            .await
-            .unwrap(),
+        store.edition_file_copy("local", &main_key).await.unwrap(),
         Some(output_copy("m4b:original")),
         "the original stays"
     );

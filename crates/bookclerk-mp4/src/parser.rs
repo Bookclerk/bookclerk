@@ -418,6 +418,38 @@ pub struct Mp4aConfig {
     pub asc: Vec<u8>,
 }
 
+/// The audio track's whole sample entry box (size, type and body, its
+/// codec configuration box included), as `stsd` holds it, so another file
+/// can describe the same samples without decoding them.
+///
+/// # Errors
+///
+/// Returns a container error when the entry does not lie inside `moov` or
+/// states a size smaller than a box header.
+pub fn sample_entry_bytes(mp4: &Mp4File) -> Result<Vec<u8>> {
+    let start = mp4
+        .audio
+        .sample_entry_type_offset
+        .checked_sub(4)
+        .and_then(|at| at.checked_sub(mp4.moov.start))
+        .and_then(|at| usize::try_from(at).ok())
+        .ok_or_else(|| Mp4Error::container("sample entry lies before moov"))?;
+    let size = mp4
+        .moov_bytes
+        .get(start..start.saturating_add(4))
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(u32::from_be_bytes)
+        .and_then(|size| usize::try_from(size).ok())
+        .ok_or_else(|| Mp4Error::container("sample entry size lies outside moov"))?;
+    if size < 8 {
+        return Err(Mp4Error::container("sample entry is smaller than a box"));
+    }
+    mp4.moov_bytes
+        .get(start..start.saturating_add(size))
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| Mp4Error::container("sample entry runs past moov"))
+}
+
 /// Read sample-rate / channel count / ASC from a clear `mp4a` sample entry.
 ///
 /// # Arguments

@@ -1,8 +1,6 @@
 //! `bookclerk library` — scan, acquire, accounts, set-status, get-license, search, export.
 
-use bookclerk_acquire::{
-    match_storage_to_library, AcquireRequest, MatchStorageOptions,
-};
+use bookclerk_acquire::{match_storage_to_library, AcquireRequest, MatchStorageOptions};
 use bookclerk_config::{AudioQuality, Config};
 use bookclerk_library::control_plane::{
     library_collections, set_library_collections, ConfigActor, LibraryCollection,
