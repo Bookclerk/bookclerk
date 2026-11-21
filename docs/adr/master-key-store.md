@@ -1,8 +1,7 @@
 # ADR: The library key can live in the OS keychain
 
-- **Status:** Accepted (decisions made with the maintainer on 2026-11-20).
-  Decisions 1 to 4 are built; a TPM-backed store for headless Linux
-  servers is planned
+- **Status:** Accepted (decisions made with the maintainer on 2026-11-20;
+  decision 6 on 2026-11-21). All six decisions are built
 - **Date:** 2026-11-20
 - **Related:** [Control plane](control-plane.md),
   [Library catalog network](library-catalog-network.md),
@@ -120,6 +119,31 @@ The desktop window's patron session and other per-install rows stay sealed
 in `encrypted_secrets`. With the key in the keychain they are protected by
 it already, and one item per install means one macOS access prompt.
 
+### 6. A `systemd-creds` store for headless Linux
+
+A third store, `key_store = "systemd-creds"`, for servers with no Secret
+Service. Packaging can't seal the key: it doesn't exist when the package
+installs, and a shared-branch join replaces it at runtime. So:
+
+- **Bookclerk seals it itself.** On start, `bookclerkd` moves a key still
+  in `master.key` into a credential sealed with `systemd-creds --user`
+  (systemd 256 or later; TPM2 when present, the host key otherwise),
+  written beside `master.key` as `master-key-<id>.cred` and read back
+  before `master.key` becomes a `BCK4` pointer. The tool runs with a
+  cleared environment and the envelope goes over stdin, never argv.
+- **Administrators can seal it themselves.** `bookclerk config master-key
+  credential` writes the envelope, unchanged, to a pipe for
+  `systemd-creds encrypt --name=bookclerk-master-key`. The unit loads it
+  with `LoadCredentialEncrypted=`, and a move into `systemd-creds` adopts
+  that credential (same bytes) instead of sealing its own copy. This
+  works on older systemd and with the system credential store.
+- **Sealing always falls back.** If sealing fails for any reason, the key
+  stays in `master.key` (password-wrapped when a password is set) with a
+  warning, even when `key_store` is set. An explicit `config master-key
+  move systemd-creds` still fails instead, so the operator sees why.
+- **Unsealing fails closed.** A sealed key that no longer opens is an
+  error, as for a missing keychain item; the fix is the recovery copy.
+
 ## Consequences
 
 - A copied files directory no longer exposes sealed secrets on keychain
@@ -135,8 +159,10 @@ it already, and one item per install means one macOS access prompt.
   CLI that file can already replace `master.key`). The pointer and envelope
   parsers still have strict header and length tests.
 - `bookclerk-keystore` joins the security surface.
-- Headless Linux servers keep the password-wrapped file. A TPM-backed store
-  (systemd-creds) is planned as a third store.
+- Headless Linux servers can seal the key with `systemd-creds` (decision
+  6), or keep the password-wrapped file. A sealed key doesn't survive a
+  new TPM or a reinstall, so the recovery copy matters as much there as on
+  a desktop.
 - The keychain does not help against code running as the same OS user, and
   removing a shared branch still doesn't take the key back; re-keying the
   library is a separate decision.

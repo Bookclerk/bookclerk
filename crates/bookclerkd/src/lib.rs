@@ -373,13 +373,16 @@ enum HostMode {
     Embedded,
 }
 
-/// Sets where this host writes new keys, and moves the desktop app's key
-/// into the OS keychain.
+/// Sets where this host writes new keys, and moves a key still in
+/// `master.key` into the store this host should seal it in.
 ///
 /// `[auth].key_store` wins when set. Otherwise the desktop window defaults
-/// to the OS keychain and `bookclerkd` to `master.key`. On the desktop
-/// default, a key still in `master.key` is moved into the keychain; if the
-/// keychain can't take it, the key stays in the file and the start goes on.
+/// to the OS keychain and `bookclerkd` to `master.key`. A key still in
+/// `master.key` is moved on the desktop default (into the OS keychain) and
+/// whenever `key_store = "systemd-creds"` (sealed with `systemd-creds`, or
+/// adopted from the unit's `bookclerk-master-key` credential). If the store
+/// can't take it, the key stays in the file with a warning and the start
+/// goes on.
 fn apply_key_store(config: &Config, mode: HostMode) {
     use bookclerk_config::KeyStoreKind;
     use bookclerk_library::MasterKeyFormat;
@@ -391,27 +394,30 @@ fn apply_key_store(config: &Config, mode: HostMode) {
         *slot = default;
     }
     let preference = refresh_key_store_preference(config);
-    if preference.kind != KeyStoreKind::Keychain || preference.required {
-        return;
-    }
+    let (target, label) = match preference.kind {
+        KeyStoreKind::Keychain if !preference.required => {
+            (KeyStoreKind::Keychain, "the OS keychain")
+        }
+        KeyStoreKind::SystemdCreds => (KeyStoreKind::SystemdCreds, "systemd-creds"),
+        KeyStoreKind::File | KeyStoreKind::Keychain => return,
+    };
     let files_dir = &config.paths().files_dir;
     match bookclerk_library::inspect_master_key(files_dir) {
         Ok(Some(MasterKeyFormat::Raw | MasterKeyFormat::Wrapped)) => {}
-        Ok(Some(MasterKeyFormat::Keychain) | None) => return,
+        Ok(Some(MasterKeyFormat::Keychain | MasterKeyFormat::SystemdCreds) | None) => return,
         Err(err) => {
-            tracing::warn!("not moving master.key into the OS keychain: {err}");
+            tracing::warn!("not moving master.key into {label}: {err}");
             return;
         }
     }
     let password = config.auth_password();
-    match bookclerk_library::move_master_key(files_dir, KeyStoreKind::Keychain, password.as_deref())
-    {
+    match bookclerk_library::move_master_key(files_dir, target, password.as_deref()) {
         Ok(_) => tracing::info!(
-            "moved the data-encryption key into the OS keychain; save a recovery copy with \
+            "moved the data-encryption key into {label}; save a recovery copy with \
              `bookclerk config master-key export --out <file>`"
         ),
         Err(err) => tracing::warn!(
-            "the data-encryption key stays in master.key: the OS keychain could not take it ({err})"
+            "the data-encryption key stays in master.key: {label} could not take it ({err})"
         ),
     }
 }

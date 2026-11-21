@@ -53906,7 +53906,7 @@
           },
           "needs_recovery_copy": {
             "type": "boolean",
-            "description": "Whether the web app should remind the operator to save a copy: the\nkey is in the OS keychain and no copy was recorded as saved.",
+            "description": "Whether the web app should remind the operator to save a copy: the\nkey is in the OS keychain or sealed with `systemd-creds` (so backups\nof the files directory don't include it) and no copy was recorded as\nsaved.",
             "example": true
           }
         }
@@ -53917,7 +53917,8 @@
         "enum": [
           "file",
           "password_file",
-          "keychain"
+          "keychain",
+          "systemd_creds"
         ]
       },
       "MeResponse": {

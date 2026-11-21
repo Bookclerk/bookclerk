@@ -1953,6 +1953,7 @@ dependencies = [
  "apple-native-keyring-store",
  "futures",
  "keyring-core",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "uuid",
