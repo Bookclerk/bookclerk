@@ -202,7 +202,7 @@ fn check_reply(reply: &[u8], scope: R2EventScope<'_>) {
             let decoded = base64_decode(text.trim()).expect("a changed body was base64");
             assert_eq!(message.body, decoded, "base64 readers disagree");
             assert!(
-                serde_json::from_slice::<Value>(&decoded).is_ok(),
+                serde_json::from_slice::<serde::de::IgnoredAny>(&decoded).is_ok(),
                 "only JSON is decoded"
             );
         }

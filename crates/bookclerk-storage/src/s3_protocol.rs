@@ -452,6 +452,24 @@ async fn handle(
             return "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 .into();
         };
+        if let Some(range) = headers.get("range") {
+            // A ranged read answers 206 with only the bytes asked for.
+            let bytes = slice_range(&obj.body, range);
+            let start = range
+                .strip_prefix("bytes=")
+                .and_then(|spec| spec.split_once('-'))
+                .and_then(|(from, _)| from.parse::<usize>().ok())
+                .unwrap_or(0);
+            return format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nETag: {}\r\nConnection: close\r\n\r\n{}",
+                bytes.len(),
+                start,
+                (start + bytes.len()).saturating_sub(1),
+                obj.body.len(),
+                obj.etag,
+                String::from_utf8_lossy(&bytes)
+            );
+        }
         return format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: {}\r\nConnection: close\r\n\r\n{}",
             obj.body.len(),

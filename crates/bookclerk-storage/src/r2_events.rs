@@ -21,7 +21,9 @@
 //! ```
 //!
 //! Events for another account or bucket, or for keys outside the
-//! destination prefix, are skipped, so one queue can serve several buckets.
+//! destination prefix, are skipped. The feed still acknowledges the message
+//! that held them, so a queue belongs to one destination: a second reader
+//! would lose whatever the first one skipped.
 //! Anything else unreadable is an error: the caller counts the message as a
 //! change it could not read.
 

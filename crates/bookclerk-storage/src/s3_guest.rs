@@ -144,11 +144,12 @@ impl Destination for ObjectStoreDestination {
     }
 
     async fn copy(&self, from: &str, to: &str) -> Result<CopyResult> {
-        let probe = self.backend.probe(from).await.map_err(map_storage)?;
-        self.backend.copy(from, to).await.map_err(map_storage)?;
-        Ok(CopyResult {
-            bytes_copied: probe.size,
-        })
+        let bytes_copied = self
+            .backend
+            .copy_sized(from, to)
+            .await
+            .map_err(map_storage)?;
+        Ok(CopyResult { bytes_copied })
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
@@ -276,7 +277,7 @@ mod tests {
         let meta = dest.head("a.m4b").await.expect("head").expect("stored");
         assert_eq!(meta.size, 3);
         assert_eq!(read(&dest, "a.m4b").await, b"abc");
-        let range = dest
+        let mut range = dest
             .get(
                 "a.m4b",
                 Some(ByteRange {
@@ -287,6 +288,9 @@ mod tests {
             .await
             .expect("range");
         assert_eq!(range.meta.key, "a.m4b");
+        let mut ranged = Vec::new();
+        range.body.read_to_end(&mut ranged).await.expect("read");
+        assert_eq!(ranged, b"b", "a ranged read returns only the range");
 
         let copied = dest.copy("a.m4b", "b.m4b").await.expect("copy");
         assert_eq!(copied.bytes_copied, 3);
@@ -630,6 +634,14 @@ mod tests {
         let keys: Vec<_> = first.changes.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(keys, ["a.m4b", "b.m4b"]);
         assert!(!first.complete, "an unreadable message is a missed change");
+        {
+            let state = queues.lock().expect("lock");
+            assert!(
+                state.acked.is_empty(),
+                "nothing is acked before the host takes the page"
+            );
+            assert_eq!(state.leased.len(), 3, "the first page stays leased");
+        }
 
         let second = dest
             .changes(ChangesRequest {

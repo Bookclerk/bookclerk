@@ -374,9 +374,11 @@ changed.
 The queue works like an SQS queue for the `s3` plugin (see
 [Following changes in the bucket](#following-changes-in-the-bucket)):
 
-- **One reader per queue.** Nothing else may consume it, and only one
-  destination on one node should name it. Events for other accounts,
-  buckets, or keys outside the `prefix` are skipped.
+- **One queue per destination.** Nothing else may consume it, and only
+  one destination on one node should name it. Events for other accounts,
+  buckets, or keys outside the `prefix` are skipped and acknowledged, so
+  they are gone for any other reader. Limit the bucket's rule to the
+  destination's `prefix` rather than sharing a queue.
 - **Messages wait for Bookclerk.** The plugin acknowledges a message only
   after Bookclerk has taken the changes in it. Until then it stays leased
   for 12 hours, after which the queue offers it again. The plugin keeps

@@ -943,6 +943,21 @@ impl S3Backend {
     /// size, [`StorageError::Integrity`] when the source has no ETag or
     /// changed during an unconditioned copy, [`StorageError::Conflict`] when
     /// a conditioned copy is refused, and S3 errors otherwise.
+    /// Copies `from` to `to` and returns the bytes copied, read from the
+    /// same probe the copy pins its source ETag to, so the size reported is
+    /// the size of the object actually copied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source cannot be probed or the copy fails.
+    pub(crate) async fn copy_sized(&self, from: &str, to: &str) -> Result<u64> {
+        let probe = self.probe(from).await?;
+        if from != to {
+            self.copy_probed(from, to, &probe, None).await?;
+        }
+        Ok(probe.size)
+    }
+
     async fn copy_probed(
         &self,
         from: &str,

@@ -15,7 +15,7 @@ use bookclerk_plugin_sdk::http::Client;
 use serde::Serialize;
 
 use crate::error::{Result, StorageError};
-use crate::r2_events::parse_pull_reply;
+use crate::r2_events::{parse_pull_reply, MAX_PULL_REPLY_BYTES};
 use crate::s3_queue::{NotificationQueue, QueueMessage, VISIBILITY_TIMEOUT_SECS};
 
 /// The Cloudflare API this client calls.
@@ -134,13 +134,34 @@ struct Lease<'a> {
     lease_id: &'a str,
 }
 
+/// One lease to offer again in an ack request.
+#[derive(Serialize)]
+struct Retry<'a> {
+    /// The lease id.
+    lease_id: &'a str,
+    /// Seconds before the message is offered again; always 0, so a
+    /// released delivery comes back on the next pull rather than after the
+    /// queue's configured retry delay.
+    delay_seconds: u32,
+}
+
+impl<'a> Retry<'a> {
+    /// A retry of `lease_id` with no delay.
+    fn now(lease_id: &'a str) -> Self {
+        Self {
+            lease_id,
+            delay_seconds: 0,
+        }
+    }
+}
+
 /// The ack request body.
 #[derive(Serialize)]
 struct AckRequest<'a> {
     /// Deliveries done with.
     acks: Vec<Lease<'a>>,
     /// Deliveries to offer again now.
-    retries: Vec<Lease<'a>>,
+    retries: Vec<Retry<'a>>,
 }
 
 impl CloudflareQueue {
@@ -182,10 +203,22 @@ impl CloudflareQueue {
             .await
             .map_err(|err| StorageError::S3(format!("notification queue {action}: {err}")))?;
         let status = reply.status();
-        let bytes = reply
-            .bytes()
+        // Read in chunks and stop one byte past the reply cap, so an
+        // oversized reply never sits whole in memory; the parser then
+        // refuses it as too large.
+        let mut reply = reply;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = reply
+            .chunk()
             .await
-            .map_err(|err| StorageError::S3(format!("notification queue {action}: {err}")))?;
+            .map_err(|err| StorageError::S3(format!("notification queue {action}: {err}")))?
+        {
+            let room = (MAX_PULL_REPLY_BYTES + 1).saturating_sub(bytes.len());
+            bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+            if bytes.len() > MAX_PULL_REPLY_BYTES {
+                break;
+            }
+        }
         if !status.is_success() {
             // The reply's errors say why (a bad token, HTTP pull turned off);
             // the parser keeps only codes and messages.
@@ -197,14 +230,14 @@ impl CloudflareQueue {
                 "notification queue {action}: HTTP {status} {detail}"
             )));
         }
-        Ok(bytes.to_vec())
+        Ok(bytes)
     }
 
     /// Acknowledges and retries leases in one call.
     async fn ack(&self, acks: &[String], retries: &[String]) -> Result<()> {
         let body = AckRequest {
             acks: acks.iter().map(|id| Lease { lease_id: id }).collect(),
-            retries: retries.iter().map(|id| Lease { lease_id: id }).collect(),
+            retries: retries.iter().map(|id| Retry::now(id)).collect(),
         };
         let reply = self.post("ack", &body).await?;
         // The ack reply is an envelope without messages.
@@ -288,12 +321,15 @@ mod tests {
         let retries = ["b".to_string()];
         let ack = serde_json::to_value(AckRequest {
             acks: acks.iter().map(|id| Lease { lease_id: id }).collect(),
-            retries: retries.iter().map(|id| Lease { lease_id: id }).collect(),
+            retries: retries.iter().map(|id| Retry::now(id)).collect(),
         })
         .unwrap();
         assert_eq!(
             ack,
-            serde_json::json!({"acks": [{"lease_id": "a"}], "retries": [{"lease_id": "b"}]})
+            serde_json::json!({
+                "acks": [{"lease_id": "a"}],
+                "retries": [{"lease_id": "b", "delay_seconds": 0}]
+            })
         );
     }
 }
