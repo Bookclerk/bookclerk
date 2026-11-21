@@ -766,7 +766,7 @@ async fn get_oidc_config(
     let enabled = cfg.auth.oidc.enabled;
     let allowed_email_domains = cfg.auth.oidc.allowed_email_domains.clone();
     let public_origin =
-        crate::origin::configured_public_origin(cfg.integrations.public_origin.as_deref())
+        crate::origin::configured_public_origin(cfg.integrations.effective_public_origin())
             .map(|o| crate::origin::rewrite_loopback_host(&o));
     let configured = cfg.auth.oidc.providers.clone();
     let detected_origin = crate::origin::detected_origin(&headers, &cfg.daemon.listen);
@@ -1272,7 +1272,7 @@ async fn start_authorize(
         .cloned()
         .ok_or(StatusCode::NOT_FOUND)?;
     let origin = crate::origin::effective_origin_from_config(&cfg, headers);
-    let tx_flags = oidc_transaction_cookie_flags(cfg.integrations.public_origin.as_deref());
+    let tx_flags = oidc_transaction_cookie_flags(cfg.integrations.effective_public_origin());
     drop(cfg);
     let endpoints = resolve_endpoints(&provider)
         .await

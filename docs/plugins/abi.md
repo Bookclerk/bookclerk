@@ -1791,11 +1791,14 @@ rules, so a library response never carries a connection field.
 ingress, and only in the TypeScript SDK; the Python SDK serves `direct`
 plugins.
 
-> [!NOTE]
-> The host does not start ingress instances yet. Serving `ORIGIN`
-> requests as public `https` traffic, storing the public origin and
-> choosing the active instance come with the daemon side of the ingress
-> work.
+The host runs an `ingress` instance only while it is the library's
+active ingress (`bookclerk ingress activate`), an Owner exists and
+operator auth is on. It calls `start` once the guest is healthy, `health`
+every minute, and `stop` before it retires or replaces the instance.
+Every `ORIGIN` request is the `tunnel` transport: the operator's own
+paths and credentials are refused, and the operator's exposure choice
+decides the rest (see [Public address](../server/ingress.md)). `ORIGIN`
+carries plain HTTP requests, not WebSocket upgrades.
 
 ### Storage entrypoints
 

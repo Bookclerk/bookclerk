@@ -462,7 +462,7 @@ fn public_origin_source(state: &Arc<AppState>) -> capacity::PublicOriginSource {
     let state = Arc::clone(state);
     Box::new(move || {
         let cfg = state.config.blocking_read();
-        crate::origin::configured_public_origin(cfg.integrations.public_origin.as_deref())
+        crate::origin::configured_public_origin(cfg.integrations.effective_public_origin())
     })
 }
 

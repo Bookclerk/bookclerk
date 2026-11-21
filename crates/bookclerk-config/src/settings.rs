@@ -338,6 +338,10 @@ pub enum NodeApiMode {
     /// The built-in TLS listener with a self-signed certificate whose SPKI
     /// pin travels in enrollment links.
     SelfSigned,
+    /// The library's active relay ingress plugin carries public traffic
+    /// through its `ORIGIN` binding; branches verify the relay's edge
+    /// certificate against the webpki roots.
+    Tunnel,
 }
 
 impl NodeApiMode {
@@ -349,6 +353,7 @@ impl NodeApiMode {
             Self::Proxy => "proxy",
             Self::Acme => "acme",
             Self::SelfSigned => "self_signed",
+            Self::Tunnel => "tunnel",
         }
     }
 }
@@ -466,7 +471,9 @@ impl NodeApiConfig {
             )),
         };
         match self.mode {
-            NodeApiMode::Loopback => Ok(()),
+            // The relay plugin reports the public origin; no listener or
+            // proxy to configure here.
+            NodeApiMode::Loopback | NodeApiMode::Tunnel => Ok(()),
             NodeApiMode::Proxy => {
                 if trusted_proxies.iter().all(|entry| entry.trim().is_empty()) {
                     return Err(

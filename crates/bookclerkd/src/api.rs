@@ -1279,6 +1279,11 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::config_authority::put_node_labels))
         .routes(routes!(crate::config_authority::put_node_owner))
+        // The library's public address: the operator (or an elevated Owner).
+        .routes(routes!(
+            crate::ingress::get_ingress,
+            crate::ingress::post_ingress
+        ))
         .routes(routes!(
             crate::plugin_installs::get_plugins,
             crate::plugin_installs::post_plugin_install
@@ -2376,6 +2381,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
                 &fresh_output,
                 db_plugin_changed,
             );
+            // The ingress origin comes from the database, not the file.
+            new_cfg.integrations.ingress_origin = config.integrations.ingress_origin.clone();
             *config = new_cfg.clone();
         }
     }

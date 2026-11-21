@@ -13,6 +13,9 @@
 //! - `proxy`: plain HTTP from a peer in `daemon.trusted_proxies`, carrying
 //!   exactly one `X-Forwarded-Proto: https`, with an https
 //!   `integrations.public_origin` (`mode = "proxy"`).
+//! - `tunnel`: it arrived through the library's active relay ingress
+//!   plugin's `ORIGIN` binding (`mode = "tunnel"`), which marks every request
+//!   [`ListenerKind::Tunnel`]. It never carries a loopback peer.
 //! - `loopback`: both ends are loopback and no forwarding header is present.
 //!   Allowed in every mode: the traffic never leaves the machine. In proxy
 //!   mode a trusted proxy's connection is always checked as proxied, so a
@@ -49,6 +52,9 @@ pub enum ListenerKind {
     /// The built-in rustls listener serving the pinned self-signed
     /// certificate.
     SelfSignedTls,
+    /// The relay ingress plugin's `ORIGIN` binding: public `https` traffic
+    /// the relay's edge terminated.
+    Tunnel,
 }
 
 /// The local address of the connection a request arrived on, attached as a
@@ -180,6 +186,8 @@ pub enum AllowedMode {
     SelfSigned,
     /// Same machine, no proxy.
     Loopback,
+    /// The relay ingress plugin's `ORIGIN` binding.
+    Tunnel,
 }
 
 /// Why a connection was refused.
@@ -200,7 +208,8 @@ pub enum RefusalReason {
     ProxyProtoNotHttps,
     /// Proxy mode needs an https `integrations.public_origin`.
     PublicOriginNotHttps,
-    /// A TLS listener accepted the connection under a different mode.
+    /// A TLS listener or the tunnel carried the connection under a
+    /// different mode.
     ListenerModeMismatch,
     /// `[daemon.node_api]` is incomplete for its mode.
     Misconfigured,
@@ -260,6 +269,13 @@ pub fn classify_transport(
         ListenerKind::SelfSignedTls => {
             return if mode == NodeApiMode::SelfSigned {
                 Allowed(AllowedMode::SelfSigned)
+            } else {
+                Refused(RefusalReason::ListenerModeMismatch)
+            };
+        }
+        ListenerKind::Tunnel => {
+            return if mode == NodeApiMode::Tunnel {
+                Allowed(AllowedMode::Tunnel)
             } else {
                 Refused(RefusalReason::ListenerModeMismatch)
             };
@@ -586,6 +602,50 @@ mod tests {
                 trusted: vec![],
                 origin: https,
                 want: Refused(R::PlainHttp),
+            },
+            Case {
+                name: "the tunnel is allowed in tunnel mode",
+                mode: M::Tunnel,
+                conn: ConnInfo {
+                    peer: Some(addr(public)),
+                    local: None,
+                    listener: ListenerKind::Tunnel,
+                },
+                headers: vec![],
+                trusted: vec![],
+                origin: None,
+                want: Allowed(A::Tunnel),
+            },
+            Case {
+                name: "the tunnel is refused in another mode",
+                mode: M::Acme,
+                conn: ConnInfo {
+                    peer: Some(addr(public)),
+                    local: None,
+                    listener: ListenerKind::Tunnel,
+                },
+                headers: vec![],
+                trusted: vec![],
+                origin: https,
+                want: Refused(R::ListenerModeMismatch),
+            },
+            Case {
+                name: "plain HTTP off loopback is refused in tunnel mode",
+                mode: M::Tunnel,
+                conn: plain(public, listen),
+                headers: vec![],
+                trusted: vec![],
+                origin: None,
+                want: Refused(R::PlainHttp),
+            },
+            Case {
+                name: "loopback is allowed in tunnel mode",
+                mode: M::Tunnel,
+                conn: plain("127.0.0.1:5555", "127.0.0.1:8787"),
+                headers: vec![],
+                trusted: vec![],
+                origin: None,
+                want: Allowed(A::Loopback),
             },
             Case {
                 name: "the acme listener is allowed in acme mode",
