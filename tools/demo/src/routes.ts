@@ -29,6 +29,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/openapi.json", "allow"],
   ["GET", "/api/openapi-3.0.json", "allow"],
   ["GET", "/api/status", "allow"],
+  // Read-only report of the formats this build decodes, reads and writes.
+  ["GET", "/api/status/media", "allow"],
 
   // Sign-in and the visitor's own account. The demo signs the visitor in;
   // signing out, other sign-in methods and credential changes are refused.
@@ -254,6 +256,15 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/preferences", "allow"],
   ["PATCH", "/api/preferences", "allow"],
 
+  // Uploads: readable, never started; the demo stores no files.
+  ["GET", "/api/uploads", "allow"],
+  ["POST", "/api/uploads", "deny"],
+  ["GET", "/api/uploads/review", "allow"],
+  ["GET", "/api/uploads/{id}", "allow"],
+  ["DELETE", "/api/uploads/{id}", "deny"],
+  ["POST", "/api/uploads/{id}/commit", "deny"],
+  ["PATCH", "/api/uploads/{id}/files/{member_no}", "deny"],
+
   // Store accounts. Every way of starting a store sign-in is counted.
   ["GET", "/api/portal/me", "allow"],
   ["GET", "/api/portal/sources", "allow"],
@@ -267,6 +278,9 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/portal/sources/{id}/login", "signin"],
   ["POST", "/api/portal/sources/{id}/oauth/start", "deny"],
   ["POST", "/api/portal/sources/{source}/connections/{account_id}/revoke", "allow"],
+  // A connection's download pace only changes how fast automatic acquires
+  // run, and the demo refuses acquire work anyway.
+  ["POST", "/api/portal/sources/{source}/connections/{account_id}/pace", "allow"],
   ["POST", "/api/portal/login/integration", "deny"],
   ["POST", "/api/portal/logout", "deny"],
   ["POST", "/api/portal/redeem", "deny"],

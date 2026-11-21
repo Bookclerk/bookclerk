@@ -2,7 +2,9 @@
 
 - **Status:** Accepted; the claims tables and resolver are built for
   chapters ([Edition chapters](edition-chapters.md)); the rest follows the
-  [Order of work](#order-of-work)
+  [Order of work](#order-of-work). Section 4 is amended by
+  [Uploads and ingest batches](uploads-and-ingest.md): an imported book is
+  held by a patron holding.
 - **Date:** 2026-11-17
 - **Related:** [Library data model](library-data-model.md),
   [Event delivery model](event-delivery-model.md),
@@ -166,8 +168,9 @@ A paged scan lists a destination, groups objects into candidate books, reads
 embedded tags and any metadata file a dialect recognises, and identifies
 each candidate: by Bookclerk's own `<call number>` in the path, then by a
 strong identifier, then through the matcher with file tags as lower-trust
-evidence. An imported book that no store account owns gets its files and an
-acquired state and no holding. A book that cannot be identified still plays
+evidence. An imported book that no store account owns gets its files, an
+acquired state and a patron holding for the person who added it (amended
+by [Uploads and ingest batches](uploads-and-ingest.md)). A book that cannot be identified still plays
 and is marked for an Administrator.
 
 Reading a third-party metadata file does not depend on whether Bookclerk

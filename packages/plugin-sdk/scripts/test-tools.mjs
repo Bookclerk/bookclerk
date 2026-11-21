@@ -409,6 +409,34 @@ function bindingMessage(manifest) {
   }
   return "";
 }
+// [acquire]: the host parses a table with deny_unknown_fields, so a scalar
+// or array is refused as well as an unknown key, and an empty table is fine.
+{
+  const store = (acquire) => ({
+    ...bindingBase,
+    entrypoints: ["storefront"],
+    media: { works: ["book"], lists: ["audio"], fetches: ["audio"] },
+    acquire,
+  });
+  const cases = [
+    [{}, ""],
+    [{ downloads_per_day: 100 }, ""],
+    [false, "plugin.toml: `[acquire]` must be a table"],
+    [100, "plugin.toml: `[acquire]` must be a table"],
+    [[1], "plugin.toml: `[acquire]` must be a table"],
+    [parse("d = 1979-05-27").d, "plugin.toml: `[acquire]` must be a table"],
+    [Object.create(null), ""],
+    [{ downloads_per_days: 1 }, "unknown field `downloads_per_days`"],
+  ];
+  for (const [acquire, want] of cases) {
+    const got = bindingMessage(store(acquire));
+    if (want === "" ? got !== "" : !got.includes(want)) {
+      console.error("FAIL [acquire]", JSON.stringify(acquire), JSON.stringify(got));
+      process.exit(1);
+    }
+  }
+  console.log("ok [acquire] must be a table of known fields");
+}
 // [metadata_files]: the host parses rows with deny_unknown_fields and a bool `writes`.
 {
   const dialect = { id: "txt", name: "Text", file_names: ["desc.txt"], fields: ["description"] };
@@ -441,6 +469,77 @@ function bindingMessage(manifest) {
     }
   }
   console.log("ok metadata_files rejects unknown keys and non-bool writes");
+}
+// [notifier] and [[notifications.types]]: the host parses both with
+// deny_unknown_fields and typed enums; the SDK checks reject the same input.
+{
+  const notifier = (table) => ({ ...bindingBase, entrypoints: ["notifier"], notifier: table });
+  const raiser = (types, extra = {}) => ({ ...bindingBase, notifications: { types }, ...extra });
+  const type = {
+    id: "sync_failed",
+    audience: "operational",
+    severity: "warning",
+    title: "Sync failed",
+  };
+  const cases = [
+    [notifier({ destinations: ["channel"] }), ""],
+    [
+      notifier({ destinations: ["channel"], extra: 1 }),
+      "plugin.toml: `[notifier]` has unknown key `extra`",
+    ],
+    [
+      notifier({ destinations: ["channel"], account_mail: "yes" }),
+      "plugin.toml: `[notifier].account_mail` must be a boolean",
+    ],
+    [
+      notifier({ destinations: ["pager"] }),
+      "plugin.toml: `[notifier].destinations` names unknown kind `pager`",
+    ],
+    [
+      notifier({ destinations: ["channel"], formats: ["text", "rtf"] }),
+      "plugin.toml: `[notifier].formats` names unknown format `rtf`",
+    ],
+    [
+      notifier({
+        destinations: ["personal"],
+        address_fields: [{ key: "email", label: "Email", required: true, hint: "x" }],
+      }),
+      "plugin.toml: notifier.address_fields[0] has unknown key `hint`",
+    ],
+    [raiser([type]), ""],
+    [
+      raiser([type], { notifications: { types: [type], extra: 1 } }),
+      "plugin.toml: `[notifications]` has unknown key `extra`",
+    ],
+    [
+      raiser([{ ...type, colour: "red" }]),
+      "plugin.toml: notifications.types[0] has unknown key `colour`",
+    ],
+    [
+      raiser([{ ...type, severity: "page" }]),
+      "plugin.toml: notifications.types[0].severity must be `info`, `warning` or `critical`",
+    ],
+  ];
+  for (const [manifest, want] of cases) {
+    const got = bindingMessage(manifest);
+    if (got !== want) {
+      console.error("FAIL notifier key check", JSON.stringify({ got, want }));
+      process.exit(1);
+    }
+  }
+  const { renderEnvTypes } = await import("../dist/tools/types.js");
+  const types = renderEnvTypes(raiser([type]));
+  if (!types.includes("NOTIFY: NotifyBinding;") || !types.includes("NotifyBinding }")) {
+    console.error(
+      "FAIL notification types env: missing the NOTIFY NotifyBinding property or import",
+    );
+    process.exit(1);
+  }
+  if (renderEnvTypes(bindingBase).includes("NOTIFY")) {
+    console.error("FAIL a plugin without notification types got a NOTIFY binding");
+    process.exit(1);
+  }
+  console.log("ok notifier and notification types reject unknown keys and type NOTIFY");
 }
 // [capabilities.network.own_user_agent]: outbound, 1-32 hosts that are not `*`,
 // and a one-line reason.
@@ -494,6 +593,28 @@ function bindingMessage(manifest) {
     }
   }
   console.log("ok own_user_agent validation");
+}
+// [acquire]: the host refuses fields it does not know, so the tools do too.
+{
+  const storefront = (acquire) => ({
+    ...bindingBase,
+    entrypoints: ["storefront"],
+    media: { works: ["book"], lists: ["audio"], fetches: ["audio"] },
+    acquire,
+  });
+  const cases = [
+    [storefront({}), ""],
+    [storefront({ downloads_per_day: 100, min_gap_seconds: 30 }), ""],
+    [storefront({ downloads_per_days: 100 }), "unknown field `downloads_per_days`"],
+  ];
+  for (const [manifest, needle] of cases) {
+    const message = bindingMessage(manifest);
+    if (needle ? !message.includes(needle) : message !== "") {
+      console.error("FAIL acquire", JSON.stringify(manifest), message);
+      process.exit(1);
+    }
+  }
+  console.log("ok acquire rejects unknown keys");
 }
 // [triggers] crons: shape, count and duplicates; a cron-only manifest is valid.
 {
@@ -664,6 +785,11 @@ console.log("ok materialize rejects disk-only python even with both flags");
   const files = healthInterfaces(["metadataFiles", "covers"]);
   if (JSON.stringify(files) !== JSON.stringify(["CoverFetcher", "MetadataFiles"])) {
     console.error("FAIL smoke probes metadataFiles health", files);
+    process.exit(1);
+  }
+  const notifier = healthInterfaces(["notifier"]);
+  if (JSON.stringify(notifier) !== JSON.stringify(["Notifier"])) {
+    console.error("FAIL smoke probes notifier health", notifier);
     process.exit(1);
   }
   if (healthInterfaces(["cli"]).length !== 0) {

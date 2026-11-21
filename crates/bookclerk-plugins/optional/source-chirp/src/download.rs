@@ -37,11 +37,11 @@ pub async fn fetch_title_materials(
                 track.id
             ))
         })?;
-        let bytes = client.download_bytes(url).await?;
-        let ext = audio_extension(url, &bytes);
-        let name = format!("{:04}{ext}", idx + 1);
-        let path = title_dir.join(&name);
-        std::fs::write(&path, &bytes)?;
+        let download = title_dir.join(format!("{:04}.download", idx + 1));
+        client.download_to_file(url, &download).await?;
+        let ext = audio_extension(url, &read_head(&download)?);
+        let path = title_dir.join(format!("{:04}{ext}", idx + 1));
+        std::fs::rename(&download, &path)?;
         let title = track
             .display_name
             .clone()
@@ -59,12 +59,9 @@ pub async fn fetch_title_materials(
     }
 
     let cover_path = if let Some(cover_url) = book.cover_url.as_deref() {
-        match client.download_bytes(cover_url).await {
-            Ok(bytes) => {
-                let path = title_dir.join("cover.jpg");
-                std::fs::write(&path, &bytes)?;
-                Some(path)
-            }
+        let path = title_dir.join("cover.jpg");
+        match client.download_to_file(cover_url, &path).await {
+            Ok(_) => Some(path),
             Err(err) => {
                 tracing::debug!(error = %err, "cover download skipped");
                 None
@@ -82,6 +79,16 @@ pub async fn fetch_title_materials(
         chapter_kind: bookclerk_storefront::ChapterKind::Tracks,
         pdf_url: None,
     })
+}
+
+/// The first bytes of a downloaded file, enough to sniff its type.
+fn read_head(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut head = Vec::with_capacity(8192);
+    std::fs::File::open(path)?
+        .take(8192)
+        .read_to_end(&mut head)?;
+    Ok(head)
 }
 
 /// Sniffs a Chirp part URL and bytes for an audio extension, defaulting to `.bin`.

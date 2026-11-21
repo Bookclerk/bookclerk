@@ -12,9 +12,9 @@ Every decode, encode and packaging step runs in a short-lived
 On Linux and macOS the worker confines itself; on Windows `bookclerk-jail`
 confines it at spawn.
 
-Acquire feeds audio from outside sources through three C libraries: LAME
-(`mp3lame-sys`), FDK-AAC (`fdk-aac-sys`) and Symphonia's native
-dependencies. Before the pool, those parsers ran on tokio's blocking
+Acquire feeds audio from outside sources through C libraries: LAME
+(`mp3lame-sys`), FDK-AAC (`fdk-aac-sys`), libopus (`opusic-sys`) and
+Symphonia's native dependencies. Before the pool, those parsers ran on tokio's blocking
 threads, inside the process that holds the master encryption key and an
 open `library.db`. A parser bug there would have disclosed the key, not
 just failed a book.
@@ -31,6 +31,16 @@ Moving the work out gives three properties:
   run at once, instead of however many threads tokio's blocking pool
   grows under load.
 
+### Uploaded archives
+
+An uploaded ZIP or tar archive is expanded by the `extract_archive` job
+into an empty folder the host made. The walk refuses links, devices,
+encrypted entries, nested archives and names that would leave the
+folder, and counts the bytes it writes against caps on entries, total
+size, entry size and compression ratio. The host checks the worker's
+report against the same caps and the files on disk before it moves
+anything. See [Uploads](uploads.md).
+
 ### What audio it reads
 
 The worker recognises a file's container and codec from its bytes, never
@@ -43,12 +53,15 @@ It reads these files:
 | MPEG audio (`.mp3`, `.mp2`) | MP3, MP2, MP1 |
 | ADTS (`.aac`) | AAC |
 | FLAC | FLAC |
+| Ogg (`.opus`, `.ogg`, `.oga`) | Opus, Vorbis |
 | WAV, AIFF, CAF | PCM, IMA ADPCM |
 
 Every AAC profile decodes through FDK: AAC-LC, HE-AAC, HE-AAC v2 and
 xHE-AAC (USAC). An HE-AAC book is reported and converted at the rate it
-plays at, not the half rate an MP4 header states for it. Opus, Vorbis,
-E-AC-3 and AC-4 aren't read yet.
+plays at, not the half rate an MP4 header states for it. Opus decodes
+through libopus at 48 kHz, mono or stereo; a surround Opus stream (more
+than one stream in the file) fails to open. E-AC-3 and AC-4 aren't read
+yet.
 
 Surround is folded to stereo by speaker position: left speakers go left,
 right speakers go right, centre and rear-centre speakers go to both sides
@@ -56,21 +69,40 @@ at -3 dB, and the LFE channel is left out. Channels with no position go to
 both sides equally. A file whose sample rate changes partway through fails
 to convert rather than losing the audio after the change.
 
-The worker writes AAC-LC M4B and MP3, and writes tags, covers and
-chapters into MP4 and MP3 files. Every M4B it writes is faststart: the
+The worker writes AAC-LC M4B, MP3 and Ogg Opus. It writes tags, covers
+and chapters into MP4 and MP3 files, and into FLAC, Ogg Opus and Ogg
+Vorbis files as Vorbis comments: `TITLE`, `ALBUM`, `ARTIST`,
+`ALBUMARTIST`, `COMPOSER` (the narrator), `DATE`, `GENRE`, `PUBLISHER`,
+`DESCRIPTION`, `LANGUAGE`, `SERIES`, `SERIES-PART`, `ASIN`, `ISBN`,
+chapters as `CHAPTERnnn` and `CHAPTERnnnNAME` (up to 999), and the cover
+as a front-cover picture. Opus output is encoded at 48 kHz: audio at
+another rate is converted with a windowed-sinc resampler first. Every
+M4B it writes is faststart: the
 sample table comes before the audio, so a player can start the book from
 its first bytes. The sample table keeps 1 MiB of room for tags, a
 cover and chapters, so adding them later never moves the audio.
 
 When an output re-encodes or repackages audio, the acquire takes another
 store's copy from a library only if the worker reads its kind of file and
-the tag reader names its codec. That means AAC or ALAC in MP4, MP3, and
-FLAC. WAV, AIFF, CAF and ADTS files decode, but a copy in one of them
-isn't taken, because its codec isn't recorded. The lists the acquire
-checks are in `bookclerk_media::capabilities`.
+the tag reader names its codec. That means AAC or ALAC in MP4, MP3,
+FLAC, and Opus or Vorbis in Ogg. WAV, AIFF, CAF and ADTS files decode,
+but a copy in one of them isn't taken, because its codec isn't recorded.
+The lists the acquire checks are in `bookclerk_media::capabilities`. The
+daemon serves the same report at `GET /api/status/media`, and
+`bookclerk media capabilities` prints it:
 
-Tagging any other container, such as FLAC, fails with a message naming it,
-and the acquire stores the file without the new tags. Files kept as
+```sh
+$ bookclerk media capabilities
+decodes: aac, alac, flac, mp3, opus, vorbis
+reads:   audio/mp4, audio/mpeg, audio/flac, audio/aac, audio/wav, audio/aiff, audio/x-caf, audio/ogg, audio/opus
+encodes: m4b, mp3, opus (advanced)
+```
+
+An encoding marked advanced is one fewer players open than M4B and MP3,
+so settings offer it under their advanced options.
+
+Tagging any other container, such as WAV, fails with a message naming
+it, and the acquire stores the file without the new tags. Files kept as
 delivered (`output.format = "none"`) are not decoded at all, so any format
 can be stored that way.
 
@@ -107,7 +139,8 @@ to see the time on your hardware.
 ### Embedded tags
 
 Files already on storage carry their own metadata: MP4 `ilst` items and
-chapter tracks, ID3 tags in MP3s, and Vorbis comments in FLAC files.
+chapter tracks, ID3 tags in MP3s, and Vorbis comments in FLAC and Ogg
+files.
 Anyone who can put a file on storage controls those bytes, so they are
 read by one long-lived `bookclerk-media-worker tags` process, never by the
 daemon. For each file it reports:
@@ -119,8 +152,9 @@ daemon. For each file it reports:
   frames or Vorbis `CHAPTERnnn` comments;
 - the running time, and whether the container states it or it was
   estimated;
-- the audio encoding (AAC, ALAC, FLAC, MP3, Opus, E-AC-3 or AC-4), from
-  the audio track's sample description in an MP4 file;
+- the audio encoding (AAC, ALAC, FLAC, MP3, Opus, Vorbis, E-AC-3 or
+  AC-4), from the audio track's sample description in an MP4 file or the
+  first packet of an Ogg stream;
 - where the cover picture lies in the file, its format and its SHA-256,
   without the picture itself;
 - a SHA-256 digest of the metadata region (versioned), which changes when
@@ -371,6 +405,7 @@ through `bookclerk-jail`, the launcher plugins use:
 | `align_chapters` | The input file | Nothing |
 | `covers` | Nothing (images arrive on stdin) | Nothing |
 | `tags` | Nothing (file ranges arrive on stdin) | Nothing |
+| `extract_archive` | The uploaded archive | The empty folder it expands into |
 
 Write grants are folders, not single files, because codecs stage output
 in temporary files beside the destination. Packaging can't know the final

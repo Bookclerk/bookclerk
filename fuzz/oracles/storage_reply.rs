@@ -3,9 +3,9 @@
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
 //! The input is one storage guest's reply to an intent operation. Byte 0
-//! modulo 5 selects the reply: 0 a `moveMany` page, 1 a `deleteMany`
-//! result, 2 a `headMany` result, 3 a `changes` page and 4 a hinted `list`
-//! page; the rest is the Cap'n Proto message (unpacked). The invariants:
+//! modulo 6 selects the reply: 0 a `moveMany` page, 1 a `deleteMany`
+//! result, 2 a `headMany` result, 3 a `changes` page, 4 a hinted `list`
+//! page and 5 a `translateKeys` result; the rest is the Cap'n Proto message (unpacked). The invariants:
 //!
 //! - decoding and validation never panic;
 //! - a decoded reply survives encode then decode unchanged;
@@ -17,10 +17,10 @@
 
 use bookclerk_plugin_abi::{
     decode_storage_reply_bytes, encode_storage_reply_bytes, validate_changes_page,
-    validate_head_many, validate_key_outcomes, validate_move_many_page, ChangesPage, KeyOutcome,
-    KeyPair, MoveManyPage, MoveManyRequest, MoveManyTarget, MoveOptions, ObjectMetadata,
-    StorageReply, StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE,
-    MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    validate_head_many, validate_key_outcomes, validate_move_many_page, validate_translated_keys,
+    ChangesPage, KeyOutcome, KeyPair, MoveManyPage, MoveManyRequest, MoveManyTarget, MoveOptions,
+    ObjectMetadata, StorageReply, StorageReplyKind, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES,
+    MAX_CHANGES_PAGE, MAX_LIST_PAGE, MAX_SCALAR_BYTES, MAX_TRANSLATED_KEY_BYTES,
 };
 
 /// For each per-key outcome in a `moveMany` or `deleteMany` reply, read
@@ -115,6 +115,31 @@ fn head_ok(objects: &[Option<ObjectMetadata>]) -> bool {
             .all(|(m, k)| m.as_ref().is_none_or(|m| m.key == k))
 }
 
+/// The translated-key rules restated, segment by segment: one key per
+/// sent host key, each non-empty, within the cap, no control character,
+/// no leading separator and no empty or dot segment.
+fn translated_ok(keys: &[String]) -> bool {
+    keys.len() == SENT.len()
+        && keys.iter().all(|key| {
+            let mut segments = Vec::new();
+            let mut current = String::new();
+            for c in key.chars() {
+                if c == '/' || c == '\\' {
+                    segments.push(std::mem::take(&mut current));
+                } else {
+                    current.push(c);
+                }
+            }
+            segments.push(current);
+            !key.is_empty()
+                && key.len() <= MAX_TRANSLATED_KEY_BYTES
+                && key.chars().all(|c| !c.is_control())
+                && segments
+                    .iter()
+                    .all(|s| !s.is_empty() && s.as_str() != "." && s.as_str() != "..")
+        })
+}
+
 /// Checks one fuzz input against the invariants above.
 ///
 /// # Panics
@@ -130,12 +155,13 @@ pub fn check(data: &[u8]) {
     let Some((&selector, bytes)) = data.split_first() else {
         return;
     };
-    let kind = match selector % 5 {
+    let kind = match selector % 6 {
         0 => StorageReplyKind::MoveMany,
         1 => StorageReplyKind::DeleteMany,
         2 => StorageReplyKind::HeadMany,
         3 => StorageReplyKind::Changes,
-        _ => StorageReplyKind::List,
+        4 => StorageReplyKind::List,
+        _ => StorageReplyKind::TranslateKeys,
     };
     let Ok(reply) = decode_storage_reply_bytes(kind, bytes) else {
         return;
@@ -224,6 +250,17 @@ pub fn check(data: &[u8]) {
             assert!(
                 page.objects.len() <= MAX_LIST_PAGE as usize,
                 "list page above its cap decoded"
+            );
+        }
+        StorageReply::TranslateKeys(keys) => {
+            assert!(
+                keys.len() <= MAX_BATCH_KEYS as usize,
+                "translateKeys result above its cap decoded"
+            );
+            assert_eq!(
+                validate_translated_keys(&sent(), keys).is_ok(),
+                translated_ok(keys),
+                "translateKeys verdict"
             );
         }
     }

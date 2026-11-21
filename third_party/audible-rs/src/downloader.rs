@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine as _;
-use bookclerk_plugin_sdk::http::header::{CONTENT_TYPE, RANGE, USER_AGENT};
+use bookclerk_plugin_sdk::http::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE, USER_AGENT};
 use bookclerk_plugin_sdk::http::{Method, StatusCode};
 use futures::StreamExt as _;
 #[cfg(feature = "cli")]
@@ -76,6 +76,40 @@ pub enum DownloadError {
          file seems to have changed; the partial was discarded, retry to start clean"
     )]
     SizeMismatch { written: u64, expected: u64 },
+    /// A `206` answered another range than the one asked for (its
+    /// `Content-Range` does not start at the partial's end, or is missing
+    /// on a resume): appending it would splice unrelated bytes. The
+    /// partial is discarded; the next attempt starts clean.
+    #[error(
+        "the server answered a range that does not start at byte {offset}; the partial was discarded"
+    )]
+    RangeMismatch { offset: u64 },
+    /// No body bytes arrived for the read timeout: the connection stalled.
+    /// The partial is kept — the next attempt resumes from it.
+    #[error("the transfer stalled at {written} bytes — the partial is kept for resume")]
+    Stalled { written: u64 },
+}
+
+impl DownloadError {
+    /// True when another attempt can be expected to make progress: the
+    /// connection failed, stalled or ended early (the partial is kept and
+    /// resumed), the answer did not fit the partial (it was discarded),
+    /// or the server answered `408`, `429` or `5xx`.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Http(_)
+            | Self::ShortTransfer { .. }
+            | Self::Stalled { .. }
+            | Self::RangeMismatch { .. }
+            | Self::SizeMismatch { .. } => true,
+            Self::Status(status) => {
+                matches!(status.as_u16(), 408 | 429) || status.is_server_error()
+            }
+            Self::Api(_) | Self::Io(_) | Self::ContentType { .. } | Self::MultipartTitle(_) => {
+                false
+            }
+        }
+    }
 }
 
 /// Outcome of a resumable download.
@@ -351,6 +385,29 @@ where
         offset = 0;
     } else if status != StatusCode::PARTIAL_CONTENT && !status.is_success() {
         return Err(DownloadError::Status(status));
+    } else if status == StatusCode::PARTIAL_CONTENT {
+        // Bookclerk patch 10: a 206 is appended only where it provably
+        // starts — at the partial's end — so a server answering another
+        // range never splices unrelated bytes into the file.
+        let first = response
+            .headers()
+            .get(CONTENT_RANGE)
+            .map(|value| bookclerk_plugin_sdk::resume::parse_content_range(value.as_bytes()));
+        let fits = match first {
+            Some(Some(bookclerk_plugin_sdk::resume::ContentRange::Bytes { first, .. })) => {
+                first == offset
+            }
+            Some(Some(bookclerk_plugin_sdk::resume::ContentRange::Unsatisfied { .. }) | None) => {
+                false
+            }
+            // Without the header only a request from byte 0 is safe.
+            None => offset == 0,
+        };
+        if !fits {
+            let _ = tokio::fs::remove_file(&part).await;
+            let _ = tokio::fs::remove_file(&marker).await;
+            return Err(DownloadError::RangeMismatch { offset });
+        }
     }
 
     // The response Content-Type drives both verification and the final
@@ -421,8 +478,27 @@ where
 
     let mut stream = response.bytes_stream();
     let mut written = offset;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
+    // Bookclerk patch 10: the client's timeout covers the answer's head
+    // only, so a body that stops arriving would hang the transfer
+    // forever; a read that waits longer than READ_TIMEOUT ends it with
+    // the partial kept for the next attempt.
+    loop {
+        let next = tokio::time::timeout(crate::api::client::READ_TIMEOUT, stream.next()).await;
+        let chunk = match next {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(_) => {
+                file.flush().await?;
+                return Err(DownloadError::Stalled { written });
+            }
+        };
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                file.flush().await?;
+                return Err(err.into());
+            }
+        };
         file.write_all(&chunk).await?;
         written += chunk.len() as u64;
         #[cfg(feature = "cli")]

@@ -14,6 +14,7 @@
 //! | Mediated TCP sockets | [`connect_socket`] / [`net`] (Workers `connect()` equivalent) |
 //! | Host-held WebSockets that let the plugin sleep (`[sockets]`) | [`sockets`] / [`HostWebSocket`] |
 //! | Native HTTPS through the socket proxy | feature `http` → `http::Client` |
+//! | Resumable large downloads (store audio, archives) | feature `http` → `download::Download`; decisions in [`resume`] |
 //! | OAuth callback without guest listen | [`callback_tunnel`] |
 //! | Workerd / Wasm guests | [`workerd`] + npm `@bookclerk/plugin-sdk` |
 //! | ABI DTOs / method names | [`protocol`] (re-exports `bookclerk-plugin-abi`) |
@@ -40,6 +41,8 @@ pub mod database_adapter;
 #[cfg(feature = "db")]
 mod db;
 mod db_binding;
+#[cfg(feature = "http")]
+pub mod download;
 mod error;
 mod fetch_dir;
 #[cfg(feature = "http")]
@@ -50,6 +53,7 @@ pub mod mux;
 pub mod net;
 mod pass_fd;
 pub mod protocol;
+pub mod resume;
 mod scan_page;
 pub mod sockets;
 pub mod workerd;
@@ -122,7 +126,11 @@ pub use bookclerk_plugin_abi::{
     MetadataFileRendered, MetadataFiles, MetadataFilesClient, MetadataLookupParams,
     MetadataProvider, MetadataProviderClient, MetadataRecord, MetadataSearchParams, MoveManyPage,
     MoveManyRequest, MoveManyTarget, MoveOptions, MoveResult, NamedKvBinding, NamedQueueBinding,
-    NeverCancel, ObjectChange, ObjectChangeKind, ObjectInfo, ObjectMetadata, Oidc, OidcClient,
+    NeverCancel, NotificationAlertAction, NotificationAudience, NotificationField,
+    NotificationMessage, NotificationRaiser, NotificationRaiserClient, NotificationSeverity,
+    Notifier, NotifierClient, NotifyDestination, NotifyDestinationKind, NotifyRaiseParams,
+    NotifyRaised, NotifySendParams, NotifySent, NotifyValidateParams, NotifyValidated,
+    ObjectChange, ObjectChangeKind, ObjectInfo, ObjectMetadata, Oidc, OidcClient,
     OidcClientTemplate, OpenedEntrypoints, PluginCli, PluginCliClient, PluginClient,
     PluginDescribe, PluginError, PluginErrorCode, PluginEvent, PluginMigration, PluginMigrationOp,
     PluginServer, PluginWorker, ProgressSink, PublishOk, PutResult, QueryPage, QueueBatch,
@@ -131,14 +139,17 @@ pub use bookclerk_plugin_abi::{
     Source, SourceClient, SourceServer, StatementResult, StreamCopyHandler, StreamCopySpec,
     TypedDbStatement, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_CHANGES,
     FEATURE_STORAGE_CONDITIONAL_WRITE, FEATURE_STORAGE_COPY, FEATURE_STORAGE_DELETE_MANY,
-    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, FEATURE_STREAMS,
-    MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES, MAX_CHANGES_PAGE, MAX_EVENT_CURSOR_BYTES,
-    MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE,
-    MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
-    MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_PLUGIN_MIGRATION_OPS,
-    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
-    MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
-    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION, SQL_CONTRACT_VERSION, STORAGE_OPERATION_FEATURES,
+    FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY,
+    FEATURE_STORAGE_TRANSLATE_KEYS, FEATURE_STREAMS, MAX_BATCH_KEYS, MAX_CHANGES_CURSOR_BYTES,
+    MAX_CHANGES_PAGE, MAX_EVENT_CURSOR_BYTES, MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES,
+    MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS,
+    MAX_METADATA_FILE_DESCRIPTION_BYTES, MAX_METADATA_FILE_LIST_ENTRIES,
+    MAX_METADATA_FILE_TEXT_BYTES, MAX_NOTIFICATION_FIELDS, MAX_NOTIFICATION_FIELD_BYTES,
+    MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES, MAX_NOTIFICATION_TITLE_BYTES,
+    MAX_NOTIFIER_ADDRESS_BYTES, MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
+    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES,
+    MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    SQL_CONTRACT_VERSION, STORAGE_OPERATION_FEATURES,
 };
 
 /// Serves a [`PluginWorker`] on stdin/stdout (Cap'n Proto RPC).

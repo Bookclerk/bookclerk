@@ -470,7 +470,7 @@ fn link_event(listing: &resolve::Listing, event: &resolve::Event, holding_id: &s
         resolve::Event::HoldingAdded { listing_id, holder } => {
             let account = match holder {
                 resolve::Holder::Account(account_id) => account_id.clone(),
-                resolve::Holder::Node(_) => String::new(),
+                resolve::Holder::Node(_) | resolve::Holder::Patron(_) => String::new(),
             };
             (
                 account,

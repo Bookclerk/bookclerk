@@ -135,6 +135,7 @@ const ENTRYPOINT_SERVICE_BINDINGS: Readonly<Record<string, readonly [string, str
     metadata: ["PLUGIN_METADATA", "Metadata"],
     covers: ["PLUGIN_COVERS", "Covers"],
     metadataFiles: ["PLUGIN_METADATA_FILES", "MetadataFiles"],
+    notifier: ["PLUGIN_NOTIFIER", "Notifier"],
   });
 
 /**

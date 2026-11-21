@@ -424,7 +424,7 @@ pub struct PluginGrant {
     pub plugin_id: String,
     /// Approved named entrypoints (wire names: `storefront`, `storage`,
     /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`,
-    /// `metadataFiles`).
+    /// `metadataFiles`, `notifier`).
     #[serde(default)]
     pub entrypoints: BTreeSet<String>,
     /// Approved event types the plugin may publish through its events binding.
@@ -1180,6 +1180,29 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
     }
 }
 
+/// Granted destinations that reach a known chat, push or mail service: fetch
+/// hosts that match [`bookclerk_plugin_manifest::KNOWN_NOTIFICATION_HOSTS`]
+/// and TCP grants to those hosts or to an SMTP port, as `host` or
+/// `host:port`.
+fn notification_reach(grant: &PluginGrant) -> Vec<String> {
+    let mut reached: Vec<String> = grant
+        .domains
+        .iter()
+        .filter(|domain| bookclerk_plugin_manifest::reaches_notification_host(domain))
+        .cloned()
+        .collect();
+    for tcp in &grant.tcp {
+        for port in &tcp.ports {
+            if bookclerk_plugin_manifest::SMTP_PORTS.contains(port)
+                || bookclerk_plugin_manifest::reaches_notification_host(&tcp.host)
+            {
+                reached.push(format!("{}:{port}", tcp.host));
+            }
+        }
+    }
+    reached
+}
+
 /// Human-readable consent lines for CLI/UI.
 #[must_use]
 pub fn consent_summary(grant: &PluginGrant) -> Vec<String> {
@@ -1319,6 +1342,20 @@ pub fn consent_summary(grant: &PluginGrant) -> Vec<String> {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+    if grant.network_mode == "outbound"
+        && !grant
+            .entrypoints
+            .contains(bookclerk_plugin_manifest::Entrypoint::Notifier.wire_name())
+    {
+        let reached = notification_reach(grant);
+        if !reached.is_empty() {
+            lines.push(format!(
+                "Can send messages outside Bookclerk: it is not a notifier but reaches chat, \
+                 push or mail services ({})",
+                reached.join(", ")
+            ));
+        }
     }
     if grant.allow_undeclared_public_redirects {
         lines.push(
@@ -3724,6 +3761,35 @@ jobs = ["stream_copy"]
         );
         let only_star = consent_summary(&sample_grant(&["*"], &[], &[])).join("\n");
         assert!(!only_star.contains("domains: *"), "{only_star}");
+    }
+
+    #[test]
+    fn a_non_notifier_reaching_chat_services_is_flagged() {
+        let mut grant = sample_grant(&["hooks.slack.com", "api.example.com"], &[], &[]);
+        grant.tcp.insert(TcpGrant {
+            host: "smtp.example.com".into(),
+            ports: vec![587],
+        });
+        let summary = consent_summary(&grant);
+        let flag = summary
+            .iter()
+            .find(|line| line.starts_with("Can send messages outside Bookclerk"))
+            .unwrap_or_else(|| panic!("{summary:?}"));
+        assert!(
+            flag.ends_with("(hooks.slack.com, smtp.example.com:587)"),
+            "{flag}"
+        );
+        let star = consent_summary(&sample_grant(&["*"], &[], &[])).join("\n");
+        assert!(
+            star.contains("Can send messages outside Bookclerk"),
+            "{star}"
+        );
+        let mut notifier = sample_grant(&["hooks.slack.com"], &[], &[]);
+        notifier.entrypoints = ["notifier".to_string()].into_iter().collect();
+        let summary = consent_summary(&notifier).join("\n");
+        assert!(!summary.contains("outside Bookclerk"), "{summary}");
+        let plain = consent_summary(&sample_grant(&["api.example.com"], &[], &[])).join("\n");
+        assert!(!plain.contains("outside Bookclerk"), "{plain}");
     }
 
     #[test]

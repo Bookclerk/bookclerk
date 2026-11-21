@@ -90,6 +90,8 @@ pub enum Entrypoint {
     Covers,
     /// Metadata file dialects: `parse` and `render` (`MetadataFiles`).
     MetadataFiles,
+    /// Notification delivery: `send` and `validateDestination` (`Notifier`).
+    Notifier,
 }
 
 impl Entrypoint {
@@ -106,6 +108,7 @@ impl Entrypoint {
             Self::Metadata => "metadata",
             Self::Covers => "covers",
             Self::MetadataFiles => "metadataFiles",
+            Self::Notifier => "notifier",
         }
     }
 
@@ -122,6 +125,7 @@ impl Entrypoint {
             "metadata" => Some(Self::Metadata),
             "covers" => Some(Self::Covers),
             "metadataFiles" => Some(Self::MetadataFiles),
+            "notifier" => Some(Self::Notifier),
             _ => None,
         }
     }
@@ -139,6 +143,7 @@ impl From<Entrypoint> for plugin_capnp::Entrypoint {
             Entrypoint::Metadata => Self::Metadata,
             Entrypoint::Covers => Self::Covers,
             Entrypoint::MetadataFiles => Self::MetadataFiles,
+            Entrypoint::Notifier => Self::Notifier,
         }
     }
 }
@@ -155,6 +160,7 @@ impl From<plugin_capnp::Entrypoint> for Entrypoint {
             plugin_capnp::Entrypoint::Metadata => Self::Metadata,
             plugin_capnp::Entrypoint::Covers => Self::Covers,
             plugin_capnp::Entrypoint::MetadataFiles => Self::MetadataFiles,
+            plugin_capnp::Entrypoint::Notifier => Self::Notifier,
         }
     }
 }
@@ -1212,6 +1218,227 @@ impl From<plugin_capnp::MetadataField> for MetadataField {
             plugin_capnp::MetadataField::Series => Self::Series,
             plugin_capnp::MetadataField::Chapters => Self::Chapters,
             plugin_capnp::MetadataField::Duration => Self::Duration,
+        }
+    }
+}
+
+/// How urgent a notification is. Routing rules carry a minimum severity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NotificationSeverity {
+    /// Informational.
+    #[default]
+    Info,
+    /// Needs attention soon.
+    Warning,
+    /// Needs attention now; ignores quiet hours for administrators.
+    Critical,
+}
+
+impl NotificationSeverity {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Critical => "critical",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "info" => Some(Self::Info),
+            "warning" => Some(Self::Warning),
+            "critical" => Some(Self::Critical),
+            _ => None,
+        }
+    }
+}
+
+impl From<NotificationSeverity> for plugin_capnp::NotificationSeverity {
+    fn from(value: NotificationSeverity) -> Self {
+        match value {
+            NotificationSeverity::Info => Self::Info,
+            NotificationSeverity::Warning => Self::Warning,
+            NotificationSeverity::Critical => Self::Critical,
+        }
+    }
+}
+
+impl From<plugin_capnp::NotificationSeverity> for NotificationSeverity {
+    fn from(value: plugin_capnp::NotificationSeverity) -> Self {
+        match value {
+            plugin_capnp::NotificationSeverity::Info => Self::Info,
+            plugin_capnp::NotificationSeverity::Warning => Self::Warning,
+            plugin_capnp::NotificationSeverity::Critical => Self::Critical,
+        }
+    }
+}
+
+/// Who a notification type is for. The account audience is reserved to the
+/// host; a plugin may declare only operational and patron types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NotificationAudience {
+    /// Administrators and library channels.
+    #[default]
+    Operational,
+    /// One patron, under their own preferences.
+    Patron,
+    /// Account mail and security notices; host-only.
+    Account,
+}
+
+impl NotificationAudience {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Operational => "operational",
+            Self::Patron => "patron",
+            Self::Account => "account",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "operational" => Some(Self::Operational),
+            "patron" => Some(Self::Patron),
+            "account" => Some(Self::Account),
+            _ => None,
+        }
+    }
+}
+
+impl From<NotificationAudience> for plugin_capnp::NotificationAudience {
+    fn from(value: NotificationAudience) -> Self {
+        match value {
+            NotificationAudience::Operational => Self::Operational,
+            NotificationAudience::Patron => Self::Patron,
+            NotificationAudience::Account => Self::Account,
+        }
+    }
+}
+
+impl From<plugin_capnp::NotificationAudience> for NotificationAudience {
+    fn from(value: plugin_capnp::NotificationAudience) -> Self {
+        match value {
+            plugin_capnp::NotificationAudience::Operational => Self::Operational,
+            plugin_capnp::NotificationAudience::Patron => Self::Patron,
+            plugin_capnp::NotificationAudience::Account => Self::Account,
+        }
+    }
+}
+
+/// Lifecycle step of an alert, for services such as PagerDuty that open and
+/// close incidents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NotificationAlertAction {
+    /// Not an alert: a one-off message.
+    #[default]
+    None,
+    /// Open (or update) the alert named by `alertKey`.
+    Trigger,
+    /// Close the alert named by `alertKey`.
+    Resolve,
+}
+
+impl NotificationAlertAction {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Trigger => "trigger",
+            Self::Resolve => "resolve",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "none" => Some(Self::None),
+            "trigger" => Some(Self::Trigger),
+            "resolve" => Some(Self::Resolve),
+            _ => None,
+        }
+    }
+}
+
+impl From<NotificationAlertAction> for plugin_capnp::NotificationAlertAction {
+    fn from(value: NotificationAlertAction) -> Self {
+        match value {
+            NotificationAlertAction::None => Self::None,
+            NotificationAlertAction::Trigger => Self::Trigger,
+            NotificationAlertAction::Resolve => Self::Resolve,
+        }
+    }
+}
+
+impl From<plugin_capnp::NotificationAlertAction> for NotificationAlertAction {
+    fn from(value: plugin_capnp::NotificationAlertAction) -> Self {
+        match value {
+            plugin_capnp::NotificationAlertAction::None => Self::None,
+            plugin_capnp::NotificationAlertAction::Trigger => Self::Trigger,
+            plugin_capnp::NotificationAlertAction::Resolve => Self::Resolve,
+        }
+    }
+}
+
+/// Kind of destination a `Notifier` sends to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NotifyDestinationKind {
+    /// A library channel the instance itself is configured for (its settings
+    /// hold the webhook or service key); `addressJson` is empty.
+    #[default]
+    Channel,
+    /// One patron's own address on this instance (`addressJson`).
+    Personal,
+}
+
+impl NotifyDestinationKind {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Channel => "channel",
+            Self::Personal => "personal",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "channel" => Some(Self::Channel),
+            "personal" => Some(Self::Personal),
+            _ => None,
+        }
+    }
+}
+
+impl From<NotifyDestinationKind> for plugin_capnp::NotifyDestinationKind {
+    fn from(value: NotifyDestinationKind) -> Self {
+        match value {
+            NotifyDestinationKind::Channel => Self::Channel,
+            NotifyDestinationKind::Personal => Self::Personal,
+        }
+    }
+}
+
+impl From<plugin_capnp::NotifyDestinationKind> for NotifyDestinationKind {
+    fn from(value: plugin_capnp::NotifyDestinationKind) -> Self {
+        match value {
+            plugin_capnp::NotifyDestinationKind::Channel => Self::Channel,
+            plugin_capnp::NotifyDestinationKind::Personal => Self::Personal,
         }
     }
 }
@@ -3231,6 +3458,179 @@ pub struct MetadataFileRendered {
     /// nothing left to write; the host decides whether to remove the file.
     #[serde(default, with = "crate::json_bytes::b64")]
     pub bytes: Vec<u8>,
+}
+
+/// One labelled value shown with a notification.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationField {
+    /// Label; at most `maxNotificationTitleBytes`.
+    #[serde(default)]
+    pub name: String,
+    /// Value; at most `maxNotificationFieldBytes`.
+    #[serde(default)]
+    pub value: String,
+}
+
+/// A message the host rendered for one notification. Every link is built
+/// from the library's public origin, never from a request.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationMessage {
+    /// Host-assigned id, the same on every destination's copy; plugins use it
+    /// as an idempotency key where the service takes one.
+    #[serde(default)]
+    pub notification_id: String,
+    /// Notification type id (`job_failed`, `<plugin>:sync_failed`).
+    #[serde(default)]
+    pub notification_type: String,
+    /// How urgent it is.
+    #[serde(default)]
+    pub severity: NotificationSeverity,
+    /// Short title; at most `maxNotificationTitleBytes`.
+    #[serde(default)]
+    pub title: String,
+    /// Plain-text body; at most `maxNotificationTextBytes`.
+    #[serde(default)]
+    pub text: String,
+    /// Markdown body for chat services; at most `maxNotificationTextBytes`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+    /// Minimal HTML body for email; at most `maxNotificationHtmlBytes`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
+    /// Absolute `https` (or loopback `http`) link into the library.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// Labelled values, at most `maxNotificationFields`.
+    #[serde(default)]
+    pub fields: Vec<NotificationField>,
+    /// Messages with one group key may be threaded or collapsed together.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_key: Option<String>,
+    /// Alert lifecycle step; `none` for a one-off message.
+    #[serde(default)]
+    pub alert_action: NotificationAlertAction,
+    /// Alert this message opens or closes; required unless `alertAction` is
+    /// `none`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert_key: Option<String>,
+    /// True when the body carries a secret (an account-mail link): the plugin
+    /// and SDKs must never log it.
+    #[serde(default)]
+    pub sensitive: bool,
+}
+
+/// Where a `Notifier.send` goes.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyDestination {
+    /// Channel or personal destination.
+    #[serde(default)]
+    pub kind: NotifyDestinationKind,
+    /// Host id of the destination, stable across sends.
+    #[serde(default)]
+    pub destination_id: String,
+    /// Personal address as a JSON object of the fields the manifest's
+    /// `\[\[notifier.address_fields\]\]` declare; empty for a channel. At most
+    /// `maxNotifierAddressBytes`. May hold secrets; never logged.
+    #[serde(default)]
+    pub address_json: String,
+}
+
+/// Params of `Notifier.send`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifySendParams {
+    /// What to send.
+    #[serde(default)]
+    pub message: NotificationMessage,
+    /// Where to send it.
+    #[serde(default)]
+    pub destination: NotifyDestination,
+}
+
+/// Success payload of `Notifier.send`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifySent {
+    /// The service's id for the delivered message, when it gives one.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+}
+
+/// Params of `Notifier.validateDestination`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyValidateParams {
+    /// Address document as the patron entered it; at most
+    /// `maxNotifierAddressBytes`.
+    #[serde(default)]
+    pub address_json: String,
+}
+
+/// Success payload of `Notifier.validateDestination`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyValidated {
+    /// Normalised address document the host saves; at most
+    /// `maxNotifierAddressBytes`.
+    #[serde(default)]
+    pub address_json: String,
+    /// Short label shown to the patron (`a***@example.com`); never a secret.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Params of `NotificationRaiser.raise`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyRaiseParams {
+    /// Type id from the plugin's `\[\[notifications.types\]\]` (without the plugin
+    /// prefix the host adds).
+    #[serde(default)]
+    pub notification_type: String,
+    /// Labelled values, at most `maxNotificationFields`.
+    #[serde(default)]
+    pub fields: Vec<NotificationField>,
+    /// Patron the notification is for; required for a patron-audience type
+    /// and must be inside the invocation's account scope; empty otherwise.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patron_id: Option<String>,
+    /// Path inside the library the notification links to (starts with `/`);
+    /// the host prefixes the public origin.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_path: Option<String>,
+    /// Messages with one group key may be threaded or collapsed together.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_key: Option<String>,
+    /// Alert lifecycle step; `none` for a one-off notification.
+    #[serde(default)]
+    pub alert_action: NotificationAlertAction,
+    /// Alert this raise opens or closes; required unless `alertAction` is
+    /// `none`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert_key: Option<String>,
+}
+
+/// Success payload of `NotificationRaiser.raise`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyRaised {
+    /// Host-assigned notification id.
+    #[serde(default)]
+    pub notification_id: String,
 }
 
 /// One WebSocket message.
@@ -7851,6 +8251,420 @@ pub fn read_metadata_file_render_reply(
     }
 }
 
+/// Encode a [`NotificationField`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_notification_field(
+    mut b: plugin_capnp::notification_field::Builder<'_>,
+    v: &NotificationField,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_value(&v.value);
+    Ok(())
+}
+
+/// Decode a [`NotificationField`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_notification_field(
+    r: plugin_capnp::notification_field::Reader<'_>,
+) -> capnp::Result<NotificationField> {
+    Ok(NotificationField {
+        name: r.get_name()?.to_string()?,
+        value: r.get_value()?.to_string()?,
+    })
+}
+
+/// Encode a [`NotificationMessage`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_notification_message(
+    mut b: plugin_capnp::notification_message::Builder<'_>,
+    v: &NotificationMessage,
+) -> capnp::Result<()> {
+    b.set_notification_id(&v.notification_id);
+    b.set_notification_type(&v.notification_type);
+    b.set_severity(v.severity.into());
+    b.set_title(&v.title);
+    b.set_text(&v.text);
+    if let Some(value) = &v.markdown {
+        b.set_markdown(value);
+    }
+    if let Some(value) = &v.html {
+        b.set_html(value);
+    }
+    if let Some(value) = &v.link {
+        b.set_link(value);
+    }
+    {
+        let mut items = b.reborrow().init_fields(list_len(v.fields.len())?);
+        for (i, item) in v.fields.iter().enumerate() {
+            write_notification_field(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    if let Some(value) = &v.group_key {
+        b.set_group_key(value);
+    }
+    b.set_alert_action(v.alert_action.into());
+    if let Some(value) = &v.alert_key {
+        b.set_alert_key(value);
+    }
+    b.set_sensitive(v.sensitive);
+    Ok(())
+}
+
+/// Decode a [`NotificationMessage`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_notification_message(
+    r: plugin_capnp::notification_message::Reader<'_>,
+) -> capnp::Result<NotificationMessage> {
+    Ok(NotificationMessage {
+        notification_id: r.get_notification_id()?.to_string()?,
+        notification_type: r.get_notification_type()?.to_string()?,
+        severity: r.get_severity()?.into(),
+        title: r.get_title()?.to_string()?,
+        text: r.get_text()?.to_string()?,
+        markdown: opt_text(r.get_markdown()?)?,
+        html: opt_text(r.get_html()?)?,
+        link: opt_text(r.get_link()?)?,
+        fields: r
+            .get_fields()?
+            .iter()
+            .map(|item| read_notification_field(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        group_key: opt_text(r.get_group_key()?)?,
+        alert_action: r.get_alert_action()?.into(),
+        alert_key: opt_text(r.get_alert_key()?)?,
+        sensitive: r.get_sensitive(),
+    })
+}
+
+/// Encode a [`NotifyDestination`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_notify_destination(
+    mut b: plugin_capnp::notify_destination::Builder<'_>,
+    v: &NotifyDestination,
+) -> capnp::Result<()> {
+    b.set_kind(v.kind.into());
+    b.set_destination_id(&v.destination_id);
+    b.set_address_json(&v.address_json);
+    Ok(())
+}
+
+/// Decode a [`NotifyDestination`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_notify_destination(
+    r: plugin_capnp::notify_destination::Reader<'_>,
+) -> capnp::Result<NotifyDestination> {
+    Ok(NotifyDestination {
+        kind: r.get_kind()?.into(),
+        destination_id: r.get_destination_id()?.to_string()?,
+        address_json: r.get_address_json()?.to_string()?,
+    })
+}
+
+/// Encode a [`NotifySendParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_notify_send_params(
+    mut b: plugin_capnp::notify_send_params::Builder<'_>,
+    v: &NotifySendParams,
+) -> capnp::Result<()> {
+    write_notification_message(b.reborrow().init_message(), &v.message)?;
+    write_notify_destination(b.reborrow().init_destination(), &v.destination)?;
+    Ok(())
+}
+
+/// Decode a [`NotifySendParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_notify_send_params(
+    r: plugin_capnp::notify_send_params::Reader<'_>,
+) -> capnp::Result<NotifySendParams> {
+    Ok(NotifySendParams {
+        message: read_notification_message(r.get_message()?)?,
+        destination: read_notify_destination(r.get_destination()?)?,
+    })
+}
+
+/// Encode a [`NotifySent`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_notify_sent(
+    mut b: plugin_capnp::notify_sent::Builder<'_>,
+    v: &NotifySent,
+) -> capnp::Result<()> {
+    if let Some(value) = &v.provider_id {
+        b.set_provider_id(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`NotifySent`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_notify_sent(r: plugin_capnp::notify_sent::Reader<'_>) -> capnp::Result<NotifySent> {
+    Ok(NotifySent {
+        provider_id: opt_text(r.get_provider_id()?)?,
+    })
+}
+
+/// Encode a `NotifySendReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_notify_send_reply(
+    b: plugin_capnp::notify_send_reply::Builder<'_>,
+    v: &Result<NotifySent, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_notify_sent(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `NotifySendReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_notify_send_reply(
+    r: plugin_capnp::notify_send_reply::Reader<'_>,
+) -> capnp::Result<Result<NotifySent, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::notify_send_reply::Ok(ok) => Ok(Ok(read_notify_sent(ok?)?)),
+        plugin_capnp::notify_send_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`NotifyValidateParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_notify_validate_params(
+    mut b: plugin_capnp::notify_validate_params::Builder<'_>,
+    v: &NotifyValidateParams,
+) -> capnp::Result<()> {
+    b.set_address_json(&v.address_json);
+    Ok(())
+}
+
+/// Decode a [`NotifyValidateParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_notify_validate_params(
+    r: plugin_capnp::notify_validate_params::Reader<'_>,
+) -> capnp::Result<NotifyValidateParams> {
+    Ok(NotifyValidateParams {
+        address_json: r.get_address_json()?.to_string()?,
+    })
+}
+
+/// Encode a [`NotifyValidated`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_notify_validated(
+    mut b: plugin_capnp::notify_validated::Builder<'_>,
+    v: &NotifyValidated,
+) -> capnp::Result<()> {
+    b.set_address_json(&v.address_json);
+    if let Some(value) = &v.label {
+        b.set_label(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`NotifyValidated`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_notify_validated(
+    r: plugin_capnp::notify_validated::Reader<'_>,
+) -> capnp::Result<NotifyValidated> {
+    Ok(NotifyValidated {
+        address_json: r.get_address_json()?.to_string()?,
+        label: opt_text(r.get_label()?)?,
+    })
+}
+
+/// Encode a `NotifyValidateReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_notify_validate_reply(
+    b: plugin_capnp::notify_validate_reply::Builder<'_>,
+    v: &Result<NotifyValidated, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_notify_validated(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `NotifyValidateReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_notify_validate_reply(
+    r: plugin_capnp::notify_validate_reply::Reader<'_>,
+) -> capnp::Result<Result<NotifyValidated, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::notify_validate_reply::Ok(ok) => Ok(Ok(read_notify_validated(ok?)?)),
+        plugin_capnp::notify_validate_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`NotifyRaiseParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_notify_raise_params(
+    mut b: plugin_capnp::notify_raise_params::Builder<'_>,
+    v: &NotifyRaiseParams,
+) -> capnp::Result<()> {
+    b.set_notification_type(&v.notification_type);
+    {
+        let mut items = b.reborrow().init_fields(list_len(v.fields.len())?);
+        for (i, item) in v.fields.iter().enumerate() {
+            write_notification_field(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    if let Some(value) = &v.patron_id {
+        b.set_patron_id(value);
+    }
+    if let Some(value) = &v.link_path {
+        b.set_link_path(value);
+    }
+    if let Some(value) = &v.group_key {
+        b.set_group_key(value);
+    }
+    b.set_alert_action(v.alert_action.into());
+    if let Some(value) = &v.alert_key {
+        b.set_alert_key(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`NotifyRaiseParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_notify_raise_params(
+    r: plugin_capnp::notify_raise_params::Reader<'_>,
+) -> capnp::Result<NotifyRaiseParams> {
+    Ok(NotifyRaiseParams {
+        notification_type: r.get_notification_type()?.to_string()?,
+        fields: r
+            .get_fields()?
+            .iter()
+            .map(|item| read_notification_field(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        patron_id: opt_text(r.get_patron_id()?)?,
+        link_path: opt_text(r.get_link_path()?)?,
+        group_key: opt_text(r.get_group_key()?)?,
+        alert_action: r.get_alert_action()?.into(),
+        alert_key: opt_text(r.get_alert_key()?)?,
+    })
+}
+
+/// Encode a [`NotifyRaised`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_notify_raised(
+    mut b: plugin_capnp::notify_raised::Builder<'_>,
+    v: &NotifyRaised,
+) -> capnp::Result<()> {
+    b.set_notification_id(&v.notification_id);
+    Ok(())
+}
+
+/// Decode a [`NotifyRaised`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_notify_raised(
+    r: plugin_capnp::notify_raised::Reader<'_>,
+) -> capnp::Result<NotifyRaised> {
+    Ok(NotifyRaised {
+        notification_id: r.get_notification_id()?.to_string()?,
+    })
+}
+
+/// Encode a `NotifyRaiseReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_notify_raise_reply(
+    b: plugin_capnp::notify_raise_reply::Builder<'_>,
+    v: &Result<NotifyRaised, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_notify_raised(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `NotifyRaiseReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_notify_raise_reply(
+    r: plugin_capnp::notify_raise_reply::Reader<'_>,
+) -> capnp::Result<Result<NotifyRaised, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::notify_raise_reply::Ok(ok) => Ok(Ok(read_notify_raised(ok?)?)),
+        plugin_capnp::notify_raise_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
 /// Encode a `SocketFrame` union.
 ///
 /// # Errors
@@ -8253,7 +9067,7 @@ pub fn read_socket_closed(
 
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 127;
+pub const READ_ANY_COUNT: u8 = 139;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -8787,55 +9601,112 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         115 => {
+            let _ = read_notification_field(
+                reader.get_root::<plugin_capnp::notification_field::Reader<'_>>()?,
+            )?;
+        }
+        116 => {
+            let _ = read_notification_message(
+                reader.get_root::<plugin_capnp::notification_message::Reader<'_>>()?,
+            )?;
+        }
+        117 => {
+            let _ = read_notify_destination(
+                reader.get_root::<plugin_capnp::notify_destination::Reader<'_>>()?,
+            )?;
+        }
+        118 => {
+            let _ = read_notify_send_params(
+                reader.get_root::<plugin_capnp::notify_send_params::Reader<'_>>()?,
+            )?;
+        }
+        119 => {
+            let _ = read_notify_sent(reader.get_root::<plugin_capnp::notify_sent::Reader<'_>>()?)?;
+        }
+        120 => {
+            let _ = read_notify_send_reply(
+                reader.get_root::<plugin_capnp::notify_send_reply::Reader<'_>>()?,
+            )?;
+        }
+        121 => {
+            let _ = read_notify_validate_params(
+                reader.get_root::<plugin_capnp::notify_validate_params::Reader<'_>>()?,
+            )?;
+        }
+        122 => {
+            let _ = read_notify_validated(
+                reader.get_root::<plugin_capnp::notify_validated::Reader<'_>>()?,
+            )?;
+        }
+        123 => {
+            let _ = read_notify_validate_reply(
+                reader.get_root::<plugin_capnp::notify_validate_reply::Reader<'_>>()?,
+            )?;
+        }
+        124 => {
+            let _ = read_notify_raise_params(
+                reader.get_root::<plugin_capnp::notify_raise_params::Reader<'_>>()?,
+            )?;
+        }
+        125 => {
+            let _ =
+                read_notify_raised(reader.get_root::<plugin_capnp::notify_raised::Reader<'_>>()?)?;
+        }
+        126 => {
+            let _ = read_notify_raise_reply(
+                reader.get_root::<plugin_capnp::notify_raise_reply::Reader<'_>>()?,
+            )?;
+        }
+        127 => {
             let _ =
                 read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
         }
-        116 => {
+        128 => {
             let _ =
                 read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
         }
-        117 => {
+        129 => {
             let _ = read_socket_auto_response(
                 reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
             )?;
         }
-        118 => {
+        130 => {
             let _ = read_socket_connect_request(
                 reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
             )?;
         }
-        119 => {
+        131 => {
             let _ = read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
         }
-        120 => {
+        132 => {
             let _ = read_socket_connect_reply(
                 reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
             )?;
         }
-        121 => {
+        133 => {
             let _ = read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
         }
-        122 => {
+        134 => {
             let _ = read_socket_list_reply(
                 reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
             )?;
         }
-        123 => {
+        135 => {
             let _ = read_socket_message_reply(
                 reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
             )?;
         }
-        124 => {
+        136 => {
             let _ = read_socket_message_ok(
                 reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
             )?;
         }
-        125 => {
+        137 => {
             let _ = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
         }
-        126 => {
+        138 => {
             let _ =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
         }
@@ -13787,6 +14658,528 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         115 => {
+            let first = read_notification_field(
+                reader.get_root::<plugin_capnp::notification_field::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notification_field(
+                message.init_root::<plugin_capnp::notification_field::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notification_field(
+                    again.get_root::<plugin_capnp::notification_field::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notification_field(
+                    message.init_root::<plugin_capnp::notification_field::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotificationField value".to_string(),
+                    ));
+                }
+            }
+        }
+        116 => {
+            let first = read_notification_message(
+                reader.get_root::<plugin_capnp::notification_message::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notification_message(
+                message.init_root::<plugin_capnp::notification_message::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notification_message(
+                    again.get_root::<plugin_capnp::notification_message::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notification_message(
+                    message.init_root::<plugin_capnp::notification_message::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotificationMessage value".to_string(),
+                    ));
+                }
+            }
+        }
+        117 => {
+            let first = read_notify_destination(
+                reader.get_root::<plugin_capnp::notify_destination::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_destination(
+                message.init_root::<plugin_capnp::notify_destination::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_destination(
+                    again.get_root::<plugin_capnp::notify_destination::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_destination(
+                    message.init_root::<plugin_capnp::notify_destination::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifyDestination value".to_string(),
+                    ));
+                }
+            }
+        }
+        118 => {
+            let first = read_notify_send_params(
+                reader.get_root::<plugin_capnp::notify_send_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_send_params(
+                message.init_root::<plugin_capnp::notify_send_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_send_params(
+                    again.get_root::<plugin_capnp::notify_send_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_send_params(
+                    message.init_root::<plugin_capnp::notify_send_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifySendParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        119 => {
+            let first =
+                read_notify_sent(reader.get_root::<plugin_capnp::notify_sent::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_sent(
+                message.init_root::<plugin_capnp::notify_sent::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_sent(again.get_root::<plugin_capnp::notify_sent::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_sent(
+                    message.init_root::<plugin_capnp::notify_sent::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifySent value".to_string(),
+                    ));
+                }
+            }
+        }
+        120 => {
+            let first = read_notify_send_reply(
+                reader.get_root::<plugin_capnp::notify_send_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_send_reply(
+                message.init_root::<plugin_capnp::notify_send_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_send_reply(
+                    again.get_root::<plugin_capnp::notify_send_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_send_reply(
+                    message.init_root::<plugin_capnp::notify_send_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifySendReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        121 => {
+            let first = read_notify_validate_params(
+                reader.get_root::<plugin_capnp::notify_validate_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_validate_params(
+                message.init_root::<plugin_capnp::notify_validate_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_validate_params(
+                    again.get_root::<plugin_capnp::notify_validate_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_validate_params(
+                    message.init_root::<plugin_capnp::notify_validate_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifyValidateParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        122 => {
+            let first = read_notify_validated(
+                reader.get_root::<plugin_capnp::notify_validated::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_validated(
+                message.init_root::<plugin_capnp::notify_validated::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_validated(
+                    again.get_root::<plugin_capnp::notify_validated::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_validated(
+                    message.init_root::<plugin_capnp::notify_validated::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifyValidated value".to_string(),
+                    ));
+                }
+            }
+        }
+        123 => {
+            let first = read_notify_validate_reply(
+                reader.get_root::<plugin_capnp::notify_validate_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_validate_reply(
+                message.init_root::<plugin_capnp::notify_validate_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_validate_reply(
+                    again.get_root::<plugin_capnp::notify_validate_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_validate_reply(
+                    message.init_root::<plugin_capnp::notify_validate_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifyValidateReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        124 => {
+            let first = read_notify_raise_params(
+                reader.get_root::<plugin_capnp::notify_raise_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_raise_params(
+                message.init_root::<plugin_capnp::notify_raise_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_raise_params(
+                    again.get_root::<plugin_capnp::notify_raise_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_raise_params(
+                    message.init_root::<plugin_capnp::notify_raise_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifyRaiseParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        125 => {
+            let first =
+                read_notify_raised(reader.get_root::<plugin_capnp::notify_raised::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_raised(
+                message.init_root::<plugin_capnp::notify_raised::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_raised(again.get_root::<plugin_capnp::notify_raised::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_raised(
+                    message.init_root::<plugin_capnp::notify_raised::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifyRaised value".to_string(),
+                    ));
+                }
+            }
+        }
+        126 => {
+            let first = read_notify_raise_reply(
+                reader.get_root::<plugin_capnp::notify_raise_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_notify_raise_reply(
+                message.init_root::<plugin_capnp::notify_raise_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_notify_raise_reply(
+                    again.get_root::<plugin_capnp::notify_raise_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_notify_raise_reply(
+                    message.init_root::<plugin_capnp::notify_raise_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded NotifyRaiseReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        127 => {
             let first =
                 read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13827,7 +15220,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        116 => {
+        128 => {
             let first =
                 read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13868,7 +15261,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        117 => {
+        129 => {
             let first = read_socket_auto_response(
                 reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
             )?;
@@ -13912,7 +15305,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        118 => {
+        130 => {
             let first = read_socket_connect_request(
                 reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
             )?;
@@ -13956,7 +15349,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        119 => {
+        131 => {
             let first =
                 read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -13997,7 +15390,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        120 => {
+        132 => {
             let first = read_socket_connect_reply(
                 reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
             )?;
@@ -14041,7 +15434,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        121 => {
+        133 => {
             let first =
                 read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -14082,7 +15475,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        122 => {
+        134 => {
             let first = read_socket_list_reply(
                 reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
             )?;
@@ -14126,7 +15519,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        123 => {
+        135 => {
             let first = read_socket_message_reply(
                 reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
             )?;
@@ -14170,7 +15563,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        124 => {
+        136 => {
             let first = read_socket_message_ok(
                 reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
             )?;
@@ -14214,7 +15607,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        125 => {
+        137 => {
             let first = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
@@ -14256,7 +15649,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        126 => {
+        138 => {
             let first =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();

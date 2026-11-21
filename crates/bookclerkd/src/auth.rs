@@ -72,7 +72,7 @@ fn resolve_client_ip_key(
     if !peer_is_trusted(peer, trusted_proxies) {
         return peer.to_string();
     }
-    if let Some(client) = forwarded_client_ip(headers) {
+    if let Some(client) = forwarded_client_ip(headers, trusted_proxies) {
         return client;
     }
     peer.to_string()
@@ -202,32 +202,104 @@ fn refuse_non_direct_loopback(addr: SocketAddr, headers: &HeaderMap) -> Result<(
     Err(StatusCode::FORBIDDEN)
 }
 
-/// First parseable client IP from `X-Forwarded-For` or RFC 7239 `Forwarded`.
-fn forwarded_client_ip(headers: &HeaderMap) -> Option<String> {
-    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        let first = xff.split(',').next()?.trim();
-        if !first.is_empty() && first.parse::<IpAddr>().is_ok() {
-            return Some(first.to_string());
-        }
+/// Client IP a chain of trusted reverse proxies reports, read from
+/// `X-Forwarded-For` (preferred) or RFC 7239 `Forwarded`.
+///
+/// Each proxy appends the address it received the request from, so only the
+/// right-hand end of the chain was written by proxies the operator trusts;
+/// anything to the left of that came from the client and may be forged. The
+/// hops are therefore read from right to left, skipping every hop that is
+/// itself a trusted proxy, and the first hop that is not is the client.
+///
+/// # Arguments
+///
+/// * `headers` - request headers; every `X-Forwarded-For` (or `Forwarded`)
+///   line counts, in order, as one chain.
+/// * `trusted_proxies` - `daemon.trusted_proxies` entries (addresses or CIDRs).
+///
+/// # Returns
+///
+/// The client address, the leftmost hop when every hop is a trusted proxy, or
+/// `None` when the header is absent, not text, or a hop that would have to be
+/// read is not an IP address (the caller then keys on the peer).
+fn forwarded_client_ip(headers: &HeaderMap, trusted_proxies: &[String]) -> Option<String> {
+    let xff: Vec<&str> = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .map(|v| v.to_str())
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if !xff.is_empty() {
+        return client_from_hops(
+            xff.iter().flat_map(|line| line.split(',')).map(str::trim),
+            trusted_proxies,
+        );
     }
-    if let Some(fwd) = headers.get(header::FORWARDED).and_then(|v| v.to_str().ok()) {
-        // Take the first `for=` value.
-        for part in fwd.split(';') {
-            let part = part.trim();
-            if let Some(rest) = part
-                .strip_prefix("for=")
-                .or_else(|| part.strip_prefix("For="))
-            {
-                let candidate = rest.trim().trim_matches('"').trim_start_matches('[');
-                let candidate = candidate.trim_end_matches(']');
-                let host = candidate.split(':').next().unwrap_or(candidate);
-                if host.parse::<IpAddr>().is_ok() {
-                    return Some(host.to_string());
-                }
-            }
-        }
+    let fwd: Vec<&str> = headers
+        .get_all(header::FORWARDED)
+        .iter()
+        .map(|v| v.to_str())
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if fwd.is_empty() {
+        return None;
     }
-    None
+    let hops: Vec<&str> = fwd
+        .iter()
+        .flat_map(|line| line.split(','))
+        .map(forwarded_element_for)
+        .collect::<Option<_>>()?;
+    client_from_hops(hops.into_iter(), trusted_proxies)
+}
+
+/// The node of one RFC 7239 `Forwarded` element's `for=` parameter, with any
+/// quotes, IPv6 brackets and port removed; `None` when the element has none.
+fn forwarded_element_for(element: &str) -> Option<&str> {
+    element.split(';').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        if !name.trim().eq_ignore_ascii_case("for") {
+            return None;
+        }
+        let value = value.trim().trim_matches('"');
+        if let Some(rest) = value.strip_prefix('[') {
+            return rest.split_once(']').map(|(inside, _)| inside);
+        }
+        // An IPv4 node may carry `:port`; a bare IPv6 node is not allowed
+        // unbracketed, so a value with more than one `:` is left whole and
+        // fails to parse as an address.
+        match value.split_once(':') {
+            Some((host, port)) if !port.contains(':') => Some(host),
+            _ => Some(value),
+        }
+    })
+}
+
+/// Walk proxy hops (leftmost first) from the right and return the first
+/// address that is not a trusted proxy.
+///
+/// # Arguments
+///
+/// * `hops` - one entry per hop, leftmost (claimed client) first.
+/// * `trusted_proxies` - `daemon.trusted_proxies` entries.
+///
+/// # Returns
+///
+/// The rightmost untrusted address; the leftmost address when every hop is
+/// trusted; `None` when there are no hops or a hop reached before an
+/// untrusted address is not an IP address.
+fn client_from_hops<'a>(
+    hops: impl DoubleEndedIterator<Item = &'a str>,
+    trusted_proxies: &[String],
+) -> Option<String> {
+    let mut leftmost = None;
+    for hop in hops.rev() {
+        let ip = hop.trim().parse::<IpAddr>().ok()?;
+        if !peer_is_trusted(ip, trusted_proxies) {
+            return Some(ip.to_string());
+        }
+        leftmost = Some(ip);
+    }
+    leftmost.map(|ip| ip.to_string())
 }
 
 #[derive(Debug)]
@@ -5263,6 +5335,109 @@ pub(crate) mod tests {
         assert_eq!(untrusted, "10.0.0.1");
     }
 
+    /// Headers holding one line per value of `name`, in order.
+    fn header_lines(name: &'static str, lines: &[&'static str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for line in lines {
+            headers.append(name, HeaderValue::from_static(line));
+        }
+        headers
+    }
+
+    #[test]
+    fn spoofed_leftmost_forwarded_for_is_ignored() {
+        // nginx's `$proxy_add_x_forwarded_for` appends the real client to
+        // whatever the client sent, so the forged value is on the left.
+        let headers = header_lines("x-forwarded-for", &["198.51.100.7, 203.0.113.10"]);
+        let peer = "10.0.0.1".parse().unwrap();
+        let key = resolve_client_ip_key(Some(peer), &headers, &["10.0.0.1".into()]);
+        assert_eq!(key, "203.0.113.10");
+    }
+
+    #[test]
+    fn forwarded_for_skips_every_trusted_hop() {
+        let headers = header_lines(
+            "x-forwarded-for",
+            &["198.51.100.7, 203.0.113.10", "10.0.0.2"],
+        );
+        let peer = "10.0.0.1".parse().unwrap();
+        let trusted = ["10.0.0.0/24".to_string()];
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &headers, &trusted),
+            "203.0.113.10"
+        );
+        let all_trusted = header_lines("x-forwarded-for", &["10.0.0.9, 10.0.0.2"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &all_trusted, &trusted),
+            "10.0.0.9"
+        );
+    }
+
+    #[test]
+    fn unreadable_forwarded_for_hop_falls_back_to_the_peer() {
+        let peer = "10.0.0.1".parse().unwrap();
+        let trusted = ["10.0.0.1".to_string()];
+        let garbage = header_lines("x-forwarded-for", &["203.0.113.10, unknown"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &garbage, &trusted),
+            "10.0.0.1"
+        );
+        // A bad hop left of the client is never read.
+        let left_garbage = header_lines("x-forwarded-for", &["unknown, 203.0.113.10"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &left_garbage, &trusted),
+            "203.0.113.10"
+        );
+        let empty = header_lines("x-forwarded-for", &[""]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &empty, &trusted),
+            "10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn rfc7239_forwarded_uses_rightmost_untrusted_for() {
+        let peer = "10.0.0.1".parse().unwrap();
+        let trusted = ["10.0.0.0/24".to_string()];
+        let headers = header_lines(
+            "forwarded",
+            &[
+                "for=198.51.100.7;proto=https, For=\"[2001:db8::5]:4711\"",
+                "for=10.0.0.2:80;by=10.0.0.1",
+            ],
+        );
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &headers, &trusted),
+            "2001:db8::5"
+        );
+        let v4 = header_lines("forwarded", &["for=198.51.100.7, for=203.0.113.10:443"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &v4, &trusted),
+            "203.0.113.10"
+        );
+        let obfuscated = header_lines("forwarded", &["for=203.0.113.10, for=_hidden"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &obfuscated, &trusted),
+            "10.0.0.1"
+        );
+        let no_for = header_lines("forwarded", &["proto=https"]);
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &no_for, &trusted),
+            "10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn x_forwarded_for_wins_over_forwarded() {
+        let peer = "10.0.0.1".parse().unwrap();
+        let mut headers = header_lines("x-forwarded-for", &["203.0.113.10"]);
+        headers.append("forwarded", HeaderValue::from_static("for=198.51.100.7"));
+        assert_eq!(
+            resolve_client_ip_key(Some(peer), &headers, &["10.0.0.1".into()]),
+            "203.0.113.10"
+        );
+    }
+
     /// Test-only owner password (assembled so static analysis does not flag a literal).
     pub(crate) fn phase2_owner_password() -> String {
         ["owner", "-", "pass"].concat()
@@ -5912,7 +6087,14 @@ pub(crate) mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         let job_id = body["job_id"].as_str().expect("job id").to_string();
         let job = library.get_job(&job_id).await.unwrap().expect("job");
-        assert_eq!(job.payload.title.as_deref(), Some(mine.uuid.as_str()));
+        // The edition's title is named by its account holding.
+        let mine_holding = library
+            .title_holding_of_book(&mine.uuid)
+            .await
+            .unwrap()
+            .expect("holding")
+            .holding_id;
+        assert_eq!(job.payload.title.as_deref(), Some(mine_holding.as_str()));
         assert_eq!(job.payload.account.as_deref(), Some("mine"));
         for (editions, want, slug) in [
             (vec![foreign_edition], StatusCode::FORBIDDEN, "forbidden"),

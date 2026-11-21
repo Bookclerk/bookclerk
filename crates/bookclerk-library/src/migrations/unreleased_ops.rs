@@ -1162,10 +1162,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     // Who holds a store listing (docs/adr/library-data-model.md): a store
-    // account of the listing's plugin, or a branch library node. The typed
-    // columns carry the foreign keys, so deleting the account or node drops
-    // its holdings; `holder` is the stored key (`account:<id>` /
-    // `node:<id>`, `bookclerk_resolve::Holder`) the uniqueness and the
+    // account of the listing's plugin, a branch library node, or a patron
+    // who uploaded the book (entitlement `own`, over a `core.import`
+    // listing; docs/adr/uploads-and-ingest.md). The typed columns carry the
+    // foreign keys, so deleting the account, node or person drops its
+    // holdings; `holder` is the stored key (`account:<id>` / `node:<id>` /
+    // `patron:<user id>`, `bookclerk_resolve::Holder`) the uniqueness and the
     // resolver read. `id` is new for each holding, so a title removed and
     // held again announces itself again (`holding_added:<id>`). `seen_pass`
     // is the scan pass that last listed it (`account_scan_state.pass_id`);
@@ -1182,11 +1184,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         id TEXT PRIMARY KEY NOT NULL,
         listing_id TEXT NOT NULL REFERENCES store_listings(id) ON DELETE CASCADE,
         holder TEXT NOT NULL,
-        holder_kind TEXT NOT NULL CHECK (holder_kind IN ('account', 'node')),
+        holder_kind TEXT NOT NULL CHECK (holder_kind IN ('account', 'node', 'patron')),
         plugin_key TEXT,
         account_id TEXT,
         node_id TEXT REFERENCES nodes(node_id) ON DELETE CASCADE,
-        entitlement TEXT NOT NULL CHECK (entitlement IN ('purchase', 'plus', 'loan', 'free')),
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        entitlement TEXT NOT NULL CHECK (entitlement IN ('purchase', 'plus', 'loan', 'free', 'own')),
         purchased_at TEXT,
         seen_pass TEXT,
         share_ref TEXT,
@@ -1198,8 +1201,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         updated_at TEXT NOT NULL,
         UNIQUE (listing_id, holder),
         FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE,
-        CHECK ((holder_kind = 'account' AND plugin_key IS NOT NULL AND account_id IS NOT NULL AND node_id IS NULL)
-            OR (holder_kind = 'node' AND node_id IS NOT NULL AND plugin_key IS NULL AND account_id IS NULL)),
+        CHECK ((holder_kind = 'account' AND plugin_key IS NOT NULL AND account_id IS NOT NULL
+                AND node_id IS NULL AND user_id IS NULL)
+            OR (holder_kind = 'node' AND node_id IS NOT NULL AND plugin_key IS NULL
+                AND account_id IS NULL AND user_id IS NULL)
+            OR (holder_kind = 'patron' AND user_id IS NOT NULL AND plugin_key IS NULL
+                AND account_id IS NULL AND node_id IS NULL)),
         CHECK (holder_kind = 'node' OR (share_ref IS NULL AND share_title IS NULL
             AND share_digest IS NULL AND delivered_digest IS NULL AND delivered_at IS NULL))
     )",
@@ -1211,6 +1218,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_holdings_node ON holdings(node_id, share_ref)",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_holdings_holder ON holdings(holder)"),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_holdings_user ON holdings(user_id)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_heartbeat ON nodes(heartbeat_at)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_owner ON nodes(owner_user_id)"),
     MigrationOp::Schema(
@@ -1549,6 +1557,71 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_node_upload_sessions_job ON node_upload_sessions(job_id)",
+    ),
+    // One ingest batch (docs/adr/uploads-and-ingest.md): files a patron
+    // uploaded, staged on `node_id` under `uploads/<id>/`, or references
+    // into a storage instance acting as an intake (`intake_instance`).
+    // Every book the batch stores is held by `user_id`. `state` runs
+    // open -> committed -> running -> done | failed, or cancelled from
+    // open or committed; `updated_at` is the last activity, which the
+    // idle prune reads. `declared_bytes` is the sum of the members' sizes,
+    // which the per-person staging quota counts while the batch is live.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS ingest_batches (
+        id TEXT PRIMARY KEY NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        node_id TEXT NOT NULL,
+        source TEXT NOT NULL CHECK (source IN ('upload', 'intake')),
+        intake_instance TEXT,
+        state TEXT NOT NULL
+            CHECK (state IN ('open', 'committed', 'running', 'done', 'failed', 'cancelled')),
+        file_count INTEGER NOT NULL,
+        declared_bytes INTEGER NOT NULL,
+        job_id TEXT,
+        detail TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        finished_at TEXT,
+        CHECK ((source = 'upload' AND intake_instance IS NULL)
+            OR (source = 'intake' AND intake_instance IS NOT NULL))
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_ingest_batches_user ON ingest_batches(user_id, state)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_ingest_batches_state ON ingest_batches(state, updated_at)",
+    ),
+    // One file of an ingest batch, numbered from 0 in manifest order;
+    // files an archive member expanded into follow, with `parent_no` the
+    // archive's number. `path` is the file's relative path in the batch
+    // (`bookclerk_archive::EntryPath`), or for a refused archive entry the
+    // sanitized name it had. A staged member's bytes are at
+    // `uploads/<batch>/files/<member_no>` and `received` counts them; an
+    // intake member names `storage_key` and its `signature` instead.
+    // `outcome` is what the job decided, with `reason` for a refusal or
+    // failure and `edition_id` for a stored book's edition.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS ingest_members (
+        batch_id TEXT NOT NULL REFERENCES ingest_batches(id) ON DELETE CASCADE,
+        member_no INTEGER NOT NULL,
+        parent_no INTEGER,
+        path TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        sha256 TEXT,
+        received INTEGER NOT NULL DEFAULT 0,
+        storage_key TEXT,
+        signature TEXT,
+        outcome TEXT NOT NULL DEFAULT 'pending'
+            CHECK (outcome IN ('pending', 'expanded', 'matched', 'needs_review', 'duplicate', 'refused', 'failed')),
+        reason TEXT,
+        edition_id TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (batch_id, member_no)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_ingest_members_outcome ON ingest_members(outcome, batch_id)",
     ),
     // A reader's leave to download the copy this library holds of one
     // edition (`copy.grant`). Only the token's hash is stored. The holder
@@ -1955,6 +2028,44 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
+    // How fast the host may download from each store account
+    // (`store::pacing`, `docs/internals/jobs.md#download-pacing`): the
+    // operator's override of the storefront's declared `[acquire]` pace
+    // (`pace_mode` `default`, `custom` or `unlimited`; a `custom` field left
+    // NULL keeps the storefront's value), and the end of the cool-down the
+    // store asked for with `rateLimited` (Unix ms; NULL or past for none).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_pace (
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        pace_mode TEXT NOT NULL DEFAULT 'default' CHECK (pace_mode IN ('default', 'custom', 'unlimited')),
+        downloads_per_day INTEGER,
+        min_gap_seconds INTEGER,
+        cooldown_until_ms INTEGER,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, account_id),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
+    // Each download that reached a store, per account (`store::pacing`):
+    // the rolling-24-hour budget counts these rows. `paced` is 1 for a
+    // download the host started itself, 0 for one a person started by
+    // hand (counted, never held). Rows older than two days are pruned when
+    // the account records its next download.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_downloads (
+        id TEXT PRIMARY KEY NOT NULL,
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        started_at_ms INTEGER NOT NULL,
+        job_id TEXT,
+        paced INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_account_downloads_account ON account_downloads(plugin_key, account_id, started_at_ms)",
+    ),
     // How far one person has listened to one edition (the built-in
     // player, `docs/adr/playback.md`): a position on the edition's
     // timeline, the runtime the last player reported, and whether they
@@ -2195,6 +2306,11 @@ mod tests {
             "library_work_rows",
             "acquire_status",
             crate::AcquireStatus::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "account_pace",
+            "pace_mode",
+            crate::pacing::PaceOverride::MODES.iter().copied(),
         );
         assert_check(
             "playback_sessions",

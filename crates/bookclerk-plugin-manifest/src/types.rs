@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 9] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 10] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
@@ -24,6 +24,7 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 9] = [
     Entrypoint::Metadata,
     Entrypoint::Covers,
     Entrypoint::MetadataFiles,
+    Entrypoint::Notifier,
 ];
 
 /// Entrypoints the host loads into their own registry (sources,
@@ -54,7 +55,8 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         | Entrypoint::Oidc
         | Entrypoint::Metadata
         | Entrypoint::Covers
-        | Entrypoint::MetadataFiles => PluginFamily::Integration,
+        | Entrypoint::MetadataFiles
+        | Entrypoint::Notifier => PluginFamily::Integration,
     }
 }
 
@@ -70,7 +72,8 @@ pub enum PluginFamily {
     /// Storefront / library source (`Storefront` entrypoint).
     Source,
     /// Event consumer, job runner, remote library, CLI, OIDC bridge,
-    /// metadata provider, cover fetcher, or metadata file dialects.
+    /// metadata provider, cover fetcher, metadata file dialects, or
+    /// notifier.
     Integration,
     /// Destination / output backend (`Storage` entrypoint).
     Output,
@@ -204,6 +207,90 @@ impl MediaManifest {
     }
 }
 
+/// Most downloads a day `[acquire].downloads_per_day` may declare.
+pub const MAX_DOWNLOADS_PER_DAY: i64 = 10_000;
+
+/// Longest gap between downloads `[acquire].min_gap_seconds` may declare
+/// (one day).
+pub const MAX_MIN_GAP_SECONDS: i64 = 86_400;
+
+/// Longest cool-down `[acquire].cooldown_seconds` may declare (one week).
+pub const MAX_COOLDOWN_SECONDS: i64 = 604_800;
+
+/// `[acquire]`: how fast the host may download from one store account of
+/// this storefront when it starts the downloads itself.
+///
+/// Stores rarely publish their limits and throttle after the fact, so a
+/// storefront declares a safe pace here and the host keeps every automatic
+/// download (auto-acquire, quality upgrades, acquire-all, requests from
+/// other libraries) under it. Every field is optional: a missing
+/// `downloads_per_day` means no daily budget, a missing `min_gap_seconds`
+/// no gap, and a missing `cooldown_seconds` the host's one-hour default.
+/// Only a plugin with the `storefront` entrypoint may declare the table.
+///
+/// The fields are signed so a negative value reaches validation and gets
+/// the same message in every author tool, rather than a parser error.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcquireManifest {
+    /// Downloads allowed per store account in any rolling 24 hours, from 1
+    /// to [`MAX_DOWNLOADS_PER_DAY`]; `None` for no daily budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloads_per_day: Option<i64>,
+    /// Seconds between the start of two downloads on one store account,
+    /// from 0 to [`MAX_MIN_GAP_SECONDS`]; `None` for no gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_gap_seconds: Option<i64>,
+    /// Seconds automatic downloads on an account pause after the store
+    /// answers `rateLimited` without saying how long, from 1 to
+    /// [`MAX_COOLDOWN_SECONDS`]; `None` for the host default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_seconds: Option<i64>,
+}
+
+impl AcquireManifest {
+    /// Checks each declared value against its range.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] naming the first field outside its range.
+    pub fn validate(&self) -> Result<()> {
+        let checks = [
+            (
+                "downloads_per_day",
+                self.downloads_per_day,
+                1,
+                MAX_DOWNLOADS_PER_DAY,
+            ),
+            (
+                "min_gap_seconds",
+                self.min_gap_seconds,
+                0,
+                MAX_MIN_GAP_SECONDS,
+            ),
+            (
+                "cooldown_seconds",
+                self.cooldown_seconds,
+                1,
+                MAX_COOLDOWN_SECONDS,
+            ),
+        ];
+        for (field, value, min, max) in checks {
+            if let Some(value) = value {
+                if !(min..=max).contains(&value) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: `[acquire].{field}` must be between {min} and {max}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// `[metadata_files]`: the metadata file dialects a `metadataFiles` plugin
 /// implements. Required for that entrypoint and forbidden without it.
 ///
@@ -265,6 +352,197 @@ impl MetadataFileDialectManifest {
             writes: self.writes,
         }
     }
+}
+
+/// Kind of destination a notifier sends to (`[notifier].destinations`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifierDestination {
+    /// A library channel the instance's own settings name (a Slack
+    /// webhook, a PagerDuty service), which administrators route to.
+    Channel,
+    /// A patron's own address on the service (an email address, a
+    /// Telegram chat), described by `[[notifier.address_fields]]`.
+    Personal,
+}
+
+/// Body format a notifier renders (`[notifier].formats`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifierFormat {
+    /// Plain text; every notifier takes it.
+    Text,
+    /// Markdown, for chat services.
+    Markdown,
+    /// Minimal HTML, for email.
+    Html,
+}
+
+/// Most `[[notifier.address_fields]]` rows; the same as the most keys an
+/// address document may carry.
+pub const MAX_NOTIFIER_ADDRESS_FIELDS: usize =
+    bookclerk_plugin_abi::notifications::MAX_NOTIFY_ADDRESS_KEYS;
+
+/// Most `[[notifications.types]]` rows one plugin may declare.
+pub const MAX_NOTIFICATION_TYPES: usize = 64;
+
+/// `[notifier]`: what a `notifier` plugin can carry. Required for that
+/// entrypoint and forbidden without it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotifierManifest {
+    /// Destination kinds the plugin sends to; never empty.
+    #[serde(default)]
+    pub destinations: Vec<NotifierDestination>,
+    /// Whether administrators may mark an instance for account mail
+    /// (invites, password resets). Needs a `personal` destination with an
+    /// `email` address field.
+    #[serde(default)]
+    pub account_mail: bool,
+    /// Body formats the plugin renders; must include `text`.
+    #[serde(default = "default_notifier_formats")]
+    pub formats: Vec<NotifierFormat>,
+    /// Fields a personal destination's address holds; required exactly
+    /// when `destinations` names `personal`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub address_fields: Vec<NotifierAddressField>,
+}
+
+/// Default `[notifier].formats`: plain text only.
+fn default_notifier_formats() -> Vec<NotifierFormat> {
+    vec![NotifierFormat::Text]
+}
+
+impl NotifierManifest {
+    /// Whether the plugin sends to `kind`.
+    #[must_use]
+    pub fn sends_to(&self, kind: NotifierDestination) -> bool {
+        self.destinations.contains(&kind)
+    }
+
+    /// The address fields as the host's address checks take them.
+    ///
+    /// # Returns
+    ///
+    /// One rule per `[[notifier.address_fields]]` row.
+    #[must_use]
+    pub fn address_rules(&self) -> Vec<bookclerk_plugin_abi::notifications::AddressFieldRule> {
+        self.address_fields
+            .iter()
+            .map(
+                |field| bookclerk_plugin_abi::notifications::AddressFieldRule {
+                    key: field.key.clone(),
+                    required: field.required,
+                },
+            )
+            .collect()
+    }
+}
+
+/// One `[[notifier.address_fields]]` row: a value a patron enters to
+/// receive notifications on this service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotifierAddressField {
+    /// Key in the address document (`[a-z][a-z0-9_]{0,63}`).
+    pub key: String,
+    /// Label shown on the patron's form.
+    pub label: String,
+    /// Whether a destination must carry it.
+    #[serde(default)]
+    pub required: bool,
+    /// Whether the value is a secret (a push subscription key): shown
+    /// masked and never logged.
+    #[serde(default)]
+    pub secret: bool,
+}
+
+/// `[notifications]`: the notification types a plugin raises through its
+/// `NOTIFY` binding.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationsManifest {
+    /// One row per type (`[[notifications.types]]`).
+    #[serde(default)]
+    pub types: Vec<NotificationTypeManifest>,
+}
+
+impl NotificationsManifest {
+    /// Whether no type is declared (the table is then omitted).
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self.types.is_empty()
+    }
+}
+
+/// One `[[notifications.types]]` row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationTypeManifest {
+    /// Type id (`[a-z][a-z0-9_]{0,63}`), unique within the plugin; routed
+    /// as `<plugin id>:<id>`.
+    pub id: String,
+    /// Who it is for: `operational` or `patron` (`account` is the host's).
+    pub audience: bookclerk_plugin_abi::NotificationAudience,
+    /// Default severity (`info`, `warning`, `critical`).
+    #[serde(default)]
+    pub severity: bookclerk_plugin_abi::NotificationSeverity,
+    /// Title administrators and patrons see in the routing matrix and on
+    /// each notification.
+    pub title: String,
+}
+
+/// Hosts of chat, push and email services that notifier plugins talk to.
+/// A plugin that is not a notifier but asks for one of these is flagged:
+/// its consent screen says it can send messages outside Bookclerk.
+pub const KNOWN_NOTIFICATION_HOSTS: &[&str] = &[
+    "discord.com",
+    "discordapp.com",
+    "hooks.slack.com",
+    "slack.com",
+    "api.telegram.org",
+    "events.pagerduty.com",
+    "events.eu.pagerduty.com",
+    "api.opsgenie.com",
+    "ntfy.sh",
+    "api.pushover.net",
+    "api.postmarkapp.com",
+    "api.resend.com",
+    "api.sendgrid.com",
+    "api.mailgun.net",
+    "api.eu.mailgun.net",
+    "webhook.office.com",
+    "fcm.googleapis.com",
+    "updates.push.services.mozilla.com",
+    "web.push.apple.com",
+];
+
+/// TCP ports of mail submission and relay (SMTP 25, SMTPS 465,
+/// submission 587); a non-notifier asking for them is flagged too.
+pub const SMTP_PORTS: [u16; 3] = [25, 465, 587];
+
+/// Whether a declared or granted network host (exact, `*.` wildcard, or
+/// [`crate::ANY_PUBLIC_HOST`]) reaches one of [`KNOWN_NOTIFICATION_HOSTS`].
+///
+/// # Arguments
+///
+/// * `declared` - The host as `plugin.toml` or a grant names it.
+///
+/// # Returns
+///
+/// True when a request to a known notification service would pass it.
+#[must_use]
+pub fn reaches_notification_host(declared: &str) -> bool {
+    let declared = declared.trim().to_ascii_lowercase();
+    if declared == crate::ANY_PUBLIC_HOST {
+        return true;
+    }
+    let wildcard = declared.strip_prefix("*.");
+    KNOWN_NOTIFICATION_HOSTS.iter().any(|known| match wildcard {
+        // `*.slack.com` reaches `hooks.slack.com` and `slack.com` alike.
+        Some(base) => *known == base || known.ends_with(&format!(".{base}")),
+        None => declared == *known || declared.ends_with(&format!(".{known}")),
+    })
 }
 
 /// Whether `name` is printable ASCII naming one file with no folder.
@@ -583,6 +861,10 @@ pub const DEFAULT_WORK_FS_BINDING: &str = "WORK_FS";
 pub const DEFAULT_OAUTH_BINDING: &str = "OAUTH";
 /// Default `binding` for `[sockets]`.
 pub const DEFAULT_SOCKETS_BINDING: &str = "SOCKETS";
+
+/// The `NOTIFY` binding a plugin with `[[notifications.types]]` receives;
+/// its name is fixed, so no other binding may take it.
+pub const NOTIFY_BINDING: &str = "NOTIFY";
 /// Default `binding` for `[[kv_namespaces]]`.
 pub const DEFAULT_KV_BINDING: &str = "KV";
 /// Default `binding` for `[[events.producers]]`.
@@ -729,6 +1011,8 @@ impl EventsManifest {
 /// `edition_acquire_changed` is written with an edition's acquire state
 /// when it moves to anything other than acquired (queued, in progress,
 /// failed); becoming acquired publishes `book_acquired` instead.
+/// `ingest_batch_finished` is written when an upload or storage intake
+/// batch reaches a final state.
 /// `wishlist_changed` is written when a wishlist entry is added or changes
 /// status, and `listening_synced` when a listening sync changed what someone
 /// has started or finished. `playback_started` is written when someone
@@ -736,13 +1020,14 @@ impl EventsManifest {
 /// session closes or progress is set outright, and `playback_finished`
 /// when a listener reaches the end of an edition. Plugins consume these
 /// types but cannot declare them under `[[events.producers]]`.
-pub const HOST_EVENT_TYPES: [&str; 11] = [
+pub const HOST_EVENT_TYPES: [&str; 12] = [
     "book_acquired",
     "edition_acquire_changed",
     "edition_linked",
     "edition_updated",
     "holding_added",
     "holding_removed",
+    "ingest_batch_finished",
     "wishlist_changed",
     "listening_synced",
     "playback_started",
@@ -1178,11 +1463,24 @@ pub struct PluginManifest {
     /// [`MediaManifest`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaManifest>,
+    /// How fast the host may download from one store account (`[acquire]`):
+    /// optional, storefronts only; see [`AcquireManifest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquire: Option<AcquireManifest>,
     /// Metadata file dialects (`[metadata_files]`): required for plugins
     /// that export the `metadataFiles` entrypoint and forbidden for every
     /// other plugin; see [`MetadataFilesManifest`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_files: Option<MetadataFilesManifest>,
+    /// What a notifier carries (`[notifier]`): required for plugins that
+    /// export the `notifier` entrypoint and forbidden for every other
+    /// plugin; see [`NotifierManifest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifier: Option<NotifierManifest>,
+    /// Notification types the plugin raises through `NOTIFY`
+    /// (`[[notifications.types]]`).
+    #[serde(default, skip_serializing_if = "NotificationsManifest::is_default")]
+    pub notifications: NotificationsManifest,
     /// Declared network capability (consent has no Wrangler analogue).
     pub capabilities: CapabilitiesManifest,
     /// Optional CLI schema advertised to `bookclerk plugins <id>` (from
@@ -1533,7 +1831,7 @@ impl PluginManifest {
     /// A plugin joins the `Source` / `Output` / `Database` families through
     /// the matching named entrypoint and the `Integration` family through
     /// event consumers, queue consumers, crons, `RemoteLibrary`, `Cli`,
-    /// `Oidc`, `Metadata`, `Covers`, or `MetadataFiles`.
+    /// `Oidc`, `Metadata`, `Covers`, `MetadataFiles`, or `Notifier`.
     ///
     /// Job triggers make a plugin an integration only when it has no
     /// `storefront`, `storage` or `databaseAdapter` entrypoint. Beside one of
@@ -1563,6 +1861,7 @@ impl PluginManifest {
                         || self.has_entrypoint(Entrypoint::Metadata)
                         || self.has_entrypoint(Entrypoint::Covers)
                         || self.has_entrypoint(Entrypoint::MetadataFiles)
+                        || self.has_entrypoint(Entrypoint::Notifier)
                         || (self.has_entrypoint(Entrypoint::Cli) && !self.has_registry_entrypoint())
                 }
             };
@@ -1782,6 +2081,26 @@ impl PluginManifest {
         .map_err(|detail| Error::message(format!("plugin.toml: {detail}")))
     }
 
+    /// Checks the `[acquire]` table against the plugin's entrypoints and its
+    /// ranges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when a plugin without the `storefront`
+    /// entrypoint declares the table, or a value is out of range
+    /// ([`AcquireManifest::validate`]).
+    fn validate_acquire(&self) -> Result<()> {
+        let Some(acquire) = &self.acquire else {
+            return Ok(());
+        };
+        if !self.has_entrypoint(Entrypoint::Storefront) {
+            return Err(Error::message(
+                "plugin.toml: `[acquire]` needs the `storefront` entrypoint",
+            ));
+        }
+        acquire.validate()
+    }
+
     /// Checks the `[media]` table against the plugin's entrypoints.
     ///
     /// The same rules, with the same messages, run in the TypeScript and
@@ -1968,6 +2287,206 @@ impl PluginManifest {
         Ok(())
     }
 
+    /// Checks the `[notifier]` table against the plugin's entrypoints.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when a `notifier` plugin has no table or
+    /// another plugin has one, or when the table has no or repeated
+    /// destinations, formats without `text` or repeated, address fields
+    /// without a `personal` destination (or a `personal` one without
+    /// fields), a bad, repeated or unlabelled address field, no required
+    /// field, too many fields, or `account_mail` without a personal
+    /// `email` field.
+    fn validate_notifier(&self) -> Result<()> {
+        let exported = self.has_entrypoint(Entrypoint::Notifier);
+        let Some(table) = &self.notifier else {
+            if exported {
+                return Err(Error::message(
+                    "plugin.toml: `[notifier]` is required for a plugin with the `notifier` \
+                     entrypoint",
+                ));
+            }
+            return Ok(());
+        };
+        if !exported {
+            return Err(Error::message(
+                "plugin.toml: `[notifier]` needs the `notifier` entrypoint",
+            ));
+        }
+        if table.destinations.is_empty() {
+            return Err(Error::message(
+                "plugin.toml: `[notifier].destinations` is empty",
+            ));
+        }
+        let mut kinds = std::collections::BTreeSet::new();
+        for kind in &table.destinations {
+            if !kinds.insert(*kind) {
+                return Err(Error::message(
+                    "plugin.toml: `[notifier].destinations` names a kind twice",
+                ));
+            }
+        }
+        let mut formats = std::collections::BTreeSet::new();
+        for format in &table.formats {
+            if !formats.insert(*format) {
+                return Err(Error::message(
+                    "plugin.toml: `[notifier].formats` names a format twice",
+                ));
+            }
+        }
+        if !formats.contains(&NotifierFormat::Text) {
+            return Err(Error::message(
+                "plugin.toml: `[notifier].formats` must include `text`",
+            ));
+        }
+        let personal = table.sends_to(NotifierDestination::Personal);
+        if personal && table.address_fields.is_empty() {
+            return Err(Error::message(
+                "plugin.toml: `[notifier]` sends to `personal` destinations but declares no \
+                 `[[notifier.address_fields]]`",
+            ));
+        }
+        if !personal && !table.address_fields.is_empty() {
+            return Err(Error::message(
+                "plugin.toml: `[[notifier.address_fields]]` needs `personal` in \
+                 `[notifier].destinations`",
+            ));
+        }
+        if table.address_fields.len() > MAX_NOTIFIER_ADDRESS_FIELDS {
+            return Err(Error::message(format!(
+                "plugin.toml: `[[notifier.address_fields]]` declares more than \
+                 {MAX_NOTIFIER_ADDRESS_FIELDS} fields"
+            )));
+        }
+        let mut keys = std::collections::BTreeSet::new();
+        for (i, field) in table.address_fields.iter().enumerate() {
+            let row = format!("plugin.toml: notifier.address_fields[{i}]");
+            if !bookclerk_plugin_abi::notifications::is_notification_type_id(&field.key) {
+                return Err(Error::message(format!(
+                    "{row}.key `{}` is not an identifier ([a-z][a-z0-9_]{{0,63}})",
+                    field.key
+                )));
+            }
+            if !keys.insert(field.key.as_str()) {
+                return Err(Error::message(format!(
+                    "plugin.toml: notifier address field `{}` is declared twice",
+                    field.key
+                )));
+            }
+            if field.label.trim().is_empty() {
+                return Err(Error::message(format!("{row}.label is required")));
+            }
+        }
+        if personal && !table.address_fields.iter().any(|f| f.required) {
+            return Err(Error::message(
+                "plugin.toml: `[[notifier.address_fields]]` needs at least one required field",
+            ));
+        }
+        if table.account_mail
+            && !table
+                .address_fields
+                .iter()
+                .any(|f| f.key == "email" && f.required && !f.secret)
+        {
+            return Err(Error::message(
+                "plugin.toml: `[notifier].account_mail` needs a required, non-secret `email` \
+                 address field",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Checks the `[[notifications.types]]` rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] for more than [`MAX_NOTIFICATION_TYPES`]
+    /// rows, a bad or repeated id, an `account` audience, or a blank,
+    /// multi-line or over-long title.
+    fn validate_notification_types(&self) -> Result<()> {
+        let types = &self.notifications.types;
+        if types.len() > MAX_NOTIFICATION_TYPES {
+            return Err(Error::message(format!(
+                "plugin.toml: `[[notifications.types]]` declares more than \
+                 {MAX_NOTIFICATION_TYPES} types"
+            )));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for (i, row_type) in types.iter().enumerate() {
+            let row = format!("plugin.toml: notifications.types[{i}]");
+            if !bookclerk_plugin_abi::notifications::is_notification_type_id(&row_type.id) {
+                return Err(Error::message(format!(
+                    "{row}.id `{}` is not an identifier ([a-z][a-z0-9_]{{0,63}})",
+                    row_type.id
+                )));
+            }
+            if !ids.insert(row_type.id.as_str()) {
+                return Err(Error::message(format!(
+                    "plugin.toml: notification type `{}` is declared twice",
+                    row_type.id
+                )));
+            }
+            match row_type.audience {
+                bookclerk_plugin_abi::NotificationAudience::Operational
+                | bookclerk_plugin_abi::NotificationAudience::Patron => {}
+                bookclerk_plugin_abi::NotificationAudience::Account => {
+                    return Err(Error::message(format!(
+                        "{row}.audience `account` is reserved to Bookclerk"
+                    )));
+                }
+            }
+            let title = row_type.title.as_str();
+            let max_title = usize::try_from(bookclerk_plugin_abi::MAX_NOTIFICATION_TITLE_BYTES)
+                .unwrap_or(usize::MAX);
+            if title.trim().is_empty()
+                || title.len() > max_title
+                || title.chars().any(char::is_control)
+            {
+                return Err(Error::message(format!(
+                    "{row}.title must be one line of 1 to {max_title} bytes"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Notification hosts a plugin that is not a notifier asks to reach.
+    ///
+    /// Nothing technical stops a plugin with a network grant from posting
+    /// to a chat service itself, so the author check warns and the
+    /// consent screen says the plugin can send messages outside Bookclerk.
+    ///
+    /// # Returns
+    ///
+    /// The declared domains and TCP grants (`host:port`) that reach a
+    /// [`KNOWN_NOTIFICATION_HOSTS`] entry or an SMTP port, in declaration
+    /// order; empty for a notifier.
+    #[must_use]
+    pub fn notification_hosts_requested(&self) -> Vec<String> {
+        if self.has_entrypoint(Entrypoint::Notifier) {
+            return Vec::new();
+        }
+        let network = &self.capabilities.network;
+        let mut hits: Vec<String> = network
+            .domains
+            .iter()
+            .filter(|domain| reaches_notification_host(domain))
+            .cloned()
+            .collect();
+        for grant in &network.tcp {
+            for port in &grant.ports {
+                if SMTP_PORTS.contains(port) || reaches_notification_host(&grant.host) {
+                    hits.push(format!("{}:{port}", grant.host));
+                }
+            }
+        }
+        hits
+    }
+
     /// Checks id grammar, `api_version`, logo, runtime-specific required
     /// fields, and network domain rules (native forbid / workerd outbound
     /// require / IDNA).
@@ -1996,7 +2515,10 @@ impl PluginManifest {
             let _ = crate::validate_logo(logo)?;
         }
         self.validate_media()?;
+        self.validate_acquire()?;
         self.validate_metadata_files()?;
+        self.validate_notifier()?;
+        self.validate_notification_types()?;
         if self.credentials.is_some() && !self.has_entrypoint(Entrypoint::Storefront) {
             return Err(Error::message(
                 "plugin.toml: `credentials` needs the `storefront` entrypoint (only storefronts connect store accounts)",
@@ -2182,6 +2704,9 @@ impl PluginManifest {
             }
             if let Some(b) = &self.sockets {
                 named.push(("sockets", b.name_or(DEFAULT_SOCKETS_BINDING), 0));
+            }
+            if !self.notifications.types.is_empty() {
+                named.push(("notifications", NOTIFY_BINDING, 0));
             }
             for (index, b) in self.kv_namespaces.iter().enumerate() {
                 named.push(("kv_namespaces", b.name_or(DEFAULT_KV_BINDING), index));
@@ -2500,8 +3025,54 @@ mod tests {
                 PluginFamily::Integration,
                 PluginFamily::Integration,
                 PluginFamily::Integration,
+                PluginFamily::Integration,
             ]
         );
+    }
+
+    /// A workerd manifest with `entrypoints` and the given network grants.
+    fn workerd_reaching(entrypoints: &str, network: &str, tables: &str) -> PluginManifest {
+        PluginManifest::parse(&format!(
+            r#"
+api_version = 3
+id = "reach"
+runtime = "workerd"
+entrypoints = [{entrypoints}]
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+[capabilities.network]
+mode = "outbound"
+{network}
+{tables}
+"#
+        ))
+        .expect("valid manifest")
+    }
+
+    #[test]
+    fn non_notifiers_reaching_notification_hosts_are_flagged() {
+        let plugin = workerd_reaching(
+            r#""cli""#,
+            "domains = [\"api.example.com\", \"*.slack.com\", \"discord.com\"]\n\
+             tcp = [{ host = \"smtp.example.com\", ports = [587, 2525] }]",
+            "",
+        );
+        assert_eq!(
+            plugin.notification_hosts_requested(),
+            vec!["*.slack.com", "discord.com", "smtp.example.com:587"]
+        );
+        let notifier = workerd_reaching(
+            r#""notifier""#,
+            "domains = [\"discord.com\"]",
+            "[notifier]\ndestinations = [\"channel\"]\n",
+        );
+        assert!(notifier.notification_hosts_requested().is_empty());
+        assert!(reaches_notification_host("events.pagerduty.com"));
+        assert!(reaches_notification_host("eu.webhook.office.com"));
+        assert!(reaches_notification_host("*"));
+        assert!(!reaches_notification_host("notslack.com"));
+        assert!(!reaches_notification_host("*.example.com"));
     }
 
     /// Minimal v3 native manifest body; callers append tables.

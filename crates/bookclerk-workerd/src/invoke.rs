@@ -147,6 +147,7 @@ const INTERFACES: &[InterfaceEntry] = &[
             "deleteMany",
             "headMany",
             "changes",
+            "translateKeys",
         ],
     },
     InterfaceEntry {
@@ -176,6 +177,11 @@ const INTERFACES: &[InterfaceEntry] = &[
         id: <plugin_capnp::metadata_files::Client as HasTypeId>::TYPE_ID,
         name: "MetadataFiles",
         methods: &["health", "parse", "render"],
+    },
+    InterfaceEntry {
+        id: <plugin_capnp::notifier::Client as HasTypeId>::TYPE_ID,
+        name: "Notifier",
+        methods: &["health", "send", "validateDestination"],
     },
     InterfaceEntry {
         id: <plugin_capnp::event_consumer::Client as HasTypeId>::TYPE_ID,

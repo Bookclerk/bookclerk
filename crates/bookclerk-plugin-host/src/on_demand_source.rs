@@ -82,6 +82,8 @@ struct Identity {
     answers_price_by_isbn: bool,
     /// Whether purchase hints price by exact ASIN.
     answers_price_by_asin: bool,
+    /// The declared `[acquire]` pace.
+    acquire_pace: bookclerk_library::pacing::AcquirePace,
 }
 
 impl Identity {
@@ -101,6 +103,7 @@ impl Identity {
             answers_catalog_detail_by_product_id: guest.answers_catalog_detail_by_product_id(),
             answers_price_by_isbn: guest.answers_price_by_isbn(),
             answers_price_by_asin: guest.answers_price_by_asin(),
+            acquire_pace: guest.acquire_pace(),
         }
     }
 }
@@ -360,6 +363,10 @@ impl ContentSource for OnDemandSource {
 
     fn answers_price_by_asin(&self) -> bool {
         self.identity.answers_price_by_asin
+    }
+
+    fn acquire_pace(&self) -> bookclerk_library::pacing::AcquirePace {
+        self.identity.acquire_pace
     }
 
     async fn catalog_detail_by_isbn(

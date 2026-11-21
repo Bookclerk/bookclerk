@@ -1527,6 +1527,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-archive"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-archive",
+ "flate2",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "unicode-normalization",
+ "zip",
+]
+
+[[package]]
 name = "bookclerk-audible-catalog"
 version = "0.1.0"
 dependencies = [
@@ -1567,6 +1582,7 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "hex",
  "libc",
  "rusqlite",
  "rust_xlsxwriter",
@@ -1574,12 +1590,14 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tokio-postgres",
  "toml 1.2.1+spec-1.1.0",
  "tracing",
  "url",
+ "walkdir",
  "windows-sys 0.61.2",
  "zeroize",
 ]
@@ -1835,6 +1853,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "base64 0.23.1",
+ "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-db-exec",
  "bookclerk-naming",
@@ -1872,6 +1891,7 @@ name = "bookclerk-media"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-cover",
  "bookclerk-mp4",
@@ -1879,8 +1899,10 @@ dependencies = [
  "bookclerk-tags",
  "fdk-aac",
  "id3",
+ "lofty",
  "mp3lame-encoder",
  "mp4ameta",
+ "opusic-c",
  "serde",
  "serde_json",
  "symphonia",
@@ -2023,6 +2045,7 @@ name = "bookclerk-plugin-catalog"
 version = "0.1.0"
 dependencies = [
  "bookclerk-plugin-manifest",
+ "bookclerk-plugin-sdk",
  "bookclerk-tls",
  "chrono",
  "flate2",
@@ -2603,6 +2626,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "bookclerk-acquire",
+ "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-cover",
  "bookclerk-discover",
@@ -2617,6 +2641,7 @@ dependencies = [
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
  "bookclerk-plugin-manifest",
+ "bookclerk-resolve",
  "bookclerk-sandbox",
  "bookclerk-search",
  "bookclerk-source",
@@ -3877,6 +3902,12 @@ name = "deadpool-runtime"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
+
+[[package]]
+name = "deflate64"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac6b926516df9c60bfa16e107b21086399f8285a44ca9711344b9e553c5146e2"
 
 [[package]]
 name = "defmt"
@@ -6508,10 +6539,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "log"
-version = "0.4.33"
+name = "lofty"
+version = "0.25.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+checksum = "35d45c446382e04663705aa8e786157f64ef1fa85755d410121ffbf08f54b0db"
+dependencies = [
+ "byteorder",
+ "data-encoding",
+ "flate2",
+ "lofty_attr",
+ "log",
+ "ogg_pager",
+ "paste",
+]
+
+[[package]]
+name = "lofty_attr"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdbca1b60ba7cea959ffc84ac27f3dbdbacd6dfda168c7eabbc00e48654bb9fd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "log"
+version = "0.4.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "logos"
@@ -7603,6 +7660,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogg_pager"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "166611b491f939446e64c6be930843a31eb8e6798204ec3e9f57e084c18e7446"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7747,6 +7813,24 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "opusic-c"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89f8e9c909466f15e60277212cc4fec082c68a5e1c9f6e373eee716fec2fed47"
+dependencies = [
+ "opusic-sys",
+]
+
+[[package]]
+name = "opusic-sys"
+version = "0.7.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "986d749e9dc12035f11bf3ecc83a2a696ff7534d4143be9469a4a0faa25b9fd1"
+dependencies = [
+ "cmake",
+]
 
 [[package]]
 name = "orbclient"
@@ -10756,9 +10840,11 @@ dependencies = [
  "symphonia-codec-adpcm",
  "symphonia-codec-alac",
  "symphonia-codec-pcm",
+ "symphonia-codec-vorbis",
  "symphonia-core",
  "symphonia-format-caf",
  "symphonia-format-isomp4",
+ "symphonia-format-ogg",
  "symphonia-format-riff",
  "symphonia-metadata",
 ]
@@ -10830,6 +10916,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "symphonia-codec-vorbis"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73d90b4fcf796137cc683c538282804ff9629f8ad9dbfd881fcbba331ac4e986"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core",
+]
+
+[[package]]
 name = "symphonia-common"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10870,6 +10967,18 @@ name = "symphonia-format-isomp4"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e681a70e1870d34e02abf1dbc51e4267c3f1827801474e8870be8c689fc4dc3"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-format-ogg"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5495e7f7e3c7035328d82b6d6e377eef289bb0c4105bdeb557fc93a833f994"
 dependencies = [
  "log",
  "symphonia-common",
@@ -13686,6 +13795,7 @@ checksum = "e3476fd497ac8af5b1ec7b51acab7bef380f7e8dd8e0487595bafd839417a302"
 dependencies = [
  "constant_time_eq 0.6.1",
  "crc32fast",
+ "deflate64",
  "flate2",
  "getrandom 0.4.3",
  "indexmap 2.14.2",

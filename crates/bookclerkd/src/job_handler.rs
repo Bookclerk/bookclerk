@@ -159,6 +159,7 @@ impl JobTransport for InProcessJobTransport {
                     crate::jobs::AcquireMode {
                         force: cmd.payload.force,
                         pdf_only: cmd.payload.pdf_only,
+                        paced: cmd.payload.paced,
                     },
                     Some(&ctx),
                 )
@@ -204,6 +205,9 @@ impl JobTransport for InProcessJobTransport {
             }
             JobKind::LibraryIndexRebuild => {
                 crate::library_index::run_library_index_rebuild(&self.state, Some(&ctx)).await
+            }
+            JobKind::IngestBatch => {
+                crate::uploads::run_ingest_batch(&self.state, &cmd.payload, Some(&ctx)).await
             }
             // Only its branch takes a request, over `requests.claim`; no
             // claim path of this library hands it to a worker.

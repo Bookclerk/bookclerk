@@ -356,6 +356,24 @@ export interface DestinationChangesResults {
 }
 
 /**
+ * Params envelope of `Destination.translateKeys`.
+ *
+ * @internal
+ */
+export interface DestinationTranslateKeysParams {
+  keys: string[];
+}
+
+/**
+ * Results envelope of `Destination.translateKeys`.
+ *
+ * @internal
+ */
+export interface DestinationTranslateKeysResults {
+  result: T.TranslateKeysReply;
+}
+
+/**
  * Params envelope of `Source.open`.
  *
  * @internal
@@ -1375,6 +1393,77 @@ export interface MetadataFilesRenderResults {
 }
 
 /**
+ * Params envelope of `Notifier.health`.
+ *
+ * @internal
+ */
+export interface NotifierHealthParams {
+}
+
+/**
+ * Results envelope of `Notifier.health`.
+ *
+ * @internal
+ */
+export interface NotifierHealthResults {
+  result: T.HealthReply;
+}
+
+/**
+ * Params envelope of `Notifier.send`.
+ *
+ * @internal
+ */
+export interface NotifierSendParams {
+  params: T.NotifySendParams;
+}
+
+/**
+ * Results envelope of `Notifier.send`.
+ *
+ * @internal
+ */
+export interface NotifierSendResults {
+  result: T.NotifySendReply;
+}
+
+/**
+ * Params envelope of `Notifier.validateDestination`.
+ *
+ * @internal
+ */
+export interface NotifierValidateDestinationParams {
+  params: T.NotifyValidateParams;
+}
+
+/**
+ * Results envelope of `Notifier.validateDestination`.
+ *
+ * @internal
+ */
+export interface NotifierValidateDestinationResults {
+  result: T.NotifyValidateReply;
+}
+
+/**
+ * Params envelope of `NotificationRaiser.raise`.
+ *
+ * @internal
+ */
+export interface NotificationRaiserRaiseParams {
+  params: T.NotifyRaiseParams;
+}
+
+/**
+ * Results envelope of `NotificationRaiser.raise`.
+ *
+ * @internal
+ */
+export interface NotificationRaiserRaiseResults {
+  result: T.NotifyRaiseReply;
+}
+
+/**
  * Params envelope of `Database.openSession`.
  *
  * @internal
@@ -2275,6 +2364,26 @@ export const HeadManyResultCodec: StructCodec<T.HeadManyResult> = {
 };
 
 /**
+ * Wire codec for `TranslateKeysResult` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const TranslateKeysResultCodec: StructCodec<T.TranslateKeysResult> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0),
+    };
+  },
+};
+
+/**
  * Wire codec for `ChangesRequest` (1 data words, 1 pointers).
  *
  * @internal
@@ -2542,13 +2651,13 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
 };
 
 /**
- * Wire codec for `Bindings` (0 data words, 10 pointers).
+ * Wire codec for `Bindings` (0 data words, 11 pointers).
  *
  * @internal
  */
 export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
-  pointerCount: 10,
+  pointerCount: 11,
   write(s, v, caps) {
     if (v.config != null) {
       ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
@@ -2592,6 +2701,9 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (v.sockets != null) {
       s.setCap(9, caps.exportCap(v.sockets));
     }
+    if (v.notify != null) {
+      s.setCap(10, caps.exportCap(v.notify));
+    }
   },
   read(s, caps) {
     const out: T.Bindings = {
@@ -2618,18 +2730,22 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (!(socketsValue == null)) {
       out.sockets = socketsValue;
     }
+    const notifyValue = caps.importCap(s.getCapIndex(10)) as T.NotificationRaiser;
+    if (!(notifyValue == null)) {
+      out.notify = notifyValue;
+    }
     return out;
   },
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 14 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 15 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 14,
+  pointerCount: 15,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -2672,6 +2788,9 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     }
     if (v.metadataFiles != null) {
       s.setCap(13, caps.exportCap(v.metadataFiles));
+    }
+    if (v.notifier != null) {
+      s.setCap(14, caps.exportCap(v.notifier));
     }
   },
   read(s, caps) {
@@ -2733,6 +2852,10 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(metadataFilesValue == null)) {
       out.metadataFiles = metadataFilesValue;
     }
+    const notifierValue = caps.importCap(s.getCapIndex(14)) as T.Notifier;
+    if (!(notifierValue == null)) {
+      out.notifier = notifierValue;
+    }
     return out;
   },
 };
@@ -2750,7 +2873,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 14), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 15), v.value, caps);
         }
         break;
       case "err":
@@ -2767,7 +2890,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 14), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 15), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -3823,6 +3946,45 @@ export const HeadManyReplyCodec: StructCodec<T.HeadManyReply> = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HeadManyReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `TranslateKeysReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const TranslateKeysReplyCodec: StructCodec<T.TranslateKeysReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          TranslateKeysResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("TranslateKeysReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: TranslateKeysResultCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("TranslateKeysReply", disc);
     }
   },
 };
@@ -8636,6 +8798,418 @@ export const MetadataFileRenderReplyCodec: StructCodec<T.MetadataFileRenderReply
 };
 
 /**
+ * Wire codec for `NotificationField` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const NotificationFieldCodec: StructCodec<T.NotificationField> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setText(1, v.value ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      value: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `NotificationMessage` (1 data words, 10 pointers).
+ *
+ * @internal
+ */
+export const NotificationMessageCodec: StructCodec<T.NotificationMessage> = {
+  dataWords: 1,
+  pointerCount: 10,
+  write(s, v, caps) {
+    s.setText(0, v.notificationId ?? "");
+    s.setText(1, v.notificationType ?? "");
+    s.setUint16(0, ord(A.NOTIFICATION_SEVERITYS, v.severity ?? A.NOTIFICATION_SEVERITYS[0]!, "NotificationSeverity"));
+    s.setText(2, v.title ?? "");
+    s.setText(3, v.text ?? "");
+    if (v.markdown !== undefined) {
+      s.setText(4, v.markdown ?? "");
+    }
+    if (v.html !== undefined) {
+      s.setText(5, v.html ?? "");
+    }
+    if (v.link !== undefined) {
+      s.setText(6, v.link ?? "");
+    }
+    {
+      const list = v.fields ?? [];
+      const items = s.initStructList(7, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        NotificationFieldCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.groupKey !== undefined) {
+      s.setText(8, v.groupKey ?? "");
+    }
+    s.setUint16(1, ord(A.NOTIFICATION_ALERT_ACTIONS, v.alertAction ?? A.NOTIFICATION_ALERT_ACTIONS[0]!, "NotificationAlertAction"));
+    if (v.alertKey !== undefined) {
+      s.setText(9, v.alertKey ?? "");
+    }
+    s.setBool(32, v.sensitive ?? false);
+  },
+  read(s, caps) {
+    const out: T.NotificationMessage = {
+      notificationId: s.getText(0),
+      notificationType: s.getText(1),
+      severity: fromOrd(A.NOTIFICATION_SEVERITYS, s.getUint16(0), "NotificationSeverity"),
+      title: s.getText(2),
+      text: s.getText(3),
+      fields: s.getStructList(7, 0, 2).map((item) => NotificationFieldCodec.read(item, caps)),
+      alertAction: fromOrd(A.NOTIFICATION_ALERT_ACTIONS, s.getUint16(1), "NotificationAlertAction"),
+      sensitive: s.getBool(32),
+    };
+    const markdownValue = s.getText(4);
+    if (!(markdownValue === "")) {
+      out.markdown = markdownValue;
+    }
+    const htmlValue = s.getText(5);
+    if (!(htmlValue === "")) {
+      out.html = htmlValue;
+    }
+    const linkValue = s.getText(6);
+    if (!(linkValue === "")) {
+      out.link = linkValue;
+    }
+    const groupKeyValue = s.getText(8);
+    if (!(groupKeyValue === "")) {
+      out.groupKey = groupKeyValue;
+    }
+    const alertKeyValue = s.getText(9);
+    if (!(alertKeyValue === "")) {
+      out.alertKey = alertKeyValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `NotifyDestination` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const NotifyDestinationCodec: StructCodec<T.NotifyDestination> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(A.NOTIFY_DESTINATION_KINDS, v.kind ?? A.NOTIFY_DESTINATION_KINDS[0]!, "NotifyDestinationKind"));
+    s.setText(0, v.destinationId ?? "");
+    s.setText(1, v.addressJson ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      kind: fromOrd(A.NOTIFY_DESTINATION_KINDS, s.getUint16(0), "NotifyDestinationKind"),
+      destinationId: s.getText(0),
+      addressJson: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `NotifySendParams` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const NotifySendParamsCodec: StructCodec<T.NotifySendParams> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.message != null) {
+      NotificationMessageCodec.write(s.initStruct(0, 1, 10), v.message, caps);
+    }
+    if (v.destination != null) {
+      NotifyDestinationCodec.write(s.initStruct(1, 1, 2), v.destination, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      message: NotificationMessageCodec.read(s.getStruct(0, 1, 10), caps),
+      destination: NotifyDestinationCodec.read(s.getStruct(1, 1, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `NotifySent` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifySentCodec: StructCodec<T.NotifySent> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    if (v.providerId !== undefined) {
+      s.setText(0, v.providerId ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.NotifySent = {
+    };
+    const providerIdValue = s.getText(0);
+    if (!(providerIdValue === "")) {
+      out.providerId = providerIdValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `NotifySendReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifySendReplyCodec: StructCodec<T.NotifySendReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          NotifySentCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("NotifySendReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: NotifySentCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("NotifySendReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `NotifyValidateParams` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifyValidateParamsCodec: StructCodec<T.NotifyValidateParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.addressJson ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      addressJson: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `NotifyValidated` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const NotifyValidatedCodec: StructCodec<T.NotifyValidated> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.addressJson ?? "");
+    if (v.label !== undefined) {
+      s.setText(1, v.label ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.NotifyValidated = {
+      addressJson: s.getText(0),
+    };
+    const labelValue = s.getText(1);
+    if (!(labelValue === "")) {
+      out.label = labelValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `NotifyValidateReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifyValidateReplyCodec: StructCodec<T.NotifyValidateReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          NotifyValidatedCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("NotifyValidateReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: NotifyValidatedCodec.read(s.getStruct(0, 0, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("NotifyValidateReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `NotifyRaiseParams` (1 data words, 6 pointers).
+ *
+ * @internal
+ */
+export const NotifyRaiseParamsCodec: StructCodec<T.NotifyRaiseParams> = {
+  dataWords: 1,
+  pointerCount: 6,
+  write(s, v, caps) {
+    s.setText(0, v.notificationType ?? "");
+    {
+      const list = v.fields ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        NotificationFieldCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.patronId !== undefined) {
+      s.setText(2, v.patronId ?? "");
+    }
+    if (v.linkPath !== undefined) {
+      s.setText(3, v.linkPath ?? "");
+    }
+    if (v.groupKey !== undefined) {
+      s.setText(4, v.groupKey ?? "");
+    }
+    s.setUint16(0, ord(A.NOTIFICATION_ALERT_ACTIONS, v.alertAction ?? A.NOTIFICATION_ALERT_ACTIONS[0]!, "NotificationAlertAction"));
+    if (v.alertKey !== undefined) {
+      s.setText(5, v.alertKey ?? "");
+    }
+  },
+  read(s, caps) {
+    const out: T.NotifyRaiseParams = {
+      notificationType: s.getText(0),
+      fields: s.getStructList(1, 0, 2).map((item) => NotificationFieldCodec.read(item, caps)),
+      alertAction: fromOrd(A.NOTIFICATION_ALERT_ACTIONS, s.getUint16(0), "NotificationAlertAction"),
+    };
+    const patronIdValue = s.getText(2);
+    if (!(patronIdValue === "")) {
+      out.patronId = patronIdValue;
+    }
+    const linkPathValue = s.getText(3);
+    if (!(linkPathValue === "")) {
+      out.linkPath = linkPathValue;
+    }
+    const groupKeyValue = s.getText(4);
+    if (!(groupKeyValue === "")) {
+      out.groupKey = groupKeyValue;
+    }
+    const alertKeyValue = s.getText(5);
+    if (!(alertKeyValue === "")) {
+      out.alertKey = alertKeyValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `NotifyRaised` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifyRaisedCodec: StructCodec<T.NotifyRaised> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.notificationId ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      notificationId: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `NotifyRaiseReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifyRaiseReplyCodec: StructCodec<T.NotifyRaiseReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          NotifyRaisedCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("NotifyRaiseReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: NotifyRaisedCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("NotifyRaiseReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `SocketFrame` (1 data words, 1 pointers).
  *
  * @internal
@@ -10991,6 +11565,46 @@ export const DestinationChangesResultsCodec: StructCodec<DestinationChangesResul
 };
 
 /**
+ * Wire codec for the `Destination.translateKeys` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationTranslateKeysParamsCodec: StructCodec<DestinationTranslateKeysParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.keys ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      keys: s.getTextList(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Destination.translateKeys` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DestinationTranslateKeysResultsCodec: StructCodec<DestinationTranslateKeysResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      TranslateKeysReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: TranslateKeysReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `Source.open` params envelope (0 data words, 1 pointers).
  *
  * @internal
@@ -13299,6 +13913,166 @@ export const MetadataFilesRenderResultsCodec: StructCodec<MetadataFilesRenderRes
 };
 
 /**
+ * Wire codec for the `Notifier.health` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const NotifierHealthParamsCodec: StructCodec<NotifierHealthParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `Notifier.health` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifierHealthResultsCodec: StructCodec<NotifierHealthResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HealthReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Notifier.send` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifierSendParamsCodec: StructCodec<NotifierSendParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      NotifySendParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: NotifySendParamsCodec.read(s.getStruct(0, 0, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Notifier.send` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifierSendResultsCodec: StructCodec<NotifierSendResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      NotifySendReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: NotifySendReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Notifier.validateDestination` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifierValidateDestinationParamsCodec: StructCodec<NotifierValidateDestinationParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      NotifyValidateParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: NotifyValidateParamsCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Notifier.validateDestination` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifierValidateDestinationResultsCodec: StructCodec<NotifierValidateDestinationResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      NotifyValidateReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: NotifyValidateReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `NotificationRaiser.raise` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotificationRaiserRaiseParamsCodec: StructCodec<NotificationRaiserRaiseParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      NotifyRaiseParamsCodec.write(s.initStruct(0, 1, 6), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: NotifyRaiseParamsCodec.read(s.getStruct(0, 1, 6), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `NotificationRaiser.raise` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotificationRaiserRaiseResultsCodec: StructCodec<NotificationRaiserRaiseResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      NotifyRaiseReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: NotifyRaiseReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `Database.openSession` params envelope (0 data words, 0 pointers).
  *
  * @internal
@@ -14035,13 +14809,13 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
       InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
     }
     if (v.bindings != null) {
-      BindingsCodec.write(s.initStruct(1, 0, 10), v.bindings, caps);
+      BindingsCodec.write(s.initStruct(1, 0, 11), v.bindings, caps);
     }
   },
   read(s, caps) {
     return {
       invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
-      bindings: BindingsCodec.read(s.getStruct(1, 0, 10), caps),
+      bindings: BindingsCodec.read(s.getStruct(1, 0, 11), caps),
     };
   },
 };

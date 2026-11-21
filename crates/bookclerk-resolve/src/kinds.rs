@@ -181,6 +181,9 @@ stored_enum! {
         Loan => "loan",
         /// Given away by the store.
         Free => "free",
+        /// The holder's own copy, uploaded by them rather than bought from
+        /// a store (a `core.import` listing).
+        Own => "own",
     }
 }
 

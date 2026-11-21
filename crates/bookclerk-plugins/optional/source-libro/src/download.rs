@@ -1,7 +1,7 @@
 //! Download Libro.fm title materials (M4B or MP3 zip parts) into a cache dir.
 
 use std::fs::File;
-use std::io::{copy, Cursor, Write};
+use std::io::{copy, Read, Write};
 use std::path::{Path, PathBuf};
 
 use bookclerk_storefront::{PlainAudioPart, PlainFetch};
@@ -133,14 +133,13 @@ fn parts_look_like_zip(parts: &[DownloadPart]) -> bool {
 
 /// Downloads one M4B into `title_dir`, using the URL filename or `book.m4b`.
 async fn download_m4b(client: &LibroClient, url: &str, title_dir: &Path) -> Result<PathBuf> {
-    let bytes = client.download_bytes(url).await?;
     let filename = filename_from_url(url).unwrap_or_else(|| "book.m4b".into());
     let path = title_dir.join(sanitize_filename(&filename));
-    std::fs::write(&path, &bytes)?;
+    client.download_to_file(url, &path).await?;
     Ok(path)
 }
 
-/// Downloads each manifest part, extracting zip audio or writing a sniffed file.
+/// Downloads each manifest part, extracting zip audio or keeping a sniffed file.
 async fn download_mp3_parts(
     client: &LibroClient,
     manifest: &DownloadManifest,
@@ -155,8 +154,9 @@ async fn download_mp3_parts(
     let mut audio_parts = Vec::new();
 
     for (idx, part) in manifest.parts.iter().enumerate() {
-        let bytes = client.download_bytes(&part.url).await?;
-        let extracted = extract_or_write_part(&bytes, &parts_dir, idx)?;
+        let download = parts_dir.join(format!("part-{idx:03}.download"));
+        client.download_to_file(&part.url, &download).await?;
+        let extracted = extract_or_keep_part(&download, &parts_dir, idx)?;
         for path in extracted {
             let title = path
                 .file_stem()
@@ -174,25 +174,31 @@ async fn download_mp3_parts(
     Ok(audio_parts)
 }
 
-/// Extracts audio from a zip part, or writes raw bytes with a sniffed extension.
-fn extract_or_write_part(bytes: &[u8], parts_dir: &Path, idx: usize) -> Result<Vec<PathBuf>> {
-    match ZipArchive::new(Cursor::new(bytes)) {
+/// Extracts audio from a downloaded zip part (then removes the zip), or
+/// renames a raw part to a sniffed audio extension.
+fn extract_or_keep_part(download: &Path, parts_dir: &Path, idx: usize) -> Result<Vec<PathBuf>> {
+    let opened = ZipArchive::new(File::open(download)?);
+    match opened {
         Ok(mut archive) => {
             let out = extract_zip_audio(&mut archive, parts_dir, idx)?;
+            drop(archive);
             if out.is_empty() {
                 let zip_path = parts_dir.join(format!("part-{idx:03}.zip"));
-                std::fs::write(&zip_path, bytes)?;
+                std::fs::rename(download, &zip_path)?;
                 return Err(LibroError::download(format!(
                     "zip part {idx} contained no audio files (saved at {})",
                     zip_path.display()
                 )));
             }
+            std::fs::remove_file(download)?;
             Ok(out)
         }
         Err(_) => {
-            let ext = sniff_audio_ext(bytes).unwrap_or("bin");
+            let mut head = Vec::with_capacity(8192);
+            File::open(download)?.take(8192).read_to_end(&mut head)?;
+            let ext = sniff_audio_ext(&head).unwrap_or("bin");
             let path = parts_dir.join(format!("part-{idx:03}.{ext}"));
-            std::fs::write(&path, bytes)?;
+            std::fs::rename(download, &path)?;
             Ok(vec![path])
         }
     }

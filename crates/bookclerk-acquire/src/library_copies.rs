@@ -277,7 +277,7 @@ fn known_ext(name: &str, known: &[&'static str]) -> Option<&'static str> {
 
 /// Audio containers a copy's audio may be in: the ones the tag reader
 /// understands.
-const AUDIO_EXTS: [&str; 5] = ["m4b", "m4a", "mp4", "mp3", "flac"];
+const AUDIO_EXTS: [&str; 8] = ["m4b", "m4a", "mp4", "mp3", "flac", "opus", "ogg", "oga"];
 
 /// Image types a copy's cover may be.
 const COVER_EXTS: [&str; 3] = ["jpg", "jpeg", "png"];
@@ -538,7 +538,7 @@ pub(crate) mod tests {
             let content_type = match ext.as_deref() {
                 Some("flac") => "audio/flac",
                 Some("mp3") => "audio/mpeg",
-                Some("ogg") => "audio/ogg",
+                Some("ogg" | "oga" | "opus") => "audio/ogg",
                 _ => "audio/mp4",
             };
             bookclerk_library::FileProbe {
@@ -795,7 +795,7 @@ pub(crate) mod tests {
         assert_eq!(plan_files(&[listed("a.mp3", FileRole::Part, 1)], PDF), None);
         // Audio of a kind the tag reader does not know, or with no
         // extension at all.
-        for name in ["Book.ogg", "Book", "Book.mp3.exe", ".m4b/Book"] {
+        for name in ["Book.wav", "Book", "Book.mp3.exe", ".m4b/Book"] {
             assert_eq!(
                 plan_files(&[listed(name, FileRole::Audio, 1)], PDF),
                 None,

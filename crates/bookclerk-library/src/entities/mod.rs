@@ -9,7 +9,9 @@
 //! `ActiveModel`) for the majority of CRUD.
 
 pub mod account_credential_revisions;
+pub mod account_downloads;
 pub mod account_links;
+pub mod account_pace;
 pub mod account_scan_state;
 pub mod account_shares;
 pub mod accounts;
@@ -50,6 +52,8 @@ pub mod event_subscriber_nodes;
 pub mod expressions;
 pub mod holdings;
 pub mod ignored_titles;
+pub mod ingest_batches;
+pub mod ingest_members;
 pub mod job_secret_handoffs;
 pub mod job_temp_paths;
 pub mod jobs;
