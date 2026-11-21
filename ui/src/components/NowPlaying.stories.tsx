@@ -65,6 +65,21 @@ export const PlayingWithBookmarks: Story = {
   },
 };
 
+/** A book with parts and chapters, part way through the second chapter. */
+export const WithChapters: Story = {
+  args: {
+    state: {
+      ...paused,
+      chapters: [
+        { title: "Part One", start_ms: 0, end_ms: 0, depth: 0 },
+        { title: "The Harbour", start_ms: 0, end_ms: 25 * 60_000, depth: 1 },
+        { title: "The Map", start_ms: 25 * 60_000, end_ms: 70 * 60_000, depth: 1 },
+        { title: "Part Two", start_ms: 70 * 60_000, end_ms: 10 * 3_600_000, depth: 0 },
+      ],
+    },
+  },
+};
+
 /** Waiting for the stream: the middle button shows the throbber. */
 export const Loading: Story = { args: { state: { ...paused, status: "loading" } } };
 
