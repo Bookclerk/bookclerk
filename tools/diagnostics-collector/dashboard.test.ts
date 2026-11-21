@@ -574,7 +574,8 @@ describe("routing", () => {
     assert.equal(home.headers.get("cache-control"), "no-store");
     const homePage = await home.text();
     assert.match(homePage, /Sign in with GitHub/);
-    assert.match(homePage, /Looking to view your report\? <a href="\/lookup">/);
+    assert.match(homePage, /Looking for a report you sent\?/);
+    assert.match(homePage, /<a class="button outline" href="\/lookup">/);
     for (const p of ["/dash", "/reports", "/issues", `/reports/${ID1}`]) {
       const res = await call(env, new Request(ORIGIN + p));
       assert.equal(res.status, 303, p);

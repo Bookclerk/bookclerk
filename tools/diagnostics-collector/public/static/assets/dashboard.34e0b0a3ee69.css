@@ -434,13 +434,32 @@ select:focus-visible {
   user-select: all;
   -webkit-user-select: all;
 }
-/* Under the sign-in card, for a report's sender who landed here by mistake. */
+/* Under the sign-in card, for a report's sender who landed here by mistake:
+   no card of its own and an outline button, so the sign-in card stays the
+   page's main action. */
 .lookup-cta {
   width: min(460px, 100%);
-  margin-top: 16px;
-  padding: 14px 28px;
-  font-size: 14px;
+  margin-top: 28px;
+  padding: 0 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.lookup-cta h2 {
+  font-size: 20px;
+}
+.lookup-cta p {
   color: var(--ink-soft);
+}
+.button.outline {
+  color: var(--ink);
+  background: transparent;
+  border: 1.5px solid var(--ink);
+}
+.button.outline:hover {
+  color: var(--ink);
+  background: var(--card);
+  opacity: 1;
 }
 .notice {
   border: 1px dashed var(--fold);

@@ -288,7 +288,11 @@ export function signInPage(
       )}Sign in with GitHub</a>
       <p class="fine">GitHub asks only to confirm who you are. Bookclerk checks your organization membership on its side and does not keep your GitHub token. Sessions last 8 hours.${policy}</p>
     </div>
-    <p class="card lookup-cta">Looking to view your report? <a href="/lookup">Look up a report you sent</a> with its ID and access code.</p>`,
+    <section class="lookup-cta" aria-labelledby="lookup-cta-title">
+      <h2 id="lookup-cta-title">Looking for a report you sent?</h2>
+      <p>Open it with the report ID and access code Bookclerk gave you. No sign-in needed.</p>
+      <a class="button outline" href="/lookup">Look up your report</a>
+    </section>`,
   });
 }
 
