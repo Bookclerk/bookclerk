@@ -1,5 +1,6 @@
 //! Replays the checked-in `granted_http`, `workerd_control`, `socket_broker`,
-//! `socket_route`, `egress_bridge` and `egress_relay_head` fuzz corpora in
+//! `socket_route`, `webhook_route`, `webhook_request`, `egress_bridge` and
+//! `egress_relay_head` fuzz corpora in
 //! PR CI (no libFuzzer required), so an input that once broke one of them
 //! stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
@@ -490,6 +491,84 @@ fn socket_route_seeds_are_current() {
     }
 }
 
+/// The `webhook_route` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/webhook_route.rs"]
+mod webhook_route_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/webhook_route.rs` with the shared oracle.
+// Test code: an unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_webhook_route_holds_invariants() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/webhook_route")
+        .canonicalize()
+        .expect("canonicalize webhook_route corpus");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("webhook_route corpus")
+        .map(|entry| entry.expect("entry").path())
+        .filter_map(|path| path.canonicalize().ok())
+        .filter(|path| path.starts_with(&dir) && path.is_file())
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "empty webhook_route corpus");
+    for path in files {
+        webhook_route_oracle::check(&std::fs::read(&path).expect("read"));
+    }
+}
+
+/// Seeds for `webhook_route`. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn webhook_route_seeds_are_current() {
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        ("url.bin", route_seed(0, r#"{"name":"events"}"#)),
+        ("url_bad_name.bin", route_seed(0, r#"{"name":"-x"}"#)),
+        (
+            "pull.bin",
+            route_seed(
+                1,
+                r#"{"name":"events","batchSize":10,"visibilityTimeoutMs":30000}"#,
+            ),
+        ),
+        (
+            "pull_zero_batch.bin",
+            route_seed(1, r#"{"name":"events","batchSize":0}"#),
+        ),
+        (
+            "pull_extra_field.bin",
+            route_seed(1, r#"{"name":"events","batchSize":1,"instance":"x"}"#),
+        ),
+        (
+            "ack.bin",
+            route_seed(2, r#"{"name":"events","acks":["l1"],"retries":["l2"]}"#),
+        ),
+        (
+            "ack_overlap.bin",
+            route_seed(2, r#"{"name":"events","acks":["l1"],"retries":["l1"]}"#),
+        ),
+        ("ack_array.bin", route_seed(2, r#"["events",["l1"],[]]"#)),
+        ("unknown_op.bin", route_seed(7, "{}")),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/webhook_route");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+    }
+    for (name, seed) in seeds {
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
+}
+
 /// The `egress_bridge` oracle, shared with the fuzz target: the Rust
 /// `EgressPolicy` side of the differential against the workerd egress gate
 /// (`bridge/egress.js`). It derives every probe of every seed with the Rust
@@ -645,5 +724,123 @@ fn fuzz_corpus_egress_relay_head_holds_the_oracle() {
     for path in egress_relay_head_corpus() {
         let data = std::fs::read(&path).expect("read");
         egress_relay_head_oracle::check(&data);
+    }
+}
+
+#[path = "../../../fuzz/oracles/webhook_request.rs"]
+mod webhook_request_oracle;
+
+/// Regular files directly under `fuzz/corpus/webhook_request/`,
+/// canonicalized and confined to that directory.
+// Test helper: a missing corpus is a failed test, not a handled error.
+#[allow(clippy::expect_used)]
+fn webhook_request_corpus() -> Vec<PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/webhook_request")
+        .canonicalize()
+        .expect("canonicalize webhook_request corpus");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("webhook_request corpus")
+        .map(|entry| entry.expect("entry").path())
+        .filter_map(|path| path.canonicalize().ok())
+        .filter(|path| path.starts_with(&dir) && path.is_file())
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "empty webhook_request corpus");
+    files
+}
+
+/// Mirrors `fuzz/fuzz_targets/webhook_request.rs` with the shared oracle.
+// Test code: an unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_webhook_request_holds_invariants() {
+    for path in webhook_request_corpus() {
+        webhook_request_oracle::check(&std::fs::read(&path).expect("read"));
+    }
+}
+
+/// One seed: the mode byte, then the secret, the body and header pairs
+/// joined by `0xff`, each pair `name 0x00 value`.
+fn request_seed(mode: u8, secret: &[u8], body: &[u8], headers: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = vec![mode];
+    out.extend_from_slice(secret);
+    out.push(0xff);
+    out.extend_from_slice(body);
+    for (name, value) in headers {
+        out.push(0xff);
+        out.extend_from_slice(name.as_bytes());
+        out.push(0);
+        out.extend_from_slice(value);
+    }
+    out
+}
+
+/// Seeds for `webhook_request`. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed I/O is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn webhook_request_seeds_are_current() {
+    let json: &[(&str, &[u8])] = &[("Content-Type", b"application/json")];
+    let seeds: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "unsigned.bin",
+            request_seed(
+                0,
+                b"",
+                b"{}",
+                &[
+                    ("Content-Type", b"application/json"),
+                    ("X-Event", b"object.created"),
+                    ("Authorization", b"Bearer dropped"),
+                ],
+            ),
+        ),
+        (
+            "hex_signed.bin",
+            request_seed(1 | 4, b"secret", b"{\"a\":1}", json),
+        ),
+        (
+            "prefixed_signed.bin",
+            request_seed(2 | 4, b"secret", b"{}", json),
+        ),
+        (
+            "base64_signed.bin",
+            request_seed(3 | 4, b"secret", b"{}", json),
+        ),
+        (
+            "wrong_signature.bin",
+            request_seed(1, b"secret", b"{}", &[("x-signature", b"00ff")]),
+        ),
+        ("no_secret.bin", request_seed(1 | 4, b"", b"{}", json)),
+        ("oversize.bin", request_seed(0, b"", &[b'a'; 257], json)),
+        (
+            "repeated_signature.bin",
+            request_seed(1 | 4, b"secret", b"{}", &[("X-Signature", b"00")]),
+        ),
+        (
+            "control_value.bin",
+            request_seed(0, b"", b"{}", &[("x-timestamp", b"1\x012")]),
+        ),
+        (
+            "long_key.bin",
+            request_seed(3 | 4, &[b'k'; 100], b"{}", json),
+        ),
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/webhook_request");
+    if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+        std::fs::create_dir_all(&dir).expect("corpus dir");
+    }
+    for (name, seed) in seeds {
+        let path = dir.join(name);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
     }
 }

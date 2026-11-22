@@ -1,8 +1,6 @@
 //! `bookclerk library` — scan, acquire, accounts, set-status, get-license, search, export.
 
-use bookclerk_acquire::{
-    convert_book, match_storage_to_library, AcquireRequest, ConvertRequest, MatchStorageOptions,
-};
+use bookclerk_acquire::{match_storage_to_library, AcquireRequest, MatchStorageOptions};
 use bookclerk_config::{AudioQuality, Config};
 use bookclerk_library::control_plane::{
     library_collections, set_library_collections, ConfigActor, LibraryCollection,
@@ -18,7 +16,6 @@ use clap::Subcommand;
 use crate::commands::export::{load_rows, write_export};
 use crate::commands::queued;
 use crate::format_out;
-use crate::progress::BatchProgress;
 use crate::registry::{open_host, resolve_source, sources};
 
 /// How long a CLI rebuild of the search index waits while a running daemon
@@ -267,16 +264,25 @@ pub enum LibraryCommand {
         /// Filter by acquire status (`acquired`, `not_downloaded`, …).
         status: Option<String>,
     },
-    /// Convert acquired m4b/m4a to mp3.
+    /// Add another copy of stored books, made from the copy the library
+    /// holds and kept beside it (queued for the daemon, like acquire).
     Convert {
         #[arg(long)]
         /// Limit conversion to this account id, stem, or nickname.
         account: Option<String>,
+        #[arg(long, value_name = "FORMAT:QUALITY", value_parser = parse_copy)]
+        /// The copy to add, as `output.copies` writes it (`mp3:64k-mono`,
+        /// `m4b:original`, `opus:32k`). Defaults to an MP3 at the
+        /// library's `output.lame` quality.
+        to: Option<bookclerk_config::OutputCopy>,
         #[arg(short, long)]
-        /// Re-encode even when an MP3 already exists in storage.
+        /// Make the copy again when the book already has it.
         force: bool,
-        #[arg(value_name = "ASIN")]
-        /// Title ids to convert; empty means all acquired titles matching the account filter.
+        #[arg(long)]
+        /// Queue the jobs and print their ids without waiting.
+        no_wait: bool,
+        #[arg(value_name = "ID", required = true)]
+        /// Title ids (uuid, ASIN, ISBN, product id) of the books to convert.
         asins: Vec<String>,
     },
     /// Manage saved quick filters.
@@ -315,6 +321,15 @@ pub(crate) enum CollectionsCommand {
         #[arg(long = "collection", value_name = "NAME=PREFIXES")]
         collections: Vec<String>,
     },
+}
+
+/// Reads `--to` for `library convert`: one copy written `format:quality`.
+///
+/// # Errors
+///
+/// Returns the reason the text names no copy.
+fn parse_copy(arg: &str) -> Result<bookclerk_config::OutputCopy, String> {
+    bookclerk_config::OutputCopy::parse(arg).map_err(|err| err.to_string())
 }
 
 /// Parses `NAME=PREFIX[,PREFIX…]` into a collection (validated on write).
@@ -767,50 +782,31 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
         }
         LibraryCommand::Convert {
             account,
+            to,
             force,
+            no_wait,
             asins,
         } => {
-            let storage = storage_for_host(&host).await?;
-            let filter: Vec<String> = asins.into_iter().map(|a| a.to_ascii_uppercase()).collect();
-            // One title per edition: the one that acquired it, whose status
-            // write moves the edition's key.
-            let targets =
-                convert_targets(library_titles(&store, account.as_deref()).await?, &filter);
-            if targets.is_empty() {
-                eprintln!("nothing to convert");
-                return Ok(());
-            }
-            paths.ensure_dirs()?;
-            let req = ConvertRequest {
-                cache_dir: config.download_cache_dir(),
-                force,
-                lame: config.output.lame.clone(),
-                max_sample_rate: config.output.max_sample_rate,
-                job_id: None,
-                temp_quota_bytes: Some(config.jobs.temp_quota_bytes),
-                cancel: None,
+            let copy = match to {
+                Some(copy) => copy,
+                None => bookclerk_config::OutputCopy::main(
+                    bookclerk_config::OutputFormat::SingleMp3,
+                    &config.output.lame,
+                )
+                .ok_or_else(|| anyhow::anyhow!("the MP3 copy has no quality"))?,
             };
-            let total = targets.len();
-            let mut batch = BatchProgress::new(total, "convert");
-            let mut converted = 0u32;
-            let mut failed = 0u32;
-            for (idx, book) in targets.into_iter().enumerate() {
-                batch.set(idx + 1, book.asin_or_isbn());
-                match convert_book(&store, storage.as_ref(), &book, &req).await {
-                    Ok(key) => {
-                        println!("converted {} -> {}", book.asin_or_isbn(), key);
-                        converted += 1;
-                    }
-                    Err(err) => {
-                        eprintln!("convert {}: {err}", book.asin_or_isbn());
-                        failed += 1;
-                    }
-                }
-            }
-            batch.finish();
-            if failed > 0 {
-                anyhow::bail!("convert finished with {failed} failure(s) (converted={converted})");
-            }
+            queued::convert(
+                &store,
+                config,
+                queued::ConvertArgs {
+                    titles: &asins,
+                    account: account.as_deref(),
+                    copy: &copy,
+                    force,
+                    wait: !no_wait,
+                },
+            )
+            .await?;
             Ok(())
         }
         LibraryCommand::Filters { command } => match command {
@@ -1391,18 +1387,6 @@ fn list_lines(titles: &[AcquireTitle], status: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// The titles `library convert` converts: one per acquired edition, the
-/// title whose acquire wrote the edition's audio state (so its status write
-/// moves the edition's key), narrowed to those `filter` names when it is
-/// not empty.
-fn convert_targets(titles: Vec<AcquireTitle>, filter: &[String]) -> Vec<AcquireTitle> {
-    titles
-        .into_iter()
-        .filter(|title| filter.is_empty() || filter.iter().any(|id| title_id_matches(title, id)))
-        .filter(|title| title.status == AcquireStatus::Acquired && title.acquired_here())
-        .collect()
-}
-
 /// The id a title is printed under: its ASIN, else its ISBN, else its
 /// store product id.
 fn title_label(title: &AcquireTitle) -> &str {
@@ -1426,12 +1410,6 @@ fn title_id_matches(book: &AcquireTitle, id: &str) -> bool {
             .asin
             .as_ref()
             .is_some_and(|a| id.eq_ignore_ascii_case(a))
-}
-
-/// Storage backend over the destination deployments present on this host.
-async fn storage_for_host(host: &HostControlPlane) -> anyhow::Result<Box<dyn StorageBackend>> {
-    let destinations = crate::registry::destinations(host).await?;
-    Ok(bookclerk_plugin_host::build_storage_backend(&destinations)?)
 }
 
 /// Listing backend plus the primary destination's download options, so a
@@ -1560,21 +1538,6 @@ mod tests {
             vec!["B0LIST0001\tacquired\tFirst\ta/First.m4b".to_string()]
         );
         assert_eq!(library_titles(&store, None).await.unwrap().len(), 4);
-    }
-
-    /// Convert takes the acquired title, by any id that names it.
-    #[tokio::test]
-    async fn convert_takes_the_acquired_title_by_any_id() {
-        let store = library().await;
-        let titles = library_titles(&store, None).await.unwrap();
-        let all = convert_targets(titles.clone(), &[]);
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].product_id, "B0LIST0001");
-        let holding = all[0].holding_id.clone();
-        for id in [holding, "b0list0001".to_string()] {
-            assert_eq!(convert_targets(titles.clone(), &[id]).len(), 1);
-        }
-        assert!(convert_targets(titles, &["B0LIST0002".into()]).is_empty());
     }
 
     /// A title is labelled by ASIN, else ISBN, else product id.

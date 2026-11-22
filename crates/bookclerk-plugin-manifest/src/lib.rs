@@ -58,6 +58,7 @@ pub mod id;
 pub mod logo;
 pub mod setting_network;
 pub mod types;
+pub mod webhooks;
 pub mod workerd_contract;
 
 pub use address::{
@@ -84,6 +85,12 @@ pub use setting_network::{
     derive_setting_destination, DestinationScope, SettingDestination, SettingDestinationError,
 };
 pub use types::*;
+pub use webhooks::{
+    is_valid_webhook_name, validate_webhooks, HmacSignature, SignatureEncoding, WebhookManifest,
+    WebhookSignature, DEFAULT_WEBHOOK_MAX_BODY_BYTES, DEFAULT_WEBHOOK_RATE_PER_MINUTE,
+    DEFAULT_WEBHOOK_RETENTION_SECS, MAX_WEBHOOKS, MAX_WEBHOOK_BODY_BYTES, MAX_WEBHOOK_HEADERS,
+    MAX_WEBHOOK_RATE_PER_MINUTE, MAX_WEBHOOK_RETENTION_SECS, WEBHOOKS_BINDING,
+};
 pub use workerd_contract::{
     apply_author_compatibility_date, module_load_key, validate_author_compatibility_date,
     validate_author_compatibility_flags, validate_module_declarations, workerd_module_is_embedded,

@@ -77,6 +77,7 @@ OS.
 | `GET /api/status` (also `/status`) | Yes | Status snapshot |
 | `POST /api/library/scan` (also `/scan`) | Yes | Queue a scan. Any user may call `/api/library/scan`; a Member or an Administrator whose library-wide switch is off scans only the store accounts linked to them. The `/scan` alias stays with Administrators |
 | `POST /api/library/acquire` (also `/acquire`) | Yes | Queue an acquire. Any user may call `/api/library/acquire`; a Member or an Administrator whose library-wide switch is off acquires only from the store accounts linked to them. `editions` queues editions from a work's detail. The `/acquire` alias stays with Administrators |
+| `POST /api/library/convert` | Yes | Queue a convert: add a copy (`copy`, such as `{"format": "mp3", "quality": "64k-mono"}`) to stored books named by `titles` or `editions`, beside the original (see [Adding a copy to a stored book](output.md#adding-a-copy-to-a-stored-book)). Operator, Owners and Administrators only |
 | `GET /api/library/works` | Yes | The library's works, one row per work, paged by cursor and filterable by media kind, kind, acquire status and account; `q` searches titles, people, series and store identifiers |
 | `GET /api/library/works/{id}` | Yes | One work with its editions, store listings, holdings and the caller's own state |
 | `GET`/`PUT /api/library/works/{id}/tags` | Provisioner | A work's library tags, or replace the ones set in Bookclerk (sidecar tags stay); `facet=library_tag` filters the works list by one |

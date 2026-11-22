@@ -685,6 +685,75 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   connection dropped without one, and 1001 when the broker itself
   stopped.
 
+## Inbound webhooks (`[[webhooks]]`)
+
+Some services report changes by calling a URL (Backblaze B2's event
+notifications, for example). A plugin can't listen for them itself: it
+sleeps, has no address, and may run on any node. So the host takes the
+request on the library's public address, checks it, stores it, and the
+plugin reads it later through `env.WEBHOOKS`, like a pulled Workers Queue.
+The manifest rows are in [`[[webhooks]]`](manifest.md#webhooks-inbound-webhooks).
+
+```ts
+const url = await env.WEBHOOKS.url("b2-events"); // null without a public address
+const { messages, missed } = await env.WEBHOOKS.pull("b2-events", { batchSize: 50 });
+// ...handle each message.body...
+await env.WEBHOOKS.ack("b2-events", { acks: messages.map((m) => m.leaseId) });
+```
+
+- **URL.** `url(name)` mints the instance's token for that row once and
+  returns `<public origin>/hooks/<token>/<name>`, where the token is 43
+  characters of base64url (32 random bytes) and the library keeps only its
+  SHA-256 and a sealed copy. It returns no URL unless
+  `integrations.public_origin` is an `https` origin on a globally reachable
+  host (a public DNS name or global IP address, not `localhost`, a private
+  or link-local address, or a `.local`-style name), and
+  `plugins.webhooks` is `auto`. A plugin without a URL keeps its fallback,
+  such as a listing.
+- **Route.** `POST /hooks/<token>/<name>` is outside operator auth; the
+  token is the credential. The route answers 404 for an unknown token or
+  name, 405 for another method, 429 over the row's `rate_per_minute` (a
+  token bucket per instance and webhook), 413 for a body over
+  `max_body_bytes`, 401 for a missing or wrong signature, 400 for a kept
+  header that repeats or holds a control character, and 503 while
+  webhooks are off, the signing secret is unset, this node runs no guest
+  for the instance, or the instance already holds 10,000 waiting requests.
+  A stored request gets 204. The body of a refusal says no more than its
+  status.
+- **Signature.** An `hmac-sha256` row computes HMAC-SHA256 of the raw body
+  under the secret setting it names and compares it in constant time with
+  the signature header (after its prefix, decoded as hex or base64). The
+  header must appear exactly once.
+- **Stored request.** The host keeps the body as sent, `content-type` and
+  the row's `headers` (lowercase), and when it arrived, for the row's
+  `retention_secs`. Requests are stored in the library database in chunks
+  that fit every database profile.
+- **Pull.** `pull(name, { batchSize, visibilityTimeoutMs })` leases up to
+  `batchSize` (1 to 100, default 10) waiting requests, oldest first, and
+  hides them from other pulls for the visibility timeout (default one
+  minute, at most 12 hours). A page also stops at 4 MiB of bodies. Each
+  message carries `leaseId`, `timestamp`, `attempts`, `headers` and `body`
+  (bytes). `missed` is true once after requests expired unread or were
+  dropped at the cap, so the plugin resynchronizes another way.
+- **Ack.** `ack(name, { acks, retries })` deletes acknowledged requests
+  and offers retried ones to the next pull at once, up to 100 leases in
+  each list; a lease can't be in both. A lease that ran out is offered
+  again on its own.
+- **Wake.** A plugin may also export `webhookHandler`; after a request is
+  stored the host calls its `delivered(name, waiting)` on a running guest
+  (`webhookDelivered` in TypeScript, `webhook_delivered` in Python) so it
+  can pull at once. The host doesn't start a sleeping guest for it. A
+  storage plugin's feed is read on the next destination sync pass, which
+  a stored request brings forward.
+- **Consent.** Declaring any row adds the `webhooks` token to the grant.
+  The binding is handed only to a deployed instance whose grant has it,
+  and only for the rows its manifest declares.
+
+> [!NOTE]
+> The route takes requests on a node that runs the instance. In a library
+> with several nodes, point `integrations.public_origin` at one that runs
+> the plugin; elsewhere the route answers 503 and the sender retries.
+
 ## Network grant (`env.NETWORK`)
 
 Every `open` carries `Bindings.network`, the network grant in effect, so a
@@ -1367,7 +1436,7 @@ records. Both describe a title in structured fields, following the
 | `mediaKind` | `audio`, `ebook` (any downloadable document: EPUB, PDF, CBZ) or `print`. Whether the host acquires an edition depends on the storefront's [`fetches`](#declaring-media) and on what the host supports, not on this field alone |
 | `identifiers` | `{ scheme, value, marketplace? }` entries. `scheme` is `isbn` (ISBN-10 or ISBN-13), `asin` (set `marketplace`), `openLibraryEdition` or `openLibraryWork`. The host trims each value, upper-cases ASINs, and turns a valid ISBN-10 into its ISBN-13 |
 | `credits` | `{ name, role, level }` entries in billing order, one person or body per entry. `role` is `author` (the default), `narrator`, `translator`, `editor`, `illustrator`, `publisher`, `host`, `cast` or `adaptor`. Set `level` to `roleDefault` unless the credit sits somewhere unusual: by default authors and adaptors credit the work, narrators, translators, hosts and cast the expression, and editors, illustrators and publishers the edition |
-| `seriesEntries` | `{ name, position?, storeSeriesId? }` entries, one per series the work belongs to. `position` is the label as the store prints it (`1`, `2.5`, `1-3`) |
+| `seriesEntries` | `{ name, position?, storeSeriesId? }` entries, one per series the work belongs to. `position` is the label as the store prints it (`1`, `2.5`, `1-3`). The host removes a trailing edition marker and the word "Series" from `name` (`King and Maxwell (abridged)` and `King & Maxwell Series` are stored as `King and Maxwell` and `King & Maxwell`), and matches series with `&` read as `and`, so send the name as the store prints it |
 | `parentProductId` | The show's product id, on a podcast episode. Only podcasts keep it |
 | `language`, `abridgement` | Content language, and `unknown` (the default), `unabridged` or `abridged` |
 | `explicitness` | Whether the store marks the edition as explicit (adult) content: `unknown` (the default), `clean` or `explicit`. The host keeps it on the store listing, so a patron scope can hide explicit books |

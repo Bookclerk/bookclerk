@@ -110,6 +110,7 @@ mod sql_proof;
 mod sql_text;
 pub mod sql_types;
 mod storage_ops;
+pub mod webhooks;
 
 /// Generated Cap'n Proto RPC interfaces (`schema/plugin.capnp`).
 ///
@@ -275,7 +276,9 @@ pub use limits::{
     MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
     MAX_SOCKETS_PER_INSTANCE, MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES,
     MAX_SOCKET_AUTO_RESPONSE_BYTES, MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS,
-    MAX_SOCKET_URL_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    MAX_SOCKET_URL_BYTES, MAX_STREAM_WINDOW_BYTES, MAX_WEBHOOK_BODY_BYTES, MAX_WEBHOOK_HEADERS,
+    MAX_WEBHOOK_HEADER_VALUE_BYTES, MAX_WEBHOOK_LEASE_ID_BYTES, MAX_WEBHOOK_NAME_BYTES,
+    MAX_WEBHOOK_PULL_BATCH, MAX_WEBHOOK_VISIBILITY_MS, PRODUCT_API_VERSION,
 };
 pub use media::{
     check_record_kinds, decode_plain_fetch_bytes, encode_plain_fetch_bytes, media_support_is_empty,
@@ -301,22 +304,24 @@ pub use roles::{
     JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding,
     NeverCancel, NotificationRaiser, Notifier, Oidc, Origin, OriginReply, PluginCli, PluginWorker,
     ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler,
-    SocketHandler, Sockets, Source, PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
+    SocketHandler, Sockets, Source, WebhookHandler, Webhooks, PURCHASE_HINTS_BUDGET,
+    PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
 pub use rpc::{
     byte_source_from_async_read, connect_plugin, connect_socket_broker, decode_empty_reply_bytes,
     decode_plugin_error_bytes, pull_byte_source_to_writer, roundtrip_event_read_message,
-    roundtrip_socket_message, serve_plugin, serve_plugin_stdio, serve_socket_broker,
-    AiModelsClient, AiRunnerClient, ContentSourceClient, CoverFetcherClient, DatabaseClient,
-    DestinationClient, DestinationServer, EventConsumerClient, EventPublisherClient,
-    EventReadCodec, EventReadMessage, HostBindings, IngressClient, JobRunnerClient,
-    KvNamespaceClient, MetadataFilesClient, MetadataProviderClient, NoOrigin,
+    roundtrip_socket_message, roundtrip_webhook_message, serve_plugin, serve_plugin_stdio,
+    serve_socket_broker, AiModelsClient, AiRunnerClient, ContentSourceClient, CoverFetcherClient,
+    DatabaseClient, DestinationClient, DestinationServer, EventConsumerClient,
+    EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings, IngressClient,
+    JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient, NoOrigin,
     NotificationRaiserClient, NotifierClient, OidcClient, OpenedEntrypoints, OriginClient,
     PluginCliClient, PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient,
     RemoteLibraryClient, ScheduledHandlerClient, SocketCodec, SocketHandlerClient,
-    SocketWireMessage, SocketsClient, SourceClient, SourceServer,
+    SocketWireMessage, SocketsClient, SourceClient, SourceServer, WebhookCodec,
+    WebhookHandlerClient, WebhookWireMessage, WebhooksClient,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

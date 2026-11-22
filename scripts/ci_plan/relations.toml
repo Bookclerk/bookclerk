@@ -106,6 +106,8 @@ paths = [
     "fuzz/oracles/socket_request.rs",
     "fuzz/corpus/storage_reply/**",
     "fuzz/oracles/storage_reply.rs",
+    "fuzz/corpus/webhook_message/**",
+    "fuzz/oracles/webhook_message.rs",
     "fuzz/corpus/origin_request/**",
     "fuzz/oracles/origin_request.rs",
 ]
@@ -184,8 +186,8 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-# The workerd_control, socket_broker, socket_route, egress_relay_head and
-# egress_bridge oracles are shared with the replay tests through `#[path]`;
+# The workerd_control, socket_broker, socket_route, webhook_route,
+# webhook_request, egress_relay_head and egress_bridge oracles are shared with the replay tests through `#[path]`;
 # the egress_bridge replay compares its result with the SDK's committed
 # vectors.
 paths = [
@@ -201,6 +203,10 @@ paths = [
     "fuzz/oracles/socket_broker.rs",
     "fuzz/corpus/socket_route/**",
     "fuzz/oracles/socket_route.rs",
+    "fuzz/corpus/webhook_route/**",
+    "fuzz/oracles/webhook_route.rs",
+    "fuzz/corpus/webhook_request/**",
+    "fuzz/oracles/webhook_request.rs",
 ]
 
 [[test_input]]
@@ -308,6 +314,14 @@ package = "bookclerk-media"
 paths = [
     "fuzz/corpus/media_decode/**",
     "fuzz/oracles/media_decode.rs",
+]
+
+[[test_input]]
+package = "bookclerk-media"
+# The media_keep_codec oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_keep_codec/**",
+    "fuzz/oracles/media_keep_codec.rs",
 ]
 
 [[test_input]]

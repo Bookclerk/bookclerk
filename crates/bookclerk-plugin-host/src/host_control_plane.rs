@@ -346,6 +346,7 @@ impl HostControlPlane {
                 plugin,
                 &self.config,
                 Some(&self.store),
+                Some(&row.instance.id),
                 prepared,
             )
             .await?;

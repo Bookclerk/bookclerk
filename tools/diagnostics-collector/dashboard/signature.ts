@@ -155,6 +155,8 @@ export async function summarizeReport(stored: unknown): Promise<{
   peakLatencyMs: number | null;
   installKey: string;
   deployment: string;
+  rustc: string;
+  buildCommit: string;
 }> {
   const s = asObject(stored);
   const p = asObject(s.payload);
@@ -213,5 +215,12 @@ export async function summarizeReport(stored: unknown): Promise<{
     peakLatencyMs,
     installKey: key,
     deployment: p.deployment === "demo" ? "demo" : "",
+    rustc: [field(p.rustc_release, MAX_FIELD_CHARS), field(p.rustc_channel, MAX_FIELD_CHARS)]
+      .filter((part) => part !== "")
+      .join(" "),
+    buildCommit:
+      typeof p.build_commit === "string" && /^[0-9a-f]{7,40}$/.test(p.build_commit)
+        ? p.build_commit
+        : "",
   };
 }

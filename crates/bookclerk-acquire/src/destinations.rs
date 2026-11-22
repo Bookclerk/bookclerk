@@ -198,48 +198,74 @@ impl AcquireDestinations {
         let Some(main) = self.items.first().map(|_| self.primary_destination()) else {
             return Vec::new();
         };
-        let mut plan = Vec::new();
-        for (index, copy) in main.options.copies_to_make().into_iter().enumerate() {
-            let items: Vec<AcquireDestination> = self
-                .items
-                .iter()
-                .filter(|dest| dest.filter.accepts_copy(&copy))
-                .map(|dest| {
-                    let mut options = dest.options.for_copy(&copy);
-                    // Every copy's request carries the library's copy list,
-                    // whatever this destination's own options hold, so
-                    // packaging decides alike for every copy.
-                    options.copies.clone_from(&main.options.copies);
-                    if index > 0 {
-                        let folder = options.naming_templates().folder;
-                        options.folder_template = Some(format!("{}/{folder}", copy.label()));
-                    }
-                    AcquireDestination {
-                        id: dest.id.clone(),
-                        backend: dest.backend.clone_box(),
-                        options,
-                        filter: dest.filter.clone(),
-                    }
-                })
-                .collect();
-            let Some(first) = items.first().map(|dest| dest.id.clone()) else {
-                continue;
-            };
-            let primary = if items.iter().any(|dest| dest.id == self.primary) {
-                self.primary.clone()
-            } else {
-                first
-            };
-            plan.push((
-                copy,
-                AcquireDestinations {
-                    items,
-                    primary,
-                    multi_destination: self.multi_destination,
-                },
-            ));
-        }
-        plan
+        main.options
+            .copies_to_make()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, copy)| {
+                let targets = self.copy_targets(&copy, &main.options.copies, index > 0)?;
+                Some((copy, targets))
+            })
+            .collect()
+    }
+
+    /// The destinations that receive `copy` when it is added to a book
+    /// already stored (a convert, see `crate::convert_copy`): each whose
+    /// filter's copy rules take it, with options that package it under a
+    /// folder of its own named after the copy, as every copy but the main
+    /// output's is. `None` when no destination takes the copy.
+    ///
+    /// The options carry `copy` as the library's only extra copy, so an
+    /// MP3 or Opus copy is always encoded at its own quality.
+    #[must_use]
+    pub fn added_copy_plan(&self, copy: &OutputCopy) -> Option<AcquireDestinations> {
+        self.items.first()?;
+        self.copy_targets(copy, std::slice::from_ref(copy), true)
+    }
+
+    /// The destinations that receive `copy`, each with options that
+    /// package it carrying `copies` as the library's copy list, under a
+    /// folder named after the copy when `own_folder`; `None` when no
+    /// destination's filter takes it.
+    fn copy_targets(
+        &self,
+        copy: &OutputCopy,
+        copies: &[OutputCopy],
+        own_folder: bool,
+    ) -> Option<AcquireDestinations> {
+        let items: Vec<AcquireDestination> = self
+            .items
+            .iter()
+            .filter(|dest| dest.filter.accepts_copy(copy))
+            .map(|dest| {
+                let mut options = dest.options.for_copy(copy);
+                // Every copy's request carries the library's copy list,
+                // whatever this destination's own options hold, so
+                // packaging decides alike for every copy.
+                options.copies = copies.to_vec();
+                if own_folder {
+                    let folder = options.naming_templates().folder;
+                    options.folder_template = Some(format!("{}/{folder}", copy.label()));
+                }
+                AcquireDestination {
+                    id: dest.id.clone(),
+                    backend: dest.backend.clone_box(),
+                    options,
+                    filter: dest.filter.clone(),
+                }
+            })
+            .collect();
+        let first = items.first().map(|dest| dest.id.clone())?;
+        let primary = if items.iter().any(|dest| dest.id == self.primary) {
+            self.primary.clone()
+        } else {
+            first
+        };
+        Some(AcquireDestinations {
+            items,
+            primary,
+            multi_destination: self.multi_destination,
+        })
     }
 
     /// Clone destination backends into a listing/match storage handle.

@@ -3,7 +3,7 @@
 //! Account login, library scans and title fetches run in the guest RPC
 //! handlers ([`crate::guest`]); the host stores the credentials they return.
 
-use bookclerk_storefront::records::{self, CreditRole};
+use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_storefront::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PricedAnswer, PricedListing,
     PurchaseHintOpts, SourcePurchaseHint,
@@ -140,8 +140,12 @@ impl ChirpSource {
         if books.len() < fetch_limit {
             if let Ok(more) = client.search_catalog(q, page, fetch_limit as u32).await {
                 for b in more {
-                    if !books.iter().any(|x| x.id == b.id) {
-                        books.push(b);
+                    // The search row carries the description the typeahead
+                    // row leaves out, so it replaces it in place (keeping
+                    // the typeahead's order).
+                    match books.iter_mut().find(|x| x.id == b.id) {
+                        Some(row) => *row = b,
+                        None => books.push(b),
                     }
                 }
             }
@@ -707,12 +711,55 @@ fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        identifiers: book
+            .cover_url
+            .as_deref()
+            .and_then(isbn_from_cover_url)
+            .and_then(|isbn| records::identifier(IdentifierScheme::Isbn, &isbn, None))
+            .into_iter()
+            .collect(),
         is_abridged: book.abridged,
         work_kind: bookclerk_storefront::records::WorkKind::Book,
         expression_kind: bookclerk_storefront::records::ExpressionKind::Narration,
         media_kind: bookclerk_storefront::records::MediaKind::Audio,
         ..Default::default()
     }
+}
+
+/// The ISBN a Chirp cover image is named after, when it is named after one.
+///
+/// Chirp's catalog lists no ISBN, but it files a publisher's cover under the
+/// edition's ISBN-13 (`…/cover_images/hachette/9781600245497.jpg`), the same
+/// audio ISBN Libro.fm and Audible list. A file name that is not thirteen
+/// digits starting `978` or `979` with a valid check digit (Chirp's own
+/// numeric ids, such as `…/cover_images/spotify/170469.jpg`) gives none.
+///
+/// # Arguments
+///
+/// * `url` - The cover image URL Chirp returned.
+///
+/// # Returns
+///
+/// The ISBN-13, or `None`.
+fn isbn_from_cover_url(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next()?;
+    let file = path.rsplit('/').next()?;
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    let digits: Vec<u32> = stem
+        .chars()
+        .map(|c| c.to_digit(10))
+        .collect::<Option<_>>()?;
+    if digits.len() != 13 || !(stem.starts_with("978") || stem.starts_with("979")) {
+        return None;
+    }
+    let weighted: u32 = digits
+        .iter()
+        .take(12)
+        .zip([1, 3].into_iter().cycle())
+        .map(|(d, w)| d * w)
+        .sum();
+    let check = (10 - weighted % 10) % 10;
+    (digits.get(12) == Some(&check)).then(|| stem.to_string())
 }
 
 /// Semicolon-joined promoted-tag display names, or `None` when none are present.
@@ -952,6 +999,62 @@ mod tests {
         assert_eq!(hit.language.as_deref(), Some("English"));
         assert_eq!(hit.is_abridged, Some(false));
         assert_eq!(hit.length_minutes, Some(671));
+    }
+
+    #[test]
+    fn a_cover_named_after_an_isbn_gives_the_hit_that_isbn() {
+        let cover = |url: &str| isbn_from_cover_url(url);
+        assert_eq!(
+            cover("https://img.chirpbooks.com/image/upload/f_jpg,q_auto:eco,w_200,h_200/v1790151929/cover_images/hachette/9781600245497.jpg")
+                .as_deref(),
+            Some("9781600245497")
+        );
+        assert_eq!(
+            cover("https://img.chirpbooks.com/x/cover_images/podium/9798895397145.jpg?v=2")
+                .as_deref(),
+            Some("9798895397145")
+        );
+        // Chirp's own ids, a bad check digit and a non-ISBN prefix give none.
+        assert_eq!(
+            cover("https://img.chirpbooks.com/x/cover_images/spotify/170469.jpg"),
+            None
+        );
+        assert_eq!(
+            cover("https://img.chirpbooks.com/x/9781600245498.jpg"),
+            None
+        );
+        assert_eq!(
+            cover("https://img.chirpbooks.com/x/1231600245497.jpg"),
+            None
+        );
+        assert_eq!(
+            cover("https://img.chirpbooks.com/x/grmmdbcdmbalonsmlzgi.jpg"),
+            None
+        );
+        assert_eq!(cover(""), None);
+
+        let book = CatalogAudiobook {
+            id: "279927".into(),
+            display_title: Some("First Family".into()),
+            display_authors: Some("David Baldacci".into()),
+            display_narrators: Some("Ron McLarty".into()),
+            url: None,
+            cover_url: Some(
+                "https://img.chirpbooks.com/image/upload/v1/cover_images/hachette/9781600245497.jpg"
+                    .into(),
+            ),
+            series_audiobook: None,
+            sub_title: None,
+            description: None,
+            publisher: None,
+            duration_ms: Some(52_283_091),
+            released_on: None,
+            language: Some("English".into()),
+            abridged: Some(false),
+            promoted_tags: Vec::new(),
+        };
+        let hit = catalog_hit(&book, "search".into());
+        assert_eq!(hit.isbn().as_deref(), Some("9781600245497"));
     }
 
     #[test]
