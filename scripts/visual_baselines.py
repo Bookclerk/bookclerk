@@ -7,13 +7,17 @@ separate ``Bookclerk/bookclerk-visual-baselines`` repository
 here, so both are parsed sans-IO:
 
 - ``ui/visual/baselines.lock``, which a pull request (possibly from a fork)
-  edits. Its value becomes a git ref the CI job checks out, so only
-  ``none`` or a 40-character lowercase commit id is accepted.
+  edits. Each entry names a screenshot path and the commit CI fetches its
+  image from, so only sorted ``<path> <commit>`` lines with paths the checks
+  produce and 40-character lowercase commit ids are accepted, and CI
+  fetches only commits the approval workflow tagged.
 - The ``ui-visual`` artifact of a pull request's CI run. That run executes
   the pull request's code, so the artifact's files are attacker-chosen. The
-  label workflow commits them to the baselines repository with a write
-  token, so only PNG screenshots with the names, sizes and folders the
-  checks produce are accepted.
+  bot commits its images to the baselines repository with a write token, so
+  only PNG screenshots with the names, sizes and folders the checks produce
+  are accepted. The comparison run's report and failure images only narrow
+  which differences are proposed (``compare_finished``,
+  ``compare_mismatches``); they never approve anything.
 
 - An ``issue_comment`` ``created`` event whose body is
   ``@<bot> approve-visuals``,
@@ -26,8 +30,10 @@ here, so both are parsed sans-IO:
 
 Usage:
 
-- ``visual_baselines.py lock PATH`` prints ``sha=<commit>`` (or ``sha=``
-  for ``none``) for ``$GITHUB_OUTPUT``.
+- ``visual_baselines.py assemble LOCK REPOSITORY_URL DIR`` fetches the
+  approved image of every screenshot ``LOCK`` lists into ``DIR`` and prints
+  ``dir=<DIR>`` (or ``dir=`` when the lock lists none) for
+  ``$GITHUB_OUTPUT``.
 - ``visual_baselines.py validate DIR`` exits 0 when ``DIR`` holds exactly a
   valid set, printing the file count; otherwise it exits 1 with the reason.
 """
@@ -39,17 +45,27 @@ import os
 import re
 import stat
 import struct
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-#: Largest lock file read, in bytes.
-MAX_LOCK_BYTES = 128
+#: Largest lock file read, in bytes: room for every screenshot a set may
+#: hold (``MAX_FILES``), each a path, a commit id and a blank line.
+MAX_LOCK_BYTES = 1024 * 1024
 
-#: A lock value naming a baselines commit.
+#: A set commit of the baselines repository.
 COMMIT_ID = re.compile(r"[0-9a-f]{40}", re.ASCII)
 
-#: Lock value for "no baselines yet": the check records instead of comparing.
-LOCK_NONE = "none"
+#: The comment the lock starts with, which ``render_lock`` writes. Comment
+#: lines may only come before the first entry.
+LOCK_HEADER = (
+    "# Approved visual baselines (docs/contributing/ui/visual-testing.md).\n"
+    "# One entry per screenshot: its path and the approved set commit of the\n"
+    "# baselines repository that holds its image. The approval workflow\n"
+    "# writes it. Entries stay sorted and apart, so pull requests that change\n"
+    "# different screenshots merge without conflicts.\n"
+)
 
 #: Viewport folders the checks write, one per Playwright project.
 VIEWPORTS = ("desktop", "phone")
@@ -84,18 +100,26 @@ class VisualBaselinesError(ValueError):
     """The lock or the screenshot set is not acceptable."""
 
 
-def parse_lock(raw: bytes) -> str | None:
-    """Returns the baselines commit a lock file names.
+def parse_lock(raw: bytes) -> dict[str, str]:
+    """Returns the approved set commit each screenshot is locked to.
+
+    The lock lists one screenshot per line as ``<path> <commit>``, sorted by
+    path with blank lines between entries (so git merges changes to
+    different screenshots cleanly). Lines starting with ``#`` are comments
+    and may only come before the first entry. A lock with no entries means
+    no screenshot has been approved yet.
 
     # Arguments
     * ``raw``: the lock file's bytes.
 
     # Returns
-    The 40-character commit id, or ``None`` when the lock says ``none``.
+    Each locked path (as ``BASELINE_PATH`` allows) and its 40-character
+    lowercase commit id.
 
     # Errors
-    ``VisualBaselinesError`` when ``raw`` is too long, not ASCII, or not
-    exactly one of the two values followed by at most one newline.
+    ``VisualBaselinesError`` when ``raw`` is too long, not ASCII, holds a
+    line that is neither blank, a leading comment nor an entry, or lists a
+    path twice or out of order.
     """
     if len(raw) > MAX_LOCK_BYTES:
         raise VisualBaselinesError("lock file too long")
@@ -103,14 +127,49 @@ def parse_lock(raw: bytes) -> str | None:
         text = raw.decode("ascii")
     except UnicodeDecodeError as err:
         raise VisualBaselinesError("lock file is not ASCII") from err
-    text = text.removesuffix("\n")
-    if text == LOCK_NONE:
-        return None
-    if COMMIT_ID.fullmatch(text) is None:
-        raise VisualBaselinesError(
-            "lock must be `none` or a 40-character lowercase commit id"
-        )
-    return text
+    entries: dict[str, str] = {}
+    last = ""
+    for number, line in enumerate(text.split("\n"), start=1):
+        if line == "":
+            continue
+        if line.startswith("#"):
+            if entries:
+                raise VisualBaselinesError(
+                    f"lock line {number}: comment after an entry"
+                )
+            continue
+        path, sep, commit = line.partition(" ")
+        if (
+            not sep
+            or BASELINE_PATH.fullmatch(path) is None
+            or COMMIT_ID.fullmatch(commit) is None
+        ):
+            raise VisualBaselinesError(
+                f"lock line {number} must be `<viewport>/<name>--<theme>.png <commit>`"
+            )
+        if path <= last:
+            raise VisualBaselinesError(
+                f"lock line {number}: {path} is repeated or out of order"
+            )
+        if len(entries) >= MAX_FILES:
+            raise VisualBaselinesError("lock lists too many screenshots")
+        entries[path] = commit
+        last = path
+    return entries
+
+
+def render_lock(entries: dict[str, str]) -> str:
+    """Writes a lock file ``parse_lock`` reads back as ``entries``.
+
+    # Arguments
+    * ``entries``: each screenshot path and its approved set commit.
+
+    # Returns
+    The header, then each entry in path order, a blank line after each.
+    """
+    return LOCK_HEADER + "".join(
+        f"\n{path} {entries[path]}\n" for path in sorted(entries)
+    )
 
 
 def png_size(data: bytes) -> tuple[int, int]:
@@ -241,16 +300,24 @@ def checkbox(head: str, checked: bool) -> str:
 
 
 def diff_sets(
-    approved: dict[str, bytes], proposed: dict[str, bytes]
+    approved: dict[str, bytes],
+    proposed: dict[str, bytes],
+    mismatched: set[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Lists how ``proposed`` differs from ``approved``.
 
-    Screenshots are compared by bytes: the pinned image encodes the same
-    pixels to the same PNG.
+    The pinned browser encodes the same pixels to the same PNG, but it does
+    not always draw anti-aliased edges the same way twice. The comparison
+    run allows for that (Playwright's per-pixel threshold), so when its
+    mismatches are known, an image whose bytes differ only counts as changed
+    if that run also found it different.
 
     # Arguments
     * ``approved``: the baselines the pull request's lock names, by path.
     * ``proposed``: the set its CI run recorded, by path.
+    * ``mismatched``: the paths the run's comparison failed
+      (``compare_mismatches``), or ``None`` when it did not compare, so any
+      difference in bytes counts.
 
     # Returns
     ``(path, change)`` pairs sorted by path, ``change`` being ``added``,
@@ -262,15 +329,161 @@ def diff_sets(
             changes.append((path, "added"))
         elif path not in proposed:
             changes.append((path, "removed"))
-        elif approved[path] != proposed[path]:
+        elif approved[path] != proposed[path] and (
+            mismatched is None or path in mismatched
+        ):
             changes.append((path, "changed"))
     return changes
+
+
+#: A comparison run's image of a failed screenshot:
+#: ``<test folder>--<viewport>[-retry<n>]/<name>--<theme>-actual.png``.
+COMPARE_ACTUAL = re.compile(
+    r"[^/]*--(desktop|phone)(?:-retry[0-9]+)?/([a-z0-9]+(?:-{1,2}[a-z0-9]+)*--(?:light|dark))-actual\.png",
+    re.ASCII,
+)
+
+
+def compare_mismatches(names: list[str]) -> set[str]:
+    """Reads which screenshots a comparison run found different.
+
+    Playwright writes ``<name>-actual.png`` into a failed test's output
+    folder, whose name ends with the project (viewport).
+
+    # Arguments
+    * ``names``: the ``/``-separated paths under the run's ``test-results``
+      folder.
+
+    # Returns
+    Each mismatched screenshot as a set path (``<viewport>/<name>.png``).
+    """
+    found = set()
+    for name in names:
+        match = COMPARE_ACTUAL.fullmatch(name)
+        if match is not None:
+            found.add(f"{match.group(1)}/{match.group(2)}.png")
+    return found
+
+
+#: Largest Playwright JSON report read, in bytes.
+MAX_REPORT_BYTES = 64 * 1024 * 1024
+
+
+def compare_finished(raw: bytes) -> bool:
+    """Whether a comparison run's Playwright JSON report shows it ran to the end.
+
+    Its mismatches (``compare_mismatches``) only stand for every screenshot
+    when it did: a run stopped by a setup error (a page server that never
+    started, say) left the rest untested.
+
+    # Arguments
+    * ``raw``: the run's ``results.json``.
+
+    # Returns
+    ``True`` when the report is a JSON object with an empty ``errors`` list
+    and ``stats`` counting at least one test that passed or failed.
+    """
+    if len(raw) > MAX_REPORT_BYTES:
+        return False
+    try:
+        report = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return False
+    if not isinstance(report, dict) or report.get("errors") != []:
+        return False
+    stats = report.get("stats")
+    if not isinstance(stats, dict):
+        return False
+    counts = [stats.get("expected"), stats.get("unexpected")]
+    if not all(type(c) is int and c >= 0 for c in counts):
+        return False
+    return sum(counts) > 0  # type: ignore[arg-type]
+
+
+#: A line of a proposed set's commit message naming one change it carries.
+CHANGE_LINE = re.compile(r"Change: (added|changed|removed) (\S+)", re.ASCII)
+
+#: Kinds of change, as ``diff_sets`` names them.
+CHANGE_KINDS = ("added", "changed", "removed")
+
+
+def render_changes(changes: list[tuple[str, str]]) -> str:
+    """Writes the change lines of a proposed set's commit message.
+
+    The approval reads them back (``parse_changes``) to update only these
+    screenshots' lock entries.
+
+    # Arguments
+    * ``changes``: from ``diff_sets``, sorted by path.
+
+    # Returns
+    One ``Change: <kind> <path>`` line per change.
+    """
+    return "".join(f"Change: {kind} {path}\n" for path, kind in changes)
+
+
+def parse_changes(message: str) -> list[tuple[str, str]]:
+    """Reads the changes a proposed set's commit message lists.
+
+    # Arguments
+    * ``message``: the set commit's message; lines that do not start with
+      ``Change:`` are ignored.
+
+    # Returns
+    ``(path, kind)`` pairs in path order, as ``diff_sets`` returns them.
+
+    # Errors
+    ``VisualBaselinesError`` when the message is too long, a ``Change:``
+    line names an unknown kind or an invalid path, a path repeats or is out
+    of order, or there are more than ``MAX_FILES``.
+    """
+    if len(message) > MAX_LOCK_BYTES:
+        raise VisualBaselinesError("set commit message too long")
+    changes: list[tuple[str, str]] = []
+    last = ""
+    for line in message.split("\n"):
+        if not line.startswith("Change:"):
+            continue
+        match = CHANGE_LINE.fullmatch(line)
+        if match is None or BASELINE_PATH.fullmatch(match.group(2)) is None:
+            raise VisualBaselinesError(f"malformed change line {line[:120]!r}")
+        kind, path = match.groups()
+        if path <= last:
+            raise VisualBaselinesError(f"change to {path} is repeated or out of order")
+        if len(changes) >= MAX_FILES:
+            raise VisualBaselinesError("too many changes")
+        changes.append((path, kind))
+        last = path
+    return changes
+
+
+def apply_changes(
+    lock: dict[str, str], set_commit: str, changes: list[tuple[str, str]]
+) -> dict[str, str]:
+    """Applies an approved set's changes to a lock.
+
+    # Arguments
+    * ``lock``: the branch's lock (``parse_lock``).
+    * ``set_commit``: the approved set commit holding the new images.
+    * ``changes``: its changes (``parse_changes``).
+
+    # Returns
+    A new lock: added and changed screenshots locked to ``set_commit``,
+    removed ones dropped, every other entry as it was.
+    """
+    updated = dict(lock)
+    for path, kind in changes:
+        if kind == "removed":
+            updated.pop(path, None)
+        else:
+            updated[path] = set_commit
+    return updated
 
 
 def render_comment(
     head: str,
     set_commit: str,
-    approved_commit: str | None,
+    approved: dict[str, str],
     changes: list[tuple[str, str]],
     raw_base: str,
     bot_login: str,
@@ -282,15 +495,13 @@ def render_comment(
     # Returns
     The comment body, opened by ``MARKER``.
     """
-    return render_comments(
-        head, set_commit, approved_commit, changes, raw_base, bot_login
-    )[0]
+    return render_comments(head, set_commit, approved, changes, raw_base, bot_login)[0]
 
 
 def render_comments(
     head: str,
     set_commit: str,
-    approved_commit: str | None,
+    approved: dict[str, str],
     changes: list[tuple[str, str]],
     raw_base: str,
     bot_login: str,
@@ -309,9 +520,9 @@ def render_comments(
 
     # Arguments
     * ``head``: the pull request head the set was recorded from.
-    * ``set_commit``: the baselines commit holding the proposed set.
-    * ``approved_commit``: the approved set the pull request is compared
-      with, or ``None`` before any set was approved.
+    * ``set_commit``: the baselines commit holding the proposed images.
+    * ``approved``: the lock the pull request is compared with: each
+      approved screenshot's path and the set commit holding its image.
     * ``changes``: from ``diff_sets``; validated paths only.
     * ``raw_base``: the raw-file URL prefix of the baselines repository,
       such as ``https://raw.githubusercontent.com/<owner>/<repo>``.
@@ -333,10 +544,10 @@ def render_comments(
         "",
         (
             f"{len(changes)} screenshot(s) recorded at `{head[:12]}` differ from "
-            f"the approved set `{approved_commit[:12]}`: {counts}."
-            if approved_commit
+            f"the approved baselines: {counts}."
+            if approved
             else f"{len(changes)} screenshot(s) recorded at `{head[:12]}`, with no "
-            f"approved set to compare them with: {counts}."
+            f"approved baselines to compare them with: {counts}."
         ),
         "",
         checkbox(head, False),
@@ -344,10 +555,14 @@ def render_comments(
         f"Without write access, a visual reviewer approves by replying `{approve_command(bot_login)}`.",
         "",
     ]
-    images = {
-        "Approved": f"{raw_base}/{approved_commit}" if approved_commit else None,
-        "Proposed": f"{raw_base}/{set_commit}",
-    }
+
+    def image(column: str, path: str) -> str | None:
+        """The raw URL of ``path``'s image in ``column``, if there is one."""
+        if column == "Proposed":
+            return f"{raw_base}/{set_commit}/{path}"
+        commit = approved.get(path)
+        return f"{raw_base}/{commit}/{path}" if commit else None
+
     sections: list[tuple[str, list[str], list[str], list[str], list[str]]] = []
     for kind, title, columns in CATEGORIES:
         paths = by_kind[kind]
@@ -360,12 +575,8 @@ def render_comments(
         top = [f"<details><summary>{title} ({len(paths)})</summary>", "", *header]
         rows = []
         for path in paths:
-            cells = [
-                f"![{column.lower()}]({images[column]}/{path})"
-                if images[column]
-                else "none"
-                for column in columns
-            ]
+            urls = [(column, image(column, path)) for column in columns]
+            cells = [f"![{c.lower()}]({url})" if url else "none" for c, url in urls]
             rows.append(f"| `{path[:-4]}` | " + " | ".join(cells) + " |")
         bare = [f"| `{path[:-4]}` |" + " |" * len(columns) for path in paths]
         sections.append((title, header, top, rows, bare))
@@ -684,25 +895,124 @@ def read_set(root: Path) -> list[tuple[str, bytes]]:
     return files
 
 
-def main(argv: list[str]) -> int:
-    """Runs the ``lock`` or ``validate`` command.
+#: Largest ``git ls-remote`` answer read, in bytes.
+MAX_LS_REMOTE_BYTES = 8 * 1024 * 1024
+
+
+def approved_commits(raw: bytes) -> set[str]:
+    """Reads the approved set commits from ``git ls-remote`` output.
+
+    Only the approval workflow can create ``refs/tags/approved/<commit>``
+    tags in the baselines repository (a ruleset keeps everyone else out), so
+    a set commit is approved when such a tag names it and points at it.
 
     # Arguments
-    * ``argv``: the command and its path.
+    * ``raw``: the output of ``git ls-remote <baselines> 'refs/tags/approved/*'``.
+
+    # Returns
+    Every commit whose ``approved/<commit>`` tag points at itself.
+
+    # Errors
+    ``VisualBaselinesError`` when ``raw`` is too long or not ASCII.
+    """
+    if len(raw) > MAX_LS_REMOTE_BYTES:
+        raise VisualBaselinesError("ls-remote answer too long")
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError as err:
+        raise VisualBaselinesError("ls-remote answer is not ASCII") from err
+    found: set[str] = set()
+    for line in text.split("\n"):
+        target, sep, ref = line.partition("\t")
+        commit = ref.removeprefix("refs/tags/approved/")
+        if sep and COMMIT_ID.fullmatch(commit) and target == commit:
+            found.add(commit)
+    return found
+
+
+def _git(args: list[str], cwd: Path | None = None) -> bytes:
+    """Runs git with ``args`` and returns its standard output.
+
+    # Errors
+    ``VisualBaselinesError`` when git exits with an error.
+    """
+    done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=False)
+    if done.returncode != 0:
+        raise VisualBaselinesError(
+            f"git {args[0]} failed: {done.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    return done.stdout
+
+
+def assemble(lock: dict[str, str], repository_url: str, dest: Path) -> int:
+    """Writes the approved image of every locked screenshot under ``dest``.
+
+    # Arguments
+    * ``lock``: the parsed lock (``parse_lock``).
+    * ``repository_url``: the baselines repository, public, so no token.
+    * ``dest``: an empty folder; each image lands at its lock path.
+
+    # Returns
+    The number of images written.
+
+    # Errors
+    ``VisualBaselinesError`` when a locked commit has no ``approved`` tag,
+    git cannot fetch a commit or find a path in it, or an image is not a PNG
+    the checks could have written.
+    """
+    if not lock:
+        return 0
+    commits = sorted(set(lock.values()))
+    approved = approved_commits(
+        _git(["ls-remote", repository_url, "refs/tags/approved/*"])
+    )
+    missing = [c for c in commits if c not in approved]
+    if missing:
+        raise VisualBaselinesError(
+            "not approved baselines sets (no approved/<commit> tag): "
+            + ", ".join(missing)
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _git(["init", "-q", "--bare"], repo)
+        _git(["fetch", "-q", "--depth", "1", repository_url, *commits], repo)
+        for path, commit in lock.items():
+            data = _git(["cat-file", "blob", f"{commit}:{path}"], repo)
+            if len(data) > MAX_FILE_BYTES:
+                raise VisualBaselinesError(f"{path} is too large")
+            png_size(data)
+            (dest / path).parent.mkdir(parents=True, exist_ok=True)
+            (dest / path).write_bytes(data)
+    return len(lock)
+
+
+def main(argv: list[str]) -> int:
+    """Runs the ``assemble`` or ``validate`` command.
+
+    # Arguments
+    * ``argv``: the command and its paths.
 
     # Returns
     The exit status.
     """
-    if len(argv) != 2 or argv[0] not in ("lock", "validate"):
-        print("usage: visual_baselines.py lock PATH | validate DIR", file=sys.stderr)
+    if not (
+        (len(argv) == 4 and argv[0] == "assemble")
+        or (len(argv) == 2 and argv[0] == "validate")
+    ):
+        print(
+            "usage: visual_baselines.py assemble LOCK REPOSITORY_URL DIR | validate DIR",
+            file=sys.stderr,
+        )
         return 2
-    command, path = argv
     try:
-        if command == "lock":
-            sha = parse_lock(Path(path).read_bytes()[: MAX_LOCK_BYTES + 1])
-            print(f"sha={sha or ''}")
+        if argv[0] == "assemble":
+            lock_path, url, dest = argv[1], argv[2], Path(argv[3])
+            lock = parse_lock(Path(lock_path).read_bytes()[: MAX_LOCK_BYTES + 1])
+            dest.mkdir(parents=True, exist_ok=True)
+            count = assemble(lock, url, dest)
+            print(f"dir={dest if count else ''}")
         else:
-            print(validate_set(read_set(Path(path))))
+            print(validate_set(read_set(Path(argv[1]))))
     except (VisualBaselinesError, OSError) as err:
         print(f"visual_baselines: {err}", file=sys.stderr)
         return 1

@@ -6,21 +6,27 @@ it never checks out or runs pull request code
 (docs/contributing/ui/visual-testing.md#baselines).
 
 - ``propose`` (``workflow_run`` of CI): reads the set the pull request's
-  ``ui-visual`` job recorded, validates it, compares it with the set the
-  ``baselines.lock`` of the pull request merged into its base names (what
-  CI compared with; the base branch's own lock when the pull request
-  conflicts and has no approved set of its own), and when they differ commits it to
-  ``pending/pr-<number>`` in the baselines repository and posts one review
-  comment with the changes grouped by category and an approval checkbox,
-  then requests a review from the ``visual-reviewers`` team. An unapproved
-  comment is updated in place; once one is approved, later changes get a
-  new comment.
+  ``ui-visual`` job recorded, validates it, compares it with the approved
+  images the ``baselines.lock`` of the pull request merged into its base
+  lists (what CI compared with; without a merge ref, the base branch's lock
+  with the head's entries over it). When CI's comparison ran to the end
+  against that same lock, an image whose bytes differ only counts as
+  changed if the comparison failed it, so anti-aliasing noise within
+  Playwright's threshold is not proposed. When anything changed it commits
+  the added and changed images, with one ``Change:`` line per change in the
+  message, to ``pending/pr-<number>`` in the baselines repository, posts one
+  review comment with the changes grouped by category and an approval
+  checkbox, and requests a review from the ``visual-reviewers`` team. An
+  unapproved comment is updated in place; once one is approved, later
+  changes get a new comment.
 - ``approve`` (``issue_comment`` ``edited``): when a user ticks that
   checkbox, or replies ``@<app> approve-visuals`` (for someone without write
   access), checks that they are a maintainer or in the ``visual-reviewers``
   team and that the pull request is open, tags the set
-  ``approved/<commit>`` so it is kept, and writes the new lock to the pull request's branch (or, for
-  a fork, tells the author the line to commit). Any other tick is undone.
+  ``approved/<commit>`` so it is kept, and on the pull request's branch
+  locks the screenshots the set changed to it, leaving every other lock
+  entry alone so the approval merges with others (or, for a fork, tells the
+  author what to commit). Any other tick is undone.
 
 Every parser lives in ``visual_baselines.py``; this module only moves bytes
 between GitHub, git and those parsers.
@@ -54,6 +60,15 @@ LOCK_PATH = "ui/visual/baselines.lock"
 
 #: The folder of the ``ui-visual`` artifact that holds the recorded set.
 ARTIFACT_SET = "baselines"
+
+#: The folder of the ``ui-visual`` artifact the comparison run wrote.
+ARTIFACT_COMPARE = "compare"
+
+#: The comparison run's Playwright JSON report, inside ``ARTIFACT_COMPARE``.
+COMPARE_REPORT = "results.json"
+
+#: The copy of the lock the CI job compared with.
+COMPARED_LOCK = "compared.lock"
 
 #: The file the CI job writes once the recording run passed; a set from a
 #: run whose recording failed (an axe-core violation) is incomplete.
@@ -122,11 +137,14 @@ def git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
 
 
 def fetch_set(repository: str, commit: str, token: str) -> dict[str, bytes]:
-    """Reads the approved set at ``commit`` of the baselines repository.
+    """Reads the images a set commit of the baselines repository holds.
+
+    A proposed set holds only the screenshots it adds or changes, so a set
+    of removals alone is empty.
 
     # Errors
     ``BotError`` when the fetch fails; ``VisualBaselinesError`` when the
-    commit does not hold a valid set.
+    commit holds anything but valid screenshots.
     """
     with tempfile.TemporaryDirectory() as tmp:
         repo, tree = Path(tmp, "repo"), Path(tmp, "tree")
@@ -152,14 +170,49 @@ def fetch_set(repository: str, commit: str, token: str) -> dict[str, bytes]:
             env,
         )
         files = vb.read_set(tree)
-        vb.validate_set(files)
+        if files:
+            vb.validate_set(files)
         return dict(files)
+
+
+def approved_images(repository: str, lock: dict[str, str]) -> dict[str, bytes]:
+    """Reads the approved image of every screenshot ``lock`` lists.
+
+    # Arguments
+    * ``repository``: the public baselines repository, ``owner/name``.
+    * ``lock``: approved entries only (``compared_lock``).
+
+    # Errors
+    ``VisualBaselinesError`` when a commit is not approved, cannot be
+    fetched or lacks a locked image.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        vb.assemble(lock, f"https://github.com/{repository}.git", Path(tmp))
+        return dict(vb.read_set(Path(tmp)))
+
+
+def set_changes(send: Transport, baselines: str, commit: str) -> list[tuple[str, str]]:
+    """Reads the changes a proposed set commit's message lists.
+
+    # Errors
+    ``BotError`` when the commit cannot be read; ``VisualBaselinesError``
+    when its message is malformed.
+    """
+    obj = vb._json_object(
+        call(send, "GET", f"repos/{baselines}/git/commits/{commit}"), "set commit"
+    )
+    message = obj.get("message")
+    if not isinstance(message, str):
+        raise vb.VisualBaselinesError("set commit has no message")
+    return vb.parse_changes(message)
 
 
 def push_set(
     repository: str, files: dict[str, bytes], ref: str, message: str, token: str
 ) -> str:
     """Commits ``files`` as the whole tree of a new root commit and force-pushes it to ``ref``.
+
+    ``files`` may be empty (a proposal that only removes screenshots).
 
     # Returns
     The new commit's id.
@@ -181,7 +234,9 @@ def push_set(
             (root / path).parent.mkdir(parents=True, exist_ok=True)
             (root / path).write_bytes(data)
         git(["add", "-A"], root, env)
-        git(["commit", "-q", "--no-gpg-sign", "-m", message], root, env)
+        git(
+            ["commit", "-q", "--allow-empty", "--no-gpg-sign", "-m", message], root, env
+        )
         commit = git(["rev-parse", "HEAD"], root, env)
         git(
             [
@@ -217,7 +272,7 @@ def is_approved(send: Transport, baselines: str, commit: str) -> bool:
     return isinstance(target, dict) and target.get("sha") == commit
 
 
-def head_lock(send: Transport, repository: str, sha: str) -> str | None:
+def head_lock(send: Transport, repository: str, sha: str) -> dict[str, str]:
     """Reads the lock at ``sha`` (a commit or ref) of this repository.
 
     # Errors
@@ -373,19 +428,18 @@ def post_or_update(
 
 def compared_lock(
     send: Transport, repository: str, baselines: str, number: int, head: str
-) -> str | None:
-    """Returns the approved set pull request ``number`` is compared with.
+) -> dict[str, str]:
+    """Returns the approved lock entries pull request ``number`` is compared with.
 
     CI checks out the pull request merged into its base, so the lock it
-    used is the merge ref's: a pull request that leaves the lock alone
-    inherits the base branch's, and one approved elsewhere and merged stops
-    showing as a change here. Without a merge ref (the pull request
-    conflicts with its base), the head's lock stands in when it names an
-    approved set (one approved on this pull request), and otherwise the
-    base branch's: a branch from before the first approval still carries
-    ``none``, and comparing with nothing would show every image as new. A
-    lock the approval workflow never tagged reads as ``None``, so every
-    image needs approval.
+    used is the merge ref's: a pull request inherits every entry the base
+    branch's lock has, and screenshots approved elsewhere and merged stop
+    showing as changes here. Without a merge ref (the pull request
+    conflicts with its base), the base branch's lock stands in, with the
+    head's entries (those approved on this pull request) over it; a head
+    lock that cannot be read is left out. Entries whose commit the
+    approval workflow never tagged are dropped, so those screenshots need
+    approval.
 
     # Errors
     ``BotError`` when a read fails; ``VisualBaselinesError`` when the lock
@@ -394,12 +448,45 @@ def compared_lock(
     try:
         lock = head_lock(send, repository, f"refs/pull/{number}/merge")
     except NotFound:
-        lock = head_lock(send, repository, head)
-        if not (lock and is_approved(send, baselines, lock)):
-            lock = head_lock(send, repository, pull_base(send, repository, number))
-    if lock and not is_approved(send, baselines, lock):
+        lock = head_lock(send, repository, pull_base(send, repository, number))
+        try:
+            lock.update(head_lock(send, repository, head))
+        except (NotFound, vb.VisualBaselinesError):
+            pass
+    approved = {c for c in set(lock.values()) if is_approved(send, baselines, c)}
+    return {path: commit for path, commit in lock.items() if commit in approved}
+
+
+def run_mismatches(artifact: Path, lock: dict[str, str]) -> set[str] | None:
+    """Returns the screenshots the run's comparison found different.
+
+    Only a comparison that ran to the end (``vb.compare_finished``) against
+    the same lock the bot compares with (the ``COMPARED_LOCK`` CI copied)
+    says which byte differences are real; otherwise every byte difference
+    counts.
+
+    # Arguments
+    * ``artifact``: the downloaded ``ui-visual`` artifact.
+    * ``lock``: the lock from ``compared_lock``.
+
+    # Returns
+    The mismatched paths, or ``None`` when the comparison cannot be used.
+    """
+    compare = artifact / ARTIFACT_COMPARE
+    results = compare / "test-results"
+    try:
+        report = (compare / COMPARE_REPORT).read_bytes()[: vb.MAX_REPORT_BYTES + 1]
+        used = vb.parse_lock(
+            (artifact / COMPARED_LOCK).read_bytes()[: vb.MAX_LOCK_BYTES + 1]
+        )
+        names = [
+            p.relative_to(results).as_posix() for p in results.rglob("*-actual.png")
+        ]
+    except (OSError, ValueError):
         return None
-    return lock
+    if used != lock or not vb.compare_finished(report):
+        return None
+    return vb.compare_mismatches(names)
 
 
 def pull_base(send: Transport, repository: str, number: int) -> str:
@@ -450,8 +537,11 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
     done = []
     for number in numbers:
         lock = compared_lock(send, repository, baselines, number, head.sha)
-        approved = fetch_set(baselines, lock, env["BASELINES_TOKEN"]) if lock else {}
-        changes = vb.diff_sets(approved, proposed)
+        approved = approved_images(baselines, lock)
+        changes = vb.diff_sets(approved, proposed, run_mismatches(artifact, lock))
+        # The pending set holds only the images this proposal adds or
+        # changes; the approval locks just those (``vb.apply_changes``).
+        images = {path: proposed[path] for path, kind in changes if kind != "removed"}
         latest = find_comment(send, repository, number, bot_login)
         shown = vb.MARKER.match(latest[1]) if latest else None
         # An approved comment is a record: later changes go in a new comment.
@@ -466,7 +556,7 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
         replaces = shown.group(2) if open_id is not None and shown is not None else None
         if not changes:
             if open_id is not None:
-                note = f"<!-- bookclerk-visual-baselines v1 head={head.sha} set={lock or '0' * 40} -->\n"
+                note = f"<!-- bookclerk-visual-baselines v1 head={head.sha} set={'0' * 40} -->\n"
                 note += f"No visual changes left to approve at `{head.sha[:12]}`.\n"
                 post_or_update(write, repository, number, open_id, note)
                 sync_continuations(
@@ -474,13 +564,14 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
                 )
             done.append(f"#{number}: matches the approved baselines")
             continue
-        # A rerun that recorded the same images keeps the open comment as it
+        # A rerun that recorded the same changes keeps the open comment as it
         # is, so a tick in progress is not lost.
         if (
             open_id is not None
             and shown is not None
             and shown.group(2) != "0" * 40
-            and fetch_set(baselines, shown.group(2), env["BASELINES_TOKEN"]) == proposed
+            and set_changes(send, baselines, shown.group(2)) == changes
+            and fetch_set(baselines, shown.group(2), env["BASELINES_TOKEN"]) == images
         ):
             done.append(
                 f"#{number}: {shown.group(2)} still pending ({len(changes)} changes)"
@@ -488,9 +579,10 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
             continue
         commit = push_set(
             baselines,
-            proposed,
+            images,
             f"refs/heads/pending/pr-{number}",
-            f"Proposed baselines for {repository}#{number} at {head.sha}",
+            f"Proposed baselines for {repository}#{number} at {head.sha}\n\n"
+            + vb.render_changes(changes),
             env["BASELINES_TOKEN"],
         )
         review, *pages = vb.render_comments(
@@ -651,6 +743,12 @@ def approve(
         return refuse(
             "Not approved: the proposed set is no longer in the baselines repository."
         )
+    changes = set_changes(baselines_write, baselines, approval.set_commit)
+    locked = sum(1 for _, kind in changes if kind != "removed")
+    dropped = len(changes) - locked
+    summary = f"{locked} screenshot(s) locked to `{approval.set_commit[:12]}`" + (
+        f", {dropped} removed" if dropped else ""
+    )
     head_repo = pull_head.get("repo")
     branch = pull_head.get("ref")
     if (
@@ -666,18 +764,28 @@ def approve(
             ),
             "lock contents",
         )
+        content = current.get("content")
+        try:
+            lock = vb.parse_lock(base64.b64decode(str(content), validate=False))
+        except (ValueError, vb.VisualBaselinesError):
+            return refuse(
+                f"Not approved: `{LOCK_PATH}` on this branch cannot be read; "
+                "merge the base branch into it and try again."
+            )
+        lock = vb.apply_changes(lock, approval.set_commit, changes)
         put = {
             "message": f"Approve visual baselines {approval.set_commit[:12]}\n\nApproved by {approval.sender} in #{approval.number}.",
-            "content": base64.b64encode(f"{approval.set_commit}\n".encode()).decode(),
+            "content": base64.b64encode(vb.render_lock(lock).encode()).decode(),
             "sha": current.get("sha"),
             "branch": branch,
         }
         call(write, "PUT", f"repos/{repository}/contents/{LOCK_PATH}", put)
-        outcome = f"Approved by {approval.sender}; the lock on this branch now names `{approval.set_commit[:12]}`."
+        outcome = f"Approved by {approval.sender}; on this branch's lock, {summary}."
     else:
         outcome = (
-            f"Approved by {approval.sender}. Set `{LOCK_PATH}` to `{approval.set_commit}` "
-            "in a commit on this pull request's branch."
+            f"Approved by {approval.sender}. In `{LOCK_PATH}` on this pull request's "
+            f"branch, lock the screenshots the set commit `{approval.set_commit}` adds "
+            "or changes to it and drop the ones it removes (its message lists them)."
         )
     call(
         write,
