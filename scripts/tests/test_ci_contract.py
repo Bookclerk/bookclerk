@@ -261,14 +261,16 @@ class WorkflowContractTests(unittest.TestCase):
                     self.jobs[name]["strategy"]["matrix"]["os"], "${{ fromJSON(needs.plan.outputs.os_matrix) }}"
                 )
 
-    def test_full_suite_on_windows_and_macos_only_reports(self) -> None:
-        """`test-os` runs `rust_test` on each OS_TEST_PARTS leg, outside pull requests, and never gates."""
-        self.assertEqual(REPORT_JOBS, {"test-os": ("test",)})
+    def test_full_suite_on_windows_and_macos_gates(self) -> None:
+        """`test-os` runs `rust_test` on each OS_TEST_PARTS leg, outside pull requests, and CI Gate needs it."""
+        self.assertEqual(OS_LEG_JOBS["test-os"], ("test",))
+        self.assertEqual(REPORT_JOBS, {})
         job = self.jobs["test-os"]
         self.assertEqual(job["needs"], "plan")
         self.assertEqual(job["if"], "needs.plan.outputs.os_legs == 'true' && needs.plan.outputs.job_test == 'true'")
-        self.assertIs(job["continue-on-error"], True)
-        self.assertNotIn("test-os", self.jobs["ci-gate"]["needs"])
+        self.assertNotIn("continue-on-error", job)
+        self.assertNotIn("report only", job["name"])
+        self.assertIn("test-os", self.jobs["ci-gate"]["needs"])
         self.assertEqual(job["strategy"]["matrix"], {"include": "${{ fromJSON(needs.plan.outputs.os_test_matrix) }}"})
         self.assertEqual(job["runs-on"], "${{ matrix.os }}")
         self.assertEqual(job["env"]["CI_OS_SUITE"], "1")
@@ -386,7 +388,7 @@ class WorkflowContractTests(unittest.TestCase):
     def test_nothing_can_hide_a_failure(self) -> None:
         for name, job in self.jobs.items():
             # A report-only job says so in its name and never reaches CI Gate
-            # (test_full_suite_on_windows_and_macos_only_reports).
+            # (REPORT_JOBS).
             if name in REPORT_JOBS:
                 self.assertIs(job["continue-on-error"], True, name)
                 self.assertIn("report only", job["name"], name)
@@ -426,7 +428,7 @@ class WorkflowContractTests(unittest.TestCase):
                     if step["with"]["save-if"] is not False and step["with"]["save-if"] != "false":
                         self.assertIn("refs/heads/main", step["with"]["save-if"])
                         savers.add(name)
-        self.assertEqual(savers, set(BUILD_ONLY_JOBS) | {"macos", *REPORT_JOBS})
+        self.assertEqual(savers, set(BUILD_ONLY_JOBS) | set(OS_LEG_JOBS) | set(REPORT_JOBS))
 
     def test_cache_keys_follow_the_cargo_profiles(self) -> None:
         """CI_CARGO_PROFILES is the digest of the workspace Cargo.toml's profile tables.

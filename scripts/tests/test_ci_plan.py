@@ -56,6 +56,7 @@ from ci_plan.plan import (  # noqa: E402
     DEMO_TEST_INPUTS,
     E2E_PACKAGE,
     JOB_CHECKS,
+    OS_LEG_JOBS,
     SITE_SOURCE_FILES,
     SITE_TEST_INPUTS,
     STEP_GATED_JOBS,
@@ -2359,8 +2360,10 @@ class RunnerLayoutTests(unittest.TestCase):
         needs = {"plan": {"result": "success"}}
         for job in JOB_CHECKS:
             needs[job] = {"result": "success" if job in BUILD_ONLY_JOBS else "skipped"}
-        # The macOS job runs the native-gateway leg, which saves the macOS cache.
+        # The macOS job runs the native-gateway leg, which saves the macOS
+        # cache; `test-os` saves each OS's test cache.
         needs["macos"] = {"result": "success"}
+        needs["test-os"] = {"result": "success"}
         self.assertEqual(gate(art, needs), [])
 
     def test_build_only_compiles_and_runs_nothing(self) -> None:
@@ -2455,8 +2458,10 @@ class RunnerLayoutTests(unittest.TestCase):
             with self.subTest(job=job):
                 self.assertEqual(out[f"job_{job.replace('-', '_')}"], "true" if job in DRAFT_JOBS else "false")
         needs = {"plan": {"result": "success"}}
-        for job in [*JOB_CHECKS, "macos"]:
+        for job in [*JOB_CHECKS, *OS_LEG_JOBS]:
             needs[job] = {"result": "success" if job in DRAFT_JOBS else "skipped"}
+        # Not resolved Linux-only, so `test` also runs on Windows and macOS.
+        needs["test-os"] = {"result": "success"}
         self.assertEqual(gate(art, needs), [])
         # A deferred job that ran anyway is a mismatch the gate reports.
         self.assertTrue(gate(art, dict(needs, e2e={"result": "success"})))
@@ -2591,7 +2596,8 @@ class RunnerLayoutTests(unittest.TestCase):
                     for n in range(1, (1 if build_only else parts) + 1)
                 ]
                 self.assertEqual(legs, want)
-                self.assertNotIn("test-os", expected_jobs(art))
+                # CI Gate needs it wherever it runs.
+                self.assertTrue(expected_jobs(art)["test-os"])
         self.assertEqual(job_outputs(self.ready_artifact("Cargo.lock", linux_only=False))["job_windows_cluster"], "true")
 
     def test_linux_only_and_build_only_are_exclusive(self) -> None:
