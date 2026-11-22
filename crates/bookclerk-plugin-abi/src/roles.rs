@@ -568,6 +568,35 @@ pub trait Origin {
         request: crate::origin::CheckedOriginRequest,
         body: Option<Pin<Box<dyn AsyncRead + Send>>>,
     ) -> Result<OriginReply>;
+
+    /// Opens a WebSocket to the library for one upgrade request and makes
+    /// it a socket of the plugin instance's `SOCKETS` binding.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - The checked head ([`crate::origin::check_origin_connect`]).
+    /// * `attachment` - The socket's initial attachment.
+    ///
+    /// # Returns
+    ///
+    /// The open socket, or the library's answer when it did not upgrade.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` for a request refused before the library saw it;
+    /// `forbidden` when the instance has no `SOCKETS` binding;
+    /// `limit_exceeded` when it holds its most sockets; `unavailable` when
+    /// the library cannot serve now or does not carry upgrades (the default).
+    async fn connect(
+        &self,
+        request: crate::origin::CheckedOriginRequest,
+        attachment: Vec<u8>,
+    ) -> Result<crate::generated::OriginConnected> {
+        let _ = (request, attachment);
+        Err(crate::PluginError::unavailable(
+            "this library does not carry WebSocket upgrades",
+        ))
+    }
 }
 
 /// `ingress` entrypoint: a public address provider (a relay, or a dynamic

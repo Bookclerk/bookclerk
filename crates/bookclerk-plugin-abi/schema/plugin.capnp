@@ -148,6 +148,9 @@ const maxOriginHeaderBytes :UInt32 = 65536;
 const maxOriginTargetBytes :UInt32 = 8192;
 # Longest `IngressStarted.origin`, in bytes.
 const maxIngressOriginBytes :UInt32 = 253;
+# Largest body of an `OriginRefusal` (the library's answer to a WebSocket
+# upgrade it did not accept), in bytes; a longer body is cut to this.
+const maxOriginRefusalBodyBytes :UInt32 = 65536;
 # Most deliveries one `Webhooks.pull` returns.
 const maxWebhookPullBatch :UInt32 = 100;
 # Longest `WebhookDelivery.leaseId`, in bytes.
@@ -1572,6 +1575,15 @@ interface Origin {
       request :OriginRequest,  # Method, target, headers, client address.
       body :ByteSource  # Request body; null when the request has none.
   ) -> (result :OriginFetchReply);
+  # Open a WebSocket to the library for one upgrade request the provider
+  # delivers. An accepted upgrade becomes a socket in the instance's
+  # `Bindings.sockets`: its messages arrive on `Entrypoints.socketHandler`
+  # and the plugin answers with `Sockets.send` and `Sockets.close`, as on
+  # any socket it dialed. Needs `[sockets]`.
+  connect @1 (
+      request :OriginRequest,  # A `GET` with `upgrade: websocket`.
+      attachment :Data  # Initial attachment, at most `maxSocketAttachmentBytes`.
+  ) -> (result :OriginConnectReply);
 }
 
 # A public address provider (`Entrypoints.ingress`): the one `ingress`
@@ -4341,6 +4353,44 @@ struct OriginRequest {
   # IP address of the client, from the provider's own connection metadata;
   # empty when the provider gives none.
   clientAddress @3 :Text $optional;
+}
+
+# The library's answer to an `Origin.connect` it did not upgrade: an
+# ordinary response (`401`, `403`, `404`, ...) for the plugin to hand back
+# to the client.
+struct OriginRefusal {
+  # HTTP status code, 200 to 599 and never `101`.
+  status @0 :UInt16;
+  # Response header fields in order, at most `maxOriginHeaders` and
+  # `maxOriginHeaderBytes`.
+  headers @1 :List(OriginHeader);
+  # Response body, at most `maxOriginRefusalBodyBytes`.
+  body @2 :Data;
+}
+
+# Success payload of `Origin.connect`.
+struct OriginConnected {
+  union {
+    # The library accepted the upgrade; the socket is open in
+    # `Bindings.sockets`. Its `protocol` is the subprotocol the library
+    # chose.
+    socket @0 :SocketInfo;
+    # The library answered without upgrading.
+    refused @1 :OriginRefusal;
+  }
+}
+
+# Result union of `Origin.connect`.
+struct OriginConnectReply {
+  union {
+    # Success: an open socket or the library's refusal.
+    ok @0 :OriginConnected;
+    # Typed failure: the request was refused before the library saw it
+    # (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded`
+    # when the instance holds its most sockets) or the library is
+    # unavailable.
+    err @1 :PluginError;
+  }
 }
 
 # Success payload of `Ingress.start`.

@@ -182,6 +182,11 @@ MAX_ORIGIN_TARGET_BYTES: int = 8192
 MAX_INGRESS_ORIGIN_BYTES: int = 253
 """Longest `IngressStarted.origin`, in bytes."""
 
+MAX_ORIGIN_REFUSAL_BODY_BYTES: int = 65536
+"""Largest body of an `OriginRefusal` (the library's answer to a WebSocket
+upgrade it did not accept), in bytes; a longer body is cut to this.
+"""
+
 MAX_WEBHOOK_PULL_BATCH: int = 100
 """Most deliveries one `Webhooks.pull` returns."""
 
@@ -540,6 +545,7 @@ __all__ = [
     "MAX_ORIGIN_HEADER_BYTES",
     "MAX_ORIGIN_TARGET_BYTES",
     "MAX_INGRESS_ORIGIN_BYTES",
+    "MAX_ORIGIN_REFUSAL_BODY_BYTES",
     "MAX_WEBHOOK_PULL_BATCH",
     "MAX_WEBHOOK_LEASE_ID_BYTES",
     "MAX_WEBHOOK_VISIBILITY_MS",

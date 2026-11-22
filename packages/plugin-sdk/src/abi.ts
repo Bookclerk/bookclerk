@@ -193,6 +193,12 @@ export const MAX_ORIGIN_TARGET_BYTES = 8192 as const;
 /** Longest `IngressStarted.origin`, in bytes. */
 export const MAX_INGRESS_ORIGIN_BYTES = 253 as const;
 
+/**
+ * Largest body of an `OriginRefusal` (the library's answer to a WebSocket
+ * upgrade it did not accept), in bytes; a longer body is cut to this.
+ */
+export const MAX_ORIGIN_REFUSAL_BODY_BYTES = 65536 as const;
+
 /** Most deliveries one `Webhooks.pull` returns. */
 export const MAX_WEBHOOK_PULL_BATCH = 100 as const;
 

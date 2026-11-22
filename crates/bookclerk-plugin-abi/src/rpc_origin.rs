@@ -17,13 +17,16 @@ use super::{
     async_read_from_byte_source, byte_source_from_async_read, from_capnp, read_error, write_error,
 };
 use crate::generated::{
-    read_ingress_health_reply, read_ingress_start_reply, read_origin_header, read_origin_request,
-    write_ingress_health_reply, write_ingress_start_reply, write_origin_header,
-    write_origin_request, IngressHealth, IngressStarted, OriginHeader, OriginRequest,
+    read_ingress_health_reply, read_ingress_start_reply, read_origin_connect_reply,
+    read_origin_header, read_origin_request, write_ingress_health_reply,
+    write_ingress_start_reply, write_origin_connect_reply, write_origin_header,
+    write_origin_request, IngressHealth, IngressStarted, OriginConnected, OriginHeader,
+    OriginRequest,
 };
+use crate::limits::MAX_SOCKET_ATTACHMENT_BYTES;
 use crate::origin::{
-    check_origin_request, check_origin_response, parse_ingress_origin, CheckedOriginRequest,
-    IngressOrigin,
+    check_origin_connect, check_origin_refusal, check_origin_request, check_origin_response,
+    parse_ingress_origin, CheckedOriginRequest, IngressOrigin,
 };
 use crate::plugin_capnp::{
     empty_reply, ingress as ingress_capnp, origin as origin_capnp, origin_fetch_reply,
@@ -103,6 +106,43 @@ impl origin_capnp::Server for OriginServer {
         }
         Ok(())
     }
+
+    async fn connect(
+        self: Rc<Self>,
+        params: origin_capnp::ConnectParams,
+        mut results: origin_capnp::ConnectResults,
+    ) -> capnp::Result<()> {
+        let p = params.get()?;
+        let request = read_origin_request(p.get_request()?)?;
+        let attachment = p.get_attachment()?.to_vec();
+        let outcome = connect_checked(self.inner.as_ref(), &request, attachment).await;
+        write_origin_connect_reply(results.get().init_result(), &outcome)
+    }
+}
+
+/// Checks one `Origin.connect` from a guest, serves it, and checks the
+/// answer before it goes back.
+///
+/// # Errors
+///
+/// `invalid_params` for a head or attachment the host refuses, or a
+/// refusal from the library that breaks a rule; the library's error.
+async fn connect_checked(
+    origin: &dyn Origin,
+    request: &OriginRequest,
+    attachment: Vec<u8>,
+) -> Result<OriginConnected> {
+    let checked = check_origin_connect(request)?;
+    if attachment.len() > MAX_SOCKET_ATTACHMENT_BYTES as usize {
+        return Err(PluginError::invalid_params(format!(
+            "the attachment exceeds {MAX_SOCKET_ATTACHMENT_BYTES} bytes"
+        )));
+    }
+    let connected = origin.connect(checked, attachment).await?;
+    if let OriginConnected::Refused(refusal) = &connected {
+        check_origin_refusal(refusal)?;
+    }
+    Ok(connected)
 }
 
 /// Guest-side client for the [`Origin`] binding (what a native relay plugin
@@ -167,6 +207,29 @@ impl Origin for OriginClient {
             }
             origin_fetch_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
+    }
+
+    async fn connect(
+        &self,
+        request: CheckedOriginRequest,
+        attachment: Vec<u8>,
+    ) -> Result<OriginConnected> {
+        let mut req = self.client.connect_request();
+        {
+            let mut p = req.get();
+            write_origin_request(p.reborrow().init_request(), &wire_request(&request))
+                .map_err(from_capnp)?;
+            p.set_attachment(&attachment);
+        }
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_origin_connect_reply(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+        .map_err(from_capnp)?
     }
 }
 

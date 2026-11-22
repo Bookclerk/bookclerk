@@ -2864,6 +2864,22 @@ class Origin(Protocol):
         """
         ...
 
+    async def connect(self, request: OriginRequest, attachment: bytes) -> OriginConnectReply:
+        """Open a WebSocket to the library for one upgrade request the provider
+        delivers. An accepted upgrade becomes a socket in the instance's
+        `Bindings.sockets`: its messages arrive on `Entrypoints.socketHandler`
+        and the plugin answers with `Sockets.send` and `Sockets.close`, as on
+        any socket it dialed. Needs `[sockets]`.
+
+        Args:
+            request: A `GET` with `upgrade: websocket`.
+            attachment: Initial attachment, at most `maxSocketAttachmentBytes`.
+
+        Returns:
+            ``OriginConnectReply``
+        """
+        ...
+
 
 class Ingress(Protocol):
     """A public address provider (`Entrypoints.ingress`): the one `ingress`
@@ -7094,6 +7110,101 @@ class OriginRequest(TypedDict):
     clientAddress: NotRequired[str]
 
 
+class OriginRefusal(TypedDict):
+    """The library's answer to an `Origin.connect` it did not upgrade: an
+    ordinary response (`401`, `403`, `404`, ...) for the plugin to hand back
+    to the client.
+
+    Attributes:
+        status: HTTP status code, 200 to 599 and never `101`.
+        headers: Response header fields in order, at most `maxOriginHeaders` and
+            `maxOriginHeaderBytes`.
+        body: Response body, at most `maxOriginRefusalBodyBytes`.
+    """
+
+    status: int
+    headers: list[OriginHeader]
+    body: bytes
+
+
+class OriginConnectedSocket(TypedDict):
+    """``OriginConnected`` member ``socket``.
+
+    The library accepted the upgrade; the socket is open in
+    `Bindings.sockets`. Its `protocol` is the subprotocol the library
+    chose.
+
+    Attributes:
+        kind: Always ``"socket"``.
+        value: The library accepted the upgrade; the socket is open in
+            `Bindings.sockets`. Its `protocol` is the subprotocol the library chose.
+    """
+
+    kind: Literal["socket"]
+    value: SocketInfo
+
+
+class OriginConnectedRefused(TypedDict):
+    """``OriginConnected`` member ``refused``.
+
+    The library answered without upgrading.
+
+    Attributes:
+        kind: Always ``"refused"``.
+        value: The library answered without upgrading.
+    """
+
+    kind: Literal["refused"]
+    value: OriginRefusal
+
+
+OriginConnected = Union[
+    OriginConnectedSocket,
+    OriginConnectedRefused,
+]
+"""Success payload of `Origin.connect`."""
+
+
+class OriginConnectReplyOk(TypedDict):
+    """``OriginConnectReply`` member ``ok``.
+
+    Success: an open socket or the library's refusal.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: an open socket or the library's refusal.
+    """
+
+    kind: Literal["ok"]
+    value: OriginConnected
+
+
+class OriginConnectReplyErr(TypedDict):
+    """``OriginConnectReply`` member ``err``.
+
+    Typed failure: the request was refused before the library saw it
+    (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded`
+    when the instance holds its most sockets) or the library is
+    unavailable.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure: the request was refused before the library saw it
+            (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded` when
+            the instance holds its most sockets) or the library is unavailable.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+OriginConnectReply = Union[
+    OriginConnectReplyOk,
+    OriginConnectReplyErr,
+]
+"""Result union of `Origin.connect`."""
+
+
 class IngressStarted(TypedDict):
     """Success payload of `Ingress.start`.
 
@@ -9138,6 +9249,13 @@ __all__ = [
     "SocketClosed",
     "OriginHeader",
     "OriginRequest",
+    "OriginRefusal",
+    "OriginConnectedSocket",
+    "OriginConnectedRefused",
+    "OriginConnected",
+    "OriginConnectReplyOk",
+    "OriginConnectReplyErr",
+    "OriginConnectReply",
     "IngressStarted",
     "IngressStartReplyOk",
     "IngressStartReplyErr",

@@ -12372,6 +12372,55 @@
         }
       ]
     },
+    "Origin.connect$Params": {
+      "name": "Origin.connect$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "OriginRequest"
+          },
+          "offset": 0
+        },
+        {
+          "name": "attachment",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Origin.connect$Results": {
+      "name": "Origin.connect$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "OriginConnectReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "Origin.fetch$Params": {
       "name": "Origin.fetch$Params",
       "file": "plugin.capnp",
@@ -12417,6 +12466,66 @@
           "type": {
             "kind": "struct",
             "name": "OriginFetchReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "OriginConnectReply": {
+      "name": "OriginConnectReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "OriginConnected"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "OriginConnected": {
+      "name": "OriginConnected",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "socket",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "SocketInfo"
+          },
+          "offset": 0
+        },
+        {
+          "name": "refused",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "OriginRefusal"
           },
           "offset": 0
         }
@@ -12475,6 +12584,47 @@
           "discriminantValue": null,
           "type": {
             "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "OriginRefusal": {
+      "name": "OriginRefusal",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "status",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint16"
+          },
+          "offset": 0
+        },
+        {
+          "name": "headers",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "OriginHeader"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "body",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
           },
           "offset": 1
         }
@@ -18731,6 +18881,12 @@
           "ordinal": 0,
           "params": "Origin.fetch$Params",
           "results": "Origin.fetch$Results"
+        },
+        {
+          "name": "connect",
+          "ordinal": 1,
+          "params": "Origin.connect$Params",
+          "results": "Origin.connect$Results"
         }
       ]
     },
@@ -19232,6 +19388,11 @@
       "name": "maxOriginHeaders",
       "file": "plugin.capnp",
       "value": 128
+    },
+    "maxOriginRefusalBodyBytes": {
+      "name": "maxOriginRefusalBodyBytes",
+      "file": "plugin.capnp",
+      "value": 65536
     },
     "maxOriginTargetBytes": {
       "name": "maxOriginTargetBytes",

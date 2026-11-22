@@ -179,3 +179,64 @@ fn oversized_or_malformed_frames_are_refused() {
     assert!(decode_origin_request_frame(br#"{"method":"GET","target":"x"}"#).is_err());
     assert!(decode_origin_response_frame(br#"{"status":42,"headers":[]}"#).is_err());
 }
+
+#[test]
+fn an_upgrade_keeps_its_subprotocols_and_drops_the_handshake() {
+    let checked = check_origin_connect(&request(
+        "/api/node/v1/socket",
+        vec![
+            header("Sec-WebSocket-Protocol", "bookclerk.v1"),
+            header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+            header("Sec-WebSocket-Version", "13"),
+            header("Sec-WebSocket-Extensions", "permessage-deflate"),
+            header("Cookie", "s=1"),
+            header("X-Forwarded-For", "10.0.0.1"),
+        ],
+    ))
+    .unwrap();
+    assert_eq!(checked.method, "GET");
+    assert_eq!(
+        checked.headers,
+        vec![
+            header("Sec-WebSocket-Protocol", "bookclerk.v1"),
+            header("Cookie", "s=1"),
+        ]
+    );
+}
+
+#[test]
+fn an_upgrade_must_be_a_get_without_connection_fields() {
+    let mut post = request("/socket", vec![]);
+    post.method = "POST".into();
+    assert!(check_origin_connect(&post)
+        .unwrap_err()
+        .message
+        .contains("GET"));
+    for name in ["Upgrade", "Connection"] {
+        let err = check_origin_connect(&request("/socket", vec![header(name, "websocket")]))
+            .unwrap_err();
+        assert!(err.message.contains("connection"), "{name}: {err:?}");
+    }
+    assert!(check_origin_connect(&request("socket", vec![])).is_err());
+}
+
+#[test]
+fn refusals_are_checked() {
+    let refusal = |status: u16, body: usize| OriginRefusal {
+        status,
+        headers: vec![header("Content-Type", "application/json")],
+        body: vec![b'x'; body],
+    };
+    check_origin_refusal(&refusal(403, 10)).unwrap();
+    check_origin_refusal(&refusal(200, MAX_ORIGIN_REFUSAL_BODY_BYTES as usize)).unwrap();
+    for status in [0, 101, 199, 600] {
+        assert!(check_origin_refusal(&refusal(status, 0)).is_err(), "{status}");
+    }
+    assert!(check_origin_refusal(&refusal(403, MAX_ORIGIN_REFUSAL_BODY_BYTES as usize + 1))
+        .unwrap_err()
+        .message
+        .contains("body"));
+    let mut hop = refusal(403, 0);
+    hop.headers.push(header("Transfer-Encoding", "chunked"));
+    assert!(check_origin_refusal(&hop).is_err());
+}

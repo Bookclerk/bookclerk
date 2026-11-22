@@ -9,9 +9,10 @@
 
 use std::net::IpAddr;
 
-use crate::generated::{IngressStarted, OriginHeader, OriginRequest};
+use crate::generated::{IngressStarted, OriginHeader, OriginRefusal, OriginRequest};
 use crate::limits::{
-    MAX_INGRESS_ORIGIN_BYTES, MAX_ORIGIN_HEADERS, MAX_ORIGIN_HEADER_BYTES, MAX_ORIGIN_TARGET_BYTES,
+    MAX_INGRESS_ORIGIN_BYTES, MAX_ORIGIN_HEADERS, MAX_ORIGIN_HEADER_BYTES,
+    MAX_ORIGIN_REFUSAL_BODY_BYTES, MAX_ORIGIN_TARGET_BYTES,
 };
 use crate::sockets::is_token;
 use crate::{PluginError, Result};
@@ -208,6 +209,72 @@ pub fn check_origin_request(request: &OriginRequest) -> Result<CheckedOriginRequ
         headers,
         client,
     })
+}
+
+/// WebSocket handshake fields the host writes itself on an
+/// `Origin.connect`, so the guest's copies are dropped. The requested
+/// subprotocols (`sec-websocket-protocol`) pass through.
+const HANDSHAKE_REQUEST_HEADERS: &[&str] = &[
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-extensions",
+    "sec-websocket-accept",
+];
+
+/// Checks the head of one WebSocket upgrade a relay plugin carries
+/// (`Origin.connect`) and keeps what the host passes on.
+///
+/// The guest sends the request without its connection fields (`upgrade`
+/// and `connection` are hop-by-hop and refused as on `Origin.fetch`); the
+/// host makes its own handshake to the library.
+///
+/// # Arguments
+///
+/// * `request` - The head as the guest sent it.
+///
+/// # Returns
+///
+/// The request as [`check_origin_request`] keeps it, without the
+/// handshake fields the host writes itself.
+///
+/// # Errors
+///
+/// [`PluginError::invalid_params`] for anything [`check_origin_request`]
+/// refuses, and for a method other than `GET`.
+pub fn check_origin_connect(request: &OriginRequest) -> Result<CheckedOriginRequest> {
+    let mut checked = check_origin_request(request)?;
+    if checked.method != "GET" {
+        return Err(PluginError::invalid_params(
+            "a WebSocket upgrade must be a GET",
+        ));
+    }
+    checked
+        .headers
+        .retain(|header| !named(&header.name, HANDSHAKE_REQUEST_HEADERS));
+    Ok(checked)
+}
+
+/// Checks the library's answer to an upgrade it did not accept before it
+/// goes back to a relay plugin.
+///
+/// # Errors
+///
+/// [`PluginError::invalid_params`] when the status is outside 200 to 599,
+/// a header breaks a rule, or the body exceeds
+/// [`MAX_ORIGIN_REFUSAL_BODY_BYTES`].
+pub fn check_origin_refusal(refusal: &OriginRefusal) -> Result<()> {
+    if !(200..=599).contains(&refusal.status) {
+        return Err(PluginError::invalid_params(format!(
+            "refusal status {} is not a final HTTP status",
+            refusal.status
+        )));
+    }
+    if refusal.body.len() > MAX_ORIGIN_REFUSAL_BODY_BYTES as usize {
+        return Err(PluginError::invalid_params(format!(
+            "refusal body exceeds {MAX_ORIGIN_REFUSAL_BODY_BYTES} bytes"
+        )));
+    }
+    check_headers(&refusal.headers, "response")
 }
 
 /// Checks the head of a response the host sends back to a relay plugin.
