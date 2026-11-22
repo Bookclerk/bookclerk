@@ -1833,6 +1833,7 @@ name = "bookclerk-dev"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bookclerk-onnxruntime",
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-manifest",
  "bookclerk-sandbox",
@@ -1894,6 +1895,15 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "bookclerk-intake"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-config",
+ "hex",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1974,6 +1984,7 @@ dependencies = [
  "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-db-exec",
+ "bookclerk-intake",
  "bookclerk-keystore",
  "bookclerk-naming",
  "bookclerk-node-proto",
@@ -2072,6 +2083,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-model-pack"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bookclerk-mp4"
 version = "0.1.0"
 dependencies = [
@@ -2138,6 +2160,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-onnxruntime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bookclerk-tls",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "bookclerk-player-api"
 version = "0.1.0"
 dependencies = [
@@ -2179,6 +2215,23 @@ dependencies = [
  "tokio-util",
  "toml 1.2.1+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "bookclerk-plugin-ai-embedder"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bookclerk-model-pack",
+ "bookclerk-onnxruntime",
+ "bookclerk-plugin-sdk",
+ "bookclerk-sentencepiece",
+ "ort",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -2323,10 +2376,12 @@ dependencies = [
  "async-trait",
  "bookclerk-config",
  "bookclerk-db-testkit",
+ "bookclerk-model-pack",
  "bookclerk-plugin-host",
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
  "bookclerk-sandbox",
+ "bookclerk-sentencepiece",
  "bookclerk-workerd",
  "libc",
  "serde_json",
@@ -2624,6 +2679,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-sentencepiece"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bookclerk-source"
 version = "0.1.0"
 dependencies = [
@@ -2795,6 +2859,7 @@ dependencies = [
  "bookclerk-cover",
  "bookclerk-discover",
  "bookclerk-enrich",
+ "bookclerk-intake",
  "bookclerk-integrations",
  "bookclerk-keystore",
  "bookclerk-library",
@@ -6425,6 +6490,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libloading"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1832accd5a4ca2795ace4d05d15c4039be15b62d3b950eff99746a990e3cc10"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6633,6 +6708,16 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "matrixmultiply"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f607c237553f086e7043417a51df26b2eb899d3caff94e6a67592ff992fedc7"
+dependencies = [
+ "autocfg",
+ "rawpointer",
+]
 
 [[package]]
 name = "md-5"
@@ -6849,6 +6934,21 @@ name = "murmurhash32"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8afc6df942f4c022d70c5725e18df1a705773870e5b7f96fde94ca0334ce77a"
+
+[[package]]
+name = "ndarray"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "520080814a7a6b4a6e9070823bb24b4531daac8c4627e08ba5de8c5ef2f2752d"
+dependencies = [
+ "matrixmultiply",
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "portable-atomic",
+ "portable-atomic-util",
+ "rawpointer",
+]
 
 [[package]]
 name = "ndk"
@@ -7755,6 +7855,25 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "ort"
+version = "2.0.0-rc.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37c87aa7a90b7ff3e0fe36cccd475df8d67f15f07f4d6c370c4b38464232813c"
+dependencies = [
+ "libloading 0.9.1",
+ "ndarray",
+ "ort-sys",
+ "smallvec",
+ "tracing",
+]
+
+[[package]]
+name = "ort-sys"
+version = "2.0.0-rc.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d22b0417f1838db5a3ac0b3f98dfe39f6fb73624aa0a27c6bbb5040b9c7db2b"
 
 [[package]]
 name = "oslog"
@@ -8844,6 +8963,12 @@ name = "raw-window-handle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
+
+[[package]]
+name = "rawpointer"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
 
 [[package]]
 name = "rayon"

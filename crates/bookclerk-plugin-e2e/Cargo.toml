@@ -22,8 +22,12 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", 
 [dev-dependencies]
 bookclerk-config.workspace = true
 bookclerk-db-testkit.workspace = true
+# The tiny model the staged `embedder` guest runs in its jail
+# (`tests/support/tiny_model.rs` of the plugin, included by path).
+bookclerk-model-pack.workspace = true
 bookclerk-plugin-host.workspace = true
 bookclerk-sandbox.workspace = true
+bookclerk-sentencepiece.workspace = true
 bookclerk-workerd.workspace = true
 tempfile.workspace = true
 

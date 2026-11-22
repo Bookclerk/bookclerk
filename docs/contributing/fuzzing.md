@@ -39,6 +39,7 @@ boundary extends it.
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, Ogg Opus and Vorbis headers and comments, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
+| `model_pack` | Embedding model files in the embedder plugin's data directory: the model description (`model.json`) and the token-row packs | `bookclerk-model-pack::PackManifest::parse`, `Rows::parse` |
 | `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
 | `media_keep_codec` | Audio parts the media worker copies into an M4B without re-encoding them (`output.keep_codec_in_m4b`): MP4 sample entries and tables, Ogg and FLAC headers and packets | `bookclerk-media::package_keeping_codec` |
@@ -73,6 +74,8 @@ boundary extends it.
 | `node_frame` | Node-to-node frames on the library socket, including the public origin a branch reports in its heartbeat | `bookclerk-node-proto::Frame`, `BranchOrigin::parse` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
+| `intake_settings` | A drop folder's settings: the body of `PUT /api/config/plugin-instances/{id}/intake` and the stored `core.intake` document | `bookclerk-config::parse_intake_settings` |
+| `intake_items` | A drop folder's listing: object keys, sizes and change signatures grouped into items and settled | `bookclerk-intake::ItemGrouper`, `step` |
 | `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
@@ -261,6 +264,29 @@ only that. The others check:
   JSON round trip, and takes or refuses sample books and sample copies
   exactly as the oracle's reading does. The shared oracle is
   `fuzz/oracles/destination_filter.rs`, replayed from `bookclerk-config`.
+- **`intake_settings`**: the input is the request body. It is accepted
+  exactly when an independent reading, built on `serde_json::Value` and a
+  separate scan for repeated keys, accepts it: at most 16 KiB, one object
+  of the documented keys with none repeated, whole numbers in range, the
+  documented names for `after_ingest` and `attribute_to`, a positive
+  `patron` exactly when `attribute_to` is `owner`, `prune_imported_days`
+  only with `after_ingest = move`, and at most 64 distinct ignore patterns
+  of 1 to 128 bytes with no path separator or control character, with the
+  settings written out with every default at most 12 KiB. Accepted
+  settings equal the oracle's reading and survive a JSON round trip. The
+  shared oracle is `fuzz/oracles/intake_settings.rs`, replayed from
+  `bookclerk-config`.
+- **`intake_items`**: the first byte picks the attribution mode and a quiet
+  period, and the rest is lines of `key<TAB>size<TAB>signature`. Every
+  object is ignored, a stray or a member of the same item as an independent
+  reading of the key rules says (ignore patterns through a reference
+  matcher of its own), the items hold the oracle's members with the member
+  cap flagged exactly when a member past it was listed, the signature does
+  not depend on listing order and moves with any size change or a member
+  past the cap, and `step` makes an item ready only once the quiet period has
+  passed, never past the member cap, and never forgets a queued item. The
+  shared oracle is `fuzz/oracles/intake_items.rs`, replayed from
+  `bookclerk-intake`.
 - **`output_copies`**: the first byte picks the main output's copy and the
   rest is the `copies` array, read as the server reads it (`OutputCopy`'s
   serde derive, then `validate_copies`). It is accepted exactly when an
@@ -347,6 +373,17 @@ only that. The others check:
   `Done` record re-encodes to a frame that decodes to the same record. The
   shared oracle is `fuzz/oracles/tags_wire.rs`, replayed from
   `bookclerk-tags`.
+- **`model_pack`**: the first byte picks the reader: `0` reads the rest as
+  a model description, any other value reads it as a row pack whose rows
+  have that many bytes. An accepted description names only files that stay
+  inside the model directory by a rule written apart from the crate's,
+  each once and none named `model.json`, keeps its limits, and writes back
+  to JSON that reads as the same description. A row pack's verdict equals
+  a layout check written apart from the crate's; an accepted pack gives
+  every listed token the bytes at the position the layout states, nothing
+  for a token it does not list, and re-encodes to exactly its own bytes.
+  The shared oracle is `fuzz/oracles/model_pack.rs`, replayed from
+  `bookclerk-model-pack`.
 - **`media_decode`**: the input is a whole audio file. It is decoded at
   the source's channel count twice and once mixed to mono. An accepted
   stream has a sample rate from 1 Hz to 768 kHz and one or two channels,
@@ -973,7 +1010,8 @@ only that. The others check:
   body is accepted only when it is one object with string `username` and
   `password`, and comes back with the username trimmed, both at most 256
   bytes and the password kept out of `Debug`. A card token is accepted
-  exactly when it is 43 URL-safe Base64 letters. Accepted list and detail
+  exactly when, without surrounding whitespace, it is 43 URL-safe Base64
+  letters, and comes back without that whitespace. Accepted list and detail
   queries are at most 4,096 bytes, with a page size of at most 1,000 and a
   search term of at most 256 bytes with no control character. An author,
   series or narrator id writes back from its key to the same id, and a
@@ -1090,8 +1128,9 @@ Each one has a replay test and seeded mutation fuzzing, checked against
 an independent oracle, and most replay a seed corpus. Python scripts run
 them on every pull request; the Workers run them in `npm test`, inside the
 Workers runtime (Vitest with `@cloudflare/vitest-plugin`), which reads each
-corpus through Vite rather than from disk. The collector's summary fuzz test
-runs in Node instead, since its oracle is a Python subprocess.
+corpus through Vite rather than from disk. The collector's summary and
+Triage now fuzz tests run in Node instead, since their oracles are Python
+subprocesses.
 
 ### Diagnostics scripts (Python)
 
@@ -1250,7 +1289,7 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     `scripts/tests/codeql_languages_corpus/` (files named `rust__<case>`
     or `norust__<case>`).
   - Oracle: Rust is analyzed exactly when some NUL-separated name is not
-    UTF-8, ends in `.rs`, `.capnp` or `.proto`, is named `Cargo.toml`, `Cargo.lock`
+    UTF-8, ends in `.rs`, `.capnp`, `.proto`, `.cc` or `.h`, is named `Cargo.toml`, `Cargo.lock`
     or `rust-toolchain.toml`, sits under a `.cargo/` directory, or is the
     workflow or one of the two scripts, checked with string operations
     rather than glob patterns.
@@ -1475,6 +1514,20 @@ The tests and corpora live in `tools/diagnostics-collector/`.
     batch, after the Worker's own open-issue list when there is one. The
     batch fits the size cap and the prompt fits the context window, and the
     reservation covers the call's worst case.
+- **Triage now reply reader** (`proposalFor` in `dashboard/triage-now.ts`).
+  It reads the model's reply about one report into the issue or
+  attachment a member may file from the report page.
+  - Test and corpus: `triage-now.fuzz.test.ts`, which replays and mutates
+    the plan validator's corpus (`scripts/tests/diagnostics_plan_corpus/`)
+    and builds plans from hostile values; `triage-now.test.ts` covers the
+    Workers runtime's reading of numbers.
+  - Oracle: the ingest run's plan validator
+    (`tools/diagnostics-collector/scripts/validate_plan.py`, through
+    `scripts/tests/diagnostics_plan_oracle.py`) with that report as its
+    whole batch. Both must propose the same attachment, or the same issue
+    title, labels and filed body, or nothing. The reader may refuse more:
+    replies over its length cap, JSON nested deeper than its cap, and
+    `NaN` or `Infinity`, which Python's JSON reader accepts.
 - **Ingest cursor body** (`parseCursor` in `ingest-cursor.ts`). It is the
   body `POST /report/cursor` stores, and decides where the next ingest run
   starts.

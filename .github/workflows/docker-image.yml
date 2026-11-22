@@ -1,5 +1,5 @@
 # Builds the production image (packaging/docker/Dockerfile) and boots it twice
-# on a fresh volume (packaging/docker/smoke.sh): the bundled sqlite and local
+# on a fresh volume (packaging/docker/smoke.sh): the bundled sqlite, local and embedder
 # platform plugins must install, be trusted, and run under the default
 # ("required") isolation.
 #

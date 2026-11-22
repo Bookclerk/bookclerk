@@ -1351,7 +1351,9 @@ export async function logAccess(
     | "triage"
     | "mute"
     | "unmute"
-    | "close-issue",
+    | "close-issue"
+    | "ai-triage"
+    | "file-issue",
   reportId: string | null,
   now: number,
 ): Promise<void> {
@@ -2112,6 +2114,23 @@ export async function getState(db: D1Database, key: string): Promise<string | nu
  */
 export async function setState(db: D1Database, key: string, value: string): Promise<void> {
   await stateStatement(db, key, value).run();
+}
+
+/**
+ * Empties a cursor only if it still holds a value, so of two requests that
+ * read the same value only one goes on to act on it.
+ *
+ * @param db - Database.
+ * @param key - Cursor name.
+ * @param value - The value the caller read.
+ * @returns Whether this call emptied it.
+ */
+export async function takeState(db: D1Database, key: string, value: string): Promise<boolean> {
+  const res = await db
+    .prepare("UPDATE sync_state SET value = '' WHERE key = ? AND value = ?")
+    .bind(key, value)
+    .run();
+  return res.meta.changes === 1;
 }
 
 /**

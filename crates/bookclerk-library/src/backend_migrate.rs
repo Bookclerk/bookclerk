@@ -34,11 +34,11 @@ use crate::entities::{
     configuration_documents, contributors, copy_grants, credits, domain_events,
     edition_acquisitions, edition_chapters, edition_copies, edition_files, edition_identifiers,
     editions, embeddings, encrypted_secrets, event_deliveries, event_outbox_stats, expressions,
-    holdings, ignored_titles, ingest_batches, ingest_members, job_secret_handoffs, job_temp_paths,
-    jobs, library_identity, library_links, link_imports, link_requests, listening_progress,
-    listing_offers, metadata_claims, node_credentials, node_enrollment_links, node_upload_sessions,
-    nodes, notifications, notify_deliveries, notify_destinations, notify_inbox,
-    notify_patron_offers, notify_patron_prefs, notify_patron_targets, notify_routes,
+    holdings, ignored_titles, ingest_batches, ingest_members, intake_items, job_secret_handoffs,
+    job_temp_paths, jobs, library_identity, library_links, link_imports, link_requests,
+    listening_progress, listing_offers, metadata_claims, node_credentials, node_enrollment_links,
+    node_upload_sessions, nodes, notifications, notify_deliveries, notify_destinations,
+    notify_inbox, notify_patron_offers, notify_patron_prefs, notify_patron_targets, notify_routes,
     oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
     patron_controls, patron_scope_keys, patron_scopes, pending_joins, playback_progress,
     playback_sessions, player_card_tokens, player_cards, player_passwords, plugin_artifacts,
@@ -273,6 +273,8 @@ macro_rules! copied_entities {
         $each!(plugin_versions);
         $each!(plugin_installs);
         $each!(plugin_instances);
+        // Drop folder items, so `leave` folders are not added again.
+        $each!(intake_items);
         $each!(plugin_deployments);
         $each!(plugin_placements);
         $each!(plugin_cron_cursors);

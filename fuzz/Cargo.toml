@@ -32,6 +32,7 @@ bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-tags = { path = "../crates/bookclerk-tags" }
+bookclerk-model-pack = { path = "../crates/bookclerk-model-pack" }
 bookclerk-archive = { path = "../crates/bookclerk-archive" }
 # media_decode drives the media worker's demux and decode path.
 # With the FFmpeg decoders, so media_decode also fuzzes WMA, AC-3/E-AC-3
@@ -40,6 +41,7 @@ bookclerk-media = { path = "../crates/bookclerk-media", features = ["libav"] }
 # media_keep_codec writes each input to a scratch file for the packager.
 tempfile = "3"
 bookclerk-config = { path = "../crates/bookclerk-config" }
+bookclerk-intake = { path = "../crates/bookclerk-intake" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
 bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
 bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/optional/source-graphicaudio" }
@@ -542,6 +544,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "intake_settings"
+path = "fuzz_targets/intake_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "intake_items"
+path = "fuzz_targets/intake_items.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "destination_id"
 path = "fuzz_targets/destination_id.rs"
 test = false
@@ -698,6 +714,13 @@ bench = false
 [[bin]]
 name = "relayed_log_line"
 path = "fuzz_targets/relayed_log_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "model_pack"
+path = "fuzz_targets/model_pack.rs"
 test = false
 doc = false
 bench = false

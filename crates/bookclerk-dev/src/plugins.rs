@@ -10,7 +10,7 @@ use bookclerk_plugin_catalog::{
     CRATES_IO_INDEX,
 };
 
-/// Workspace-relative directory of always-shipped platform guests (`sqlite`, `local`).
+/// Workspace-relative directory of always-shipped platform guests (`sqlite`, `local`, `embedder`).
 const PLATFORM_PLUGINS_DIR: &str = "crates/bookclerk-plugins/platform";
 /// Workspace-relative directory of optional storefront and database guests.
 const OPTIONAL_PLUGINS_DIR: &str = "crates/bookclerk-plugins/optional";
@@ -757,7 +757,47 @@ fn default_members(root: &Path) -> Result<Vec<String>> {
     Ok(pkgs)
 }
 
-/// Copies a guest's `plugin.toml`, binary or modules, and embedded logo into the staging root.
+/// Whether a native guest loads ONNX Runtime: `onnxruntime = true` under
+/// `[package.metadata.bookclerk]` in its `Cargo.toml`.
+fn needs_onnxruntime(dir: &Path) -> Result<bool> {
+    let path = dir.join("Cargo.toml");
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let value: toml::Value =
+        toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+    Ok(value
+        .get("package")
+        .and_then(|package| package.get("metadata"))
+        .and_then(|metadata| metadata.get("bookclerk"))
+        .and_then(|bookclerk| bookclerk.get("onnxruntime"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false))
+}
+
+/// Puts the pinned ONNX Runtime shared library beside a staged guest's
+/// binary, fetching it into the target directory's cache first.
+///
+/// On a platform ONNX Runtime has no release for, nothing is copied: the
+/// guest is still staged and reports the library as missing.
+fn stage_onnxruntime(bin_dir: &Path, out: &Path) -> Result<()> {
+    let target = bin_dir.parent().unwrap_or(bin_dir);
+    let Some(library) = bookclerk_onnxruntime::ensure_in_target(target)? else {
+        eprintln!(
+            "no ONNX Runtime release for this platform; {} staged without it",
+            out.display()
+        );
+        return Ok(());
+    };
+    let dest = out.join(bookclerk_onnxruntime::LIBRARY_FILE_NAME);
+    fs::copy(&library, &dest)
+        .with_context(|| format!("copy {} -> {}", library.display(), dest.display()))?;
+    Ok(())
+}
+
+/// Copies a guest's `plugin.toml`, binary or modules, embedded logo and, for a
+/// guest that asks for it, the ONNX Runtime library into the staging root.
 fn stage_guest(
     _root: &Path,
     bin_dir: &Path,
@@ -797,6 +837,9 @@ fn stage_guest(
             .with_context(|| format!("copy {} -> {}", src_bin.display(), dest_bin.display()))?;
         set_executable(&dest_bin)?;
         patch_command(&manifest_dest, bin_name)?;
+        if needs_onnxruntime(&guest.dir)? {
+            stage_onnxruntime(bin_dir, &out)?;
+        }
     } else {
         bail!(
             "native guest `{}` has no Cargo package and no known script stage path ({})",

@@ -135,7 +135,7 @@ activate an earlier version.
 
 ### Staged packages
 
-Platform guests (`local`, `sqlite`) ship with the node, and
+Platform guests (`local`, `sqlite`, `embedder`) ship with the node, and
 `cargo stage-plugins` stages development trees under `plugins/<fs-id>`.
 Those are staged on one machine, not installed into the library. Their
 provenance is `platform_bundled`, `verified_staged` or
@@ -200,7 +200,7 @@ running, and records observations (`materialized`, `running`, `healthy`,
 
 - Third-party plugins enroll `absent` until an operator approves their
   grant and enables them.
-- Platform guests (`local`, `sqlite`) grant themselves (the reconciler
+- Platform guests (`local`, `sqlite`, `embedder`) grant themselves (the reconciler
   persists that grant before the first spawn) and come up enabled.
 
 ```sh
@@ -227,6 +227,7 @@ The daemon offers the same operations to an operator session:
 | `DELETE` | `/api/config/plugin-instances/{id}` (no deployments left) |
 | `GET` / `PUT` | `/api/config/plugin-instances/{id}/config` (`{expected_revision, settings, secret_refs, secrets}`; `secrets` are sealed server-side) |
 | `GET` / `PUT` | `/api/config/plugin-instances/{id}/filter` (a storage destination's filter: `PUT` takes `{rules: [{field, value, effect}]}`, and both answer `{plugin_instance_id, revision, filter}` with the rules under `filter`; see [Output](output.md#choosing-which-books-a-destination-takes)) |
+| `GET` / `PUT` / `DELETE` | `/api/config/plugin-instances/{id}/intake` (whether a storage instance is a drop folder: `PUT` takes the settings, `DELETE` makes it a destination again, and both `GET` and `PUT` answer `{plugin_instance_id, revision, intake}`; see [Drop folders](drop-folders.md)) |
 | `PUT` | `/api/config/plugin-instances/{id}/deployments/{node_id}` (`{desired, expected_revision}`) |
 | `GET` | `/api/config/nodes`; `/api/config/plugins/{key}` carries the pinned schema |
 
@@ -669,7 +670,7 @@ $FILES_DIR/
 
 Host-local trees remain for three cases:
 
-- platform guests that ship with the host (`sqlite`, `local`);
+- platform guests that ship with the host (`sqlite`, `local`, `embedder`);
 - development trees staged by `cargo stage-plugins` or `cargo dev`;
 - installs committed before library installs existed.
 

@@ -32,6 +32,7 @@ on:
       # build turns on.
       - "crates/bookclerk-libav/**"
       - "crates/bookclerk-config/**"
+      - "crates/bookclerk-intake/**"
       - "crates/bookclerk-storefront/**"
       - "crates/bookclerk-plugins/optional/source-libro/**"
       - "crates/bookclerk-audible-catalog/**"
@@ -41,6 +42,7 @@ on:
       - "crates/bookclerk-window-policy/**"
       - "crates/bookclerk-storage/**"
       - "crates/bookclerk-discover/**"
+      - "crates/bookclerk-model-pack/**"
       - "crates/bookclerk-player-api/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite-*.yml"

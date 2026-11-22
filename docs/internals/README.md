@@ -10,6 +10,8 @@ confined. It assumes you can read Rust.
 - [Discovery design](discovery.md): how suggestions are found and ranked.
 - [Embedding model benchmarks](embedding-benchmarks.md): how candidate
   models match taste across languages, and what they cost to run.
+- [Embedding model packs](model-packs.md): how a model is stored on
+  disk, how the `embedder` plugin runs it, and how it was checked.
 - [Durable job queue](jobs.md): admission, leases and crash recovery.
 - [Bounded storage](storage-bounds.md): size caps, streams, paged scans
   and checkpoints.

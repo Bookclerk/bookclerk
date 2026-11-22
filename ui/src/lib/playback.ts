@@ -57,6 +57,18 @@ export interface Bookmark {
   created_at: string;
 }
 
+/** A chapter of the edition, as a player seeks between them. */
+export interface ChapterSpan {
+  /** Chapter title. */
+  title: string;
+  /** Where it starts on the edition's timeline, in milliseconds. */
+  start_ms: number;
+  /** Where it ends: the next chapter's start, or the end of the timeline. */
+  end_ms: number;
+  /** Nesting depth; 0 for a top-level chapter. */
+  depth: number;
+}
+
 /** `GET /api/library/editions/{id}/playback`. */
 export interface PlaybackManifest {
   /** The edition. */
@@ -75,6 +87,8 @@ export interface PlaybackManifest {
   progress: PlaybackProgress | null;
   /** The caller's bookmarks, in timeline order. */
   bookmarks: Bookmark[];
+  /** The chapters the edition plays, in pre-order; empty when it has none. */
+  chapters: ChapterSpan[];
 }
 
 /** `POST /api/playback/sessions` answer. */

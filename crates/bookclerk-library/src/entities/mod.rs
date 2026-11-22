@@ -57,6 +57,7 @@ pub mod holdings;
 pub mod ignored_titles;
 pub mod ingest_batches;
 pub mod ingest_members;
+pub mod intake_items;
 pub mod job_secret_handoffs;
 pub mod job_temp_paths;
 pub mod jobs;

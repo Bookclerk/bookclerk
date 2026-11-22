@@ -23,6 +23,7 @@ Every guest is an **external** (jailed) subprocess. Runtimes are **`native`** or
 | `cargo build-app --plugin libro --plugin echo_native_rust` | Individual guests by `plugin.toml` id (any tier; repeatable) |
 | `cargo build-app --print …` | Print resolved `-p` names (no duplicates) |
 | `cargo ensure-workerd` | Download/update pinned Cloudflare `workerd` → `target/<profile>/` |
+| `cargo ensure-onnxruntime` | Download the pinned ONNX Runtime library the `embedder` plugin loads → `target/onnxruntime-<version>/` |
 | `cargo install-platform` | Install platform guests → `$BOOKCLERK_FILES_DIR/plugins/` |
 | `cargo stage-plugins --optional` | Stage optional guests → `target/plugin-artifacts` |
 | `cargo stage-plugins --plugin libro` | Stage only the named optional/example guests (platform ids are rejected — `install-platform` owns them) |
