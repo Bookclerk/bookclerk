@@ -1086,8 +1086,9 @@ Each one has a replay test and seeded mutation fuzzing, checked against
 an independent oracle, and most replay a seed corpus. Python scripts run
 them on every pull request; the Workers run them in `npm test`, inside the
 Workers runtime (Vitest with `@cloudflare/vitest-plugin`), which reads each
-corpus through Vite rather than from disk. The collector's summary fuzz test
-runs in Node instead, since its oracle is a Python subprocess.
+corpus through Vite rather than from disk. The collector's summary and
+Triage now fuzz tests run in Node instead, since their oracles are Python
+subprocesses.
 
 ### Diagnostics scripts (Python)
 
@@ -1471,6 +1472,20 @@ The tests and corpora live in `tools/diagnostics-collector/`.
     batch, after the Worker's own open-issue list when there is one. The
     batch fits the size cap and the prompt fits the context window, and the
     reservation covers the call's worst case.
+- **Triage now reply reader** (`proposalFor` in `dashboard/triage-now.ts`).
+  It reads the model's reply about one report into the issue or
+  attachment a member may file from the report page.
+  - Test and corpus: `triage-now.fuzz.test.ts`, which replays and mutates
+    the plan validator's corpus (`scripts/tests/diagnostics_plan_corpus/`)
+    and builds plans from hostile values; `triage-now.test.ts` covers the
+    Workers runtime's reading of numbers.
+  - Oracle: the ingest run's plan validator
+    (`tools/diagnostics-collector/scripts/validate_plan.py`, through
+    `scripts/tests/diagnostics_plan_oracle.py`) with that report as its
+    whole batch. Both must propose the same attachment, or the same issue
+    title, labels and filed body, or nothing. The reader may refuse more:
+    replies over its length cap, JSON nested deeper than its cap, and
+    `NaN` or `Infinity`, which Python's JSON reader accepts.
 - **Ingest cursor body** (`parseCursor` in `ingest-cursor.ts`). It is the
   body `POST /report/cursor` stores, and decides where the next ingest run
   starts.
