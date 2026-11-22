@@ -23,6 +23,11 @@ pub struct Pack {
 impl Pack {
     /// A model with three small files and the description that lists
     /// them.
+    ///
+    /// # Panics
+    ///
+    /// When the description cannot be written as JSON, which a test
+    /// fixture never produces.
     #[must_use]
     pub fn new(model_id: &str) -> Self {
         let mut files = BTreeMap::new();
@@ -99,6 +104,10 @@ pub type Seen = Arc<Mutex<Vec<(String, bool)>>>;
 ///
 /// The registry's address (`http://127.0.0.1:<port>`) and what it was
 /// asked.
+///
+/// # Panics
+///
+/// When no loopback port can be bound.
 #[must_use]
 pub fn serve(blobs: BTreeMap<String, Vec<u8>>, cut: Option<String>) -> (String, Seen) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -190,6 +199,11 @@ pub fn serve(blobs: BTreeMap<String, Vec<u8>>, cut: Option<String>) -> (String, 
 }
 
 /// [`serve`], as the registry [`offers_json`] names reached on loopback.
+///
+/// # Panics
+///
+/// When no loopback port can be bound, or the fixture list stops
+/// parsing.
 #[must_use]
 pub fn registry(blobs: BTreeMap<String, Vec<u8>>, cut: Option<String>) -> (ModelRegistry, Seen) {
     let (base, seen) = serve(blobs, cut);
@@ -198,6 +212,11 @@ pub fn registry(blobs: BTreeMap<String, Vec<u8>>, cut: Option<String>) -> (Model
 }
 
 /// A model list that offers `pack` as `tiny`, the default.
+///
+/// # Panics
+///
+/// When `pack` has no `model.json` or the list cannot be written as
+/// JSON.
 #[must_use]
 pub fn offers_json(pack: &Pack) -> Vec<u8> {
     let offer = pack.offer();
