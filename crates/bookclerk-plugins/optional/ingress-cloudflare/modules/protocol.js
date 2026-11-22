@@ -90,7 +90,8 @@ export class FrameReader {
         const end = FRAME_PREFIX_BYTES + length;
         let json;
         try {
-            json = new TextDecoder("utf-8", { fatal: true }).decode(joined.subarray(FRAME_PREFIX_BYTES, end));
+            // `ignoreBOM` keeps a leading byte-order mark, which JSON then refuses.
+            json = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(joined.subarray(FRAME_PREFIX_BYTES, end));
         }
         catch {
             return this.#fail("frame head is not UTF-8");

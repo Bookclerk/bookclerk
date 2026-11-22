@@ -115,7 +115,7 @@ The relay serves six requests at once; more wait up to 30 seconds. Stopping
 the ingress leaves the Worker in your account, so turning it back on keeps
 the same name. The plugin's
 [README](../../crates/bookclerk-plugins/optional/ingress-cloudflare/README.md)
-lists the limits it was tested against.
+lists its limits.
 
 > [!WARNING]
 > Cloudflare ends TLS at its edge and can read the traffic it carries:

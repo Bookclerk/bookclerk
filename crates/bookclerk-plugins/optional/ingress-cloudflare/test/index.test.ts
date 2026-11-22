@@ -62,17 +62,9 @@ class Entrypoint {
 mock.module("@bookclerk/plugin-sdk/workerd", {
   namedExports: { BookclerkEntrypoint: Entrypoint, IngressEntrypoint: Entrypoint, PluginError },
 });
-const {
-  Ingress,
-  default: Plugin,
-  handleMessage,
-  relayHealth,
-  relaySockets,
-  startRelay,
-  stopRelay,
-  targetOf,
-  topUpSockets,
-} = await import("../src/index.ts");
+const { Ingress, default: Plugin } = await import("../src/index.ts");
+const { handleMessage, relayHealth, relaySockets, startRelay, stopRelay, targetOf, topUpSockets } =
+  await import("../src/lifecycle.ts");
 const { API_BASE, MIGRATION_TAG, relayToken } = await import("../src/cloudflare.ts");
 const { RELAY_HEALTH_PATH, RELAY_PULL_PATH, RELAY_PUSH_PATH, RELAY_SOCKETS, encodeFrame } =
   await import("../src/protocol.ts");
@@ -290,10 +282,21 @@ test("health reports the relay's view and reopens sockets", async () => {
     sleep: () => Promise.resolve(),
     startWaitMs: 0,
   });
-  assert.deepEqual(await relayHealth(ctx(1)), {
-    serving: false,
-    detail: "not connected to the relay",
+  // With every socket gone, health finds the deployed relay and reconnects.
+  assert.deepEqual(await relayHealth(ctx(RELAY_SOCKETS)), { serving: true });
+  assert.equal(open.length, RELAY_SOCKETS);
+  await stopRelay(binding);
+  const offline = await relayHealth({
+    ...ctx(1),
+    fetch: () => Promise.reject(new Error("offline")),
   });
+  assert.equal(offline.serving, false);
+  assert.match(offline.detail ?? "", /^not connected to the relay: could not reach/);
+  const odd = await relayHealth({
+    ...ctx(1),
+    fetch: () => Promise.resolve(Response.json({ success: true, result: { subdomain: 7 } })),
+  });
+  assert.match(odd.detail ?? "", /^not connected to the relay/);
   await binding.connect(`wss://${HOST}/__bookclerk/relay/connect`, { attachment: { host: HOST } });
   assert.deepEqual(await relayHealth(ctx(RELAY_SOCKETS)), { serving: true });
   assert.equal(open.length, RELAY_SOCKETS);
@@ -347,10 +350,15 @@ test("the entrypoint classes delegate to the lifecycle functions", async () => {
   const { binding, open } = fakeSockets();
   const env = envOf(binding);
   const ingress = new Ingress({} as never, env);
-  assert.deepEqual(await ingress.health(), {
-    serving: false,
-    detail: "not connected to the relay",
-  });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new Error("offline"));
+  try {
+    const health = await ingress.health();
+    assert.equal(health.serving, false);
+    assert.match(health.detail ?? "", /^not connected to the relay/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
   const plugin = new Plugin({} as never, env);
   assert.deepEqual(
     await plugin.webSocketMessage(await binding.connect("wss://x/y", { attachment: null }), "x"),
@@ -363,6 +371,13 @@ test("the entrypoint classes delegate to the lifecycle functions", async () => {
   assert.equal(open.length, before);
   await ingress.stop();
   assert.equal(open.length, 0);
+});
+
+test("the main module exports only entrypoint classes", async () => {
+  // workerd treats each named export of the main module as an entrypoint and
+  // refuses one that is not a class or handler.
+  const main = await import("../src/index.ts");
+  assert.deepEqual(Object.keys(main).sort(), ["Ingress", "default"]);
 });
 
 test("the version matches plugin.toml", () => {

@@ -260,10 +260,7 @@ export async function deployRelay(
   target: RelayTarget,
   token: string,
 ): Promise<string> {
-  if (!isAccountId(target.accountId))
-    throw new DeployError("account_id must be 32 lowercase hex digits");
-  if (!isDnsLabel(target.workerName))
-    throw new DeployError("worker_name must be a lowercase DNS label");
+  checkTarget(target);
   const tag = await existingTag(fetch, target);
   if (tag !== null && tag !== MIGRATION_TAG) {
     throw new DeployError(
@@ -289,5 +286,31 @@ export async function deployRelay(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ enabled: true, previews_enabled: false }),
   });
+  return relayHost(target.workerName, await accountSubdomain(fetch, target));
+}
+
+/**
+ * Refuses settings that cannot name a Worker before any call.
+ *
+ * @param target - The account, Worker name and API token.
+ * @throws {DeployError} When the account id or Worker name is malformed.
+ */
+function checkTarget(target: RelayTarget): void {
+  if (!isAccountId(target.accountId))
+    throw new DeployError("account_id must be 32 lowercase hex digits");
+  if (!isDnsLabel(target.workerName))
+    throw new DeployError("worker_name must be a lowercase DNS label");
+}
+
+/**
+ * The host an already deployed relay answers on, without deploying it.
+ *
+ * @param fetch - The request function.
+ * @param target - The account, Worker name and API token.
+ * @returns The relay's host name.
+ * @throws {DeployError} When the settings are malformed or the call fails.
+ */
+export async function findRelayHost(fetch: Fetch, target: RelayTarget): Promise<string> {
+  checkTarget(target);
   return relayHost(target.workerName, await accountSubdomain(fetch, target));
 }

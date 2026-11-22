@@ -28,7 +28,6 @@ import { test } from "node:test";
 import {
   FRAME_PREFIX_BYTES,
   FrameReader,
-  HOP_BY_HOP,
   MAX_HEADERS,
   MAX_HEADER_BYTES,
   MAX_HEAD_BYTES,
@@ -40,27 +39,59 @@ import {
   parseNotice,
   parseRequestHead,
   parseResponseHead,
-  providerHeader,
 } from "../src/protocol.ts";
 
+/**
+ * A whole-number setting from the environment.
+ *
+ * @param name - Variable name.
+ * @param fallback - Value when the variable is unset.
+ * @param max - Largest accepted value.
+ * @returns The value.
+ * @throws {Error} Naming the variable when its value is not a whole number
+ *   from 0 to `max`.
+ */
+function wholeEnv(name: string, fallback: number, max: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(raw) ? Number(raw) : Number.NaN;
+  if (!Number.isSafeInteger(value) || value > max)
+    throw new Error(`${name} must be a whole number from 0 to ${max}, not ${JSON.stringify(raw)}`);
+  return value;
+}
+
 /** PRNG seed for this run. */
-const SEED = Number(process.env["FUZZ_SEED"] ?? 0x7e1a);
+const SEED = wholeEnv("FUZZ_SEED", 0x7e1a, 0xffff_ffff);
 
 /** Mutated inputs checked per corpus. */
-const ITERATIONS = Number(process.env["FUZZ_ITERATIONS"] ?? 3000);
+const ITERATIONS = wholeEnv("FUZZ_ITERATIONS", 3000, 10_000_000);
+
+/** One seed file. */
+interface Seed {
+  /** File name, for failures. */
+  file: string;
+  /** Text without its final newline. */
+  text: string;
+}
 
 /**
  * Reads one corpus directory.
  *
  * @param name - Directory under `fuzz/`.
- * @returns Each seed's text without its final newline, by file name order.
+ * @returns Each seed, by file name order.
+ * @throws {Error} When the directory holds no seed.
  */
-function corpus(name: string): string[] {
+function corpus(name: string): Seed[] {
   const dir = new URL(`../fuzz/${name}/`, import.meta.url);
-  return readdirSync(dir)
+  const seeds = readdirSync(dir)
     .filter((file) => file.endsWith(".txt"))
     .sort()
-    .map((file) => readFileSync(new URL(file, dir), "utf8").replace(/\n$/, ""));
+    .map((file) => ({
+      file: `fuzz/${name}/${file}`,
+      text: readFileSync(new URL(file, dir), "utf8").replace(/\n$/, ""),
+    }));
+  if (seeds.length === 0) throw new Error(`fuzz/${name}/ holds no .txt seeds`);
+  return seeds;
 }
 
 /**
@@ -83,10 +114,13 @@ function prng(seed: number): () => number {
 /**
  * Bytes of a hex seed.
  *
- * @param hex - Even-length hex.
+ * @param seed - The seed, whose text is even-length hex.
  * @returns The bytes.
+ * @throws {Error} Naming the file when its text is not whole hex pairs.
  */
-function fromHex(hex: string): Uint8Array {
+function fromHex(seed: Seed): Uint8Array {
+  const hex = seed.text;
+  if (!/^(?:[0-9a-f]{2})*$/i.test(hex)) throw new Error(`${seed.file} is not whole hex byte pairs`);
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(2 * i, 2 * i + 2), 16);
   return out;
@@ -250,10 +284,42 @@ function checkFrame(bytes: Uint8Array, rand: () => number, label: string): void 
     expected,
     `${label} chunked ${Buffer.from(bytes).toString("hex")}`,
   );
-  assert.deepEqual(
-    readInChunks(bytes, () => 0.999),
-    expected,
-    `${label} whole`,
+  const step = new FrameReader().push(bytes);
+  const whole: FrameVerdict =
+    step.kind === "head" ? { ok: true, json: step.json, rest: [...step.rest] } : { ok: false };
+  assert.deepEqual(whole, expected, `${label} whole`);
+}
+
+/**
+ * Fields that describe one connection (RFC 9110 section 7.6.1, plus the
+ * legacy and proxy ones): neither side may pass them on. Written out here
+ * rather than imported, so the oracle does not share the parser's list.
+ */
+const CONNECTION_FIELDS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+
+/**
+ * Whether a request head may not carry `name`: the provider's own fields,
+ * forwarding fields and the authority, which only the relay and the library
+ * set.
+ *
+ * @param name - Lowercase field name.
+ * @returns `true` when a request head must not carry it.
+ */
+function relayOnlyField(name: string): boolean {
+  return (
+    name.startsWith("cf-") ||
+    name.startsWith("x-forwarded-") ||
+    ["cdn-loop", "forwarded", "host", "x-real-ip"].includes(name)
   );
 }
 
@@ -279,8 +345,8 @@ function headersOk(value: unknown, request: boolean): boolean {
       const code = ch.codePointAt(0) ?? 0;
       if (!(code === 9 || (code >= 0x20 && code <= 0x7e))) return false;
     }
-    if (HOP_BY_HOP.has(name)) return false;
-    if (request && providerHeader(name)) return false;
+    if (CONNECTION_FIELDS.has(name)) return false;
+    if (request && relayOnlyField(name)) return false;
     bytes += name.length + text.length;
     if (bytes > MAX_HEADER_BYTES) return false;
   }
@@ -340,6 +406,20 @@ function responseOk(json: string): boolean {
 }
 
 /**
+ * The protocol's view of a header list the oracle accepted: each field's
+ * name and value, in order, without other members.
+ *
+ * @param value - The `headers` member.
+ * @returns The fields.
+ */
+function fieldsOf(value: unknown): Array<{ name: string; value: string }> {
+  return (value as Array<{ name: string; value: string }>).map(({ name, value: text }) => ({
+    name,
+    value: text,
+  }));
+}
+
+/**
  * Checks one head input against the oracles and the round trip.
  *
  * @param json - The input.
@@ -353,6 +433,15 @@ function checkHead(json: string, label: string): void {
     `${label} request ${JSON.stringify(json)}`,
   );
   if (typeof request !== "string") {
+    // An accepted head keeps exactly the protocol's members of the input.
+    const input = JSON.parse(json) as Record<string, unknown>;
+    const projected: Record<string, unknown> = {
+      method: input["method"],
+      target: input["target"],
+      headers: fieldsOf(input["headers"]),
+    };
+    if (input["client"] !== undefined) projected["client"] = input["client"];
+    assert.deepEqual(request, projected, `${label} request projection`);
     const step = new FrameReader().push(encodeFrame(request));
     assert.equal(step.kind, "head");
     if (step.kind === "head") assert.deepEqual(parseRequestHead(step.json), request, label);
@@ -369,6 +458,12 @@ function checkHead(json: string, label: string): void {
     `${label} response ${JSON.stringify(json)}`,
   );
   if (typeof response !== "string") {
+    const input = JSON.parse(json) as Record<string, unknown>;
+    assert.deepEqual(
+      response,
+      { status: input["status"], headers: fieldsOf(input["headers"]) },
+      `${label} response projection`,
+    );
     const step = new FrameReader().push(encodeFrame(response));
     assert.equal(step.kind, "head");
     if (step.kind === "head") assert.deepEqual(parseResponseHead(step.json), response, label);
@@ -391,9 +486,11 @@ function checkNotice(text: string, label: string): void {
   );
   const notice = parseNotice(text);
   let expected = false;
+  let id: unknown;
   if (text.length <= 256) {
     try {
       const value = JSON.parse(text) as unknown;
+      id = (value as Record<string, unknown> | null)?.["id"];
       expected =
         typeof value === "object" &&
         value !== null &&
@@ -406,7 +503,10 @@ function checkNotice(text: string, label: string): void {
     }
   }
   assert.equal(typeof notice !== "string", expected, `${label} notice ${JSON.stringify(text)}`);
-  if (typeof notice !== "string") assert.equal(isRequestId(notice.id), true);
+  if (typeof notice !== "string") {
+    assert.deepEqual(notice, { t: "request", id }, label);
+    assert.equal(isRequestId(notice.id), true);
+  }
 }
 
 test("frame seeds replay and mutations match the independent decoder", () => {
@@ -424,7 +524,7 @@ test("frame seeds replay and mutations match the independent decoder", () => {
 });
 
 test("head seeds replay and mutations match the grammar oracle", () => {
-  const seeds = corpus("head");
+  const seeds = corpus("head").map((seed) => seed.text);
   const rand = prng(SEED + 1);
   seeds.forEach((seed, i) => checkHead(seed, `seed ${i}`));
   for (let i = 0; i < ITERATIONS; i++) {
@@ -434,7 +534,7 @@ test("head seeds replay and mutations match the grammar oracle", () => {
 });
 
 test("notice and address seeds replay and mutations match the oracles", () => {
-  const seeds = corpus("notice");
+  const seeds = corpus("notice").map((seed) => seed.text);
   const rand = prng(SEED + 2);
   seeds.forEach((seed, i) => checkNotice(seed, `seed ${i}`));
   for (let i = 0; i < ITERATIONS; i++) {

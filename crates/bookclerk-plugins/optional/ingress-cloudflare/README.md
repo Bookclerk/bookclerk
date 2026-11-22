@@ -18,7 +18,8 @@ each public request back over that connection.
   library through `env.ORIGIN` with the client address Cloudflare reported,
   and pushes the answer back. Bodies stream both ways.
 - `health` asks the relay how many sockets it holds and reopens any that
-  closed. `stop` closes the sockets and leaves the Worker deployed, so
+  closed. When every socket has closed, it looks the relay's address up
+  through the Cloudflare API and reconnects. `stop` closes the sockets and leaves the Worker deployed, so
   starting again keeps the same name.
 
 The relay and the plugin share `src/protocol.ts`. Every relay path needs a
@@ -42,7 +43,8 @@ next start.
    `worker_name` (default `bookclerk-relay`) is the first label of the
    address. A Worker of that name that Bookclerk did not create is left
    alone and `start` fails with a message saying so.
-4. Make it the library's ingress: `bookclerk ingress activate
+4. Deploy it on this computer: `bookclerk plugins deploy cloudflare_relay`.
+5. Make it the library's ingress: `bookclerk ingress activate
    cloudflare_relay`. See [Public address](../../../../docs/server/ingress.md).
 
 > [!WARNING]
@@ -52,7 +54,9 @@ next start.
 
 ## Limits
 
-Tested against Cloudflare's Workers Free plan on 2026-11-22:
+These are the relay's own limits and those of Cloudflare's Workers Free
+plan as Cloudflare documents them. The relay's tests run it under Node with
+fake sockets; it has not yet been run against a live Cloudflare account.
 
 - The plugin serves six requests at once, one per socket; more wait at the
   relay for up to 30 seconds, then get `503`. A request the library does

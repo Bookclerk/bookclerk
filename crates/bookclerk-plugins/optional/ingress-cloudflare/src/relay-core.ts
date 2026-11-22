@@ -69,6 +69,8 @@ interface Pending {
   socket: RelaySocket | null;
   /** The running wait (for a socket, then for the head). */
   timer: ReturnType<typeof setTimeout> | null;
+  /** Stops the plugin's push while its head is still arriving. */
+  headRead: AbortController | null;
 }
 
 /** Statuses whose responses have no body. */
@@ -136,14 +138,42 @@ export interface ReadFrame {
  *
  * @param stream - The framed stream.
  * @param onBodyDone - Called once when the body ends, fails or is cancelled.
+ * @param signal - Cancels the stream while the head is still arriving; the
+ *   read then ends as a truncated frame.
  * @returns The head's JSON and the body, or why the frame is refused.
  */
 export async function readFrame(
   stream: ReadableStream<Uint8Array>,
   onBodyDone: () => void = () => {},
+  signal?: AbortSignal,
 ): Promise<ReadFrame | string> {
   const reader = stream.getReader();
   const frames = new FrameReader();
+  const stop = (): void => {
+    reader.cancel().catch(() => {});
+  };
+  if (signal?.aborted) stop();
+  else signal?.addEventListener("abort", stop, { once: true });
+  try {
+    return await readHead(reader, frames, onBodyDone);
+  } finally {
+    signal?.removeEventListener("abort", stop);
+  }
+}
+
+/**
+ * The loop behind {@link readFrame}.
+ *
+ * @param reader - The stream's reader.
+ * @param frames - The frame decoder.
+ * @param onBodyDone - Called once when the body ends, fails or is cancelled.
+ * @returns The head's JSON and the body, or why the frame is refused.
+ */
+async function readHead(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  frames: FrameReader,
+  onBodyDone: () => void,
+): Promise<ReadFrame | string> {
   for (;;) {
     let chunk: ReadableStreamReadResult<Uint8Array>;
     try {
@@ -345,6 +375,7 @@ export class RelayHub {
         pulled: false,
         socket: null,
         timer: null,
+        headRead: null,
       };
       this.#pending.set(id, pending);
       this.#queue.push(id);
@@ -426,7 +457,10 @@ export class RelayHub {
     const done = new Promise<void>((resolve) => {
       resolveDone = resolve;
     });
-    const frame = await readFrame(body, () => resolveDone());
+    const headRead = new AbortController();
+    pending.headRead = headRead;
+    const frame = await readFrame(body, () => resolveDone(), headRead.signal);
+    pending.headRead = null;
     if (typeof frame === "string") {
       this.#fail(id, problem(502, "bad_gateway", "The library sent a malformed answer."));
       return problem(400, "bad_frame", frame);
@@ -482,6 +516,8 @@ export class RelayHub {
     const pending = this.#pending.get(id);
     if (!pending) return;
     if (!pending.pulled) pending.body?.cancel().catch(() => {});
+    // A push still sending its head would otherwise run on unread.
+    pending.headRead?.abort();
     this.#answer(id, response);
     this.#release(id);
   }
@@ -496,6 +532,10 @@ export class RelayHub {
     if (!pending) return;
     if (pending.timer) clearTimeout(pending.timer);
     this.#pending.delete(id);
+    // A request that never reached a socket leaves the queue too, so waits
+    // that ran out while every socket was busy do not pile up.
+    const queued = this.#queue.indexOf(id);
+    if (queued >= 0) this.#queue.splice(queued, 1);
     const socket = pending.socket;
     if (socket && this.#sockets.get(socket) === id) this.#sockets.set(socket, null);
     this.#dispatch();

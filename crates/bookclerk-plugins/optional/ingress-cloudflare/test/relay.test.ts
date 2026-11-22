@@ -198,7 +198,7 @@ test("a request no socket takes in time gets 503, and one never answered gets 50
   assert.ok(notices.length >= 1);
 });
 
-test("a head that arrives after the 504 is refused instead of hanging the push", async () => {
+test("a push whose head is still arriving at the 504 is cut off instead of hanging", async () => {
   const hub = new RelayHub(TOKEN, { queueMs: 1000, headMs: 40 });
   const auth = { authorization: `Bearer ${TOKEN}` };
   let push: Promise<Response> | undefined;
@@ -241,7 +241,28 @@ test("a head that arrives after the 504 is refused instead of hanging the push",
   await response.body?.cancel();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(push);
-  assert.equal((await push).status, 410);
+  assert.equal((await push).status, 400);
+});
+
+test("requests that time out while every socket is busy leave the queue", async () => {
+  const hub = new RelayHub(TOKEN, { queueMs: 20, headMs: 5000 });
+  const auth = { authorization: `Bearer ${TOKEN}` };
+  // The only socket takes the first notice and never answers it.
+  hub.attach({ send: () => {} });
+  const first = hub.fetch(new Request("https://lib.example/held"));
+  const waited = await Promise.all([
+    hub.fetch(new Request("https://lib.example/a")),
+    hub.fetch(new Request("https://lib.example/b")),
+  ]);
+  assert.deepEqual(
+    waited.map((r) => r.status),
+    [503, 503],
+  );
+  const health = await hub.fetch(
+    new Request(`https://${HOST}${RELAY_HEALTH_PATH}`, { headers: auth }),
+  );
+  assert.deepEqual(await health.json(), { sockets: 1, waiting: 0 });
+  void first;
 });
 
 test("a socket that closes mid-request answers 502, and detach frees the request", async () => {

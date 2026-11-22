@@ -32,6 +32,11 @@ path = "cloudflare.js"
 type = "js"
 
 [[modules]]
+name = "lifecycle.js"
+path = "lifecycle.js"
+type = "js"
+
+[[modules]]
 name = "protocol.js"
 path = "protocol.js"
 type = "js"
