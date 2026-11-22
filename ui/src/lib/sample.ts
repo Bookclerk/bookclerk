@@ -41,6 +41,9 @@ export function isStoreSamplePath(path: string): boolean {
  * @param query - The title, as sent to title-meta.
  * @param lookup - Asks the stores (the daemon's title-sample route).
  * @yields Same-origin URLs, one at a time.
+ * @throws When the store lookup itself fails (offline, a timeout, a
+ *   server error), so the control can offer to try again; a lookup that
+ *   answers "no sample" ends the sources instead.
  */
 export async function* sampleSources(
   editionId: string | null | undefined,
@@ -49,12 +52,7 @@ export async function* sampleSources(
 ): AsyncGenerator<string, void, undefined> {
   if (editionId) yield editionSampleUrl(editionId);
   if (!query.title.trim()) return;
-  let path: string | null = null;
-  try {
-    path = await lookup(query);
-  } catch {
-    path = null;
-  }
+  const path = await lookup(query);
   if (path && isStoreSamplePath(path)) yield path;
 }
 

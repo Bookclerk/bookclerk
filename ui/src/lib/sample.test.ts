@@ -28,15 +28,16 @@ describe("sampleSources", () => {
     ]);
   });
 
-  it("yields nothing when the store has none or the lookup fails", async () => {
+  it("yields nothing when the store has none", async () => {
     expect(await all(sampleSources(undefined, query, async () => null))).toEqual([]);
-    expect(
-      await all(
-        sampleSources(undefined, query, async () => {
-          throw new Error("offline");
-        }),
-      ),
-    ).toEqual([]);
+  });
+
+  it("passes a failed lookup on, so it can be retried", async () => {
+    const gen = sampleSources("ed", query, async () => {
+      throw new Error("offline");
+    });
+    expect((await gen.next()).value).toBe("/api/library/editions/ed/sample");
+    await expect(gen.next()).rejects.toThrow("offline");
   });
 
   it("never asks the stores without a title", async () => {

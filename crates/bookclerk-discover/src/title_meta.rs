@@ -542,6 +542,23 @@ pub fn check_title_meta_query(
     Ok(())
 }
 
+/// The ISBN the store fill looks a title up by: its ISBN, or an ASIN
+/// shaped like one (Audible lists some print-matched titles that way).
+fn fill_isbn(query: &TitleMetaQuery) -> Option<&str> {
+    query
+        .isbn
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            query
+                .asin
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| isbn_like(s))
+        })
+}
+
 /// Plans the catalog-detail lookups that can fill `query`, in the order to
 /// try them.
 ///
@@ -587,19 +604,7 @@ pub fn plan_title_meta_fill<S>(
             break;
         }
     }
-    let isbn = query
-        .isbn
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            query
-                .asin
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| isbn_like(s))
-        });
-    if let Some(isbn) = isbn {
+    if let Some(isbn) = fill_isbn(query) {
         for store in isbn_stores {
             if plan.len() >= STORE_FILL_MAX_LOOKUPS {
                 break;
@@ -720,15 +725,19 @@ const SAMPLE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// * `query` - The title, as the details dialog sends title-meta.
 /// * `sources` - Loaded storefronts.
+/// * `usable` - Whether the caller can serve a sample URL (for the
+///   daemon, one it can sign into a path); a record whose URL is not
+///   usable is passed over for the next store's.
 ///
 /// # Returns
 ///
 /// The sample's URL as the store gave it; the caller signs it into a
 /// same-origin path and never hands it to a client. `None` when no store
-/// offered one.
+/// offered a usable one.
 pub async fn resolve_title_sample(
     query: &TitleMetaQuery,
     sources: &SourceRegistry,
+    usable: fn(&str) -> bool,
 ) -> Option<String> {
     let editions: Vec<String> = query
         .store_editions
@@ -737,15 +746,15 @@ pub async fn resolve_title_sample(
         .collect();
     let editions = editions.join(",");
     let key = cache_key(&[
-        "title-sample-v1",
-        query.isbn.as_deref().unwrap_or(""),
+        "title-sample-v2",
+        fill_isbn(query).unwrap_or(""),
         editions.as_str(),
     ]);
     if let Some(cached) = title_sample_cache().get(&key) {
         return cached;
     }
     let plan = store_fill_plan(query, sources);
-    let found = tokio::time::timeout(SAMPLE_LOOKUP_TIMEOUT, sample_in_order(plan))
+    let found = tokio::time::timeout(SAMPLE_LOOKUP_TIMEOUT, sample_in_order(plan, usable))
         .await
         .unwrap_or_else(|_| {
             tracing::debug!(title = %query.title, "title-sample lookup timed out");
@@ -755,9 +764,12 @@ pub async fn resolve_title_sample(
     found
 }
 
-/// Runs a fill plan in order and returns the first sample URL a record
-/// carries.
-async fn sample_in_order(plan: Vec<(Arc<dyn ContentSource>, FillLookup)>) -> Option<String> {
+/// Runs a fill plan in order and returns the first `usable` sample URL a
+/// record carries.
+async fn sample_in_order(
+    plan: Vec<(Arc<dyn ContentSource>, FillLookup)>,
+    usable: fn(&str) -> bool,
+) -> Option<String> {
     for (store, lookup) in plan {
         let result = match &lookup {
             FillLookup::Product(product_id) => store.catalog_detail(product_id).await,
@@ -765,7 +777,7 @@ async fn sample_in_order(plan: Vec<(Arc<dyn ContentSource>, FillLookup)>) -> Opt
         };
         match result {
             Ok(Some(hit)) => {
-                if let Some(url) = hit.sample_url.filter(|url| !url.trim().is_empty()) {
+                if let Some(url) = hit.sample_url.filter(|url| usable(url.trim())) {
                     return Some(url);
                 }
             }
@@ -1286,7 +1298,7 @@ mod tests {
         registry.register(with_sample);
 
         let query = query(&[("graphicaudio", "sample-1")], Some("9780000005551"));
-        let found = resolve_title_sample(&query, &registry).await;
+        let found = resolve_title_sample(&query, &registry, https).await;
         assert_eq!(
             found.as_deref(),
             Some("https://samples.example/mistborn.mp3")
@@ -1295,7 +1307,9 @@ mod tests {
         assert_eq!(*calls.lock().unwrap(), vec!["isbn:9780000005551"]);
 
         assert_eq!(
-            resolve_title_sample(&query, &registry).await.as_deref(),
+            resolve_title_sample(&query, &registry, https)
+                .await
+                .as_deref(),
             Some("https://samples.example/mistborn.mp3")
         );
         assert_eq!(calls.lock().unwrap().len(), 1, "answered from the cache");
@@ -1305,7 +1319,45 @@ mod tests {
         let mut bare = SourceRegistry::new();
         bare.register(only_listing);
         let miss = query_for_miss();
-        assert!(resolve_title_sample(&miss, &bare).await.is_none());
+        assert!(resolve_title_sample(&miss, &bare, https).await.is_none());
+    }
+
+    /// A record whose sample the caller cannot serve is passed over for
+    /// the next store's.
+    #[tokio::test]
+    async fn an_unusable_sample_url_falls_through() {
+        let detail = |id: &'static str, url: &str| -> Arc<dyn ContentSource> {
+            Arc::new(DetailStore {
+                id,
+                by_isbn: true,
+                by_product_id: false,
+                answer: Some(CatalogHit {
+                    product_id: format!("{id}-1"),
+                    title: "Elantris".into(),
+                    sample_url: Some(url.into()),
+                    ..CatalogHit::default()
+                }),
+                fails: false,
+                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+                listed: Vec::new(),
+            })
+        };
+        let mut registry = SourceRegistry::new();
+        registry.register(detail("chirp", "http://samples.example/plain.mp3"));
+        registry.register(detail("libro", "https://samples.example/elantris.mp3"));
+        // The ISBN comes from an ISBN-shaped ASIN, as the fill reads it.
+        let mut query = query(&[], None);
+        query.asin = Some("9780000005568".into());
+        let found = resolve_title_sample(&query, &registry, https).await;
+        assert_eq!(
+            found.as_deref(),
+            Some("https://samples.example/elantris.mp3")
+        );
+    }
+
+    /// The test callers' rule for a usable sample URL: `https` only.
+    fn https(url: &str) -> bool {
+        url.starts_with("https://")
     }
 
     /// A query no store offers a sample for.

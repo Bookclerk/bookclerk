@@ -56,7 +56,12 @@ minutes.
 Samples are cut on demand, the first time someone asks, and kept in
 `cache/samples/` under a digest of what they were cut from, so a changed
 file gets a new sample. The least recently served are removed once the
-folder passes 256 MiB.
+folder passes 256 MiB. A person's right to an edition can end at any
+time, so its sample is sent `Cache-Control: no-store` and every play
+passes the rights check again; a store sample, the same for everyone, may
+be kept by the browser for a day. The media worker cuts as many samples
+at once as it runs jobs, apart from the job slots, and further requests
+wait.
 
 ### 4. Store samples are declared by storefronts and fetched by plugins
 
@@ -65,12 +70,21 @@ in `plugin.capnp`). The host asks for it the same way title-meta asks for
 details: the stores that listed the title by their product ids, when they
 declared `detailByProductId`, then the stores that declared `detailByIsbn`.
 
-The host never hands the store URL to a client. It signs it into a
+The browser never loads the store URL itself. The host signs it into a
 same-origin path (`/api/samples/{token}`) with this node's own key, as
-cover paths are signed, and fetches only paths it issued. The download
-goes through the first `covers` plugin with `media = audio`
-(`CoverFetchParams.media`): public `https` hosts only, a size cap, and an
-`audio/*` answer; the host makes no outbound request of its own.
+cover paths are signed, and fetches only paths it issued. The token is
+authenticated, not secret: it carries the URL in readable form, so
+anyone holding the path can read it, but nobody can make this node fetch
+a URL it did not sign. The download goes through the first `covers`
+plugin with `media = audio` (`CoverFetchParams.media`): public `https`
+hosts only and a size cap. The plugin refuses an answer whose
+`Content-Type` names something else (text, HTML, JSON, an image); it
+keeps `audio/*`, `video/mp4` and `application/ogg` (which some CDNs send
+for M4A and Ogg audio), a generic octet stream, and an answer with no
+type, because what makes a download a sample is the media worker
+decoding it, not the header. The host makes no outbound request of its
+own. A record whose URL this node cannot sign is passed over for the
+next store's.
 
 ## Consequences
 

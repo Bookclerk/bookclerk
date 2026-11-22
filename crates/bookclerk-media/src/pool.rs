@@ -158,6 +158,10 @@ enum Runner {
 pub struct MediaPool {
     /// Concurrency limiter; one permit is held for the lifetime of each job.
     permits: Arc<Semaphore>,
+    /// Samples being cut at once, apart from the job slots: as many as
+    /// there are job slots, so presses of **Sample** cannot start a worker
+    /// each without bound.
+    samples: Arc<Semaphore>,
     /// Normalized settings this pool was built from, kept so a later config can
     /// be compared against what is actually running.
     config: MediaPoolConfig,
@@ -239,6 +243,7 @@ impl MediaPool {
         };
         Self {
             permits: Arc::new(Semaphore::new(config.workers)),
+            samples: Arc::new(Semaphore::new(config.workers)),
             covers: Box::new(CoverWorker::new(cover_runner, config.workers)),
             tags: Box::new(TagWorker::new(tag_runner)),
             pcm: Box::new(pcm),
@@ -408,8 +413,9 @@ impl MediaPool {
     /// with `Sample`).
     ///
     /// Like [`Self::open_pcm`], each call starts its own worker, jailed to
-    /// no path and no network, which asks for the byte ranges it reads; it
-    /// does not take a job slot. The worker decodes only the sample's span,
+    /// no path and no network, which asks for the byte ranges it reads. It
+    /// does not take a job slot; samples have their own limit, as many at
+    /// once as there are job slots, and a call waits for one. The worker decodes only the sample's span,
     /// and the bytes returned are its encoding, never the file's own. With
     /// isolation off, samples are refused, never cut in this process.
     ///
@@ -438,6 +444,14 @@ impl MediaPool {
         length_ms: u64,
         source: S,
     ) -> Result<EncodedSample> {
+        let _slot = self
+            .samples
+            .acquire()
+            .await
+            .map_err(|err| MediaError::Worker {
+                job: "sample",
+                detail: format!("pool closed: {err}"),
+            })?;
         self.pcm.cut_sample(size, start_ms, length_ms, source).await
     }
 

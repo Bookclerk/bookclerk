@@ -82,8 +82,8 @@ const KEY_FILE: &str = "token.key";
 const SAMPLE_EXTENSION: &str = "mp3";
 
 /// The browser cache header of an edition's sample: the person's right to
-/// it can end, so it is kept for an hour only.
-const EDITION_CACHE_CONTROL: &str = "private, max-age=3600";
+/// it can end at any time, so no browser keeps it.
+const EDITION_CACHE_CONTROL: &str = "no-store";
 
 /// The browser cache header of a store sample: a path always names the
 /// same sample.
@@ -258,44 +258,67 @@ impl SampleService {
             let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
             Arc::clone(flights.entry(name.clone()).or_default())
         };
-        let _guard = flight.lock().await;
+        let guard = flight.lock().await;
         // Another request may have made it while this one waited.
         let outcome = match read_cached(&path).await {
             Some(bytes) => Ok(bytes),
             None => {
                 let made = make().await;
                 if let Ok(bytes) = &made {
-                    self.keep(dir, &name, bytes).await;
+                    keep(dir, &name, bytes, self.budget).await;
                 }
                 made
             }
         };
-        self.flights
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&name);
+        drop(guard);
+        self.land(&name, &flight);
         outcome
     }
 
-    /// Writes a sample into the cache (a temporary file renamed into
-    /// place), then trims the cache to its budget. Failures are logged:
-    /// the sample is served either way.
-    async fn keep(&self, dir: &std::path::Path, name: &str, bytes: &[u8]) {
-        let staged = dir.join(format!(".{name}.{:016x}", rand::random::<u64>()));
-        let written = async {
-            tokio::fs::write(&staged, bytes).await?;
-            tokio::fs::rename(&staged, dir.join(name)).await
+    /// Forgets the lock of `name` once no other request holds or waits on
+    /// it. Clones are only taken under the map's lock, so the count read
+    /// here cannot grow before the entry is removed; a waiter keeps the
+    /// entry, and the last one out removes it.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The sample's cache file name.
+    /// * `flight` - This request's clone of the lock.
+    fn land(&self, name: &str, flight: &Arc<tokio::sync::Mutex<()>>) {
+        let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
+        // The map's reference plus this request's.
+        let unshared = Arc::strong_count(flight) <= 2;
+        if unshared
+            && flights
+                .get(name)
+                .is_some_and(|kept| Arc::ptr_eq(kept, flight))
+        {
+            flights.remove(name);
         }
-        .await;
+    }
+}
+
+/// Writes a sample into the cache (a temporary file renamed into place),
+/// then trims the cache to `budget` bytes. The work runs on its own
+/// blocking task, so a request dropped mid-write still renames or removes
+/// its temporary file. Failures are logged: the sample is served either
+/// way.
+async fn keep(dir: &std::path::Path, name: &str, bytes: &[u8], budget: u64) {
+    let dir = dir.to_path_buf();
+    let name = name.to_owned();
+    let bytes = bytes.to_vec();
+    let _ = tokio::task::spawn_blocking(move || {
+        let staged = dir.join(format!(".{name}.{:016x}", rand::random::<u64>()));
+        let written = std::fs::write(&staged, &bytes)
+            .and_then(|()| std::fs::rename(&staged, dir.join(&name)));
         if let Err(err) = written {
-            let _ = tokio::fs::remove_file(&staged).await;
+            let _ = std::fs::remove_file(&staged);
             tracing::warn!(error = %err, "could not keep a sample");
             return;
         }
-        let dir = dir.to_path_buf();
-        let budget = self.budget;
-        let _ = tokio::task::spawn_blocking(move || trim(&dir, budget)).await;
-    }
+        trim(&dir, budget);
+    })
+    .await;
 }
 
 /// Reads a cached sample and marks it served (its modification time), or
@@ -353,7 +376,7 @@ struct StoredFile {
 
 impl RangeSource for StoredFile {
     async fn read_range(&self, span: ByteSpan) -> std::io::Result<Vec<u8>> {
-        let (_, mut reader) = self
+        let (_, reader) = self
             .backend
             .get_stream(
                 &self.key,
@@ -364,8 +387,20 @@ impl RangeSource for StoredFile {
             )
             .await
             .map_err(std::io::Error::other)?;
-        let mut bytes = Vec::with_capacity(usize::try_from(span.len).unwrap_or(0));
-        reader.read_to_end(&mut bytes).await?;
+        let wanted = usize::try_from(span.len).map_err(std::io::Error::other)?;
+        let mut bytes = Vec::with_capacity(wanted);
+        // One byte past the span shows a destination that ignored the
+        // range, without reading the rest of the file.
+        reader
+            .take(span.len.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .await?;
+        if bytes.len() != wanted {
+            return Err(std::io::Error::other(format!(
+                "the destination answered {} bytes for a {wanted}-byte range",
+                bytes.len()
+            )));
+        }
         Ok(bytes)
     }
 }
@@ -384,12 +419,24 @@ impl RangeSource for Downloaded {
     }
 }
 
+/// The starts of an edition's top-level chapters, in order. Nested
+/// chapters are left out, so a part's first sub-chapter is not taken for
+/// the end of an opening.
+pub(crate) fn top_level_starts(chapters: &[bookclerk_library::Chapter]) -> Vec<u64> {
+    chapters
+        .iter()
+        .filter(|chapter| chapter.depth == 0)
+        .map(|chapter| chapter.start_ms)
+        .collect()
+}
+
 /// Where an edition's sample starts: the second chapter when the first is
 /// shorter than [`OPENING_MAX_MS`], else the start.
 ///
 /// # Arguments
 ///
-/// * `chapter_starts` - Chapter starts in milliseconds, in order.
+/// * `chapter_starts` - Top-level chapter starts in milliseconds, in order
+///   ([`top_level_starts`]).
 pub(crate) fn sample_start(chapter_starts: &[u64]) -> u64 {
     match chapter_starts {
         [first, second, ..] if second.saturating_sub(*first) < OPENING_MAX_MS => *second,
@@ -494,7 +541,7 @@ pub(crate) async fn get_edition_sample(
             .await
             .map_err(|err| read_failed(ROUTE, &err))?;
         let starts: Vec<u64> = chapters
-            .map(|found| found.list.chapters().iter().map(|c| c.start_ms).collect())
+            .map(|found| top_level_starts(found.list.chapters()))
             .unwrap_or_default();
         sample_start(&starts)
     } else {
@@ -572,7 +619,9 @@ pub(crate) async fn post_title_sample(
 ) -> Result<Json<TitleSampleJson>, (StatusCode, String)> {
     crate::api::validate_title_meta_query(&body)?;
     let sources = state.sources.read().await;
-    let url = bookclerk_discover::resolve_title_sample(&body, &sources).await;
+    // Only a URL this node can sign is worth taking: a store whose record
+    // carries another kind gives way to the next store's.
+    let url = bookclerk_discover::resolve_title_sample(&body, &sources, is_coverable).await;
     Ok(Json(TitleSampleJson {
         sample_path: url.and_then(|url| state.samples.path_for(&url)),
     }))

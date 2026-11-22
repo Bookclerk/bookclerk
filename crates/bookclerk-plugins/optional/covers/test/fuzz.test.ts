@@ -15,6 +15,13 @@
  * request headers, and an upstream server's caching headers come back in
  * the answer. `fuzz/header/` seeds both directions, checked against an
  * oracle written from the ABI's limit and RFC 9110's field-value grammar.
+ *
+ * What a request fetches (`media`, the ABI's `RemoteMedia`) and the
+ * `Content-Type` an upstream server answers with decide whether a body is
+ * kept. `fuzz/content-type/` seeds the answer's type, checked for both
+ * kinds against an oracle written from the documented lists of accepted
+ * types and RFC 9110's media-type syntax; mutated `media` values must be
+ * refused unless they name a kind.
  */
 
 import assert from "node:assert/strict";
@@ -29,6 +36,8 @@ import {
   checkUrl,
   fetchOne,
   headerValueOk,
+  maybeAudio,
+  maybeImage,
   passHeaders,
   type CoverSink,
   type Fetch,
@@ -66,6 +75,9 @@ const LOCATIONS = corpus("location");
 
 /** Seeds for header values: validators and caching headers, good and bad. */
 const HEADERS = corpus("header");
+
+/** Seeds for an answer's `Content-Type`: audio, images, CDN aliases and error pages. */
+const CONTENT_TYPES = corpus("content-type");
 
 /** Fragments a mutation splices in: URL syntax, address forms and odd text. */
 const FRAGMENTS: readonly string[] = [
@@ -411,5 +423,145 @@ test("header values agree with the oracle when mutated", () => {
   const rand = prng(SEED ^ 0x5bd1e995);
   for (let i = 0; i < ITERATIONS; i++) {
     checkHeader(mutateHeader(pick(HEADERS, rand), rand), `FUZZ_SEED=${SEED} iteration ${i}`);
+  }
+});
+
+/** Fragments a `Content-Type` mutation splices in. */
+const TYPE_FRAGMENTS: readonly string[] = [
+  "audio/",
+  "image/",
+  "video/mp4",
+  "application/ogg",
+  "octet-stream",
+  "text/html",
+  "/",
+  ";",
+  ",",
+  " ",
+  "\t",
+  "\u00a0",
+  "=",
+  '"',
+  "+",
+  "X",
+  "é",
+];
+
+/**
+ * The type oracle: whether a body answered with `contentType` is kept for
+ * `media`. Written from the fetcher's documented lists: no type, or an
+ * empty one, is kept (the host checks the bytes either way); otherwise the
+ * media type (RFC 9110: the text before the first `;`, optional whitespace
+ * being spaces and tabs, compared without ASCII case) must be an `image/`
+ * type for an image, an `audio/` type, `video/mp4` or `application/ogg`
+ * for audio, or `application/octet-stream` / `binary/octet-stream` for
+ * either.
+ *
+ * @param contentType - The header as `Headers` holds it, or `null`.
+ * @param media - What was asked for.
+ * @returns Whether the body is kept.
+ */
+function typeOracle(contentType: string | null, media: "image" | "audio"): boolean {
+  if (contentType === null) return true;
+  const semi = contentType.indexOf(";");
+  let type = semi === -1 ? contentType : contentType.slice(0, semi);
+  while (type.startsWith(" ") || type.startsWith("\t")) type = type.slice(1);
+  while (type.endsWith(" ") || type.endsWith("\t")) type = type.slice(0, -1);
+  type = type.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+  if (type === "" || type === "application/octet-stream" || type === "binary/octet-stream") {
+    return true;
+  }
+  if (media === "image") return type.slice(0, 6) === "image/";
+  return type.slice(0, 6) === "audio/" || type === "video/mp4" || type === "application/ogg";
+}
+
+/**
+ * Applies one to three random splices or deletions to a type.
+ *
+ * @param input - Seed text.
+ * @param rand - The PRNG.
+ * @returns The mutated text.
+ */
+function mutateType(input: string, rand: () => number): string {
+  let out = input;
+  for (let n = 1 + Math.floor(rand() * 3); n > 0; n--) {
+    const at = Math.floor(rand() * (out.length + 1));
+    out =
+      rand() < 0.6
+        ? out.slice(0, at) + pick(TYPE_FRAGMENTS, rand) + out.slice(at)
+        : out.slice(0, at) + out.slice(at + 1 + Math.floor(rand() * 6));
+  }
+  return out;
+}
+
+/**
+ * Checks one answer type for both kinds: the predicates, and `fetchOne`
+ * keeping the body exactly when the oracle allows it.
+ *
+ * @param value - The `Content-Type` as sent.
+ * @param where - How to reproduce it, for the failure message.
+ */
+async function checkType(value: string, where: string): Promise<void> {
+  let headers: Headers;
+  try {
+    headers = new Headers({ "content-type": value });
+  } catch {
+    return; // `fetch` can never hand the fetcher such a header.
+  }
+  const held = headers.get("content-type");
+  const label = `${where}: ${JSON.stringify(held)}`;
+  assert.equal(maybeImage(held), typeOracle(held, "image"), `${label} image`);
+  assert.equal(maybeAudio(held), typeOracle(held, "audio"), `${label} audio`);
+  for (const media of ["image", "audio"] as const) {
+    let accept: string | undefined;
+    const fetch: Fetch = (_url, init) => {
+      accept = new Headers(init.headers).get("accept") ?? undefined;
+      return Promise.resolve(new Response(new Uint8Array([1, 2]), { headers }));
+    };
+    const { sink: into, keys } = sink();
+    const answer = await fetchOne(
+      { fetch, version: VERSION },
+      "https://a.example/sample",
+      0,
+      8,
+      into,
+      {},
+      media,
+    );
+    assert.equal(accept, media === "audio" ? "audio/*" : "image/*", `${label} ${media}`);
+    assert.equal(answer.stored, typeOracle(held, media), `${label} ${media}`);
+    assert.equal(keys.length, answer.stored ? 1 : 0, `${label} ${media}`);
+  }
+}
+
+test("answer types replay their corpus against the oracle", async () => {
+  for (const [i, value] of CONTENT_TYPES.entries()) await checkType(value, `type seed ${i}`);
+});
+
+test("answer types agree with the oracle when mutated", async () => {
+  const rand = prng(SEED ^ 0x27d4eb2f);
+  const rounds = Math.max(1, Math.floor(ITERATIONS / 3));
+  for (let i = 0; i < rounds; i++) {
+    await checkType(
+      mutateType(pick(CONTENT_TYPES, rand), rand),
+      `FUZZ_SEED=${SEED} iteration ${i}`,
+    );
+  }
+});
+
+test("media accepts only the kinds the ABI names", () => {
+  const rand = prng(SEED ^ 0x165667b1);
+  const seeds: readonly unknown[] = ["image", "audio", undefined, "", "Audio", 1, null, {}];
+  for (let i = 0; i < ITERATIONS; i++) {
+    const seed = pick(seeds, rand);
+    const media = typeof seed === "string" && rand() < 0.7 ? mutateType(seed, rand) : seed;
+    const where = `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(media)}`;
+    const params = { urls: ["https://a.example/x"], maxBytes: 1, media };
+    // An absent `media` (undefined or null) is an image, as before it existed.
+    if (media === undefined || media === null || media === "image" || media === "audio") {
+      assert.equal(checkParams(params).media, media ?? "image", where);
+    } else {
+      assert.throws(() => checkParams(params), CoverFailure, where);
+    }
   }
 });

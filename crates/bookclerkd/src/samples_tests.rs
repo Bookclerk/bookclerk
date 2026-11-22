@@ -30,6 +30,73 @@ fn a_short_first_chapter_is_skipped() {
 }
 
 #[test]
+fn only_top_level_chapters_mark_the_opening() {
+    let chapter = |start_ms: u64, depth: u32| bookclerk_library::Chapter {
+        title: format!("at {start_ms}"),
+        start_ms,
+        depth,
+    };
+    // Part One holds a 40 s first sub-chapter; the opening is the whole
+    // part, so the sample starts at the beginning.
+    let parts = [
+        chapter(0, 0),
+        chapter(0, 1),
+        chapter(40_000, 1),
+        chapter(1_200_000, 0),
+    ];
+    assert_eq!(top_level_starts(&parts), vec![0, 1_200_000]);
+    assert_eq!(sample_start(&top_level_starts(&parts)), 0);
+    let credits = [chapter(0, 0), chapter(30_000, 0), chapter(60_000, 1)];
+    assert_eq!(sample_start(&top_level_starts(&credits)), 30_000);
+}
+
+#[tokio::test]
+async fn a_flight_lock_is_forgotten_only_by_its_last_holder() {
+    let service = SampleService::detached();
+    let first = Arc::clone(
+        service
+            .flights
+            .lock()
+            .unwrap()
+            .entry("a.mp3".into())
+            .or_default(),
+    );
+    let waiter = Arc::clone(service.flights.lock().unwrap().get("a.mp3").unwrap());
+    service.land("a.mp3", &first);
+    assert!(
+        service.flights.lock().unwrap().contains_key("a.mp3"),
+        "a waiter still needs the same lock"
+    );
+    drop(first);
+    // A lock that is no longer the map's is never removed for it.
+    let stray = Arc::new(tokio::sync::Mutex::new(()));
+    service.land("a.mp3", &stray);
+    assert!(service.flights.lock().unwrap().contains_key("a.mp3"));
+    service.land("a.mp3", &waiter);
+    assert!(service.flights.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_range_answer_of_the_wrong_length_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = bookclerk_storage::LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+    std::fs::write(dir.path().join("f.bin"), [7u8; 32]).unwrap();
+    let file = StoredFile {
+        backend: Box::new(backend),
+        key: "f.bin".into(),
+    };
+    let part = file
+        .read_range(ByteSpan { offset: 4, len: 8 })
+        .await
+        .unwrap();
+    assert_eq!(part, vec![7u8; 8]);
+    assert!(file
+        .read_range(ByteSpan { offset: 28, len: 8 })
+        .await
+        .is_err());
+}
+
+#[test]
 fn store_tokens_open_only_on_the_node_that_signed_them() {
     let service = SampleService::detached();
     let path = service
@@ -343,7 +410,7 @@ async fn a_member_hears_a_sample_that_is_not_listening() {
     assert_eq!(status, StatusCode::OK);
     let page: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(page["items"], json!([]));
-    let (_, _, body) = send(
+    let (status, _, body) = send(
         &world,
         Method::GET,
         &format!("/api/library/editions/{held}/playback"),
@@ -351,8 +418,13 @@ async fn a_member_hears_a_sample_that_is_not_listening() {
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let manifest: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(manifest["progress"], Value::Null);
+    assert_eq!(
+        manifest.get("progress"),
+        Some(&Value::Null),
+        "the manifest states no progress"
+    );
 }
 
 /// A store sample path this node did not issue is refused, and a title no

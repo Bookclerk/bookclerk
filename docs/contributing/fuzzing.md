@@ -1770,8 +1770,10 @@ tree and on its text, in `npm test` (the `workerd_guests` check).
 The `covers` guest decides which URLs it requests: the host's URLs and every
 redirect `Location` an upstream server sends. It also passes header values
 both ways: the host's validators out as request headers, and an upstream
-server's caching headers back in its answer. Its `test/fuzz.test.ts` replays
-`fuzz/url/`, `fuzz/location/` and `fuzz/header/` and runs seeded text mutations in
+server's caching headers back in its answer, and it decides from an answer's
+`Content-Type` whether to keep an image or an audio sample. Its
+`test/fuzz.test.ts` replays `fuzz/url/`, `fuzz/location/`, `fuzz/header/` and
+`fuzz/content-type/` and runs seeded text mutations in
 `npm test` (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS`
 pick another run.
 
@@ -1793,6 +1795,14 @@ pick another run.
   exactly when it is at most 1024 bytes of tab, space and `VCHAR`. A
   condition outside that is refused, and a response header outside it is
   dropped from the answer.
+- **Answer types and media** (`maybeImage`, `maybeAudio`, `fetchOne` and
+  `checkParams`'s `media`). Oracle, written from the documented lists and
+  RFC 9110's media-type syntax: with no type or an empty one the body is
+  kept; otherwise the type before the first `;`, without surrounding spaces
+  and tabs and compared without ASCII case, must be an `image/` type for an
+  image, an `audio/` type, `video/mp4` or `application/ogg` for audio, or a
+  generic octet stream for either. Each kind sends its own `Accept`. A
+  `media` other than `image`, `audio` or absent is refused.
 
 ### Metadata file dialect guests
 

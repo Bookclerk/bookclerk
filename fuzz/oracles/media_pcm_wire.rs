@@ -29,8 +29,10 @@ use bookclerk_media::pcm_wire::{
 };
 use bookclerk_media::MAX_SAMPLE_RATE_HZ;
 
-/// Largest input worth checking.
-pub const MAX_INPUT_BYTES: usize = 64 * 1024;
+/// Largest input worth checking: room for two of the largest `Encoded`
+/// frames with the rest of a sample's stream around them, so the frame
+/// size limit itself is reachable.
+pub const MAX_INPUT_BYTES: usize = 2 * MAX_ENCODED_BYTES + 64 * 1024;
 
 /// Runs the oracle on one input.
 ///

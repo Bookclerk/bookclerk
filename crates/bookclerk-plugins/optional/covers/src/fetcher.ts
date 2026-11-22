@@ -224,6 +224,19 @@ export function declaredLength(headers: Headers): number | undefined {
 }
 
 /**
+ * A `Content-Type`'s type and subtype, lowercased: the text before its
+ * first `;`, without the spaces and tabs (HTTP's optional whitespace)
+ * around it. Other characters are kept, so a type padded with anything
+ * else names no known type.
+ *
+ * @param contentType - The header value.
+ * @returns The essence, possibly empty.
+ */
+function mediaEssence(contentType: string): string {
+  return (contentType.split(";")[0] ?? "").replace(/^[ \t]+|[ \t]+$/g, "").toLowerCase();
+}
+
+/**
  * Whether a `Content-Type` could be an image. Absent and generic binary types
  * pass, since the host sniffs the bytes anyway; text, HTML and JSON (an error
  * page, usually) do not.
@@ -233,7 +246,7 @@ export function declaredLength(headers: Headers): number | undefined {
  */
 export function maybeImage(contentType: string | null): boolean {
   if (contentType === null) return true;
-  const essence = (contentType.split(";")[0] ?? "").trim().toLowerCase();
+  const essence = mediaEssence(contentType);
   return (
     essence === "" ||
     essence.startsWith("image/") ||
@@ -256,7 +269,7 @@ export type Media = "image" | "audio";
  */
 export function maybeAudio(contentType: string | null): boolean {
   if (contentType === null) return true;
-  const essence = (contentType.split(";")[0] ?? "").trim().toLowerCase();
+  const essence = mediaEssence(contentType);
   return (
     essence === "" ||
     essence.startsWith("audio/") ||

@@ -121,6 +121,7 @@ Every response says how long a browser or a caching proxy may keep it:
 | Other web app files (icons, manifest, fonts) | `no-cache` |
 | Covers (`/api/covers/…`) | `private, max-age=31536000, immutable` |
 | Other images (`/api/images/…`, Gravatars, store icons) | `private, max-age=3600, stale-while-revalidate=86400` |
+| Store samples (`/api/samples/…`) | `private, max-age=86400` |
 | API JSON, errors (HTML error pages too) and everything else | `no-store` |
 
 Covers and other images also send an `ETag`. A browser that asks again

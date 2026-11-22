@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { Headphones, Loader2, Pause } from "lucide-react";
+import { Headphones, Loader2, Pause, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { TitleMetaQuery } from "@/lib/api";
 import { pauseBookFor, sampleSources } from "@/lib/sample";
 import { webPlayer } from "@/lib/webPlayer";
 
-/** Where the sample control is: nothing tried yet, finding audio, playing, paused, or none found. */
-type SampleStatus = "idle" | "loading" | "playing" | "paused" | "none";
+/**
+ * Where the sample control is: nothing tried yet, finding audio, playing,
+ * paused, none found, or the store lookup failed (pressing again retries).
+ */
+type SampleStatus = "idle" | "loading" | "playing" | "paused" | "none" | "failed";
 
 /**
  * The "Sample" control of a title's details: plays a short preview, cut
@@ -48,13 +51,24 @@ export function SampleButton({
     };
   }, []);
 
-  /** Moves to the next source, or settles on "none" when they ran out. */
+  /**
+   * Moves to the next source, settling on "none" when they ran out or on
+   * "failed" when the store lookup did.
+   */
   const playNext = async () => {
     const audio = audioRef.current;
     const sources = sourcesRef.current;
     if (!audio || !sources) return;
     setStatus("loading");
-    const next = await sources.next();
+    let next: IteratorResult<string, void>;
+    try {
+      next = await sources.next();
+    } catch {
+      if (sourcesRef.current !== sources) return;
+      sourcesRef.current = null;
+      setStatus("failed");
+      return;
+    }
     if (sourcesRef.current !== sources) return;
     if (next.done) {
       setStatus("none");
@@ -93,7 +107,9 @@ export function SampleButton({
         ? "Finding sample…"
         : status === "none"
           ? "No sample"
-          : "Sample";
+          : status === "failed"
+            ? "Retry sample"
+            : "Sample";
 
   return (
     <>
@@ -102,12 +118,18 @@ export function SampleButton({
         onClick={onClick}
         disabled={status === "loading" || status === "none"}
         aria-pressed={status === "playing"}
-        title="A short preview; it does not count as listening"
+        title={
+          status === "failed"
+            ? "The stores could not be asked; press to try again"
+            : "A short preview; it does not count as listening"
+        }
       >
         {status === "playing" ? (
           <Pause className="h-4 w-4" />
         ) : status === "loading" ? (
           <Loader2 className="h-4 w-4 animate-spin" />
+        ) : status === "failed" ? (
+          <RotateCcw className="h-4 w-4" />
         ) : (
           <Headphones className="h-4 w-4" />
         )}
