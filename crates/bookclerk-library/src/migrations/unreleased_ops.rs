@@ -48,91 +48,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS books (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        uuid TEXT NOT NULL UNIQUE,
-        plugin_key TEXT NOT NULL,
-        source TEXT NOT NULL,
-        account_id TEXT NOT NULL,
-        product_id TEXT NOT NULL,
-        asin TEXT,
-        isbn TEXT,
-        marketplace TEXT NOT NULL,
-        title TEXT NOT NULL,
-        authors TEXT,
-        narrators TEXT,
-        series TEXT,
-        series_index TEXT,
-        series_asin TEXT,
-        acquire_status TEXT NOT NULL DEFAULT 'not_acquired',
-        storage_key TEXT,
-        error_message TEXT,
-        purchased_at TEXT,
-        tags TEXT,
-        rating_overall REAL,
-        rating_performance REAL,
-        rating_story REAL,
-        is_finished INTEGER NOT NULL DEFAULT 0,
-        pdf_status TEXT NOT NULL DEFAULT 'not_acquired',
-        pdf_storage_key TEXT,
-        publisher TEXT,
-        length_minutes INTEGER,
-        is_abridged INTEGER NOT NULL DEFAULT 0,
-        content_kind TEXT NOT NULL DEFAULT 'book',
-        categories TEXT,
-        subtitle TEXT,
-        published_at TEXT,
-        description TEXT,
-        language TEXT,
-        cover_url TEXT,
-        subjects TEXT,
-        enrich_source TEXT,
-        enrich_confidence REAL,
-        enrich_updated_at TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(plugin_key, account_id, product_id),
-        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
-    )",
-    ),
-    // Search hydration matches `lower(uuid)`. A btree on the expression keeps
-    // that predicate off a table scan. Stored uuids that differ only by ASCII
-    // case stay distinct rows. Postgres lowering wraps the argument as
-    // `lower((uuid COLLATE "C"))` so the fold matches SQLite. `IF NOT EXISTS`
-    // leaves an index created from the older expression in place.
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid_lower ON books(lower(uuid))"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_status ON books(acquire_status)"),
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_account ON books(plugin_key, account_id)",
-    ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_title ON books(title)"),
-    // Title order for library pages is ASCII case-fold, then code points, then
-    // `uuid` in code-point order. SQLite serves the fold with `COLLATE NOCASE`
-    // and the tie with BINARY. Postgres lowering rewrites the fold to
-    // `lower(title COLLATE "C")`, the tie to `(uuid COLLATE "C")`, and marks
-    // the index `NULLS FIRST`. Binary `idx_books_title` cannot serve the plan.
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_page_title ON books(title COLLATE NOCASE, uuid)",
-    ),
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_page_status ON books(acquire_status, title COLLATE NOCASE, uuid)",
-    ),
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_page_account ON books(account_id, title COLLATE NOCASE, uuid)",
-    ),
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_page_account_status ON books(account_id, acquire_status, title COLLATE NOCASE, uuid)",
-    ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_pdf_status ON books(pdf_status)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_series_asin ON books(series_asin)"),
-    MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_content_kind ON books(content_kind)",
-    ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_source ON books(source)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_asin ON books(asin)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_product_id ON books(product_id)"),
-    MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS ignored_titles (
         plugin_key TEXT NOT NULL,
         account_id TEXT NOT NULL,
@@ -1925,7 +1840,6 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     // The live socket's revision reads take each table's newest change
     // stamp every couple of seconds; an index makes that a lookup.
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_updated ON books(updated_at)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_jobs_updated ON jobs(updated_at)"),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_jobs_state_finished ON jobs(state, finished_at)",
@@ -2229,6 +2143,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Data(
         r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES ('playback', 0)",
     ),
+    MigrationOp::Data(
+        r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES ('notifications', 0)",
+    ),
     // Notifications (`store::notifications`, `docs/adr/notifications.md`).
     // A destination is where a notifier instance sends: a library channel
     // the instance's own settings point at (`user_id` NULL, `address_json`
@@ -2265,6 +2182,26 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         min_severity TEXT NOT NULL DEFAULT 'info' CHECK (min_severity IN ('info', 'warning', 'critical')),
         created_at TEXT NOT NULL,
         PRIMARY KEY (notification_type, destination_id)
+    )",
+    ),
+    // Administrators' routing of operational types to the built-in "In
+    // app" target: each row puts a type in the inbox of every active Owner
+    // and Administrator at or above a minimum severity. The API shows it as
+    // a route to the reserved destination id `in-app`.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_inbox_routes (
+        notification_type TEXT PRIMARY KEY NOT NULL,
+        min_severity TEXT NOT NULL DEFAULT 'info' CHECK (min_severity IN ('info', 'warning', 'critical')),
+        created_at TEXT NOT NULL
+    )",
+    ),
+    // A fresh revision per replacement of one type's routes, written in the
+    // replacement's batch, so routing can check that its reads of
+    // `notify_routes` and `notify_inbox_routes` saw one configuration.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_route_revisions (
+        notification_type TEXT PRIMARY KEY NOT NULL,
+        revision TEXT NOT NULL
     )",
     ),
     // Which notifier instances patrons may use for each patron type, and
@@ -2729,6 +2666,7 @@ mod tests {
         for (table, column) in [
             ("notifications", "severity"),
             ("notify_routes", "min_severity"),
+            ("notify_inbox_routes", "min_severity"),
         ] {
             assert_check(table, column, SEVERITIES.iter().map(|s| s.wire_name()));
         }

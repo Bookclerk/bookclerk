@@ -242,7 +242,10 @@ bookclerk export postgres …
 
 `bookclerk copydb` is a hidden alias. The default layout matches classic
 Libation's EF Postgres schema; `--format flat` picks Bookclerk's flat
-layout. See `bookclerk export postgres --help`.
+layout, one `books` row per account title. Either way the titles come
+from the library and leave people's own tags, ratings and finished flags
+empty, as `export libation` does without `--user`. See
+`bookclerk export postgres --help`.
 
 ## Next steps
 

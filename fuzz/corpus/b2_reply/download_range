@@ -1,0 +1,8 @@
+content-length: 3
+x-bz-file-id: 4_z1
+x-bz-file-name: a/b%20c.m4b
+x-bz-content-sha1: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+x-bz-upload-timestamp: 1700000000000
+content-type: audio/mp4
+x-bz-info-title: %C3%9Cn%C3%AFcode
+content-range: bytes 1-3/10

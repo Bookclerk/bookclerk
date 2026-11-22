@@ -105,7 +105,7 @@ fn secret(value: Option<String>) -> Option<String> {
 pub async fn destination_from(
     config: &ExtensibleConfig,
     secrets: &ExtensibleConfig,
-) -> Result<ObjectStoreDestination> {
+) -> Result<ObjectStoreDestination<S3Backend>> {
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
@@ -123,7 +123,7 @@ async fn destination_in(
     config: &ExtensibleConfig,
     secrets: &ExtensibleConfig,
     home: &std::path::Path,
-) -> Result<ObjectStoreDestination> {
+) -> Result<ObjectStoreDestination<S3Backend>> {
     let invalid = |what: String| PluginError::invalid_params(format!("r2 destination: {what}"));
     let config: R2Config = config.json_into().map_err(|err| invalid(err.to_string()))?;
     let secrets: R2Secrets = match secrets.json_value() {

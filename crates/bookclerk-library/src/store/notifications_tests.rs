@@ -7,11 +7,12 @@ use bookclerk_plugin_abi::{
 
 use super::notifications::{NotifyCursor, NotifyQueueLimits};
 use super::LibraryStore;
+use crate::control_plane::{changed_topics, live_revisions, LiveTopic};
 use crate::error::LibraryError;
-use crate::models::{JobFence, JobKind, UserRole};
+use crate::models::{JobFence, JobKind, UserRole, UserStatus};
 use crate::notifications::{
     DeliveryState, DestinationKind, FailedAttempt, FailureEffect, NewDestination, NewNotification,
-    PatronChoice, PatronOffer, Route, MAX_ADDRESS_BYTES, PAUSE_AFTER_FAILURES,
+    PatronChoice, PatronOffer, Route, IN_APP_DESTINATION, MAX_ADDRESS_BYTES, PAUSE_AFTER_FAILURES,
 };
 use crate::test_support::{sqlite::memory, Profile};
 
@@ -1255,5 +1256,159 @@ fn a_cursor_round_trips_and_a_foreign_token_is_refused() {
     assert_eq!(NotifyCursor::decode(&cursor.encode()).unwrap(), cursor);
     for bad in ["", "!!", "e30", &"A".repeat(600)] {
         assert!(NotifyCursor::decode(bad).is_err(), "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn an_in_app_route_inboxes_active_owners_and_administrators_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let owner = store
+            .create_user(UserRole::Owner, Some("Owner"), None)
+            .await
+            .unwrap()
+            .id;
+        let admin = store
+            .create_user(UserRole::Administrator, Some("Admin"), None)
+            .await
+            .unwrap()
+            .id;
+        let away = store
+            .create_user(UserRole::Administrator, Some("Away"), None)
+            .await
+            .unwrap()
+            .id;
+        store
+            .set_user_status(away, UserStatus::Disabled)
+            .await
+            .unwrap();
+        let patron = member(&store, "Patron").await;
+        let ops = channel(&store, "slack-1", "Ops").await;
+        store
+            .set_notify_routes(
+                "scan_failed",
+                &[
+                    Route {
+                        destination_id: ops.clone(),
+                        min_severity: NotificationSeverity::Info,
+                    },
+                    Route {
+                        destination_id: IN_APP_DESTINATION.into(),
+                        min_severity: NotificationSeverity::Warning,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        let routes = store.notify_routes().await.unwrap();
+        let listed = &routes["scan_failed"];
+        assert_eq!(listed.len(), 2, "{name}");
+        assert_eq!(listed[0].destination_id, IN_APP_DESTINATION, "{name}");
+        assert_eq!(
+            listed[0].min_severity,
+            NotificationSeverity::Warning,
+            "{name}"
+        );
+        assert_eq!(listed[1].destination_id, ops, "{name}");
+
+        // Below the In app severity: the channel only, no inbox, no bump.
+        let before = live_revisions(&store).await.unwrap();
+        let info = store
+            .route_notification(
+                &operational("scan_failed", NotificationSeverity::Info),
+                LIMITS,
+            )
+            .await
+            .unwrap();
+        assert!(!info.inboxed, "{name}");
+        assert_eq!(info.deliveries.len(), 1, "{name}");
+        let after = live_revisions(&store).await.unwrap();
+        assert!(
+            !changed_topics(&before, &after).contains(&LiveTopic::Notifications),
+            "{name}"
+        );
+
+        let warning = store
+            .route_notification(
+                &operational("scan_failed", NotificationSeverity::Warning),
+                LIMITS,
+            )
+            .await
+            .unwrap();
+        assert!(warning.inboxed, "{name}");
+        assert_eq!(warning.deliveries.len(), 1, "{name}");
+        let inboxed = live_revisions(&store).await.unwrap();
+        assert!(
+            changed_topics(&after, &inboxed).contains(&LiveTopic::Notifications),
+            "{name}"
+        );
+        for (user, want) in [(owner, 1), (admin, 1), (away, 0), (patron, 0)] {
+            assert_eq!(store.inbox_unread(user).await.unwrap(), want, "{name}");
+        }
+        let page = store.inbox(admin, None, 10).await.unwrap();
+        assert_eq!(page.items.len(), 1, "{name}");
+        assert_eq!(
+            page.items[0].notification.id, warning.notification_id,
+            "{name}"
+        );
+
+        // Reading tells the reader's other pages; reading nothing does not.
+        assert_eq!(
+            store.mark_inbox_read(admin, None).await.unwrap(),
+            1,
+            "{name}"
+        );
+        let read = live_revisions(&store).await.unwrap();
+        assert!(
+            changed_topics(&inboxed, &read).contains(&LiveTopic::Notifications),
+            "{name}"
+        );
+        assert_eq!(
+            store.mark_inbox_read(admin, None).await.unwrap(),
+            0,
+            "{name}"
+        );
+        let again = live_revisions(&store).await.unwrap();
+        assert!(
+            !changed_topics(&read, &again).contains(&LiveTopic::Notifications),
+            "{name}"
+        );
+        assert_eq!(store.inbox_unread(owner).await.unwrap(), 1, "{name}");
+
+        // Replacing the routes without In app turns it off.
+        store
+            .set_notify_routes(
+                "scan_failed",
+                &[Route {
+                    destination_id: ops.clone(),
+                    min_severity: NotificationSeverity::Info,
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.notify_routes().await.unwrap()["scan_failed"].len(), 1);
+        let quiet = store
+            .route_notification(
+                &operational("scan_failed", NotificationSeverity::Critical),
+                LIMITS,
+            )
+            .await
+            .unwrap();
+        assert!(!quiet.inboxed, "{name}");
+        // In app twice is refused like any repeated destination.
+        let twice = Route {
+            destination_id: IN_APP_DESTINATION.into(),
+            min_severity: NotificationSeverity::Info,
+        };
+        assert!(
+            matches!(
+                store
+                    .set_notify_routes("scan_failed", &[twice.clone(), twice])
+                    .await,
+                Err(LibraryError::Invalid(_))
+            ),
+            "{name}"
+        );
     }
 }

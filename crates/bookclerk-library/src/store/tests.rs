@@ -7144,7 +7144,7 @@ async fn execute_guest_atomic_deny_all_does_not_run_sql() {
         .with_db_capabilities(bookclerk_plugin_abi::DbCapabilities::advertised_sqlite());
     let err = store
         .execute_guest_atomic(
-            guest_select("SELECT id FROM books"),
+            guest_select("SELECT id FROM store_listings"),
             &crate::GuestSqlPolicy::deny_all(),
         )
         .await

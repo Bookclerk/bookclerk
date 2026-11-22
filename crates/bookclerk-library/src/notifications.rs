@@ -52,6 +52,13 @@ pub const MAX_DESTINATION_LABEL_BYTES: usize = 128;
 /// Most routes, offers or patron targets one notification type may have.
 pub const MAX_ROUTES_PER_TYPE: usize = 32;
 
+/// The reserved destination id of the built-in "In app" target: an
+/// operational route to it puts the notification in the inbox of every
+/// active Owner and Administrator, where the web app's bell, browser
+/// notifications and the desktop window's system notifications show it.
+/// It is not a stored destination and runs no plugin.
+pub const IN_APP_DESTINATION: &str = "in-app";
+
 /// The host's built-in `test` type: an administrator or a patron sends it to
 /// one destination to check that it works.
 pub const TEST_NOTIFICATION_TYPE: &str = "test";
@@ -384,7 +391,8 @@ pub struct Routed {
     /// The deliveries it made, each with a send job enqueued (or left for
     /// the sweep when the enqueue failed).
     pub deliveries: Vec<PendingDelivery>,
-    /// Whether it reached a patron's inbox.
+    /// Whether it reached an inbox: its patron's, or the staff's through an
+    /// "In app" route.
     pub inboxed: bool,
 }
 
@@ -433,7 +441,7 @@ pub struct NewDestination {
 /// One operational route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
-    /// Channel destination.
+    /// Channel destination, or [`IN_APP_DESTINATION`] for the staff inbox.
     pub destination_id: String,
     /// Lowest severity sent.
     pub min_severity: NotificationSeverity,

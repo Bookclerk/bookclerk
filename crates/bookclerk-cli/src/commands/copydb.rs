@@ -1,6 +1,7 @@
 //! `bookclerk export postgres` (hidden alias: `copydb`) — SQLite → PostgreSQL.
 //!
-//! Default `--format flat` writes the native bookclerk schema (`accounts` / `books`).
+//! `--format flat` writes Bookclerk's flat layout (`accounts`, and one `books`
+//! row per account title read from the library model).
 //! `--format classic` writes the Libation EF schema (`Books`, `LibraryBooks`, …).
 
 use std::collections::HashMap;
@@ -12,11 +13,11 @@ use clap::{Args, ValueEnum};
 use rusqlite::Connection;
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
-/// Destination schema for `bookclerk export postgres` (classic Libation vs native flat).
+/// Destination schema for `bookclerk export postgres` (classic Libation vs Bookclerk flat).
 pub enum CopyDbFormat {
     /// Classic Libation EF / Postgres schema.
     Classic,
-    /// Native bookclerk flat schema.
+    /// Bookclerk flat layout: one `books` row per account title.
     #[default]
     Flat,
 }
@@ -48,7 +49,8 @@ pub async fn run(args: CopyDbArgs, config: &Config) -> anyhow::Result<()> {
     }
     // Apply host schema through the staged sqlite adapter (no in-process
     // implementation-crate linkage).
-    let _ = bookclerk_plugin_host::open_library_store_for_plugin(&cfg, "sqlite").await?;
+    let store = bookclerk_plugin_host::open_library_store_for_plugin(&cfg, "sqlite").await?;
+    let books = load_flat_books(&store).await?;
     let conn = Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let (mut client, connection) =
         tokio_postgres::connect(&args.connection, tokio_postgres::NoTls).await?;
@@ -59,14 +61,14 @@ pub async fn run(args: CopyDbArgs, config: &Config) -> anyhow::Result<()> {
     });
 
     match args.format {
-        CopyDbFormat::Classic => export_classic(&conn, &mut client, &source).await,
-        CopyDbFormat::Flat => export_flat(&conn, &mut client, &source).await,
+        CopyDbFormat::Classic => export_classic(books, &mut client, &source).await,
+        CopyDbFormat::Flat => export_flat(&conn, books, &mut client, &source).await,
     }
 }
 
 /// Wipes classic Libation tables and inserts Books / LibraryBooks / contributors / series.
 async fn export_classic(
-    conn: &Connection,
+    books: Vec<FlatBook>,
     client: &mut tokio_postgres::Client,
     source: &std::path::Path,
 ) -> anyhow::Result<()> {
@@ -100,7 +102,6 @@ async fn export_classic(
     )
     .await?;
 
-    let books = load_flat_books(conn)?;
     let mut contributor_ids: HashMap<String, i32> = HashMap::new();
     let mut series_ids: HashMap<String, i32> = HashMap::new();
     let mut next_contributor = 1i32;
@@ -108,7 +109,7 @@ async fn export_classic(
     let mut book_count = 0usize;
 
     for book in &books {
-        let book_id = book.id as i32;
+        let book_id = i32::try_from(book.id)?;
         let content_type = content_kind_to_classic(&book.content_kind);
         let (title, subtitle) = split_title_subtitle(&book.title, book.subtitle.as_deref());
         let date_published = book.published_at.map(|d| d.naive_utc());
@@ -267,9 +268,11 @@ async fn export_classic(
     Ok(())
 }
 
-/// Recreates native `accounts` / `books` / `saved_filters` and copies every SQLite row.
+/// Recreates the flat `accounts` / `books` / `saved_filters` tables: accounts
+/// and saved filters copied from SQLite, `books` from the library model.
 async fn export_flat(
     conn: &Connection,
+    books: Vec<FlatBook>,
     client: &mut tokio_postgres::Client,
     source: &std::path::Path,
 ) -> anyhow::Result<()> {
@@ -375,7 +378,6 @@ async fn export_flat(
         acct_count += 1;
     }
 
-    let books = load_flat_books(conn)?;
     let mut book_count = 0usize;
     for book in books {
         tx.execute(
@@ -465,11 +467,11 @@ async fn export_flat(
 }
 
 #[derive(Debug)]
-/// One `books` row loaded from SQLite for either export format.
+/// One account title, as either export format writes it.
 struct FlatBook {
-    /// SQLite `books.id` used as classic `BookId`.
+    /// Position of the title in the export, from 1; classic `BookId`.
     id: i64,
-    /// Public library UUID (unique per title).
+    /// The account's holding id (unique per account title).
     uuid: String,
     /// Source plugin id; missing SQLite values become `audible`.
     source: String,
@@ -537,67 +539,62 @@ struct FlatBook {
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Reads every `books` row from SQLite, defaulting missing `source` to `audible`.
-fn load_flat_books(conn: &Connection) -> anyhow::Result<Vec<FlatBook>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, uuid, source, account_id, product_id, asin, isbn, marketplace, title, authors,
-                narrators, series, series_index, series_asin, acquire_status, storage_key,
-                error_message, purchased_at, tags, rating_overall, rating_performance, rating_story,
-                is_finished, pdf_status, pdf_storage_key, publisher, length_minutes, is_abridged,
-                content_kind, categories, subtitle, published_at, created_at, updated_at
-         FROM books",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(FlatBook {
-            id: row.get(0)?,
-            uuid: row.get(1)?,
-            source: row
-                .get::<_, String>(2)
-                .unwrap_or_else(|_| String::from("audible")),
-            account_id: row.get(3)?,
-            product_id: row.get(4)?,
-            asin: row.get(5)?,
-            isbn: row.get(6)?,
-            marketplace: row.get(7)?,
-            title: row.get(8)?,
-            authors: row.get(9)?,
-            narrators: row.get(10)?,
-            series: row.get(11)?,
-            series_index: row.get(12)?,
-            series_asin: row.get(13).ok().flatten(),
-            acquire_status: row.get(14)?,
-            storage_key: row.get(15)?,
-            error_message: row.get(16)?,
-            purchased_at: row
-                .get::<_, Option<String>>(17)?
-                .as_deref()
-                .and_then(parse_dt),
-            tags: row.get(18)?,
-            rating_overall: row.get(19)?,
-            rating_performance: row.get(20)?,
-            rating_story: row.get(21)?,
-            is_finished: row.get::<_, i64>(22)? != 0,
-            pdf_status: row.get(23)?,
-            pdf_storage_key: row.get(24)?,
-            publisher: row.get(25)?,
-            length_minutes: row.get(26)?,
-            is_abridged: row.get::<_, i64>(27)? != 0,
-            content_kind: row.get(28).unwrap_or_else(|_| "book".into()),
-            categories: row.get(29).ok().flatten(),
-            subtitle: row.get(30).ok().flatten(),
-            published_at: row
-                .get::<_, Option<String>>(31)
-                .ok()
-                .flatten()
-                .as_deref()
-                .and_then(parse_dt),
-            created_at: parse_dt(&row.get::<_, String>(32)?).unwrap_or_else(chrono::Utc::now),
-            updated_at: parse_dt(&row.get::<_, String>(33)?).unwrap_or_else(chrono::Utc::now),
-        })
-    })?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
+/// Reads every account title from the library model, in holding order.
+///
+/// Per-person state (tags, ratings, finished) belongs to people, not to an
+/// account title, so it is left empty, as `export libation` does without
+/// `--user`. A title that has no purchase or added time takes the time of
+/// the export for its row times.
+///
+/// # Errors
+///
+/// Returns an error when a page of titles cannot be read, or the library
+/// holds more titles than a classic `BookId` can number.
+async fn load_flat_books(store: &bookclerk_library::LibraryStore) -> anyhow::Result<Vec<FlatBook>> {
+    let now = chrono::Utc::now();
+    let titles = store.all_acquire_titles(None).await?;
+    let mut out = Vec::with_capacity(titles.len());
+    for (index, title) in titles.into_iter().enumerate() {
+        let id = i64::try_from(index)?
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("too many titles to number"))?;
+        let created_at = title.added_at.or(title.purchased_at).unwrap_or(now);
+        out.push(FlatBook {
+            id,
+            uuid: title.holding_id,
+            source: title.source,
+            account_id: title.account_id,
+            product_id: title.product_id,
+            asin: title.asin,
+            isbn: title.isbn,
+            marketplace: title.marketplace,
+            title: title.title,
+            authors: title.authors,
+            narrators: title.narrators,
+            series: title.series,
+            series_index: title.series_index,
+            series_asin: title.series_product_id,
+            acquire_status: title.status.as_str().to_string(),
+            storage_key: title.storage_key,
+            error_message: None,
+            purchased_at: title.purchased_at,
+            tags: None,
+            rating_overall: None,
+            rating_performance: None,
+            rating_story: None,
+            is_finished: false,
+            pdf_status: title.pdf_status.as_str().to_string(),
+            pdf_storage_key: title.pdf_storage_key,
+            publisher: title.publisher,
+            length_minutes: title.length_minutes,
+            is_abridged: title.is_abridged,
+            content_kind: title.content_kind.to_string(),
+            categories: title.categories,
+            subtitle: title.subtitle,
+            published_at: title.published_at,
+            created_at,
+            updated_at: created_at,
+        });
     }
     Ok(out)
 }
@@ -612,20 +609,6 @@ fn split_title_subtitle(title: &str, subtitle: Option<&str>) -> (String, String)
     } else {
         (title.to_string(), String::new())
     }
-}
-
-/// Parses RFC 3339 or `YYYY-MM-DD HH:MM:SS[.frac]` as UTC; returns `None` when none match.
-fn parse_dt(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
-        return Some(dt.with_timezone(&chrono::Utc));
-    }
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f") {
-        return Some(dt.and_utc());
-    }
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Some(dt.and_utc());
-    }
-    None
 }
 
 /// Advance a SERIAL sequence to at least `MAX(column)` after bulk inserts that
@@ -770,3 +753,71 @@ CREATE TABLE IF NOT EXISTS "CategoryCategoryLadder" (
     PRIMARY KEY ("_categoriesCategoryId", "_categoryLaddersCategoryLadderId")
 );
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{load_flat_books, split_title_subtitle};
+    use bookclerk_library::{AcquireStatus, LibraryStore, NewBook};
+
+    /// The export reads every account title from the library model, with
+    /// its acquire state, and numbers the rows from 1.
+    #[tokio::test]
+    async fn the_export_reads_each_account_title_from_the_library() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        assert!(load_flat_books(&store).await.unwrap().is_empty());
+        for account in ["a-acct", "b-acct"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+        }
+        let mut dune = NewBook::minimal("B0DUNE", "a-acct", "us", "Dune: Deluxe");
+        dune.authors = Some("Frank Herbert".into());
+        dune.series = Some("Dune".into());
+        dune.series_index = Some("1".into());
+        dune.length_minutes = Some(1260);
+        let held = store.upsert_book(&dune).await.unwrap();
+        store
+            .upsert_book(&NewBook::minimal("B0EMMA", "b-acct", "us", "Emma"))
+            .await
+            .unwrap();
+        store
+            .set_holding_acquire_status(
+                &held.holding_id,
+                AcquireStatus::Acquired,
+                Some("Frank Herbert/Dune.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let books = load_flat_books(&store).await.unwrap();
+        assert_eq!(books.len(), 2);
+        let mut ids: Vec<i64> = books.iter().map(|b| b.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2]);
+        let dune = books.iter().find(|b| b.product_id == "B0DUNE").unwrap();
+        assert_eq!(dune.uuid, held.holding_id);
+        assert_eq!(dune.account_id, "a-acct");
+        assert_eq!(dune.asin.as_deref(), Some("B0DUNE"));
+        assert_eq!(dune.authors.as_deref(), Some("Frank Herbert"));
+        assert_eq!(dune.series.as_deref(), Some("Dune"));
+        assert_eq!(dune.length_minutes, Some(1260));
+        assert_eq!(dune.acquire_status, AcquireStatus::Acquired.as_str());
+        assert_eq!(dune.storage_key.as_deref(), Some("Frank Herbert/Dune.m4b"));
+        assert_eq!(dune.pdf_status, AcquireStatus::NotAcquired.as_str());
+        assert_eq!(dune.tags, None);
+        assert!(!dune.is_finished);
+        assert_eq!(
+            split_title_subtitle(&dune.title, dune.subtitle.as_deref()),
+            ("Dune".to_string(), "Deluxe".to_string())
+        );
+        let emma = books.iter().find(|b| b.product_id == "B0EMMA").unwrap();
+        assert_eq!(emma.acquire_status, AcquireStatus::NotAcquired.as_str());
+        assert_eq!(emma.storage_key, None);
+    }
+}

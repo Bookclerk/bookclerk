@@ -373,7 +373,8 @@ async fn a_member_hears_only_their_topics_until_signed_out() {
             "library".to_string(),
             "nodes".to_string(),
             "discover".to_string(),
-            "playback".to_string()
+            "playback".to_string(),
+            "notifications".to_string()
         ]
     );
 
