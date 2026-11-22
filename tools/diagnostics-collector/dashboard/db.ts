@@ -1351,7 +1351,8 @@ export async function logAccess(
     | "triage"
     | "mute"
     | "unmute"
-    | "close-issue",
+    | "close-issue"
+    | "ai-triage",
   reportId: string | null,
   now: number,
 ): Promise<void> {

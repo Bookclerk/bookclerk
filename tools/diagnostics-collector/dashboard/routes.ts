@@ -69,6 +69,7 @@ import {
 } from "./db.ts";
 import {
   closeIssue,
+  dispatchTriage,
   githubConfig,
   writeSummaryComment,
   type AttachLink,
@@ -137,6 +138,7 @@ const PATHS = new Set([
   "/admin/update-issue",
   "/admin/close-issue",
   "/reports/triage",
+  "/reports/ai-triage",
   "/signatures/mute",
   "/live",
 ]);
@@ -497,6 +499,19 @@ export async function dashboardFetch(
     return correctLinks(request, env, member, now);
   }
 
+  if (method === "POST" && path === "/reports/ai-triage") {
+    if (!sameOrigin(request)) {
+      return htmlResponse(
+        messagePage(
+          "Request refused",
+          html`<p>Triage is started from the report page's own button.</p>`,
+        ),
+        403,
+      );
+    }
+    return requestTriage(request, env, cfg, member, now);
+  }
+
   if (method === "POST" && (path === "/reports/triage" || path === "/signatures/mute")) {
     if (!sameOrigin(request)) {
       return htmlResponse(
@@ -816,7 +831,10 @@ export async function dashboardFetch(
       .sort((a, b) => Number(b.merged_at) - Number(a.merged_at))[0];
     // A report no issue tracks gets a picker to attach it; one issue is the
     // normal case and needs none.
-    const openIssues = found.issues.length === 0 ? await openIssueOptions(db) : [];
+    const [openIssues, triageNote] = await Promise.all([
+      found.issues.length === 0 ? openIssueOptions(db) : Promise.resolve([]),
+      getState(db, TRIAGE_NOTE).then((s) => triageNoteFor(s, String(r.report_id), now)),
+    ]);
     return htmlResponse(
       reportPage({
         cfg,
@@ -835,6 +853,7 @@ export async function dashboardFetch(
         signatureIssues: sameSignature,
         mute,
         installs,
+        triageNote,
         now,
       }),
     );
@@ -1007,6 +1026,128 @@ async function correctLinks(
   await announceChange(env);
   const back = safeNext(formField(body, "back"));
   return redirect(back ?? `/issues/${change.action === "merge" ? change.to : change.issue}`);
+}
+
+/**
+ * Cursor holding what the last **Triage now** press said, as
+ * `<report id>\t<unix ms>\t<text>`, shown on that report's page for
+ * `UPDATE_NOTE_TTL_MS`.
+ */
+const TRIAGE_NOTE = "triage_request_note";
+
+/** A report waits this long between two **Triage now** presses. */
+export const TRIAGE_REQUEST_GAP_MS = 10 * 60_000;
+
+/**
+ * Most **Triage now** presses across the dashboard per rolling day: each
+ * starts a workflow run, and the neuron budget caps what they spend.
+ */
+export const TRIAGE_REQUESTS_PER_DAY = 20;
+
+/**
+ * The note of the last **Triage now** press when it concerns this report
+ * and is recent.
+ *
+ * @param stored - The `TRIAGE_NOTE` cursor.
+ * @param report - Report ID of the page.
+ * @param now - Unix time in milliseconds.
+ * @returns The note text, or null.
+ */
+function triageNoteFor(stored: string | null, report: string, now: number): string | null {
+  const [forReport, at, ...rest] = (stored ?? "").split("\t");
+  const when = Number(at);
+  if (
+    forReport !== report ||
+    !Number.isFinite(when) ||
+    now - when > UPDATE_NOTE_TTL_MS ||
+    rest.length === 0
+  )
+    return null;
+  return rest.join("\t");
+}
+
+/**
+ * Whether a **Triage now** press may start a run, from the earlier presses
+ * in the access log.
+ *
+ * @param db - Database.
+ * @param report - Report ID.
+ * @param now - Unix time in milliseconds.
+ * @returns Null when it may, else the note that says why not.
+ */
+async function triageRefusal(db: D1Database, report: string, now: number): Promise<string | null> {
+  const row = await first(
+    db,
+    "SELECT COUNT(*) AS day, SUM(CASE WHEN report_id = ? AND at > ? THEN 1 ELSE 0 END) AS recent FROM access_log WHERE action = 'ai-triage' AND at > ?",
+    report,
+    now - TRIAGE_REQUEST_GAP_MS,
+    now - DAY_MS,
+  );
+  if (Number(row?.recent ?? 0) > 0) {
+    return "Triage was started for this report a few minutes ago; its issue appears here when the run finishes.";
+  }
+  if (Number(row?.day ?? 0) >= TRIAGE_REQUESTS_PER_DAY) {
+    return `The dashboard has started triage ${TRIAGE_REQUESTS_PER_DAY} times in the last day, its most; the daily ingest run still triages this report.`;
+  }
+  return null;
+}
+
+/**
+ * `POST /reports/ai-triage` (members, same origin): starts the ingest
+ * workflow for one report no issue lists yet, which triages it on Workers
+ * AI and files or attaches an issue as the daily run would. The press is
+ * logged under the member's name, and what happened is noted on the page.
+ *
+ * @param request - The form post.
+ * @param env - Worker bindings.
+ * @param cfg - Settings.
+ * @param member - The signed-in member.
+ * @param now - Unix time in milliseconds.
+ * @returns A redirect back to the report page.
+ */
+async function requestTriage(
+  request: Request,
+  env: DashboardEnv,
+  cfg: GitHubConfig,
+  member: Member,
+  now: number,
+): Promise<Response> {
+  const db = env.DASHBOARD_DB;
+  const body = await readForm(request);
+  const raw = (formField(body, "report") ?? "").toLowerCase();
+  const found = REPORT_PATH.test(`/reports/${raw}`) ? await getReport(db, raw) : null;
+  if (!found) {
+    return htmlResponse(
+      messagePage("Request not understood", html`<p>The form names no indexed report.</p>`),
+      400,
+    );
+  }
+  let note: string;
+  if (found.issues.length > 0) {
+    note = "An issue already lists this report, so there is nothing to triage.";
+  } else if (found.report.deleted_at) {
+    note = "Its sender deleted the stored copy, so there is nothing for triage to read.";
+  } else {
+    const refused = await triageRefusal(db, raw, now);
+    if (refused) {
+      note = refused;
+    } else {
+      try {
+        await dispatchTriage(cfg, now, raw);
+        await logAccess(db, member, "ai-triage", raw, now);
+        note =
+          "Triage started. The ingest workflow files or attaches an issue in a few minutes, and it shows here.";
+      } catch (err) {
+        const text = err instanceof Error ? err.message : String(err);
+        console.error(`triage dispatch failed: ${text}`);
+        note = text.startsWith("installation token failed")
+          ? `GitHub refused the token to start the workflow (${text}); the App needs Actions: write on the repository.`
+          : `GitHub did not start the workflow (${text}); try again later.`;
+      }
+    }
+  }
+  await setState(db, TRIAGE_NOTE, `${raw}\t${now}\t${note}`);
+  return redirect(`/reports/${raw}`);
 }
 
 /**

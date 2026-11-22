@@ -325,6 +325,7 @@ function renderers(): Record<string, () => SafeHtml> {
         signatureIssues: [412],
         mute: null,
         installs: 6,
+        triageNote: null,
         now: NOW,
       }),
     "/issues": () =>

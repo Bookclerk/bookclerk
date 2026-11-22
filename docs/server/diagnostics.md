@@ -718,6 +718,11 @@ the owner's [close buttons](#closing-issues):
 - If the installation doesn't grant Issues: write, the button says so. A
   summary comment is then left to the scheduled run.
 
+A member's [**Triage now**](#triage-now) starts the ingest workflow with a
+token narrowed to `actions: write` alone, minted for that call and not
+kept. That permission also covers re-running and cancelling runs and
+deleting their logs, artifacts and caches, but not code or workflow files.
+
 The client secret and private key are Worker secrets only. Neither, nor
 any user token, is logged, stored or sent to a browser.
 `scripts/tests/test_ci_contract.py` keeps them out of Bookclerk builds and
@@ -730,6 +735,7 @@ The App needs, in its settings:
 - the repository permission **Issues: write**, for the **Update GitHub
   now** and close buttons. The App's token is separate from the ingest Action's
   `GITHUB_TOKEN`, so the Action's permission doesn't cover it;
+- the repository permission **Actions: write**, for **Triage now**;
 - the callback URL `https://diagnostics.<DOMAIN>/auth/callback`, or the
   workers.dev URL.
 
@@ -906,6 +912,33 @@ the newest; `/reports?triage=needs` is the whole queue.
 
 Each mark and mute is written to the access log under the member's login,
 and open pages refresh.
+
+### Triage now
+
+A report no issue lists yet has a **Triage now** button on its page. It
+posts to `/reports/ai-triage`, and the Worker starts the ingest workflow
+(`workflow_dispatch` with the `report_id` input) instead of waiting for
+the daily run:
+
+1. The workflow pulls only that report (`GET /report?report_id=<uuid>`),
+   whatever its version and wherever the cursor is, and passes it over if
+   an issue lists it by then.
+2. It triages the report on Workers AI under the same daily budget, and
+   files a new issue or attaches the report to an open one, as the daily
+   run would.
+3. It leaves the stored cursor alone, so the scheduled pull is unchanged.
+   Each report's run has its own concurrency group, so one press never
+   cancels another's pending run.
+
+The page notes what happened for 10 minutes. The issue shows up under
+**Tracked by** once the run finishes, usually within a few minutes.
+
+- A report waits 10 minutes between presses, and the dashboard starts at
+  most 20 runs a day. Each press is written to the access log.
+- A report whose stored copy was deleted has no button, since triage has
+  nothing to read.
+- Without Actions: write on the App's installation, the page says so and
+  nothing starts. See [What the Worker holds](#what-the-worker-holds).
 
 ### Closing issues
 

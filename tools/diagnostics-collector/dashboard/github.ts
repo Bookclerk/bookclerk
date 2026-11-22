@@ -443,6 +443,53 @@ export async function closeIssue(
   if (!res.ok) throw new Error(`close failed: HTTP ${res.status}`);
 }
 
+/**
+ * Permissions of the token that starts the ingest workflow for one report
+ * (`dispatchTriage`, a member's **Triage now**): Actions write, which
+ * `workflow_dispatch` needs. It is never cached.
+ */
+export const DISPATCH_PERMISSIONS = Object.freeze({
+  actions: "write",
+});
+
+/** The ingest workflow's file, under `.github/workflows/`. */
+export const INGEST_WORKFLOW = "diagnostics-ingest.yml";
+
+/**
+ * Branch the ingest workflow is started on: the one the collector deploys
+ * from, so the workflow and the Worker it calls match.
+ */
+export const INGEST_REF = "main";
+
+/**
+ * Starts the ingest workflow for one report, which triages it on Workers AI
+ * and files or attaches an issue as the daily run would. The token is
+ * minted for this call alone with `DISPATCH_PERMISSIONS` and not kept.
+ *
+ * @param cfg - Settings.
+ * @param now - Unix time in milliseconds.
+ * @param reportId - Lowercase report UUID (the caller validated it).
+ * @throws {Error} When the App lacks `actions: write` on the repository
+ *   (the message starts "installation token failed") or GitHub refuses the
+ *   dispatch. Messages carry a stage and an HTTP status, never the token.
+ */
+export async function dispatchTriage(
+  cfg: GitHubConfig,
+  now: number,
+  reportId: string,
+): Promise<void> {
+  const { token } = await mintToken(cfg, now, DISPATCH_PERMISSIONS);
+  const res = await gh(
+    `${API}/repos/${cfg.owner}/${cfg.repo}/actions/workflows/${INGEST_WORKFLOW}/dispatches`,
+    {
+      method: "POST",
+      headers: { ...apiHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: INGEST_REF, inputs: { report_id: reportId } }),
+    },
+  );
+  if (!res.ok) throw new Error(`dispatch failed: HTTP ${res.status}`);
+}
+
 /** Forgets the cached installation token (tests). */
 export function clearTokenCache(): void {
   cachedToken = null;

@@ -144,6 +144,8 @@ export type ReportData = MemberPage & {
   mute: SignatureMute | null;
   /** Distinct installs (by monthly install key) behind its signature. */
   installs: number;
+  /** What the last **Triage now** press on this report said, if recent. */
+  triageNote: string | null;
   /** Unix ms. */
   now: number;
 };
@@ -1051,6 +1053,8 @@ export function reportPage(d: ReportData): SafeHtml {
                 )
               : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`
           }
+          ${d.issues.length === 0 && !r.deleted_at ? html`<form class="link-item" method="post" action="/reports/ai-triage"><input type="hidden" name="report" value="${r.report_id}"><button type="submit" class="button">Triage now</button> <span class="fine">Runs the ingest workflow on this report: AI triage files or attaches an issue.</span></form>` : ""}
+          ${d.triageNote ? html`<p class="fine" role="status">${d.triageNote}</p>` : ""}
           ${d.issues.length === 0 && d.openIssues?.length ? html`<div class="link-item">${linkForm({ action: "attach", report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Attach", options: d.openIssues, pickerLabel: "Attach to issue", preferred: d.signatureIssues })}</div>` : ""}
           ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0]?.number} until a member detaches it from the others.</p>` : ""}
           ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span>${externalLink(ghUrl(d.cfg, "pull", pr.pr_number), `#${pr.pr_number} ${pr.title}`)}</div>`)}

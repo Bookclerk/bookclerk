@@ -4696,6 +4696,110 @@ describe("triage state, mutes and owner close", () => {
     ).text();
     assert.match(page, /Closed on GitHub as fixed in 0\.9\.1\./);
   });
+
+  it("starts the ingest workflow for one untracked report from Triage now", async () => {
+    gh = scriptGitHub([
+      ...appRoutes(null),
+      [
+        "POST https://api.github.com/repos/Bookclerk/bookclerk/actions/workflows/diagnostics-ingest.yml/dispatches",
+        () => new Response(null, { status: 204 }),
+      ],
+    ]);
+    const env = makeEnv();
+    await seed(env, ID1);
+    const cookie = await signedIn(env);
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /<form class="link-item" method="post" action="\/reports\/ai-triage">/);
+
+    // Only from the dashboard's own pages.
+    const foreign = await call(
+      env,
+      new Request(`${ORIGIN}/reports/ai-triage`, {
+        method: "POST",
+        headers: {
+          cookie,
+          origin: "https://evil.test",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: `report=${ID1}`,
+      }),
+    );
+    assert.equal(foreign.status, 403);
+    assert.equal(
+      (await postForm(env, cookie, "/reports/ai-triage", [["report", "x"]])).status,
+      400,
+    );
+
+    const res = await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]]);
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), `/reports/${ID1}`);
+    const dispatch = gh.calls.find((c) => c.url.endsWith("/dispatches"));
+    assert.deepEqual(dispatch?.body, { ref: "main", inputs: { report_id: ID1 } });
+    const tokenAsk = gh.calls.find((c) => c.url.endsWith("/access_tokens"));
+    assert.deepEqual(tokenAsk?.body?.["permissions"], { actions: "write" });
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Triage started\./);
+    const logged = await all(
+      env.DASHBOARD_DB,
+      "SELECT login, report_id FROM access_log WHERE action = 'ai-triage'",
+    );
+    assert.deepEqual(
+      logged.map((r) => ({ ...r })),
+      [{ login: "octo", report_id: ID1 }],
+    );
+
+    // A second press within ten minutes starts nothing.
+    const before = gh.calls.length;
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]]);
+    assert.equal(gh.calls.length, before);
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Triage was started for this report a few minutes ago/);
+  });
+
+  it("says when the App lacks Actions: write, and starts nothing for a tracked report", async () => {
+    const env = makeEnv();
+    await seed(env, ID1);
+    await seed(env, ID2);
+    const cookie = await signedIn(env);
+    gh = scriptGitHub([
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/installation",
+        () => Response.json({ id: 42 }),
+      ],
+      [
+        "POST https://api.github.com/app/installations/42/access_tokens",
+        () => new Response("{}", { status: 422 }),
+      ],
+    ]);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]]);
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /the App needs Actions: write on the repository/);
+
+    await env.DASHBOARD_DB.prepare(
+      "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (412, 't', 'open', 'triage', 1, 1)",
+    ).run();
+    await env.DASHBOARD_DB.prepare(
+      "INSERT INTO report_issue (report_id, issue_number) VALUES (?, 412)",
+    )
+      .bind(ID2)
+      .run();
+    const before = gh.calls.length;
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID2]]);
+    assert.equal(gh.calls.length, before);
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID2}`, { headers: { cookie } }))
+    ).text();
+    assert.ok(!page.includes('action="/reports/ai-triage"'), "no button once an issue lists it");
+    assert.match(page, /An issue already lists this report/);
+  });
 });
 
 describe("hosted demo runs", () => {

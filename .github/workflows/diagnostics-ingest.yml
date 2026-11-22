@@ -29,6 +29,10 @@ on:
         description: "Ignore stored cursor, pull from epoch (0) and re-triage reports that already have an issue"
         type: boolean
         default: false
+      report_id:
+        description: "Triage only this report (UUID); the dashboard's Triage now button sets it"
+        type: string
+        default: ""
 
 # Least privilege:
 #   contents — checkout (triage script lives in-repo) and releases/latest
@@ -37,8 +41,11 @@ permissions:
   contents: read
   issues: write
 
+# One-report runs (the dashboard's Triage now) get a group per report, so a
+# press never replaces another report's pending run; they leave the stored
+# cursor alone, so they can run beside the scheduled pull.
 concurrency:
-  group: diagnostics-ingest
+  group: diagnostics-ingest${{ inputs.report_id && format('-report-{0}', inputs.report_id) || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -88,8 +95,23 @@ jobs:
         id: cursor
         env:
           FORCE: ${{ inputs.force_full }}
+          REPORT_ID: ${{ inputs.report_id }}
         run: |
           set -euo pipefail
+          # One report by ID (Triage now): the collector looks it up wherever
+          # it sits, so the cursor is neither read nor stored. The input is
+          # checked here, before it reaches a URL.
+          if [ -n "${REPORT_ID:-}" ]; then
+            if ! printf '%s' "$REPORT_ID" | grep -Eqx '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'; then
+              echo "::error::report_id must be a lowercase report UUID"
+              exit 1
+            fi
+            echo "query=report_id=${REPORT_ID}" >> "$GITHUB_OUTPUT"
+            echo "single=true" >> "$GITHUB_OUTPUT"
+            echo "Pulling one report: ${REPORT_ID}"
+            exit 0
+          fi
+          echo "single=false" >> "$GITHUB_OUTPUT"
           # The collector stores the cursor (POST /report/cursor below), so a
           # run starts where the last one ended. Forced runs pull from epoch;
           # the stored cursor never moves backwards.
@@ -134,9 +156,15 @@ jobs:
           CURSOR_QUERY: ${{ steps.cursor.outputs.query }}
           BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
           FORCE: ${{ inputs.force_full }}
+          SINGLE: ${{ steps.cursor.outputs.single }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/diagnostics-batch
+          # A member asked for this report, so its version is not held to
+          # the release baseline.
+          if [ "${SINGLE:-false}" = "true" ]; then
+            BASELINE_TAG=""
+          fi
           # unfiled=1 has the collector pass over reports an issue already
           # lists, so a re-pull (a forced run, or a failed filing retried)
           # cannot file them again.
@@ -184,7 +212,8 @@ jobs:
         # Only after every report in the batch is filed (or nothing needed
         # triage), so a failed filing is retried by the next run; reports an
         # issue already lists are skipped then (unfiled=1), not filed twice.
-        if: ${{ always() && steps.pull.outcome == 'success' && (steps.triage.outcome == 'success' || steps.triage.outcome == 'skipped') }}
+        # One-report runs leave the cursor where the scheduled pull put it.
+        if: ${{ always() && steps.cursor.outputs.single != 'true' && steps.pull.outcome == 'success' && (steps.triage.outcome == 'success' || steps.triage.outcome == 'skipped') }}
         env:
           BASE: ${{ steps.collector.outputs.base }}
           KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
