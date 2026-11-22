@@ -9,7 +9,13 @@
  * 404).
  */
 
-import { BudgetLedger, DEFAULT_DAILY_NEURONS, MAX_DAILY_NEURONS, utcDay } from "../triage.ts";
+import {
+  BUDGET_HISTORY_DAYS,
+  BudgetLedger,
+  DEFAULT_DAILY_NEURONS,
+  MAX_DAILY_NEURONS,
+  utcDay,
+} from "../triage.ts";
 import { DEFAULT_NEXT, finishSignIn, safeNext, sameSiteHop, signOut, startSignIn } from "./auth.ts";
 import { metered } from "./budget.ts";
 import {
@@ -46,7 +52,9 @@ import {
   PAGE_SIZE,
   RANGES,
   recentAccess,
+  parseReportSource,
   reportSource,
+  type ReportSource,
   reportWhere,
   run,
   setState,
@@ -94,7 +102,14 @@ import {
   signInPage,
   type ReportFix,
 } from "./pages.ts";
-import { currentMember, endAllSessions, sameOrigin, type Member } from "./session.ts";
+import {
+  cookieValue,
+  currentMember,
+  endAllSessions,
+  hostCookie,
+  sameOrigin,
+  type Member,
+} from "./session.ts";
 import { readStoredReport, type B2Access } from "./storage.ts";
 import {
   indexSubmitted,
@@ -348,24 +363,65 @@ function rangeOf(q: URLSearchParams): RangeId {
 }
 
 /**
- * Today's triage spend and cap, read from #388's TRIAGE_BUDGET ledger.
+ * Today's triage spend and cap, and the last seven days' spend, read from
+ * the TRIAGE_BUDGET ledger. Triage runs once a day from the ingest workflow
+ * and today's figure resets at midnight UTC, so the week shows it ran.
  *
  * @param env - Worker bindings.
  * @param now - Unix time in milliseconds.
  * @returns Neurons.
  */
-async function triageBudget(env: Env, now: number): Promise<{ spent: number; cap: number }> {
+async function triageBudget(
+  env: Env,
+  now: number,
+): Promise<{ spent: number; cap: number; week: number }> {
   const n = Number(env.TRIAGE_DAILY_NEURONS);
   const cap = Math.min(
     Number.isSafeInteger(n) && n > 0 ? n : DEFAULT_DAILY_NEURONS,
     MAX_DAILY_NEURONS,
   );
-  if (!env.TRIAGE_BUDGET) return { spent: 0, cap };
+  if (!env.TRIAGE_BUDGET) return { spent: 0, cap, week: 0 };
   try {
-    return { spent: await new BudgetLedger(env.TRIAGE_BUDGET).spent(utcDay(now)), cap };
+    const ledger = new BudgetLedger(env.TRIAGE_BUDGET);
+    const [spent, week] = await Promise.all([
+      ledger.spent(utcDay(now)),
+      ledger.spentOver(now, BUDGET_HISTORY_DAYS),
+    ]);
+    return { spent, cap, week };
   } catch {
-    return { spent: 0, cap };
+    return { spent: 0, cap, week: 0 };
   }
+}
+
+/** Cookie that remembers a member's last report source filter. */
+export const SOURCE_COOKIE = "__Host-bc_source";
+
+/** How long the source choice is remembered: a year. */
+const SOURCE_COOKIE_SECONDS = 365 * 24 * 3600;
+
+/**
+ * The report source filter for an Overview or Reports request, and the
+ * cookie that remembers it when the query chose one, so the choice holds
+ * when the member moves between the two pages.
+ *
+ * @param request - Incoming request (its `Cookie` header).
+ * @param q - Its query.
+ * @returns The source in force, and `Set-Cookie` values (none
+ *   when the query named no source).
+ */
+function sourceChoice(
+  request: Request,
+  q: URLSearchParams,
+): { source: ReportSource; cookies: string[] } {
+  const asked = parseReportSource(q.get("source"));
+  const source = reportSource(
+    asked,
+    cookieValue(request.headers.get("cookie") || "", SOURCE_COOKIE),
+  );
+  const cookies = asked
+    ? [hostCookie(SOURCE_COOKIE, asked, { maxAge: SOURCE_COOKIE_SECONDS, sameSite: "Lax" })]
+    : [];
+  return { source, cookies };
 }
 
 /**
@@ -568,7 +624,7 @@ export async function dashboardFetch(
     const rangeId = rangeOf(q);
     const range = RANGES[rangeId];
     const since = now - range.ms;
-    const source = reportSource(q.get("source"));
+    const { source, cookies: sourceCookies } = sourceChoice(request, q);
     const filter: ReportFilter = { version: param(q, "version"), source };
     const [
       stats,
@@ -631,6 +687,9 @@ export async function dashboardFetch(
         reindexNote: reindexNote ?? "",
         totalSeries: dailySeries(now, 14, new Map(totals.map((t) => [Number(t.day), Number(t.n)]))),
       }),
+      200,
+      {},
+      sourceCookies,
     );
   }
 
@@ -640,13 +699,14 @@ export async function dashboardFetch(
     const filed = q.get("filed");
     const signature = param(q, "signature");
     const triage = q.get("triage");
+    const choice = sourceChoice(request, q);
     const filter: ReportFilter = {
       version: param(q, "version"),
       platform: param(q, "platform"),
       trigger: param(q, "trigger"),
       filed: filed === "yes" || filed === "no" ? filed : "",
       signature: /^[0-9a-f]{16}$/.test(signature) ? signature : "",
-      source: reportSource(q.get("source")),
+      source: choice.source,
       triage: triage === "needs" || triage === "seen" || triage === "noise" ? triage : "",
       now,
     };
@@ -668,6 +728,9 @@ export async function dashboardFetch(
         rows: list.rows,
         total: list.total,
       }),
+      200,
+      {},
+      choice.cookies,
     );
   }
 
