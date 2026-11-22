@@ -1066,6 +1066,7 @@ methods on [`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) and
 | `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns a `PlainFetch` of **plain** files (DRM guests decrypt before returning): `mediaKind`, the carrier it fetched, which must be in its declared [`fetches`](#declaring-media); `files`, each `{ path, role, contentType?, title?, durationMs? }` with `role` `part` (ordered pieces), `whole` (the edition in one file, such as an M4B) or `cover`; `chapters`; `chapterKind`, what those markers are (`chapters` for the book's own chapters, `tracks` for track or file markers, `unknown` when the store does not say), which decides how the host ranks them against other chapter sources; and an optional `pdfUrl`. A reply lists `part`s or one `whole` file, never both, and at most one `cover`. The host acquires audio editions only today. When the store throttles the account, fail with `rate_limited` (and `details.retryAfterMs` when the store said how long): the host pauses automatic downloads on that account (see [`[acquire]`](manifest.md#acquire-download-pace)). A native Rust storefront whose store reports throttling only in words can test the refusal text with `bookclerk_storefront::is_throttle_reason` |
 | `purchaseHint` | Purchase link and, when `withPrice` is set, the live price of one title. `null` when the store does not sell it. `lookup` says how the host names the title (see [Price lookups](#price-lookups)) |
 | `purchaseHints` | The same for several titles in one call (`{ queries }`, one answer per query in order). The default in every SDK asks `purchaseHint` for each query, four at a time, those with a product id first, and stops starting lookups after 4 s, answering `null` for the rest, so the host's batch gets what the store managed; a store whose catalog prices many products per request (Audible's `products?asins=` takes fifty, Chirp's GraphQL takes aliased ids) overrides it to make one request, so a page of Discover cards costs one call per store |
+| `qualityOffers` | `{ accountId, credentials?, sourceConfig, titleIds, fetch }` → `{ offers, refreshedCredentials? }`: which stream the account would download for each title today, without downloading (see [Quality offers](#quality-offers)). The host calls it only on a store that declares `catalog.qualityOffers` |
 
 #### Price lookups
 
@@ -1219,6 +1220,31 @@ scan(params: ScanParams): Promise<ScanPage> {
 The three SDKs write the same cursors, so a plugin can move between them
 without breaking a pass in progress.
 
+#### Quality offers
+
+The daily [upgrade check](../server/output.md#upgrading-to-better-files)
+asks a store which file an account would download for titles it already
+holds. A storefront takes part by setting `catalog.qualityOffers` in
+`describe()` and answering `qualityOffers`:
+
+1. The host sends up to `maxListPage` of the account's product ids in
+   `titleIds`, with its credentials, the instance's `sourceConfig` and the
+   `fetch` options an acquire would use (DRM path, quality, xHE-AAC).
+2. Answer one `TitleQualityOffer` per id, in the same order. Set `found`
+   and fill `offer` with the stream's `codec`, `aacProfile` (AAC only;
+   `unknown` otherwise), and, when known, `bitrateKbps`, `sampleRateHz`
+   and `channels`. Leave `found` false for a title you can't answer, and
+   offer only streams a `fetchTitle` with the same options would deliver.
+3. When the store throttles the account, fail with `rate_limited`; the
+   host leaves the account alone until the next day.
+
+The host checks the reply before comparing anything: no more answers than
+titles sent, a channel count up to 32, a sample rate up to 768 kHz, a
+bitrate up to 800,000 kbps, and an AAC profile only on AAC. A reply that
+breaks one is refused whole. `refreshedCredentials` follows
+[Refreshed credentials](#refreshed-credentials). The default in every SDK
+fails with `unsupported`; Audible is the first-party store that answers it.
+
 #### Refreshed credentials
 
 A store may renew an account's tokens while the plugin uses them, such as
@@ -1226,7 +1252,8 @@ an access token that expired in the middle of a scan. The plugin hands the
 renewed credentials back so the next call does not have to renew them
 again:
 
-1. Set `refreshedCredentials` on the `ScanPage` or `PlainFetch` reply to
+1. Set `refreshedCredentials` on the `ScanPage`, `PlainFetch` or
+   `QualityOffersResult` reply to
    the account's whole credentials, in the same JSON form the host sent
    them. Leave it empty when nothing changed.
 2. The value must be one JSON object of at most
@@ -1360,13 +1387,13 @@ names, send one credit per name; split a display string such as
 `"Jane Doe, John Roe"` only when that is all the store gives.
 
 > [!NOTE]
-> Until the library stores works, expressions and editions, the host maps
-> these records onto its current flat title row: names join by role, the
-> first ISBN and ASIN fill the identifier columns, and the first series
-> entry fills the series columns. An episode with no `storeSeriesId` is
-> filed under the show named by `parentProductId`. Ebook and print scan
-> records are not stored yet, since the flat row cannot keep them out of
-> acquire, and records with an unspecified kind are never stored.
+> The host resolves each record into a listing of its work, expression and
+> edition. A record that is not a valid listing is stored from its flat
+> fields instead: names join by role, the first ISBN and ASIN fill the
+> identifiers, and the first series entry fills the series. An episode
+> with no `storeSeriesId` is filed under the show named by
+> `parentProductId`. Ebook and print scan records are not stored yet, and
+> records with an unspecified kind are never stored.
 
 ### Metadata providers
 
@@ -1603,8 +1630,10 @@ The typed methods on `Notifier` and `NotifierEntrypoint` are:
 | `validateDestination` | `({ addressJson })` → `{ addressJson, label? }`. Check and normalise a personal address a patron entered; `label` is a short hint that is never a secret (`a***@example.com`). The default accepts the address as given |
 
 A `NotificationMessage` carries `notificationId` (the same on every
-destination's copy, so use it as an idempotency key where the service
-takes one), `notificationType`, `severity`, `title`, a plain `text` body,
+destination's copy; where the service takes an idempotency key, build it
+from `notificationId` and the destination's `destinationId`, so two
+addresses on one service account both receive it and a retry to the same
+destination reuses the same key), `notificationType`, `severity`, `title`, a plain `text` body,
 optional `markdown` and `html` bodies, an optional `link` into the
 library, labelled `fields`, an optional `groupKey` for threading, and an
 alert action and key for services that open and close incidents. When
@@ -1664,10 +1693,13 @@ export class Notifier extends NotifierEntrypoint<Env> {
 }
 ```
 
-> [!NOTE]
-> The host does not route notifications yet: notifiers answer health
-> probes only. The router, the `notify.send` jobs, the delivery log and
-> the inbox come next, followed by the first providers.
+The host gives `send` 30 seconds and `validateDestination` 6 seconds;
+a call that runs longer is dropped and answers `unavailable`, so a send
+is retried.
+
+The host calls `send` from one `notify_send` job per delivery and
+records the answer in the delivery log; see
+[Notifications](../server/notifications.md) for retries and pausing.
 
 ### Raising notifications
 
@@ -1690,20 +1722,21 @@ await env.NOTIFY.raise({
   the host adds.
 - `fields` are `{ name, value }` rows or a plain object, with the caps of
   a message's fields.
-- `patronId` is required for a `patron` type and must be inside the
-  invocation's account scope.
+- `patronId` is required for a `patron` type: the patron's library
+  user id in decimal (`"42"`, with no sign or leading zero), for a patron
+  who holds the store account the invocation runs for.
 - `linkPath` is a path inside the library (`/books/42`): it starts with
   one `/` and has no space or backslash. The host adds its public origin.
 - `groupKey`, `alertAction` and `alertKey` follow the message rules.
 
 `raise` answers the host's `notificationId`, or `invalid_params` for an
 undeclared type or a malformed raise, `forbidden` for a patron outside
-the scope, and `rate_limited` past the per-instance raise budget.
+the scope, and `rate_limited` past the per-session raise budget.
 Python authors call `env.NOTIFY.raise_(...)` with snake-case keywords.
 Native guests receive the binding as `Bindings.notify`.
-
-> [!NOTE]
-> The host does not hand out `NOTIFY` yet; it comes with the router.
+The binding is handed to the instance's entrypoint calls (not to
+stream copies). A plugin may raise at most 30 notifications a minute per
+session (one per store account the instance works for).
 
 ### Public addresses (`ingress`)
 
@@ -1764,11 +1797,14 @@ rules, so a library response never carries a connection field.
 ingress, and only in the TypeScript SDK; the Python SDK serves `direct`
 plugins.
 
-> [!NOTE]
-> The host does not start ingress instances yet. Serving `ORIGIN`
-> requests as public `https` traffic, storing the public origin and
-> choosing the active instance come with the daemon side of the ingress
-> work.
+The host runs an `ingress` instance only while it is the library's
+active ingress (`bookclerk ingress activate`), an Owner exists and
+operator auth is on. It calls `start` once the guest is healthy, `health`
+every minute, and `stop` before it retires or replaces the instance.
+Every `ORIGIN` request is the `tunnel` transport: the operator's own
+paths and credentials are refused, and the operator's exposure choice
+decides the rest (see [Public address](../server/ingress.md)). `ORIGIN`
+carries plain HTTP requests, not WebSocket upgrades.
 
 ### Storage entrypoints
 

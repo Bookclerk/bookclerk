@@ -32,6 +32,7 @@ mod documents;
 mod enrollment;
 mod identity;
 mod ingest;
+mod ingress;
 mod instance_config;
 mod instances;
 mod job_routing;
@@ -198,6 +199,11 @@ pub use ingest::{
     ReviewItem, Sha256Hex, UploadManifest, UploadQuota, MAX_BATCH_FILES, MAX_INTAKE_REF_BYTES,
     MAX_REASON_BYTES,
 };
+pub use ingress::{
+    accept_reported_origin, activate_ingress, deactivate_ingress, ingress_settings,
+    load_ingress_settings, record_started, set_ingress_exposure, IngressExposure, IngressSettings,
+    OriginReport, INGRESS_NAMESPACE, INGRESS_SCHEMA_VERSION,
+};
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,
     reconcile_instance_configs_to_schema, replace_instance_config, resolve_instance_bindings,
@@ -215,10 +221,10 @@ pub use instances::{
 };
 pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
-    instance_semaphore, job_permit_holder_prefix, job_plugin_keys, job_semaphores,
-    job_source_plugin_key, node_can_run_job, resolve_job_requirements, JobClaimFilter,
-    JobClaimLimits, JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
-    ROUTED_CLAIM_CANDIDATES,
+    instance_running_on_database_node, instance_semaphore, job_permit_holder_prefix,
+    job_plugin_keys, job_semaphores, job_source_plugin_key, node_can_run_job,
+    resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
+    ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
 pub use keeper::{
     apply_keeper_update, confirmed_keeping_branch, keeping_branch, keeps_for_link, kept_shares,

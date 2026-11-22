@@ -81,10 +81,10 @@ impl DownloadOptions {
     }
 }
 
-/// The title a scan record describes: its flat row and its listing.
+/// The title a scan record describes: its scan fields and its listing.
 ///
 /// The listing is `None` when the record fails listing validation (the
-/// flat row is still stored and its own listing derived from it); see
+/// library then derives the title's listing from its scan fields); see
 /// [`scan_book_to_new`] for when no title is returned at all.
 ///
 /// # Arguments
@@ -102,7 +102,7 @@ pub fn scanned_title(plugin_id: &str, book: abi::ScanBook) -> Option<ScannedTitl
                 plugin = plugin_id,
                 product_id = %book.product_id,
                 error = %err,
-                "scan record is not a valid listing; using its flat row"
+                "scan record is not a valid listing; deriving it from the scan fields"
             );
             None
         }
@@ -116,9 +116,10 @@ pub fn scanned_title(plugin_id: &str, book: abi::ScanBook) -> Option<ScannedTitl
     })
 }
 
-/// Maps a guest scan row onto the flat [`NewBook`] row the library stores
-/// until it keeps works, expressions and editions, forcing `source` to the
-/// plugin id so a guest can never claim another storefront's rows. The
+/// Maps a guest scan row onto the [`NewBook`] fields the library records
+/// for a title (its account, store text and, when the structured listing
+/// is refused, the listing they describe), forcing `source` to the plugin
+/// id so a guest can never claim another storefront's titles. The
 /// owning `plugin_key` is stamped by the [`bookclerk_library::SourceScope`]
 /// on write.
 ///
@@ -135,10 +136,9 @@ pub fn scanned_title(plugin_id: &str, book: abi::ScanBook) -> Option<ScannedTitl
 /// # Returns
 ///
 /// `None` for a record with a blank product id, which would overwrite
-/// another blank row, for a record that leaves a kind unspecified (the
-/// host refuses those), and for an ebook or print edition: the flat table has
-/// no way to keep those out of acquire, so they are not stored until the
-/// library keeps editions.
+/// another blank title, for a record that leaves a kind unspecified (the
+/// host refuses those), and for an ebook or print edition, which the
+/// library does not store yet.
 #[must_use]
 pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook> {
     use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
@@ -171,7 +171,6 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook>
         });
     let marketplace = book.marketplace.unwrap_or_else(|| String::from("us"));
     Some(NewBook {
-        uuid: None,
         plugin_key: String::new(),
         source: plugin_id.to_string(),
         account_id: book.account_id,
@@ -432,5 +431,118 @@ mod tests {
         let fetch = abi::FetchOptions::from(&download);
         let rebuilt = DownloadOptions::from_fetch_options(&fetch);
         assert_eq!(rebuilt.cover_size, "1215");
+    }
+}
+
+/// The stream a store's quality offer names, as the upgrade rule compares
+/// it ([`bookclerk_library::quality::is_upgrade`]).
+///
+/// # Returns
+///
+/// `None` for an answer that is not `found` or names no codec, which the
+/// host treats as "the store did not say".
+#[must_use]
+pub fn offered_stream(
+    answer: &abi::TitleQualityOffer,
+) -> Option<bookclerk_library::quality::StreamQuality> {
+    use bookclerk_tags::{AacProfile, AudioCodec};
+    if !answer.found {
+        return None;
+    }
+    let offer = &answer.offer;
+    let codec = match offer.codec {
+        abi::OfferedCodec::Unknown => return None,
+        abi::OfferedCodec::Aac => AudioCodec::Aac,
+        abi::OfferedCodec::Alac => AudioCodec::Alac,
+        abi::OfferedCodec::Flac => AudioCodec::Flac,
+        abi::OfferedCodec::Mp3 => AudioCodec::Mp3,
+        abi::OfferedCodec::Opus => AudioCodec::Opus,
+        abi::OfferedCodec::Vorbis => AudioCodec::Vorbis,
+        abi::OfferedCodec::Eac3 => AudioCodec::Eac3,
+        abi::OfferedCodec::Ac4 => AudioCodec::Ac4,
+    };
+    let aac_profile = match offer.aac_profile {
+        abi::OfferedAacProfile::Unknown => None,
+        abi::OfferedAacProfile::Lc => Some(AacProfile::Lc),
+        abi::OfferedAacProfile::He => Some(AacProfile::He),
+        abi::OfferedAacProfile::HeV2 => Some(AacProfile::HeV2),
+        abi::OfferedAacProfile::Xhe => Some(AacProfile::Xhe),
+    };
+    Some(bookclerk_library::quality::StreamQuality {
+        codec,
+        aac_profile,
+        bitrate_kbps: offer.bitrate_kbps,
+    })
+}
+
+#[cfg(test)]
+mod offered_stream_tests {
+    use super::*;
+    use bookclerk_tags::{AacProfile, AudioCodec};
+
+    #[test]
+    fn a_found_offer_reads_as_its_stream_and_others_as_unknown() {
+        let answer = abi::TitleQualityOffer {
+            found: true,
+            offer: abi::QualityOffer {
+                codec: abi::OfferedCodec::Aac,
+                aac_profile: abi::OfferedAacProfile::Xhe,
+                bitrate_kbps: Some(137),
+                sample_rate_hz: Some(44_100),
+                channels: Some(2),
+            },
+        };
+        assert_eq!(
+            offered_stream(&answer),
+            Some(bookclerk_library::quality::StreamQuality {
+                codec: AudioCodec::Aac,
+                aac_profile: Some(AacProfile::Xhe),
+                bitrate_kbps: Some(137),
+            })
+        );
+        let unfound = abi::TitleQualityOffer {
+            found: false,
+            ..answer.clone()
+        };
+        assert_eq!(offered_stream(&unfound), None);
+        let mut nameless = answer;
+        nameless.offer.codec = abi::OfferedCodec::Unknown;
+        assert_eq!(offered_stream(&nameless), None);
+        for (codec, want) in [
+            (abi::OfferedCodec::Alac, AudioCodec::Alac),
+            (abi::OfferedCodec::Flac, AudioCodec::Flac),
+            (abi::OfferedCodec::Mp3, AudioCodec::Mp3),
+            (abi::OfferedCodec::Opus, AudioCodec::Opus),
+            (abi::OfferedCodec::Vorbis, AudioCodec::Vorbis),
+            (abi::OfferedCodec::Eac3, AudioCodec::Eac3),
+            (abi::OfferedCodec::Ac4, AudioCodec::Ac4),
+        ] {
+            let answer = abi::TitleQualityOffer {
+                found: true,
+                offer: abi::QualityOffer {
+                    codec,
+                    ..abi::QualityOffer::default()
+                },
+            };
+            assert_eq!(offered_stream(&answer).map(|s| s.codec), Some(want));
+        }
+        for (profile, want) in [
+            (abi::OfferedAacProfile::Lc, AacProfile::Lc),
+            (abi::OfferedAacProfile::He, AacProfile::He),
+            (abi::OfferedAacProfile::HeV2, AacProfile::HeV2),
+        ] {
+            let answer = abi::TitleQualityOffer {
+                found: true,
+                offer: abi::QualityOffer {
+                    codec: abi::OfferedCodec::Aac,
+                    aac_profile: profile,
+                    ..abi::QualityOffer::default()
+                },
+            };
+            assert_eq!(
+                offered_stream(&answer).and_then(|s| s.aac_profile),
+                Some(want)
+            );
+        }
     }
 }

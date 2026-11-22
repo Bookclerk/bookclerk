@@ -147,7 +147,6 @@ async fn hold(store: &LibraryStore, user: i64, account: &str, asin: &str) {
         .unwrap();
     store
         .upsert_book(&NewBook {
-            uuid: None,
             product_id: asin.into(),
             plugin_key: PLUGIN.into(),
             source: "audible".into(),
@@ -687,11 +686,15 @@ async fn a_card_downloads_the_librarys_copy_until_it_is_signed_out() {
         .await
         .unwrap();
     let book = store
-        .get_book("B0RILEY001", "riley-acct")
+        .held_title("B0RILEY001", "riley-acct")
         .await
         .unwrap()
         .unwrap();
-    let owner = store.file_owner_of_book(&book.uuid).await.unwrap().unwrap();
+    let owner = store
+        .file_owner_of_holding(&book.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
     for (key, role) in [
         (KEY, bookclerk_library::FileRole::Audio),
         (COVER, bookclerk_library::FileRole::Cover),

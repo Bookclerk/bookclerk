@@ -8,6 +8,7 @@ pub mod events;
 pub mod export;
 pub mod export_cmd;
 pub mod import_cmd;
+pub mod ingress;
 pub mod integrations;
 pub mod libraries;
 mod libraries_join;

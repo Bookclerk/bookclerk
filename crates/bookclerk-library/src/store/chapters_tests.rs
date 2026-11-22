@@ -46,7 +46,7 @@ async fn edition(store: &LibraryStore, asin: &str) -> String {
     let book = crate::NewBook::minimal(asin, "acct", "us", format!("Title {asin}"));
     let record = store.upsert_book(&book).await.unwrap();
     store
-        .edition_of_book(&record.uuid)
+        .edition_of_holding(&record.holding_id)
         .await
         .unwrap()
         .expect("a held title has an edition")

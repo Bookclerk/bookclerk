@@ -140,6 +140,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.quality_offers]
+crate = "bookclerk-plugin-abi"
+boundary = "One ContentSource.qualityOffers reply: answers no more than the titles sent, each found stream's channels, sample rate, bitrate and AAC profile within bounds, and refreshed credentials"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.metadata_file_record]
 crate = "bookclerk-plugin-abi"
 boundary = "A metadata-file dialect's parse reply: what a sidecar says, its field list, credit roles, text and list caps, dates and chapter order, against the dialect's declared fields"
@@ -158,6 +165,20 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-plugin-abi"
 boundary = "A plugin's NOTIFY.raise: the /notify/raise JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert"
 input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.notify_address_body]
+crate = "bookclerk-plugin-abi"
+boundary = "The address object of a patron's POST /api/me/notifications/destinations body: a flat object of strings with no key written twice"
+input_from = "signed-in patron"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.notify_cursor]
+crate = "bookclerk-library"
+boundary = "The cursor query parameter of the notification delivery log and a patron's inbox: a token the caller sends back"
+input_from = "signed-in patron"
 side = "host"
 artifacts = ["bookclerk"]
 
@@ -403,6 +424,13 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-node-proto"
 boundary = "A library's answer to a copy download, GET /api/copies/v1/{copy_id}/files/{n}: where its head ends, and what the head says of how many bytes a branch or clerk takes and where in the file it writes them"
 input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.tunnel_policy]
+crate = "bookclerk-node-proto"
+boundary = "Paths of requests a relay ingress plugin carries from the public internet on the tunnel transport, which reach the router unless refused as operator-only or outside the exposure the operator chose"
+input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 

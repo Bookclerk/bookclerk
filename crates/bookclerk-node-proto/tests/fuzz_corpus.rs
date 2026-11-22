@@ -1,7 +1,7 @@
 //! Replays the checked-in `node_frame`, `node_account_bundle`,
 //! `clerk_authorization`, `clerk_authorize`, `clerk_token_request`,
 //! `clerk_token_answer`, `clerk_socket_frame`, `copy_range`, `copy_answer`
-//! and `upload_part` fuzz corpora
+//! `upload_part` and `tunnel_policy` fuzz corpora
 //! in PR CI (no libFuzzer required), through the same oracles the targets
 //! use, so an input that once broke a parsing invariant stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
@@ -42,6 +42,10 @@ mod copy_answer_oracle;
 /// The `upload_part` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/upload_part.rs"]
 mod upload_part_oracle;
+
+/// The `tunnel_policy` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/tunnel_policy.rs"]
+mod tunnel_policy_oracle;
 
 /// The `clerk_token_answer` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/clerk_token_answer.rs"]
@@ -337,4 +341,29 @@ fn fuzz_corpus_upload_part_replays() {
     assert!(parts > 0, "no upload_part seed named a part");
     assert!(statuses > 0, "no upload_part seed named a status query");
     assert!(others > 0, "no upload_part seed named a refusal");
+}
+
+#[test]
+fn fuzz_corpus_tunnel_policy_replays() {
+    use tunnel_policy_oracle::Verdict;
+
+    let mut seen = [0usize; 3];
+    for path in corpus_files("tunnel_policy") {
+        let data = std::fs::read(&path).expect("read");
+        let verdict = tunnel_policy_oracle::check(&data);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Seeds say what they are answered with in their name.
+        let named = if name.starts_with("served") {
+            seen[0] += 1;
+            Verdict::Served
+        } else if name.starts_with("operator") {
+            seen[1] += 1;
+            Verdict::OperatorOnly
+        } else {
+            seen[2] += 1;
+            Verdict::NotExposed
+        };
+        assert_eq!(verdict, named, "{name}");
+    }
+    assert!(seen.iter().all(|&count| count > 0), "{seen:?}");
 }

@@ -21,6 +21,7 @@ mod drm;
 mod error;
 mod guest;
 mod options;
+pub mod quality;
 mod retry;
 mod sync;
 mod throttle;
@@ -34,7 +35,7 @@ pub use download::{request_content_license, summarize_license, LicenseSummary};
 pub use error::{AudibleError, Result};
 pub use guest::{
     deregister_device, guest_fetch_title, guest_login_complete, guest_login_start,
-    guest_revoke_account, guest_scan_page, AudibleScanCursor,
+    guest_quality_offers, guest_revoke_account, guest_scan_page, AudibleScanCursor,
 };
 pub use options::{Bitrate, DownloadOptions};
 pub use sync::{collect_account_books, fetch_library_page, LibraryPageRequest, LibraryPageRows};

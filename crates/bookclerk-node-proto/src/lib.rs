@@ -102,6 +102,7 @@ mod requests;
 mod sealed;
 mod shared_branch;
 mod signature;
+mod tunnel;
 mod upload_part;
 mod window;
 
@@ -190,6 +191,10 @@ pub use signature::{
     parse_artifact_authorization, sign_artifact_request, sign_auth, verify_artifact_request,
     verify_auth, ArtifactRequest, AuthContext, AuthError, ARTIFACT_AUTH_SCHEME, ARTIFACT_DOMAIN,
     ARTIFACT_REQUEST_MAX_SKEW_SECS, AUTH_DOMAIN, NONCE_LEN,
+};
+pub use tunnel::{
+    normalize_tunnel_path, tunnel_refusal, TunnelExposure, TunnelRefusal, BRANCH_API_PATHS,
+    LEGACY_CONTROL_PATHS, OPERATOR_ONLY_PATHS,
 };
 pub use upload_part::{
     parse_upload_range, upload_parts, UploadPart, UploadRange, UPLOAD_PART_BYTES,

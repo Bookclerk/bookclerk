@@ -52,7 +52,11 @@ async fn enroll_status(
 #[test]
 fn tls_modes_need_a_ready_gate() {
     use bookclerk_config::NodeApiMode;
-    for mode in [NodeApiMode::Loopback, NodeApiMode::Proxy] {
+    for mode in [
+        NodeApiMode::Loopback,
+        NodeApiMode::Proxy,
+        NodeApiMode::Tunnel,
+    ] {
         assert!(node_api_mounted(mode, None));
         let started = NodeApiGate::fixed(mode, NodeApiStatus::Ready);
         assert!(node_api_mounted(mode, Some(&started)));

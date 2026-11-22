@@ -16,6 +16,7 @@ bytes.workspace = true
 filetime.workspace = true
 fs4.workspace = true
 hex.workspace = true
+same-file.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 bookclerk-config.workspace = true

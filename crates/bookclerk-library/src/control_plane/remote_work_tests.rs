@@ -1187,7 +1187,6 @@ async fn remote_reads_are_scoped_to_the_nodes_own_deployments() {
 /// A store row for `account_id` as a guest's scan would produce it.
 fn scanned(account_id: &str, product_id: &str) -> crate::store::NewBook {
     crate::store::NewBook {
-        uuid: Some("00000000-0000-0000-0000-000000000000".into()),
         product_id: product_id.into(),
         plugin_key: "path:file:///tmp/other#other".into(),
         source: "spoofed".into(),
@@ -1217,9 +1216,9 @@ async fn book_row(
     store: &LibraryStore,
     account_id: &str,
     product_id: &str,
-) -> Option<crate::models::BookRecord> {
+) -> Option<crate::AcquireTitle> {
     store
-        .list_books(Some(account_id))
+        .all_acquire_titles(Some(account_id))
         .await
         .unwrap()
         .into_iter()
@@ -1255,7 +1254,6 @@ async fn a_members_host_writes_scan_rows_only_for_its_own_accounts() {
         .expect("written");
     assert_eq!(row.plugin_key, PLUGIN);
     assert_eq!(row.source, "test", "labelled from the account row");
-    assert_ne!(row.uuid, "00000000-0000-0000-0000-000000000000");
 
     for (rows, reason) in [
         (
@@ -1623,7 +1621,7 @@ fn local(folder: &str) -> Vec<UploadDestination> {
 /// granted for); empty for a uuid with no holding, which no grant accepts.
 async fn holding_of(store: &LibraryStore, book_uuid: &str) -> String {
     store
-        .title_holding_of_book(book_uuid)
+        .acquire_title_of_holding(book_uuid)
         .await
         .unwrap()
         .map(|title| title.holding_id)
@@ -1686,12 +1684,11 @@ async fn the_closing_upload_waits_for_every_title() {
         .store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             ..scanned("riley-acct", "t2")
         })
         .await
         .unwrap()
-        .uuid;
+        .holding_id;
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
     upload_title(&w.store, &job_id, fence, &first, &files).await;
     let early = closing_upload(&w.store, &job_id, fence).await;
@@ -1959,7 +1956,6 @@ async fn riley_title(store: &LibraryStore) -> (String, Vec<bookclerk_node_proto:
     let book = store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             ..scanned("riley-acct", "t1")
         })
         .await
@@ -1974,7 +1970,7 @@ async fn riley_title(store: &LibraryStore) -> (String, Vec<bookclerk_node_proto:
         content_type: Some("audio/mp4".into()),
         probe: None,
     }];
-    (book.uuid, files)
+    (book.holding_id, files)
 }
 
 /// The probe a branch states for an uploaded audio file reaches its file
@@ -2093,9 +2089,13 @@ async fn a_refused_commit_records_no_download_and_its_retry_records_one() {
             let book_uuid = book_uuid.clone();
             async move {
                 assert_eq!(ledger_len(&store, "riley-acct").await, 0, "{why}");
-                let book = store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+                let book = store
+                    .acquire_title_of_holding(&book_uuid)
+                    .await
+                    .unwrap()
+                    .unwrap();
                 assert_ne!(
-                    book.acquire_status,
+                    book.status,
                     crate::models::AcquireStatus::Acquired,
                     "{why}: nothing of the failed commit landed"
                 );
@@ -2175,14 +2175,13 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         .store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             ..scanned("sam-acct", "s1")
         })
         .await
         .unwrap();
     let destinations = local("Author/Title");
     let sams = UploadGrantRequest {
-        holding_id: &holding_of(&w.store, &sam_book.uuid).await,
+        holding_id: &holding_of(&w.store, &sam_book.holding_id).await,
         primary_key: "Author/Title/Title.m4b",
         pdf_key: None,
         files: &files,
@@ -2332,8 +2331,13 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         1,
         "a repeated commit records nothing more"
     );
-    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
-    assert_eq!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    let book = w
+        .store
+        .acquire_title_of_holding(&book_uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(book.status, crate::models::AcquireStatus::Acquired);
     assert_eq!(book.storage_key.as_deref(), Some("Author/Title/Title.m4b"));
     assert_eq!(
         w.store.get_job(&job_id).await.unwrap().unwrap().state,
@@ -2426,8 +2430,13 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
             .unwrap(),
         UploadCommit::Lost
     );
-    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
-    assert_ne!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    let book = w
+        .store
+        .acquire_title_of_holding(&book_uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(book.status, crate::models::AcquireStatus::Acquired);
     assert_ne!(
         w.store.get_job(&job_id).await.unwrap().unwrap().state,
         crate::models::JobState::Succeeded
@@ -2484,7 +2493,12 @@ async fn an_upload_records_its_pdf_on_the_edition() {
             job_completed: false
         }
     );
-    let edition = w.store.edition_of_book(&book_uuid).await.unwrap().unwrap();
+    let edition = w
+        .store
+        .edition_of_holding(&book_uuid)
+        .await
+        .unwrap()
+        .unwrap();
     let state = w
         .store
         .edition_acquisition(&edition)
@@ -2514,25 +2528,27 @@ async fn an_upload_keeps_the_edition_with_the_title_that_acquired_it() {
         .store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             ..scanned("sam-acct", "t1")
         })
         .await
         .unwrap();
     let edition = w
         .store
-        .edition_of_book(&book_uuid)
+        .edition_of_holding(&book_uuid)
         .await
         .unwrap()
         .expect("the title has an edition");
     assert_eq!(
-        w.store.edition_of_book(&sam_book.uuid).await.unwrap(),
+        w.store
+            .edition_of_holding(&sam_book.holding_id)
+            .await
+            .unwrap(),
         Some(edition.clone()),
         "one product on two accounts is one edition"
     );
     w.store
         .set_acquire_status(
-            &sam_book.uuid,
+            &sam_book.holding_id,
             "sam-acct",
             crate::models::AcquireStatus::Acquired,
             Some("Sam/Title/Title.m4b"),
@@ -2542,8 +2558,13 @@ async fn an_upload_keeps_the_edition_with_the_title_that_acquired_it() {
         .unwrap();
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
     upload_title(&w.store, &job_id, fence, &book_uuid, &files).await;
-    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
-    assert_eq!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    let book = w
+        .store
+        .acquire_title_of_holding(&book_uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(book.status, crate::models::AcquireStatus::Acquired);
     let kept = w
         .store
         .edition_acquisition(&edition)
@@ -2553,7 +2574,7 @@ async fn an_upload_keeps_the_edition_with_the_title_that_acquired_it() {
     assert_eq!(kept.status, crate::models::AcquireStatus::Acquired);
     let sam_holding = w
         .store
-        .title_holding_of_book(&sam_book.uuid)
+        .acquire_title_of_holding(&sam_book.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -2790,23 +2811,11 @@ async fn a_repeated_completing_commit_gives_back_left_permits() {
     );
 }
 
-/// Sets the recorded audio and PDF keys of the title `uuid`.
+/// Sets the recorded audio and PDF keys of the edition the title (holding)
+/// `uuid` holds.
 async fn set_book_keys(store: &LibraryStore, uuid: &str, audio: &str, pdf: Option<&str>) {
-    crate::entities::books::Entity::update_many()
-        .col_expr(
-            crate::entities::books::Column::StorageKey,
-            Expr::value(Some(audio.to_string())),
-        )
-        .col_expr(
-            crate::entities::books::Column::PdfStorageKey,
-            Expr::value(pdf.map(str::to_string)),
-        )
-        .filter(crate::entities::books::Column::Uuid.eq(uuid))
-        .exec(store.db())
-        .await
-        .unwrap();
     // The edition's acquire state, which the upload checks read.
-    let title = store.title_holding_of_book(uuid).await.unwrap().unwrap();
+    let title = store.acquire_title_of_holding(uuid).await.unwrap().unwrap();
     crate::store::event_outbox::update_edition_acquisition_on(
         store.db(),
         &title.edition_id,
@@ -2848,14 +2857,13 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
         .store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             ..scanned("riley-acct", "t9")
         })
         .await
         .unwrap();
     set_book_keys(
         &w.store,
-        &elsewhere.uuid,
+        &elsewhere.holding_id,
         "Author/Other/Other.m4b",
         Some("Author/Other/Other.pdf"),
     )
@@ -2864,14 +2872,13 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
         .store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             ..scanned("riley-acct", "t8")
         })
         .await
         .unwrap();
     set_book_keys(
         &w.store,
-        &neighbour.uuid,
+        &neighbour.holding_id,
         "Author/Title/Neighbour.m4b",
         Some("Author/Title/Neighbour booklet.pdf"),
     )
@@ -3863,7 +3870,6 @@ async fn a_shared_folder_never_grants_another_titles_recorded_file() {
         .store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             ..scanned("riley-acct", "t8")
         })
         .await
@@ -3874,13 +3880,18 @@ async fn a_shared_folder_never_grants_another_titles_recorded_file() {
         &w.store,
         "local",
         "Author/Title/Neighbour - 01.mp3",
-        &neighbour.uuid,
+        &neighbour.holding_id,
     )
     .await
     .unwrap();
-    record_for_book(&w.store, "s3", "Author/Title/cover.jpg", &neighbour.uuid)
-        .await
-        .unwrap();
+    record_for_book(
+        &w.store,
+        "s3",
+        "Author/Title/cover.jpg",
+        &neighbour.holding_id,
+    )
+    .await
+    .unwrap();
     record_for_book(&w.store, "local", "Author/Title/Gone.jpg", "no-such-title")
         .await
         .unwrap();
@@ -3952,7 +3963,7 @@ async fn a_shared_folder_never_grants_another_titles_recorded_file() {
     // Another title of the job asking for a key that open upload claimed
     // is refused, though nothing is acquired yet.
     assert!(matches!(
-        grant(neighbour.uuid.clone(), files.clone()).await,
+        grant(neighbour.holding_id.clone(), files.clone()).await,
         UploadGrant::Refused("key_of_another_title")
     ));
     // An acquire on the owner that writes the key afterwards takes it
@@ -3976,28 +3987,19 @@ async fn the_commit_gate_carries_the_nodes_trust() {
     let _guard = master_key_test_lock_async().await;
     let w = world().await;
     let (book_uuid, _) = riley_title(&w.store).await;
-    let book = crate::entities::books::Entity::find()
-        .filter(crate::entities::books::Column::Uuid.eq(&book_uuid))
-        .one(w.store.db())
+    let book = w
+        .store
+        .acquire_title_of_holding(&book_uuid)
         .await
         .unwrap()
         .unwrap();
     let sam_book = w
         .store
         .scope(PLUGIN, "test")
-        .upsert_book(&crate::store::NewBook {
-            uuid: None,
-            ..scanned("sam-acct", "s1")
-        })
+        .upsert_book(&scanned("sam-acct", "s1"))
         .await
         .unwrap();
-    let sam_book = crate::entities::books::Entity::find()
-        .filter(crate::entities::books::Column::Uuid.eq(&sam_book.uuid))
-        .one(w.store.db())
-        .await
-        .unwrap()
-        .unwrap();
-    let passes = |book: Option<crate::entities::books::Model>| {
+    let passes = |book: Option<crate::AcquireTitle>| {
         let store = w.store.clone();
         async move {
             let (sql, binds) = uploads::commit_trust_gate(
@@ -4081,7 +4083,6 @@ async fn a_title_acquire_is_handed_its_named_accounts_secrets() {
     ] {
         scope
             .upsert_book(&crate::store::NewBook {
-                uuid: None,
                 asin: Some(asin.into()),
                 ..scanned(account, product)
             })
@@ -4168,16 +4169,20 @@ async fn an_upload_never_replaces_its_editions_file_another_account_wrote() {
         .store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             ..scanned("sam-acct", "t1")
         })
         .await
         .unwrap();
     let owner = owner_of(&w.store, &book_uuid).await;
-    assert_eq!(owner_of(&w.store, &sibling.uuid).await, owner);
-    record_for_book(&w.store, "local", "Author/Title/cover.jpg", &sibling.uuid)
-        .await
-        .unwrap();
+    assert_eq!(owner_of(&w.store, &sibling.holding_id).await, owner);
+    record_for_book(
+        &w.store,
+        "local",
+        "Author/Title/cover.jpg",
+        &sibling.holding_id,
+    )
+    .await
+    .unwrap();
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
     assert!(matches!(
         grant_title(
@@ -4228,7 +4233,12 @@ async fn an_upload_of_a_removed_holding_is_refused() {
         .exec(w.store.db())
         .await
         .unwrap();
-    assert!(w.store.edition_of_book(&book_uuid).await.unwrap().is_none());
+    assert!(w
+        .store
+        .edition_of_holding(&book_uuid)
+        .await
+        .unwrap()
+        .is_none());
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
     let granted = grant_upload(
         &w.store,
@@ -4272,7 +4282,6 @@ async fn a_refused_upload_grant_gives_back_the_keys_it_claimed() {
         .store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             ..scanned("riley-acct", "t8")
         })
         .await
@@ -4281,7 +4290,7 @@ async fn a_refused_upload_grant_gives_back_the_keys_it_claimed() {
         &w.store,
         "local",
         "Author/Title/Neighbour - 01.mp3",
-        &neighbour.uuid,
+        &neighbour.holding_id,
     )
     .await
     .unwrap();
@@ -4325,7 +4334,7 @@ async fn a_refused_upload_grant_gives_back_the_keys_it_claimed() {
             .unwrap()
             .unwrap()
             .owner,
-        owner_of(&w.store, &neighbour.uuid).await
+        owner_of(&w.store, &neighbour.holding_id).await
     );
     let open: Vec<String> = node_upload_sessions::Entity::find()
         .filter(node_upload_sessions::Column::JobId.eq(&job_id))
@@ -4370,8 +4379,13 @@ async fn an_upload_commit_is_refused_once_a_key_was_taken() {
             .unwrap(),
         UploadCommit::Refused("key_taken")
     );
-    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
-    assert_ne!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    let book = w
+        .store
+        .acquire_title_of_holding(&book_uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(book.status, crate::models::AcquireStatus::Acquired);
     assert_eq!(
         load_upload(&w.store, &upload_id)
             .await
@@ -4399,7 +4413,7 @@ async fn an_upload_job_naming_its_account_by_label_covers_its_titles() {
         assert_eq!(
             titles
                 .iter()
-                .filter_map(|t| t.book_uuid.as_deref())
+                .map(|t| t.holding_id.as_str())
                 .collect::<Vec<_>>(),
             vec![book_uuid.as_str()],
             "{selector}"
@@ -4455,8 +4469,13 @@ async fn an_expired_lease_neither_grants_nor_commits_an_upload() {
             .unwrap(),
         UploadCommit::Lost
     );
-    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
-    assert_ne!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    let book = w
+        .store
+        .acquire_title_of_holding(&book_uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(book.status, crate::models::AcquireStatus::Acquired);
 }
 
 /// A scan job naming its account by label, or by its id in another case,
@@ -4690,7 +4709,7 @@ async fn a_job_upload_takes_over_a_branch_delivered_copy_of_its_edition() {
 /// its record is a stale owner's.
 async fn owner_of(store: &LibraryStore, book_uuid: &str) -> FileOwner {
     store
-        .file_owner_of_book(book_uuid)
+        .file_owner_of_holding(book_uuid)
         .await
         .unwrap()
         .unwrap_or_else(|| FileOwner::Edition(book_uuid.to_owned()))

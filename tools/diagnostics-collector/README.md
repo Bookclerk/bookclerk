@@ -29,7 +29,10 @@ fallback).
 The member dashboard is on only when the automation App's secrets are set;
 see [Member dashboard](../../docs/server/diagnostics.md#member-dashboard). Its code
 is under `dashboard/`, its D1 schema under `migrations/`, and its styles,
-script and fonts under `public/static/`.
+script and fonts under `public/static/`. `visual/serve.ts` renders every page
+template from fixed sample data for the web UI's visual and accessibility
+checks (`docs/contributing/ui/visual-testing.md`); a new page template gets a
+sample there and an entry in `visual/pages.ts`.
 
 Each `/submit` is assigned a **`report_id` UUID**; the B2 object is
 `diagnostics/<version>/<report_id>.json`. Triage issues list these IDs

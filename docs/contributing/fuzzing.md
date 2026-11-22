@@ -46,10 +46,13 @@ boundary extends it.
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
+| `quality_offers` | A storefront's `qualityOffers` reply: how many titles it answers, the stream bounds of each offer and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_quality_offers` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
 | `notify_raise` | A plugin's `NOTIFY.raise`: the `/notify/raise` JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert | `bookclerk-plugin-abi::notifications::check_raise_params` |
+| `notify_address_body` | The `address` object of a patron's `POST /api/me/notifications/destinations` body: a flat object of strings with no key written twice | `bookclerk-plugin-abi::notifications::AddressFields` |
+| `notify_cursor` | The `cursor` query parameter of the notification delivery log and a patron's inbox: a token the caller sends back | `bookclerk-library::NotifyCursor::decode` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
@@ -82,6 +85,7 @@ boundary extends it.
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
 | `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
 | `upload_part` | The `Content-Range` header of an upload `PUT`, `/api/node/v1/uploads/{upload_id}/files/{n}`, which decides which bytes of a declared file the body is, or that it only asks where the owner is | `bookclerk-node-proto::parse_upload_range` |
+| `tunnel_policy` | Paths of requests a relay ingress plugin carries from the public internet on the `tunnel` transport, which reach the router unless refused as operator-only or outside the exposure the operator chose | `bookclerk-node-proto::normalize_tunnel_path`, `tunnel_refusal` |
 | `copy_answer` | A library's answer to a copy download, read on the branch or clerk that took the copy: where its head ends, how many bytes follow and where in the file they are written | `bookclerk-node-proto::copy_answer_head_end`, `parse_copy_answer` |
 | `clerk_socket_frame` | The clerk socket's frames, `GET /api/clerk/v1/connect`: what a library reads from a clerk, and what a clerk reads back (changed topics, pages of the library's books with the person's marked, and the grant of a copy with its download token) | `bookclerk-node-proto::parse_clerk_frame`, `parse_library_frame` |
 | `instance_config` | A plugin instance's settings, table rows included: the `settings` object of `PUT /api/config/plugin-instances/{id}/config` and the row text of `bookclerk plugins config set` | `bookclerk-library::control_plane::PluginInstanceConfigV1::validate`, `parse_setting_text` |
@@ -383,6 +387,16 @@ only that. The others check:
   page round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/scan_page.rs`, replayed from
   `bookclerk-plugin-abi`.
+- **`quality_offers`**: byte 0 is how many title ids the host sent and the
+  rest is a `QualityOffersResult` message. The host accepts the reply
+  exactly when an independent check agrees: no more answers than titles
+  sent, every found offer within `MAX_OFFER_CHANNELS`,
+  `MAX_OFFER_SAMPLE_RATE_HZ` and `MAX_OFFER_BITRATE_KBPS` with an AAC
+  profile only on AAC, and refreshed credentials that are absent, empty,
+  or one JSON object within `MAX_REFRESHED_CREDENTIAL_BYTES`. An accepted
+  reply round-trips through the codec and is accepted again. The shared
+  oracle is `fuzz/oracles/quality_offers.rs`, replayed from
+  `bookclerk-plugin-abi`.
 - **`plain_fetch`**: the input is a `PlainFetch` message. The host accepts
   it exactly when an independent check agrees, against a fixed declaration
   that fetches audio: the carrier is audio, every file has a role and a
@@ -425,6 +439,21 @@ only that. The others check:
   action is not `none`. An accepted raise round-trips through the codec and
   is accepted again. The shared oracle is `fuzz/oracles/notify_raise.rs`,
   replayed from `bookclerk-plugin-abi`.
+- **`notify_address_body`**: the input is the `address` object. It is
+  accepted exactly when an independent reading that keeps every entry,
+  repeats included, finds one JSON object whose values are all strings and
+  whose keys are all different, and the accepted fields are the same as
+  that reading's. An accepted address written out again reads back the
+  same. The shared oracle is `fuzz/oracles/notify_address_body.rs`,
+  replayed from `bookclerk-plugin-abi`.
+- **`notify_cursor`**: the input is the token. It is accepted exactly
+  when it is at most 512 bytes of unpadded base64url whose bytes are one
+  JSON object with exactly the keys `created_at` and `id`, each written
+  once, each a string of at most 128 bytes with no U+0000, as the
+  oracle's own base64url
+  decoder and an untyped reading of the JSON agree. An accepted token
+  re-encodes to one that decodes to the same cursor. The shared oracle is
+  `fuzz/oracles/notify_cursor.rs`, replayed from `bookclerk-library`.
 - **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
   a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
   `EventReadPage` (3). The body parser accepts exactly the JSON objects whose
@@ -671,6 +700,16 @@ only that. The others check:
   part, `status-*` as a status query, and the others must be refused.
   The shared oracle is `fuzz/oracles/upload_part.rs`, replayed from
   `bookclerk-node-proto`.
+- **`tunnel_policy`**: the input is one byte choosing the exposure (even:
+  branches, odd: the whole library) and then the path as sent. The
+  normalized path is what the router matches (one leading slash, no
+  trailing slash) and normalizing it again changes nothing; the
+  operator-only paths are refused under both exposures; the whole-library
+  exposure refuses nothing else; and the answer equals the one the oracle
+  works out by comparing path segments rather than string prefixes. Seeds
+  named `served-*` must be served, `operator-*` refused as operator-only,
+  and `refused-*` refused as not exposed. The shared oracle is
+  `fuzz/oracles/tunnel_policy.rs`, replayed from `bookclerk-node-proto`.
 - **`copy_answer`**: the input is the byte the reader asked to resume
   from and the file's size (eight bytes each, big endian) and then the
   answer as received: the head, the blank line that ends it (CRLF CRLF)

@@ -14,9 +14,10 @@ use crate::generated::{
     MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
     NotifyRaiseParams, NotifyRaised, NotifySendParams, NotifySent, NotifyValidateParams,
     NotifyValidated, OriginHeader, PlainFetch, PluginEvent, PublishOk, PurchaseHint,
-    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, RevokeAccountParams,
-    ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams, SocketClosed,
-    SocketConnectRequest, SocketFrame, SocketInfo, SocketMessage, SocketMessageOk, SourceAccount,
+    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, QualityOffersParams,
+    QualityOffersResult, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams,
+    SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
+    SocketMessage, SocketMessageOk, SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -685,6 +686,19 @@ pub trait ContentSource {
     /// Full catalog record for one product; `Ok(None)` when unknown.
     async fn catalog_detail(&self, _params: CatalogDetailParams) -> Result<Option<CatalogHit>> {
         Err(PluginError::unsupported("catalogDetail"))
+    }
+
+    /// The audio quality `params.account_id` would download for each title
+    /// today, one answer per title id in order. It must not license or
+    /// download anything; the host asks only when the guest declares
+    /// `CatalogCapabilities.quality_offers`.
+    ///
+    /// # Errors
+    ///
+    /// The default answers `unsupported`; a store's own error fails the
+    /// whole batch.
+    async fn quality_offers(&self, _params: QualityOffersParams) -> Result<QualityOffersResult> {
+        Err(PluginError::unsupported("qualityOffers"))
     }
 
     /// Undo store-side state for one account before the host deletes its

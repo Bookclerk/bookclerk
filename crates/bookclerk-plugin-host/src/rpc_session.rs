@@ -37,6 +37,7 @@ use crate::event_publisher::{
     granted_event_subscriptions, manifest_event_subscriptions, EventOutbox, EventReaders,
 };
 use crate::kv_binding::KvNamespaces;
+use crate::notify_raiser::NotifyOutbox;
 use crate::queue_producer::QueueOutbox;
 use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan, SpawnTransport};
 use crate::storage_intent::{StorageOp, StorageOpReply};
@@ -88,6 +89,9 @@ type MetadataFilesCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataFiles>
 
 /// Typed call against the opened `notifier` entrypoint.
 type NotifierCall = EntrypointCall<dyn bookclerk_plugin_sdk::Notifier>;
+
+/// Typed call against the opened `ingress` entrypoint.
+type IngressCall = EntrypointCall<dyn bookclerk_plugin_abi::Ingress>;
 
 /// Typed call against the opened `socketHandler` entrypoint.
 type SocketHandlerCall = EntrypointCall<dyn bookclerk_plugin_abi::SocketHandler>;
@@ -206,6 +210,11 @@ enum Work {
     Notifier {
         /// Typed call; replies through the sender it captured.
         call: NotifierCall,
+    },
+    /// One typed `ingress` method on the opened primary entrypoints.
+    Ingress {
+        /// Typed call; replies through the sender it captured.
+        call: IngressCall,
     },
     /// One socket event for the opened `socketHandler` entrypoint.
     SocketHandler {
@@ -605,6 +614,14 @@ pub struct SessionServices {
     /// the covering grant has the `sockets` token; `None` never exposes
     /// `SOCKETS`.
     pub sockets: Option<crate::SocketBroker>,
+    /// The library as a relay ingress plugin reaches it, behind the `ORIGIN`
+    /// binding.
+    ///
+    /// The deployment sets it only for the library's active ingress
+    /// instance. The session hands it out only when the manifest also
+    /// exports `ingress` with `[ingress] kind = "relay"`; `None` never
+    /// exposes `ORIGIN`.
+    pub origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
 }
 
 impl SessionServices {
@@ -618,6 +635,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            origin: None,
         }
     }
 
@@ -631,6 +649,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            origin: None,
         }
     }
 
@@ -647,6 +666,7 @@ impl SessionServices {
             local_output_root: None,
             deployed_endpoint: None,
             sockets: None,
+            origin: None,
         }
     }
 }
@@ -848,6 +868,20 @@ impl PluginSession {
             .event_outbox
             .clone()
             .and_then(|store| QueueOutbox::new(store, &id, &manifest, &grant));
+        // `NOTIFY` needs the library and a declared `[[notifications.types]]`
+        // row; the types themselves are the consent (the host decides who
+        // receives them).
+        let notify = services.event_outbox.clone().and_then(|store| {
+            NotifyOutbox::new(
+                store,
+                &id,
+                &manifest,
+                bookclerk_library::NotifyQueueLimits {
+                    max_pending: i64::from(config.jobs.max_pending),
+                    max_attempts: i64::from(config.jobs.max_attempts),
+                },
+            )
+        });
         // `[[kv_namespaces]]` rows live on the same library; the `plugin_kv`
         // grant token covers every row.
         let kv = services
@@ -856,6 +890,9 @@ impl PluginSession {
         // `SOCKETS` needs the deployment's broker, a `[sockets]` declaration
         // and the `sockets` grant token.
         let sockets = crate::socket_broker::granted(services.sockets, &manifest, &grant);
+        // `ORIGIN` needs the deployment's origin (the active ingress only)
+        // and a manifest exporting a relay `ingress`.
+        let origin = granted_origin(services.origin, &manifest);
         let network = spawned.network.clone();
         let spawn_config = spawned.spawn_config.clone();
         #[cfg(windows)]
@@ -953,6 +990,8 @@ impl PluginSession {
                         queues,
                         kv,
                         sockets,
+                        notify,
+                        origin,
                         network,
                     },
                     rx,
@@ -1433,6 +1472,27 @@ impl PluginSession {
             + 'static,
     {
         self.entrypoint_call(call, |call| Work::Notifier { call })
+            .await
+    }
+
+    /// One typed `ingress` method (`start`, `health` or `stop`) on the
+    /// opened primary entrypoints.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `ingress` or the
+    /// method fails.
+    pub async fn ingress<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_abi::Ingress>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.entrypoint_call(call, |call| Work::Ingress { call })
             .await
     }
 
@@ -2427,6 +2487,10 @@ struct PrimaryState {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker; `None` unless `[sockets]` is declared and granted.
     sockets: Option<crate::SocketBroker>,
+    /// `NOTIFY` hook; `None` when no type is declared.
+    notify: Option<NotifyOutbox>,
+    /// `ORIGIN`; `None` unless this is the active relay ingress.
+    origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
     /// `NETWORK`: the grant in effect, carried by every `open`.
     network: bookclerk_plugin_abi::NetworkGrant,
 }
@@ -2442,6 +2506,10 @@ struct BindingHooks {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker.
     sockets: Option<crate::SocketBroker>,
+    /// `NOTIFY` hook; `None` when no type is declared.
+    notify: Option<NotifyOutbox>,
+    /// `ORIGIN`, already filtered by [`granted_origin`].
+    origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
     /// `NETWORK` grant computed at spawn.
     network: bookclerk_plugin_abi::NetworkGrant,
 }
@@ -2455,6 +2523,8 @@ impl PrimaryState {
             queues: hooks.queues,
             kv: hooks.kv,
             sockets: hooks.sockets,
+            notify: hooks.notify,
+            origin: hooks.origin,
             network: hooks.network,
         }
     }
@@ -2496,12 +2566,42 @@ impl PrimaryState {
         values
     }
 
+    /// `NOTIFY` raiser for `invocation`, when the manifest declares types.
+    fn notify_for(
+        &self,
+        invocation: &Invocation,
+    ) -> Option<Arc<dyn bookclerk_plugin_abi::NotificationRaiser>> {
+        self.notify.as_ref().map(|outbox| {
+            Arc::new(outbox.raiser(invocation)) as Arc<dyn bookclerk_plugin_abi::NotificationRaiser>
+        })
+    }
+
     /// `EVENTS` publisher for `invocation`, when the outbox is granted.
     fn events_for(&self, invocation: &Invocation) -> Option<Arc<dyn EventPublisher>> {
         self.events
             .as_ref()
             .map(|outbox| Arc::new(outbox.publisher(invocation)) as Arc<dyn EventPublisher>)
     }
+}
+
+/// The `ORIGIN` binding a session may hand out.
+///
+/// # Returns
+///
+/// `origin` when the manifest exports `ingress` and declares
+/// `[ingress] kind = "relay"`; `None` otherwise, so a direct ingress plugin
+/// or any other plugin never reaches the library this way, whatever the
+/// caller passed.
+fn granted_origin(
+    origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
+    manifest: &crate::PluginManifest,
+) -> Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>> {
+    let relay = manifest.has_entrypoint(bookclerk_plugin_manifest::Entrypoint::Ingress)
+        && manifest
+            .ingress
+            .as_ref()
+            .is_some_and(|ingress| ingress.kind == bookclerk_plugin_manifest::IngressKind::Relay);
+    origin.filter(|_| relay)
 }
 
 /// Host-issued invocation identity for one `PluginWorker.open`.
@@ -2546,6 +2646,11 @@ async fn primary_entrypoints<'a>(
                     queues: primary.queues_for(&invocation),
                     kv: primary.kv_bindings(),
                     sockets: primary.sockets_binding(),
+                    notify: primary.notify_for(&invocation),
+                    origin: primary
+                        .origin
+                        .clone()
+                        .map(|origin| origin as Arc<dyn bookclerk_plugin_abi::Origin>),
                     ..HostBindings::from_values(want.clone())
                 },
             )
@@ -3499,6 +3604,22 @@ fn vat_thread(
                                 |eps| {
                                     eps.notifier.clone().map(|stub| {
                                         Box::new(stub) as Box<dyn bookclerk_plugin_sdk::Notifier>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
+                        Work::Ingress { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "ingress",
+                                |eps| {
+                                    eps.ingress.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_abi::Ingress>
                                     })
                                 },
                                 call,
@@ -5146,6 +5267,50 @@ mode = "deny"
             media = media_line(entrypoint)
         ))
         .expect("manifest")
+    }
+
+    /// An ingress manifest of `kind`.
+    fn ingress_manifest(kind: &str) -> PluginManifest {
+        PluginManifest::parse(&format!(
+            r#"
+api_version = 3
+id = "relay"
+runtime = "native"
+command = "./guest"
+entrypoints = ["ingress"]
+
+[ingress]
+kind = "{kind}"
+
+[capabilities.network]
+mode = "deny"
+"#
+        ))
+        .expect("manifest")
+    }
+
+    /// An `ORIGIN` that refuses everything; only its presence matters here.
+    struct Refusing;
+
+    #[async_trait::async_trait(?Send)]
+    impl bookclerk_plugin_abi::Origin for Refusing {
+        async fn fetch(
+            &self,
+            _request: bookclerk_plugin_abi::origin::CheckedOriginRequest,
+            _body: Option<std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>>,
+        ) -> bookclerk_plugin_abi::Result<bookclerk_plugin_abi::OriginReply> {
+            Err(bookclerk_plugin_abi::PluginError::unavailable("test"))
+        }
+    }
+
+    #[test]
+    fn only_a_relay_ingress_gets_origin() {
+        let origin =
+            || Some(Arc::new(Refusing) as Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>);
+        assert!(granted_origin(origin(), &ingress_manifest("relay")).is_some());
+        assert!(granted_origin(None, &ingress_manifest("relay")).is_none());
+        assert!(granted_origin(origin(), &ingress_manifest("direct")).is_none());
+        assert!(granted_origin(origin(), &manifest_with("cli")).is_none());
     }
 
     fn output_describe() -> PluginDescribe {

@@ -143,6 +143,8 @@ export const NAV: NavSpec[] = [
       "server/integrations",
       "server/plugins",
       "server/branches",
+      "server/notifications",
+      "server/ingress",
       "server/media",
       "server/uploads",
       "server/playback",

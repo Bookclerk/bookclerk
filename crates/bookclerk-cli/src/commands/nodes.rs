@@ -183,16 +183,25 @@ fn invite_spki_pin(config: &Config) -> anyhow::Result<Option<String>> {
         })
 }
 
-/// Origin that enrollment links point at: `integrations.public_origin`, or
-/// this node's loopback listener when none is set.
-fn invite_origin(config: &Config) -> (String, bool) {
-    match config
+/// Origin that enrollment links point at: `integrations.public_origin`,
+/// else the origin the library's active ingress serves under, else this
+/// node's loopback listener.
+async fn invite_origin(config: &Config, store: &bookclerk_library::LibraryStore) -> (String, bool) {
+    let configured = config
         .integrations
         .public_origin
         .as_deref()
         .map(str::trim)
         .filter(|origin| !origin.is_empty())
-    {
+        .map(str::to_owned);
+    let ingress = match configured {
+        Some(_) => None,
+        None => bookclerk_library::control_plane::ingress_settings(store)
+            .await
+            .ok()
+            .and_then(|settings| settings.serving_origin().map(str::to_owned)),
+    };
+    match configured.or(ingress) {
         Some(origin) => (origin.trim_end_matches('/').to_string(), true),
         None => (
             format!("http://localhost:{}", config.daemon.listen.ui_port()),
@@ -452,7 +461,7 @@ pub async fn run(
             let minted =
                 mint_enrollment_link(store, &cli_enrollment_actor(), owner.id, &label, Some(ttl))
                     .await?;
-            let (origin, configured) = invite_origin(config);
+            let (origin, configured) = invite_origin(config, store).await;
             let url = minted.url(&origin, spki_pin.as_deref());
             let payload = json!({
                 "link": link_json(&minted.link, chrono::Utc::now()),
@@ -460,8 +469,8 @@ pub async fn run(
             });
             if !configured {
                 eprintln!(
-                    "note: integrations.public_origin is not set; this link points at {origin}, \
-                     which only a host on this machine can reach"
+                    "note: integrations.public_origin is not set and no ingress is on; this link \
+                     points at {origin}, which only a host on this machine can reach"
                 );
             }
             emit(format, &payload, || {

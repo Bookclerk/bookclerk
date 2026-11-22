@@ -225,7 +225,13 @@ fn refusal(status: StatusCode, error: &str) -> Response {
 )]
 pub async fn get_live(State(state): State<Arc<AppState>>, request: Request) -> Response {
     let (mut parts, _body) = request.into_parts();
-    let public_origin = state.config.read().await.integrations.public_origin.clone();
+    let public_origin = state
+        .config
+        .read()
+        .await
+        .integrations
+        .effective_public_origin()
+        .map(str::to_owned);
     if !origin_allowed(&parts.headers, public_origin.as_deref()) {
         tracing::warn!("refused a live socket from another origin");
         return refusal(StatusCode::FORBIDDEN, "origin_mismatch");

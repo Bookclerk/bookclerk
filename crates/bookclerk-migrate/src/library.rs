@@ -206,9 +206,8 @@ pub async fn import_library_db(
             row.series_order.filter(|s| !s.is_empty())
         };
 
-        store
+        let record = store
             .upsert_book(&NewBook {
-                uuid: None,
                 product_id: row.asin.clone(),
                 plugin_key: plugin_key.to_string(),
                 asin: Some(row.asin.clone()),
@@ -252,7 +251,7 @@ pub async fn import_library_db(
         }
 
         store
-            .set_acquire_status(&row.asin, &account_id, status, storage_key.as_deref(), None)
+            .set_holding_acquire_status(&record.holding_id, status, storage_key.as_deref(), None)
             .await?;
 
         let has_user_fields = row.tags.as_ref().is_some_and(|s| !s.is_empty())
@@ -263,7 +262,7 @@ pub async fn import_library_db(
         if has_user_fields {
             store
                 .update_user_fields(
-                    &row.asin,
+                    &record.holding_id,
                     &account_id,
                     &UserBookFields {
                         tags: row.tags.clone(),
@@ -447,10 +446,14 @@ mod tests {
         assert_eq!(summary.books, 1);
         assert_eq!(summary.acquired, 1);
         assert_eq!(summary.storage_keys, 1);
-        let book = store.get_book("B00TEST", "cust-1").await.unwrap().unwrap();
+        let book = store
+            .held_title("B00TEST", "cust-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(book.title, "Hello: World");
         assert_eq!(book.authors.as_deref(), Some("Ann Author"));
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(book.status, AcquireStatus::Acquired);
         assert_eq!(
             book.storage_key.as_deref(),
             Some("Ann Author/Hello/B00TEST.m4b")

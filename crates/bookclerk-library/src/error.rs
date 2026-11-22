@@ -10,7 +10,7 @@ use thiserror::Error;
 pub enum EntityKind {
     /// A store account, keyed by plugin and account id.
     Account,
-    /// A library title (`books` row).
+    /// A library title: an account's holding of a store listing.
     Book,
     /// A work of the library data model.
     Work,
@@ -76,13 +76,17 @@ pub enum EntityKind {
     SavedFilter,
     /// A claim ticket.
     ClaimTicket,
+    /// A notification destination.
+    NotifyDestination,
+    /// A notification (in an inbox or the delivery log).
+    Notification,
     /// One source's metadata claim about a library subject.
     MetadataClaim,
 }
 
 impl EntityKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 37] = [
         Self::Account,
         Self::Book,
         Self::Work,
@@ -117,6 +121,8 @@ impl EntityKind {
         Self::Job,
         Self::SavedFilter,
         Self::ClaimTicket,
+        Self::NotifyDestination,
+        Self::Notification,
         Self::MetadataClaim,
     ];
 
@@ -158,6 +164,8 @@ impl EntityKind {
             Self::Job => "job",
             Self::SavedFilter => "saved filter",
             Self::ClaimTicket => "claim ticket",
+            Self::NotifyDestination => "notification destination",
+            Self::Notification => "notification",
             Self::MetadataClaim => "metadata claim",
         }
     }

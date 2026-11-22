@@ -535,16 +535,9 @@ mod tests {
             .0
     }
 
-    /// The edition a library title with `uuid` reaches.
-    async fn edition_of(store: &LibraryStore, uuid: &str) -> Option<String> {
-        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-        let book = crate::entities::books::Entity::find()
-            .filter(crate::entities::books::Column::Uuid.eq(uuid))
-            .one(store.db())
-            .await
-            .unwrap()
-            .unwrap();
-        store.edition_id_for_book(&book).await.unwrap()
+    /// The edition the library title (holding) `holding_id` reaches.
+    async fn edition_of(store: &LibraryStore, holding_id: &str) -> Option<String> {
+        store.edition_of_holding(holding_id).await.unwrap()
     }
 
     /// Identifiers with an optional ASIN and ISBN.
@@ -572,10 +565,10 @@ mod tests {
                 .upsert_book(&NewBook::minimal("B00OTHER01", "a1", "US", "Other"))
                 .await
                 .unwrap();
-            let dune_work = store.work_id_for_book(&dune.uuid).await.unwrap();
-            let other_work = store.work_id_for_book(&other.uuid).await.unwrap();
-            let dune_edition = edition_of(store, &dune.uuid).await;
-            let other_edition = edition_of(store, &other.uuid).await;
+            let dune_work = store.work_of_holding(&dune.holding_id).await.unwrap();
+            let other_work = store.work_of_holding(&other.holding_id).await.unwrap();
+            let dune_edition = edition_of(store, &dune.holding_id).await;
+            let other_edition = edition_of(store, &other.holding_id).await;
             assert!(dune_work.is_some(), "{name}");
             assert!(dune_edition.is_some(), "{name}");
             assert_ne!(dune_work, other_work, "{name}");
@@ -697,7 +690,7 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            let edition = edition_of(store, &book.uuid).await;
+            let edition = edition_of(store, &book.holding_id).await;
             let mut seeded = report("u1", "kept", &dune, 0.1);
             seeded.edition_id.clone_from(&edition);
             seeded.last_listened_at = Some(chrono::Utc::now());

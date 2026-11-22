@@ -152,8 +152,12 @@ stateDiagram-v2
   cursor after each written page, and the sync token and time of the last
   finished pass. A retried or later job resumes a cursor younger than 24
   hours and otherwise starts a new pass, full when no complete pass ended in
-  seven days (see [Paged scans](../plugins/abi.md#paged-scans)). The row
-  goes away with its account.
+  seven days (see [Paged scans](../plugins/abi.md#paged-scans)). The same
+  row keeps the daily quality-upgrade check's place (`quality_cursor`, the
+  last holding id asked about, empty after a full walk) and time
+  (`quality_checked_at`); see
+  [Upgrading to better files](../server/output.md#upgrading-to-better-files).
+  The row goes away with its account.
 - Storage scans checkpoint `storage_scan` JSON (instance id, generation,
   phase, cursor) with `checkpoint_running_job` while the row stays `running`.
   The generation is a UUID bound in `storage_scan_generations` to that storage
@@ -212,6 +216,7 @@ stateDiagram-v2
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
 | `library_index_rebuild` | `library_index_rebuild` | `network` | `run_library_index_rebuild` (no network; rewrites every row of the library's page index) |
 | `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
+| `notify_send` | `notify_send:delivery={id}` | `network` | `run_notify_send` on a node running the notifier instance (requires it); parks itself between retries with `defer_job` |
 | `ingest_batch` | `ingest_batch:batch={id}` | `network` | `run_ingest_batch` on the node that holds the upload's bytes (pinned by `payload.node_id`; never handed to a branch) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
@@ -861,6 +866,7 @@ visible:
 | Storage-scan inventories | Job terminal or gone; a jobless (CLI) scan silent for 1 day |
 | `security_audit_events`, `configuration_audit` | 365 days old |
 | `configuration_changes` | 30 days old (the document and its audit row keep the content) |
+| `notifications` with their delivery log and inbox rows | 30 days old |
 
 The prunes are idempotent, so the fence bounds wasted work rather than
 guarding correctness: the window between a fence check and its delete is

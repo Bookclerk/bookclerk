@@ -268,7 +268,7 @@ pub async fn match_storage_using_index(
     Ok(summary)
 }
 
-/// Uppercased product id/ASIN/ISBN/UUID tokens used to match an audio
+/// Uppercased product id/ASIN/ISBN tokens used to match an audio
 /// object to a title.
 fn title_identity_tokens(title: &AcquireTitle) -> Vec<String> {
     let mut ids = Vec::new();
@@ -277,7 +277,6 @@ fn title_identity_tokens(title: &AcquireTitle) -> Vec<String> {
         Some(title.asin_or_isbn()),
         title.asin.as_deref(),
         title.isbn.as_deref(),
-        title.book_uuid.as_deref(),
     ]
     .into_iter()
     .flatten()
@@ -562,7 +561,7 @@ mod tests {
         .unwrap();
         assert_eq!(summary.matched, 1);
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
@@ -631,7 +630,7 @@ mod tests {
         assert_eq!(summary.relocated, 1);
 
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
@@ -814,7 +813,7 @@ mod tests {
         );
 
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
@@ -943,7 +942,7 @@ mod tests {
             .unwrap();
         assert_eq!(summary.matched, 1);
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
@@ -988,7 +987,7 @@ mod tests {
             .unwrap();
         assert_eq!(summary.matched, 1);
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
@@ -1077,7 +1076,7 @@ mod tests {
             .unwrap());
 
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
