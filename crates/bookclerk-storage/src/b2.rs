@@ -7,8 +7,11 @@
 //!
 //! - Writes of up to one part go up in one `b2_upload_file`. Longer bodies
 //!   become large files: `b2_start_large_file`, one `b2_upload_part` per
-//!   part, then `b2_finish_large_file`. At most two parts are in memory at
-//!   once, and a failed upload is cancelled (best effort). A finish whose
+//!   part, then `b2_finish_large_file`. At most three part buffers are in
+//!   memory at once (two read ahead to choose between the two paths, and
+//!   the copy the request in flight owns, since the HTTP client takes its
+//!   body by value and a retry needs the bytes again), and a failed upload
+//!   is cancelled (best effort). A finish whose
 //!   reply was lost is settled by reading the file back by id.
 //! - Reads and probes use the download URL (`GET` / `HEAD` on
 //!   `/file/<bucket>/<name>`), so a probe never lists.
@@ -62,10 +65,21 @@ const API_PATH: &str = "/b2api/v3/";
 const ATTEMPTS: u32 = 4;
 
 /// Largest file `b2_copy_file` copies in one call, in bytes.
+#[cfg(not(test))]
 const COPY_FILE_MAX_BYTES: u64 = 5_000_000_000;
 
+/// Largest file `b2_copy_file` copies in one call in this crate's tests,
+/// small enough that a fixture reaches the multipart copy path.
+#[cfg(test)]
+const COPY_FILE_MAX_BYTES: u64 = 10;
+
 /// Part size of a large server-side copy, in bytes.
+#[cfg(not(test))]
 const COPY_PART_BYTES: u64 = 1 << 30;
+
+/// Part size of a large server-side copy in this crate's tests.
+#[cfg(test)]
+const COPY_PART_BYTES: u64 = 4;
 
 /// Versions asked for per `b2_list_file_versions` page.
 const VERSIONS_PAGE: u32 = 1000;
@@ -92,9 +106,14 @@ const BODY_IDLE: Duration = Duration::from_secs(60);
 /// Content type that asks B2 to pick one from the file name.
 const AUTO_CONTENT_TYPE: &str = "b2/x-auto";
 
-/// Longest percent-encoded file-info value sent; a longer value (a very
-/// long title) is left out rather than failing the upload.
-const MAX_INFO_VALUE_BYTES: usize = 2048;
+/// Budget for a write's file name and file info together, in bytes: B2's
+/// limit on a bucket with server-side encryption or Object Lock, the
+/// strictest one, counted as the percent-encoded name plus each
+/// `X-Bz-Info-<name>` header name and encoded value.
+const MAX_NAME_AND_INFO_BYTES: usize = 2048;
+
+/// Length of the header-name prefix every file-info entry is sent under.
+const INFO_HEADER_PREFIX_BYTES: usize = "X-Bz-Info-".len();
 
 /// An application key's secret half. Its `Debug` output never shows it.
 #[derive(Clone)]
@@ -276,22 +295,40 @@ fn content_type_header(meta: Option<&str>) -> String {
     }
 }
 
-/// The file info stored with a write: the same names the S3 backend uses
-/// for user metadata.
-fn file_info(meta: &ObjectMeta, sha256_hex: Option<&str>) -> BTreeMap<String, String> {
+/// The file info stored with a write to `name`: the same names the S3
+/// backend uses for user metadata, within [`MAX_NAME_AND_INFO_BYTES`].
+///
+/// The digest and commit token are always kept; the display fields
+/// (ASIN, times, then the title) follow only while the name and info still
+/// fit, so a very long title is left out rather than failing the write.
+fn file_info(name: &str, meta: &ObjectMeta, sha256_hex: Option<&str>) -> BTreeMap<String, String> {
+    let cost = |key: &str, value: &str| {
+        INFO_HEADER_PREFIX_BYTES + key.len() + b2_api::encode_file_name(value).len()
+    };
     let mut info = BTreeMap::new();
-    let fields = [
-        ("asin", meta.asin.as_deref()),
-        ("title", meta.title.as_deref()),
-        ("creation-time", meta.creation_time.as_deref()),
-        ("last-write-time", meta.last_write_time.as_deref()),
+    let mut used = b2_api::encode_file_name(name).len();
+    let required = [
         ("sha256", sha256_hex),
         ("commit-token", meta.commit_token.as_deref()),
     ];
-    for (name, value) in fields {
+    for (key, value) in required {
         if let Some(value) = value {
-            if b2_api::encode_file_name(value).len() <= MAX_INFO_VALUE_BYTES {
-                info.insert(name.to_string(), value.to_string());
+            used += cost(key, value);
+            info.insert(key.to_string(), value.to_string());
+        }
+    }
+    let optional = [
+        ("asin", meta.asin.as_deref()),
+        ("creation-time", meta.creation_time.as_deref()),
+        ("last-write-time", meta.last_write_time.as_deref()),
+        ("title", meta.title.as_deref()),
+    ];
+    for (key, value) in optional {
+        if let Some(value) = value {
+            let entry = cost(key, value);
+            if used + entry <= MAX_NAME_AND_INFO_BYTES {
+                used += entry;
+                info.insert(key.to_string(), value.to_string());
             }
         }
     }
@@ -785,8 +822,15 @@ impl B2Backend {
                 b2_api::parse_file_version,
             )
             .await;
-        let Err(err) = finished else {
-            return finished;
+        let err = match finished {
+            Ok(version)
+                if version.action == FileAction::Upload
+                    && version.file_id.as_ref().map(b2_api::FileId::as_str) == Some(file_id) =>
+            {
+                return Ok(version);
+            }
+            Ok(_) => return Err(remote("finish large file", "the reply names another file")),
+            Err(err) => err,
         };
         match self
             .call(
@@ -841,7 +885,7 @@ impl B2Backend {
         };
         if second.is_empty() {
             let (total, digest) = tally.finish(meta.sha256_hex.as_deref())?;
-            let info = file_info(&meta, Some(&digest));
+            let info = file_info(&name, &meta, Some(&digest));
             let version = self
                 .upload_small(&session, &name, &first, &content_type, &info)
                 .await?;
@@ -855,16 +899,16 @@ impl B2Backend {
             ));
         }
         tally.take(&second)?;
-        let info = file_info(&meta, meta.sha256_hex.as_deref());
+        let info = file_info(&name, &meta, meta.sha256_hex.as_deref());
         let file_id = self
             .start_large_file(&session, &name, &content_type, &info)
             .await?;
         let uploaded = async {
-            let mut sha1s = vec![
-                self.upload_part(&file_id, 1, &first).await?,
-                self.upload_part(&file_id, 2, &second).await?,
-            ];
-            drop((first, second));
+            let first_sha1 = self.upload_part(&file_id, 1, &first).await?;
+            drop(first);
+            let second_sha1 = self.upload_part(&file_id, 2, &second).await?;
+            drop(second);
+            let mut sha1s = vec![first_sha1, second_sha1];
             let mut number = 2u32;
             loop {
                 let part = read_part(&mut body, part_size).await?;

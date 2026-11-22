@@ -14,14 +14,17 @@
 //!
 //! - reading never panics and gives the same answer twice;
 //! - an error reply always reads, with a non-empty code and code and
-//!   message within their caps and free of control characters;
+//!   message within their caps and free of control characters, and a code
+//!   other than `unknown` is exactly the error object's own `code`;
 //! - an accepted JSON reply is a JSON object, as is every struct nested in
 //!   it (`apiInfo`, `storageApi`, each bucket and each listed file), and an
 //!   independent reading
 //!   of the same JSON (a `serde_json::Value` walk) finds the same token, URLs, names, counts and
 //!   part numbers, every file name passes the oracle's own copy of B2's
-//!   naming rules, a listing's continuation name is past every listed
-//!   name, and every SHA-1 is 40 lowercase hex digits;
+//!   naming rules, a file-name listing's continuation is past every listed
+//!   name, a file-version listing's continuation (name and id together) is
+//!   not before any listed name and its versions of one name are newest
+//!   first, and every SHA-1 is 40 lowercase hex digits;
 //! - percent-encoding any text and decoding it gives the text back, and the
 //!   encoding matches the oracle's own encoder.
 
@@ -201,6 +204,11 @@ pub fn check(data: &[u8]) {
                     assert!(name_ok(next));
                     assert!(page.files.iter().all(|file| &file.file_name <= next));
                 }
+                for pair in page.files.windows(2) {
+                    if pair[0].file_name == pair[1].file_name {
+                        assert!(pair[0].upload_timestamp_ms >= pair[1].upload_timestamp_ms);
+                    }
+                }
             }
         }
         6 => {
@@ -232,6 +240,17 @@ pub fn check(data: &[u8]) {
                 .chars()
                 .chain(err.message.chars())
                 .any(char::is_control));
+            // A recognized code is exactly the one the error object sent,
+            // never a cleaned-up version of something else.
+            if err.code != "unknown" {
+                let json: Value = serde_json::from_slice(body).expect("a coded error is JSON");
+                assert!(json.is_object());
+                assert_eq!(json["code"].as_str(), Some(err.code.as_str()));
+                assert!(err
+                    .code
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
+            }
             let _ = err.to_string();
         }
         _ => {

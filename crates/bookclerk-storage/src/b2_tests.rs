@@ -85,6 +85,8 @@ struct World {
     /// pages with `nextFileName` / `nextFileId`, and may return fewer rows
     /// than `maxFileCount`, as B2 does.
     versions_page: Option<usize>,
+    /// The `range` of each `b2_copy_part`, in order.
+    copy_ranges: Vec<String>,
 }
 
 impl World {
@@ -306,6 +308,40 @@ fn api(world: &mut World, op: &str, request: &Value) -> Reply {
                 "authorizationToken": "upload-token",
             }),
         ),
+        "b2_copy_part" => {
+            let range = text("range");
+            world.copy_ranges.push(range.clone());
+            let Some(source) = world
+                .files
+                .iter()
+                .find(|file| file.id == text("sourceFileId"))
+                .cloned()
+            else {
+                return reply_error(400, "bad_request");
+            };
+            let Some((start, end)) = range
+                .strip_prefix("bytes=")
+                .and_then(|span| span.split_once('-'))
+                .and_then(|(start, end)| {
+                    Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+                })
+                .filter(|&(start, end)| start <= end && end < source.data.len())
+            else {
+                return reply_error(400, "bad_request");
+            };
+            let number = u32::try_from(request["partNumber"].as_u64().unwrap_or(0)).unwrap_or(0);
+            let bytes = source.data[start..=end].to_vec();
+            let sha1 = hex::encode(Sha1::digest(&bytes));
+            let Some(large) = world.large.get_mut(&text("largeFileId")) else {
+                return reply_error(400, "bad_request");
+            };
+            let length = bytes.len();
+            large.parts.insert(number, bytes);
+            reply_json(
+                200,
+                &json!({ "fileId": text("largeFileId"), "partNumber": number, "contentLength": length, "contentSha1": sha1 }),
+            )
+        }
         "b2_start_large_file" => {
             let id = world.id();
             let info: BTreeMap<String, String> =
@@ -1005,4 +1041,55 @@ async fn keys_translate_like_other_object_stores() {
     );
     assert!(backend.capabilities().translate_keys);
     assert!(!backend.capabilities().conditional_write);
+}
+
+#[test]
+fn file_info_keeps_the_digest_and_token_and_drops_display_fields_that_do_not_fit() {
+    let meta = ObjectMeta {
+        asin: Some("B000000001".into()),
+        title: Some("t".repeat(1900)),
+        commit_token: Some("0123456789abcdef0123456789abcdef".into()),
+        ..ObjectMeta::default()
+    };
+    let digest = "0".repeat(64);
+    let info = file_info("books/a.m4b", &meta, Some(&digest));
+    assert_eq!(info.get("sha256"), Some(&digest));
+    assert!(info.contains_key("commit-token"));
+    assert!(info.contains_key("asin"));
+    // The title alone fits B2's limit but not beside the name and the
+    // required fields.
+    assert!(!info.contains_key("title"));
+    let used = encode_file_name("books/a.m4b").len()
+        + info
+            .iter()
+            .map(|(key, value)| "X-Bz-Info-".len() + key.len() + encode_file_name(value).len())
+            .sum::<usize>();
+    assert!(used <= MAX_NAME_AND_INFO_BYTES);
+
+    let short = ObjectMeta {
+        title: Some("A short title".into()),
+        ..ObjectMeta::default()
+    };
+    assert!(file_info("a", &short, None).contains_key("title"));
+}
+
+#[tokio::test]
+async fn a_large_copy_goes_part_by_part() {
+    let world = serve().await;
+    let backend = open(&world, "").await;
+    // Eleven bytes: past this build's one-call copy limit (10), in parts
+    // of four with a short last part.
+    backend
+        .put(
+            "big",
+            Bytes::from_static(b"hello world"),
+            ObjectMeta::default(),
+        )
+        .await
+        .expect("put");
+    assert_eq!(backend.copy_sized("big", "copy").await.expect("copy"), 11);
+    assert_eq!(backend.get("copy").await.expect("get"), "hello world");
+    let world = world.lock().await;
+    assert_eq!(world.copy_ranges, ["bytes=0-3", "bytes=4-7", "bytes=8-10"]);
+    assert!(world.large.is_empty());
 }

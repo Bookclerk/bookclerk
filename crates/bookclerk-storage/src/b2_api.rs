@@ -745,9 +745,10 @@ struct WireFile {
     file_id: Option<String>,
     /// The file name.
     file_name: String,
-    /// The size.
+    /// The size; required for an upload or a copy, where it is the stored
+    /// bytes.
     #[serde(default)]
-    content_length: u64,
+    content_length: Option<u64>,
     /// The SHA-1 (`none` for large files, `unverified:<hex>` for some).
     #[serde(default)]
     content_sha1: Option<String>,
@@ -806,12 +807,19 @@ fn file_version(wire: WireFile) -> ReplyResult<FileVersion> {
         }
         other => other.filter(|kind| !kind.is_empty()),
     };
+    let content_length = match (action, wire.content_length) {
+        (_, Some(length)) => length,
+        (FileAction::Upload | FileAction::Copy, None) => {
+            return Err(malformed("stored file version has no length"));
+        }
+        (FileAction::Hide | FileAction::Start | FileAction::Folder, None) => 0,
+    };
     let content_sha1 = sha1_of(wire.content_sha1.as_deref())
         .or_else(|| sha1_of(info.get("large_file_sha1").map(String::as_str)));
     Ok(FileVersion {
         file_id,
         file_name: wire.file_name,
-        content_length: wire.content_length,
+        content_length,
         content_sha1,
         content_type,
         upload_timestamp_ms: wire.upload_timestamp,
@@ -950,6 +958,15 @@ struct WireVersionsPage {
 pub fn parse_versions_page(bytes: &[u8]) -> ReplyResult<VersionsPage> {
     let wire: WireVersionsPage = decode("file version listing", bytes)?;
     let files = listed(wire.files)?;
+    // B2 lists each name's versions newest first; deleting a name walks
+    // them oldest first, so a page out of that order is refused rather than
+    // risk removing the current version before an older one.
+    if files.windows(2).any(|pair| {
+        pair[0].file_name == pair[1].file_name
+            && pair[0].upload_timestamp_ms < pair[1].upload_timestamp_ms
+    }) {
+        return Err(malformed("a name's versions are not newest first"));
+    }
     let next = match (wire.next_file_name, wire.next_file_id) {
         (None, None) => None,
         (Some(name), Some(id)) => {
@@ -1147,7 +1164,7 @@ where
     let wire = WireFile {
         file_id: Some(file_id.ok_or_else(|| malformed("download reply has no X-Bz-File-Id"))?),
         file_name,
-        content_length: total,
+        content_length: Some(total),
         content_sha1: sha1,
         content_type,
         upload_timestamp: upload_timestamp_ms,
@@ -1233,6 +1250,16 @@ fn bounded_text(text: &str) -> String {
     out
 }
 
+/// Whether `code` is a plain B2 error code: 1 to [`MAX_ERROR_TEXT_BYTES`]
+/// bytes of ASCII lowercase letters, digits and `_`.
+fn error_code_ok(code: &str) -> bool {
+    !code.is_empty()
+        && code.len() <= MAX_ERROR_TEXT_BYTES
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 /// Reads an error reply. Never fails: a body that is not B2's error JSON
 /// reads as code `unknown` with no message.
 ///
@@ -1246,16 +1273,17 @@ fn bounded_text(text: &str) -> String {
 /// The error, with code and message cut to [`MAX_ERROR_TEXT_BYTES`].
 #[must_use]
 pub fn parse_api_error(status: u16, bytes: &[u8]) -> ApiError {
-    let wire = (bytes.len() <= MAX_B2_REPLY_BYTES)
-        .then(|| serde_json::from_slice::<WireError>(bytes).ok())
-        .flatten();
-    let (code, message) = match wire {
-        Some(wire) => (wire.code, wire.message),
-        None => (None, None),
+    // The same object-only reading as every other reply: a positional array
+    // or anything else that is not B2's error object reads as `unknown`.
+    let (code, message) = match decode::<WireError>("error reply", bytes) {
+        Ok(wire) => (wire.code, wire.message),
+        Err(_) => (None, None),
     };
+    // The code decides retries and absence, so it is used only exactly as
+    // sent: a code that is not a plain identifier is never cleaned up into
+    // one that is recognized.
     let code = code
-        .map(|code| bounded_text(&code))
-        .filter(|code| !code.is_empty())
+        .filter(|code| error_code_ok(code))
         .unwrap_or_else(|| "unknown".into());
     ApiError {
         status,
@@ -1449,12 +1477,14 @@ mod tests {
         );
         assert!(file.action.is_stored());
         let large = parse_file_version(
-            br#"{"fileId":"4_z2","fileName":"big","contentSha1":"none","action":"upload",
+            br#"{"fileId":"4_z2","fileName":"big","contentLength":10,"contentSha1":"none","action":"upload",
                  "fileInfo":{"large_file_sha1":"0000000000000000000000000000000000000000"}}"#,
         )
         .expect("large file");
         assert_eq!(large.content_sha1.as_deref(), Some(&*"0".repeat(40)));
-        assert!(parse_file_version(br#"{"fileName":"a","action":"upload"}"#).is_err());
+        assert!(
+            parse_file_version(br#"{"fileName":"a","contentLength":0,"action":"upload"}"#).is_err()
+        );
         assert!(parse_file_version(br#"{"fileId":"x","fileName":"a","action":"zap"}"#).is_err());
         let folder = parse_file_version(br#"{"fileId":null,"fileName":"dir/","action":"folder"}"#)
             .expect("folder");
@@ -1463,18 +1493,62 @@ mod tests {
     }
 
     #[test]
+    fn stored_versions_need_a_length_and_newest_first_order() {
+        assert!(parse_file_version(br#"{"fileId":"1","fileName":"a","action":"upload"}"#).is_err());
+        let empty = parse_file_version(
+            br#"{"fileId":"1","fileName":"a","contentLength":0,"action":"upload"}"#,
+        )
+        .expect("an explicit zero is an empty file");
+        assert_eq!(empty.content_length, 0);
+        let hidden = parse_file_version(br#"{"fileId":"1","fileName":"a","action":"hide"}"#)
+            .expect("a hide marker has no bytes");
+        assert_eq!(hidden.content_length, 0);
+        let newest_first = br#"{"files":[
+            {"fileId":"2","fileName":"a","contentLength":1,"uploadTimestamp":2,"action":"upload"},
+            {"fileId":"1","fileName":"a","contentLength":1,"uploadTimestamp":2,"action":"upload"},
+            {"fileId":"0","fileName":"b","contentLength":1,"uploadTimestamp":9,"action":"upload"}]}"#;
+        assert_eq!(
+            parse_versions_page(newest_first).expect("page").files.len(),
+            3
+        );
+        let oldest_first = br#"{"files":[
+            {"fileId":"1","fileName":"a","contentLength":1,"uploadTimestamp":1,"action":"upload"},
+            {"fileId":"2","fileName":"a","contentLength":1,"uploadTimestamp":2,"action":"upload"}]}"#;
+        assert!(parse_versions_page(oldest_first).is_err());
+    }
+
+    #[test]
+    fn error_codes_are_used_only_exactly_as_sent() {
+        assert_eq!(
+            parse_api_error(400, br#"["expired_auth_token","x"]"#).code,
+            "unknown"
+        );
+        assert_eq!(
+            parse_api_error(400, br#"{"code":"file_not_\u0007present"}"#).code,
+            "unknown"
+        );
+        assert_eq!(
+            parse_api_error(400, br#"{"code":"File_Not_Present"}"#).code,
+            "unknown"
+        );
+        let err = parse_api_error(404, br#"{"code":"file_not_present","message":"gone"}"#);
+        assert!(err.not_found());
+        assert_eq!(err.message, "gone");
+    }
+
+    #[test]
     fn listings_must_move_forward() {
         let page = parse_names_page(
-            br#"{"files":[{"fileId":"1","fileName":"a","action":"upload"}],"nextFileName":"b"}"#,
+            br#"{"files":[{"fileId":"1","fileName":"a","contentLength":0,"action":"upload"}],"nextFileName":"b"}"#,
         )
         .expect("page");
         assert_eq!(page.next_file_name.as_deref(), Some("b"));
         assert!(parse_names_page(
-            br#"{"files":[{"fileId":"1","fileName":"b","action":"upload"}],"nextFileName":"a"}"#,
+            br#"{"files":[{"fileId":"1","fileName":"b","contentLength":0,"action":"upload"}],"nextFileName":"a"}"#,
         )
         .is_err());
         let versions = parse_versions_page(
-            br#"{"files":[{"fileId":"2","fileName":"a","action":"upload"},{"fileId":"1","fileName":"a","action":"hide"}],
+            br#"{"files":[{"fileId":"2","fileName":"a","contentLength":0,"action":"upload"},{"fileId":"1","fileName":"a","action":"hide"}],
                  "nextFileName":"a","nextFileId":"0"}"#,
         )
         .expect("versions");

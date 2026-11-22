@@ -593,8 +593,11 @@ only that. The others check:
   reply agrees with an independent walk of the same JSON (token, file
   names and ids, list lengths, part number); its URLs are plain `https`;
   every file name passes the oracle's own copy of B2's naming rules; a
-  listing's continuation name is past every listed name; every SHA-1 is
-  40 lowercase hex digits; and accepted download headers name a file id
+  file-name page's continuation is past every listed name; a
+  file-version page continues with a name and a file id together, so it
+  may continue at the last listed name, and lists each name's versions
+  newest first; every SHA-1 is 40 lowercase hex digits; an error code
+  other than `unknown` is exactly the one the error object sent; and accepted download headers name a file id
   and a body no longer than the file. Percent-encoding any text matches
   the oracle's own encoder and decodes back to the text. The shared
   oracle is `fuzz/oracles/b2_reply.rs`, replayed from `bookclerk-storage`.

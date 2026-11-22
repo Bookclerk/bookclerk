@@ -405,8 +405,9 @@ The `b2` plugin writes to a Backblaze B2 bucket through B2's native API.
 
 It works like the other object stores, with these differences:
 
-- **Large files.** A file over 8 MiB goes up in parts, with at most two
-  parts in memory. An upload that fails part way is cancelled. If the
+- **Large files.** A file over 8 MiB goes up in parts, with at most
+  three parts' worth of memory in use (two read ahead and the part being
+  sent). An upload that fails part way is cancelled. If the
   cancel fails too, the unfinished file stays in the bucket (and is
   billed) until a later delete of that name or a lifecycle rule removes
   it.
@@ -415,6 +416,11 @@ It works like the other object stores, with these differences:
   first, so none stay billed behind a hide marker and a delete that stops
   part way never brings back an older version. A name with more than
   10,000 versions is refused instead of half deleted.
+- **Metadata fits the strictest bucket.** B2 limits a file's name and
+  stored metadata together (2,048 bytes on a bucket with encryption or
+  Object Lock). The checksum and commit token are always stored; the
+  ASIN, file times and title follow only while they fit, so a very long
+  title is left out of the metadata rather than failing the upload.
 - **No conditional writes.** B2 cannot write a file only if it is
   unchanged. Bookclerk checks just before such a write instead, so
   another program writing the same file at the same moment can still win.

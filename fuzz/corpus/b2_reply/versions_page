@@ -1,1 +1,1 @@
-{"files": [{"fileId": "2", "fileName": "a", "action": "upload"}, {"fileId": "1", "fileName": "a", "action": "hide"}], "nextFileName": "a", "nextFileId": "0"}
+{"files": [{"fileId": "2", "fileName": "a", "contentLength":0,"action": "upload"}, {"fileId": "1", "fileName": "a", "action": "hide"}], "nextFileName": "a", "nextFileId": "0"}

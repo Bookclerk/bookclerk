@@ -182,6 +182,30 @@ fn b2_seed_reads(name: &str) -> bool {
 }
 
 #[test]
+fn named_b2_error_seeds_read_as_expected() {
+    use bookclerk_storage::b2_api;
+    for (name, status, code, message_empty) in [
+        ("error_html", 503, "unknown", true),
+        ("error_expired", 401, "expired_auth_token", false),
+        ("error_control", 400, "unknown", false),
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/corpus/b2_reply")
+            .join(name);
+        let data = std::fs::read(&path).expect("read seed");
+        // The same framing as the shared oracle: the selector byte, then
+        // the status as two big-endian bytes, then the body.
+        let (&selector, rest) = data.split_first().expect("non-empty seed");
+        assert_eq!(selector % 9, 7, "{name} is an error seed");
+        let (head, body) = rest.split_at(2);
+        let err = b2_api::parse_api_error(u16::from_be_bytes([head[0], head[1]]), body);
+        assert_eq!(err.status, status, "{name}");
+        assert_eq!(err.code, code, "{name}");
+        assert_eq!(err.message.is_empty(), message_empty, "{name}");
+    }
+}
+
+#[test]
 fn named_b2_seeds_keep_their_meaning() {
     for accepted in [
         "authorize_restricted",
@@ -212,6 +236,8 @@ fn named_b2_seeds_keep_their_meaning() {
         "authorize_positional_storage_api",
         "names_page_positional_file",
         "versions_page_positional_file",
+        "versions_page_old_first",
+        "file_no_length",
         "buckets_bad_name",
         "buckets_ipv4_name",
         "buckets_double_dot",
