@@ -68,6 +68,11 @@ Dependabot leaves Playwright in `ui/` alone: the
 `ci.yml` whose version must match `@playwright/test`, and a new browser
 renders the approved baselines differently. Bump both by hand together.
 
+In Cargo, Dependabot leaves zbus majors and notify-rust 4.19 and later
+alone, so the desktop keeps one D-Bus stack: its media controls and tray
+are on zbus 5, and notify-rust 4.18 is the last line on it. Lift both
+ignores when those crates move to zbus 6.
+
 `examples/` lockfiles are left out, because they are reference plugins and
 never packaged. The full OSV scan still reports them.
 

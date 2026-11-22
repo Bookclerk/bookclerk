@@ -8,6 +8,15 @@ updates:
     # Match workerd pin cooldown (supply-chain). Platform default is 3 days.
     cooldown:
       default-days: 7
+    # One D-Bus stack: the desktop's media controls (souvlaki) and the tray
+    # (ksni) are on zbus 5, so the keystore stays on zbus 5 and notify-rust
+    # on 4.18, its last zbus 5 line (crates/bookclerk-desktop/Cargo.toml).
+    # Lift both once those move to zbus 6.
+    ignore:
+      - dependency-name: "zbus"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "notify-rust"
+        versions: [">=4.19"]
     groups:
       # capnp / capnpc / capnp-rpc share a version; bumping one alone
       # dual-compiles the runtime and breaks generated Client bounds.

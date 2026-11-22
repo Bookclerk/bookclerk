@@ -180,9 +180,9 @@ fn msys_command(program: &str) -> Command {
         path.push(compiler_dir.to_path_buf());
     }
     let mut compiler_path = None;
-    for (key, value) in compiler.env() {
+    for (key, value) in compiler.get_envs() {
         if key.eq_ignore_ascii_case("PATH") {
-            compiler_path = Some(value.clone());
+            compiler_path = Some(value.to_os_string());
         } else {
             cmd.env(key, value);
         }
