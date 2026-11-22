@@ -139,11 +139,13 @@ impl Host {
 ///
 /// # Panics
 ///
-/// When MSYS2 is not installed at `MSYS2_ROOT` (default `C:\msys64`).
+/// When MSYS2, or its `make` package, is not installed at `MSYS2_ROOT`
+/// (default `C:\msys64`): another `make` on `PATH` cannot read MSYS2
+/// paths and fails in a confusing way.
 fn msys2_bin() -> PathBuf {
     let root = env::var_os("MSYS2_ROOT").map_or_else(|| PathBuf::from(r"C:\msys64"), PathBuf::from);
     let bin = root.join("usr").join("bin");
-    if !bin.join("sh.exe").exists() {
+    if !bin.join("sh.exe").exists() || !bin.join("make.exe").exists() {
         panic!(
             "building FFmpeg for MSVC needs MSYS2 (with `pacman -S make`); none at {}; set MSYS2_ROOT",
             root.display()

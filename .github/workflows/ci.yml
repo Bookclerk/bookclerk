@@ -1146,6 +1146,11 @@ jobs:
           cache-on-failure: true
           save-if: false
 
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
+
       - name: Confinement clippy + enforcement tests
         run: python scripts/ci-exec.py run confinement
 
