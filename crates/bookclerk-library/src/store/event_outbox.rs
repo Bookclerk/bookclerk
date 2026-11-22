@@ -3412,7 +3412,6 @@ pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
             pdf_storage_key: Set(pdf_storage_key.map(str::to_string)),
             pdf_holding_id: Set(Some(holding_id.to_string())),
             updated_at: Set(now.clone()),
-            ..Default::default()
         },
     )
     .await?;
