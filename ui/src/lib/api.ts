@@ -1653,12 +1653,7 @@ export async function putDefaultScope(scope: PatronScope): Promise<{ scope: Patr
 
 /** One thing an administrator may allow or refuse a patron. */
 export type MemberControl =
-  | "link_accounts"
-  | "download"
-  | "edit_metadata"
-  | "upload"
-  | "request_books"
-  | "see_prices";
+  "link_accounts" | "download" | "edit_metadata" | "upload" | "request_books" | "see_prices";
 
 /** A value for every member control (`true` = allowed). */
 export type MemberControls = Record<MemberControl, boolean>;
@@ -2322,12 +2317,7 @@ export interface PluginSettingsGroup {
  * node does not download models) or `installed`.
  */
 export type ModelInstallState =
-  | "not_installed"
-  | "checking"
-  | "downloading"
-  | "waiting"
-  | "downloads_off"
-  | "installed";
+  "not_installed" | "checking" | "downloading" | "waiting" | "downloads_off" | "installed";
 
 /** One model a model plugin offers. */
 export interface OfferedModelView {
@@ -3176,10 +3166,7 @@ export interface RemoteGrantView {
 
 /** Where an owner plugin's request to run here stands. */
 export type RemoteConsentState =
-  | "consented"
-  | "awaiting_host_consent"
-  | "awaiting_host_reapproval"
-  | "invalid_grant";
+  "consented" | "awaiting_host_consent" | "awaiting_host_reapproval" | "invalid_grant";
 
 /** One owner plugin's request to run on this host, and this host's answer. */
 export interface RemoteConsentView {
@@ -4659,13 +4646,7 @@ export interface CatalogSearchHit {
  * Server-supported Discover catalog sort keys.
  */
 export type CatalogSearchSort =
-  | "relevance"
-  | "popularity"
-  | "rating"
-  | "title"
-  | "author"
-  | "price"
-  | "length";
+  "relevance" | "popularity" | "rating" | "title" | "author" | "price" | "length";
 
 /**
  * Ascending or descending catalog sort direction.

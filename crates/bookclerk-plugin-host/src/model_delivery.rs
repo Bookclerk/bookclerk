@@ -127,6 +127,84 @@ impl ModelWant {
     }
 }
 
+/// What the spawn of `plugin` asks the delivery for.
+///
+/// The host downloads with its own network, from the registry the package
+/// names. Only a verified platform plugin may ask for that: any other
+/// package would reach hosts its consent never covered, so its model list
+/// is ignored and logged.
+///
+/// # Arguments
+///
+/// * `plugin` - The plugin about to be spawned.
+/// * `config` - The node's config, for the plugin's data directory and
+///   memory ceiling.
+/// * `request` - The spawn, with the instance's resolved settings.
+///
+/// # Returns
+///
+/// `None` when the package pins no models, is not a platform plugin, or
+/// its model list or data directory is unusable (logged).
+pub(crate) fn model_want(
+    plugin: &crate::DiscoveredPlugin,
+    config: &bookclerk_config::Config,
+    request: &crate::DeploymentSpawn,
+) -> Option<ModelWant> {
+    let listed = plugin
+        .root
+        .join(bookclerk_plugin_catalog::MODEL_OFFERS_FILE);
+    if !plugin.identity.provenance.grants_platform_defaults()
+        || !bookclerk_plugin_catalog::is_platform_plugin_key(plugin.plugin_key())
+    {
+        if listed.exists() {
+            tracing::warn!(
+                plugin_key = %request.plugin_key,
+                "only platform plugins have models installed by the host; this package's model list is ignored"
+            );
+        }
+        return None;
+    }
+    let offers = match ModelOffers::read(&plugin.root) {
+        Ok(offers) => offers?,
+        Err(err) => {
+            tracing::warn!(
+                plugin_key = %request.plugin_key,
+                error = %err,
+                "the plugin's model list is unusable; no model is installed"
+            );
+            return None;
+        }
+    };
+    let data_dir = match crate::jail::plugin_data_dir(config, plugin) {
+        Ok(dir) => dir,
+        Err(err) => {
+            tracing::warn!(plugin_key = %request.plugin_key, error = %err, "no data directory for models");
+            return None;
+        }
+    };
+    let chosen = serde_json::from_slice::<serde_json::Value>(&request.config.payload)
+        .ok()
+        .and_then(|document| {
+            document
+                .get(MODEL_SETTING_KEY)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    let grant = crate::consent::spawn_grant(&config.paths().files_dir, plugin).ok();
+    let reservation =
+        crate::jail::guest_reservation(&plugin.manifest, grant.as_ref(), &config.plugins.jail);
+    Some(ModelWant {
+        plugin_instance_id: request.plugin_instance_id.clone(),
+        plugin_key: request.plugin_key.clone(),
+        plugin_id: plugin.manifest.id.clone(),
+        serves: plugin.manifest.ai.serves.clone(),
+        offers,
+        chosen,
+        data_dir,
+        memory_ceiling_bytes: u64::try_from(reservation.memory_bytes).unwrap_or(0),
+    })
+}
+
 /// One tracked plugin instance: what it wants and where the chosen model
 /// stands.
 struct Tracked {

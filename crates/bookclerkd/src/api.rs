@@ -10515,4 +10515,88 @@ mod instance_settings_tests {
             serde_json::json!([{ "library": "main", "watch": true }])
         );
     }
+
+    #[test]
+    fn model_status_carries_cost_fit_and_state() {
+        use bookclerk_plugin_host::{ModelState, ModelStatus, PluginModels};
+
+        let offer = |label: &str, download: u64, memory: u64| {
+            serde_json::json!({
+                "label": label,
+                "summary": "A model.",
+                "model_json": { "bytes": 1296, "sha256": "ab".repeat(32) },
+                "download_bytes": download,
+                "memory_bytes": memory,
+            })
+        };
+        let offers = bookclerk_plugin_catalog::ModelOffers::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "registry": "ghcr.io/bookclerk/models",
+                "default": "bekko-a8m",
+                "models": {
+                    "bekko-a8m": offer("Bekko (fast)", 140_609_206, 220 << 20),
+                    "harrier-270m-q4": offer("Harrier (most accurate)", 217_276_472, 380 << 20),
+                },
+            }))
+            .expect("json"),
+        )
+        .expect("a model list");
+        let status = |id: &str, state: ModelState| ModelStatus {
+            model_id: id.to_owned(),
+            offer: offers.get(id).expect("offered").clone(),
+            state,
+        };
+        let view = super::PluginModelsView::from(PluginModels {
+            plugin_instance_id: "pi_1".into(),
+            plugin_key: "embedder".into(),
+            chosen: "bekko-a8m".into(),
+            // Room for the default model, not for the larger one.
+            memory_ceiling_bytes: 256 << 20,
+            models: vec![
+                status(
+                    "bekko-a8m",
+                    ModelState::Downloading {
+                        received_bytes: 1024,
+                        total_bytes: 140_609_206,
+                    },
+                ),
+                status("harrier-270m-q4", ModelState::NotInstalled),
+            ],
+        });
+        let json = serde_json::to_value(&view).expect("json");
+        assert_eq!(json["setting"], "model");
+        assert_eq!(json["chosen"], "bekko-a8m");
+        assert_eq!(json["memory_ceiling_bytes"], 256 << 20);
+        let bekko = &json["models"][0];
+        assert_eq!(bekko["id"], "bekko-a8m");
+        assert_eq!(bekko["label"], "Bekko (fast)");
+        assert_eq!(bekko["download_bytes"], 140_609_206);
+        assert_eq!(bekko["fits"], true);
+        assert_eq!(bekko["state"], "downloading");
+        assert_eq!(bekko["received_bytes"], 1024);
+        assert!(bekko.get("detail").is_none());
+        let harrier = &json["models"][1];
+        assert_eq!(harrier["fits"], false);
+        assert_eq!(harrier["state"], "not_installed");
+        assert!(harrier.get("received_bytes").is_none());
+
+        let state_of = |state: ModelState| {
+            let view = super::PluginModelsView::from(PluginModels {
+                plugin_instance_id: "pi_1".into(),
+                plugin_key: "embedder".into(),
+                chosen: "bekko-a8m".into(),
+                memory_ceiling_bytes: 512 << 20,
+                models: vec![status("bekko-a8m", state)],
+            });
+            serde_json::to_value(&view).expect("json")["models"][0].clone()
+        };
+        assert_eq!(state_of(ModelState::Checking)["state"], "checking");
+        assert_eq!(state_of(ModelState::Installed)["state"], "installed");
+        assert_eq!(state_of(ModelState::DownloadsOff)["state"], "downloads_off");
+        let waiting = state_of(ModelState::Waiting {
+            detail: "the registry answered 503".into(),
+        });
+        assert_eq!(waiting["state"], "waiting");
+        assert_eq!(waiting["detail"], "the registry answered 503");
+    }
 }

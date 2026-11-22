@@ -314,6 +314,15 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-plugin-host"
+# The model delivery tests read the embedder package's manifest and model
+# list.
+paths = [
+    "crates/bookclerk-plugins/platform/ai-embedder/plugin.toml",
+    "crates/bookclerk-plugins/platform/ai-embedder/models.json",
+]
+
+[[test_input]]
 package = "bookclerk-plugin-catalog"
 # The model fetch oracle is shared with the replay test through `#[path]`;
 # the same test holds the embedder's model list to the pins the pack
@@ -322,6 +331,7 @@ paths = [
     "fuzz/corpus/model_fetch/**",
     "fuzz/oracles/model_fetch.rs",
     "crates/bookclerk-plugins/platform/ai-embedder/models.json",
+    "crates/bookclerk-plugins/platform/ai-embedder/plugin.toml",
     "scripts/model-packs/models.json",
 ]
 

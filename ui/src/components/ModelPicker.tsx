@@ -44,7 +44,7 @@ export function ModelPicker({
             className={cn(
               "flex items-start gap-3 rounded-md border px-3 py-2 text-sm",
               selected ? "border-teal bg-teal/5" : "border-ink/15 bg-card-strong",
-              unfit && !selected ? "opacity-70" : "cursor-pointer",
+              unfit && !selected ? "border-dashed" : "cursor-pointer",
             )}
           >
             <input

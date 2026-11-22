@@ -43,6 +43,7 @@ on:
       - "crates/bookclerk-storage/**"
       - "crates/bookclerk-discover/**"
       - "crates/bookclerk-model-pack/**"
+      - "crates/bookclerk-plugin-catalog/**"
       - "crates/bookclerk-player-api/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite-*.yml"

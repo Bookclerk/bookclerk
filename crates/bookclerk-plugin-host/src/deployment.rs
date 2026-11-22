@@ -948,46 +948,9 @@ impl LiveDeploymentRuntime {
         let Some(delivery) = self.model_delivery() else {
             return;
         };
-        let offers = match bookclerk_plugin_catalog::ModelOffers::read(&plugin.root) {
-            Ok(Some(offers)) => offers,
-            Ok(None) => return,
-            Err(err) => {
-                tracing::warn!(
-                    plugin_key = %request.plugin_key,
-                    error = %err,
-                    "the plugin's model list is unusable; no model is installed"
-                );
-                return;
-            }
-        };
-        let data_dir = match crate::jail::plugin_data_dir(config, plugin) {
-            Ok(dir) => dir,
-            Err(err) => {
-                tracing::warn!(plugin_key = %request.plugin_key, error = %err, "no data directory for models");
-                return;
-            }
-        };
-        let chosen = serde_json::from_slice::<serde_json::Value>(&request.config.payload)
-            .ok()
-            .and_then(|document| {
-                document
-                    .get(crate::MODEL_SETTING_KEY)
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            });
-        let grant = crate::consent::spawn_grant(&config.paths().files_dir, plugin).ok();
-        let reservation =
-            crate::jail::guest_reservation(&plugin.manifest, grant.as_ref(), &config.plugins.jail);
-        delivery.ensure(crate::ModelWant {
-            plugin_instance_id: request.plugin_instance_id.clone(),
-            plugin_key: request.plugin_key.clone(),
-            plugin_id: plugin.manifest.id.clone(),
-            serves: plugin.manifest.ai.serves.clone(),
-            offers,
-            chosen,
-            data_dir,
-            memory_ceiling_bytes: u64::try_from(reservation.memory_bytes).unwrap_or(0),
-        });
+        if let Some(want) = crate::model_delivery::model_want(plugin, config, request) {
+            delivery.ensure(want);
+        }
     }
 
     /// Stores what the daemon supplies to run the library's ingress. Until

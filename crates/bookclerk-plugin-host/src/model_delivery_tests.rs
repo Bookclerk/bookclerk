@@ -204,3 +204,83 @@ fn an_unusable_mirror_falls_back_to_the_packages_registry() {
         offers.registry()
     );
 }
+
+/// The embedder's own package files, as a plugin tree under `root`.
+fn embedder_tree(root: &Path) -> crate::DiscoveredPlugin {
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../bookclerk-plugins/platform/ai-embedder");
+    for name in ["plugin.toml", "models.json"] {
+        std::fs::copy(source.join(name), root.join(name)).expect("package file");
+    }
+    let text = std::fs::read_to_string(root.join("plugin.toml")).expect("plugin.toml");
+    let manifest = bookclerk_plugin_manifest::parse(&text).expect("manifest");
+    crate::DiscoveredPlugin::for_test(manifest, root.to_path_buf(), root.join("guest"))
+}
+
+/// A spawn of instance `pi_1` with `settings` as its resolved document.
+fn spawn(settings: &serde_json::Value) -> crate::DeploymentSpawn {
+    crate::DeploymentSpawn {
+        plugin_instance_id: "pi_1".into(),
+        plugin_key: "embedder".into(),
+        plugin_root: None,
+        config: bookclerk_plugin_abi::ExtensibleConfig::json(settings),
+        secrets: bookclerk_plugin_abi::ExtensibleConfig::json(&serde_json::json!({})),
+        config_revision: 1,
+        installed: None,
+    }
+}
+
+#[test]
+fn only_a_platform_plugin_has_its_models_installed() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let root = tempfile::tempdir().expect("tempdir");
+    let config = bookclerk_config::Config {
+        paths: Some(bookclerk_config::Paths::from_files_dir(
+            files.path().to_path_buf(),
+        )),
+        ..Default::default()
+    };
+    let mut plugin = embedder_tree(root.path());
+    let request = spawn(&serde_json::json!({ "model": "harrier-270m-q4" }));
+
+    // A development tree is not a platform plugin, whatever it is named.
+    assert!(model_want(&plugin, &config, &request).is_none());
+
+    // The same tree as the verified platform `embedder`.
+    let platform = bookclerk_plugin_catalog::PLATFORM_ARTIFACTS
+        .iter()
+        .find(|artifact| artifact.manifest_id == "embedder")
+        .expect("the embedder is a platform plugin")
+        .plugin_key();
+    plugin.identity.plugin_key = platform.clone();
+    plugin.identity.artifact.plugin_key = platform;
+    assert!(
+        model_want(&plugin, &config, &request).is_none(),
+        "the platform key alone is not enough"
+    );
+    plugin.identity.provenance = bookclerk_plugin_catalog::PluginProvenance::PlatformBundled;
+    let want = model_want(&plugin, &config, &request).expect("a platform plugin's want");
+    assert_eq!(want.plugin_instance_id, "pi_1");
+    assert_eq!(want.plugin_id, "embedder");
+    assert_eq!(want.serves, [AiTask::TextEmbeddings]);
+    assert_eq!(want.chosen.as_deref(), Some("harrier-270m-q4"));
+    assert_eq!(want.model_id(), "harrier-270m-q4");
+    assert_eq!(want.offers.default_model(), "bekko-a8m");
+    assert!(want.data_dir.starts_with(files.path()));
+    // The default jail ceiling, which both published models fit.
+    assert_eq!(want.memory_ceiling_bytes, 512 << 20);
+    for (_, offer) in want.offers.models() {
+        assert!(offer.memory_bytes <= want.memory_ceiling_bytes);
+    }
+
+    // No setting: the package's default. No list: nothing to install.
+    let unset = model_want(&plugin, &config, &spawn(&serde_json::json!({}))).expect("want");
+    assert_eq!(
+        (unset.chosen.as_deref(), unset.model_id()),
+        (None, "bekko-a8m")
+    );
+    std::fs::write(root.path().join("models.json"), b"[]").expect("write");
+    assert!(model_want(&plugin, &config, &request).is_none());
+    std::fs::remove_file(root.path().join("models.json")).expect("remove");
+    assert!(model_want(&plugin, &config, &request).is_none());
+}

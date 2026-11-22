@@ -120,6 +120,13 @@ isolation = "required"
 # Normally unset: the launcher is found beside the running executable.
 # jail_bin = "/usr/local/bin/bookclerk-jail"
 
+# The embedding model (141 MB for the default) is downloaded by each node the
+# first time the embedder plugin starts, and verified against pinned digests.
+# See docs/server/configuration.md#model-downloads.
+# [plugins.models]
+# download = false                      # never download on this node
+# registry = "https://mirror.example"   # download from a mirror instead
+
 # Shared packaging. This table seeds the `core.output` library document in the
 # library database the first time a host enrolls against a database without
 # one; after that the database is authoritative and edits to this table (or to

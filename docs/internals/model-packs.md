@@ -251,6 +251,110 @@ The digests a node will trust are the ones in `models.json`, in the
 repository it was built from. The attestation lets anyone else check
 where an artifact came from.
 
+## How a node gets a model
+
+The plugin has no network, so the host downloads the model for it. Each
+node does this for itself, in the background, the first time the plugin
+starts there.
+
+### What the plugin package pins
+
+The plugin package carries its own `models.json`
+(`ModelOffers` in `bookclerk-plugin-catalog`), beside `plugin.toml`:
+
+```json
+{
+  "registry": "ghcr.io/bookclerk/models",
+  "default": "bekko-a8m",
+  "models": {
+    "bekko-a8m": {
+      "label": "Bekko (fast)",
+      "summary": "Fast on any machine: about 30 ms per book description on one core.",
+      "model_json": { "bytes": 6330, "sha256": "f826a998…" },
+      "download_bytes": 140609206,
+      "memory_bytes": 230686720
+    }
+  }
+}
+```
+
+- `model_json` is the size and SHA-256 of the model's `model.json`. That
+  file lists the size and SHA-256 of every other file, so one digest
+  fixes the whole model.
+- `download_bytes` and `memory_bytes` are what the picker shows.
+  `memory_bytes` is the plugin's measured peak memory on the check texts
+  (210 MiB for bekko-a8m, 372 MiB for Harrier), rounded up.
+- A test holds this file to the builder's pins
+  (`scripts/model-packs/models.json`) and to the values of the plugin's
+  `model` setting, so the three cannot drift apart.
+
+Only a platform plugin has models installed this way. The host downloads
+with its own network, so a `models.json` in any other package is ignored
+and logged.
+
+### The download
+
+The host asks the registry for an anonymous pull token, then fetches
+blobs by digest. It never reads an OCI manifest: a blob's name is the
+SHA-256 of a file, and the pins say which blobs to fetch.
+
+1. Fetch the blob named by `model_json.sha256` and check its size and
+   digest. Read it as a model description, and refuse one that names
+   another model.
+2. Fetch each file the description lists into `models/.incoming-<model id>`
+   and check its size and SHA-256. A dropped connection resumes with a
+   `Range` request; a file a stopped download already finished is kept.
+3. When every file is there, move the directory to `models/<model id>`.
+   The plugin never sees a partial model: a directory name that starts
+   with a dot is not a model id.
+4. Remove every other model directory. The model a library used before
+   stays until the new one is in place, and the router keeps answering
+   from it until then.
+
+The token reply is the only thing parsed before a digest check. The
+token goes into a request header, so it must be 1 to 8192 characters
+from `A-Z a-z 0-9 . _ ~ + / = -`. The token is sent only to the registry
+host, never to a redirect target.
+
+A failed download is tried again after 1 minute, then 2, 4 and so on up
+to an hour. The picker in Settings shows the state and the last error.
+
+### Which model a library uses
+
+The plugin's `model` setting names the model (`bekko-a8m` by default).
+It is an instance setting like any other, so it is stored in the
+database and every node that runs the plugin follows it:
+
+```bash
+bookclerk plugins config set embedder model harrier-270m-q4
+```
+
+**Settings → Plugins → Text embeddings** lists the models with their
+download size and memory need, and where each stands on the answering
+node. A model that needs more memory than the plugin may use on that
+node (512 MiB by default) cannot be picked there.
+
+The chosen model becomes the one `@library/text-embeddings` names once
+it is installed. Vectors of two models are never compared, so features
+that store vectors embed the library again after a change.
+
+### Nodes that do not download
+
+`[plugins.models]` in `config.toml` turns the download off or points it
+at a mirror (see [Model downloads](../server/configuration.md#model-downloads)).
+With `download = false` an operator can still place a model by hand:
+copy the files into `plugin-state/<plugin fs-id>/data/models/<model id>/`
+and restart. The host accepts a directory only when its `model.json` is
+the pinned one and every listed file has the listed size, and the plugin
+checks every file's SHA-256 before it loads the model.
+
+The hosted demo never downloads: a visitor's container lives for
+minutes.
+
+A model takes 141 to 217 MB of the plugin's data directory, whose
+budget is 512 MiB by default. While a library changes from one model to
+the other, both are on disk.
+
 ## How it was checked
 
 ### Against the published models
@@ -348,6 +452,19 @@ which packs a node holds.
 - The `model_pack` fuzz target checks the `model.json` and row-pack
   readers against a layout check written apart from them (see
   [Fuzzing](../contributing/fuzzing.md)).
+- The host's download is tested against a registry on loopback: a
+  model is downloaded and verified, a dropped file resumes, a file or a
+  description that is not the pinned one is refused, a failed download
+  waits and reports why, and a new choice replaces the old model only
+  once it is installed.
+- The `model_fetch` fuzz target checks the token reply and `models.json`
+  readers: an accepted token is safe in a header, and every URL an
+  accepted list leads to is `https://` on the listed registry host.
+- The staged-plugin suite has the host install the tiny model for the
+  jailed `embedder` from a loopback registry, then has the
+  `echo_workerd_ts` example run `@library/text-embeddings` through its
+  `AI` binding and compares the vector with the model's arithmetic. That
+  is two real plugins in two jails with the host routing between them.
 
 ## Next steps
 

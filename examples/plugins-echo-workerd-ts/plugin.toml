@@ -27,6 +27,11 @@ name = "notes.js"
 path = "notes.js"
 type = "js"
 
+# Runs the library's text-embedding model through the `AI` binding (the
+# `embed` command); the operator approves the task like any capability.
+[ai]
+calls = ["textEmbeddings"]
+
 [capabilities.network]
 mode = "deny"
 
