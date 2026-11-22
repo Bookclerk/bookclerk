@@ -360,8 +360,12 @@ pub fn own_rules(prefix: &str, url: &str, secret: &B2SigningSecret) -> Vec<Value
         .collect()
 }
 
-/// True when `existing` holds the destination's rules for `prefix` exactly
-/// as [`own_rules`] would write them, turned on and not suspended.
+/// True when `existing` holds the destination's rules for `prefix` as
+/// [`own_rules`] would write them, turned on and not suspended.
+///
+/// B2 does not document whether a listed rule repeats its signing secret
+/// and batch size, so a field the listing leaves out is not held against
+/// the rule; one it gives must match.
 #[must_use]
 pub fn own_rules_in_place(
     existing: &[NotificationRule],
@@ -380,8 +384,14 @@ pub fn own_rules_in_place(
                     && rule.event_types == [format!("{category}:*")]
                     && rule.object_name_prefix == prefix
                     && rule.url.as_deref() == Some(url)
-                    && rule.signing_secret.as_ref() == Some(secret)
-                    && rule.max_events_per_batch == Some(u64::from(EVENTS_PER_BATCH))
+                    && rule
+                        .raw
+                        .get("targetConfiguration")
+                        .and_then(|target| target.get("hmacSha256SigningSecret"))
+                        .is_none_or(|got| got.as_str() == Some(secret.expose()))
+                    && rule
+                        .max_events_per_batch
+                        .is_none_or(|got| got == u64::from(EVENTS_PER_BATCH))
             })
         })
 }

@@ -497,8 +497,10 @@ kept as they are.
 
 - **Rules follow the settings.** The plugin checks the rules every hour
   and rewrites them when they are missing, suspended by B2, or point at
-  an old URL or secret. A bucket holds at most 25 rules; when the three
-  don't fit, or B2 refuses them, Bookclerk keeps listing.
+  an old URL or secret. A bucket holds at most 25 rules, and B2 refuses
+  two rules for the same kind of event whose prefixes overlap (such as
+  `library/` and `library/new/`, or any prefix and an empty one). When the
+  three don't fit, or B2 refuses them, Bookclerk keeps listing.
 - **Turning it off removes them.** Unset the secret, or let the library
   lose its public address, and the plugin removes the rules it added on
   its next check.

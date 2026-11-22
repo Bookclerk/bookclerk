@@ -215,6 +215,16 @@ pub struct B2Backend {
     inner: Arc<Inner>,
 }
 
+/// How an API call sends its arguments.
+#[derive(Clone, Copy)]
+enum ApiArgs<'a> {
+    /// A `POST` with this JSON body (most calls).
+    Post(&'a Value),
+    /// A `GET` with these query parameters (calls B2 documents only as
+    /// `GET`, such as `b2_get_bucket_notification_rules`).
+    Get(&'a [(&'a str, &'a str)]),
+}
+
 /// Maps a failure to [`StorageError::Remote`] with what was being done.
 fn remote(what: &str, err: impl std::fmt::Display) -> StorageError {
     StorageError::Remote(format!("B2 {what}: {err}"))
@@ -653,16 +663,16 @@ impl B2Backend {
         body: &Value,
         parse: impl Fn(&[u8]) -> ReplyResult<T> + Send,
     ) -> Result<T> {
-        self.call_at(API_PATH, op, body, parse).await
+        self.call_at(API_PATH, op, ApiArgs::Post(body), parse).await
     }
 
     /// [`Self::call`] for an operation under `path` (an API version's
-    /// path, such as [`API_V4_PATH`]).
+    /// path, such as [`API_V4_PATH`]), sent as `args` says.
     async fn call_at<T>(
         &self,
         path: &str,
         op: &str,
-        body: &Value,
+        args: ApiArgs<'_>,
         parse: impl Fn(&[u8]) -> ReplyResult<T> + Send,
     ) -> Result<T> {
         let mut session = self.session().await?;
@@ -670,12 +680,12 @@ impl B2Backend {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let request = self
-                .inner
-                .http
-                .post(format!("{}{path}{op}", session.auth.api_url.as_str()))
-                .header("Authorization", session.auth.token.expose())
-                .json(body);
+            let url = format!("{}{path}{op}", session.auth.api_url.as_str());
+            let request = match args {
+                ApiArgs::Post(body) => self.inner.http.post(url).json(body),
+                ApiArgs::Get(query) => self.inner.http.get(url).query(&query),
+            }
+            .header("Authorization", session.auth.token.expose());
             let settled = match send(request, op).await {
                 Ok(reply) => settle(reply).await,
                 Err(err) => Err(err),
@@ -1232,7 +1242,7 @@ impl B2Backend {
         self.call_at(
             API_V4_PATH,
             "b2_get_bucket_notification_rules",
-            &json!({ "bucketId": bucket_id }),
+            ApiArgs::Get(&[("bucketId", bucket_id.as_str())]),
             b2_events::parse_notification_rules,
         )
         .await
@@ -1251,7 +1261,7 @@ impl B2Backend {
         self.call_at(
             API_V4_PATH,
             "b2_set_bucket_notification_rules",
-            &json!({ "bucketId": bucket_id, "eventNotificationRules": rules }),
+            ApiArgs::Post(&json!({ "bucketId": bucket_id, "eventNotificationRules": rules })),
             b2_events::parse_notification_rules,
         )
         .await
@@ -1261,9 +1271,10 @@ impl B2Backend {
     /// signed with `secret`, keeping every other rule of the bucket.
     ///
     /// Setting rules replaces them all, so the bucket's other rules are
-    /// read first and sent back unchanged. A suspended rule of the
-    /// destination's can only be deleted, so it is removed in one call and
-    /// added again in the next.
+    /// read first and sent back unchanged. Rules of the destination's that
+    /// are out of date are removed in one call and added again in the
+    /// next: a suspended rule can only be deleted, and an edited rule may
+    /// keep its old signing secret.
     ///
     /// # Returns
     ///
@@ -1285,10 +1296,7 @@ impl B2Backend {
             return Ok(false);
         }
         let names = b2_events::rule_names(&prefix);
-        if existing
-            .iter()
-            .any(|rule| rule.is_suspended && names.contains(&rule.name))
-        {
+        if existing.iter().any(|rule| names.contains(&rule.name)) {
             existing = self
                 .set_notification_rules(b2_events::rules_with(&existing, &prefix, Vec::new()))
                 .await?;

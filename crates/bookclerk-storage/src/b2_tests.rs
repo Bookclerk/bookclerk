@@ -94,6 +94,9 @@ struct World {
     rules: Vec<Value>,
     /// `b2_set_bucket_notification_rules` calls so far.
     rule_sets: u32,
+    /// List rules without their signing secret and batch size, which B2
+    /// does not document repeating.
+    terse_rules: bool,
 }
 
 impl World {
@@ -115,6 +118,23 @@ impl World {
             "action": file.action,
             "fileInfo": file.info,
         })
+    }
+
+    /// The rules as a reply lists them.
+    fn listed_rules(&self) -> Vec<Value> {
+        self.rules
+            .iter()
+            .map(|rule| {
+                let mut rule = rule.clone();
+                if self.terse_rules {
+                    if let Some(target) = rule["targetConfiguration"].as_object_mut() {
+                        target.remove("hmacSha256SigningSecret");
+                        target.remove("maxEventsPerBatch");
+                    }
+                }
+                rule
+            })
+            .collect()
     }
 
     /// The newest version of `name`, when it is not hidden.
@@ -184,10 +204,16 @@ fn handle(
             }),
         );
     }
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
     let api_op = path
         .strip_prefix("/b2api/v3/")
         .or_else(|| path.strip_prefix("/b2api/v4/"));
     if let Some(op) = api_op {
+        // B2 documents the rules listing as a GET with a query string.
+        let get_only = op == "b2_get_bucket_notification_rules";
+        if get_only != (method == "GET") {
+            return reply_error(405, "method_not_allowed");
+        }
         if world.expire_next {
             world.expire_next = false;
             return reply_error(401, "expired_auth_token");
@@ -195,7 +221,19 @@ fn handle(
         if auth != world.token {
             return reply_error(401, "bad_auth_token");
         }
-        let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let request: Value = if get_only {
+            let fields: serde_json::Map<String, Value> = query
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .map(|(key, value)| (key.to_string(), json!(value)))
+                .collect();
+            Value::Object(fields)
+        } else {
+            serde_json::from_slice(body).unwrap_or(Value::Null)
+        };
+        if get_only && request["bucketId"].as_str().unwrap_or_default().is_empty() {
+            return reply_error(400, "bad_request");
+        }
         return api(world, op, &request);
     }
     if path == "/upload/file" || path.starts_with("/upload/part/") {
@@ -317,7 +355,7 @@ fn api(world: &mut World, op: &str, request: &Value) -> Reply {
     match op {
         "b2_get_bucket_notification_rules" => reply_json(
             200,
-            &json!({ "bucketId": text("bucketId"), "eventNotificationRules": world.rules }),
+            &json!({ "bucketId": text("bucketId"), "eventNotificationRules": world.listed_rules() }),
         ),
         "b2_set_bucket_notification_rules" => {
             let Some(rules) = request["eventNotificationRules"].as_array() else {
@@ -345,7 +383,7 @@ fn api(world: &mut World, op: &str, request: &Value) -> Reply {
                 .collect();
             reply_json(
                 200,
-                &json!({ "bucketId": text("bucketId"), "eventNotificationRules": world.rules }),
+                &json!({ "bucketId": text("bucketId"), "eventNotificationRules": world.listed_rules() }),
             )
         }
         "b2_list_buckets" => reply_json(
@@ -1578,7 +1616,7 @@ async fn a_changed_url_rewrites_the_rules_and_the_page_is_incomplete() {
         .expect("feed on");
     assert!(!page.complete, "events before the new rules went elsewhere");
     let world = world.lock().await;
-    assert_eq!(world.rule_sets, 2);
+    assert_eq!(world.rule_sets, 3, "removed, then added with the new URL");
     assert!(world
         .rules
         .iter()
@@ -1651,4 +1689,68 @@ async fn without_a_url_or_a_secret_the_feed_removes_its_rules() {
     let sets = world.lock().await.rule_sets;
     assert!(off.changes(None, 0).await.expect("off").is_none());
     assert_eq!(world.lock().await.rule_sets, sets, "removed once");
+}
+
+#[tokio::test]
+async fn rules_listed_without_their_secret_still_count_as_in_place() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    world.lock().await.terse_rules = true;
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    let start = feed
+        .changes(None, 0)
+        .await
+        .expect("start")
+        .expect("feed on");
+    assert_eq!(world.lock().await.rule_sets, 1, "written and verified once");
+    // A fresh state file forces a check against B2's listing.
+    for entry in std::fs::read_dir(dir.path()).expect("dir") {
+        let path = entry.expect("entry").path();
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("b2-rules-"))
+        {
+            std::fs::remove_file(path).expect("remove");
+        }
+    }
+    let page = feed
+        .changes(Some(&start.cursor), 0)
+        .await
+        .expect("page")
+        .expect("feed on");
+    assert!(page.complete);
+    assert_eq!(
+        world.lock().await.rule_sets,
+        1,
+        "found in place, not rewritten"
+    );
+}
+
+#[tokio::test]
+async fn out_of_date_rules_are_deleted_before_they_are_written_again() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    world.lock().await.rules.extend(crate::b2_events::own_rules(
+        "library/",
+        "https://old.example/hook",
+        &hook_secret(),
+    ));
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    feed.changes(None, 0).await.expect("page").expect("feed on");
+    let world = world.lock().await;
+    assert_eq!(world.rule_sets, 2, "removed, then added with the new URL");
+    assert!(world
+        .rules
+        .iter()
+        .all(|rule| rule["targetConfiguration"]["url"] == HOOK_URL));
 }
