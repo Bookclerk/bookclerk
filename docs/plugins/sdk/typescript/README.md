@@ -136,7 +136,9 @@ which slices the store's own pages into replies the host accepts; see
 [Paged scans](../../abi.md#paged-scans).
 A relay [`[ingress]`](../../manifest.md#ingress-public-address) plugin also
 gets `ORIGIN` while it is the active ingress; `ORIGIN.fetch(request, {
-clientAddress })` hands one request to the library (see
+clientAddress })` hands one request to the library, and
+`ORIGIN.connect(request, { clientAddress, attachment })` opens a
+WebSocket to it for an upgrade (see
 [Public addresses](../../abi.md#public-addresses-ingress)).
 Generate the `Env` type from `plugin.toml`:
 
@@ -179,6 +181,11 @@ attachment is JSON of at most 2 KiB, kept for the socket's life, so the
 handler doesn't depend on memory a restart would lose. Without a
 `webSocketMessage` handler the host is told the plugin has none; without
 `webSocketClose`, closes are ignored.
+
+`SOCKETS.getWebSocket(id)` makes a handle for a socket whose id the plugin
+kept (in another socket's attachment, say) without asking the host. It
+can `send` and `close`; it carries no URL, subprotocol or attachment, and
+sending on a socket that has closed fails with `not_found`.
 
 A remote library whose message announced a new user returns
 `{ pollEvents: true }` from `webSocketMessage`, and the host calls

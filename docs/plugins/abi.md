@@ -621,7 +621,9 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   subprotocols to offer, extra request headers, up to 4 heartbeat pairs
   and an attachment, and returns the socket's id. `send`, `close`,
   `setAttachment` and `list` act on the plugin's own sockets only. An
-  instance holds at most 8 sockets (`maxSocketsPerInstance`).
+  instance holds at most 8 sockets it dialed (`maxSocketsPerInstance`),
+  and apart from those at most 256 sockets to the library that
+  `Origin.connect` opened (`maxOriginSocketsPerInstance`).
 - **Handler.** A plugin that declares `[sockets]` may return a
   `SocketHandler` from `open`. The host calls `message` with each frame
   and the socket's attachment, and `closed` once when the socket ends,
@@ -1863,6 +1865,29 @@ connection metadata (such as `cf-connecting-ip` on a Cloudflare relay),
 never from a header the client sent. Responses follow the same header
 rules, so a library response never carries a connection field.
 
+`env.ORIGIN.connect(request, { clientAddress, attachment })` opens a
+WebSocket to the library for one upgrade the provider delivered. Pass
+the `GET` as the client sent it: the host drops the handshake fields
+(`sec-websocket-key`, `sec-websocket-version`, `sec-websocket-extensions`
+and the connection fields), makes its own handshake, and passes the rest,
+including `sec-websocket-protocol` and cookies, under the same rules as
+`fetch`. It resolves with one of:
+
+- `{ socket }`: the library accepted. The socket is one of the instance's
+  `SOCKETS`: its messages reach `webSocketMessage` and its close reaches
+  `webSocketClose`, `send`, `close` and `serializeAttachment` work on it,
+  and it outlives the invocation. Keep in `attachment` what pairs it with
+  the provider's side. `socket.protocol` is the subprotocol the library
+  chose.
+- `{ response }`: the library answered without upgrading (`401`, `404`,
+  ...). Pass it to the client as it is; its body is at most
+  `MAX_ORIGIN_REFUSAL_BODY_BYTES` (64 KiB).
+
+`connect` needs `[sockets]` (`forbidden` without it) and fails with
+`limit_exceeded` once the instance holds `MAX_ORIGIN_SOCKETS_PER_INSTANCE`
+(256) of these sockets. Frames follow the socket rules: at most
+`maxSocketFrameBytes` (256 KiB) each.
+
 `env.ORIGIN` is present only on a `relay` plugin while it is the active
 ingress, and only in the TypeScript SDK; the Python SDK serves `direct`
 plugins.
@@ -1873,8 +1898,7 @@ operator auth is on. It calls `start` once the guest is healthy, `health`
 every minute, and `stop` before it retires or replaces the instance.
 Every `ORIGIN` request is the `tunnel` transport: the operator's own
 paths and credentials are refused, and the operator's exposure choice
-decides the rest (see [Public address](../server/ingress.md)). `ORIGIN`
-carries plain HTTP requests, not WebSocket upgrades.
+decides the rest (see [Public address](../server/ingress.md)).
 
 ### Model plugins
 
