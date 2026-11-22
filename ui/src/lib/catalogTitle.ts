@@ -443,6 +443,62 @@ function uniqueSorted(values: Iterable<string>): string[] {
 }
 
 /**
+ * The key series names are grouped by.
+ *
+ * Stores spell one series differently (`King & Maxwell`, `King and Maxwell`);
+ * the key reads `&` as `and` and ignores case, accents, apostrophes,
+ * parenthesised text and extra spaces, as the server's series filter does.
+ *
+ * @param name - A series name.
+ * @returns The key; empty for a blank name.
+ */
+export function seriesKey(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/&/g, " and ")
+    .replace(/['\u2019]/g, "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+/**
+ * One label per series among names that may spell it differently.
+ *
+ * Names are grouped by {@link seriesKey}; each group shows the spelling most
+ * of its names use (the first seen on a tie).
+ *
+ * @param names - Series names, blanks allowed.
+ * @returns The labels, sorted.
+ */
+export function seriesChoices(names: Iterable<string>): string[] {
+  const groups = new Map<string, Map<string, number>>();
+  for (const raw of names) {
+    const name = raw.trim();
+    const key = seriesKey(name);
+    if (!key) continue;
+    const spellings = groups.get(key) ?? new Map<string, number>();
+    spellings.set(name, (spellings.get(name) ?? 0) + 1);
+    groups.set(key, spellings);
+  }
+  const labels = [...groups.values()].map((spellings) => {
+    let best = "";
+    let bestCount = 0;
+    for (const [name, count] of spellings) {
+      if (count > bestCount) {
+        best = name;
+        bestCount = count;
+      }
+    }
+    return best;
+  });
+  return uniqueSorted(labels);
+}
+
+/**
  * Formats series name + book number for list/card rows (`Sun Eater #3`).
  *
  * @param series - Series name.
@@ -1032,9 +1088,10 @@ export function catalogFilterValues(
         label: v,
       }));
     case "series": {
-      const named = uniqueSorted(
-        titles.map((t) => t.series?.trim()).filter(Boolean) as string[],
-      ).map((v) => ({ value: v, label: v }));
+      const named = seriesChoices(titles.map((t) => t.series ?? "")).map((v) => ({
+        value: v,
+        label: v,
+      }));
       const hasNone = titles.some((t) => !t.series?.trim());
       return hasNone ? [{ value: "__none__", label: "No series" }, ...named] : named;
     }
@@ -1077,11 +1134,7 @@ export function catalogMatchesFilter(
       );
     case "series":
       if (value === "__none__") return !title.series?.trim();
-      return (
-        (title.series ?? "").localeCompare(value, undefined, {
-          sensitivity: "base",
-        }) === 0
-      );
+      return seriesKey(title.series ?? "") === seriesKey(value);
     case "narrators":
       return splitList(title.narrators).some(
         (a) => a.localeCompare(value, undefined, { sensitivity: "base" }) === 0,

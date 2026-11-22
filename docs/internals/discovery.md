@@ -653,12 +653,47 @@ disables the hard filter
 
 A row is one recording, never one title. Two stores' hits share a row when
 they share an ISBN or ASIN, or when the shared listing pool resolved both
-store products into the same expression (`LibraryStore::listing_expressions`;
-a product the pool has not listed, or placed in two recordings, merges only on
-its identifiers). Titles and authors are never compared, so a narration and a
-dramatisation of one book, or two narrations whose stores share no identifier
-and that the pool has not seen, are separate rows with their own cover,
-narrators and price.
+store products into the same expression (`LibraryStore::listing_expressions`).
+
+Stores rarely share a record number, so hits from two different stores that
+share none of those still share a row when all of these hold
+(`same_recording_by_runtime` in `bookclerk-discover`):
+
+1. Both report a runtime, and the runtimes differ by at most 2 minutes
+   (stores round a recording's length differently).
+2. They name the same work: the resolver's work key matches. It reads the
+   cleaned title without a trailing edition marker (`First Family - Abridged`
+   and `First Family (Abridged)` both key as `First Family`) and the authors.
+3. They credit the same, non-empty set of narrators.
+4. Nothing tells them apart: no two different ISBNs or ASINs, no abridged
+   against unabridged, no two different languages, and no two different
+   expressions in the pool.
+
+Two products of one store never merge this way, and title and authors alone
+never merge hits. A narration and a dramatisation of one book, or an
+unabridged and an abridged recording, stay separate rows with their own
+cover, narrators and price. Each merged row keeps every store's edition, so
+every store's price is still offered, and a field one store left out (a
+runtime, a series, a publisher) is filled from another store's hit.
+
+> [!NOTE]
+> David Baldacci's *First Family*, read by Ron McLarty, is the reference
+> case: Audible, Chirp and Libro.fm each list an unabridged (871 minutes)
+> and an abridged (370 minutes) recording, and search shows two rows.
+
+Stores give ISBNs where they can: Audible's catalog `isbn` attribute and
+Libro.fm's product ids are ISBNs, and Chirp, which lists none, names a
+publisher's cover image after the edition's ISBN-13, which the Chirp plugin
+reads when the file name is a valid ISBN-13. Chirp's typeahead rows, which
+lead page one of a Chirp search, ask for the runtime, publisher and series
+too.
+
+Series names are cleaned when a hit arrives: a trailing edition marker and
+the word "Series" are removed (`King and Maxwell (abridged)` reads
+`King and Maxwell`, `King & Maxwell Series` reads `King & Maxwell`). The
+`series` filter and the web app's series choices treat `&` and `and`, case
+and accents as the same, so one series is one choice whichever store spelled
+it.
 
 | Param | Notes |
 | --- | --- |
