@@ -16,22 +16,25 @@ const FALLBACK_COVER = "/bookclerk-mark.svg";
  * lazily, and one still loading when the cover leaves the page is cancelled.
  *
  * @param props - `path` is a `cover_path` from the API, loaded at `size`;
- *   `sources` are other same-origin URLs tried first (a library sidecar);
- *   `className` sizes the frame.
+ *   `sources` are other same-origin URLs (a library sidecar), tried before
+ *   `path` unless `sourcesLast` is set, then after it; `className` sizes
+ *   the frame.
  */
 export function CoverThumb({
   path,
   size = 128,
   sources = [],
+  sourcesLast = false,
   className = "h-12 w-12",
 }: {
   path?: string | null;
   size?: CoverSize;
   sources?: string[];
+  sourcesLast?: boolean;
   className?: string;
 }) {
   const remote = coverSrc(path, size);
-  const candidates = remote ? [...sources, remote] : sources;
+  const candidates = remote ? (sourcesLast ? [remote, ...sources] : [...sources, remote]) : sources;
   const key = candidates.join("\n");
   const [state, setState] = useState<CoverState>(() => freshState(key));
   // A new set of candidates starts over from the first one.
