@@ -170,6 +170,7 @@ the API. Config reload swaps auth before listen rebind. See [sign-in.md](../serv
 | `GET` | `/api/jobs`, `/jobs` | yes | Job list |
 | `POST` | `/api/library/scan`, `/scan` | yes | Queue scan |
 | `POST` | `/api/library/acquire`, `/acquire` | yes | Queue acquire |
+| `POST` | `/api/library/convert` | yes | Queue a convert (add a copy to stored books) |
 | `GET` | `/api/library/works` | yes | Works from the page index, by cursor, or matching a search (`q`) |
 | `GET` | `/api/library/works/{id}` | yes | One work with editions, listings, holdings and own state |
 | `PUT`/`DELETE` | `/api/library/listings/{id}/pin` | Administrator | Pin a listing to an edition (moves it now), or drop the pin |
