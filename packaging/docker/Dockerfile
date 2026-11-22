@@ -33,6 +33,12 @@ WORKDIR /src/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY ui/ ./
+# `tsc -b` also checks the Workers' visual spec, which imports the page lists
+# of the website and the diagnostics collector from outside `ui/`. Their
+# `package.json` files mark them as ES modules.
+COPY tools/site/audit/package.json tools/site/audit/pages.ts /src/tools/site/audit/
+COPY tools/diagnostics-collector/package.json /src/tools/diagnostics-collector/
+COPY tools/diagnostics-collector/visual/pages.ts /src/tools/diagnostics-collector/visual/
 RUN npm run build
 
 FROM rust:1-trixie@sha256:931c2c0531a8b143e044f0f3914dfe802f15bb3d1955f0b657e9359327ac2ffc AS builder
