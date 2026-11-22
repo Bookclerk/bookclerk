@@ -261,6 +261,32 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/playback/sessions/{id}/sync", "allow"],
   ["POST", "/api/playback/sessions/{id}/close", "allow"],
   ["GET", "/api/playback/sessions/{id}/tracks/{index}", "allow"],
+
+  // Notifications. Visitors may read settings, the catalog, the delivery
+  // log and their inbox, and change routing choices. Anything that adds,
+  // tests or resumes a destination is refused: a destination is where the
+  // library would send messages, and the demo must not become a way to
+  // send them anywhere.
+  ["GET", "/api/notifications/catalog", "allow"],
+  ["GET", "/api/notifications/channels", "allow"],
+  ["POST", "/api/notifications/channels", "deny"],
+  ["PATCH", "/api/notifications/channels/{id}", "deny"],
+  ["DELETE", "/api/notifications/channels/{id}", "deny"],
+  ["POST", "/api/notifications/channels/{id}/resume", "deny"],
+  ["POST", "/api/notifications/channels/{id}/test", "deny"],
+  ["GET", "/api/notifications/routes", "allow"],
+  ["PUT", "/api/notifications/routes/{type}", "allow"],
+  ["GET", "/api/notifications/offers", "allow"],
+  ["PUT", "/api/notifications/offers/{type}", "allow"],
+  ["GET", "/api/notifications/deliveries", "allow"],
+  ["GET", "/api/me/notifications", "allow"],
+  ["PUT", "/api/me/notifications/choices/{type}", "allow"],
+  ["DELETE", "/api/me/notifications/choices/{type}", "allow"],
+  ["POST", "/api/me/notifications/destinations", "deny"],
+  ["DELETE", "/api/me/notifications/destinations/{id}", "deny"],
+  ["POST", "/api/me/notifications/destinations/{id}/resume", "deny"],
+  ["GET", "/api/me/notifications/inbox", "allow"],
+  ["POST", "/api/me/notifications/inbox/read", "allow"],
   // Same-origin cover images; the token only names URLs the API handed out.
   ["GET", "/api/covers/{token}/{size}", "allow"],
   // Same-origin store samples; the token only names URLs the API handed out.

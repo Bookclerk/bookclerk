@@ -77,6 +77,9 @@ a later change supersedes one, its **Status** says so.
 - [Book samples](book-samples.md): a book's details play a short sample,
   cut by the media worker from a held edition or fetched from a
   storefront's public sample, which never counts as listening.
+- [Model plugins and the AI binding](ai-models.md): models run in jailed
+  plugins behind an `ai` entrypoint, every caller reaches them through
+  one `AI` binding, and the host loads no model.
 
 ## Adding a record
 

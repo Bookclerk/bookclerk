@@ -280,6 +280,16 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Wishlist", "/api/branch-requests", "Titles users have asked for."),
     ("Wishlist", "/api/download-requests", "Titles users have asked for."),
     ("Jobs", "/api/jobs", "Queued and running control-plane jobs."),
+    (
+        "Notifications",
+        "/api/notifications",
+        "Channels, routing rules, patron offers, the delivery log, and each user's own notification settings and inbox.",
+    ),
+    (
+        "Notifications",
+        "/api/me/notifications",
+        "Channels, routing rules, patron offers, the delivery log, and each user's own notification settings and inbox.",
+    ),
     ("Events", "/api/events", "Domain events and their deliveries."),
     ("Events", "/api/queues", "Domain events and their deliveries."),
     ("Live", "/api/live", "The web interface's live-updates socket."),

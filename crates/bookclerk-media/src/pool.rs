@@ -36,6 +36,7 @@ use crate::error::{MediaError, Result};
 use crate::job::{MediaJob, MediaJobOutput, MediaJobReply};
 use crate::pcm_stream::{EncodedSample, PcmRunner, PcmStream};
 use crate::tag_worker::{RangeSource, TagRunner, TagWorker};
+use crate::worker_pipe::ThreadPipe;
 
 /// Environment variable naming the worker binary explicitly.
 pub const WORKER_BIN_ENV: &str = "BOOKCLERK_MEDIA_WORKER";
@@ -598,7 +599,17 @@ impl MediaPool {
 }
 
 /// Re-emits worker/jail stderr through tracing so daemon JSON logs stay structured.
+///
+/// The pipe is read on its own thread ([`ThreadPipe`]), so a long-lived
+/// worker's stderr never holds a runtime's blocking pool open.
 pub(crate) fn forward_worker_stderr(job: &'static str, stderr: tokio::process::ChildStderr) {
+    let stderr = match ThreadPipe::spawn(format!("media-{job}-stderr"), stderr) {
+        Ok(pipe) => pipe,
+        Err(err) => {
+            tracing::warn!(job, %err, "could not read media worker stderr");
+            return;
+        }
+    };
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {

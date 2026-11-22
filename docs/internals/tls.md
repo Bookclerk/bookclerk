@@ -39,12 +39,6 @@ Other clients pick aws-lc-rs through their features:
   database guest has it. SeaORM's own `runtime-tokio-rustls` feature is left
   off because it selects sqlx's `ring` provider.
 
-> [!NOTE]
-> The ONNX embeddings stack (`fastembed` and `hf-hub` in
-> `bookclerk-discover`) still brings `native-tls`, OpenSSL and `ring`. It is
-> built only with the opt-in `onnx-embeddings` feature of `bookclerkd` and
-> `bookclerk-cli`, never in a default host build.
-
 ## Reusing connections
 
 A TLS handshake costs far more CPU than the request it opens: about
@@ -74,8 +68,7 @@ cargo tree --workspace -e normal,build -i ring
 cargo tree --workspace -e normal,build -i openssl-sys
 ```
 
-Both should print nothing for a default build. With `--features
-onnx-embeddings` they list only the embeddings stack named above. Passkeys
+Both should print nothing. Passkeys
 (`webauthn-rs` 0.6 in `bookclerkd`) verify signatures and attestation
 certificates with pure-Rust RustCrypto crates, not OpenSSL.
 

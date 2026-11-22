@@ -52,6 +52,8 @@ mod master_key_recovery;
 mod media_capabilities;
 mod node_api;
 mod node_queue;
+mod notifications_api;
+mod notify_jobs;
 mod oidc;
 mod oidc_rp;
 mod oidc_verify;
@@ -678,6 +680,7 @@ async fn assemble_host(
     clerk_link::spawn_clerk_links(state.clone());
     placement::spawn_placement_scheduler(state.clone());
     maintenance::spawn_maintenance(state.clone());
+    notify_jobs::spawn_notify_sweep(state.clone());
     uploads::spawn_prune(state.clone());
     cron_worker::spawn_cron_worker(state.clone());
     requirements_sweep::spawn_requirements_sweep(state.clone());

@@ -91,10 +91,9 @@ pub async fn run_discover_request_queue(
         anyhow::bail!("cancelled");
     }
     // Same options the route used when it ranked per request: local-hash
-    // taste only, no ONNX, so the pass stays cheap and needs no model files.
+    // taste only, so the pass stays cheap.
     let mut opts = crate::discover_jobs::discover_options(
         &cfg,
-        false,
         false,
         String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1),
     );

@@ -174,6 +174,13 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
         .join(", ")}); the host routes each raise.`,
     });
   }
+  if ((m.ai?.calls?.length ?? 0) > 0) {
+    props.push({
+      name: "AI",
+      type: "AiBinding",
+      doc: `\`[ai].calls\` model runner (${(m.ai!.calls ?? []).join(", ")}); the host routes each run to the plugin that serves the model.`,
+    });
+  }
   if (m.work_fs) {
     props.push({
       name: m.work_fs.binding ?? "WORK_FS",
@@ -260,6 +267,7 @@ export function renderEnvTypes(m: Manifest): string {
   const imports = [
     "BookclerkEnv",
     ...[
+      "AiBinding",
       "DatabaseBinding",
       "EventPublisherBinding",
       "KvNamespaceBinding",

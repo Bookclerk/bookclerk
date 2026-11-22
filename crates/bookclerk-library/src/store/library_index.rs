@@ -864,7 +864,7 @@ pub(crate) fn build_work_facets(
 impl LibraryStore {
     /// Most rows one read may return: the database plugin's advertised
     /// `maxResultRows`, or no cap when it advertises none. At least 1.
-    fn result_row_cap(&self) -> u64 {
+    pub(super) fn result_row_cap(&self) -> u64 {
         match self.db_capabilities().max_result_rows {
             0 => u64::MAX,
             rows => u64::from(rows),
@@ -1439,6 +1439,33 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .is_some())
+    }
+
+    /// Whether an edition is inside a patron scope: no scope admits every
+    /// edition, and a scope admits one whose work passes
+    /// [`Self::work_in_scope`]. An edition that belongs to no work is
+    /// outside every scope, so a scoped patron never learns of it.
+    ///
+    /// # Arguments
+    ///
+    /// * `edition_id` - The edition (`editions.id`).
+    /// * `scope` - The patron's filter, `None` when nothing is hidden.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails; callers fail closed.
+    pub async fn edition_in_scope(
+        &self,
+        edition_id: &str,
+        scope: Option<&WorkScope>,
+    ) -> Result<bool> {
+        let Some(scope) = scope else {
+            return Ok(true);
+        };
+        match self.work_of_edition(edition_id).await? {
+            Some(work_id) => self.work_in_scope(&work_id, scope).await,
+            None => Ok(false),
+        }
     }
 
     /// One page of the values a facet has across the held works, by key.

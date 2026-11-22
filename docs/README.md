@@ -36,6 +36,7 @@ others go deeper.
 - [Integrations and sign-in](server/integrations.md): Audiobookshelf, invites and identity providers
 - [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
 - [Libraries and branches](server/branches.md): join a library, shared branches and consent
+- [Notifications](server/notifications.md): channels, routes, patron choices, the inbox and the delivery log
 - [Public address](server/ingress.md): reach the library from the internet through an ingress plugin, with no port forwarding
 - [Media worker](server/media.md): the confined process that handles audio files
 - [Uploads](server/uploads.md): adding books from files, folders and archives, limits and review
@@ -123,3 +124,4 @@ Build and agent conventions for this repository live in
 - [What needs the operator](adr/owner-and-operator.md): the rule for which actions need elevation, and the switches an Owner sets on each Administrator
 - [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins
 - [Notifications](adr/notifications.md): the host routes events into send jobs, notifier plugins send them, and account mail carries reset and recovery
+- [Model plugins and the AI binding](adr/ai-models.md): models run in jailed plugins behind an `ai` entrypoint, and every caller reaches them through one `AI` binding

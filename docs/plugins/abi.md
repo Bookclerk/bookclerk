@@ -1637,8 +1637,10 @@ The typed methods on `Notifier` and `NotifierEntrypoint` are:
 | `validateDestination` | `({ addressJson })` → `{ addressJson, label? }`. Check and normalise a personal address a patron entered; `label` is a short hint that is never a secret (`a***@example.com`). The default accepts the address as given |
 
 A `NotificationMessage` carries `notificationId` (the same on every
-destination's copy, so use it as an idempotency key where the service
-takes one), `notificationType`, `severity`, `title`, a plain `text` body,
+destination's copy; where the service takes an idempotency key, build it
+from `notificationId` and the destination's `destinationId`, so two
+addresses on one service account both receive it and a retry to the same
+destination reuses the same key), `notificationType`, `severity`, `title`, a plain `text` body,
 optional `markdown` and `html` bodies, an optional `link` into the
 library, labelled `fields`, an optional `groupKey` for threading, and an
 alert action and key for services that open and close incidents. When
@@ -1698,10 +1700,13 @@ export class Notifier extends NotifierEntrypoint<Env> {
 }
 ```
 
-> [!NOTE]
-> The host does not route notifications yet: notifiers answer health
-> probes only. The router, the `notify.send` jobs, the delivery log and
-> the inbox come next, followed by the first providers.
+The host gives `send` 30 seconds and `validateDestination` 6 seconds;
+a call that runs longer is dropped and answers `unavailable`, so a send
+is retried.
+
+The host calls `send` from one `notify_send` job per delivery and
+records the answer in the delivery log; see
+[Notifications](../server/notifications.md) for retries and pausing.
 
 ### Raising notifications
 
@@ -1724,20 +1729,21 @@ await env.NOTIFY.raise({
   the host adds.
 - `fields` are `{ name, value }` rows or a plain object, with the caps of
   a message's fields.
-- `patronId` is required for a `patron` type and must be inside the
-  invocation's account scope.
+- `patronId` is required for a `patron` type: the patron's library
+  user id in decimal (`"42"`, with no sign or leading zero), for a patron
+  who holds the store account the invocation runs for.
 - `linkPath` is a path inside the library (`/books/42`): it starts with
   one `/` and has no space or backslash. The host adds its public origin.
 - `groupKey`, `alertAction` and `alertKey` follow the message rules.
 
 `raise` answers the host's `notificationId`, or `invalid_params` for an
 undeclared type or a malformed raise, `forbidden` for a patron outside
-the scope, and `rate_limited` past the per-instance raise budget.
+the scope, and `rate_limited` past the per-session raise budget.
 Python authors call `env.NOTIFY.raise_(...)` with snake-case keywords.
 Native guests receive the binding as `Bindings.notify`.
-
-> [!NOTE]
-> The host does not hand out `NOTIFY` yet; it comes with the router.
+The binding is handed to the instance's entrypoint calls (not to
+stream copies). A plugin may raise at most 30 notifications a minute per
+session (one per store account the instance works for).
 
 ### Public addresses (`ingress`)
 
@@ -1806,6 +1812,129 @@ Every `ORIGIN` request is the `tunnel` transport: the operator's own
 paths and credentials are refused, and the operator's exposure choice
 decides the rest (see [Public address](../server/ingress.md)). `ORIGIN`
 carries plain HTTP requests, not WebSocket upgrades.
+
+### Model plugins
+
+Export `ai` to serve models: the plugin loads them, the host and other
+plugins call them by name (see the [model plugins ADR](../adr/ai-models.md)).
+`[ai].serves` in [`plugin.toml`](manifest.md#ai-models) declares the tasks.
+**Text embeddings** (`textEmbeddings`) is the only task today: a model
+turns each text into a vector, and texts with similar meaning get nearby
+vectors.
+
+The typed methods on `AiModels` and `AiEntrypoint` are:
+
+| Method | Notes |
+| --- | --- |
+| `health` | Liveness and readiness: can the models be loaded with the current settings |
+| `models` | `()` → `{ models }`. The models served now. Must be cheap: load no model here |
+| `run` | `({ model, input })` → `{ output }`. Run one model on one input; `model` is the plugin's own model id |
+
+A listed model has a `modelId` (`[a-z0-9][a-z0-9._-]*`, at most 158
+bytes), a `task`, a `revision` and, for text embeddings, `dimensions`
+(numbers per vector, 1 to `MAX_AI_EMBED_DIMENSIONS`, 4096), `maxTokens`
+and the `languages` it has loaded. Callers name it
+`@<plugin id>/<model id>`.
+
+> [!IMPORTANT]
+> Vectors are comparable only within one revision. Change `revision`
+> whenever the weights, the tokenizer or the loaded language packs change.
+> The host stores it beside every vector and never compares across
+> revisions.
+
+The input of a text-embedding run is `textEmbeddings.texts`: 1 to
+`MAX_AI_EMBED_TEXTS` (64) texts of at most `MAX_AI_EMBED_TEXT_BYTES`
+(16 KiB), each marked `document` (stored content) or `query` (a search
+query matched against documents). The output is `textEmbeddings`:
+
+- `dimensions` and `revision`, the same as the listing;
+- `vectors`: one vector per text in input order, as little-endian 32-bit
+  floats, concatenated (`packEmbeddingVectors` builds it);
+- `fallbacks`: ascending indexes of the texts the tokenizer could not
+  cover with the loaded languages, so the host can recompute them later.
+
+The host treats the listing and every reply as untrusted. A listing over
+`MAX_AI_MODELS` (64), with a repeated or malformed id, an unprintable
+revision or a missing vector length is refused whole. A reply with the
+wrong number of vectors, another length or revision, or a number that is
+not finite fails the run as `unavailable`; the caller never sees a partial
+result.
+
+```ts
+export class Ai extends AiEntrypoint<Env> {
+  async models(): Promise<AiModelList> {
+    return {
+      models: [
+        {
+          modelId: "tiny",
+          task: "textEmbeddings",
+          revision: "sha256:0123abcd",
+          dimensions: 384,
+          maxTokens: 512,
+          languages: ["en"],
+        },
+      ],
+    };
+  }
+
+  async run({ model, input }: AiRunParams): Promise<AiRunOk> {
+    if (model !== "tiny") throw new PluginError("not_found", `no model ${model}`);
+    const vectors = input.textEmbeddings.texts.map(({ text }) => embed(text));
+    return {
+      output: {
+        textEmbeddings: {
+          dimensions: 384,
+          vectors: packEmbeddingVectors(vectors),
+          revision: "sha256:0123abcd",
+          fallbacks: [],
+        },
+      },
+    };
+  }
+}
+```
+
+> [!NOTE]
+> Bookclerk's own features do not call models yet: Discover still ranks
+> with word-hash vectors. The first-party model plugin and Discover on
+> model vectors come next.
+
+### Calling models
+
+A plugin that lists tasks under [`[ai].calls`](manifest.md#ai-models) gets
+an `env.AI` binding with one method, `run`, shaped like the `AI` binding
+of Cloudflare Workers. The host routes the run to the deployed plugin
+that serves the model.
+
+```ts
+const out = await env.AI.run("@library/text-embeddings", {
+  text: ["A detective in Victorian London", "Dragons and a stolen ring"],
+});
+// out.shape = [2, 384]; out.data[0] is the first vector
+```
+
+- The model is `@<plugin id>/<model id>`, or the alias
+  `@library/text-embeddings` for the library's text-embedding model, so a
+  caller need not know which plugin is installed.
+- `text` is one text or a batch; `role` is `document` (the default) or
+  `query`.
+- The answer has `shape`, `data` (one `number[]` per text), the full
+  `model` name that ran, its `revision`, and `fallbacks`. Store `model`
+  and `revision` beside any vector you keep.
+
+`run` fails with `invalid_params` for a malformed name or input,
+`forbidden` for a task the plugin was not granted, `not_found` when no
+plugin deployed on the node serves the model, `rate_limited` past the
+budget, `deadline_exceeded` after 30 seconds, and `unavailable` when the
+model plugin failed or answered wrongly. A plugin cannot call a model it
+serves itself.
+
+A plugin instance may send 240 texts a minute through `AI`. That is
+enough to embed a search query or a handful of new items; work over a
+whole library belongs to the host's jobs.
+
+Python authors call `await env.AI.run(model, text=[...], role="query")`.
+Native guests receive the binding as `Bindings.ai` and send `AiRunParams`.
 
 ### Storage entrypoints
 

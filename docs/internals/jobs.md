@@ -216,6 +216,7 @@ stateDiagram-v2
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
 | `library_index_rebuild` | `library_index_rebuild` | `network` | `run_library_index_rebuild` (no network; rewrites every row of the library's page index) |
 | `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
+| `notify_send` | `notify_send:delivery={id}` | `network` | `run_notify_send` on a node running the notifier instance (requires it); parks itself between retries with `defer_job` |
 | `ingest_batch` | `ingest_batch:batch={id}` | `network` | `run_ingest_batch` on the node that holds the upload's bytes (pinned by `payload.node_id`; never handed to a branch) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
@@ -865,6 +866,7 @@ visible:
 | Storage-scan inventories | Job terminal or gone; a jobless (CLI) scan silent for 1 day |
 | `security_audit_events`, `configuration_audit` | 365 days old |
 | `configuration_changes` | 30 days old (the document and its audit row keep the content) |
+| `notifications` with their delivery log and inbox rows | 30 days old |
 
 The prunes are idempotent, so the fence bounds wasted work rather than
 guarding correctness: the window between a fence check and its delete is

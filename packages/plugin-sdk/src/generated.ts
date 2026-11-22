@@ -42,6 +42,8 @@ import type {
   NotificationAudience,
   NotificationAlertAction,
   NotifyDestinationKind,
+  AiTask,
+  AiTextRole,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -79,6 +81,8 @@ export type {
   NotificationAudience,
   NotificationAlertAction,
   NotifyDestinationKind,
+  AiTask,
+  AiTextRole,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -605,6 +609,12 @@ export interface Bindings {
    * Null when the guest does not export this capability.
    */
   origin?: Origin | null;
+  /**
+   * `AI`: runs models other plugins serve; null unless `[ai]` names the
+   * tasks the plugin calls and the operator granted them.
+   * Null when the guest does not export this capability.
+   */
+  ai?: AiRunner | null;
 }
 
 /**
@@ -740,6 +750,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   ingress?: Ingress | null;
+  /**
+   * `ai` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  ai?: AiModels | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -2014,6 +2029,52 @@ export interface NotificationRaiser {
    * @returns {@link NotifyRaiseReply}
    */
   raise(params: NotifyRaiseParams): Promise<NotifyRaiseReply>;
+}
+
+/**
+ * `ai` entrypoint: serves models. The plugin lists the models it serves,
+ * each with one task, and runs one model on one input. The host routes
+ * every call (its own and other plugins' through the `AI` binding) to the
+ * deployed plugin that serves the named model; a model plugin never learns
+ * who asked. Bulk work arrives as many `run` calls from a host job, each
+ * within the per-call caps.
+ */
+export interface AiModels {
+  /**
+   * Liveness / readiness probe: model files present and loadable.
+   *
+   * @returns {@link HealthReply}
+   */
+  health(): Promise<HealthReply>;
+  /**
+   * The models this plugin serves right now, under its current settings.
+   *
+   * @returns {@link AiModelsReply}
+   */
+  models(): Promise<AiModelsReply>;
+  /**
+   * Run one model on one input.
+   *
+   * @param params - Model name and the task's input.
+   * @returns {@link AiRunReply}
+   */
+  run(params: AiRunParams): Promise<AiRunReply>;
+}
+
+/**
+ * `AI` binding: runs a model by name, as `env.AI.run(model, input)` does on
+ * Cloudflare Workers. The host checks the caller's `[ai]` grant for the
+ * model's task, applies the call's deadline and the caller's budget, and
+ * forwards to the serving plugin's `AiModels.run`.
+ */
+export interface AiRunner {
+  /**
+   * Run one model on one input.
+   *
+   * @param params - Model name or task alias, and the task's input.
+   * @returns {@link AiRunReply}
+   */
+  run(params: AiRunParams): Promise<AiRunReply>;
 }
 
 /**
@@ -4275,6 +4336,135 @@ export interface NotifyRaised {
 /** Result union of `NotificationRaiser.raise`. */
 export type NotifyRaiseReply =
   | { kind: "ok"; value: NotifyRaised } // Accepted by the router.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One model an `ai` plugin serves. */
+export interface AiModel {
+  /**
+   * Model id within the plugin (`bekko-a8m`): lowercase letters, digits,
+   * `.`, `_` and `-`. Callers name it `@<plugin id>/<model id>`; the whole
+   * name is at most `maxAiModelNameBytes`.
+   */
+  modelId: string;
+  /** The model's one task. */
+  task: AiTask;
+  /**
+   * Digest of everything that decides the output: weights, tokenizer and
+   * the language packs loaded. Outputs are comparable only when it matches.
+   */
+  revision: string;
+  /**
+   * Text embeddings: numbers per vector, at most `maxAiEmbedDimensions`.
+   * Omitted when absent (wire zero value).
+   */
+  dimensions?: number;
+  /**
+   * Text embeddings: tokens read from one text; the rest is cut off.
+   * Omitted when absent (wire zero value).
+   */
+  maxTokens?: number;
+  /**
+   * BCP 47 tags of the languages the model is loaded for, at most
+   * `maxAiLanguages`; empty when it has no language packs.
+   */
+  languages: string[];
+}
+
+/** Success payload of `AiModels.models`. */
+export interface AiModelList {
+  /** Served models, at most `maxAiModels`, each `modelId` once. */
+  models: AiModel[];
+}
+
+/** Result union of `AiModels.models`. */
+export type AiModelsReply =
+  | { kind: "ok"; value: AiModelList } // The served models.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One text to embed. */
+export interface AiEmbedText {
+  /** The text, at most `maxAiEmbedTextBytes`; never empty. */
+  text: string;
+  /** Document or query. */
+  role: AiTextRole;
+}
+
+/** Input of the `textEmbeddings` task. */
+export interface AiTextEmbeddingsInput {
+  /** Texts to embed, 1 to `maxAiEmbedTexts`. */
+  texts: AiEmbedText[];
+}
+
+/** Output of the `textEmbeddings` task. */
+export interface AiTextEmbeddingsOutput {
+  /** Numbers per vector; equals the model's `AiModel.dimensions`. */
+  dimensions: number;
+  /**
+   * One vector per input text, in input order: `dimensions` little-endian
+   * IEEE 754 32-bit floats each, concatenated. Every number is finite.
+   */
+  vectors: Uint8Array;
+  /** `AiModel.revision` of the model that made the vectors. */
+  revision: string;
+  /**
+   * Indexes (into the input texts, ascending, each once) of the texts
+   * where the tokenizer met text outside the loaded language packs and
+   * fell back to smaller pieces; such a vector should be recomputed after
+   * the missing pack is added.
+   */
+  fallbacks: number[];
+}
+
+/**
+ * Input to one model run: one field per `AiTask`, and exactly one is set
+ * (the others are null). A new task appends a field.
+ */
+export interface AiInput {
+  /** `textEmbeddings` task. */
+  textEmbeddings: AiTextEmbeddingsInput;
+}
+
+/**
+ * Output of one model run: one field per `AiTask`, and exactly one is set
+ * (the others are null). A new task appends a field.
+ */
+export interface AiOutput {
+  /** `textEmbeddings` task. */
+  textEmbeddings: AiTextEmbeddingsOutput;
+}
+
+/** Params of `AiModels.run` and `AiRunner.run`. */
+export interface AiRunParams {
+  /**
+   * On `AiModels.run`, the plugin's own `AiModel.modelId`. On
+   * `AiRunner.run`, `@<plugin id>/<model id>` or a task alias
+   * (`@library/text-embeddings`: the model the library chose for the task).
+   */
+  model: string;
+  /** The input; the field set must match the model's task. */
+  input: AiInput;
+}
+
+/** Success payload of a model run. */
+export interface AiRunOk {
+  /** The output; the field set matches the model's task. */
+  output: AiOutput;
+  /**
+   * Full name of the model that ran (`@<plugin id>/<model id>`), so a
+   * caller that used a task alias knows what answered. Set by the host on
+   * `AiRunner.run`; empty on `AiModels.run`.
+   * Omitted when absent (wire zero value).
+   */
+  model?: string;
+}
+
+/**
+ * Result union of `AiModels.run` and `AiRunner.run`. A model the plugin
+ * does not serve is `not_found`; an input for another task is
+ * `invalid_params`; a caller without the grant gets `forbidden`.
+ */
+export type AiRunReply =
+  | { kind: "ok"; value: AiRunOk } // The model ran.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** One WebSocket message. */

@@ -708,6 +708,9 @@ def _write_bindings(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("origin") is not None:
         if v["origin"] is not None:
             s.set_cap(12, caps.export_cap(v["origin"]))
+    if v.get("ai") is not None:
+        if v["ai"] is not None:
+            s.set_cap(13, caps.export_cap(v["ai"]))
 
 
 def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
@@ -738,11 +741,14 @@ def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
     origin = caps.import_cap(s.get_cap_index(12))
     if not (origin is None):
         out["origin"] = origin
+    ai = caps.import_cap(s.get_cap_index(13))
+    if not (ai is None):
+        out["ai"] = ai
     return out
 
 
-_bindings_codec = _Codec(0, 13, _write_bindings, _read_bindings)
-"""Wire codec for ``Bindings`` (0 data words, 13 pointers)."""
+_bindings_codec = _Codec(0, 14, _write_bindings, _read_bindings)
+"""Wire codec for ``Bindings`` (0 data words, 14 pointers)."""
 
 
 def _write_network_grant(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -845,6 +851,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("ingress") is not None:
         if v["ingress"] is not None:
             s.set_cap(15, caps.export_cap(v["ingress"]))
+    if v.get("ai") is not None:
+        if v["ai"] is not None:
+            s.set_cap(16, caps.export_cap(v["ai"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -898,18 +907,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     ingress = caps.import_cap(s.get_cap_index(15))
     if not (ingress is None):
         out["ingress"] = ingress
+    ai = caps.import_cap(s.get_cap_index(16))
+    if not (ai is None):
+        out["ai"] = ai
     return out
 
 
-_entrypoints_codec = _Codec(0, 16, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 16 pointers)."""
+_entrypoints_codec = _Codec(0, 17, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 17 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 16), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 17), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -920,7 +932,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 16), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 17), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -5560,6 +5572,223 @@ _notify_raise_reply_codec = _Codec(1, 1, _write_notify_raise_reply, _read_notify
 """Wire codec for ``NotifyRaiseReply`` (1 data words, 1 pointers)."""
 
 
+def _write_ai_model(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["modelId"])
+    s.set_u16(0, _ord(A.AI_TASKS, v["task"], "AiTask"))
+    s.set_text(1, v["revision"])
+    if v.get("dimensions") is not None:
+        s.set_u32(1, v["dimensions"])
+    if v.get("maxTokens") is not None:
+        s.set_u32(2, v["maxTokens"])
+    s.set_text_list(2, v["languages"])
+
+
+def _read_ai_model(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "modelId": s.get_text(0),
+        "task": _from_ord(A.AI_TASKS, s.get_u16(0), "AiTask"),
+        "revision": s.get_text(1),
+        "languages": s.get_text_list(2),
+    }
+    dimensions = s.get_u32(1)
+    if not (dimensions == 0):
+        out["dimensions"] = dimensions
+    max_tokens = s.get_u32(2)
+    if not (max_tokens == 0):
+        out["maxTokens"] = max_tokens
+    return out
+
+
+_ai_model_codec = _Codec(2, 3, _write_ai_model, _read_ai_model)
+"""Wire codec for ``AiModel`` (2 data words, 3 pointers)."""
+
+
+def _write_ai_model_list(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["models"]), 2, 3)
+    for item, elem in zip(items, v["models"], strict=True):
+        _ai_model_codec.write(item, elem, caps)
+
+
+def _read_ai_model_list(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "models": [_ai_model_codec.read(item, caps) for item in s.get_struct_list(0, 2, 3)],
+    }
+
+
+_ai_model_list_codec = _Codec(0, 1, _write_ai_model_list, _read_ai_model_list)
+"""Wire codec for ``AiModelList`` (0 data words, 1 pointers)."""
+
+
+def _write_ai_models_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _ai_model_list_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown AiModelsReply union member: {kind}")
+
+
+def _read_ai_models_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _ai_model_list_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown AiModelsReply union member: {disc}")
+
+
+_ai_models_reply_codec = _Codec(1, 1, _write_ai_models_reply, _read_ai_models_reply)
+"""Wire codec for ``AiModelsReply`` (1 data words, 1 pointers)."""
+
+
+def _write_ai_embed_text(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["text"])
+    s.set_u16(0, _ord(A.AI_TEXT_ROLES, v["role"], "AiTextRole"))
+
+
+def _read_ai_embed_text(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "text": s.get_text(0),
+        "role": _from_ord(A.AI_TEXT_ROLES, s.get_u16(0), "AiTextRole"),
+    }
+
+
+_ai_embed_text_codec = _Codec(1, 1, _write_ai_embed_text, _read_ai_embed_text)
+"""Wire codec for ``AiEmbedText`` (1 data words, 1 pointers)."""
+
+
+def _write_ai_text_embeddings_input(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["texts"]), 1, 1)
+    for item, elem in zip(items, v["texts"], strict=True):
+        _ai_embed_text_codec.write(item, elem, caps)
+
+
+def _read_ai_text_embeddings_input(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "texts": [_ai_embed_text_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+    }
+
+
+_ai_text_embeddings_input_codec = _Codec(0, 1, _write_ai_text_embeddings_input, _read_ai_text_embeddings_input)
+"""Wire codec for ``AiTextEmbeddingsInput`` (0 data words, 1 pointers)."""
+
+
+def _write_ai_text_embeddings_output(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u32(0, v["dimensions"])
+    s.set_data(0, v["vectors"])
+    s.set_text(1, v["revision"])
+    s.set_u32_list(2, v["fallbacks"])
+
+
+def _read_ai_text_embeddings_output(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "dimensions": s.get_u32(0),
+        "vectors": s.get_data(0),
+        "revision": s.get_text(1),
+        "fallbacks": s.get_u32_list(2),
+    }
+
+
+_ai_text_embeddings_output_codec = _Codec(1, 3, _write_ai_text_embeddings_output, _read_ai_text_embeddings_output)
+"""Wire codec for ``AiTextEmbeddingsOutput`` (1 data words, 3 pointers)."""
+
+
+def _write_ai_input(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("textEmbeddings") is not None:
+        _ai_text_embeddings_input_codec.write(s.init_struct(0, 0, 1), v["textEmbeddings"], caps)
+
+
+def _read_ai_input(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "textEmbeddings": _ai_text_embeddings_input_codec.read(s.get_struct(0, 0, 1), caps),
+    }
+
+
+_ai_input_codec = _Codec(0, 1, _write_ai_input, _read_ai_input)
+"""Wire codec for ``AiInput`` (0 data words, 1 pointers)."""
+
+
+def _write_ai_output(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("textEmbeddings") is not None:
+        _ai_text_embeddings_output_codec.write(s.init_struct(0, 1, 3), v["textEmbeddings"], caps)
+
+
+def _read_ai_output(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "textEmbeddings": _ai_text_embeddings_output_codec.read(s.get_struct(0, 1, 3), caps),
+    }
+
+
+_ai_output_codec = _Codec(0, 1, _write_ai_output, _read_ai_output)
+"""Wire codec for ``AiOutput`` (0 data words, 1 pointers)."""
+
+
+def _write_ai_run_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["model"])
+    if v.get("input") is not None:
+        _ai_input_codec.write(s.init_struct(1, 0, 1), v["input"], caps)
+
+
+def _read_ai_run_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "model": s.get_text(0),
+        "input": _ai_input_codec.read(s.get_struct(1, 0, 1), caps),
+    }
+
+
+_ai_run_params_codec = _Codec(0, 2, _write_ai_run_params, _read_ai_run_params)
+"""Wire codec for ``AiRunParams`` (0 data words, 2 pointers)."""
+
+
+def _write_ai_run_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("output") is not None:
+        _ai_output_codec.write(s.init_struct(0, 0, 1), v["output"], caps)
+    if v.get("model") is not None:
+        s.set_text(1, v["model"])
+
+
+def _read_ai_run_ok(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "output": _ai_output_codec.read(s.get_struct(0, 0, 1), caps),
+    }
+    model = s.get_text(1)
+    if not (model == ""):
+        out["model"] = model
+    return out
+
+
+_ai_run_ok_codec = _Codec(0, 2, _write_ai_run_ok, _read_ai_run_ok)
+"""Wire codec for ``AiRunOk`` (0 data words, 2 pointers)."""
+
+
+def _write_ai_run_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _ai_run_ok_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown AiRunReply union member: {kind}")
+
+
+def _read_ai_run_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _ai_run_ok_codec.read(s.get_struct(0, 0, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown AiRunReply union member: {disc}")
+
+
+_ai_run_reply_codec = _Codec(1, 1, _write_ai_run_reply, _read_ai_run_reply)
+"""Wire codec for ``AiRunReply`` (1 data words, 1 pointers)."""
+
+
 def _write_socket_frame(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "text":
@@ -9339,6 +9568,120 @@ _notification_raiser_raise_results_codec = _Codec(0, 1, _write_notification_rais
 """Wire codec for ``NotificationRaiserRaiseResults`` (0 data words, 1 pointers)."""
 
 
+def _write_ai_models_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_ai_models_health_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_ai_models_health_params_codec = _Codec(0, 0, _write_ai_models_health_params, _read_ai_models_health_params)
+"""Wire codec for ``AiModelsHealthParams`` (0 data words, 0 pointers)."""
+
+
+def _write_ai_models_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_ai_models_health_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _health_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_ai_models_health_results_codec = _Codec(0, 1, _write_ai_models_health_results, _read_ai_models_health_results)
+"""Wire codec for ``AiModelsHealthResults`` (0 data words, 1 pointers)."""
+
+
+def _write_ai_models_models_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_ai_models_models_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_ai_models_models_params_codec = _Codec(0, 0, _write_ai_models_models_params, _read_ai_models_models_params)
+"""Wire codec for ``AiModelsModelsParams`` (0 data words, 0 pointers)."""
+
+
+def _write_ai_models_models_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _ai_models_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_ai_models_models_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _ai_models_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_ai_models_models_results_codec = _Codec(0, 1, _write_ai_models_models_results, _read_ai_models_models_results)
+"""Wire codec for ``AiModelsModelsResults`` (0 data words, 1 pointers)."""
+
+
+def _write_ai_models_run_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("params") is not None:
+        _ai_run_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+
+
+def _read_ai_models_run_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _ai_run_params_codec.read(s.get_struct(0, 0, 2), caps),
+    }
+
+
+_ai_models_run_params_codec = _Codec(0, 1, _write_ai_models_run_params, _read_ai_models_run_params)
+"""Wire codec for ``AiModelsRunParams`` (0 data words, 1 pointers)."""
+
+
+def _write_ai_models_run_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _ai_run_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_ai_models_run_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _ai_run_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_ai_models_run_results_codec = _Codec(0, 1, _write_ai_models_run_results, _read_ai_models_run_results)
+"""Wire codec for ``AiModelsRunResults`` (0 data words, 1 pointers)."""
+
+
+def _write_ai_runner_run_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("params") is not None:
+        _ai_run_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+
+
+def _read_ai_runner_run_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _ai_run_params_codec.read(s.get_struct(0, 0, 2), caps),
+    }
+
+
+_ai_runner_run_params_codec = _Codec(0, 1, _write_ai_runner_run_params, _read_ai_runner_run_params)
+"""Wire codec for ``AiRunnerRunParams`` (0 data words, 1 pointers)."""
+
+
+def _write_ai_runner_run_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _ai_run_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_ai_runner_run_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _ai_run_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_ai_runner_run_results_codec = _Codec(0, 1, _write_ai_runner_run_results, _read_ai_runner_run_results)
+"""Wire codec for ``AiRunnerRunResults`` (0 data words, 1 pointers)."""
+
+
 def _write_database_open_session_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
@@ -9849,13 +10192,13 @@ def _write_plugin_worker_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -
     if v.get("invocation") is not None:
         _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
     if v.get("bindings") is not None:
-        _bindings_codec.write(s.init_struct(1, 0, 13), v["bindings"], caps)
+        _bindings_codec.write(s.init_struct(1, 0, 14), v["bindings"], caps)
 
 
 def _read_plugin_worker_open_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "invocation": _invocation_codec.read(s.get_struct(0, 1, 4), caps),
-        "bindings": _bindings_codec.read(s.get_struct(1, 0, 13), caps),
+        "bindings": _bindings_codec.read(s.get_struct(1, 0, 14), caps),
     }
 
 
