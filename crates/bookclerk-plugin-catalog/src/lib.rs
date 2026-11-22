@@ -22,6 +22,8 @@ mod kind;
 mod ledger;
 mod manifest;
 mod model_fetch;
+#[cfg(any(test, feature = "test-support"))]
+pub mod model_fetch_testing;
 mod mutation_lock;
 mod owner_fetch;
 mod payload;

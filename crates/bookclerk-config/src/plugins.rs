@@ -108,6 +108,46 @@ pub struct PluginsConfig {
     /// `POST /hooks/<token>/<name>`.
     #[serde(default, skip_serializing_if = "WebhooksExposure::is_default")]
     pub webhooks: WebhooksExposure,
+    /// How this node gets the model files of its model plugins.
+    #[serde(default, skip_serializing_if = "PluginModelsConfig::is_default")]
+    pub models: PluginModelsConfig,
+}
+
+/// `[plugins.models]`: how this node gets the model files a model plugin
+/// pins (the embedding model behind Discover and search).
+///
+/// A model plugin has no network. The host downloads the chosen model
+/// from the registry the plugin package names and checks every file
+/// against the digests pinned in that package.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PluginModelsConfig {
+    /// False to never download a model on this node. Features that need
+    /// one keep their stand-in until an operator places the files by
+    /// hand. Defaults to true.
+    pub download: bool,
+    /// Address to download from instead of the registry the plugin
+    /// package names: `https://host` with no path (a mirror that serves
+    /// the same repositories). The pinned digests are checked either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+}
+
+impl Default for PluginModelsConfig {
+    fn default() -> Self {
+        Self {
+            download: true,
+            registry: None,
+        }
+    }
+}
+
+impl PluginModelsConfig {
+    /// True when the section matches [`Self::default`], so serde can omit
+    /// `[plugins.models]`.
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// `plugins.webhooks`: whether the public webhook route is open.
