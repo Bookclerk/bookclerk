@@ -104,10 +104,10 @@ def _nextest_mode(event: str, os_suite: bool = False) -> list[str]:
     A merge group only needs to know whether it can land, so it retries once and
     stops at the first test that still fails. Pull requests run every test, so
     one round of CI shows every failure to fix. The ``test-os`` job
-    (``os_suite``, set through ``OS_SUITE_ENV``) only reports
-    (``REPORT_JOBS``), so it uses ``NEXTEST_OS_PROFILE`` whatever the event:
-    every test runs, and a hung test is stopped and named instead of holding
-    the job until its timeout.
+    (``os_suite``, set through ``OS_SUITE_ENV``) uses ``NEXTEST_OS_PROFILE``
+    whatever the event: every test runs with one retry, so one queue run
+    shows every Windows or macOS failure, and a hung test is stopped and
+    named instead of holding the job until its timeout.
     """
     if os_suite:
         return ["--profile", NEXTEST_OS_PROFILE]
@@ -1105,6 +1105,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             "test:db-value",
             "test:db-stream",
             "test:scan-page",
+            "test:webhooks",
             "test:db-adapter",
             "test:plugin-migrations",
             "test:entrypoints",

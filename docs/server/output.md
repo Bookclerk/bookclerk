@@ -22,9 +22,12 @@ files.
 | Local filesystem | `local` (platform) | none | Yes, on every host at enrollment |
 | S3 / MinIO | `s3` (optional) | Sealed keys, or the AWS SDK chain | No, until `bookclerk plugins deploy s3` |
 | Cloudflare R2 | `r2` (optional) | Sealed R2 keys | No, until `bookclerk plugins deploy r2` |
+| Backblaze B2 | `b2` (optional) | A sealed B2 application key | No, until `bookclerk plugins deploy b2` |
 
 Any other plugin with a `storage` entrypoint is a destination too, and an
-acquire writes to it like the built-in ones:
+acquire writes to it like the built-in ones. The exception is a storage
+instance made a [drop folder](drop-folders.md): Bookclerk reads books from
+it and never writes acquired books into it.
 
 - Each deployed plugin instance is its own destination, named by its
   plugin instance id. That id is what upload records and `edition_files`
@@ -55,7 +58,7 @@ records for that destination:
   such as `\`, `{`, `}`, `^`, `%` and `|`, and fits the whole key, its prefix
   included, into 1024 bytes. It shortens the file name before its
   extension first, then the longest folder names.
-- `r2` follows the same object-key rules as `s3`.
+- `r2` and `b2` follow the same object-key rules as `s3`.
 - A third-party destination translates keys when it declares
   `storage.translateKeys` ([plugin ABI](../plugins/abi.md#translating-keys)).
   One that doesn't stores the host key as written.
@@ -295,8 +298,8 @@ sidecars onto your naming layout instead, set
 Matching works per edition. When two accounts own the same book, its file
 is matched once and both accounts see it as acquired. When the file is
 gone, the account whose acquire recorded it marks the book not acquired.
-`bookclerk library convert` also converts each edition once, through that
-account.
+`bookclerk library convert` also adds a copy to each edition once, through
+that account.
 
 ## Cloudflare R2
 
@@ -388,6 +391,75 @@ The queue works like an SQS queue for the `s3` plugin (see
   lists the bucket once and carries on from there. Messages the queue
   drops when its retention runs out are found by the next scheduled
   listing.
+
+## Backblaze B2
+
+The `b2` plugin writes to a Backblaze B2 bucket through B2's native API.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `bucket` | none | Required. The bucket's name |
+| `prefix` | `library/` | |
+| `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | from `core.output` | Naming for this destination only |
+| `application_key_id`, `application_key` | none | Required secrets: a B2 application key |
+
+It works like the other object stores, with these differences:
+
+- **Large files.** A file over 8 MiB goes up in parts, with at most
+  three parts' worth of memory held by the B2 code (two read ahead and
+  the part being sent). When the plugin's requests go through the host's
+  network proxy, the proxy step holds one more copy of the part in
+  flight, so plan for up to four parts. An upload that fails part way is cancelled. If the
+  cancel fails too, the unfinished file stays in the bucket (and is
+  billed) until a later delete of that name or a lifecycle rule removes
+  it.
+- **Deletes remove every version.** B2 keeps old versions of a file.
+  When Bookclerk deletes a file it deletes all of its versions, oldest
+  first, so none stay billed behind a hide marker and a delete that stops
+  part way never brings back an older version. A name with more than
+  10,000 versions is refused instead of half deleted.
+- **Metadata fits the strictest bucket.** B2 limits a file's name and
+  stored metadata together (2,048 bytes on a bucket with encryption or
+  Object Lock). The checksum and commit token are always stored; the
+  ASIN, file times and title follow only while they fit, so a very long
+  title is left out of the metadata rather than failing the upload.
+- **No conditional writes.** B2 cannot write a file only if it is
+  unchanged. Bookclerk checks just before such a write instead, so
+  another program writing the same file at the same moment can still win.
+  Moves are a copy and then a delete.
+- **No change feed yet.** Bookclerk lists the bucket on a schedule to find
+  files other programs add, change or remove.
+
+### Set up a B2 bucket
+
+1. In the Backblaze web app, create an application key with **Read and
+   Write** access to the bucket. Note its keyID and its application key,
+   which is shown only once. A key limited to a file-name prefix works
+   when the destination's `prefix` is inside it.
+2. Set the bucket:
+
+   ```sh
+   bookclerk plugins config set b2 bucket my-audiobooks
+   ```
+
+3. Enter the key. Each command reads the value from stdin:
+
+   ```sh
+   bookclerk plugins config set b2 application_key_id --secret
+   bookclerk plugins config set b2 application_key --secret
+   ```
+
+4. Approve the plugin's network access when you enable it. It reaches
+   `*.backblazeb2.com` for the API and downloads and `*.backblaze.com` for
+   uploads, both on port 443.
+5. Deploy the plugin:
+
+   ```sh
+   bookclerk plugins deploy b2
+   ```
+
+The plugin signs in to B2 on its first call, not when it starts. A wrong
+key or bucket shows up as an error on the first write or listing.
 
 ## Choosing which books a destination takes
 
@@ -520,10 +592,43 @@ as the title's storage key, and the only one offered to a branch that
 asks for the library's copy.
 
 > [!NOTE]
-> Copies are made when a book is acquired. A copy added to
-> `output.copies` later is not made for books already stored. When a book
-> no destination receives any copy of is acquired, the acquire fails at
-> once with "no destination accepts this book".
+> Copies in `output.copies` are made when a book is acquired. A copy added
+> to `output.copies` later is not made for books already stored; add it to
+> those with a convert (see [Adding a copy to a stored book](#adding-a-copy-to-a-stored-book)).
+> When a book no destination receives any copy of is acquired, the acquire
+> fails at once with "no destination accepts this book".
+
+### Adding a copy to a stored book
+
+An administrator can add one more copy to a book the library already
+stores, without downloading it from the store again:
+
+1. Open the book in **Library**.
+2. Under **Convert**, pick a copy, such as **MP3, 64 kbit/s mono**. Opus
+   copies are listed after ticking **Advanced formats**.
+3. Select **Convert**.
+
+From the command line, name the copy with `--to`; without it, the copy is
+an MP3 at the `output.lame` settings:
+
+```sh
+bookclerk library convert --to mp3:64k-mono <book>
+```
+
+The web API takes the same request as `POST /api/library/convert`.
+
+A convert runs as a job on a host that may store files. It makes the copy
+from the stored copy closest to the store's audio: one kept as delivered
+or as an M4B first, then the main output, then the copy on the primary
+destination. The new copy goes beside the original, under its own folder
+(`mp3 64k-mono/Title [1a2b3c4d]/`), to every destination whose filter
+takes it, and is recorded on the edition as that copy. The title's
+storage key stays the main output's. No companion PDF is written for it.
+
+A convert of a copy the book already has does nothing, unless
+**Make it again if it exists** (`--force`) is ticked. A convert refuses
+`original` copies and the main output's own copy, which only an acquire
+makes, and a book that is not stored yet.
 
 ## Upgrading to better files
 
@@ -774,6 +879,7 @@ apply that set everywhere instead, or list your own
 [output]
 format = "enriched_m4b"   # single_mp3 | split_mp3_by_chapter | opus | none
 copies = []               # extra copies, see "Keeping several copies"
+keep_codec_in_m4b = false # see "Keeping unusual audio in M4B"
 download_cover = true
 download_pdf = true
 create_cue = true
@@ -794,6 +900,28 @@ Every host applies a new revision at its next configuration wakeup. See
 [Configuration](configuration.md#output-shared).
 
 If a sidecar file fails, Bookclerk logs it and still keeps the audio.
+
+### Keeping unusual audio in M4B
+
+An M4B normally holds AAC audio, which every audiobook player plays. When
+a store delivers Opus, FLAC, ALAC, E-AC-3 or AC-4 audio, Bookclerk
+re-encodes it to AAC for the M4B. Two codecs are kept as they are
+whatever this setting says, because no decoder for them is built in:
+E-AC-3 in a build without the [FFmpeg decoders](media.md#ffmpeg-decoders)
+(release builds have them, so there it re-encodes), and AC-4 in every
+build. The advanced setting
+`output.keep_codec_in_m4b` (off by default; **Settings → Output →
+Advanced**) keeps that audio unchanged inside the M4B instead, with its
+own sample entry, tags and chapters:
+
+```sh
+bookclerk config set output.keep_codec_in_m4b true
+```
+
+Keeping it saves an encode and keeps the delivered audio bit for bit, but
+some players and devices cannot play these codecs inside an M4B. When a
+book's parts differ in codec, sample rate or channels, they are still
+encoded to AAC.
 
 With `fixup_metadata` on, an M4B also records which Bookclerk version
 tagged it, in the freeform item `----:app.bookclerk:TOOL`.

@@ -157,6 +157,9 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         }
         "output.download_pdf" => config.output.download_pdf = parse_bool(v).unwrap_or(false),
         "output.create_cue" => config.output.create_cue = parse_bool(v).unwrap_or(false),
+        "output.keep_codec_in_m4b" => {
+            config.output.keep_codec_in_m4b = parse_bool(v).unwrap_or(false);
+        }
         "output.fixup_metadata" => {
             config.output.fixup_metadata = parse_bool(v).unwrap_or(false);
         }
@@ -451,6 +454,11 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 config.integrations.portal_session_ttl_hours = n.max(1);
             }
         }
+        "plugins.webhooks" => {
+            if let Some(exposure) = crate::WebhooksExposure::parse(v) {
+                config.plugins.webhooks = exposure;
+            }
+        }
         "plugins.isolation" => {
             if let Some(isolation) = crate::Isolation::parse(v) {
                 config.plugins.isolation = isolation;
@@ -599,6 +607,7 @@ mod tests {
         ("integrations.claim_ticket_ttl_hours", "77"),
         ("integrations.portal_session_ttl_hours", "77"),
         ("plugins.isolation", "off"),
+        ("plugins.webhooks", "off"),
         ("media.isolation", "off"),
         ("plugins.jail.memory_mib", "777"),
         ("plugins.jail.cpu_rate_percent", "7"),

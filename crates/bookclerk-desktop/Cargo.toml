@@ -29,6 +29,7 @@ window = [
     "dep:tracing",
     "dep:tauri",
     "dep:tauri-build",
+    "dep:notify-rust",
 ]
 
 [dependencies]
@@ -48,6 +49,11 @@ souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tauri = { version = "2.12.5", default-features = false, features = ["wry", "common-controls-v6"], optional = true }
+# The system notifications the page's `notify` command posts (the inbox's
+# alerts): D-Bus on Linux, the notification center on macOS, toasts on
+# Windows. Held on 4.18, the last line on the zbus 5 that the media
+# controls already bring, so the window carries one D-Bus stack.
+notify-rust = { version = "~4.18.0", optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2.5", default-features = false, optional = true , features = [] }

@@ -134,6 +134,10 @@ pub struct OutputConfig {
     pub create_cue: bool,
     /// Embed tags, cover, and chapters natively.
     pub fixup_metadata: bool,
+    /// Keep Opus, FLAC, ALAC, E-AC-3 and AC-4 audio unchanged inside an
+    /// M4B copy instead of encoding it to AAC (an advanced setting: fewer
+    /// players open those codecs in MP4). Off by default.
+    pub keep_codec_in_m4b: bool,
     /// Chapter JSON sidecars: `off` | `flat` | `tree` | `both`.
     pub chapter_json: ChapterJsonMode,
     /// Deprecated: use [`Self::chapter_json`].
@@ -212,6 +216,7 @@ impl Default for OutputConfig {
             download_pdf: true,
             create_cue: false,
             fixup_metadata: true,
+            keep_codec_in_m4b: false,
             chapter_json: ChapterJsonMode::Off,
             save_chapter_json: None,
             save_metadata_json: false,

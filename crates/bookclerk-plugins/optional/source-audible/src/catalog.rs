@@ -799,6 +799,11 @@ fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
         },
         identifiers: records::identifier(IdentifierScheme::Asin, &p.asin, None)
             .into_iter()
+            .chain(
+                p.isbn
+                    .as_deref()
+                    .and_then(|isbn| records::identifier(IdentifierScheme::Isbn, isbn, None)),
+            )
             .collect(),
         cover_url: p.cover_url,
         origin,
@@ -1149,6 +1154,7 @@ mod tests {
             categories: None,
             genre_roots: Vec::new(),
             language: None,
+            isbn: None,
             is_abridged: None,
             price_cents: None,
             currency: None,

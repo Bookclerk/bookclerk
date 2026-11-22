@@ -256,7 +256,10 @@ fn append_live_bump(
             bump_if_stamped(topic, now).map_err(|err| DbErr::Custom(err.to_string()))?
         }
         // No change stamp to test; no named operation writes these today.
-        LiveTopic::Config | LiveTopic::Libraries | LiveTopic::Playback => bump(topic),
+        LiveTopic::Config
+        | LiveTopic::Libraries
+        | LiveTopic::Playback
+        | LiveTopic::Notifications => bump(topic),
     };
     plan.statements.push(SqlStmt {
         sql: bump.sql,

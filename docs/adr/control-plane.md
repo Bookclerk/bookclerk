@@ -425,7 +425,7 @@ the healthy default" degrades to "route to the present default" there.
 
 ### Accounts belong to the plugin, not the instance
 
-`accounts` is keyed `(plugin_key, account_id)`; `books`, `ignored_titles`,
+`accounts` is keyed `(plugin_key, account_id)`; `ignored_titles`,
 and `account_links` carry `plugin_key` with composite foreign keys; `source`
 remains the display alias. `SourceScope` carries the plugin key (isolation)
 and the source id (display). Any instance of that plugin on any host may scan
@@ -1704,7 +1704,7 @@ which topics changed; the SPA then re-reads its ordinary routes.
   re-checked every 30 s and a signed-out caller is closed with 4401 or
   loses topics.
 - **Change detection.** Every 2 s the session reads a revision per topic
-  (`live_revisions`: row count plus newest `updated_at` of `books`,
+  (`live_revisions`: row count plus newest `updated_at` of
   `jobs`, `event_deliveries`, `remote_plugin_consents` and `users`, the
   newest `node_status.heartbeat_at`, the newest
   `configuration_changes` id, and for `library_links`, which has no
@@ -2018,7 +2018,7 @@ it: a tree, A ← B ← C.
   title's `store:product_id` (`share_ref`), the title as received
   (`share_title`), its manifest digest and the digest whose files arrived.
   B's owner user owns B's node, so the title is theirs. A title A already
-  holds in its own `books` for that user (same store and product id under
+  holds on its own accounts for that user (same store and product id under
   an account the user owns) is skipped, so nothing B got from A comes
   back as B's. Book model step 5 replaced the earlier `branch_titles`
   table with these holdings
@@ -2165,7 +2165,7 @@ already processed.
   `plugin_deployments`, `plugin_deployment_observations`, and
   `plugin_schemas`. `plugin_instance_defaults` names the plugin's default
   instance; explicit create adds further instances of the same key.
-  `accounts` is unique on `(plugin_key, account_id)`; `books`,
+  `accounts` is unique on `(plugin_key, account_id)`;
   `ignored_titles`, and `account_links` carry `plugin_key`. Phase 3 adds
   `plugin_kv`, `plugin_versions`, `plugin_installs`,
   `plugin_artifacts` with its `plugin_artifact_chunks`,

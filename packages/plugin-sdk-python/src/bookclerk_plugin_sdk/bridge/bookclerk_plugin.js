@@ -29,6 +29,10 @@ var MAX_SOCKET_FRAME_BYTES = 262144;
 var MAX_SOCKET_ATTACHMENT_BYTES = 2048;
 var MAX_ORIGIN_HEADER_BYTES = 65536;
 var MAX_ORIGIN_TARGET_BYTES = 8192;
+var MAX_WEBHOOK_PULL_BATCH = 100;
+var MAX_WEBHOOK_LEASE_ID_BYTES = 128;
+var MAX_WEBHOOK_VISIBILITY_MS = 432e5;
+var MAX_WEBHOOK_NAME_BYTES = 32;
 var MAX_KV_METADATA_BYTES = 1024;
 var MAX_PLUGIN_MIGRATION_OPS = 256;
 var MAX_PLUGIN_MIGRATION_TOTAL_OPS = 2048;
@@ -6224,6 +6228,22 @@ var IngressHealthReplyCodec = {
     }
   }
 };
+var WebhookDeliveredCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setUint32(0, v.waiting ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      waiting: s.getUint32(0)
+    };
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -7914,6 +7934,34 @@ var IngressStopParamsCodec = {
   }
 };
 var IngressStopResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var WebhookHandlerDeliveredParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.event != null) {
+      WebhookDeliveredCodec.write(s.initStruct(0, 1, 1), v.event, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      event: WebhookDeliveredCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var WebhookHandlerDeliveredResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -11555,6 +11603,15 @@ var METHODS = {
       ok: okEmpty
     })
   },
+  WebhookHandler: {
+    delivered: spec({
+      params: WebhookHandlerDeliveredParamsCodec,
+      results: WebhookHandlerDeliveredResultsCodec,
+      stub: "author",
+      call: (s, p, cx) => s.bookclerkWebhookDelivered(cx.host.bindContext(cx.ctx), p.event ?? {}),
+      ok: okEmpty
+    })
+  },
   JobRunner: {
     job: spec({
       params: JobRunnerJobParamsCodec,
@@ -12207,6 +12264,94 @@ function messageOf(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
+// dist/webhooks.js
+var DEFAULT_WEBHOOK_PULL_BATCH = 10;
+function checkWebhookName(name) {
+  const text = String(name ?? "");
+  if (text.length === 0 || text.length > MAX_WEBHOOK_NAME_BYTES || !/^[a-z0-9][a-z0-9-]*$/.test(text)) {
+    throw PluginError.fromWire("invalid_params", "malformed webhook name");
+  }
+  return text;
+}
+function checkLeases(leases) {
+  const list = Array.isArray(leases) ? leases.map(String) : [];
+  if (list.length > MAX_WEBHOOK_PULL_BATCH) {
+    throw PluginError.fromWire("invalid_params", `a webhook ack names at most ${MAX_WEBHOOK_PULL_BATCH} leases in each list`);
+  }
+  for (const lease of list) {
+    if (lease.length === 0 || lease.length > MAX_WEBHOOK_LEASE_ID_BYTES || !/^[A-Za-z0-9_-]+$/.test(lease)) {
+      throw PluginError.fromWire("invalid_params", "malformed webhook lease id");
+    }
+  }
+  return list;
+}
+function fromBase642(text) {
+  if (typeof text !== "string" || text === "")
+    return new Uint8Array();
+  const bin = atob(text);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++)
+    out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function call2(transport, op, body) {
+  const reply = await transport.call(op, body);
+  if ("err" in reply) {
+    throw PluginError.fromWire(reply.err.code || "internal", reply.err.message || "");
+  }
+  return reply.ok ?? {};
+}
+function messageOf2(wire) {
+  const headers = {};
+  if (Array.isArray(wire.headers)) {
+    for (const header of wire.headers) {
+      if (header && typeof header.name === "string") {
+        headers[header.name] = String(header.value ?? "");
+      }
+    }
+  }
+  return Object.freeze({
+    leaseId: String(wire.leaseId ?? ""),
+    timestamp: new Date(Number(wire.receivedAtUnixMs ?? 0) || 0),
+    attempts: Number(wire.attempt ?? 0) || 0,
+    headers: Object.freeze(headers),
+    body: fromBase642(wire.body)
+  });
+}
+function webhooksBinding(transport) {
+  return Object.freeze({
+    async url(name) {
+      const reply = await call2(transport, "url", { name: checkWebhookName(name) });
+      return typeof reply.url === "string" && reply.url !== "" ? reply.url : null;
+    },
+    async pull(name, options) {
+      const batchSize = Math.floor(Number(options?.batchSize ?? DEFAULT_WEBHOOK_PULL_BATCH));
+      if (!(batchSize >= 1 && batchSize <= MAX_WEBHOOK_PULL_BATCH)) {
+        throw PluginError.fromWire("invalid_params", `webhook batch size must be 1..=${MAX_WEBHOOK_PULL_BATCH}`);
+      }
+      const visibilityTimeoutMs = Math.floor(Number(options?.visibilityTimeoutMs ?? 0));
+      if (!(visibilityTimeoutMs >= 0 && visibilityTimeoutMs <= MAX_WEBHOOK_VISIBILITY_MS)) {
+        throw PluginError.fromWire("invalid_params", `webhook visibility timeout must be at most ${MAX_WEBHOOK_VISIBILITY_MS} ms`);
+      }
+      const reply = await call2(transport, "pull", {
+        name: checkWebhookName(name),
+        batchSize,
+        visibilityTimeoutMs
+      });
+      const deliveries = Array.isArray(reply.deliveries) ? reply.deliveries : [];
+      return { messages: deliveries.map(messageOf2), missed: reply.missed === true };
+    },
+    async ack(name, leases) {
+      const acks = checkLeases(leases?.acks);
+      const retries = checkLeases(leases?.retries);
+      if (retries.some((lease) => acks.includes(lease))) {
+        throw PluginError.fromWire("invalid_params", "a webhook lease is both acknowledged and retried");
+      }
+      await call2(transport, "ack", { name: checkWebhookName(name), acks, retries });
+    }
+  });
+}
+
 // dist/plugin.js
 function unsupported(method) {
   return PluginError.fromWire("unsupported", `${method} not implemented`);
@@ -12581,6 +12726,8 @@ function invocationEnv(rawEnv, context) {
       merged[sockets.name] = socketsBinding(sockets.sockets);
     if (context.origin)
       merged.ORIGIN = originBinding(context.origin);
+    if (context.webhooks)
+      merged.WEBHOOKS = webhooksBinding(context.webhooks);
     if (context.network && typeof context.network === "object") {
       merged.NETWORK = Object.freeze(normalizeNetworkGrant(context.network));
     }
@@ -13199,6 +13346,24 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
       attachment: wire?.attachment
     });
     await this.webSocketClose(ws, Number(wire?.code ?? 0) || 0, String(wire?.reason ?? ""), wire?.clean === true);
+  }
+  /**
+   * Adapter dispatch for `WebhookHandler.delivered`. Without a
+   * `webhookDelivered` handler the call is acknowledged and ignored.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `WebhookDelivered`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkWebhookDelivered(context, wire) {
+    if (typeof this.webhookDelivered !== "function")
+      return;
+    applyInvocationEnv(this, context);
+    await this.webhookDelivered(Object.freeze({
+      name: String(wire?.name ?? ""),
+      waiting: Number(wire?.waiting ?? 0) || 0
+    }));
   }
   /**
    * Adapter dispatch for the `job(controller)` trigger.
@@ -14724,6 +14889,52 @@ var GrantedOrigin = class extends RpcTarget {
     return grantedOriginFetch(this.#granted, this.#auth, head, body);
   }
 };
+var GrantedWebhooks = class extends RpcTarget {
+  /** Granted reverse channel that serves `POST /webhooks/<op>`. */
+  #granted;
+  /** `Authorization` header carrying the webhooks-only grant token. */
+  #auth;
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the webhooks grant.
+   */
+  constructor(granted, auth) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+  /**
+   * Makes one `POST /webhooks/<op>` call on the granted channel.
+   *
+   * @param op - Operation, the path segment after `/webhooks/`.
+   * @param body - That operation's JSON fields, bytes already base64.
+   * @returns `{ ok }` with the route's reply body, or `{ err }` with the
+   *   host's code (`unavailable` when the channel cannot be reached,
+   *   `internal` for a reply that is not JSON); never throws.
+   */
+  async call(op, body) {
+    let resp;
+    try {
+      resp = await this.#granted.fetch(`http://granted/webhooks/${op}`, {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      return { err: { code: "unavailable", message: `webhooks ${op}: ${errorMessage(err)}` } };
+    }
+    const value = await resp.json().catch(() => null);
+    if (value && value.error) {
+      return {
+        err: { code: value.error.code || "internal", message: value.error.message || "" }
+      };
+    }
+    if (!resp.ok || !value || typeof value !== "object") {
+      return { err: { code: "internal", message: `webhooks ${op} HTTP ${resp.status}` } };
+    }
+    return { ok: value };
+  }
+};
 var GrantedDatabase = class extends RpcTarget {
   #granted;
   #auth;
@@ -14984,7 +15195,8 @@ var TRIGGER_FAMILIES = Object.freeze({
   queueConsumer: "queueConsumer",
   scheduledHandler: "scheduledHandler",
   jobRunner: "jobRunner",
-  socketHandler: "socketHandler"
+  socketHandler: "socketHandler",
+  webhookHandler: "webhookHandler"
 });
 function scheduledControllerOf(wire) {
   const w = wire && typeof wire === "object" ? wire : {};
@@ -15023,6 +15235,9 @@ function allowedEntrypointFamilies(capabilities, requested) {
         out.push(name);
     } else if (name === TRIGGER_FAMILIES.socketHandler) {
       if (capabilities.sockets === true)
+        out.push(name);
+    } else if (name === TRIGGER_FAMILIES.webhookHandler) {
+      if (capabilities.webhooks === true)
         out.push(name);
     } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name)) {
       out.push(name);
@@ -15075,7 +15290,7 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx) {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, notifyToken, aiToken, databases, queues, kv, sockets, originToken, ...rest } = source;
+      const { eventsToken, notifyToken, aiToken, databases, queues, kv, sockets, originToken, webhooksToken, ...rest } = source;
       const bound = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -15144,6 +15359,11 @@ function createInvocationAdapter() {
       }
       if (typeof originToken === "string" && originToken && granted) {
         bound.origin = new GrantedOrigin(granted, { Authorization: `Bearer ${originToken}` });
+      }
+      if (typeof webhooksToken === "string" && webhooksToken && granted) {
+        bound.webhooks = new GrantedWebhooks(granted, {
+          Authorization: `Bearer ${webhooksToken}`
+        });
       }
       return bound;
     }

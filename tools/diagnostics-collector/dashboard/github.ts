@@ -443,6 +443,38 @@ export async function closeIssue(
   if (!res.ok) throw new Error(`close failed: HTTP ${res.status}`);
 }
 
+/**
+ * Files a diagnostics issue for a member's **Triage now**, as the ingest run
+ * files one: the title, body and labels come from the validated proposal
+ * (`dashboard/triage-now.ts`). The token is minted for this call alone with
+ * `SUMMARY_PERMISSIONS` (`issues: write`) and not kept.
+ *
+ * @param cfg - Settings.
+ * @param now - Unix time in milliseconds.
+ * @param issue - Title, body and labels to file.
+ * @returns The new issue's number.
+ * @throws {Error} When the App lacks `issues: write` (the message starts
+ *   "installation token failed"), GitHub refuses the issue, or its answer
+ *   names no issue. Messages carry a stage and an HTTP status, never the
+ *   token.
+ */
+export async function createIssue(
+  cfg: GitHubConfig,
+  now: number,
+  issue: { title: string; body: string; labels: string[] },
+): Promise<number> {
+  const { token } = await mintToken(cfg, now, SUMMARY_PERMISSIONS);
+  const res = await gh(`${API}/repos/${cfg.owner}/${cfg.repo}/issues`, {
+    method: "POST",
+    headers: { ...apiHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify(issue),
+  });
+  if (!res.ok) throw new Error(`issue create failed: HTTP ${res.status}`);
+  const created = decodeIssue(await res.json().catch(() => null));
+  if (!created) throw new Error("issue create answer malformed");
+  return created.issue.number;
+}
+
 /** Forgets the cached installation token (tests). */
 export function clearTokenCache(): void {
   cachedToken = null;

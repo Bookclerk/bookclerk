@@ -36,6 +36,7 @@ no Audiobookshelf server is involved. The decisions are in the
 - Browse the books you can see: your patron scope applies, as on the web.
 - Stream any book you can see, and keep your place, finished books and
   bookmarks in step with the web app.
+- See a book's chapters and skip between them.
 - Save books for offline listening when the **Download** member control is
   on for you.
 - Listen offline and sync the progress when back online.

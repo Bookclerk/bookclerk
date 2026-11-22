@@ -38,6 +38,7 @@ mod event_worker;
 mod heartbeat;
 mod http_error;
 mod ingress;
+mod intake;
 mod job_handler;
 mod job_worker;
 mod jobs;
@@ -82,6 +83,7 @@ mod startup_tests;
 mod totp;
 mod tray_companion;
 mod uploads;
+mod webhooks;
 mod work_tags;
 
 pub mod embedded;
@@ -684,6 +686,7 @@ async fn assemble_host(
     uploads::spawn_prune(state.clone());
     cron_worker::spawn_cron_worker(state.clone());
     requirements_sweep::spawn_requirements_sweep(state.clone());
+    intake::spawn_intake_runner(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 

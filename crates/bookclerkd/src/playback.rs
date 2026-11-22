@@ -415,6 +415,9 @@ pub(crate) struct PlaybackManifestJson {
     progress: Option<ProgressJson>,
     /// The caller's bookmarks, in timeline order.
     bookmarks: Vec<BookmarkJson>,
+    /// The chapters the edition plays, in pre-order, each ending where the
+    /// next starts and the last at `duration_ms`; empty when it has none.
+    chapters: Vec<bookclerk_library::ChapterSpan>,
 }
 
 /// Reads whether and what the caller may play of an edition, with their
@@ -467,7 +470,17 @@ pub(crate) async fn get_edition_playback(
         .as_ref()
         .and_then(|progress| progress.duration)
         .or(edition.runtime);
+    let chapters = library
+        .edition_chapters(&edition.edition_id)
+        .await
+        .map_err(|err| read_failed(ROUTE, &err))?
+        .map(|resolved| {
+            let end = duration.map(PlaybackMs::get).or(resolved.runtime_ms);
+            resolved.list.spans(end)
+        })
+        .unwrap_or_default();
     Ok(Json(PlaybackManifestJson {
+        chapters,
         playable: !tracks.is_empty(),
         duration_ms: duration.map(PlaybackMs::get),
         tracks,

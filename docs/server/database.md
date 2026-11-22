@@ -288,6 +288,8 @@ Store credentials and other runtime secrets are stored in the
   provider chain.
 - R2 destination keys and its queue API token, which are `secret`
   settings of the `r2` plugin instance.
+- The B2 destination's application key, which is a pair of `secret`
+  settings of the `b2` plugin instance.
 
 > [!NOTE]
 > Bookclerk no longer creates or reads an `Accounts/` directory.
@@ -513,7 +515,7 @@ method is an `async fn` returning `Result<…>`.
 
 CRUD runs on typed **SeaORM entities** (see
 [`crate::entities`](../../crates/bookclerk-library/src/entities)): one
-`DeriveEntityModel` per table (`accounts`, `books`, `works`,
+`DeriveEntityModel` per table (`accounts`, `holdings`, `works`,
 `title_requests`, `title_request_sources`, `encrypted_secrets`, …).
 
 - Reads use `Entity::find()` with `QueryFilter` and `QueryOrder`.
@@ -791,7 +793,7 @@ collection deletes unreferenced objects.
 ### Tables
 
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
-`accounts`, `books`, `ignored_titles`, `saved_filters`,
+`accounts`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
 `operator_sessions`, `account_links`, `patron_controls`, `admin_controls`, `patron_scopes`,
 `patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
@@ -957,8 +959,7 @@ library holds as works, expressions and editions:
 - `user_title_state`: one user's finished flag, ratings and tags for a
   work, keyed `(user_id, work_id)`. Fields imported for an account reach
   every user linked to that account, and each user edits their own with
-  `PUT /api/library/works/{id}/state`. Discover reads its taste from here,
-  not from `books`.
+  `PUT /api/library/works/{id}/state`. Discover reads its taste from here.
 - `user_work_tags`: one user's tags on a work, one row per tag, written
   in the same batch as `user_title_state.tags` so the library page can
   filter by a tag.
@@ -1029,7 +1030,11 @@ its titles' description, subjects, categories and cover where it has none
 yet, and an episode stored before its show is linked to the show once the
 show has been scanned. A work first stored from a listing that named no
 author gains its matching key once a listing names one, so other stores'
-listings of the same book can find it. Likewise, an expression first
+listings of the same book can find it. The matching key ignores a trailing
+edition marker in the title (`First Family - Abridged` keys as
+`First Family`), and series are matched with `&` read as `and` after a
+trailing edition marker and the word "Series" are removed from the name, so
+`King and Maxwell` and `King & Maxwell Series` are one series. Likewise, an expression first
 stored without a language, an abridgement or a narrator gains them from a
 later scan that names them, so another store's listing with the same ISBN
 can join its edition; values already known are never overwritten.

@@ -35,6 +35,8 @@ mod ingest;
 mod ingress;
 mod instance_config;
 mod instances;
+mod intake;
+mod intake_items;
 mod job_routing;
 mod keeper;
 mod leases;
@@ -62,6 +64,7 @@ mod template;
 mod trust;
 mod uploads;
 mod versions;
+mod webhooks;
 mod window_books;
 /// The reply-capped library fixture, for store tests outside the control
 /// plane.
@@ -219,6 +222,14 @@ pub use instances::{
     list_all_plugin_instances, list_plugin_instances_for_key, load_plugin_instance, PluginInstance,
     PluginInstanceId,
 };
+pub use intake::{
+    intake_key, intake_settings, load_intake_role, set_intake, set_intake_at, IntakeRoleV1,
+    INTAKE_NAMESPACE, INTAKE_SCHEMA_VERSION,
+};
+pub use intake_items::{
+    apply_intake_writes, finish_intake_item, intake_item_hash, load_intake_items, IntakeFinish,
+    IntakeItemRecord, IntakeWrite, MAX_INTAKE_ERROR_BYTES,
+};
 pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
     instance_running_on_database_node, instance_semaphore, job_permit_holder_prefix,
@@ -361,6 +372,12 @@ pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
     list_versions, load_active_version, load_install, load_version, AddVersion, PluginArtifact,
     PluginInstall, PluginVersion, ARTIFACT_BLOB_SCHEME,
+};
+pub use webhooks::{
+    ack_webhook_requests, delete_instance_webhooks, find_webhook, pull_webhook_requests,
+    store_webhook_request, waiting_webhook_requests, webhook_url_token, WebhookRequest,
+    WebhookStoreOutcome, WebhookTarget, WebhookUrlToken, MAX_WAITING_WEBHOOK_DELIVERIES,
+    MAX_WEBHOOK_PULL_PAGE_BYTES,
 };
 pub use window_books::{
     clear_window_books, discard_window_read, finish_window_read, person_books_page,

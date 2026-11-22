@@ -711,6 +711,9 @@ def _write_bindings(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("ai") is not None:
         if v["ai"] is not None:
             s.set_cap(13, caps.export_cap(v["ai"]))
+    if v.get("webhooks") is not None:
+        if v["webhooks"] is not None:
+            s.set_cap(14, caps.export_cap(v["webhooks"]))
 
 
 def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
@@ -744,11 +747,14 @@ def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
     ai = caps.import_cap(s.get_cap_index(13))
     if not (ai is None):
         out["ai"] = ai
+    webhooks = caps.import_cap(s.get_cap_index(14))
+    if not (webhooks is None):
+        out["webhooks"] = webhooks
     return out
 
 
-_bindings_codec = _Codec(0, 14, _write_bindings, _read_bindings)
-"""Wire codec for ``Bindings`` (0 data words, 14 pointers)."""
+_bindings_codec = _Codec(0, 15, _write_bindings, _read_bindings)
+"""Wire codec for ``Bindings`` (0 data words, 15 pointers)."""
 
 
 def _write_network_grant(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -854,6 +860,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("ai") is not None:
         if v["ai"] is not None:
             s.set_cap(16, caps.export_cap(v["ai"]))
+    if v.get("webhookHandler") is not None:
+        if v["webhookHandler"] is not None:
+            s.set_cap(17, caps.export_cap(v["webhookHandler"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -910,18 +919,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     ai = caps.import_cap(s.get_cap_index(16))
     if not (ai is None):
         out["ai"] = ai
+    webhook_handler = caps.import_cap(s.get_cap_index(17))
+    if not (webhook_handler is None):
+        out["webhookHandler"] = webhook_handler
     return out
 
 
-_entrypoints_codec = _Codec(0, 17, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 17 pointers)."""
+_entrypoints_codec = _Codec(0, 18, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 18 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 17), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 18), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -932,7 +944,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 17), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 18), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -2129,6 +2141,7 @@ def _write_plugin_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None
     s.set_text_list(7, v["queueProducers"])
     s.set_text_list(8, v["crons"])
     s.set_bool(0, v["sockets"])
+    s.set_bool(1, v["webhooks"])
 
 
 def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
@@ -2143,6 +2156,7 @@ def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
         "queueProducers": s.get_text_list(7),
         "crons": s.get_text_list(8),
         "sockets": s.get_bool(0),
+        "webhooks": s.get_bool(1),
     }
 
 
@@ -6129,6 +6143,150 @@ _ingress_start_reply_codec = _Codec(1, 1, _write_ingress_start_reply, _read_ingr
 """Wire codec for ``IngressStartReply`` (1 data words, 1 pointers)."""
 
 
+def _write_webhook_url(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("url") is not None:
+        s.set_text(0, v["url"])
+
+
+def _read_webhook_url(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+    }
+    url = s.get_text(0)
+    if not (url == ""):
+        out["url"] = url
+    return out
+
+
+_webhook_url_codec = _Codec(0, 1, _write_webhook_url, _read_webhook_url)
+"""Wire codec for ``WebhookUrl`` (0 data words, 1 pointers)."""
+
+
+def _write_webhook_url_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _webhook_url_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown WebhookUrlReply union member: {kind}")
+
+
+def _read_webhook_url_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _webhook_url_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown WebhookUrlReply union member: {disc}")
+
+
+_webhook_url_reply_codec = _Codec(1, 1, _write_webhook_url_reply, _read_webhook_url_reply)
+"""Wire codec for ``WebhookUrlReply`` (1 data words, 1 pointers)."""
+
+
+def _write_webhook_pull_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_u32(0, v["batchSize"])
+    s.set_u32(1, v["visibilityTimeoutMs"])
+
+
+def _read_webhook_pull_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "name": s.get_text(0),
+        "batchSize": s.get_u32(0),
+        "visibilityTimeoutMs": s.get_u32(1),
+    }
+
+
+_webhook_pull_request_codec = _Codec(1, 1, _write_webhook_pull_request, _read_webhook_pull_request)
+"""Wire codec for ``WebhookPullRequest`` (1 data words, 1 pointers)."""
+
+
+def _write_webhook_header(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_text(1, v["value"])
+
+
+def _read_webhook_header(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "name": s.get_text(0),
+        "value": s.get_text(1),
+    }
+
+
+_webhook_header_codec = _Codec(0, 2, _write_webhook_header, _read_webhook_header)
+"""Wire codec for ``WebhookHeader`` (0 data words, 2 pointers)."""
+
+
+def _write_webhook_delivery(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["leaseId"])
+    s.set_u64(0, v["receivedAtUnixMs"])
+    s.set_u32(2, v["attempt"])
+    items = s.init_struct_list(1, len(v["headers"]), 0, 2)
+    for item, elem in zip(items, v["headers"], strict=True):
+        _webhook_header_codec.write(item, elem, caps)
+    s.set_data(2, v["body"])
+
+
+def _read_webhook_delivery(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "leaseId": s.get_text(0),
+        "receivedAtUnixMs": s.get_u64(0),
+        "attempt": s.get_u32(2),
+        "headers": [_webhook_header_codec.read(item, caps) for item in s.get_struct_list(1, 0, 2)],
+        "body": s.get_data(2),
+    }
+
+
+_webhook_delivery_codec = _Codec(2, 3, _write_webhook_delivery, _read_webhook_delivery)
+"""Wire codec for ``WebhookDelivery`` (2 data words, 3 pointers)."""
+
+
+def _write_webhook_pull_page(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["deliveries"]), 2, 3)
+    for item, elem in zip(items, v["deliveries"], strict=True):
+        _webhook_delivery_codec.write(item, elem, caps)
+    s.set_bool(0, v["missed"])
+
+
+def _read_webhook_pull_page(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "deliveries": [_webhook_delivery_codec.read(item, caps) for item in s.get_struct_list(0, 2, 3)],
+        "missed": s.get_bool(0),
+    }
+
+
+_webhook_pull_page_codec = _Codec(1, 1, _write_webhook_pull_page, _read_webhook_pull_page)
+"""Wire codec for ``WebhookPullPage`` (1 data words, 1 pointers)."""
+
+
+def _write_webhook_pull_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _webhook_pull_page_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown WebhookPullReply union member: {kind}")
+
+
+def _read_webhook_pull_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _webhook_pull_page_codec.read(s.get_struct(0, 1, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown WebhookPullReply union member: {disc}")
+
+
+_webhook_pull_reply_codec = _Codec(1, 1, _write_webhook_pull_reply, _read_webhook_pull_reply)
+"""Wire codec for ``WebhookPullReply`` (1 data words, 1 pointers)."""
+
+
 def _write_ingress_health(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["serving"])
     if v.get("detail") is not None:
@@ -6172,6 +6330,40 @@ def _read_ingress_health_reply(s: _StructReader, caps: _CapTable) -> Any:
 
 _ingress_health_reply_codec = _Codec(1, 1, _write_ingress_health_reply, _read_ingress_health_reply)
 """Wire codec for ``IngressHealthReply`` (1 data words, 1 pointers)."""
+
+
+def _write_webhook_ack_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_text_list(1, v["acks"])
+    s.set_text_list(2, v["retries"])
+
+
+def _read_webhook_ack_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "name": s.get_text(0),
+        "acks": s.get_text_list(1),
+        "retries": s.get_text_list(2),
+    }
+
+
+_webhook_ack_request_codec = _Codec(0, 3, _write_webhook_ack_request, _read_webhook_ack_request)
+"""Wire codec for ``WebhookAckRequest`` (0 data words, 3 pointers)."""
+
+
+def _write_webhook_delivered(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_u32(0, v["waiting"])
+
+
+def _read_webhook_delivered(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "name": s.get_text(0),
+        "waiting": s.get_u32(0),
+    }
+
+
+_webhook_delivered_codec = _Codec(1, 1, _write_webhook_delivered, _read_webhook_delivered)
+"""Wire codec for ``WebhookDelivered`` (1 data words, 1 pointers)."""
 
 
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -8406,6 +8598,125 @@ _ingress_stop_results_codec = _Codec(0, 1, _write_ingress_stop_results, _read_in
 """Wire codec for ``IngressStopResults`` (0 data words, 1 pointers)."""
 
 
+def _write_webhooks_url_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+
+
+def _read_webhooks_url_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "name": s.get_text(0),
+    }
+
+
+_webhooks_url_params_codec = _Codec(0, 1, _write_webhooks_url_params, _read_webhooks_url_params)
+"""Wire codec for ``WebhooksUrlParams`` (0 data words, 1 pointers)."""
+
+
+def _write_webhooks_url_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _webhook_url_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_webhooks_url_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _webhook_url_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_webhooks_url_results_codec = _Codec(0, 1, _write_webhooks_url_results, _read_webhooks_url_results)
+"""Wire codec for ``WebhooksUrlResults`` (0 data words, 1 pointers)."""
+
+
+def _write_webhooks_pull_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("request") is not None:
+        _webhook_pull_request_codec.write(s.init_struct(0, 1, 1), v["request"], caps)
+
+
+def _read_webhooks_pull_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _webhook_pull_request_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_webhooks_pull_params_codec = _Codec(0, 1, _write_webhooks_pull_params, _read_webhooks_pull_params)
+"""Wire codec for ``WebhooksPullParams`` (0 data words, 1 pointers)."""
+
+
+def _write_webhooks_pull_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _webhook_pull_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_webhooks_pull_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _webhook_pull_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_webhooks_pull_results_codec = _Codec(0, 1, _write_webhooks_pull_results, _read_webhooks_pull_results)
+"""Wire codec for ``WebhooksPullResults`` (0 data words, 1 pointers)."""
+
+
+def _write_webhooks_ack_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("request") is not None:
+        _webhook_ack_request_codec.write(s.init_struct(0, 0, 3), v["request"], caps)
+
+
+def _read_webhooks_ack_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _webhook_ack_request_codec.read(s.get_struct(0, 0, 3), caps),
+    }
+
+
+_webhooks_ack_params_codec = _Codec(0, 1, _write_webhooks_ack_params, _read_webhooks_ack_params)
+"""Wire codec for ``WebhooksAckParams`` (0 data words, 1 pointers)."""
+
+
+def _write_webhooks_ack_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_webhooks_ack_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_webhooks_ack_results_codec = _Codec(0, 1, _write_webhooks_ack_results, _read_webhooks_ack_results)
+"""Wire codec for ``WebhooksAckResults`` (0 data words, 1 pointers)."""
+
+
+def _write_webhook_handler_delivered_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("event") is not None:
+        _webhook_delivered_codec.write(s.init_struct(0, 1, 1), v["event"], caps)
+
+
+def _read_webhook_handler_delivered_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "event": _webhook_delivered_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_webhook_handler_delivered_params_codec = _Codec(0, 1, _write_webhook_handler_delivered_params, _read_webhook_handler_delivered_params)
+"""Wire codec for ``WebhookHandlerDeliveredParams`` (0 data words, 1 pointers)."""
+
+
+def _write_webhook_handler_delivered_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_webhook_handler_delivered_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_webhook_handler_delivered_results_codec = _Codec(0, 1, _write_webhook_handler_delivered_results, _read_webhook_handler_delivered_results)
+"""Wire codec for ``WebhookHandlerDeliveredResults`` (0 data words, 1 pointers)."""
+
+
 def _write_content_source_login_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("params") is not None:
         _login_params_codec.write(s.init_struct(0, 2, 10), v["params"], caps)
@@ -10192,13 +10503,13 @@ def _write_plugin_worker_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -
     if v.get("invocation") is not None:
         _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
     if v.get("bindings") is not None:
-        _bindings_codec.write(s.init_struct(1, 0, 14), v["bindings"], caps)
+        _bindings_codec.write(s.init_struct(1, 0, 15), v["bindings"], caps)
 
 
 def _read_plugin_worker_open_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "invocation": _invocation_codec.read(s.get_struct(0, 1, 4), caps),
-        "bindings": _bindings_codec.read(s.get_struct(1, 0, 14), caps),
+        "bindings": _bindings_codec.read(s.get_struct(1, 0, 15), caps),
     }
 
 

@@ -6,16 +6,19 @@ what; notifier plugins only deliver one finished message to one place.
 The design is in the [notifications ADR](../adr/notifications.md).
 
 > [!NOTE]
-> Routing, the delivery log, the inbox and the web API are built. No
-> notifier plugin ships yet, and account mail (invites and password
-> resets) comes later.
+> Routing, the delivery log, the inbox, the web app's bell with browser
+> and desktop notifications, and the web API are built. No notifier
+> plugin ships yet, and account mail (invites and password resets) comes
+> later.
 
 ## How a notification travels
 
 1. Something raises a notification: the host itself, or a plugin through
    its [`NOTIFY` binding](../plugins/abi.md#raising-notifications).
 2. The host stores it, renders it once, and picks its destinations by the
-   rules below. A patron notification also lands in that patron's inbox.
+   rules below. A patron notification also lands in that patron's inbox,
+   and an operational one routed to **In app** lands in every active
+   Owner's and Administrator's inbox.
 3. Each destination gets a row in the delivery log and one `notify_send`
    job, which calls the notifier instance's `send`.
 4. The notifier answers delivered, retry, or failed, and the log records
@@ -51,6 +54,14 @@ notifier eligible for patrons. `GET
 /api/notifications/catalog` lists every known type and every notifier
 instance, with the address fields each one asks patrons for.
 
+**In app** is a built-in route target with the reserved destination id
+`in-app`. It runs no plugin: an operational notification at or above its
+minimum severity goes into the inbox of every active Owner and
+Administrator, read when the notification is stored (a disabled account,
+or someone who is no longer an Administrator, gets nothing). Route it like
+a channel; `GET /api/notifications/routes` lists it first in its type's
+routes.
+
 To check a channel, `POST /api/notifications/channels/{id}/test` sends it
 the host's `test` notification. A paused channel answers `409`: resume it
 first.
@@ -85,6 +96,35 @@ nothing outside the inbox, even with `enabled: true`.
 patron reads their settings with `GET /api/me/notifications`, and their
 inbox with `GET /api/me/notifications/inbox`; `POST
 /api/me/notifications/inbox/read` marks entries read.
+
+## The bell, browser and desktop notifications
+
+Every signed-in library user has a bell in the web app's top bar. It shows
+their newest inbox entries and how many are unread; opening an entry marks
+it read and goes to the page it links to, and **Mark all read** clears the
+rest.
+
+The bell follows the inbox and nothing else. The web app hears about new
+entries on the `notifications` [live topic](sign-in.md#live-updates),
+which changes whenever an entry arrives in any inbox or someone reads one,
+and then re-reads `GET /api/me/notifications/inbox`. It also re-reads
+every minute while the live connection is down.
+
+A person can also turn on alerts for one device from the bell:
+
+- **In a browser**, **Show browser notifications on this device** asks for
+  the browser's permission. New unread entries then show as browser
+  notifications while the app is open in a tab that does not have focus;
+  clicking one focuses the tab and opens the entry's page. A browser that
+  blocked the site says so, and only its site settings can undo that.
+- **In the desktop window**, **Show system notifications on this device**
+  posts each new unread entry as a native notification (D-Bus on Linux,
+  the notification center on macOS, a toast on Windows) while the window
+  is not focused. See [the desktop window](../contributing/ui/README.md#the-desktop-window).
+
+The choice is remembered per device, in the browser's storage. Entries
+that were already in the inbox when the page loaded are not announced
+again, and several open tabs show one alert per entry, not one each.
 
 A plugin can only raise a patron notification for a patron who holds the
 store account the plugin is working for, so a store plugin cannot message

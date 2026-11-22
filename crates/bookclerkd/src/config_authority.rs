@@ -29,6 +29,7 @@ use serde_json::json;
 use crate::api::AppState;
 use crate::auth::NodeAdminCaller;
 use crate::http_error::ErrorMessage;
+use crate::playback::BoundedJson;
 
 /// Operator actor recorded on configuration commits from the daemon.
 fn operator_actor() -> ConfigActor {
@@ -1676,6 +1677,147 @@ pub async fn put_destination_filter(
     }))
 }
 
+/// `GET`, `PUT` and `DELETE /api/config/plugin-instances/{id}/intake` body:
+/// whether a storage instance is a drop folder, and its settings.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct IntakeResponse {
+    /// The storage instance's plugin instance id.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Revision of the instance's `core.intake` document; `0` when none was
+    /// written, so the instance is a destination.
+    #[schema(example = 1)]
+    revision: i64,
+    /// The drop folder's settings; `null` when the instance is a
+    /// destination.
+    #[schema(example = json!({"settle_seconds": 60, "scan_interval_seconds": 300, "after_ingest": "move", "attribute_to": "owner", "patron": 2, "ignore": []}))]
+    intake: Option<bookclerk_config::IntakeSettings>,
+}
+
+/// The [`IntakeResponse`] for a stored role document, or for none.
+fn intake_response(
+    instance_id: &bookclerk_library::control_plane::PluginInstanceId,
+    stored: Option<
+        bookclerk_library::control_plane::ConfigurationDocument<
+            bookclerk_library::control_plane::IntakeRoleV1,
+        >,
+    >,
+) -> IntakeResponse {
+    match stored {
+        Some(document) => IntakeResponse {
+            plugin_instance_id: instance_id.to_string(),
+            revision: document.revision,
+            intake: document.body.intake,
+        },
+        None => IntakeResponse {
+            plugin_instance_id: instance_id.to_string(),
+            revision: 0,
+            intake: None,
+        },
+    }
+}
+
+/// `GET /api/config/plugin-instances/{id}/intake`: whether the storage
+/// instance is a drop folder, and its settings.
+#[utoipa::path(
+    get,
+    path = "/api/config/plugin-instances/{id}/intake",
+    params(("id" = String, Path, description = "Plugin instance id of the storage instance.")),
+    responses(
+        (status = 200, description = "The instance's drop folder settings, or `null` for a destination.", body = IntakeResponse),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 500, description = "The settings could not be read.", body = ErrorMessage, example = json!({"error": "invalid core.intake: intake settings: unknown field `colour`"})),
+    ),
+)]
+pub async fn get_intake(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<IntakeResponse>, Response> {
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let stored = bookclerk_library::control_plane::load_intake_role(&library, instance_id.as_str())
+        .await
+        .map_err(events_error)?;
+    Ok(Json(intake_response(&instance_id, stored)))
+}
+
+/// `PUT /api/config/plugin-instances/{id}/intake`: makes the storage
+/// instance a drop folder with these settings, or changes a drop folder's
+/// settings. Turning a destination into a drop folder is refused while the
+/// instance is deployed on any node.
+///
+/// Operator principal only. The route is mounted on the operator router.
+#[utoipa::path(
+    put,
+    path = "/api/config/plugin-instances/{id}/intake",
+    params(("id" = String, Path, description = "Plugin instance id of the storage instance.")),
+    request_body(content = bookclerk_config::IntakeSettingsRequest, content_type = "application/json"),
+    responses(
+        (status = 200, description = "The settings after the change.", body = IntakeResponse),
+        (status = 400, description = "The body is not JSON (text), or the patron is not an active user (JSON).", body = ErrorMessage, example = json!({"error": "intake settings: patron 4242 is not an active user"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 413, description = "The body is over 16 KiB.", body = ErrorMessage, example = json!({"error": "the body is at most 16384 bytes"})),
+        (status = 415, description = "The body is not sent as `application/json`.", body = String, content_type = "text/plain"),
+        (status = 422, description = "The settings are invalid: an unknown or repeated key, a value of the wrong type or out of range, or settings over 12 KiB written out.", body = String, content_type = "text/plain", example = "Failed to deserialize the JSON body into the target type: intake settings: attribute_to = owner needs a patron user id at line 1 column 2"),
+        (status = 409, description = "The instance is deployed, or the document kept changing.", body = ErrorMessage, example = json!({"error": "storage instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is deployed on node-a; undeploy it before changing whether it is a drop folder"})),
+        (status = 500, description = "The settings could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+    ),
+)]
+pub async fn put_intake(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    BoundedJson(settings): BoundedJson<
+        bookclerk_config::IntakeSettings,
+        { bookclerk_config::MAX_INTAKE_SETTINGS_BYTES },
+    >,
+) -> Result<Json<IntakeResponse>, Response> {
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let stored = bookclerk_library::control_plane::set_intake(
+        &library,
+        &operator_actor(),
+        &instance_id,
+        Some(settings),
+    )
+    .await
+    .map_err(events_error)?;
+    Ok(Json(intake_response(&instance_id, Some(stored))))
+}
+
+/// `DELETE /api/config/plugin-instances/{id}/intake`: makes a drop folder a
+/// destination again. Refused while the instance is deployed on any node.
+///
+/// Operator principal only. The route is mounted on the operator router.
+#[utoipa::path(
+    delete,
+    path = "/api/config/plugin-instances/{id}/intake",
+    params(("id" = String, Path, description = "Plugin instance id of the storage instance.")),
+    responses(
+        (status = 200, description = "The instance is a destination.", body = IntakeResponse),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 409, description = "The instance is deployed, or the document kept changing.", body = ErrorMessage, example = json!({"error": "storage instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is deployed on node-a; undeploy it before changing whether it is a drop folder"})),
+        (status = 500, description = "The document could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+    ),
+)]
+pub async fn delete_intake(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<IntakeResponse>, Response> {
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let stored = bookclerk_library::control_plane::set_intake(
+        &library,
+        &operator_actor(),
+        &instance_id,
+        None,
+    )
+    .await
+    .map_err(events_error)?;
+    Ok(Json(intake_response(&instance_id, Some(stored))))
+}
+
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutPluginDeployment {
@@ -3205,6 +3347,104 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn intake_routes_set_change_and_clear_a_drop_folder() {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use serde_json::{json, Value};
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let (state, store, _node, _files) = daemon_state().await;
+        let instance = bookclerk_library::control_plane::create_plugin_instance(
+            &store,
+            &super::operator_actor(),
+            "local",
+            "Drop folder",
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/config/plugin-instances/{id}/intake",
+                get(super::get_intake)
+                    .put(super::put_intake)
+                    .delete(super::delete_intake),
+            )
+            .with_state(std::sync::Arc::clone(&state));
+        let uri = format!("/api/config/plugin-instances/{}/intake", instance.id);
+        let reader = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Reader"), None)
+            .await
+            .unwrap()
+            .id;
+
+        let (status, empty) = send(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{empty}");
+        assert_eq!(empty["revision"], 0);
+        assert_eq!(empty["intake"], Value::Null);
+
+        // A patron who is not a user is refused.
+        let (status, _) = send(&app, "PUT", &uri, json!({"patron": 4242})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, put) = send(
+            &app,
+            "PUT",
+            &uri,
+            json!({"patron": reader, "settle_seconds": 90}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{put}");
+        assert_eq!(put["intake"]["settle_seconds"], 90);
+        assert_eq!(put["intake"]["after_ingest"], "move");
+        let (_, read) = send(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(read, put);
+
+        // Bad settings and repeated keys are refused and change nothing.
+        let (status, _) = send(&app, "PUT", &uri, json!({"settle_seconds": 90})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _) = send(&app, "PUT", &uri, json!({"patron": reader, "colour": 1})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _) = send(
+            &app,
+            "PUT",
+            &uri,
+            json!({"patron": reader, "ignore": ["x".repeat(16 * 1024)]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let (_, after) = send(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(after, put);
+
+        // Deployed, the role is fixed.
+        let deployment = bookclerk_library::control_plane::ensure_plugin_deployment(
+            &store,
+            &super::operator_actor(),
+            &instance.id,
+            "node-x",
+            bookclerk_library::control_plane::DesiredState::Present,
+        )
+        .await
+        .unwrap();
+        let (status, conflict) = send(&app, "DELETE", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+        bookclerk_library::control_plane::replace_plugin_deployment(
+            &store,
+            &super::operator_actor(),
+            &deployment.deployment_id,
+            deployment.revision,
+            bookclerk_library::control_plane::DesiredState::Absent,
+            "intake-route-test-undeploy",
+        )
+        .await
+        .unwrap();
+        let (status, cleared) = send(&app, "DELETE", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{cleared}");
+        assert_eq!(cleared["intake"], Value::Null);
+
+        let missing = "/api/config/plugin-instances/3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b/intake";
+        let (status, _) = send(&app, "GET", missing, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

@@ -32,6 +32,11 @@ e2e = "workerd-runtime"
 package = "bookclerkd"
 paths = ["assets/brand/svg/bookclerk-logo.svg"]
 
+# The vendored tokenizer sources the crate's build script compiles.
+[[embed]]
+package = "bookclerk-sentencepiece"
+paths = ["third_party/sentencepiece-lite/**"]
+
 # Files outside a package directory read by that package's tests.
 # The OpenAPI route-coverage test scans the portal's route sources.
 [[test_input]]
@@ -101,6 +106,8 @@ paths = [
     "fuzz/oracles/socket_request.rs",
     "fuzz/corpus/storage_reply/**",
     "fuzz/oracles/storage_reply.rs",
+    "fuzz/corpus/webhook_message/**",
+    "fuzz/oracles/webhook_message.rs",
     "fuzz/corpus/origin_request/**",
     "fuzz/oracles/origin_request.rs",
 ]
@@ -179,8 +186,8 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-# The workerd_control, socket_broker, socket_route, egress_relay_head and
-# egress_bridge oracles are shared with the replay tests through `#[path]`;
+# The workerd_control, socket_broker, socket_route, webhook_route,
+# webhook_request, egress_relay_head and egress_bridge oracles are shared with the replay tests through `#[path]`;
 # the egress_bridge replay compares its result with the SDK's committed
 # vectors.
 paths = [
@@ -196,6 +203,10 @@ paths = [
     "fuzz/oracles/socket_broker.rs",
     "fuzz/corpus/socket_route/**",
     "fuzz/oracles/socket_route.rs",
+    "fuzz/corpus/webhook_route/**",
+    "fuzz/oracles/webhook_route.rs",
+    "fuzz/corpus/webhook_request/**",
+    "fuzz/oracles/webhook_request.rs",
 ]
 
 [[test_input]]
@@ -219,6 +230,8 @@ paths = [
     "fuzz/oracles/cache_settings.rs",
     "fuzz/corpus/destination_filter/**",
     "fuzz/oracles/destination_filter.rs",
+    "fuzz/corpus/intake_settings/**",
+    "fuzz/oracles/intake_settings.rs",
     "fuzz/corpus/destination_id/**",
     "fuzz/oracles/destination_id.rs",
     "fuzz/corpus/output_copies/**",
@@ -247,12 +260,23 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-storage"
-# The S3 and R2 notification oracles are shared with the replay test through `#[path]`.
+# The S3 and R2 notification oracles and the B2 reply oracle are shared
+# with the replay test through `#[path]`.
 paths = [
     "fuzz/corpus/s3_event/**",
     "fuzz/oracles/s3_event.rs",
     "fuzz/corpus/r2_event/**",
     "fuzz/oracles/r2_event.rs",
+    "fuzz/corpus/b2_reply/**",
+    "fuzz/oracles/b2_reply.rs",
+]
+
+[[test_input]]
+package = "bookclerk-intake"
+# The intake_items oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/intake_items/**",
+    "fuzz/oracles/intake_items.rs",
 ]
 
 [[test_input]]
@@ -263,6 +287,28 @@ paths = [
     "fuzz/oracles/tags_read.rs",
     "fuzz/corpus/tags_wire/**",
     "fuzz/oracles/tags_wire.rs",
+]
+
+[[test_input]]
+package = "bookclerk-plugin-ai-embedder"
+# The tiny tokenizer the plugin's tests load.
+paths = ["crates/bookclerk-sentencepiece/tests/fixtures/**"]
+
+[[test_input]]
+package = "bookclerk-plugin-e2e"
+# The staged suite installs the embedder's tiny model (shared through `#[path]`).
+paths = [
+    "crates/bookclerk-plugins/platform/ai-embedder/tests/support/**",
+    "crates/bookclerk-plugins/platform/ai-embedder/tests/fixtures/**",
+    "crates/bookclerk-sentencepiece/tests/fixtures/**",
+]
+
+[[test_input]]
+package = "bookclerk-model-pack"
+# The model pack oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/model_pack/**",
+    "fuzz/oracles/model_pack.rs",
 ]
 
 [[test_input]]
@@ -281,6 +327,14 @@ package = "bookclerk-media"
 paths = [
     "fuzz/corpus/media_decode/**",
     "fuzz/oracles/media_decode.rs",
+]
+
+[[test_input]]
+package = "bookclerk-media"
+# The media_keep_codec oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_keep_codec/**",
+    "fuzz/oracles/media_keep_codec.rs",
 ]
 
 [[test_input]]
@@ -704,3 +758,8 @@ paths = [
 package = "bookclerk-config"
 reference = ".git"
 reason = "build.rs reads the checkout's commit for diagnostics reports (rerun-if-changed on .git/HEAD); no test reads it"
+
+[[reviewed]]
+package = "bookclerk-plugin-ai-embedder"
+reference = "target"
+reason = "the pinned ONNX Runtime library the tests load is downloaded under the target directory, not read from the repository"

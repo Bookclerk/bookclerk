@@ -1,0 +1,25 @@
+[package]
+name = "bookclerk-sentencepiece"
+description = "Safe wrapper over the SentencePiece Lite tokenizer runtime, built from the pinned sources under third_party/sentencepiece-lite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+# One copy of the C++ runtime per binary.
+links = "bookclerk_sentencepiece_lite"
+
+[dependencies]
+thiserror.workspace = true
+
+[build-dependencies]
+# Compiles the vendored C++20 runtime and the C shim; no CMake, no network.
+cc = { version = "1.2", features = ["parallel"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

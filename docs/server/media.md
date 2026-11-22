@@ -13,8 +13,9 @@ On Linux and macOS the worker confines itself; on Windows `bookclerk-jail`
 confines it at spawn.
 
 Acquire feeds audio from outside sources through C libraries: LAME
-(`mp3lame-sys`), FDK-AAC (`fdk-aac-sys`), libopus (`opusic-sys`) and
-Symphonia's native dependencies. Before the pool, those parsers ran on tokio's blocking
+(`mp3lame-sys`), FDK-AAC (`fdk-aac-sys`), libopus (`opusic-sys`), the
+FFmpeg decoders in release builds (`bookclerk-libav`) and Symphonia's
+native dependencies. Before the pool, those parsers ran on tokio's blocking
 threads, inside the process that holds the master encryption key and an
 open `library.db`. A parser bug there would have disclosed the key, not
 just failed a book.
@@ -49,19 +50,25 @@ It reads these files:
 
 | Container | Codecs |
 | --- | --- |
-| MP4 (`.m4a`, `.m4b`) | AAC, ALAC |
+| MP4 (`.m4a`, `.m4b`) | AAC, ALAC, FLAC, Opus, and E-AC-3 and AC-3 in release builds |
 | MPEG audio (`.mp3`, `.mp2`) | MP3, MP2, MP1 |
 | ADTS (`.aac`) | AAC |
 | FLAC | FLAC |
 | Ogg (`.opus`, `.ogg`, `.oga`) | Opus, Vorbis |
 | WAV, AIFF, CAF | PCM, IMA ADPCM |
+| ASF (`.wma`), release builds | WMA 1, WMA 2, WMA 9 Pro, WMA 9 Lossless |
+| Raw Dolby (`.ac3`, `.eac3`), release builds | AC-3, E-AC-3 |
+| AMR (`.amr`, `.awb`, `.3gp`), release builds | AMR-NB, AMR-WB |
 
 Every AAC profile decodes through FDK: AAC-LC, HE-AAC, HE-AAC v2 and
 xHE-AAC (USAC). An HE-AAC book is reported and converted at the rate it
 plays at, not the half rate an MP4 header states for it. Opus decodes
 through libopus at 48 kHz, mono or stereo; a surround Opus stream (more
-than one stream in the file) fails to open. E-AC-3 and AC-4 aren't read
-yet.
+than one stream in the file) fails to open. AC-4 isn't read by any build.
+
+The rows marked release builds decode through FFmpeg's decoders. Every
+release archive and the Docker image carry them; a plain `cargo build`
+doesn't (see [FFmpeg decoders](#ffmpeg-decoders)).
 
 Surround is folded to stereo by speaker position: left speakers go left,
 right speakers go right, centre and rear-centre speakers go to both sides
@@ -69,7 +76,12 @@ at -3 dB, and the LFE channel is left out. Channels with no position go to
 both sides equally. A file whose sample rate changes partway through fails
 to convert rather than losing the audio after the change.
 
-The worker writes AAC-LC M4B, MP3 and Ogg Opus. It writes tags, covers
+The worker writes AAC-LC M4B, MP3 and Ogg Opus. With
+`output.keep_codec_in_m4b` on, an M4B also carries Opus (`Opus` with
+`dOps`), FLAC (`fLaC` with `dfLa`), ALAC, E-AC-3 or AC-4 audio copied
+unchanged from the source, with the Opus pre-skip as an edit list (see
+[Keeping unusual audio in M4B](output.md#keeping-unusual-audio-in-m4b)).
+It writes tags, covers
 and chapters into MP4 and MP3 files, and into FLAC, Ogg Opus and Ogg
 Vorbis files as Vorbis comments: `TITLE`, `ALBUM`, `ARTIST`,
 `ALBUMARTIST`, `COMPOSER` (the narrator), `DATE`, `GENRE`, `PUBLISHER`,
@@ -85,8 +97,9 @@ cover and chapters, so adding them later never moves the audio.
 When an output re-encodes or repackages audio, the acquire takes another
 store's copy from a library only if the worker reads its kind of file and
 the tag reader names its codec. That means AAC or ALAC in MP4, MP3,
-FLAC, and Opus or Vorbis in Ogg. WAV, AIFF, CAF and ADTS files decode,
-but a copy in one of them isn't taken, because its codec isn't recorded.
+FLAC, Opus or Vorbis in Ogg, and in release builds E-AC-3 in MP4. WAV,
+AIFF, CAF, ADTS, WMA, raw AC-3 and AMR files decode, but a copy in one of
+them isn't taken, because its codec isn't recorded.
 The lists the acquire checks are in `bookclerk_media::capabilities`. The
 daemon serves the same report at `GET /api/status/media`, and
 `bookclerk media capabilities` prints it:
@@ -97,6 +110,10 @@ decodes: aac, alac, flac, mp3, opus, vorbis
 reads:   audio/mp4, audio/mpeg, audio/flac, audio/aac, audio/wav, audio/aiff, audio/x-caf, audio/ogg, audio/opus
 encodes: m4b, mp3, opus (advanced)
 ```
+
+A release build on Linux or macOS also lists `eac3` under decodes, and
+`audio/x-ms-wma`, `audio/ac3`, `audio/eac3`, `audio/amr`, `audio/amr-wb`
+and `audio/3gpp` under reads.
 
 An encoding marked advanced is one fewer players open than M4B and MP3,
 so settings offer it under their advanced options.
@@ -292,6 +309,9 @@ launcher (found the same way):
 cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker -p bookclerk-jail
 ```
 
+Add `--features bookclerk-media-worker/libav` for the FFmpeg decoders, as
+`cargo build-app --release` and `cargo package-platform` do.
+
 The Docker image ships it in the read-only bundle under `/opt/bookclerk`,
 next to `bookclerk` and `bookclerkd` (see
 [Running Bookclerk → Docker](operations.md#docker)).
@@ -304,6 +324,37 @@ The pool looks for the worker in this order:
 
 Each candidate must exist, so a stale configured path fails loudly
 instead of quietly encoding unconfined.
+
+### FFmpeg decoders
+
+WMA, AC-3, E-AC-3 and AMR decode through FFmpeg, built from source by the
+`bookclerk-libav` crate behind the worker's `libav` feature:
+
+- The build script downloads one pinned FFmpeg release from `ffmpeg.org`,
+  checks its SHA-256, and builds only those decoders, their demuxers (ASF,
+  raw AC-3/E-AC-3, raw AMR and MP4/3GP) and the AC-3 parser. It builds no
+  encoders, filters, protocols, devices, hardware decoders or programs,
+  and none of FFmpeg's GPL or nonfree parts.
+- On Linux and macOS it needs `curl`, `tar` with xz support, a POSIX
+  shell and `make`.
+- On Windows it builds with MSVC (x64 and arm64): FFmpeg's `configure`
+  runs under [MSYS2](https://www.msys2.org/)'s shell, which needs its
+  `make` package (`pacman -S make`). MSYS2 is found at `C:\msys64`, or
+  at `MSYS2_ROOT` when that is set.
+- FFmpeg decodes single-threaded inside the worker's confinement, like
+  every other codec. It never opens a file or a network connection: the
+  worker hands it the bytes.
+- The worker tries Symphonia first. A file that starts like ASF, raw AMR
+  or a raw AC-3 stream goes straight to FFmpeg, and so does a file
+  Symphonia can't read or whose audio it has no decoder for, such as AMR
+  in a 3GP file.
+
+The release builds of the repository's `cargo` aliases turn the feature on
+by themselves: `cargo build-app --release`, `cargo package-platform` and
+`cargo install-platform --release`. A plain `cargo build --release` needs
+the `--features` flag shown in [Install the worker](#install-the-worker).
+Tests run with it too, so the first test build downloads FFmpeg and takes
+about half a minute longer (a few minutes on Windows).
 
 ## Configure it
 

@@ -25,11 +25,12 @@ pub(crate) struct OutputEncodingJson {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct MediaCapabilitiesJson {
     /// Audio codecs the worker decodes (`aac`, `alac`, `flac`, `mp3`,
-    /// `opus`, `vorbis`).
+    /// `opus`, `vorbis`, and `eac3` in builds with the FFmpeg decoders).
     #[schema(example = json!(["aac", "alac", "flac", "mp3", "opus", "vorbis"]))]
     pub decodes: Vec<&'static str>,
     /// Media types of files the worker opens, compared without case or
-    /// parameters.
+    /// parameters. Builds with the FFmpeg decoders add WMA, raw AC-3 and
+    /// E-AC-3, and AMR types.
     #[schema(example = json!(["audio/mp4", "audio/mpeg", "audio/flac", "audio/ogg"]))]
     pub reads: Vec<&'static str>,
     /// Encodings the worker writes.

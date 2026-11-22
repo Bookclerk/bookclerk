@@ -95,7 +95,8 @@ The web UI holds one WebSocket to `GET /api/live` (subprotocol
 `bookclerk-live.v1`) and re-reads a panel's ordinary routes when the daemon
 says its topic changed, instead of polling on timers. The socket carries
 topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
-`consents`, `libraries`, `users`, `discover`, `playback`), never rows, ids or secrets:
+`consents`, `libraries`, `users`, `discover`, `playback`, `notifications`),
+never rows, ids or secrets:
 
 ```json
 {"v":1,"type":"hello","topics":["jobs","nodes"]}
@@ -109,10 +110,12 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
   page cannot open it.
 - **Session.** The operator, or a signed-in user. The operator hears every
   topic; an Owner or Administrator hears `library`, `jobs`, `deliveries`,
-  `nodes`, `users`, `discover` and `playback`; anyone else hears
-  `library`, `nodes`, `discover` and `playback`. `discover` says only
-  that someone's stored shelves changed, and `playback` only that
-  someone's progress or bookmarks did; each page re-reads its own. The
+  `nodes`, `users`, `discover`, `playback` and `notifications`; anyone
+  else hears `library`, `nodes`, `discover`, `playback` and
+  `notifications`. `discover` says only that someone's stored shelves
+  changed, `playback` only that someone's progress or bookmarks did, and
+  `notifications` only that someone's inbox did; each page re-reads its
+  own. The
   session is re-checked every 30 s, and a signed-out user's socket closes
   with 4401.
 - Changes are found by reading revisions from the shared database every

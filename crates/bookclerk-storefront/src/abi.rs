@@ -270,12 +270,26 @@ impl From<abi::CatalogHit> for CatalogHit {
             media_kind: hit.media_kind,
             identifiers: hit.identifiers,
             credits: hit.credits,
-            series_entries: hit.series_entries,
+            series_entries: cleaned_series(hit.series_entries),
             parent_product_id: hit.parent_product_id,
             rank_hint: hit.rank_hint.filter(|rank| *rank > 0),
             sample_url: hit.sample_url,
         }
     }
+}
+
+/// A hit's series entries with each name cleaned the way the resolver
+/// stores it ([`bookclerk_resolve::clean_series_name`]), so a search row
+/// shows `King & Maxwell` for a store's `King & Maxwell Series`; an entry
+/// whose name cleans to nothing is dropped.
+fn cleaned_series(entries: Vec<abi::SeriesEntry>) -> Vec<abi::SeriesEntry> {
+    entries
+        .into_iter()
+        .filter_map(|mut entry| {
+            entry.name = bookclerk_resolve::clean_series_name(&entry.name);
+            (!entry.name.is_empty()).then_some(entry)
+        })
+        .collect()
 }
 
 impl From<SourcePurchaseHint> for abi::PurchaseHint {

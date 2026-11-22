@@ -278,6 +278,15 @@ port, plus the address-space rules), and the broker owns the handshake
 headers, so a plugin can't use a socket to reach a host its grant doesn't
 cover. The consent token is `sockets`.
 
+### Inbound webhooks
+
+`[[webhooks]]` asks the host to take requests from outside services on
+the library's public address and keep them for the plugin (see
+[Inbound webhooks](abi.md#inbound-webhooks-webhooks)). It grants no
+network reach: the plugin only reads requests the host already checked
+and stored, for its own instance and rows. The consent token is
+`webhooks`.
+
 ### What a manifest can't ask for
 
 > [!IMPORTANT]
@@ -408,7 +417,7 @@ bookclerk plugins approve echo --reset
 
 ### Platform guests
 
-Platform guests (`sqlite`, `local`) skip the consent screens and are
+Platform guests (`sqlite`, `local`, `embedder`) skip the consent screens and are
 enabled by default, **only when host-controlled provenance says they are
 verified Bookclerk platform artifacts**. The manifest id being `sqlite` or
 `local` isn't enough.

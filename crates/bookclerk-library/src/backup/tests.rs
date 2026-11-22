@@ -1070,18 +1070,18 @@ async fn omitted_backup_table_fails_verify_before_restore_mutates() {
         .unwrap();
     let repo = BackupRepository::open(files.path()).unwrap();
     let mut manifest = repo.read_manifest(&outcome.manifest.id).unwrap();
-    manifest.units[0].tables.retain(|t| t.name != "books");
+    manifest.units[0].tables.retain(|t| t.name != "accounts");
     repo.publish_manifest(&manifest).unwrap();
     let err = verify_recovery_point(&repo, &outcome.manifest.id).unwrap_err();
     assert!(
-        err.to_string().contains("books") && err.to_string().contains("missing"),
+        err.to_string().contains("accounts") && err.to_string().contains("missing"),
         "{err}"
     );
     let err = restore_backup_in_repo(&db, &repo, &outcome.manifest.id, &restore_ok())
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("books") || err.to_string().contains("table set"),
+        err.to_string().contains("accounts") || err.to_string().contains("table set"),
         "{err}"
     );
     let after = count(
@@ -1958,11 +1958,11 @@ async fn restore_sqlite_keeps_foreign_keys_enforced() {
     let err = dest
         .execute_raw(Statement::from_string(
             DbBackend::Sqlite,
-            "INSERT INTO books (uuid, plugin_key, source, account_id, product_id, marketplace, title, created_at, updated_at) \
-             VALUES ('u', 'audible', 'audible', 'missing', 'p', 'us', 't', 't', 't')",
+            "INSERT INTO account_scan_state (plugin_key, account_id, updated_at) \
+             VALUES ('audible', 'missing', 't')",
         ))
         .await
-        .expect_err("orphan book insert must fail");
+        .expect_err("orphan scan state insert must fail");
     let s = err.to_string().to_lowercase();
     assert!(
         s.contains("foreign") || s.contains("constraint") || s.contains("787"),
@@ -2280,7 +2280,7 @@ async fn missing_host_table_aborts_backup() {
     apply_host_schema(&db).await.unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "DROP TABLE books",
+        "DROP TABLE ignored_titles",
     ))
     .await
     .unwrap();
@@ -2289,7 +2289,7 @@ async fn missing_host_table_aborts_backup() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("cannot query") || err.to_string().contains("books"),
+        err.to_string().contains("cannot query") || err.to_string().contains("ignored_titles"),
         "{err}"
     );
 }

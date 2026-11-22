@@ -259,6 +259,7 @@ async fn pool_packages_m4b_in_a_confined_worker() {
                 parts: parts.clone(),
                 output: remuxed.clone(),
                 chapter_titles: vec!["One".into(), "Two".into()],
+                keep_codec: false,
             }),
         })
         .await
@@ -290,6 +291,7 @@ async fn pool_packages_m4b_in_a_confined_worker() {
             parts: mp3_parts,
             output: transcoded.clone(),
             chapter_titles: vec!["One".into(), "Two".into()],
+            keep_codec: false,
         }),
     })
     .await
@@ -396,6 +398,7 @@ async fn pool_surfaces_a_job_failure_without_killing_the_caller() {
                 parts: vec![garbage],
                 output: out.path().join("book.m4b"),
                 chapter_titles: vec![],
+                keep_codec: false,
             }),
         })
         .await

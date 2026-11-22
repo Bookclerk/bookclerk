@@ -9,15 +9,18 @@
 //! The window shows only pages from that scheme, except while joining a
 //! library, when it shows the library's own sign-in pages until the library
 //! sends it back (the host decides: `bookclerkd::embedded::Navigation`).
-//! The page may call three Tauri commands: `live` for its live updates, and
-//! `player` and `player_events` for the window's own audio player
-//! (`player.rs`), since the custom scheme cannot stream audio to the
-//! webview. The capability in `capabilities/main.json` allows them on the
+//! The page may call four Tauri commands: `live` for its live updates,
+//! `notify` to post a system notification for a new inbox entry
+//! (`alert.rs`), and `player` and `player_events` for the window's own
+//! audio player (`player.rs`), since the custom scheme cannot stream audio
+//! to the webview. The capability in `capabilities/main.json` allows them on the
 //! app's own pages only.
 //!
 //! The window needs the `window` feature, which needs the platform webview's
 //! development files to build; without it this binary only says so.
 
+#[cfg(feature = "window")]
+mod alert;
 #[cfg(feature = "window")]
 mod player;
 #[cfg(feature = "window")]

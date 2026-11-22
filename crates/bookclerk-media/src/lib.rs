@@ -43,11 +43,14 @@ pub use decode::{decode_pcm_bytes, OutChannels, PcmFormat, MAX_SAMPLE_RATE_HZ};
 /// Media-worker error types (`MediaError`) for remux, encode, and pool failures.
 mod error;
 mod job;
+#[cfg(feature = "libav")]
+mod libav;
 mod metadata;
 mod moov;
 mod mp3;
 pub use mp3::write_output_within_budget;
 mod mux_aac;
+mod mux_keep;
 mod native;
 mod opus_dec;
 mod opus_enc;
@@ -80,6 +83,7 @@ pub use cover_worker::{COVER_THREADS_ENV, COVER_WORKER_ARG};
 pub use error::{MediaError, Result};
 pub use job::{MediaJob, MediaJobOutput, MediaJobReply};
 pub use metadata::{bookclerk_tool_tag, fixup_audiobook, FixupRequest, BOOKCLERK_TOOL_NAME};
+pub use mux_keep::package_keeping_codec;
 pub use native::remux_trimmed;
 pub use opus_enc::{encode_to_opus_native, OpusEncodeOptions, MAX_OPUS_KBPS, MIN_OPUS_KBPS};
 pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};

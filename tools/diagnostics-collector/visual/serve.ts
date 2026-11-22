@@ -90,6 +90,8 @@ function report(i: number): ReportListRow {
     issue_source: tracked ? "filed" : null,
     issue_count: tracked ? 1 : 0,
     deleted_at: null,
+    rustc: "1.100.0 stable",
+    build_commit: "0123456789abcdef0123456789abcdef01234567",
   };
 }
 
@@ -253,7 +255,7 @@ function renderers(): Record<string, () => SafeHtml> {
         ],
         queue: reports.filter((r) => r.issue_number === null),
         afterFix: new Map([[412, FIX]]),
-        budget: { spent: 1200, cap: 10_000 },
+        budget: { spent: 1200, cap: 10_000, week: 3400 },
         versionOptions: ["0.1.3", "0.1.2"],
         capReached: false,
         usage: {
@@ -323,6 +325,8 @@ function renderers(): Record<string, () => SafeHtml> {
         signatureIssues: [412],
         mute: null,
         installs: 6,
+        triageNote: null,
+        proposal: null,
         now: NOW,
       }),
     "/issues": () =>

@@ -208,6 +208,18 @@ function scriptGitHub(routes: Route[]): Scripted {
 }
 
 /**
+ * A JSON value as an object (an empty one for anything else).
+ *
+ * @param v - Value.
+ * @returns The object.
+ */
+function asJson(v: unknown): Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+}
+
+/**
  * GitHub routes for a successful App token and the given membership.
  *
  * @param membership - Membership answer, or null for a 404.
@@ -948,6 +960,33 @@ describe("sign-in", () => {
     assert.equal(res.status, 502);
   });
 
+  it("opens the dashboard when a spent callback comes back to a signed-in browser", async () => {
+    gh = scriptGitHub([]);
+    const env = makeEnv();
+    const session = await signedIn(env);
+    const res = await call(
+      env,
+      new Request(`${ORIGIN}/auth/callback?code=abc&state=${"a".repeat(43)}`, {
+        headers: { cookie: session },
+      }),
+    );
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /You are signed in\./);
+    assert.equal(gh.calls.length, 0);
+  });
+
+  it("offers a fresh sign-in when a callback has expired", async () => {
+    gh = scriptGitHub([]);
+    const res = await call(
+      makeEnv(),
+      new Request(`${ORIGIN}/auth/callback?code=abc&state=${"a".repeat(43)}`),
+    );
+    assert.equal(res.status, 400);
+    const page = await res.text();
+    assert.match(page, /used already or took too long/);
+    assert.match(page, /href="\/auth\/github">Sign in with GitHub again/);
+  });
+
   it("rejects a callback whose state does not match the cookie", async () => {
     gh = scriptGitHub([]);
     const res = await call(
@@ -998,6 +1037,36 @@ describe("sessions", () => {
     const own = await call(
       env,
       new Request(`${ORIGIN}/auth/logout`, { method: "POST", headers: { cookie, origin: ORIGIN } }),
+    );
+    assert.equal(own.status, 303);
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM sessions")).length, 0);
+  });
+
+  it("logs out from its own button, which posts with Origin: null under no-referrer", async () => {
+    const env = makeEnv();
+    const cookie = await signedIn(env);
+    // A null origin from another site's page (a sandboxed frame, a data:
+    // URL) carries Sec-Fetch-Site: cross-site and stays refused.
+    const framed = await call(
+      env,
+      new Request(`${ORIGIN}/auth/logout`, {
+        method: "POST",
+        headers: { cookie, origin: "null", "sec-fetch-site": "cross-site" },
+      }),
+    );
+    assert.equal(framed.status, 403);
+    const bare = await call(
+      env,
+      new Request(`${ORIGIN}/auth/logout`, { method: "POST", headers: { cookie, origin: "null" } }),
+    );
+    assert.equal(bare.status, 403);
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM sessions")).length, 1);
+    const own = await call(
+      env,
+      new Request(`${ORIGIN}/auth/logout`, {
+        method: "POST",
+        headers: { cookie, origin: "null", "sec-fetch-site": "same-origin" },
+      }),
     );
     assert.equal(own.status, 303);
     assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM sessions")).length, 0);
@@ -1098,6 +1167,9 @@ describe("pages", () => {
     ).text();
     assert.match(gone, /The report's sender deleted its stored copy on /);
     assert.ok(!gone.includes("could not be read from storage"));
+    // The index keeps the toolchain and commit, so they outlive the copy.
+    assert.ok(gone.includes("1.91.0 stable"));
+    assert.ok(gone.includes("0123456"));
   });
 
   it("counts a report filed twice under the older issue and flags the conflict", async () => {
@@ -4304,6 +4376,7 @@ describe("triage state, mutes and owner close", () => {
     cookie: string,
     path: string,
     fields: [string, string][],
+    b2: B2Access = makeB2(),
   ): Promise<Response> {
     return call(
       env,
@@ -4316,6 +4389,7 @@ describe("triage state, mutes and owner close", () => {
         },
         body: new URLSearchParams(fields).toString(),
       }),
+      b2,
     );
   }
 
@@ -4327,14 +4401,12 @@ describe("triage state, mutes and owner close", () => {
     const cookie = await signedIn(env);
 
     let page = await (
-      await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))
+      await call(env, new Request(`${ORIGIN}/dash?source=installs`, { headers: { cookie } }))
     ).text();
     assert.match(page, /Needs triage<\/a><\/h2><div class="v">2</, "the demo report is left out");
     assert.match(page, /Active installs/);
-    page = await (
-      await call(env, new Request(`${ORIGIN}/dash?source=all`, { headers: { cookie } }))
-    ).text();
-    assert.match(page, /Needs triage<\/a><\/h2><div class="v">3</, "all sources count three");
+    page = await (await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))).text();
+    assert.match(page, /Needs triage<\/a><\/h2><div class="v">3</, "all sources by default");
     assert.match(
       page,
       /href="\/reports\?range=[a-z0-9]+&amp;signature=[0-9a-f]{16}&amp;source=all"/,
@@ -4363,7 +4435,10 @@ describe("triage state, mutes and owner close", () => {
       ],
     );
     page = await (
-      await call(env, new Request(`${ORIGIN}/reports?triage=needs`, { headers: { cookie } }))
+      await call(
+        env,
+        new Request(`${ORIGIN}/reports?triage=needs&source=installs`, { headers: { cookie } }),
+      )
     ).text();
     assert.match(page, /0 reports/, "the installs queue is empty");
     page = await (
@@ -4404,6 +4479,74 @@ describe("triage state, mutes and owner close", () => {
       }),
     );
     assert.equal(crossSite.status, 403);
+  });
+
+  it("shows today's triage spend and the last seven days' on the overview", async () => {
+    const day = (offset: number) => new Date(NOW - offset * 86_400_000).toISOString().slice(0, 10);
+    const totals = new Map([
+      [`triage-neurons:${day(0)}`, "7"],
+      [`triage-neurons:${day(3)}`, "13"],
+      [`triage-neurons:${day(6)}`, "19"],
+      [`triage-neurons:${day(7)}`, "500"],
+    ]);
+    const env = makeEnv({
+      TRIAGE_BUDGET: {
+        get: (key: string) => Promise.resolve(totals.get(key) ?? null),
+        put: () => Promise.resolve(),
+      },
+    });
+    const cookie = await signedIn(env);
+    const page = await (
+      await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /neurons used today \(UTC\), 39 in the last 7 days/);
+
+    const broken = makeEnv({
+      TRIAGE_BUDGET: {
+        get: () => Promise.reject(new Error("kv down")),
+        put: () => Promise.resolve(),
+      },
+    });
+    const fallback = await (
+      await call(
+        broken,
+        new Request(`${ORIGIN}/dash`, { headers: { cookie: await signedIn(broken) } }),
+      )
+    ).text();
+    assert.match(fallback, /neurons used today \(UTC\), 0 in the last 7 days/);
+  });
+
+  it("remembers the source filter between the overview and the reports list", async () => {
+    const env = makeEnv();
+    await seed(env, ID1);
+    await seed(env, ID3, NOW - 3_600_000, { deployment: "demo" });
+    const cookie = await signedIn(env);
+    const chose = await call(
+      env,
+      new Request(`${ORIGIN}/dash?source=demo`, { headers: { cookie } }),
+    );
+    const remembered = chose.headers.get("set-cookie") ?? "";
+    assert.match(remembered, /^__Host-bc_source=demo; Path=\/; Secure; HttpOnly; SameSite=Lax/);
+    assert.match(await chose.text(), /<a href="\/dash\?source=demo" aria-current="true">Demo<\/a>/);
+    const both = `${cookie}; __Host-bc_source=demo`;
+    const list = await call(env, new Request(`${ORIGIN}/reports`, { headers: { cookie: both } }));
+    assert.equal(list.headers.get("set-cookie"), null, "no choice in the query, nothing to store");
+    const text = await list.text();
+    assert.match(text, /1 reports/, "only the demo report");
+    assert.match(text, /aria-current="true">Demo</);
+    // An explicit All replaces the remembered choice.
+    const all = await call(
+      env,
+      new Request(`${ORIGIN}/reports?source=all`, { headers: { cookie: both } }),
+    );
+    assert.match(all.headers.get("set-cookie") ?? "", /^__Host-bc_source=all;/);
+    assert.match(await all.text(), /2 reports/);
+    // Junk in the cookie falls back to All.
+    const junk = await call(
+      env,
+      new Request(`${ORIGIN}/reports`, { headers: { cookie: `${cookie}; __Host-bc_source=x` } }),
+    );
+    assert.match(await junk.text(), /2 reports/);
   });
 
   it("mutes a signature out of the queue and the ingest pull, until a version ends it", async () => {
@@ -4566,6 +4709,406 @@ describe("triage state, mutes and owner close", () => {
       await call(env, new Request(`${ORIGIN}/issues/412`, { headers: { cookie: owner } }))
     ).text();
     assert.match(page, /Closed on GitHub as fixed in 0\.9\.1\./);
+  });
+
+  /**
+   * Bindings with a scripted triage model and an in-memory budget.
+   *
+   * @param reply - What the model answers (its `response` text).
+   * @returns The bindings and the model's received prompts.
+   */
+  function triageEnv(reply: string): { env: DashboardEnv; prompts: string[] } {
+    const prompts: string[] = [];
+    const kv = new Map<string, string>();
+    const env = makeEnv({
+      AI: {
+        run: (_model, input) => {
+          prompts.push(input.messages.map((m) => m.content).join("\n"));
+          return Promise.resolve({
+            response: reply,
+            usage: { prompt_tokens: 100, completion_tokens: 50 },
+          });
+        },
+      },
+      TRIAGE_BUDGET: {
+        get: (key: string) => Promise.resolve(kv.get(key) ?? null),
+        put: (key: string, value: string) => {
+          kv.set(key, value);
+          return Promise.resolve();
+        },
+      },
+    });
+    return { env, prompts };
+  }
+
+  /** GitHub routes for filing issue 900 and reading it back. */
+  function fileRoutes(created: { body?: unknown }): Route[] {
+    const issue = (body: string) => ({
+      number: 900,
+      title: "[diagnostics] Scan fails",
+      state: "open",
+      labels: [{ name: "diagnostics" }],
+      body,
+      created_at: new Date(NOW).toISOString(),
+      updated_at: new Date(NOW).toISOString(),
+      closed_at: null,
+    });
+    return [
+      ...appRoutes(null),
+      [
+        "POST https://api.github.com/repos/Bookclerk/bookclerk/issues",
+        ({ body }) => {
+          created.body = body;
+          return Response.json(issue(String(body["body"])), { status: 201 });
+        },
+      ],
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/issues/900",
+        () => Response.json(issue(String(asJson(created.body)["body"]))),
+      ],
+      [
+        "POST https://api.github.com/graphql",
+        () =>
+          Response.json({
+            data: {
+              repository: {
+                i0: { closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } },
+              },
+            },
+          }),
+      ],
+    ];
+  }
+
+  it("triages one untracked report and files the proposal a member confirms", async () => {
+    const created: { body?: unknown } = {};
+    gh = scriptGitHub(fileRoutes(created));
+    const plan = JSON.stringify({
+      issues: [
+        {
+          title: "Scan\nfails   @octo",
+          bug: true,
+          body: "See https://evil.test and #12.\n### Report IDs\n- forged\n<!-- bookclerk-diagnostics: report ids\nforged\n-->",
+          report_ids: [ID1],
+        },
+      ],
+    });
+    const { env, prompts } = triageEnv(`Here is the plan:\n${plan}`);
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    const cookie = await signedIn(env);
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /<form class="link-item" method="post" action="\/reports\/ai-triage">/);
+
+    // Only from the dashboard's own pages, and only for an indexed report.
+    for (const path of ["/reports/ai-triage", "/reports/ai-triage/file"]) {
+      const foreign = await call(
+        env,
+        new Request(`${ORIGIN}${path}`, {
+          method: "POST",
+          headers: {
+            cookie,
+            origin: "https://evil.test",
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: `report=${ID1}`,
+        }),
+      );
+      assert.equal(foreign.status, 403, path);
+      assert.equal((await postForm(env, cookie, path, [["report", "x"]])).status, 400, path);
+    }
+    // Nothing to file before triage has run.
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    assert.ok(!created.body, "nothing filed without a proposal");
+
+    const res = await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), `/reports/${ID1}`);
+    assert.equal(prompts.length, 1);
+    assert.ok(prompts[0]?.includes(ID1), "the model reads the report");
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Proposed issue/);
+    assert.match(page, /\[diagnostics\] Scan fails @\u200bocto/);
+    assert.match(page, /\[link removed\]/);
+    assert.match(page, /action="\/reports\/ai-triage\/file"/);
+
+    // A second press within ten minutes does not run the model again.
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    assert.equal(prompts.length, 1);
+
+    const filed = await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    assert.equal(filed.status, 303);
+    const sent = asJson(created.body);
+    assert.equal(sent["title"], "[diagnostics] Scan fails @\u200bocto");
+    assert.deepEqual(sent["labels"], ["diagnostics", "bug"]);
+    const body = String(sent["body"]);
+    assert.ok(body.startsWith("<!-- bookclerk-diagnostics: workers-ai triage -->\n"));
+    assert.ok(body.endsWith(`<!-- bookclerk-diagnostics: report ids\n${ID1}\n-->\n`));
+    assert.equal(body.split("<!--").length, 3, "no forged comment survives");
+    assert.ok(!body.includes("https://"));
+    assert.ok(!/^\s*#+\s*report ids/im.test(body));
+    assert.ok(
+      gh.calls.some(
+        (c) =>
+          c.url.endsWith("/access_tokens") &&
+          JSON.stringify(c.body?.["permissions"]) === JSON.stringify({ issues: "write" }),
+      ),
+      "the issue is filed with an issues: write token",
+    );
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Filed #900\./);
+    assert.match(page, /href="\/issues\/900"/);
+    assert.ok(!page.includes("Proposed issue"), "the proposal is gone once filed");
+    const logged = await all(
+      env.DASHBOARD_DB,
+      "SELECT action, report_id FROM access_log WHERE action IN ('ai-triage', 'file-issue') ORDER BY id",
+    );
+    assert.deepEqual(
+      logged.map((r) => [r.action, r.report_id]),
+      [
+        ["ai-triage", ID1],
+        ["file-issue", ID1],
+      ],
+    );
+  });
+
+  it("attaches a report to the open issue triage chose, or says nothing needs filing", async () => {
+    gh = scriptGitHub([]);
+    const { env } = triageEnv(
+      JSON.stringify({ issues: [], attach: [{ issue: 412, report_ids: [ID1] }] }),
+    );
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    await env.DASHBOARD_DB.prepare(
+      "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (412, 'Scan fails', 'open', 'triage', 1, 1)",
+    ).run();
+    const cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /belongs to <a href="\/issues\/412">#412 Scan fails<\/a>/);
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    const row = await first(
+      env.DASHBOARD_DB,
+      "SELECT issue_number, source FROM report_issue WHERE report_id = ?",
+      ID1,
+    );
+    assert.deepEqual({ ...row }, { issue_number: 412, source: "triage" });
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Attached to #412\./);
+    assert.ok(!page.includes('action="/reports/ai-triage"'), "no button once an issue lists it");
+
+    const noise = triageEnv(JSON.stringify({ issues: [] })).env;
+    const b2n = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID2}.json`]: JSON.stringify(await seed(noise, ID2)),
+    });
+    const c2 = await signedIn(noise);
+    await postForm(noise, c2, "/reports/ai-triage", [["report", ID2]], b2n);
+    page = await (
+      await call(noise, new Request(`${ORIGIN}/reports/${ID2}`, { headers: { cookie: c2 } }))
+    ).text();
+    assert.match(page, /Triage judged this report noise/);
+    await postForm(noise, c2, "/reports/ai-triage/file", [["report", ID2]]);
+    page = await (
+      await call(noise, new Request(`${ORIGIN}/reports/${ID2}`, { headers: { cookie: c2 } }))
+    ).text();
+    assert.match(page, /There is no triage proposal to file/);
+  });
+
+  it("says why triage could not run or its answer was not used", async () => {
+    gh = scriptGitHub([]);
+    const plain = makeEnv();
+    await seed(plain, ID1);
+    let cookie = await signedIn(plain);
+    await postForm(plain, cookie, "/reports/ai-triage", [["report", ID1]]);
+    let page = await (
+      await call(plain, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Triage is not configured on this collector/);
+
+    const { env } = triageEnv("no plan here");
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /answer could not be used/);
+  });
+
+  it("says when the App cannot file the issue", async () => {
+    const { env } = triageEnv(
+      JSON.stringify({ issues: [{ title: "t", body: "b", report_ids: [ID1] }] }),
+    );
+    gh = scriptGitHub([
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/installation",
+        () => Response.json({ id: 42 }),
+      ],
+      [
+        "POST https://api.github.com/app/installations/42/access_tokens",
+        () => new Response("{}", { status: 422 }),
+      ],
+    ]);
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    const cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    const page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /the App needs Issues: write on the repository/);
+    assert.match(page, /Proposed issue/, "the proposal stays for another try");
+  });
+
+  it("gives the reason for each refusal", async () => {
+    gh = scriptGitHub([]);
+    const plan = JSON.stringify({ issues: [{ title: "t", body: "b", report_ids: [ID1] }] });
+    /** Presses Triage now on a fresh collector set up by `prepare`, and returns the page. */
+    const press = async (
+      prepare: (env: DashboardEnv) => Promise<void>,
+      opts: { env?: DashboardEnv; stored?: boolean; overrides?: Record<string, unknown> } = {},
+    ): Promise<string> => {
+      const env = opts.env ?? triageEnv(plan).env;
+      const s = await seed(env, ID1, undefined, opts.overrides ?? {});
+      const b2 = makeB2(
+        opts.stored === false
+          ? {}
+          : { [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(s) },
+      );
+      await prepare(env);
+      const cookie = await signedIn(env);
+      await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+      return (
+        await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+      ).text();
+    };
+    const nothing = (): Promise<void> => Promise.resolve();
+
+    assert.match(
+      await press(async (env) => {
+        await env.DASHBOARD_DB.prepare(
+          "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (412, 'Scan fails', 'open', 'triage', 1, 1)",
+        ).run();
+        await run(
+          env.DASHBOARD_DB,
+          "INSERT INTO report_issue (report_id, issue_number) VALUES (?, 412)",
+          ID1,
+        );
+      }),
+      /An issue already lists this report, so there is nothing to triage/,
+    );
+    assert.match(
+      await press((env) =>
+        run(env.DASHBOARD_DB, "UPDATE reports SET deleted_at = 1 WHERE report_id = ?", ID1),
+      ),
+      /Its sender deleted the stored copy/,
+    );
+    assert.match(await press(nothing, { stored: false }), /The stored report could not be read/);
+    assert.match(
+      await press(async (env) => {
+        for (let i = 0; i < 20; i++) {
+          await run(
+            env.DASHBOARD_DB,
+            "INSERT INTO access_log (at, user_id, login, action, report_id) VALUES (?, 1, 'octo', 'ai-triage', ?)",
+            NOW - 1000,
+            ID2,
+          );
+        }
+      }),
+      /has run triage 20 times in the last day/,
+    );
+    const spent = triageEnv(plan).env;
+    spent.TRIAGE_DAILY_NEURONS = "1";
+    assert.match(await press(nothing, { env: spent }), /triage budget is spent/);
+    assert.match(
+      await press(nothing, {
+        overrides: {
+          events: [
+            { level: "ERROR", target: "t", message: "m", fields: [["k", "x".repeat(200_000)]] },
+          ],
+        },
+      }),
+      /too large for the triage model/,
+    );
+    const silent = triageEnv(plan).env;
+    silent.AI = { run: () => Promise.reject(new Error("model down")) };
+    assert.match(await press(nothing, { env: silent }), /The triage model did not answer/);
+  });
+
+  it("files a proposal once when two members confirm it together", async () => {
+    const created: { body?: unknown } = {};
+    gh = scriptGitHub(fileRoutes(created));
+    const { env } = triageEnv(
+      JSON.stringify({ issues: [{ title: "t", body: "b", report_ids: [ID1] }] }),
+    );
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    const cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    await Promise.all([
+      postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2),
+      postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2),
+    ]);
+    const creates = gh.calls.filter(
+      (c) => c.method === "POST" && c.url.endsWith("/repos/Bookclerk/bookclerk/issues"),
+    );
+    assert.equal(creates.length, 1);
+  });
+
+  it("files the issue even when reading it back fails", async () => {
+    const created: { body?: unknown } = {};
+    gh = scriptGitHub(fileRoutes(created).filter(([route]) => !route.endsWith("/issues/900")));
+    const { env } = triageEnv(
+      JSON.stringify({ issues: [{ title: "t", body: "b", report_ids: [ID1] }] }),
+    );
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    const cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    await env.DASHBOARD_DB.prepare(
+      "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (412, 'Scan fails', 'open', 'triage', 1, 1)",
+    ).run();
+    await run(
+      env.DASHBOARD_DB,
+      "INSERT INTO report_issue (report_id, issue_number) VALUES (?, 412)",
+      ID1,
+    );
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /An issue already lists this report, so nothing was filed/);
+    assert.ok(!created.body, "nothing filed once an issue lists the report");
+
+    // That refusal drops the proposal; triage runs again once the report is
+    // free and its ten minutes have passed.
+    await run(env.DASHBOARD_DB, "DELETE FROM report_issue WHERE report_id = ?", ID1);
+    await run(env.DASHBOARD_DB, "DELETE FROM access_log");
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.ok(created.body, "the issue is filed");
+    assert.match(page, /Filed #900; it shows here after the next issue sync\./);
   });
 });
 

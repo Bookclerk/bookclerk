@@ -258,6 +258,11 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 9] {
 /// debug assertion for a documented path no prefix matches.
 const TAGS: &[(&str, &str, &str)] = &[
     ("Health", "/health", "Liveness."),
+    (
+        "Webhooks",
+        "/hooks",
+        "Inbound webhooks for plugins, outside operator auth: the URL token is the credential.",
+    ),
     ("Spec", OPENAPI_PATH, "This document."),
     ("Spec", v30::OPENAPI_V30_PATH, "This document."),
     ("Auth", "/api/auth", "Sign-in, sessions, passkeys, TOTP and the operator's elevation."),

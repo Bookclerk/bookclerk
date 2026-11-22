@@ -83,6 +83,10 @@ export type ReportRow = {
   peak_latency_ms: number | null;
   /** "demo" for a report from the hosted demo, else "". */
   deployment: string;
+  /** rustc release and channel the client was built with, or "". */
+  rustc: string;
+  /** Commit the client was built from (7 to 40 hex digits), or "". */
+  build_commit: string;
   /** "" (needs triage when not filed), "seen" or "noise". */
   triage_state: string;
   /** Login of the member who set the triage state, or null. */
@@ -393,8 +397,8 @@ export function reportInsert(
     .prepare(
       `INSERT OR IGNORE INTO reports (report_id, object_key, received_at, version, os, arch, distro,
          trigger, events, errors, warnings, signature, signature_label, route, peak_latency_ms,
-         install_key, deployment)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         install_key, deployment, rustc, build_commit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       row.reportId,
@@ -414,6 +418,8 @@ export function reportInsert(
       s.peakLatencyMs,
       s.installKey,
       s.deployment,
+      s.rustc,
+      s.buildCommit,
     );
 }
 
@@ -504,19 +510,31 @@ export type ReportFilter = {
 };
 
 /** Report origins the source filter offers, default first. */
-export const REPORT_SOURCES = ["installs", "demo", "all"] as const;
+export const REPORT_SOURCES = ["all", "installs", "demo"] as const;
 
 /** One of {@link REPORT_SOURCES}. */
 export type ReportSource = (typeof REPORT_SOURCES)[number];
 
 /**
- * Parses the source filter.
+ * Parses one source filter value.
  *
- * @param raw - The `source` query parameter.
- * @returns The source; anything unknown is "installs", the default.
+ * @param raw - A `source` query parameter or the remembered choice.
+ * @returns The source, or null when `raw` names none.
  */
-export function reportSource(raw: string | null): ReportSource {
-  return raw === "demo" || raw === "all" ? raw : "installs";
+export function parseReportSource(raw: string | null | undefined): ReportSource | null {
+  return raw === "all" || raw === "installs" || raw === "demo" ? raw : null;
+}
+
+/**
+ * The source filter in force: the query's when it names one, else the
+ * member's last choice, else "all".
+ *
+ * @param query - The `source` query parameter.
+ * @param remembered - The `__Host-bc_source` cookie's value.
+ * @returns The source.
+ */
+export function reportSource(query: string | null, remembered: string | null = null): ReportSource {
+  return parseReportSource(query) ?? parseReportSource(remembered) ?? "all";
 }
 
 /**
@@ -600,7 +618,7 @@ const TRACKER = `(SELECT ri.issue_number FROM report_issue ri LEFT JOIN issues t
  */
 const REPORT_COLUMNS = `r.report_id, r.object_key, r.received_at, r.version, r.os, r.arch, r.distro,
   r.trigger, r.events, r.errors, r.warnings, r.signature, r.signature_label,
-  r.route, r.peak_latency_ms, r.deployment, r.triage_state, r.triaged_by, r.deleted_at,
+  r.route, r.peak_latency_ms, r.deployment, r.rustc, r.build_commit, r.triage_state, r.triaged_by, r.deleted_at,
   (SELECT COUNT(*) FROM signature_mutes m WHERE m.signature = r.signature
     AND (m.until IS NULL OR m.until > CAST(strftime('%s', 'now') AS INTEGER) * 1000)) AS muted,
   i.number AS issue_number, i.state AS issue_state,
@@ -1333,7 +1351,9 @@ export async function logAccess(
     | "triage"
     | "mute"
     | "unmute"
-    | "close-issue",
+    | "close-issue"
+    | "ai-triage"
+    | "file-issue",
   reportId: string | null,
   now: number,
 ): Promise<void> {
@@ -2094,6 +2114,23 @@ export async function getState(db: D1Database, key: string): Promise<string | nu
  */
 export async function setState(db: D1Database, key: string, value: string): Promise<void> {
   await stateStatement(db, key, value).run();
+}
+
+/**
+ * Empties a cursor only if it still holds a value, so of two requests that
+ * read the same value only one goes on to act on it.
+ *
+ * @param db - Database.
+ * @param key - Cursor name.
+ * @param value - The value the caller read.
+ * @returns Whether this call emptied it.
+ */
+export async function takeState(db: D1Database, key: string, value: string): Promise<boolean> {
+  const res = await db
+    .prepare("UPDATE sync_state SET value = '' WHERE key = ? AND value = ?")
+    .bind(key, value)
+    .run();
+  return res.meta.changes === 1;
 }
 
 /**

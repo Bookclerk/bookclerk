@@ -4,6 +4,8 @@
 //!
 //! The generated seeds come from `decode::tests::generate_fuzz_seeds`
 //! (`UPDATE_FUZZ_SEEDS=1 cargo test -p bookclerk-media generate_fuzz_seeds`).
+//! The `libav_*` seeds are `bookclerk-libav`'s sample files (WMA, AC-3,
+//! E-AC-3, AMR, AMR in 3GP), which only the `libav` feature decodes.
 // Test code: a failed assertion or a missing corpus file is the test failing.
 #![allow(clippy::missing_panics_doc, clippy::expect_used, clippy::unwrap_used)]
 
@@ -42,6 +44,53 @@ fn fuzz_corpus_media_decode_holds_invariants() {
     }
     // The whole AAC and MP3 files exercise the success invariants.
     assert!(accepted >= 4, "only {accepted} seeds decoded");
+}
+
+/// With the FFmpeg decoders (every Unix and Windows test build), each
+/// `libav_*` seed decodes.
+#[cfg(any(unix, all(windows, target_env = "msvc")))]
+#[test]
+fn fuzz_corpus_media_decode_libav_seeds_decode() {
+    let seeds: Vec<PathBuf> = corpus_files()
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("libav_"))
+        })
+        .collect();
+    assert!(seeds.len() >= 8, "only {} libav seeds", seeds.len());
+    for path in seeds {
+        let data = std::fs::read(&path).expect("read");
+        decode_pcm_bytes(data, OutChannels::Mono, |_, _| Ok(()))
+            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+    }
+}
+
+#[path = "../../../fuzz/oracles/media_keep_codec.rs"]
+mod media_keep_codec_oracle;
+
+#[test]
+fn fuzz_corpus_media_keep_codec_holds_invariants() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/media_keep_codec")
+        .canonicalize()
+        .expect("canonicalize corpus");
+    let (mut count, mut kept) = (0, 0);
+    for entry in std::fs::read_dir(&dir).expect("fuzz corpus") {
+        let Ok(path) = entry.expect("entry").path().canonicalize() else {
+            continue;
+        };
+        if path.starts_with(&dir) && path.is_file() {
+            kept += usize::from(media_keep_codec_oracle::check(
+                &std::fs::read(&path).expect("read"),
+            ));
+            count += 1;
+        }
+    }
+    assert!(count >= 6, "only {count} seeds");
+    // The Opus, FLAC and ALAC seeds exercise the success invariants.
+    assert!(kept >= 4, "only {kept} seeds were kept");
 }
 
 #[path = "../../../fuzz/oracles/media_pcm_wire.rs"]

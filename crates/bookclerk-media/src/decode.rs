@@ -192,7 +192,8 @@ fn to_i16(sample: f32) -> i16 {
 }
 
 /// The codec registry the decode front uses: Symphonia's enabled decoders,
-/// with FDK preferred for AAC and libopus for Opus.
+/// with FDK preferred for AAC and libopus for Opus, and (with the `libav`
+/// feature) FFmpeg for AC-3, E-AC-3, WMA and AMR.
 fn codecs() -> &'static CodecRegistry {
     static REGISTRY: OnceLock<CodecRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
@@ -200,12 +201,18 @@ fn codecs() -> &'static CodecRegistry {
         symphonia::default::register_enabled_codecs(&mut registry);
         registry.register_audio_decoder_at_tier::<FdkAacDecoder>(Tier::Preferred);
         registry.register_audio_decoder_at_tier::<OpusDecoder>(Tier::Preferred);
+        #[cfg(feature = "libav")]
+        registry.register_audio_decoder_at_tier::<crate::libav::LibavDecoder>(Tier::Fallback);
         registry
     })
 }
 
 /// Opens the audio in `source` for decoding, primed to its first audible
 /// packet so the layout reported is the decoder's.
+///
+/// With the `libav` feature, files only FFmpeg reads (WMA in ASF, raw
+/// AC-3/E-AC-3, raw AMR) and tracks Symphonia has no decoder for go
+/// through FFmpeg ([`crate::libav`]).
 ///
 /// # Arguments
 ///
@@ -218,52 +225,101 @@ fn codecs() -> &'static CodecRegistry {
 /// audio track, the track states no usable sample rate, or no decoder
 /// handles its codec; or a demux or fatal decode error while priming.
 pub(crate) fn open_audio(source: Box<dyn MediaSource>, seek_index: bool) -> Result<OpenedAudio> {
+    #[cfg(feature = "libav")]
+    {
+        crate::libav::open_audio(source, seek_index)
+    }
+    #[cfg(not(feature = "libav"))]
+    {
+        match open_reader(probe(source, seek_index)?)? {
+            Opened::Ready(opened) => Ok(opened),
+            Opened::NoDecoder(reason) => Err(MediaError::Native(reason)),
+        }
+    }
+}
+
+/// Finds the container in `source` by its bytes and opens Symphonia's
+/// reader for it.
+///
+/// # Errors
+///
+/// [`MediaError::Native`] when no Symphonia reader recognises the bytes.
+pub(crate) fn probe(
+    source: Box<dyn MediaSource>,
+    seek_index: bool,
+) -> Result<Box<dyn FormatReader>> {
     let mss = MediaSourceStream::new(source, Default::default());
     // No extension hint: the probe recognises the container by its bytes.
-    let format = symphonia::default::get_probe()
+    symphonia::default::get_probe()
         .probe(
             &Hint::new(),
             mss,
             FormatOptions::default().prebuild_seek_index(seek_index),
             MetadataOptions::default(),
         )
-        .map_err(|err| MediaError::Native(format!("probe failed: {err}")))?;
+        .map_err(|err| MediaError::Native(format!("probe failed: {err}")))
+}
 
-    let track = format
-        .default_track(TrackType::Audio)
-        .ok_or_else(|| MediaError::Native("no decodable audio track".into()))?
-        .clone();
-    let audio_params = match track.codec_params.as_ref() {
-        Some(CodecParameters::Audio(params)) => params.clone(),
-        _ => {
-            return Err(MediaError::Native(
-                "selected track is missing audio codec parameters".into(),
-            ));
-        }
+/// What [`open_reader`] made of a container.
+pub(crate) enum Opened {
+    /// The audio track, with its decoder, primed.
+    Ready(OpenedAudio),
+    /// No audio track has a decoder in the registry (or the reader found
+    /// no audio track); the reader was dropped. Holds the reason.
+    NoDecoder(String),
+}
+
+/// Picks the default audio track of `format`, makes its decoder and primes
+/// the stream.
+///
+/// # Returns
+///
+/// [`Opened::NoDecoder`] when there is no audio track this build decodes.
+///
+/// # Errors
+///
+/// [`MediaError::Native`] when the track's stream states no usable sample
+/// rate, or a demux or fatal decode error happens while priming.
+pub(crate) fn open_reader(format: Box<dyn FormatReader>) -> Result<Opened> {
+    // A track in a codec the reader does not know carries no audio
+    // parameters, so both cases mean "nothing here decodes it".
+    let Some(track) = format.default_track(TrackType::Audio).cloned() else {
+        return Ok(Opened::NoDecoder("no decodable audio track".into()));
     };
-    let sample_rate = audio_params
+    let Some(CodecParameters::Audio(audio_params)) = track.codec_params.clone() else {
+        return Ok(Opened::NoDecoder(
+            "selected track is missing audio codec parameters".into(),
+        ));
+    };
+    let decoder = match codecs().make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
+    {
+        Ok(decoder) => decoder,
+        Err(err) => return Ok(Opened::NoDecoder(format!("decoder init failed: {err}"))),
+    };
+    // A stream may carry its own rate (raw AMR, AC-3), so the stated one
+    // is only a fallback until priming reads the decoder's.
+    let stated_rate = audio_params
         .sample_rate
-        .filter(|rate| (1..=MAX_SAMPLE_RATE_HZ).contains(rate))
-        .ok_or_else(|| MediaError::Native("missing or unusable sample rate".into()))?;
+        .filter(|rate| (1..=MAX_SAMPLE_RATE_HZ).contains(rate));
     let channels = audio_params
         .channels
         .as_ref()
         .map(symphonia::core::audio::Channels::count)
         .unwrap_or(1)
         .max(1);
-    let decoder = codecs()
-        .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
-        .map_err(|err| MediaError::Native(format!("decoder init failed: {err}")))?;
     let mut opened = OpenedAudio {
         format,
         decoder,
         track_id: track.id,
-        sample_rate,
+        sample_rate: stated_rate.unwrap_or(0),
         channels,
         primed: Primed::default(),
     };
     opened.prime()?;
-    Ok(opened)
+    if !(1..=MAX_SAMPLE_RATE_HZ).contains(&opened.sample_rate) {
+        return Err(MediaError::Native("missing or unusable sample rate".into()));
+    }
+    Ok(Opened::Ready(opened))
 }
 
 /// Opens the audio file at `path` for decoding ([`open_audio`]).

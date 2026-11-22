@@ -69,7 +69,7 @@ Commands:
 - [`bookclerk library search`](#bookclerk-library-search): Search the library's works by title, people, series or store id
 - [`bookclerk library export`](#bookclerk-library-export): Export library titles as CSV / JSON / XLSX (alias of `export library`): the whole library, or with `--user` that person's view
 - [`bookclerk library list`](#bookclerk-library-list): List books in the local library DB
-- [`bookclerk library convert`](#bookclerk-library-convert): Convert acquired m4b/m4a to mp3
+- [`bookclerk library convert`](#bookclerk-library-convert): Add another copy of stored books, made from the copy the library holds and kept beside it (queued for the daemon, like acquire)
 - [`bookclerk library filters`](#bookclerk-library-filters): Manage saved quick filters
 - [`bookclerk library tags`](#bookclerk-library-tags): Read or set a work's library tags, which everyone sees, the Library filters by, and a patron scope can include or exclude
 - [`bookclerk library collections`](#bookclerk-library-collections): Read or set the library's collections: named parts of the library, each defined by storage key prefixes, which the Library filters by and a patron scope can include or exclude
@@ -312,20 +312,22 @@ Options:
 
 ### `bookclerk library convert`
 
-Convert acquired m4b/m4a to mp3
+Add another copy of stored books, made from the copy the library holds and kept beside it (queued for the daemon, like acquire)
 
 ```text
-bookclerk library convert [OPTIONS] [ASIN]...
+bookclerk library convert [OPTIONS] <ID>...
 ```
 
 Arguments:
 
-- `[ASIN]...`: Title ids to convert; empty means all acquired titles matching the account filter
+- `<ID>...`: Title ids (uuid, ASIN, ISBN, product id) of the books to convert
 
 Options:
 
 - `--account <ACCOUNT>`: Limit conversion to this account id, stem, or nickname
-- `-f, --force`: Re-encode even when an MP3 already exists in storage
+- `--to <FORMAT:QUALITY>`: The copy to add, as `output.copies` writes it (`mp3:64k-mono`, `m4b:original`, `opus:32k`). Defaults to an MP3 at the library's `output.lame` quality
+- `-f, --force`: Make the copy again when the book already has it
+- `--no-wait`: Queue the jobs and print their ids without waiting
 
 ### `bookclerk library filters`
 
@@ -863,6 +865,7 @@ Commands:
 - [`bookclerk plugins instances create`](#bookclerk-plugins-instances-create): Create another instance of a plugin that has a pinned schema
 - [`bookclerk plugins instances delete`](#bookclerk-plugins-instances-delete): Delete an instance that has no deployment on any node
 - [`bookclerk plugins instances filter`](#bookclerk-plugins-instances-filter): Show or change which books a storage destination takes
+- [`bookclerk plugins instances intake`](#bookclerk-plugins-instances-intake): Show or change whether a storage instance is a drop folder: a folder Bookclerk watches and adds whatever lands there to the library
 
 #### `bookclerk plugins instances list`
 
@@ -959,6 +962,68 @@ bookclerk plugins instances filter clear [OPTIONS] <INSTANCE>
 Arguments:
 
 - `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the destination
+
+#### `bookclerk plugins instances intake`
+
+Show or change whether a storage instance is a drop folder: a folder Bookclerk watches and adds whatever lands there to the library
+
+```text
+bookclerk plugins instances intake [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`bookclerk plugins instances intake get`](#bookclerk-plugins-instances-intake-get): Show whether a storage instance is a drop folder, and its settings
+- [`bookclerk plugins instances intake set`](#bookclerk-plugins-instances-intake-set): Make a storage instance a drop folder, or change a drop folder's settings. Options left out keep their current value (or the default, for a new drop folder). Turning a destination into a drop folder needs the instance undeployed on every node
+- [`bookclerk plugins instances intake clear`](#bookclerk-plugins-instances-intake-clear): Make a drop folder a destination again. Needs the instance undeployed on every node
+
+##### `bookclerk plugins instances intake get`
+
+Show whether a storage instance is a drop folder, and its settings
+
+```text
+bookclerk plugins instances intake get [OPTIONS] <INSTANCE>
+```
+
+Arguments:
+
+- `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the storage instance
+
+##### `bookclerk plugins instances intake set`
+
+Make a storage instance a drop folder, or change a drop folder's settings. Options left out keep their current value (or the default, for a new drop folder). Turning a destination into a drop folder needs the instance undeployed on every node
+
+```text
+bookclerk plugins instances intake set [OPTIONS] <INSTANCE>
+```
+
+Arguments:
+
+- `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the storage instance
+
+Options:
+
+- `--patron <USER_ID>`: User id of the patron who holds every book the folder adds
+- `--subfolder`: Each top-level folder is named after a patron's username and holds that patron's books
+- `--settle-seconds <SECONDS>`: Seconds an item must stay unchanged before it is added (5 to 86400; default 60)
+- `--scan-interval-seconds <SECONDS>`: Seconds between two full listings of the folder (30 to 86400; default 300)
+- `--after-ingest <ACTION>`: What happens to an item once it is added: `move` (to `_imported/`, the default), `delete` or `leave`
+- `--ignore <PATTERN>`: Extra file name pattern to ignore, with `*` and `?` (repeatable; replaces the current list)
+- `--clear-ignore`: Remove every extra ignore pattern (the built-in list still applies)
+- `--prune-imported-days <DAYS>`: With `--after-ingest move`, delete `_imported` day folders older than this many days (1 to 3650)
+- `--no-prune`: Keep `_imported` day folders: turn pruning off
+
+##### `bookclerk plugins instances intake clear`
+
+Make a drop folder a destination again. Needs the instance undeployed on every node
+
+```text
+bookclerk plugins instances intake clear [OPTIONS] <INSTANCE>
+```
+
+Arguments:
+
+- `<INSTANCE>`: Plugin alias, PluginKey, or plugin instance id of the storage instance
 
 ### `bookclerk plugins config`
 

@@ -828,6 +828,9 @@ class Bindings(TypedDict):
         ai: `AI`: runs models other plugins serve; null unless `[ai]` names the tasks
             the plugin calls and the operator granted them. Null when the guest does not
             export this capability.
+        webhooks: `WEBHOOKS`: the instance's inbound webhooks, their URLs and the
+            deliveries the host stored; null unless `[[webhooks]]` is declared and
+            granted. Null when the guest does not export this capability.
     """
 
     config: ExtensibleConfig
@@ -844,6 +847,7 @@ class Bindings(TypedDict):
     network: NetworkGrant
     origin: NotRequired[Origin | None]
     ai: NotRequired[AiRunner | None]
+    webhooks: NotRequired[Webhooks | None]
 
 
 class NetworkGrant(TypedDict):
@@ -925,6 +929,8 @@ class Entrypoints(TypedDict):
         ingress: `ingress` entrypoint. Null when the guest does not export this
             capability.
         ai: `ai` entrypoint. Null when the guest does not export this capability.
+        webhookHandler: `[[webhooks]]` handler: called after the host stores deliveries.
+            Null when the guest does not export this capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -944,6 +950,7 @@ class Entrypoints(TypedDict):
     notifier: NotRequired[Notifier | None]
     ingress: NotRequired[Ingress | None]
     ai: NotRequired[AiModels | None]
+    webhookHandler: NotRequired[WebhookHandler | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -2893,6 +2900,66 @@ class Ingress(Protocol):
         ...
 
 
+class Webhooks(Protocol):
+    """Host-served inbound webhooks, granted through `Bindings.webhooks`.
+
+    The host serves each `[[webhooks]]` row at a secret URL under the
+    library's public origin, checks every request against the row's body cap,
+    rate limit and signature rule, stores it and answers at once. The guest
+    takes stored deliveries with `pull` and settles them with `ack`, in the
+    manner of a Cloudflare Queues HTTP pull consumer: a pulled delivery stays
+    leased until acknowledged, retried, or its visibility timeout ends.
+    """
+
+    async def url(self, name: str) -> WebhookUrlReply:
+        """The URL an outside service should call for one webhook.
+
+        Args:
+            name: `[[webhooks]]` name.
+
+        Returns:
+            ``WebhookUrlReply``
+        """
+        ...
+
+    async def pull(self, request: WebhookPullRequest) -> WebhookPullReply:
+        """Lease up to `batchSize` stored deliveries, oldest first.
+
+        Args:
+            request: Webhook, batch size, visibility timeout.
+
+        Returns:
+            ``WebhookPullReply``
+        """
+        ...
+
+    async def ack(self, request: WebhookAckRequest) -> EmptyReply:
+        """Acknowledge finished deliveries and offer retried ones again at once.
+
+        Args:
+            request: Webhook and lease ids.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+
+class WebhookHandler(Protocol):
+    """Guest handler for inbound webhooks (`Entrypoints.webhookHandler`)."""
+
+    async def delivered(self, event: WebhookDelivered) -> EmptyReply:
+        """The host stored deliveries for one webhook; the guest pulls them.
+
+        Args:
+            event: Webhook and how many wait.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+
 class ContentSource(Protocol):
     """Storefront content source (not byte Source). Every method takes and
     returns typed structs from the "Typed method payloads" section.
@@ -3465,6 +3532,9 @@ class PluginCapabilities(TypedDict):
             spaces.
         sockets: True when the guest declared `[sockets]`: it receives the host-brokered
             `Sockets` binding and may export a `SocketHandler` for pushed messages.
+        webhooks: True when the guest declared `[[webhooks]]`: it receives the host-
+            served `Webhooks` binding and may export a `WebhookHandler` the host wakes
+            when it stores deliveries.
     """
 
     entrypoints: list[Entrypoint]
@@ -3477,6 +3547,7 @@ class PluginCapabilities(TypedDict):
     queueProducers: list[str]
     crons: list[str]
     sockets: bool
+    webhooks: bool
 
 
 class CatalogCapabilities(TypedDict):
@@ -7084,6 +7155,148 @@ IngressStartReply = Union[
 """Result union of `Ingress.start`."""
 
 
+class WebhookUrl(TypedDict):
+    """Success payload of `Webhooks.url`.
+
+    Attributes:
+        url: Absolute `https://` URL; empty when the library cannot be reached from the
+            Internet or webhooks are turned off, and the plugin should use its fallback.
+            Omitted when absent (wire zero value).
+    """
+
+    url: NotRequired[str]
+
+
+class WebhookUrlReplyOk(TypedDict):
+    """``WebhookUrlReply`` member ``ok``.
+
+    Success: the URL, or none.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the URL, or none.
+    """
+
+    kind: Literal["ok"]
+    value: WebhookUrl
+
+
+class WebhookUrlReplyErr(TypedDict):
+    """``WebhookUrlReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+WebhookUrlReply = Union[
+    WebhookUrlReplyOk,
+    WebhookUrlReplyErr,
+]
+"""Result union of `Webhooks.url`."""
+
+
+class WebhookPullRequest(TypedDict):
+    """Arguments of `Webhooks.pull`.
+
+    Attributes:
+        name: `[[webhooks]]` name.
+        batchSize: Most deliveries to lease, 1 to `maxWebhookPullBatch`.
+        visibilityTimeoutMs: How long leased deliveries stay hidden from the next pull,
+            in milliseconds, at most `maxWebhookVisibilityMs`; zero means one minute.
+    """
+
+    name: str
+    batchSize: int
+    visibilityTimeoutMs: int
+
+
+class WebhookHeader(TypedDict):
+    """One request header kept with a delivery.
+
+    Attributes:
+        name: Lowercase header name, one the row's `headers` names or `content-type`.
+        value: Header value as received.
+    """
+
+    name: str
+    value: str
+
+
+class WebhookDelivery(TypedDict):
+    """One stored request, leased to the guest.
+
+    Attributes:
+        leaseId: Lease id for `ack`, at most `maxWebhookLeaseIdBytes`; a new one each
+            time the delivery is pulled.
+        receivedAtUnixMs: When the host stored the request, in Unix milliseconds.
+        attempt: How many times this delivery has been pulled, counting this one.
+        headers: Kept request headers, in the order the row names them.
+        body: Request body as received, at most the row's `max_body_bytes`.
+    """
+
+    leaseId: str
+    receivedAtUnixMs: int
+    attempt: int
+    headers: list[WebhookHeader]
+    body: bytes
+
+
+class WebhookPullPage(TypedDict):
+    """Success payload of `Webhooks.pull`.
+
+    Attributes:
+        deliveries: Leased deliveries, oldest first.
+        missed: True when the host dropped deliveries for this webhook since the last
+            pull (the waiting cap was full or a delivery expired unacknowledged): the
+            guest should treat what it follows as incomplete.
+    """
+
+    deliveries: list[WebhookDelivery]
+    missed: bool
+
+
+class WebhookPullReplyOk(TypedDict):
+    """``WebhookPullReply`` member ``ok``.
+
+    Success: the leased deliveries.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the leased deliveries.
+    """
+
+    kind: Literal["ok"]
+    value: WebhookPullPage
+
+
+class WebhookPullReplyErr(TypedDict):
+    """``WebhookPullReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+WebhookPullReply = Union[
+    WebhookPullReplyOk,
+    WebhookPullReplyErr,
+]
+"""Result union of `Webhooks.pull`."""
+
+
 class IngressHealth(TypedDict):
     """Success payload of `Ingress.health`.
 
@@ -7130,6 +7343,32 @@ IngressHealthReply = Union[
     IngressHealthReplyErr,
 ]
 """Result union of `Ingress.health`."""
+
+
+class WebhookAckRequest(TypedDict):
+    """Arguments of `Webhooks.ack`.
+
+    Attributes:
+        name: `[[webhooks]]` name.
+        acks: Leases whose deliveries are done and are deleted.
+        retries: Leases whose deliveries the next pull offers again.
+    """
+
+    name: str
+    acks: list[str]
+    retries: list[str]
+
+
+class WebhookDelivered(TypedDict):
+    """Argument of `WebhookHandler.delivered`.
+
+    Attributes:
+        name: `[[webhooks]]` name.
+        waiting: Deliveries waiting for this webhook when the host called.
+    """
+
+    name: str
+    waiting: int
 
 
 class DbValueNull(TypedDict):
@@ -8669,6 +8908,8 @@ __all__ = [
     "SocketHandler",
     "Origin",
     "Ingress",
+    "Webhooks",
+    "WebhookHandler",
     "ContentSource",
     "RemoteLibrary",
     "PluginCli",
@@ -8917,10 +9158,23 @@ __all__ = [
     "IngressStartReplyOk",
     "IngressStartReplyErr",
     "IngressStartReply",
+    "WebhookUrl",
+    "WebhookUrlReplyOk",
+    "WebhookUrlReplyErr",
+    "WebhookUrlReply",
+    "WebhookPullRequest",
+    "WebhookHeader",
+    "WebhookDelivery",
+    "WebhookPullPage",
+    "WebhookPullReplyOk",
+    "WebhookPullReplyErr",
+    "WebhookPullReply",
     "IngressHealth",
     "IngressHealthReplyOk",
     "IngressHealthReplyErr",
     "IngressHealthReply",
+    "WebhookAckRequest",
+    "WebhookDelivered",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

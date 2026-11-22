@@ -10,6 +10,8 @@
 //! nothing is retried member by member.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail};
 use bookclerk_acquire::{storage_key_with_contexts, NamingContext};
@@ -23,12 +25,13 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{call_number, AcquireStatus, FileOwner, JobPayload, LibraryStore};
 use bookclerk_resolve::{Entitlement, Holder, HoldingDraft, LinkReason, Listing};
-use bookclerk_storage::ObjectMeta;
+use bookclerk_storage::{ByteRange, ObjectMeta};
 use chrono::Utc;
 use serde::Serialize;
 use tracing::warn;
 
 use super::identify::{self, BookGroup, Candidate, FileKind};
+use super::intake_copy::{self, CopyFailure};
 use super::staging;
 use crate::api::AppState;
 use crate::job_handler::JobExecCtx;
@@ -271,13 +274,16 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Copies an intake member from its storage instance (a destination
-    /// deployed on this node, by id) into staging.
+    /// Copies an intake member from its drop folder (deployed on this node,
+    /// by instance id) into staging.
     ///
     /// # Errors
     ///
-    /// `intake_unavailable` when the instance is not deployed here or the
-    /// object cannot be read.
+    /// `intake_unavailable` when the drop folder is not deployed here or the
+    /// object cannot be read; `intake_changed` when the object no longer
+    /// has the size it settled with (it is still being written). A read
+    /// that breaks partway resumes from the staged length, a few times with
+    /// backoff, before the member fails.
     async fn copy_intake(&self, member: &IngestMember, path: &Path) -> Result<(), OutcomeUpdate> {
         let unavailable = || {
             outcome(
@@ -295,24 +301,40 @@ impl Run<'_> {
         let Some(source) = intake_source(self.state, instance).await else {
             return Err(unavailable());
         };
-        let (_, mut body) = source
-            .backend
-            .get_stream(key, None)
-            .await
-            .map_err(|_| unavailable())?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|_| unavailable())?;
+        // The copy caps each body itself; a range never reaches past the
+        // end, which backends refuse.
+        let open = |offset: u64, _length: u64| {
+            let source = Arc::clone(&source);
+            async move {
+                let range = (offset > 0).then_some(ByteRange {
+                    offset,
+                    length: None,
+                });
+                // The version a resumed read must match: the backend's
+                // version id, else its ETag, else its change signature.
+                source
+                    .get_stream(key, range)
+                    .await
+                    .map(|(probe, body)| {
+                        let identity = probe
+                            .version_id
+                            .or(probe.etag)
+                            .or(probe.signature)
+                            .filter(|identity| !identity.is_empty());
+                        (identity, body)
+                    })
+                    .map_err(std::io::Error::other)
+            }
+        };
+        match intake_copy::copy_resumable(open, path, member.size, INTAKE_COPY_BACKOFF).await {
+            Ok(()) => Ok(()),
+            Err(CopyFailure::Unavailable) => Err(unavailable()),
+            Err(CopyFailure::Changed) => Err(outcome(
+                member.member_no,
+                MemberOutcome::Failed,
+                "intake_changed",
+            )),
         }
-        let mut file = tokio::fs::File::create(path)
-            .await
-            .map_err(|_| unavailable())?;
-        tokio::io::copy(&mut body, &mut file)
-            .await
-            .map_err(|_| unavailable())?;
-        file.sync_all().await.map_err(|_| unavailable())?;
-        Ok(())
     }
 
     /// Expands the archives among `ready` and returns every file left to
@@ -835,24 +857,41 @@ fn stop_code(stop: StopReason) -> &'static str {
     }
 }
 
-/// The storage instance an intake batch reads, found by its id among the
-/// storage deployed on this node.
+/// Wait before the first resumption of a broken drop folder read; it
+/// doubles for each one after.
+const INTAKE_COPY_BACKOFF: Duration = Duration::from_millis(500);
+
+/// The storage an intake batch reads: the drop folder with that plugin
+/// instance id deployed on this node.
 ///
-/// This is the one place an intake batch resolves its instance, so the
-/// drop folder's intake-only slots can be looked up here too.
+/// Drop folders are never acquire destinations, so they are looked up
+/// among the registry's intakes, not its destinations.
 ///
 /// # Returns
 ///
-/// `None` when no deployed instance has that id.
+/// `None` when no drop folder with that id runs here.
 async fn intake_source(
     state: &AppState,
     instance: &str,
-) -> Option<crate::node_api::uploads::OwnerDestination> {
-    owner_destinations(state)
+) -> Option<std::sync::Arc<dyn bookclerk_storage::StorageBackend>> {
+    let deployed = state
+        .destinations
+        .read()
         .await
-        .ok()?
+        .intakes()
         .into_iter()
-        .find(|dest| dest.id == instance)
+        .find(|intake| intake.id.as_str() == instance)
+        .map(|intake| intake.backend);
+    #[cfg(test)]
+    if deployed.is_none() {
+        // Tests stand local folders in for guests they cannot spawn.
+        let files_dir = state.config.read().await.paths().files_dir.clone();
+        let root = crate::node_api::uploads::test_intake(&files_dir, instance)?;
+        let backend: std::sync::Arc<dyn bookclerk_storage::StorageBackend> =
+            std::sync::Arc::new(bookclerk_storage::LocalFsBackend::new(root).ok()?);
+        return Some(backend);
+    }
+    deployed
 }
 
 #[cfg(test)]

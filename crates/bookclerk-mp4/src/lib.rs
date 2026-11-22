@@ -43,8 +43,8 @@ pub use brand::{
 };
 pub use error::{Mp4Error, Result};
 pub use parser::{
-    extract_mp4a_config, parse_mp4, track_duration_ms, AudioTrack, Mp4File, Mp4aConfig,
-    SampleEntryKind,
+    extract_mp4a_config, parse_mp4, sample_entry_bytes, track_duration_ms, AudioTrack, Mp4File,
+    Mp4aConfig, SampleEntryKind,
 };
 pub use patch::{
     pad_moov_to, read_moov, shift_chunk_offsets, strip_trailing_free, top_level_boxes,

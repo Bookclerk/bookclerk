@@ -207,11 +207,40 @@ mod test_destinations {
     pub(super) fn get(files_dir: &Path) -> Option<Vec<TestDestination>> {
         ROOTS.lock().unwrap().get(files_dir).cloned()
     }
+
+    /// Drop folder stand-ins of one owner: instance id and root.
+    type Intakes = Vec<(String, PathBuf)>;
+
+    /// Drop folder stand-ins by files dir. Kept apart from the
+    /// destinations, as the registry keeps them.
+    static INTAKES: LazyLock<Mutex<HashMap<PathBuf, Intakes>>> = LazyLock::new(Default::default);
+
+    /// Makes `root` the drop folder `instance` of the owner at `files_dir`.
+    pub(crate) fn set_intake(files_dir: &Path, instance: &str, root: &Path) {
+        INTAKES
+            .lock()
+            .unwrap()
+            .entry(files_dir.to_path_buf())
+            .or_default()
+            .push((instance.to_string(), root.to_path_buf()));
+    }
+
+    /// The root of the drop folder stand-in `instance` at `files_dir`.
+    pub(crate) fn intake(files_dir: &Path, instance: &str) -> Option<PathBuf> {
+        INTAKES
+            .lock()
+            .unwrap()
+            .get(files_dir)?
+            .iter()
+            .find(|(id, _)| id == instance)
+            .map(|(_, root)| root.clone())
+    }
 }
 
 #[cfg(test)]
 pub(crate) use test_destinations::{
-    set as set_test_destination, set_many as set_test_destinations, TestDestination,
+    intake as test_intake, set as set_test_destination, set_intake as set_test_intake,
+    set_many as set_test_destinations, TestDestination,
 };
 
 /// Every output destination deployed on this node, the primary first.

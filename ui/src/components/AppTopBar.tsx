@@ -4,6 +4,7 @@ import { GitBranchPlus, LogOut, Menu, Settings2, X } from "lucide-react";
 import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { AppNav, type AppNavProps } from "@/components/AppNav";
 import { BookclerkLogo } from "@/components/BookclerkLogo";
+import { NotificationBell } from "@/components/NotificationBell";
 import { usePreferences } from "@/components/usePreferences";
 import { navLinksForRole } from "@/lib/nav";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,8 @@ export function AppTopBar({
   // user account and adds one for a user in User management.
   const canAddBranch = nav.role != null && nav.role !== "operator";
   const [addingBranch, setAddingBranch] = useState(false);
+  // The operator token alone has no inbox; every library user has one.
+  const hasInbox = nav.role != null && nav.role !== "operator";
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -92,6 +95,7 @@ export function AppTopBar({
 
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           {actions}
+          {hasInbox ? <NotificationBell onNavigate={nav.onNavigate} /> : null}
           <div className="hidden items-center gap-2 lg:flex">
             {canAddBranch ? (
               <Button

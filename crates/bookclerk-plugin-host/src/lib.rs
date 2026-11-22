@@ -93,6 +93,9 @@ mod spawn_plan;
 mod spawn_stdio;
 mod storage_intent;
 mod user_poll;
+mod webhook_binding;
+/// The public webhook route's sans-IO request checks.
+pub use bookclerk_workerd::webhook_request;
 
 pub use bookclerk_plugin_sdk::protocol;
 pub use bookclerk_plugin_sdk::{
@@ -169,10 +172,10 @@ pub use event_publisher::{
 pub use host::{
     backup_adapter_id, database_connect_bindings, export_registered_plugin_units,
     load_external_database, migrate_database_plugin, migrate_library_schema, open_library_store,
-    open_library_store_for_plugin, restore_plugin_backup_units, DatabaseRegistry,
-    DeployedDestination, DestinationRegistry, DestinationSession, DestinationSettings,
-    ExternalDatabase, ExternalIntegration, ExternalSource, HandedPass, HandedScan,
-    RefreshedCredentialSink,
+    open_library_store_for_plugin, restore_plugin_backup_units, storage_role, DatabaseRegistry,
+    DeployedDestination, DeployedIntake, DestinationRegistry, DestinationSession,
+    DestinationSettings, ExternalDatabase, ExternalIntegration, ExternalSource, HandedPass,
+    HandedScan, RefreshedCredentialSink, StorageRole,
 };
 pub use host_control_plane::{
     allow_credential_login, enroll_node, open_host_control_plane,
@@ -242,3 +245,7 @@ pub use spawn_stdio::{
     TEST_CHANNEL_TAG_FILE, TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
 };
 pub use user_poll::{ON_DEMAND_USER_POLL_INTERVAL, RESIDENT_USER_POLL_INTERVAL};
+pub use webhook_binding::{
+    set_webhook_public_origin, webhook_public_origin, HostWebhooks, WebhookEndpoint,
+    WEBHOOKS_GRANT_BINDING,
+};

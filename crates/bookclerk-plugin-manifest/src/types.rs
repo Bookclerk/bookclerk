@@ -772,6 +772,10 @@ pub struct BindingCapabilities {
     /// pushed messages while the process sleeps. Every target must also pass
     /// the `[capabilities.network]` grant.
     pub sockets: bool,
+    /// Host serves inbound webhooks for the plugin (`[[webhooks]]`): the
+    /// `WEBHOOKS` binding that pulls stored deliveries, plus the optional
+    /// `webhookHandler` entrypoint the host wakes after storing one.
+    pub webhooks: bool,
     /// Named plugin-owned database bindings (`[[databases]] binding = "DB"`).
     pub databases: Vec<String>,
 }
@@ -1527,6 +1531,11 @@ pub struct PluginManifest {
     /// the network grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sockets: Option<NamedBinding>,
+    /// Inbound webhooks the host serves for each instance (`[[webhooks]]`);
+    /// see [`crate::webhooks`]. Declaring any grants the fixed
+    /// [`crate::WEBHOOKS_BINDING`] binding.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub webhooks: Vec<crate::WebhookManifest>,
     /// How the store accounts this storefront connects may be shared
     /// between Bookclerk instances (`credentials`); see
     /// [`CredentialSharing`] and [`Self::credential_sharing`]. Only a
@@ -1832,6 +1841,7 @@ impl PluginManifest {
             work_fs: self.work_fs.is_some(),
             oauth: self.oauth.is_some(),
             sockets: self.sockets.is_some(),
+            webhooks: !self.webhooks.is_empty(),
             databases: self.databases.iter().map(|d| d.binding.clone()).collect(),
         }
     }
@@ -2025,6 +2035,7 @@ impl PluginManifest {
             queue_consumers: self.queue_consumer_names(),
             queue_producers: self.queue_producer_names(),
             sockets: self.sockets.is_some(),
+            webhooks: !self.webhooks.is_empty(),
         }
     }
 
@@ -2033,7 +2044,8 @@ impl PluginManifest {
     /// # Returns
     ///
     /// `CONFIG` (when `[vars]` is present), the resolved `[secrets]`,
-    /// `[work_fs]`, `[oauth]`, `[sockets]` names, every `[[kv_namespaces]]` binding,
+    /// `[work_fs]`, `[oauth]`, `[sockets]` names, `WEBHOOKS` (with `[[webhooks]]`),
+    /// every `[[kv_namespaces]]` binding,
     /// every distinct `[[events.producers]]` binding, and every
     /// `[[queues.producers]]` binding, in that order.
     #[must_use]
@@ -2053,6 +2065,9 @@ impl PluginManifest {
         }
         if let Some(b) = &self.sockets {
             names.push(b.name_or(DEFAULT_SOCKETS_BINDING).to_string());
+        }
+        if !self.webhooks.is_empty() {
+            names.push(crate::WEBHOOKS_BINDING.to_string());
         }
         for kv in &self.kv_namespaces {
             names.push(kv.name_or(DEFAULT_KV_BINDING).to_string());
@@ -2687,6 +2702,11 @@ impl PluginManifest {
         }
         self.validate_media()?;
         self.validate_acquire()?;
+        crate::validate_webhooks(&self.webhooks, |key| {
+            self.settings
+                .iter()
+                .any(|s| s.key == key && s.kind == bookclerk_plugin_abi::SettingKind::Secret)
+        })?;
         self.validate_metadata_files()?;
         self.validate_notifier()?;
         self.validate_notification_types()?;
@@ -2890,6 +2910,9 @@ impl PluginManifest {
             }
             if !self.ai.calls.is_empty() {
                 named.push(("ai", AI_BINDING, 0));
+            }
+            if !self.webhooks.is_empty() {
+                named.push(("webhooks", crate::WEBHOOKS_BINDING, 0));
             }
             for (index, b) in self.kv_namespaces.iter().enumerate() {
                 named.push(("kv_namespaces", b.name_or(DEFAULT_KV_BINDING), index));

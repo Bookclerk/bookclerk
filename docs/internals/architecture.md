@@ -53,7 +53,7 @@ Bookclerk uses four first-class plugin roles (in-process and/or external):
 | Kind | Trait / host | Examples |
 | --- | --- | --- |
 | **Source** | `ContentSource` | `audible`, `libro`, `chirp`, `graphicaudio` |
-| **Output / destination** | storage backends under `[output.*]` | `local`, `s3`, `r2` |
+| **Output / destination** | storage backends under `[output.*]` | `local`, `s3`, `r2`, `b2` |
 | **Database** | SeaORM connection under `[database]` | `sqlite` (default), `d1` |
 | **Integration** | `Integration` | `audiobookshelf`, SPA portal claim helpers |
 
@@ -85,6 +85,7 @@ PostgreSQL 16+, or Cloudflare D1
 | Scan deltas for stores with no change feed (plugins) | `bookclerk-scan-delta` (fingerprints in the plugin's own `SCAN_STATE` database, read through a keyed reader; links only the SDK) |
 | ABS integration (plugin) | `bookclerk-plugins/optional/integration-audiobookshelf` (TypeScript workerd guest, no Cargo package; user watch and listening memory in its own `LISTENING_STATE` database) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
+| FFmpeg decoders (WMA, AC-3/E-AC-3, AMR) | `bookclerk-libav` (pinned FFmpeg built decoders-only from source, behind a C shim; linked by the media worker in release builds) |
 | MP4 container plumbing | `bookclerk-mp4` (shared with store plugins, plus the Audible brand-trim helpers; no cryptography) |
 | Process confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |
 | Guest jail launcher | `bookclerk-jail` (applies a policy, then `exec`s the guest) |
@@ -96,7 +97,7 @@ PostgreSQL 16+, or Cloudflare D1
 | Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |
 | Search | `bookclerk-search` |
 | Discovery / recommendations | `bookclerk-discover` (via registered `ContentSource` catalog APIs) |
-| Storage backends | `bookclerk-storage` (local; the S3 backend sits behind its `s3` feature, which only the `s3` and `r2` destination plugins enable, so the hosts do not link the AWS SDK) |
+| Storage backends | `bookclerk-storage` (local; the S3 backend sits behind its `s3` feature, which only the `s3` and `r2` destination plugins enable, so the hosts do not link the AWS SDK; the B2 backend sits behind its `b2` feature, for the `b2` plugin) |
 | TLS provider and HTTP client | `bookclerk-tls` (one rustls provider, aws-lc-rs; see [tls.md](tls.md)) |
 | OS keychain | `bookclerk-keystore` (the item that holds the library key on a keychain install; see [Master key store](../adr/master-key-store.md)) |
 | Public Audible catalog | `bookclerk-audible-catalog` (unauthenticated search, genres, ratings and reviews; linked by the Audible guest and `bookclerk-enrich`) |
@@ -170,6 +171,7 @@ the API. Config reload swaps auth before listen rebind. See [sign-in.md](../serv
 | `GET` | `/api/jobs`, `/jobs` | yes | Job list |
 | `POST` | `/api/library/scan`, `/scan` | yes | Queue scan |
 | `POST` | `/api/library/acquire`, `/acquire` | yes | Queue acquire |
+| `POST` | `/api/library/convert` | yes | Queue a convert (add a copy to stored books) |
 | `GET` | `/api/library/works` | yes | Works from the page index, by cursor, or matching a search (`q`) |
 | `GET` | `/api/library/works/{id}` | yes | One work with editions, listings, holdings and own state |
 | `PUT`/`DELETE` | `/api/library/listings/{id}/pin` | Administrator | Pin a listing to an edition (moves it now), or drop the pin |

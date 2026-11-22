@@ -2,6 +2,7 @@ import { normalizeThemePreference, type ThemePreference } from "@/lib/theme";
 import { coversSettled } from "@/lib/coverLoads";
 import { createLookupBatcher } from "@/lib/lookupBatcher";
 import { clearLookupCaches, createLookupCache, lookupGeneration } from "@/lib/lookupCache";
+import { parseInboxPage, type InboxPageView } from "@/lib/notifications";
 
 /**
  * Pipeline acquire state for a library book row.
@@ -4025,6 +4026,46 @@ export async function triggerAcquire(body: {
   return parseJobAdmit(res);
 }
 
+/** One copy of a book: a format at a quality, as `output.copies` names it. */
+export interface OutputCopy {
+  /** `m4b`, `mp3`, `mp3_chapters`, `opus` (or `original`, which a convert refuses). */
+  format: string;
+  /** `original`, a bitrate such as `64k` or `64k-mono`, or an MP3 VBR level such as `v2`. */
+  quality: string;
+}
+
+/**
+ * The editions of `work` a convert can read from: the ones already stored.
+ *
+ * @param work - The work's detail.
+ * @returns Edition ids.
+ */
+export function storedEditions(work: WorkDetail): string[] {
+  return work.editions.filter((e) => e.acquire_status === "acquired").map((e) => e.id);
+}
+
+/**
+ * Queues a convert: each named edition gets `copy` beside its original,
+ * made from the copy the library stores. Owners, Administrators and the
+ * operator only.
+ *
+ * @param body - The editions, the copy, and `force` to make it again.
+ * @returns Action ack including `job_id`.
+ */
+export async function triggerConvert(body: {
+  editions: string[];
+  copy: OutputCopy;
+  force?: boolean;
+}): Promise<ActionResponse> {
+  const res = await fetch("/api/library/convert", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJobAdmit(res);
+}
+
 /**
  * Requests cancel of a pending job or cooperative stop of a running job.
  *
@@ -5263,4 +5304,38 @@ export async function removeWishlistItem(uuid: string): Promise<TitleRequest> {
     credentials: "include",
   });
   return parseJson(res);
+}
+
+/**
+ * Reads one page of the signed-in person's notification inbox.
+ *
+ * @param options - `cursor` from the previous page and a page size.
+ * @returns The page, malformed entries dropped.
+ */
+export async function fetchInbox(
+  options: { cursor?: string | null; limit?: number } = {},
+): Promise<InboxPageView> {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set("cursor", options.cursor);
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  const res = await fetch(`/api/me/notifications/inbox${suffix}`, { credentials: "include" });
+  return parseInboxPage(await parseJson<unknown>(res));
+}
+
+/**
+ * Marks one inbox entry read, or the whole inbox when no id is given.
+ *
+ * @param notificationId - The entry to mark, or `null` for all of them.
+ * @returns How many entries changed.
+ */
+export async function markInboxRead(notificationId: string | null): Promise<number> {
+  const res = await fetch("/api/me/notifications/inbox/read", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notification_id: notificationId }),
+  });
+  const body = await parseJson<{ marked?: unknown }>(res);
+  return typeof body.marked === "number" ? body.marked : 0;
 }

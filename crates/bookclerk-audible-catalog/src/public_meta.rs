@@ -163,6 +163,13 @@ pub struct CatalogProduct {
     pub genre_roots: Vec<String>,
     /// BCP-47 / storefront language code (`en`, `de`, …) when known.
     pub language: Option<String>,
+    /// The edition's ISBN as the catalog's `isbn` attribute (in
+    /// `product_attrs`) reports it, digits and a final `X` only; `None` when
+    /// the catalog gives none or the value is not ten or thirteen of them.
+    /// Audible gives one for many publisher titles, the same audio ISBN
+    /// other stores list, so the host can tell their listings are one
+    /// recording.
+    pub isbn: Option<String>,
     /// Whether this edition is abridged, from the catalog's `format_type`
     /// (`abridged` / `unabridged`); `None` when it gave no format the
     /// parser knows.
@@ -1242,6 +1249,10 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let is_abridged = abridged_from_format_type(p.get("format_type"));
+    let isbn = p
+        .get("isbn")
+        .and_then(Value::as_str)
+        .and_then(isbn_from_catalog);
     let categories = categories_from_catalog_product(p);
     let genre_roots = genre_roots_from_catalog_product(p);
     let (price_cents, currency, price_label) = price_from_catalog_product(p);
@@ -1265,6 +1276,7 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
         categories,
         genre_roots,
         language,
+        isbn,
         is_abridged,
         price_cents,
         currency,
@@ -1285,6 +1297,26 @@ fn product_sample_url(p: &Value) -> Option<String> {
     let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let clean = !raw.chars().any(|c| c.is_whitespace() || c.is_control());
     (clean && !host.is_empty()).then(|| raw.to_owned())
+}
+
+/// The catalog's `isbn` attribute as compact ISBN text: hyphens and spaces
+/// removed, then ten or thirteen characters that are digits (a ten-digit
+/// ISBN may end in `X`), or `None`.
+fn isbn_from_catalog(raw: &str) -> Option<String> {
+    let compact: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '-' | ' '))
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    let digits_ok = |body: &str| body.bytes().all(|b| b.is_ascii_digit());
+    let valid = match compact.len() {
+        13 => digits_ok(&compact),
+        10 => compact
+            .split_at_checked(9)
+            .is_some_and(|(body, check)| digits_ok(body) && (digits_ok(check) || check == "X")),
+        _ => false,
+    };
+    valid.then_some(compact)
 }
 
 /// Reads the catalog's `format_type` as an abridged flag: `abridged` is
@@ -1942,6 +1974,33 @@ mod tests {
         assert_eq!(json_i64(&serde_json::json!(-7.9)), Some(-7));
         assert_eq!(json_i64(&serde_json::json!(1e300)), Some(i64::MAX));
         assert_eq!(saturating_i64(f64::NAN), 0);
+    }
+
+    #[test]
+    fn the_catalog_isbn_is_kept_when_it_is_isbn_shaped() {
+        let isbn = |value: serde_json::Value| {
+            parse_catalog_product(&serde_json::json!({
+                "asin": "B002V0QCMW",
+                "title": "First Family",
+                "isbn": value,
+            }))
+            .and_then(|p| p.isbn)
+        };
+        assert_eq!(
+            isbn(serde_json::json!("9781600245497")).as_deref(),
+            Some("9781600245497")
+        );
+        assert_eq!(
+            isbn(serde_json::json!("978-1-60024-549-7")).as_deref(),
+            Some("9781600245497")
+        );
+        assert_eq!(
+            isbn(serde_json::json!("160024549x")).as_deref(),
+            Some("160024549X")
+        );
+        assert_eq!(isbn(serde_json::json!("B002V0QCMW")), None);
+        assert_eq!(isbn(serde_json::json!("12345")), None);
+        assert_eq!(isbn(serde_json::json!(9781600245497_u64)), None);
     }
 
     #[test]

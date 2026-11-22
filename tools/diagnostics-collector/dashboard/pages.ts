@@ -30,6 +30,7 @@ import { fmtDay, fmtInt, fmtTime, html, isoTime, raw, type SafeHtml } from "./ht
 import type { UsageStats } from "../checkin.ts";
 import type { DemoStats } from "../demo-runs.ts";
 import type { SignatureMute } from "./triage-state.ts";
+import type { Proposal } from "./triage-now.ts";
 import type { Env } from "../env.ts";
 import type { Member } from "./session.ts";
 import { asObject, type JsonObject } from "../json.ts";
@@ -74,8 +75,8 @@ export type OverviewData = MemberPage & {
   queue: ReportListRow[];
   /** Issue → fix. */
   afterFix: Map<number, FixStatus>;
-  /** Today's triage neurons. */
-  budget: { spent: number; cap: number };
+  /** Today's triage neurons, its cap, and the last seven days' total. */
+  budget: { spent: number; cap: number; week: number };
   /** Versions offered in the filter. */
   versionOptions: string[];
   /** Whether today's index cap is reached. */
@@ -144,8 +145,20 @@ export type ReportData = MemberPage & {
   mute: SignatureMute | null;
   /** Distinct installs (by monthly install key) behind its signature. */
   installs: number;
+  /** What the last **Triage now** press on this report said, if recent. */
+  triageNote: string | null;
+  /** The triage proposal waiting for a member to file, if any. */
+  proposal: ProposalView | null;
   /** Unix ms. */
   now: number;
+};
+
+/** A triage proposal as the report page shows it. */
+export type ProposalView = {
+  /** What triage proposes. */
+  proposal: Proposal;
+  /** For an attachment, the issue's indexed title, if known. */
+  issueTitle: string | null;
 };
 
 /** Query results for the issues board (`issuesPage`). */
@@ -614,11 +627,12 @@ function fmtMs(ms: number): string {
  * @returns A link group.
  */
 function sourcePicker(url: URL, source: ReportSource): SafeHtml {
-  const labels: Record<ReportSource, string> = { installs: "Installs", demo: "Demo", all: "All" };
+  const labels: Record<ReportSource, string> = { all: "All", installs: "Installs", demo: "Demo" };
   return html`<nav class="picker" aria-label="Report source">${REPORT_SOURCES.map((s) => {
     const u = new URL(url);
-    if (s === "installs") u.searchParams.delete("source");
-    else u.searchParams.set("source", s);
+    // Always explicit: the dashboard remembers the last choice, so leaving
+    // the parameter out would mean "the remembered one", not "All".
+    u.searchParams.set("source", s);
     u.searchParams.delete("page");
     return html`<a href="${u.pathname}${u.search}"${s === source ? raw(' aria-current="true"') : ""}>${labels[s]}</a>`;
   })}</nav>`;
@@ -651,10 +665,10 @@ export function overviewPage(d: OverviewData): SafeHtml {
   const verMax = Math.max(1, ...d.versions.map((p) => Number(p.n)));
   const afterFixIssues = [...d.afterFix.values()].filter((a) => a.after > 0).length;
   const budgetFrac = d.budget.cap > 0 ? d.budget.spent / d.budget.cap : 0;
-  const source = d.filter.source ?? "installs";
-  const sourceParam = source === "installs" ? "" : `&source=${source}`;
+  const source = d.filter.source ?? "all";
+  const sourceParam = `&source=${source}`;
   const versionForm = html`<form class="inline" method="get" action="/dash">
-      <input type="hidden" name="range" value="${d.rangeId}">${source === "installs" ? "" : html`<input type="hidden" name="source" value="${source}">`}
+      <input type="hidden" name="range" value="${d.rangeId}"><input type="hidden" name="source" value="${source}">
       <label class="sr" for="ov-version">Version</label>
       <select id="ov-version" name="version" class="sel autosubmit"><option value="">All versions</option>${d.versionOptions.map(
         (v) =>
@@ -687,7 +701,7 @@ export function overviewPage(d: OverviewData): SafeHtml {
         <section class="panel stat warn s2"><h2><a class="quiet" href="/reports?range=${d.rangeId}&amp;triage=needs${sourceParam}">Needs triage</a></h2><div class="v">${fmtInt(d.stats.needsTriage)}</div><div class="d">no issue, not marked, not muted</div></section>
         <section class="panel stat s2"><h2>Active installs</h2><div class="v">${fmtInt(d.usage.weekly)}</div><div class="d">this week · ${fmtInt(d.usage.monthly)} this month${d.usage.byKind.length ? ` · ${d.usage.byKind.map((k) => `${fmtInt(k.n)} ${k.kind}`).join(", ")}` : ""}</div></section>
         <section class="panel stat${afterFixIssues ? " crit" : ""} s2"><h2>After a fix</h2><div class="v">${fmtInt(afterFixIssues)}</div><div class="d">of ${fmtInt(d.stats.openIssues)} open issues seen again from the fixed version on</div></section>
-        <section class="panel stat s2"><h2>Triage budget</h2><div class="v small">${fmtInt(d.budget.spent)}<span class="of"> / ${fmtInt(d.budget.cap)}</span></div>${meter(budgetFrac, "fill-amber", `${Math.round(budgetFrac * 100)} percent of today's neurons used`)}<div class="d">neurons used today (UTC)</div></section>
+        <section class="panel stat s2"><h2>Triage budget</h2><div class="v small">${fmtInt(d.budget.spent)}<span class="of"> / ${fmtInt(d.budget.cap)}</span></div>${meter(budgetFrac, "fill-amber", `${Math.round(budgetFrac * 100)} percent of today's neurons used`)}<div class="d">neurons used today (UTC), ${fmtInt(d.budget.week)} in the last 7 days</div></section>
 
         <section class="panel s8"><h2>Reports per ${range.bucket < 86_400_000 ? "hour" : "day"}, by trigger <span class="legend">${series.map((s) => html`<span><i class="${s.cls}"></i>${s.key}</span>`)}</span></h2>
           ${stackedBars(buckets(d.now, range, byBucket), series.length ? series : TRIGGER_SERIES.slice(0, 1), "Stacked bars of reports per time bucket by trigger")}</section>
@@ -740,11 +754,11 @@ export function reportsPage(d: ReportsData): SafeHtml {
     member: d.member,
     nav: "reports",
     body: html`<div class="wrap">
-      <div class="toolbar"><h1>Reports</h1>${sourcePicker(d.url, d.filter.source ?? "installs")}${rangePicker(d.url, d.rangeId)}</div>
+      <div class="toolbar"><h1>Reports</h1>${sourcePicker(d.url, d.filter.source ?? "all")}${rangePicker(d.url, d.rangeId)}</div>
       <section class="panel">
         <form class="filters" method="get" action="/reports">
           <input type="hidden" name="range" value="${d.rangeId}">
-          ${d.filter.source && d.filter.source !== "installs" ? html`<input type="hidden" name="source" value="${d.filter.source}">` : ""}
+          <input type="hidden" name="source" value="${d.filter.source ?? "all"}">
           ${d.filter.signature ? html`<input type="hidden" name="signature" value="${d.filter.signature}">` : ""}
           ${sel("f-ver", "version", "Version", [["", "All versions"], ...d.options.versions.map((v): [string, string] => [v, v])], d.filter.version ?? "")}
           ${sel("f-os", "platform", "Platform", [["", "All platforms"], ...d.options.platforms.map((v): [string, string] => [v, v])], d.filter.platform ?? "")}
@@ -773,7 +787,7 @@ export function reportsPage(d: ReportsData): SafeHtml {
             d.filter.triage ?? "",
           )}
           <noscript><button class="button small" type="submit">Apply</button></noscript>
-          <span class="fine" data-live="total">${fmtInt(d.total)} reports · page ${d.page} of ${pages}${d.filter.signature ? html` · signature <span class="mono">${d.filter.signature}</span> <a href="/reports?range=${d.rangeId}${d.filter.source && d.filter.source !== "installs" ? `&source=${d.filter.source}` : ""}">clear</a>` : ""}</span>
+          <span class="fine" data-live="total">${fmtInt(d.total)} reports · page ${d.page} of ${pages}${d.filter.signature ? html` · signature <span class="mono">${d.filter.signature}</span> <a href="/reports?range=${d.rangeId}&amp;source=${d.filter.source ?? "all"}">clear</a>` : ""}</span>
         </form>
         <form id="bulk-triage" class="bulk" method="post" action="/reports/triage">
           <input type="hidden" name="back" value="${d.url.pathname}${d.url.search}">
@@ -822,12 +836,32 @@ function fieldText(value: unknown, max: number): string {
  * The source commit a report names, shown after its version.
  *
  * @param p - The stored payload (untrusted).
+ * @param indexed - The index's copy, used once the stored copy is deleted.
  * @returns ` (abc1234)` for a 7 to 40 digit hex commit, else nothing.
  */
-function buildCommit(p: JsonObject): SafeHtml | string {
-  const commit = p.build_commit;
-  if (typeof commit !== "string" || !/^[0-9a-f]{7,40}$/.test(commit)) return "";
+function buildCommit(p: JsonObject, indexed: string): SafeHtml | string {
+  const stored = p.build_commit;
+  const commit = typeof stored === "string" && stored !== "" ? stored : indexed;
+  if (!/^[0-9a-f]{7,40}$/.test(commit)) return "";
   return html` <span class="fine">(${commit.slice(0, 12)})</span>`;
+}
+
+/**
+ * The rustc release and channel a report's client was built with.
+ *
+ * @param p - The stored payload (untrusted), empty once deleted.
+ * @param indexed - The index's copy (reports indexed before it kept one
+ *   have "").
+ * @param deleted - Whether the sender deleted the stored copy.
+ * @returns The text for the row.
+ */
+function rustcText(p: JsonObject, indexed: string, deleted: boolean): string {
+  if (typeof p.rustc_release === "string" && p.rustc_release) {
+    const channel = typeof p.rustc_channel === "string" ? p.rustc_channel.slice(0, 32) : "";
+    return `${p.rustc_release.slice(0, 64)} ${channel}`.trim();
+  }
+  if (indexed) return indexed.slice(0, 100);
+  return deleted ? "deleted with the stored copy" : "not reported";
 }
 
 /**
@@ -985,6 +1019,27 @@ export function eventLog(events: unknown): {
 }
 
 /**
+ * A triage proposal on a report page, with the button that files it.
+ *
+ * @param report - Report ID.
+ * @param view - The proposal.
+ * @returns The panel part.
+ */
+function proposalPanel(report: string, view: ProposalView): SafeHtml {
+  const p = view.proposal;
+  const file = (label: string) =>
+    html`<form method="post" action="/reports/ai-triage/file"><input type="hidden" name="report" value="${report}"><button type="submit" class="button small">${label}</button></form>`;
+  switch (p.kind) {
+    case "issue":
+      return html`<div class="proposal"><h3>Proposed issue</h3><p><strong>${p.title}</strong>${p.bug ? html` <span class="chip open">bug</span>` : ""}</p><pre class="proposal-body">${p.body}</pre>${file("Open issue")}<p class="fine">Files this on GitHub with this report listed, as the daily run would.</p></div>`;
+    case "attach":
+      return html`<div class="proposal"><h3>Proposed issue</h3><p>Triage says this report belongs to <a href="/issues/${p.issue}">#${p.issue}${view.issueTitle ? ` ${view.issueTitle}` : ""}</a>.</p>${file(`Attach to #${p.issue}`)}</div>`;
+    case "none":
+      return html`<div class="proposal"><p class="fine">Triage judged this report noise: nothing to file. Mark it noise to take it out of the queue.</p></div>`;
+  }
+}
+
+/**
  * One report.
  *
  * @param d - Query results assembled by routes.ts.
@@ -1010,10 +1065,10 @@ export function reportPage(d: ReportData): SafeHtml {
       <div class="grid">
         <section class="panel s8"><h2>Report</h2><dl class="meta">
           <div><dt>Received</dt><dd class="num">${fmtTime(r.received_at)} UTC</dd></div>
-          <div><dt>Version</dt><dd class="mono">${r.version}${buildCommit(p)}</dd></div>
+          <div><dt>Version</dt><dd class="mono">${r.version}${buildCommit(p, String(r.build_commit ?? ""))}</dd></div>
           <div><dt>Platform</dt><dd>${`${r.os} ${r.arch}`.trim()}${r.distro ? `, ${r.distro}` : ""}</dd></div>
           ${nodeLimits(p)}
-          <div><dt>rustc</dt><dd class="mono">${typeof p.rustc_release === "string" && p.rustc_release ? `${p.rustc_release.slice(0, 64)} ${typeof p.rustc_channel === "string" ? p.rustc_channel.slice(0, 32) : ""}` : "not reported"}</dd></div>
+          <div><dt>rustc</dt><dd class="mono">${rustcText(p, String(r.rustc ?? ""), Boolean(r.deleted_at))}</dd></div>
           <div><dt>Trigger</dt><dd>${r.trigger}</dd></div>
           <div><dt>Events</dt><dd class="num">${fmtInt(r.events)} (${plural(r.errors, "error")}, ${plural(r.warnings, "warning")})</dd></div>
           <div><dt>Signature</dt><dd class="mono">${r.signature ? html`<a href="/reports?range=90d&amp;signature=${r.signature}">${r.signature}</a>` : "none"}${r.signature ? html` <span class="fine">${d.installs ? `from ${plural(d.installs, "install")} that share usage` : "no install that shares usage reported it"}</span>` : ""}</dd></div>
@@ -1030,6 +1085,9 @@ export function reportPage(d: ReportData): SafeHtml {
                 )
               : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`
           }
+          ${d.issues.length === 0 && !r.deleted_at ? html`<form class="link-item" method="post" action="/reports/ai-triage"><input type="hidden" name="report" value="${r.report_id}"><button type="submit" class="button small outline">Triage now</button> <span class="fine">Asks the triage model about this report; you file what it proposes.</span></form>` : ""}
+          ${d.triageNote ? html`<p class="fine" role="status">${d.triageNote}</p>` : ""}
+          ${d.issues.length === 0 && d.proposal ? proposalPanel(String(r.report_id), d.proposal) : ""}
           ${d.issues.length === 0 && d.openIssues?.length ? html`<div class="link-item">${linkForm({ action: "attach", report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Attach", options: d.openIssues, pickerLabel: "Attach to issue", preferred: d.signatureIssues })}</div>` : ""}
           ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0]?.number} until a member detaches it from the others.</p>` : ""}
           ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span>${externalLink(ghUrl(d.cfg, "pull", pr.pr_number), `#${pr.pr_number} ${pr.title}`)}</div>`)}

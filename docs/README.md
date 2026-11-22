@@ -32,6 +32,7 @@ others go deeper.
 - [Database](server/database.md): SQLite, PostgreSQL or Cloudflare D1, and encrypted secrets
 - [Stores reference](server/stores.md): store plugins, formats and settings
 - [Output and destinations reference](server/output.md): local and S3 destinations, naming and packaging
+- [Drop folders](server/drop-folders.md): a watched folder whose books Bookclerk adds to the library
 - [Web app and sign-in reference](server/sign-in.md): roles, sign-in methods, routes and screens
 - [Integrations and sign-in](server/integrations.md): Audiobookshelf, invites and identity providers
 - [Managing plugins](server/plugins.md): install, approve, configure and place plugins; isolation modes
@@ -65,6 +66,7 @@ others go deeper.
 - [Architecture](internals/architecture.md): how the pieces fit
 - [Discovery design](internals/discovery.md): how suggestions are found and ranked
 - [Embedding model benchmarks](internals/embedding-benchmarks.md): how candidate models match taste across languages, and what they cost to run
+- [Embedding model packs](internals/model-packs.md): how a model is stored on disk, how the `embedder` plugin runs it, and how it was checked
 - [Durable job queue](internals/jobs.md): admission, leases and crash recovery
 - [Bounded storage](internals/storage-bounds.md): size caps, streams, paged scans and checkpoints
 - [The guest jail](internals/guest-jail.md): why plugins run as jailed processes, and how each platform confines them
@@ -124,4 +126,5 @@ Build and agent conventions for this repository live in
 - [What needs the operator](adr/owner-and-operator.md): the rule for which actions need elevation, and the switches an Owner sets on each Administrator
 - [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins
 - [Notifications](adr/notifications.md): the host routes events into send jobs, notifier plugins send them, and account mail carries reset and recovery
+- [Drop folders](adr/drop-folders.md): a storage instance can be a watched drop folder instead of a destination, settled by the host and added by the ingest job
 - [Model plugins and the AI binding](adr/ai-models.md): models run in jailed plugins behind an `ai` entrypoint, and every caller reaches them through one `AI` binding

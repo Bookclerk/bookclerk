@@ -225,10 +225,18 @@ export async function endAllSessions(db: D1Database): Promise<void> {
  * SameSite=Strict already keeps the session cookie off cross-site requests;
  * this also refuses a POST whose Origin is missing or foreign.
  *
+ * The dashboard's `Referrer-Policy: no-referrer` makes browsers send
+ * `Origin: null` on its own form posts (the Fetch standard serializes the
+ * origin as `null` under that policy), so a `null` origin is accepted when
+ * `Sec-Fetch-Site` says `same-origin`. Pages cannot set that header, and
+ * every browser that sends `Origin: null` for this reason sends it.
+ *
  * @param request - Incoming POST.
- * @returns True when `Origin` equals the request's own origin.
+ * @returns True when `Origin` equals the request's own origin, or is
+ *   `null` with `Sec-Fetch-Site: same-origin`.
  */
 export function sameOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
+  if (origin === "null") return request.headers.get("sec-fetch-site") === "same-origin";
   return Boolean(origin) && origin === new URL(request.url).origin;
 }
