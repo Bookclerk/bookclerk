@@ -13,7 +13,6 @@ mod cli_reference;
 /// Subcommand implementations (`library`, `discover`, `daemon`, …).
 mod commands;
 mod format_out;
-mod progress;
 /// CLI helpers that open the library store and source/integration registries.
 mod registry;
 mod secret_input;

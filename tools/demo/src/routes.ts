@@ -223,10 +223,12 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   // not feed a guest deliveries it never asked for.
   ["POST", "/hooks/{token}/{name}", "deny"],
 
-  // Jobs and the library: scan the visitor's accounts, never acquire.
+  // Jobs and the library: scan the visitor's accounts, never acquire or
+  // convert (a convert writes a new copy to storage, like an acquire).
   ["GET", "/api/jobs", "allow"],
   ["POST", "/api/jobs/{id}/cancel", "allow"],
   ["POST", "/api/library/acquire", "deny"],
+  ["POST", "/api/library/convert", "deny"],
   ["GET", "/api/library/works", "allow"],
   ["GET", "/api/library/works/{id}", "allow"],
   ["PUT", "/api/library/works/{id}/state", "allow"],

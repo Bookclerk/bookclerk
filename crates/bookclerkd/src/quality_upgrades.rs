@@ -132,6 +132,7 @@ pub async fn queue_quality_upgrades(state: Arc<AppState>) -> anyhow::Result<usiz
                     plugin_instance_id: source.plugin_instance_id().map(str::to_owned),
                     force: true,
                     paced: true,
+                    convert: None,
                     ..AcquireAsk::default()
                 },
                 JobTrigger::Scheduler,

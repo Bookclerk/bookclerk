@@ -72,6 +72,7 @@ impl RequestAcquirer for DaemonAcquirer {
                 // The host takes the request on its own: paced like any
                 // download it starts itself.
                 paced: true,
+                convert: None,
                 ..crate::jobs::AcquireAsk::default()
             },
             JobTrigger::Scheduler,

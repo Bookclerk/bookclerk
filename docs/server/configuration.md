@@ -516,7 +516,9 @@ multi_destination = "sync_missing"
 The shared output table is the second settings domain in the database,
 `core.output`: one document every host applies. It holds the format and
 the extra copies of each book (`copies`, see
-[Keeping several copies](output.md#keeping-several-copies)), Widevine
+[Keeping several copies](output.md#keeping-several-copies)), whether an
+M4B keeps unusual audio unchanged (`keep_codec_in_m4b`, see
+[Keeping unusual audio in M4B](output.md#keeping-unusual-audio-in-m4b)), Widevine
 and CDM provider, naming profile and templates, sidecars, cover
 and chapter options, LAME settings, timestamps, path sanitization and
 replacement rules, file name length, the multi-destination policy, and

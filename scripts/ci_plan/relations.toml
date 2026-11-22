@@ -291,6 +291,14 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-media"
+# The media_keep_codec oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_keep_codec/**",
+    "fuzz/oracles/media_keep_codec.rs",
+]
+
+[[test_input]]
+package = "bookclerk-media"
 # The media_pcm_wire oracle is shared with the replay test through `#[path]`.
 paths = [
     "fuzz/corpus/media_pcm_wire/**",

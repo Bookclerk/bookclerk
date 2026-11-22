@@ -157,6 +157,9 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         }
         "output.download_pdf" => config.output.download_pdf = parse_bool(v).unwrap_or(false),
         "output.create_cue" => config.output.create_cue = parse_bool(v).unwrap_or(false),
+        "output.keep_codec_in_m4b" => {
+            config.output.keep_codec_in_m4b = parse_bool(v).unwrap_or(false);
+        }
         "output.fixup_metadata" => {
             config.output.fixup_metadata = parse_bool(v).unwrap_or(false);
         }

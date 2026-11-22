@@ -41,6 +41,7 @@ boundary extends it.
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
 | `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
+| `media_keep_codec` | Audio parts the media worker copies into an M4B without re-encoding them (`output.keep_codec_in_m4b`): MP4 sample entries and tables, Ogg and FLAC headers and packets | `bookclerk-media::package_keeping_codec` |
 | `media_decode` | Audio the media worker demuxes and decodes before it encodes or repackages it: store downloads, library copies and files on storage, recognised by their bytes, never their names | `bookclerk-media::decode_pcm_bytes` |
 | `media_pcm_wire` | PCM worker frames for the desktop window's player: requests the worker reads, and the worker's whole output (byte-range requests, the stream format, samples, the end) the host reads while the worker decodes untrusted audio | `bookclerk-media::pcm_wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
@@ -356,6 +357,16 @@ only that. The others check:
   it. Seeds cover every container and codec the worker reads, including
   HE-AAC, HE-AAC v2, Ogg Opus (mono and stereo) and Ogg Vorbis. The shared oracle is
   `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
+- **`media_keep_codec`**: the input is one audio part, packaged twice
+  over into one M4B keeping its audio. A refused part leaves no file
+  behind. An accepted M4B has two chapters, the first at 0 ms; the
+  independent ISO-BMFF parser in `bookclerk-mp4` reads it, finds an Opus,
+  FLAC, ALAC, E-AC-3 or AC-4 sample entry, and every sample lies inside the
+  file; the second half of the sample table repeats the first; and the
+  same bytes always give the same file. Seeds are Ogg Opus, FLAC and ALAC
+  parts, plus AAC and damaged files the packager refuses. The shared
+  oracle is `fuzz/oracles/media_keep_codec.rs`, replayed from
+  `bookclerk-media`.
 - **`media_pcm_wire`**: the first byte, modulo 3, picks a request body, a
   reply body, or the worker's whole output. An accepted request or reply
   re-encodes to exactly its own bytes, and a reply's fields are within the
