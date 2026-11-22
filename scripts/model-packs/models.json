@@ -1,0 +1,70 @@
+{
+  "source": "https://github.com/Bookclerk/bookclerk",
+  "registry": "ghcr.io/bookclerk/models",
+  "models": {
+    "bekko-a8m": {
+      "license": "MIT",
+      "graph": {
+        "repository": "hotchpotch/bekko-embedding-v1-a8m",
+        "revision": "c721113d59a1d91b447450324f51c4b3332c924a",
+        "path": "onnx/model.onnx",
+        "bytes": 130099079,
+        "sha256": "96d8cc6199e96357b21b2fb12f6d7ffd2d4abc7b182fe94b5468fbd6dc819af7"
+      },
+      "graph_data": null,
+      "tokenizer": {
+        "repository": "hotchpotch/bekko-embedding-v1-a8m",
+        "revision": "c721113d59a1d91b447450324f51c4b3332c924a",
+        "path": "tokenizer.json",
+        "bytes": 34363442,
+        "sha256": "8bd47075711f75a143d1b78e01a41cc65c1c591b00d3cfeffc23db07adce1392"
+      },
+      "dimensions": 384,
+      "max_tokens": 512,
+      "pooling": "mean",
+      "output": "last_hidden_state",
+      "query_prefix": "",
+      "document_prefix": "",
+      "literal_pieces": "added",
+      "pack": {
+        "model_json_sha256": "f826a998307bf33fb41522eb8623e116e1a71c5e8384c68c07785cede5cef2eb",
+        "manifest_sha256": "7b285a4735a775e3780944952731bcd4e569dbddffb415e9bf889de54a62e264"
+      }
+    },
+    "harrier-270m-q4": {
+      "license": "MIT",
+      "graph": {
+        "repository": "onnx-community/harrier-oss-v1-270m-ONNX",
+        "revision": "d59c919d0159aea2c19ed7d04288fcdd048d0f9c",
+        "path": "onnx/model_q4.onnx",
+        "bytes": 239762,
+        "sha256": "228dca2603b907d673dd99cf89c309c0ca68baeed127416a5e027a48e62b0f49"
+      },
+      "graph_data": {
+        "repository": "onnx-community/harrier-oss-v1-270m-ONNX",
+        "revision": "d59c919d0159aea2c19ed7d04288fcdd048d0f9c",
+        "path": "onnx/model_q4.onnx_data",
+        "bytes": 205492736,
+        "sha256": "b5a15487360f5341659480ae4b5ad60028d5f865bd329196ec8d5708bbed3118"
+      },
+      "tokenizer": {
+        "repository": "onnx-community/harrier-oss-v1-270m-ONNX",
+        "revision": "d59c919d0159aea2c19ed7d04288fcdd048d0f9c",
+        "path": "tokenizer.json",
+        "bytes": 20323311,
+        "sha256": "ec95be298bea26f90370854faa650744c9fb0a04ca5e5ff95dd3913393ac5e45"
+      },
+      "dimensions": 640,
+      "max_tokens": 512,
+      "pooling": "none",
+      "output": "sentence_embedding",
+      "query_prefix": "Instruct: Retrieve semantically similar text\nQuery: ",
+      "document_prefix": "",
+      "literal_pieces": "none",
+      "pack": {
+        "model_json_sha256": "3b3435089f0cd8f430a29f5074fe5330763feaccf3f17bcab9ca5643a6753f99",
+        "manifest_sha256": "62e434e43efdd36bda8ef372069d0a50b80e1f6ea229d17d61004ed89ed8c2f5"
+      }
+    }
+  }
+}

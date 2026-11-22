@@ -339,8 +339,8 @@ pub enum ChapterSourceKind {
     Provider,
     /// The markers a store returned with the audio.
     Listing,
-    /// Chapters read from a file as first imported. Nothing records these
-    /// yet.
+    /// Chapters read from a stored copy's files as first imported: an
+    /// upload records them.
     File,
     /// The titles of the parts a store delivered, one chapter per part.
     PartNames,
@@ -467,6 +467,35 @@ pub enum ChapterSource {
         /// The storefront's PluginKey.
         plugin: String,
     },
+    /// The chapters embedded in one stored copy's files, as first
+    /// imported.
+    File {
+        /// The copy ([`copy_source_id`]).
+        copy: String,
+    },
+}
+
+/// Most a stored copy's running time may differ from the resolved list's
+/// before the copy plays the chapters read from its own files, in
+/// milliseconds (`docs/adr/edition-chapters.md`, decision 1).
+pub const COPY_RUNTIME_TOLERANCE_MS: u64 = 2_000;
+
+/// The source id a [`ChapterSource::File`] claim names one stored copy by:
+/// `copy-` and the first 32 hex digits of the SHA-256 of the destination
+/// and the copy's audio keys in sorted order, so the id has a fixed length
+/// whatever the keys are and does not depend on their play order.
+#[must_use]
+pub fn copy_source_id(destination: &str, keys: &[String]) -> String {
+    let mut sorted: Vec<&str> = keys.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    let mut hasher = Sha256::new();
+    hasher.update(destination.as_bytes());
+    for key in sorted {
+        hasher.update([0u8]);
+        hasher.update(key.as_bytes());
+    }
+    let hex = hex::encode(hasher.finalize());
+    format!("copy-{}", hex.get(..32).unwrap_or(&hex))
 }
 
 /// How a provider found the edition, and how exact its offsets are.
@@ -520,6 +549,7 @@ impl ChapterSource {
                 plugin.as_str(),
                 ClaimQuality::None,
             ),
+            Self::File { copy } => (ChapterSourceKind::File, copy.as_str(), ClaimQuality::None),
         }
     }
 }
@@ -743,14 +773,16 @@ impl LibraryStore {
             ChapterSource::Person { .. }
             | ChapterSource::Provider { .. }
             | ChapterSource::Listing { .. }
-            | ChapterSource::PartNames { .. } => None,
+            | ChapterSource::PartNames { .. }
+            | ChapterSource::File { .. } => None,
         };
         let user = match &write.source {
             ChapterSource::Person { user_id } => *user_id,
             ChapterSource::Processed { .. }
             | ChapterSource::Provider { .. }
             | ChapterSource::Listing { .. }
-            | ChapterSource::PartNames { .. } => None,
+            | ChapterSource::PartNames { .. }
+            | ChapterSource::File { .. } => None,
         };
         let runtime = write.runtime_ms.map(stored);
         let same = existing.as_ref().is_some_and(|row| {
@@ -1017,6 +1049,89 @@ impl LibraryStore {
             source_id: row.source_id,
             runtime_ms: row.runtime_ms.and_then(|ms| u64::try_from(ms).ok()),
         }))
+    }
+
+    /// The chapters one stored copy plays: the edition's resolved list,
+    /// unless the copy's own running time is more than
+    /// [`COPY_RUNTIME_TOLERANCE_MS`] from the timeline that list was
+    /// measured on and the copy's files carried chapters of their own
+    /// ([`ChapterSource::File`]), which it then plays instead
+    /// (`docs/adr/edition-chapters.md`, decision 1).
+    ///
+    /// The copy's running time is the sum of its probed files' durations;
+    /// when a file was never probed, or the list's runtime is unknown, the
+    /// resolved list stands.
+    ///
+    /// # Arguments
+    ///
+    /// * `edition_id` - The edition (`editions.id`).
+    /// * `destination` - The destination the copy is read from.
+    /// * `keys` - The storage keys of the copy's audio files.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read error, or [`LibraryError::Other`] when a stored
+    /// list is missing or no longer passes its own checks.
+    pub async fn chapters_for_copy(
+        &self,
+        edition_id: &str,
+        destination: &str,
+        keys: &[String],
+    ) -> Result<Option<EditionChapters>> {
+        let Some(resolved) = self.edition_chapters(edition_id).await? else {
+            return Ok(None);
+        };
+        let copy = copy_source_id(destination, keys);
+        if resolved.source_kind == ChapterSourceKind::File && resolved.source_id == copy {
+            return Ok(Some(resolved));
+        }
+        let Some(listed) = resolved.runtime_ms else {
+            return Ok(Some(resolved));
+        };
+        let files = self.edition_audio_files(edition_id).await?;
+        let durations: Option<Vec<u64>> = keys
+            .iter()
+            .map(|key| {
+                files
+                    .iter()
+                    .find(|file| file.destination == destination && &file.storage_key == key)
+                    .and_then(|file| file.stream.duration_ms)
+            })
+            .collect();
+        let Some(own) =
+            durations.map(|all| all.iter().fold(0u64, |sum, ms| sum.saturating_add(*ms)))
+        else {
+            return Ok(Some(resolved));
+        };
+        if keys.is_empty() || own.abs_diff(listed) <= COPY_RUNTIME_TOLERANCE_MS {
+            return Ok(Some(resolved));
+        }
+        let Some(row) = metadata_claims::Entity::find_by_id((
+            SUBJECT_EDITION.to_string(),
+            edition_id.to_string(),
+            FIELD_CHAPTERS.to_string(),
+            ChapterSourceKind::File.as_str().to_string(),
+            copy.clone(),
+            String::new(),
+        ))
+        .one(&self.db)
+        .await
+        .map_err(LibraryError::Orm)?
+        else {
+            return Ok(Some(resolved));
+        };
+        let Some(digest) = ChapterDigest::parse(&row.value_digest) else {
+            return Ok(Some(resolved));
+        };
+        match self.chapter_list(&digest).await? {
+            Some(list) if !list.chapters().is_empty() => Ok(Some(EditionChapters {
+                list,
+                source_kind: ChapterSourceKind::File,
+                source_id: copy,
+                runtime_ms: row.runtime_ms.and_then(|ms| u64::try_from(ms).ok()),
+            })),
+            Some(_) | None => Ok(Some(resolved)),
+        }
     }
 
     /// A stored chapter list; `None` when no complete list has this

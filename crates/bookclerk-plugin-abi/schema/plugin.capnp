@@ -210,6 +210,10 @@ const featureStorageDeleteMany :Text = "storage.deleteMany";
 const featureStorageHeadMany :Text = "storage.headMany";
 # Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`).
 const featureStorageConditionalWrite :Text = "storage.conditionalWrite";
+# Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` by writing, then
+# checking and withdrawing its write when another got in first
+# (`storage.checkedWrite`); a reader may briefly see the losing write.
+const featureStorageCheckedWrite :Text = "storage.checkedWrite";
 # Guest implements `Destination.changes` (`storage.changes`).
 const featureStorageChanges :Text = "storage.changes";
 # Guest implements `Destination.translateKeys` (`storage.translateKeys`).

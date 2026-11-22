@@ -26,6 +26,13 @@ pub const FEATURE_STORAGE_HEAD_MANY: &str = crate::plugin_capnp::FEATURE_STORAGE
 pub const FEATURE_STORAGE_CONDITIONAL_WRITE: &str =
     crate::plugin_capnp::FEATURE_STORAGE_CONDITIONAL_WRITE;
 
+/// Guest enforces [`super::WriteOptions::if_match`] and
+/// [`super::WriteOptions::if_none_match`] without an atomic primitive: it
+/// writes, then checks and withdraws its write when another got in first,
+/// so a reader may briefly see the losing write. The host reports such a
+/// write as not atomic.
+pub const FEATURE_STORAGE_CHECKED_WRITE: &str = crate::plugin_capnp::FEATURE_STORAGE_CHECKED_WRITE;
+
 /// Guest implements [`super::Destination::changes`].
 pub const FEATURE_STORAGE_CHANGES: &str = crate::plugin_capnp::FEATURE_STORAGE_CHANGES;
 
@@ -42,6 +49,7 @@ pub const STORAGE_OPERATION_FEATURES: &[&str] = &[
     FEATURE_STORAGE_DELETE_MANY,
     FEATURE_STORAGE_HEAD_MANY,
     FEATURE_STORAGE_CONDITIONAL_WRITE,
+    FEATURE_STORAGE_CHECKED_WRITE,
     FEATURE_STORAGE_CHANGES,
     FEATURE_STORAGE_TRANSLATE_KEYS,
 ];

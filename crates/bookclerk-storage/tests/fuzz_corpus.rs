@@ -1,6 +1,7 @@
-//! Replays the checked-in `s3_event`, `r2_event` and `b2_reply` fuzz
-//! corpora in PR CI (no libFuzzer required), so a notification message,
-//! queue reply or B2 reply that once broke a parser stays fixed
+//! Replays the checked-in `s3_event`, `r2_event`, `b2_reply` and `b2_event`
+//! fuzz corpora in PR CI (no libFuzzer required), so a notification message,
+//! queue reply, B2 reply or B2 webhook body that once broke a parser stays
+//! fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing.
 #![allow(clippy::missing_panics_doc, clippy::expect_used, clippy::unwrap_used)]
@@ -18,6 +19,9 @@ mod r2_event_oracle;
 
 #[path = "../../../fuzz/oracles/b2_reply.rs"]
 mod b2_reply_oracle;
+
+#[path = "../../../fuzz/oracles/b2_event.rs"]
+mod b2_event_oracle;
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
 /// confined to that directory.
@@ -256,4 +260,73 @@ fn named_b2_seeds_keep_their_meaning() {
     ] {
         assert!(!b2_seed_reads(refused), "{refused} should be refused");
     }
+}
+
+/// Reads one `b2_event` seed: the keys of its events (even first byte) or
+/// the names of its rules (odd first byte), or `None` when refused.
+fn read_b2_event_seed(name: &str) -> Option<Vec<String>> {
+    use bookclerk_storage::b2_events::{parse_b2_events, parse_notification_rules, B2EventScope};
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/b2_event")
+        .join(name);
+    let data = std::fs::read(&path).expect("read seed");
+    let (&selector, rest) = data.split_first().expect("non-empty seed");
+    if selector % 2 == 0 {
+        let scope = B2EventScope {
+            bucket: "books",
+            prefix: if selector & 2 == 0 { "" } else { "library/" },
+        };
+        parse_b2_events(rest, scope)
+            .ok()
+            .map(|events| events.into_iter().map(|event| event.change.key).collect())
+    } else {
+        parse_notification_rules(rest)
+            .ok()
+            .map(|rules| rules.into_iter().map(|rule| rule.name).collect())
+    }
+}
+
+#[test]
+fn fuzz_corpus_b2_event_holds_the_oracle() {
+    let mut accepted = 0;
+    for path in corpus_files("b2_event") {
+        let data = std::fs::read(&path).expect("read");
+        b2_event_oracle::check(&data);
+        let name = path.file_name().and_then(|n| n.to_str()).expect("name");
+        if read_b2_event_seed(name).is_some_and(|found| !found.is_empty()) {
+            accepted += 1;
+        }
+    }
+    assert!(
+        accepted >= 5,
+        "the seeds must reach the oracle's comparison, {accepted} did"
+    );
+}
+
+#[test]
+fn named_b2_event_seeds_keep_their_meaning() {
+    let keys = |name: &str| read_b2_event_seed(name).expect(name);
+    assert_eq!(keys("upload"), ["a b.m4b"]);
+    assert_eq!(keys("upload_under_prefix"), ["x/y.m4b"]);
+    assert_eq!(keys("batch_mixed"), ["a", "b", "c", "d", "e"]);
+    assert_eq!(keys("future_type"), ["a"]);
+    assert_eq!(keys("no_time"), ["a"]);
+    for skipped in ["other_bucket", "outside_prefix", "test_event", "live_read"] {
+        assert!(keys(skipped).is_empty(), "{skipped}");
+    }
+    for refused in [
+        "bad_name_backslash",
+        "bad_time",
+        "missing_name",
+        "events_as_object",
+        "body_as_array",
+        "not_json",
+        "rules_duplicate",
+        "rules_as_array",
+    ] {
+        assert!(read_b2_event_seed(refused).is_none(), "{refused}");
+    }
+    assert_eq!(keys("rules").len(), 3);
+    assert_eq!(keys("rules_bad_secret"), ["a"]);
+    assert!(keys("rules_empty").is_empty());
 }

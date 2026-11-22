@@ -80,6 +80,13 @@ request, so reviewers and Codecov see their results before it is queued.
 `CI Gate` in the merge group requires every platform, so a Windows or macOS
 failure ejects the pull request from the queue and keeps it out of `main`.
 
+A file name Windows cannot check out (a reserved device name such as `nul`
+or `con`, a name ending in a dot or a space, or a forbidden character) would
+fail every Windows job in the queue, for its own pull request and for the
+ones queued behind it. `scripts/tests/test_portable_paths.py` (in the `plan`
+job) refuses such a name on the pull request, along with two names that
+differ only by letter case.
+
 ### Full suite on Windows and macOS
 
 The jobs above run chosen parts of the suite on Windows and macOS, and in
@@ -988,6 +995,11 @@ These run outside `CI Gate`:
   builds and checks the contributor image (see below).
 - **ABS Integration** (`.github/workflows/abs-integration.yml`) tests the
   `audiobookshelf` plugin against a real Audiobookshelf server (see below).
+- **Model packs** (`.github/workflows/model-packs.yml`) builds the
+  embedding models, checks them against the published ones and, on `main`,
+  publishes them (see [Model packs](packaging.md#model-packs)). A pull
+  request runs it only when it changes the builder, the pack layout, the
+  tokenizer or the `embedder` plugin, and skips drafts.
 
 ### CodeQL
 

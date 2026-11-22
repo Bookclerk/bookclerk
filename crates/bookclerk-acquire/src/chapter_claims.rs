@@ -269,6 +269,7 @@ mod tests {
                 ChapterSource::Processed { .. } => (ChapterSourceKind::Processed, None),
                 ChapterSource::PartNames { .. } => (ChapterSourceKind::PartNames, None),
                 ChapterSource::Person { .. } => (ChapterSourceKind::Person, None),
+                ChapterSource::File { .. } => (ChapterSourceKind::File, None),
             })
             .collect();
         assert_eq!(

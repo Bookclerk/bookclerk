@@ -58,6 +58,11 @@ another path (by case or Unicode form) is refused.
    edition.
 7. The book's files are written to every destination, named by the
    destination's templates with the edition's `<call number>`.
+8. Each audio file's format, bitrate and running time are recorded from
+   its tags, as for an acquired copy. When the files carry chapters, they
+   become the copy's chapter claim, each file's chapters shifted by the
+   running time of the files before it (see
+   [Chapters](playback.md#chapters)).
 
 Every file ends with one outcome:
 
