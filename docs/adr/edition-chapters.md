@@ -1,9 +1,12 @@
 # ADR: Chapters belong to the edition and are resolved from claims
 
 - **Status:** Accepted (decisions made with the maintainer on 2026-11-20).
-  Decisions 1, 2, 4, 5, 6 and 8 are built; 3 is built at acquire only;
-  7 is built for the playback manifest, the web player and `/player`,
-  and the Audiobookshelf integration's push is planned
+  Decisions 1, 2, 4, 5, 6 and 8 are built, including the per-copy runtime
+  guard of 1 and file claims recorded by uploads; 3 is built at acquire
+  only, and re-aligning stored copies is planned; 7 is built for the
+  playback manifest, the web player and `/player`, and the Audiobookshelf
+  integration's push is planned. Chapters from sidecar files wait for the
+  metadata file sync engine
 - **Date:** 2026-11-20
 - **Related:** [Metadata claims and file sync](metadata-claims-and-file-sync.md),
   [Library data model](library-data-model.md),

@@ -23,13 +23,17 @@ use bookclerk_library::control_plane::{
     IngestBatch, IngestBatchId, IngestMember, IngestSource, IngestState, MemberOutcome,
     OutcomeUpdate,
 };
-use bookclerk_library::{call_number, AcquireStatus, FileOwner, JobPayload, LibraryStore};
+use bookclerk_library::{
+    call_number, copy_source_id, AcquireStatus, AudioStream, ChapterClaimWrite, ChapterSource,
+    FileOwner, FileProbe, JobPayload, LibraryStore,
+};
 use bookclerk_resolve::{Entitlement, Holder, HoldingDraft, LinkReason, Listing};
 use bookclerk_storage::{ByteRange, ObjectMeta};
 use chrono::Utc;
 use serde::Serialize;
 use tracing::warn;
 
+use super::chapters::{file_chapters, FilePart};
 use super::identify::{self, BookGroup, Candidate, FileKind};
 use super::intake_copy::{self, CopyFailure};
 use super::staging;
@@ -516,11 +520,8 @@ impl Run<'_> {
             return Ok(Vec::new());
         };
         let first_path = self.staged(first.member_no);
-        let size = tokio::fs::metadata(&first_path).await?.len();
-        let tags = bookclerk_media::pool()
-            .read_tags(size, &bookclerk_media::FileRange::new(&first_path))
-            .await
-            .ok();
+        let read = self.read_audio(group).await?;
+        let tags = read.first().and_then(|file| file.tags.clone());
         let evidence = identify::evidence(group, tags.as_ref(), group.audio.len());
         let digest = staging::sha256_file(&first_path).await?;
         let product_id = digest.get(..32).unwrap_or(&digest);
@@ -592,6 +593,8 @@ impl Run<'_> {
                     ));
                 }
             }
+            self.describe_copy(&edition_id, destination, &files, &read)
+                .await;
             if primary.is_none() {
                 primary = files.first().map(|file| file.key.clone());
             }
@@ -611,6 +614,106 @@ impl Run<'_> {
             ));
         }
         Ok(all(result, None, Some(&edition_id)))
+    }
+
+    /// Reads the tags of each of `group`'s audio files, in play order. A
+    /// file the tag reader cannot read is kept with no tags: it is stored
+    /// either way.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a staged file is missing.
+    async fn read_audio(&self, group: &BookGroup) -> anyhow::Result<Vec<ReadAudio>> {
+        let mut read = Vec::with_capacity(group.audio.len());
+        for candidate in &group.audio {
+            let path = self.staged(candidate.member_no);
+            let size = tokio::fs::metadata(&path).await?.len();
+            let tags = bookclerk_media::pool()
+                .read_tags(size, &bookclerk_media::FileRange::new(&path))
+                .await
+                .ok();
+            read.push(ReadAudio {
+                member_no: candidate.member_no,
+                path: candidate.path.clone(),
+                size,
+                tags,
+            });
+        }
+        Ok(read)
+    }
+
+    /// Records what the tag reader found in the copy just written to
+    /// `destination`: each audio file's probe and stream, then the chapters
+    /// the files carry as the copy's [`ChapterSource::File`] claim
+    /// (`docs/adr/edition-chapters.md`). Best effort: the files are stored
+    /// either way, so a failure is logged and the upload goes on.
+    async fn describe_copy(
+        &self,
+        edition_id: &str,
+        destination: &OwnerDestination,
+        files: &[PlannedFile],
+        read: &[ReadAudio],
+    ) {
+        let owner = FileOwner::Edition(edition_id.to_string());
+        let mut keys = Vec::new();
+        for file in files {
+            let Some(audio) = read.iter().find(|audio| audio.member_no == file.member_no) else {
+                continue;
+            };
+            keys.push(file.key.clone());
+            let Some(tags) = &audio.tags else { continue };
+            let probed = bookclerk_media::AudioProbe::from_record(audio.size, tags);
+            let probe = FileProbe {
+                content_type: probed.content_type.to_string(),
+                bitrate_kbps: probed
+                    .bitrate_kbps
+                    .map(|kbps| kbps.min(FileProbe::MAX_BITRATE_KBPS)),
+                lossless: probed.lossless,
+                source_store: None,
+            };
+            let stream = AudioStream {
+                codec: probed.codec,
+                format: probed.format,
+                duration_ms: probed.duration_ms,
+            };
+            let id = destination.id.as_str();
+            let described = match self
+                .library
+                .set_edition_file_probe(id, &file.key, &owner, &probe)
+                .await
+            {
+                Ok(true) => self
+                    .library
+                    .set_edition_file_stream(id, &file.key, &owner, &stream)
+                    .await
+                    .map(|_| ()),
+                Ok(false) => Ok(()),
+                Err(err) => Err(err),
+            };
+            if let Err(err) = described {
+                warn!(batch = %self.batch.id, destination = %destination.id, key = %file.key, error = %err, "could not store an uploaded file's probe");
+            }
+        }
+        let parts: Vec<FilePart<'_>> = read
+            .iter()
+            .map(|audio| FilePart {
+                path: &audio.path,
+                tags: audio.tags.as_ref(),
+            })
+            .collect();
+        let Some((list, runtime_ms)) = file_chapters(&parts) else {
+            return;
+        };
+        let claim = ChapterClaimWrite {
+            source: ChapterSource::File {
+                copy: copy_source_id(destination.id.as_str(), &keys),
+            },
+            list,
+            runtime_ms,
+        };
+        if let Err(err) = self.library.record_chapter_claim(edition_id, &claim).await {
+            warn!(batch = %self.batch.id, destination = %destination.id, error = %err, "could not record an upload's chapters");
+        }
     }
 
     /// The keys `group`'s files take on `destination`: the first audio file
@@ -703,6 +806,19 @@ impl Run<'_> {
         }
         Ok(())
     }
+}
+
+/// One staged audio file and what the tag reader found in it.
+#[derive(Debug, Clone)]
+struct ReadAudio {
+    /// The member whose bytes it is.
+    member_no: u32,
+    /// Its path in the batch.
+    path: String,
+    /// Its size in bytes.
+    size: u64,
+    /// Its tags; `None` when the reader could not read it.
+    tags: Option<bookclerk_media::TagRecord>,
 }
 
 /// One file of a book and where it goes on one destination.
