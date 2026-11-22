@@ -288,6 +288,8 @@ Store credentials and other runtime secrets are stored in the
   provider chain.
 - R2 destination keys and its queue API token, which are `secret`
   settings of the `r2` plugin instance.
+- The B2 destination's application key, which is a pair of `secret`
+  settings of the `b2` plugin instance.
 
 > [!NOTE]
 > Bookclerk no longer creates or reads an `Accounts/` directory.

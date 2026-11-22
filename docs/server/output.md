@@ -22,6 +22,7 @@ files.
 | Local filesystem | `local` (platform) | none | Yes, on every host at enrollment |
 | S3 / MinIO | `s3` (optional) | Sealed keys, or the AWS SDK chain | No, until `bookclerk plugins deploy s3` |
 | Cloudflare R2 | `r2` (optional) | Sealed R2 keys | No, until `bookclerk plugins deploy r2` |
+| Backblaze B2 | `b2` (optional) | A sealed B2 application key | No, until `bookclerk plugins deploy b2` |
 
 Any other plugin with a `storage` entrypoint is a destination too, and an
 acquire writes to it like the built-in ones. The exception is a storage
@@ -57,7 +58,7 @@ records for that destination:
   such as `\`, `{`, `}`, `^`, `%` and `|`, and fits the whole key, its prefix
   included, into 1024 bytes. It shortens the file name before its
   extension first, then the longest folder names.
-- `r2` follows the same object-key rules as `s3`.
+- `r2` and `b2` follow the same object-key rules as `s3`.
 - A third-party destination translates keys when it declares
   `storage.translateKeys` ([plugin ABI](../plugins/abi.md#translating-keys)).
   One that doesn't stores the host key as written.
@@ -390,6 +391,75 @@ The queue works like an SQS queue for the `s3` plugin (see
   lists the bucket once and carries on from there. Messages the queue
   drops when its retention runs out are found by the next scheduled
   listing.
+
+## Backblaze B2
+
+The `b2` plugin writes to a Backblaze B2 bucket through B2's native API.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `bucket` | none | Required. The bucket's name |
+| `prefix` | `library/` | |
+| `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | from `core.output` | Naming for this destination only |
+| `application_key_id`, `application_key` | none | Required secrets: a B2 application key |
+
+It works like the other object stores, with these differences:
+
+- **Large files.** A file over 8 MiB goes up in parts, with at most
+  three parts' worth of memory held by the B2 code (two read ahead and
+  the part being sent). When the plugin's requests go through the host's
+  network proxy, the proxy step holds one more copy of the part in
+  flight, so plan for up to four parts. An upload that fails part way is cancelled. If the
+  cancel fails too, the unfinished file stays in the bucket (and is
+  billed) until a later delete of that name or a lifecycle rule removes
+  it.
+- **Deletes remove every version.** B2 keeps old versions of a file.
+  When Bookclerk deletes a file it deletes all of its versions, oldest
+  first, so none stay billed behind a hide marker and a delete that stops
+  part way never brings back an older version. A name with more than
+  10,000 versions is refused instead of half deleted.
+- **Metadata fits the strictest bucket.** B2 limits a file's name and
+  stored metadata together (2,048 bytes on a bucket with encryption or
+  Object Lock). The checksum and commit token are always stored; the
+  ASIN, file times and title follow only while they fit, so a very long
+  title is left out of the metadata rather than failing the upload.
+- **No conditional writes.** B2 cannot write a file only if it is
+  unchanged. Bookclerk checks just before such a write instead, so
+  another program writing the same file at the same moment can still win.
+  Moves are a copy and then a delete.
+- **No change feed yet.** Bookclerk lists the bucket on a schedule to find
+  files other programs add, change or remove.
+
+### Set up a B2 bucket
+
+1. In the Backblaze web app, create an application key with **Read and
+   Write** access to the bucket. Note its keyID and its application key,
+   which is shown only once. A key limited to a file-name prefix works
+   when the destination's `prefix` is inside it.
+2. Set the bucket:
+
+   ```sh
+   bookclerk plugins config set b2 bucket my-audiobooks
+   ```
+
+3. Enter the key. Each command reads the value from stdin:
+
+   ```sh
+   bookclerk plugins config set b2 application_key_id --secret
+   bookclerk plugins config set b2 application_key --secret
+   ```
+
+4. Approve the plugin's network access when you enable it. It reaches
+   `*.backblazeb2.com` for the API and downloads and `*.backblaze.com` for
+   uploads, both on port 443.
+5. Deploy the plugin:
+
+   ```sh
+   bookclerk plugins deploy b2
+   ```
+
+The plugin signs in to B2 on its first call, not when it starts. A wrong
+key or bucket shows up as an error on the first write or listing.
 
 ## Choosing which books a destination takes
 

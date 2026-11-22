@@ -1507,6 +1507,10 @@ impl StorageBackend for S3Backend {
         })
     }
 
+    async fn copy_sized(&self, from: &str, to: &str) -> Result<u64> {
+        S3Backend::copy_sized(self, from, to).await
+    }
+
     async fn copy(&self, from: &str, to: &str) -> Result<()> {
         if from == to {
             return Ok(());

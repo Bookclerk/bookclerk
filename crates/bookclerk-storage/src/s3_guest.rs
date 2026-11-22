@@ -1,10 +1,10 @@
-//! A storage guest's `Destination` capability over an [`S3Backend`].
+//! A storage guest's `Destination` capability over an object store.
 //!
-//! The `s3`, `r2` and `b2` destination plugins all store through an
-//! [`S3Backend`] (each built its own way: endpoint, credentials, change
-//! feed), and answer the plugin ABI the same way: streamed writes with
-//! optional conditions, staged writes committed by token, and the intent
-//! operations through [`crate::guest`].
+//! The `s3` and `r2` destination plugins store through an `S3Backend` and
+//! the `b2` plugin through a `B2Backend` (each built its own way: endpoint,
+//! credentials, change feed). They answer the plugin ABI the same way:
+//! streamed writes with optional conditions, staged writes committed by
+//! token, and the intent operations through [`crate::guest`].
 
 use std::pin::Pin;
 
@@ -17,21 +17,21 @@ use bookclerk_plugin_sdk::{
 use tokio::io::AsyncRead;
 
 use crate::guest::{self, object_metadata, plugin_error as map_storage};
-use crate::{ObjectMeta, S3Backend, StorageBackend, StorageError};
+use crate::{ObjectMeta, StorageBackend, StorageError};
 
 /// Result alias matching the ABI crate.
 type Result<T> = std::result::Result<T, PluginError>;
 
 /// The `Destination` capability of an object-store guest.
-pub struct ObjectStoreDestination {
+pub struct ObjectStoreDestination<B> {
     /// The backend every call goes to.
-    backend: S3Backend,
+    backend: B,
 }
 
-impl ObjectStoreDestination {
+impl<B: StorageBackend> ObjectStoreDestination<B> {
     /// Serves `backend` as a destination.
     #[must_use]
-    pub fn new(backend: S3Backend) -> Self {
+    pub fn new(backend: B) -> Self {
         Self { backend }
     }
 }
@@ -78,7 +78,7 @@ fn stage_object_key(token: Option<&str>, key: &str) -> Result<String> {
 }
 
 #[async_trait(?Send)]
-impl Destination for ObjectStoreDestination {
+impl<B: StorageBackend> Destination for ObjectStoreDestination<B> {
     async fn head(&self, key: &str) -> Result<Option<ObjectMetadata>> {
         self.backend
             .head(key)
@@ -224,6 +224,7 @@ impl Destination for ObjectStoreDestination {
 }
 
 #[cfg(test)]
+#[cfg(feature = "s3")]
 mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -237,7 +238,7 @@ mod tests {
     use crate::s3::s3_protocol::{new_world, open_backend, serve};
 
     /// A destination over a fresh in-memory S3 fixture.
-    async fn destination(dir: &std::path::Path) -> ObjectStoreDestination {
+    async fn destination(dir: &std::path::Path) -> ObjectStoreDestination<crate::S3Backend> {
         let url = serve(new_world(false)).await;
         ObjectStoreDestination::new(open_backend(&url, dir).await)
     }
@@ -248,7 +249,7 @@ mod tests {
     }
 
     /// Reads a whole object.
-    async fn read(dest: &ObjectStoreDestination, key: &str) -> Vec<u8> {
+    async fn read<B: StorageBackend>(dest: &ObjectStoreDestination<B>, key: &str) -> Vec<u8> {
         let mut out = Vec::new();
         let mut result = dest.get(key, None).await.expect("get");
         result.body.read_to_end(&mut out).await.expect("read");

@@ -837,7 +837,7 @@ fn is_retryable(err: &StorageError) -> bool {
             err.kind(),
             std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
         ),
-        StorageError::S3(_) => true,
+        StorageError::S3(_) | StorageError::Remote(_) => true,
         StorageError::NotFound(_)
         | StorageError::InvalidKey(_)
         | StorageError::PayloadTooLarge(_)

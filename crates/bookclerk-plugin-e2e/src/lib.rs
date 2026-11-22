@@ -34,6 +34,7 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "audiobookshelf",
     "s3",
     "r2",
+    "b2",
     "d1",
     "postgres",
     "metadata_files",
