@@ -67878,7 +67878,7 @@
       },
       "RouteJson": {
         "type": "object",
-        "description": "One route: a channel and the least severity it takes.",
+        "description": "One route: a channel, or the built-in \"In app\" target, and the least\nseverity it takes.",
         "required": [
           "destination_id",
           "min_severity"
@@ -67886,7 +67886,7 @@
         "properties": {
           "destination_id": {
             "type": "string",
-            "description": "The channel.",
+            "description": "The channel's id, or `in-app` for the built-in target that puts the\nnotification in every active Owner's and Administrator's inbox\n(the bell in the web app, and browser or desktop notifications where\nthey turned them on). `in-app` runs no plugin and is listed first.",
             "example": "8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"
           },
           "min_severity": {

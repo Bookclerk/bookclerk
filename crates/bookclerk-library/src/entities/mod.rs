@@ -80,6 +80,7 @@ pub mod notifications;
 pub mod notify_deliveries;
 pub mod notify_destinations;
 pub mod notify_inbox;
+pub mod notify_inbox_routes;
 pub mod notify_patron_offers;
 pub mod notify_patron_prefs;
 pub mod notify_patron_targets;

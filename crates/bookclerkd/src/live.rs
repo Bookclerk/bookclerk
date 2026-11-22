@@ -204,6 +204,7 @@ fn member_topics() -> BTreeSet<LiveTopic> {
         LiveTopic::Nodes,
         LiveTopic::Discover,
         LiveTopic::Playback,
+        LiveTopic::Notifications,
     ])
 }
 

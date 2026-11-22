@@ -20,11 +20,11 @@ use chrono::{DateTime, Duration, Utc};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::LibraryStore;
-use crate::control_plane::batch;
+use crate::control_plane::{batch, bump_if_any, LiveTopic};
 use crate::entities::{
     account_links, jobs, notifications, notify_deliveries, notify_destinations, notify_inbox,
-    notify_patron_offers, notify_patron_prefs, notify_patron_targets, notify_routes,
-    portal_identities, users,
+    notify_inbox_routes, notify_patron_offers, notify_patron_prefs, notify_patron_targets,
+    notify_routes, portal_identities, users,
 };
 use crate::error::{EntityKind, LibraryError, Result};
 use crate::models::{
@@ -34,8 +34,8 @@ use crate::notifications::{
     severity_reaches, DeliveryRecord, DeliveryState, Destination, DestinationKind, FailedAttempt,
     FailureEffect, InboxEntry, NewDestination, NewNotification, PatronChoice, PatronOffer,
     PendingDelivery, Route, Routed, SendWork, StallOutcome, StalledSend, StoredNotification,
-    MAX_DESTINATION_LABEL_BYTES, MAX_ROUTES_PER_TYPE, NOTIFICATION_RETENTION_DAYS,
-    PAUSE_AFTER_FAILURES,
+    IN_APP_DESTINATION, MAX_DESTINATION_LABEL_BYTES, MAX_ROUTES_PER_TYPE,
+    NOTIFICATION_RETENTION_DAYS, PAUSE_AFTER_FAILURES,
 };
 
 /// Queue limits a `notify_send` admission uses (the daemon's `[jobs]`).
@@ -228,6 +228,16 @@ fn page(limit: u64) -> u64 {
     limit.clamp(1, MAX_NOTIFY_PAGE)
 }
 
+/// What the routing rules picked for one notification.
+#[derive(Debug, Default)]
+struct RouteTargets {
+    /// Active destinations, each once.
+    destinations: Vec<Destination>,
+    /// Whether an "In app" route puts it in every active Owner's and
+    /// Administrator's inbox.
+    staff_inbox: bool,
+}
+
 /// A patron's choice for one notification type, as routing reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PatronPick {
@@ -349,16 +359,20 @@ impl LibraryStore {
             .ok_or_else(|| {
                 LibraryError::not_found(EntityKind::NotifyDestination, destination_id)
             })?;
-        self.store_notification(id, new, &[target], limits).await
+        let targets = RouteTargets {
+            destinations: vec![target],
+            staff_inbox: false,
+        };
+        self.store_notification(id, new, &targets, limits).await
     }
 
-    /// Writes notification `id`, its inbox row and one delivery per target
+    /// Writes notification `id`, its inbox rows and one delivery per target
     /// in one batch, then enqueues the send jobs.
     async fn store_notification(
         &self,
         id: String,
         new: &NewNotification,
-        targets: &[Destination],
+        targets: &RouteTargets,
         limits: NotifyQueueLimits,
     ) -> Result<Routed> {
         let now = super::now_str();
@@ -396,8 +410,31 @@ impl LibraryStore {
             }
             _ => false,
         };
-        let mut deliveries = Vec::with_capacity(targets.len());
-        for target in targets {
+        let inboxed = if targets.staff_inbox {
+            // Every active Owner and Administrator, read in the same batch
+            // so a role change between the route read and this write cannot
+            // inbox someone who no longer holds the role.
+            statements.push(batch::exec(
+                "INSERT INTO notify_inbox (user_id, notification_id, read_at, created_at) \
+                 SELECT id, ?, NULL, ? FROM users \
+                 WHERE role IN ('owner', 'administrator') AND status = 'active'",
+                vec![batch::text(&id), batch::text(&now)],
+            ));
+            true
+        } else {
+            inboxed
+        };
+        if inboxed {
+            statements.push(bump_if_any(
+                LiveTopic::Notifications,
+                batch::exec(
+                    "SELECT 1 FROM notify_inbox WHERE notification_id = ?",
+                    vec![batch::text(&id)],
+                ),
+            ));
+        }
+        let mut deliveries = Vec::with_capacity(targets.destinations.len());
+        for target in &targets.destinations {
             let delivery = PendingDelivery {
                 id: uuid::Uuid::new_v4().to_string(),
                 plugin_instance_id: target.plugin_instance_id.clone(),
@@ -484,13 +521,15 @@ impl LibraryStore {
         }
     }
 
-    /// The active destinations the routing rules pick for `new`, each once.
+    /// The active destinations the routing rules pick for `new`, each once,
+    /// and whether an "In app" route puts it in the staff inbox.
     ///
     /// # Errors
     ///
     /// An error when a read fails.
-    async fn route_targets(&self, new: &NewNotification) -> Result<Vec<Destination>> {
+    async fn route_targets(&self, new: &NewNotification) -> Result<RouteTargets> {
         let mut out: BTreeMap<String, Destination> = BTreeMap::new();
+        let mut staff_inbox = false;
         match (new.audience, new.patron) {
             (NotificationAudience::Operational, _) => {
                 let routes = notify_routes::Entity::find()
@@ -506,6 +545,15 @@ impl LibraryStore {
                     })
                     .map(|r| r.destination_id)
                     .collect();
+                staff_inbox =
+                    notify_inbox_routes::Entity::find_by_id(new.notification_type.clone())
+                        .one(&self.db)
+                        .await
+                        .map_err(LibraryError::Orm)?
+                        .is_some_and(|r| {
+                            NotificationSeverity::from_wire_name(&r.min_severity)
+                                .is_some_and(|min| severity_reaches(new.severity, min))
+                        });
                 if !wanted.is_empty() {
                     for row in super::library_model::find_chunked::<notify_destinations::Entity, _>(
                         self,
@@ -533,7 +581,7 @@ impl LibraryStore {
                     .await
                     .map_err(LibraryError::Orm)?;
                 if offers.is_empty() {
-                    return Ok(Vec::new());
+                    return Ok(RouteTargets::default());
                 }
                 let offered: BTreeSet<String> = offers
                     .iter()
@@ -552,7 +600,7 @@ impl LibraryStore {
                     .await
                     .map_err(LibraryError::Orm)?;
                 let picked = match self.patron_pick(patron, &new.notification_type).await? {
-                    PatronPick::Off => return Ok(Vec::new()),
+                    PatronPick::Off => return Ok(RouteTargets::default()),
                     PatronPick::Default => None,
                     PatronPick::Chosen(picked) => Some(picked),
                 };
@@ -574,7 +622,10 @@ impl LibraryStore {
             // mail is enqueued by its own flow, not routed.
             (NotificationAudience::Patron, None) | (NotificationAudience::Account, _) => {}
         }
-        Ok(out.into_values().collect())
+        Ok(RouteTargets {
+            destinations: out.into_values().collect(),
+            staff_inbox,
+        })
     }
 
     /// Fails with [`LibraryError::NotFound`] unless user `id` exists.
@@ -1557,7 +1608,8 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Every operational route, by type.
+    /// Every operational route, by type; an "In app" route comes first in
+    /// its type's list under [`IN_APP_DESTINATION`].
     ///
     /// # Errors
     ///
@@ -1576,10 +1628,26 @@ impl LibraryStore {
                 min_severity: parse_severity(&row.min_severity)?,
             });
         }
+        for row in notify_inbox_routes::Entity::find()
+            .order_by_asc(notify_inbox_routes::Column::NotificationType)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        {
+            // The built-in target leads its type's list.
+            out.entry(row.notification_type).or_default().insert(
+                0,
+                Route {
+                    destination_id: IN_APP_DESTINATION.to_owned(),
+                    min_severity: parse_severity(&row.min_severity)?,
+                },
+            );
+        }
         Ok(out)
     }
 
-    /// Replaces the routes of one operational type.
+    /// Replaces the routes of one operational type. A route to
+    /// [`IN_APP_DESTINATION`] is the staff inbox, not a stored destination.
     ///
     /// # Errors
     ///
@@ -1600,6 +1668,9 @@ impl LibraryStore {
                     route.destination_id
                 )));
             }
+            if route.destination_id == IN_APP_DESTINATION {
+                continue;
+            }
             let dest = self
                 .notify_destination(&route.destination_id)
                 .await?
@@ -1614,11 +1685,29 @@ impl LibraryStore {
             }
         }
         let now = super::now_str();
-        let mut statements = vec![batch::exec(
-            "DELETE FROM notify_routes WHERE notification_type = ?",
-            vec![batch::text(notification_type)],
-        )];
+        let mut statements = vec![
+            batch::exec(
+                "DELETE FROM notify_routes WHERE notification_type = ?",
+                vec![batch::text(notification_type)],
+            ),
+            batch::exec(
+                "DELETE FROM notify_inbox_routes WHERE notification_type = ?",
+                vec![batch::text(notification_type)],
+            ),
+        ];
         for route in routes {
+            if route.destination_id == IN_APP_DESTINATION {
+                statements.push(batch::exec(
+                    "INSERT INTO notify_inbox_routes (notification_type, min_severity, \
+                     created_at) VALUES (?, ?, ?)",
+                    vec![
+                        batch::text(notification_type),
+                        batch::text(route.min_severity.wire_name()),
+                        batch::text(&now),
+                    ],
+                ));
+                continue;
+            }
             statements.push(batch::exec(
                 "INSERT INTO notify_routes (notification_type, destination_id, min_severity, \
                  created_at) VALUES (?, ?, ?, ?)",
@@ -2072,10 +2161,18 @@ impl LibraryStore {
                 vec![batch::text(&now), batch::int(user_id)],
             ),
         };
+        // Only a read that changed a row tells this patron's other pages.
+        let bumped = bump_if_any(
+            LiveTopic::Notifications,
+            batch::exec(
+                "SELECT 1 FROM notify_inbox WHERE user_id = ? AND read_at = ?",
+                vec![batch::int(user_id), batch::text(&now)],
+            ),
+        );
         let reply = self
             .execute_host_batch(batch::request(
                 &format!("notify-read-{user_id}-{}", uuid::Uuid::new_v4()),
-                vec![statement],
+                vec![statement, bumped],
             ))
             .await?;
         Ok(batch::rows_affected(&reply, 0))
