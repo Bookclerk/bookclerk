@@ -306,6 +306,16 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue(p.selected("ui"))
         self.assertFalse(p.selected("ui_visual"))
 
+    def test_ui_visual_follows_the_api_document(self) -> None:
+        """The app pages check their sample answers against the daemon's OpenAPI document."""
+        self.assertTrue(plan("crates/bookclerkd/openapi.json").selected("ui_visual"))
+
+    def test_ui_visual_builds_the_app_and_checks_coverage(self) -> None:
+        cmds = [c for key, c in planned_commands(artifact(plan("ui/src/App.tsx")), "ui_visual", CTX) if not key]
+        self.assertIn(["npm", "run", "build:visual"], [c.argv for c in cmds])
+        record = next(c for c in cmds if c.label == "record screenshots + axe-core (ui)")
+        self.assertEqual(record.env["VISUAL_COVERAGE_CHECK"], "1")
+
     def test_ui_visual_follows_worker_pages(self) -> None:
         """The website's and the collector's sources change pages the check screenshots; docs do not."""
         for path in (

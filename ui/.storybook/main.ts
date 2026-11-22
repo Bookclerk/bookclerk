@@ -11,6 +11,9 @@ import type { StorybookConfig } from "@storybook/react-vite";
 const config: StorybookConfig = {
   stories: ["../src/**/*.stories.tsx"],
   framework: { name: "@storybook/react-vite", options: {} },
+  // Not minified, so components keep their names and the visual suite can
+  // tell which ones each story rendered (visual/coverage.ts).
+  viteFinal: (vite) => ({ ...vite, build: { ...vite.build, minify: false } }),
   core: {
     // No outside service: no usage reports, no update checks.
     disableTelemetry: true,

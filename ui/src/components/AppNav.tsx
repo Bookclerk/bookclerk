@@ -50,7 +50,7 @@ export function AppNav({ view, onNavigate, role, administersNodes }: AppNavProps
             "rounded-md px-2 py-1 transition-colors",
             view === link.id
               ? "font-semibold text-ink"
-              : "text-ink/55 hover:bg-ink/5 hover:text-ink",
+              : "text-ink/70 hover:bg-ink/5 hover:text-ink",
           )}
           aria-current={view === link.id ? "page" : undefined}
         >

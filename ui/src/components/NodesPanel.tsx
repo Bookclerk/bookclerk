@@ -60,7 +60,7 @@ function Meter({
     <div className="grid gap-1">
       <div className="flex items-baseline justify-between gap-2 text-xs">
         <span className="font-medium text-ink/70">{label}</span>
-        <span className={cn("font-mono text-[11px]", over ? "text-brick" : "text-ink/55")}>
+        <span className={cn("font-mono text-[11px]", over ? "text-brick-text" : "text-ink/70")}>
           {text}
         </span>
       </div>
@@ -212,7 +212,7 @@ function NodeRow({
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-semibold text-ink">{node.runtime.label || node.node_id}</span>
         {node.runtime.label ? (
-          <span className="break-all font-mono text-[11px] text-ink/45">{node.node_id}</span>
+          <span className="break-all font-mono text-[11px] text-ink/70">{node.node_id}</span>
         ) : null}
         {node.this_node ? (
           <Badge className="bg-ink/10 text-ink/70 normal-case tracking-normal">This node</Badge>
@@ -220,26 +220,26 @@ function NodeRow({
         <Badge
           className={cn(
             "normal-case tracking-normal",
-            node.live ? "bg-teal/10 text-ink/70" : "bg-brick/10 text-brick",
+            node.live ? "bg-teal/10 text-ink/70" : "bg-brick/10 text-brick-text",
           )}
         >
           {node.live ? "Live" : "Offline"}
         </Badge>
         {drained ? (
-          <Badge className="bg-brick/10 text-brick normal-case tracking-normal">Drained</Badge>
+          <Badge className="bg-brick/10 text-brick-text normal-case tracking-normal">Drained</Badge>
         ) : null}
-        <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
+        <Badge className="bg-ink/5 text-ink/70 normal-case tracking-normal">
           {relationshipLabel(node.relationship)}
         </Badge>
         {status?.public_origin ? (
-          <span className="font-mono text-[11px] text-ink/45">{status.public_origin}</span>
+          <span className="font-mono text-[11px] text-ink/70">{status.public_origin}</span>
         ) : null}
         {node.target ? (
-          <span className="font-mono text-[11px] text-ink/45">{node.target}</span>
+          <span className="font-mono text-[11px] text-ink/70">{node.target}</span>
         ) : null}
       </div>
       {capabilities.can_assign_owner ? (
-        <label className="flex flex-wrap items-center gap-2 text-xs text-ink/60">
+        <label className="flex flex-wrap items-center gap-2 text-xs text-ink/70">
           Owner
           <select
             className="rounded-md border border-ink/15 bg-paper px-2 py-1 text-xs text-ink"
@@ -265,17 +265,17 @@ function NodeRow({
               </option>
             ))}
           </select>
-          <span className="text-ink/45">
+          <span className="text-ink/70">
             The owner may change this node's budgets, drain switch, and name.
           </span>
         </label>
       ) : node.owner ? (
-        <p className="text-xs text-ink/55">Owned by {ownerName(node.owner)}</p>
+        <p className="text-xs text-ink/70">Owned by {ownerName(node.owner)}</p>
       ) : null}
 
       {status ? (
         <>
-          <p className="text-xs text-ink/55">
+          <p className="text-xs text-ink/70">
             Heartbeat {age(status.heartbeat_at)} · {status.running_guests} guest(s) running ·{" "}
             {(status.availability_ppm / 10_000).toFixed(1)}% available recently
             {status.files_dir_free_bytes != null
@@ -287,13 +287,13 @@ function NodeRow({
           </div>
         </>
       ) : (
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-ink/70">
           No heartbeat yet: this node's daemon has not run since heartbeats were added.
         </p>
       )}
 
       <div className="flex flex-wrap items-end gap-2">
-        <label className="grid min-w-[10rem] flex-1 gap-1 text-xs text-ink/60">
+        <label className="grid min-w-[10rem] flex-1 gap-1 text-xs text-ink/70">
           Name
           <Input
             placeholder="Optional"
@@ -303,7 +303,7 @@ function NodeRow({
             onKeyDown={onKeyDown}
           />
         </label>
-        <label className="grid gap-1 text-xs text-ink/60">
+        <label className="grid gap-1 text-xs text-ink/70">
           CPU budget %
           <Input
             className="w-20"
@@ -314,7 +314,7 @@ function NodeRow({
             onKeyDown={onKeyDown}
           />
         </label>
-        <label className="grid gap-1 text-xs text-ink/60">
+        <label className="grid gap-1 text-xs text-ink/70">
           Memory budget %
           <Input
             className="w-20"
@@ -326,7 +326,7 @@ function NodeRow({
           />
         </label>
         {capabilities.can_edit_labels ? (
-          <label className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/60">
+          <label className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/70">
             Labels
             <Input
               placeholder="nas, zone=eu"
@@ -337,7 +337,7 @@ function NodeRow({
             />
           </label>
         ) : node.labels.length > 0 ? (
-          <p className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/60">
+          <p className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/70">
             Labels
             <span className="font-mono text-ink/70">{node.labels.join(", ")}</span>
           </p>
@@ -422,7 +422,7 @@ export function NodesPanel({ onSessionExpired }: NodesPanelProps) {
     <section className="space-y-5">
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-ink">{owned ? "Your nodes" : "Nodes"}</h2>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-ink/70">
           Every daemon reports its capacity, use, and running guests every 15 seconds through the
           shared database. The budget is the share of a node's CPU and memory the scheduler may
           commit to plugin guests; the bar shows what running guests reserve and the marker what the
@@ -431,14 +431,14 @@ export function NodesPanel({ onSessionExpired }: NodesPanelProps) {
         </p>
       </div>
       {loadError || actionError ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {actionError ?? loadError}
         </p>
       ) : null}
       {nodes == null || capabilities == null ? (
-        <p className="text-sm text-ink/50">Loading nodes…</p>
+        <p className="text-sm text-ink/70">Loading nodes…</p>
       ) : nodes.length === 0 ? (
-        <p className="text-sm text-ink/50">
+        <p className="text-sm text-ink/70">
           {owned ? "You do not own any nodes yet." : "No nodes registered."}
         </p>
       ) : (

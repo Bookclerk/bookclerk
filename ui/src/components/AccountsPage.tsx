@@ -266,13 +266,13 @@ export function AccountsPage({
             <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
               Accounts
             </h1>
-            <p className="text-sm text-ink/60">
+            <p className="text-sm text-ink/70">
               Link bookstore accounts. Acquired books stay when you revoke.
             </p>
           </div>
 
           {error ? (
-            <p className="text-sm font-medium text-brick" role="alert">
+            <p className="text-sm font-medium text-brick-text" role="alert">
               {error}
             </p>
           ) : null}
@@ -286,12 +286,12 @@ export function AccountsPage({
             <h2 className="text-lg font-semibold text-ink">Bookstore sources</h2>
             {sources === null ? (
               error ? null : (
-                <p className="text-sm text-ink/50" role="status" aria-busy="true">
+                <p className="text-sm text-ink/70" role="status" aria-busy="true">
                   Loading sources…
                 </p>
               )
             ) : sources.length === 0 ? (
-              <p className="text-sm text-ink/50">No storefront plugin is deployed on this node.</p>
+              <p className="text-sm text-ink/70">No storefront plugin is deployed on this node.</p>
             ) : (
               <ul className="divide-y divide-ink/10 bg-card">
                 {sources.map((s) => {
@@ -313,7 +313,7 @@ export function AccountsPage({
                           )}
                           <div>
                             <p className="font-medium text-ink">{s.name}</p>
-                            <p className="text-xs text-ink/50">
+                            <p className="text-xs text-ink/70">
                               {s.auth === "oauth" ? "OAuth" : "Email & password"} · {s.id}
                             </p>
                           </div>
@@ -361,13 +361,13 @@ export function AccountsPage({
                         </form>
                       ) : null}
                       {open && s.auth === "oauth" && oauthUrl ? (
-                        <p className="mt-2 text-sm text-ink/60">
+                        <p className="mt-2 text-sm text-ink/70">
                           Complete sign-in in the new tab, or{" "}
                           <a
                             href={oauthUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="text-teal underline"
+                            className="text-teal-text underline"
                           >
                             open {s.name} login
                           </a>
@@ -384,7 +384,7 @@ export function AccountsPage({
           <section className="space-y-3">
             <h2 className="text-lg font-semibold text-ink">Connections</h2>
             {connections.length === 0 ? (
-              <p className="text-sm text-ink/50">No store connections yet.</p>
+              <p className="text-sm text-ink/70">No store connections yet.</p>
             ) : (
               <ul className="divide-y divide-ink/10 bg-card">
                 {connections.map((c) => (
@@ -402,7 +402,7 @@ export function AccountsPage({
                       ) : null}
                       <div>
                         <p className="font-medium text-ink">{c.label || c.account_id}</p>
-                        <p className="text-xs text-ink/50">
+                        <p className="text-xs text-ink/70">
                           {c.source} · {c.connection_status}
                           {!c.source_enabled ? " · source not deployed on this node" : ""}
                         </p>

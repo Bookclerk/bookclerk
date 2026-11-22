@@ -171,7 +171,7 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
             <h2 id="add-branch-title" className="text-lg font-semibold text-ink">
               Add a branch{userLabel ? ` for ${userLabel}` : ""}
             </h2>
-            <p className="text-sm text-ink/60">
+            <p className="text-sm text-ink/70">
               A branch invite lets another Bookclerk server join this library as a branch owned by{" "}
               {userLabel ?? "you"}. Paste it in that server's <strong>Join a library</strong> →{" "}
               <strong>I have an invite</strong>. It works once.
@@ -198,7 +198,7 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
                 {copied ? "Copied" : "Copy"}
               </Button>
             </div>
-            <p className={cn("text-xs", expired ? "text-brick" : "text-ink/55")}>
+            <p className={cn("text-xs", expired ? "text-brick-text" : "text-ink/70")}>
               {expired
                 ? "This invite has expired."
                 : `Expires in ${formatCountdown(minted.expiresAt, now)}`}
@@ -226,7 +226,7 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
         )}
 
         {error ? (
-          <p className="text-sm font-medium text-brick" role="alert">
+          <p className="text-sm font-medium text-brick-text" role="alert">
             {error}
           </p>
         ) : null}
@@ -234,7 +234,7 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-ink">Outstanding invites</h3>
           {invites.length === 0 ? (
-            <p className="text-sm text-ink/50">None.</p>
+            <p className="text-sm text-ink/70">None.</p>
           ) : (
             <ul className="divide-y divide-ink/10 rounded-md border border-ink/10 bg-card">
               {invites.map((invite) => (
@@ -242,7 +242,7 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
                   <span className="min-w-0 flex-1 truncate text-ink">
                     {invite.label || "Branch invite"}
                   </span>
-                  <Badge className="bg-ink/5 normal-case tracking-normal text-ink/60">
+                  <Badge className="bg-ink/5 normal-case tracking-normal text-ink/70">
                     expires in {formatCountdown(invite.expires_at, now)}
                   </Badge>
                   <Button

@@ -45,8 +45,8 @@ export function ConvertBookPanel({ editions, onQueued }: ConvertBookPanelProps) 
 
   return (
     <section className="space-y-2 border-t border-ink/10 pt-3" aria-label="Convert">
-      <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">Convert</p>
-      <p className="text-xs text-ink/55">
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Convert</p>
+      <p className="text-xs text-ink/70">
         Adds another copy of this book, kept beside the original. Each destination receives it when
         its filter takes that copy.
       </p>
@@ -72,7 +72,7 @@ export function ConvertBookPanel({ editions, onQueued }: ConvertBookPanelProps) 
           Convert
         </Button>
       </div>
-      <div className="flex flex-wrap gap-4 text-xs text-ink/65">
+      <div className="flex flex-wrap gap-4 text-xs text-ink/70">
         <label className="flex items-center gap-1.5">
           <input
             type="checkbox"
@@ -92,11 +92,11 @@ export function ConvertBookPanel({ editions, onQueued }: ConvertBookPanelProps) 
         </label>
       </div>
       {selected.advanced ? (
-        <p className="text-xs text-ink/55">Fewer players open this format than M4B and MP3.</p>
+        <p className="text-xs text-ink/70">Fewer players open this format than M4B and MP3.</p>
       ) : null}
-      {message ? <p className="text-xs text-teal">{message}</p> : null}
+      {message ? <p className="text-xs text-teal-text">{message}</p> : null}
       {error ? (
-        <p role="alert" className="text-xs text-brick">
+        <p role="alert" className="text-xs text-brick-text">
           {error}
         </p>
       ) : null}

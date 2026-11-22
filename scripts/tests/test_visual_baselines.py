@@ -525,7 +525,7 @@ class CategoryCommentTests(unittest.TestCase):
         body = vb.render_comment(
             "a" * 40, "b" * 40, "c" * 40, changes, "https://r", BOT
         )
-        self.assertIn("4 screenshot(s) differ", body)
+        self.assertIn("differ from the approved set `cccccccccccc`", body)
         self.assertIn("1 changed, 2 new, 1 removed", body)
         self.assertEqual(body.count("<details>"), 3)
         self.assertLess(body.index("Changed (1)"), body.index("New (2)"))
@@ -562,6 +562,45 @@ class CategoryCommentTests(unittest.TestCase):
         for path, _ in changes:
             self.assertEqual(body.count(f"`{path[:-4]}`"), 1)
         self.assertGreater(body.count("![proposed]"), 100)
+
+    def test_images_without_room_move_to_continuation_comments(self) -> None:
+        changes = [(f"desktop/c-{i:04}--light.png", "changed") for i in range(150)]
+        changes += [(f"phone/n-{i:04}--dark.png", "added") for i in range(600)]
+        bodies = vb.render_comments(
+            "a" * 40, "b" * 40, "c" * 40, changes, "https://raw.example/o/r", BOT
+        )
+        self.assertGreater(len(bodies), 2)
+        self.assertTrue(vb.MARKER.match(bodies[0]))
+        for part, page in enumerate(bodies[1:], start=1):
+            more = vb.MORE_MARKER.match(page)
+            self.assertIsNotNone(more)
+            assert more is not None
+            self.assertEqual((more.group(1), more.group(2)), ("b" * 40, str(part)))
+        for body in bodies:
+            self.assertLessEqual(len(body), vb.MAX_COMMENT_CHARS)
+        joined = "\n".join(bodies)
+        # Every image appears exactly once across the comments.
+        for path, change in changes:
+            self.assertEqual(joined.count(f"/{'b' * 40}/{path})"), 1)
+            if change == "changed":
+                self.assertEqual(joined.count(f"/{'c' * 40}/{path})"), 1)
+            # Each name is listed once in the review comment.
+            self.assertEqual(bodies[0].count(f"`{path[:-4]}`"), 1)
+        self.assertIn(
+            f"they are in the {len(bodies) - 1} comment(s) that follow", bodies[0]
+        )
+
+    def test_a_set_that_fits_has_no_continuation(self) -> None:
+        bodies = vb.render_comments(
+            "a" * 40,
+            "b" * 40,
+            None,
+            [("desktop/x--light.png", "added")],
+            "https://r",
+            BOT,
+        )
+        self.assertEqual(len(bodies), 1)
+        self.assertNotIn("no room", bodies[0])
 
 
 class FakeGitHub:
@@ -851,6 +890,7 @@ class BotTests(unittest.TestCase):
                 ("POST", f"{repo}/issues/990/comments"): (201, {}),
                 ("PATCH", f"{repo}/issues/comments/7"): (200, {}),
                 ("DELETE", f"{repo}/issues/comments/8"): (204, {}),
+                ("PATCH", f"{repo}/issues/comments/10"): (200, {}),
                 ("POST", f"{repo}/pulls/990/requested_reviewers"): (201, {}),
             }
         )
@@ -869,25 +909,81 @@ class BotTests(unittest.TestCase):
             out = self.bot.propose(self.env, FakeGitHub(answers), write)
         return out, write, pushed
 
-    def test_propose_without_a_merge_ref_reads_the_head_lock(self) -> None:
+    def test_propose_without_a_merge_ref_falls_back_to_the_base_lock(self) -> None:
+        """A conflicting branch from before the first approval compares with its base's set."""
         repo = "repos/Bookclerk/bookclerk"
+        approved = "a" * 40
         send = FakeGitHub(
             {
                 ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}"): (
                     200,
                     {"content": base64.b64encode(b"none\n").decode()},
-                )
+                ),
+                ("GET", f"{repo}/pulls/990"): (200, {"base": {"ref": "main"}}),
+                ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref=main"): (
+                    200,
+                    {"content": base64.b64encode(approved.encode() + b"\n").decode()},
+                ),
+                (
+                    "GET",
+                    f"repos/B/v/git/ref/tags/approved/{approved}",
+                ): (200, {"object": {"sha": approved}}),
+            }
+        )
+        self.assertEqual(
+            self.bot.compared_lock(send, "Bookclerk/bookclerk", "B/v", 990, "d" * 40),
+            approved,
+        )
+        self.assertEqual(
+            [p for _, p, _ in send.sent if "baselines.lock" in p],
+            [
+                f"{repo}/contents/ui/visual/baselines.lock?ref=refs/pull/990/merge",
+                f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}",
+                f"{repo}/contents/ui/visual/baselines.lock?ref=main",
+            ],
+        )
+
+    def test_propose_without_a_merge_ref_keeps_an_approved_head_lock(self) -> None:
+        """A set approved on the pull request itself stays its comparison."""
+        repo = "repos/Bookclerk/bookclerk"
+        approved = "b" * 40
+        send = FakeGitHub(
+            {
+                ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}"): (
+                    200,
+                    {"content": base64.b64encode(approved.encode() + b"\n").decode()},
+                ),
+                (
+                    "GET",
+                    f"repos/B/v/git/ref/tags/approved/{approved}",
+                ): (200, {"object": {"sha": approved}}),
+            }
+        )
+        self.assertEqual(
+            self.bot.compared_lock(send, "Bookclerk/bookclerk", "B/v", 990, "d" * 40),
+            approved,
+        )
+        self.assertNotIn(f"{repo}/pulls/990", [p for _, p, _ in send.sent])
+
+    def test_propose_without_a_merge_ref_or_any_approved_set(self) -> None:
+        """No approved set anywhere: every image is new."""
+        repo = "repos/Bookclerk/bookclerk"
+        none = {"content": base64.b64encode(b"none\n").decode()}
+        send = FakeGitHub(
+            {
+                ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}"): (
+                    200,
+                    none,
+                ),
+                ("GET", f"{repo}/pulls/990"): (200, {"base": {"ref": "main"}}),
+                ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref=main"): (
+                    200,
+                    none,
+                ),
             }
         )
         self.assertIsNone(
             self.bot.compared_lock(send, "Bookclerk/bookclerk", "B/v", 990, "d" * 40)
-        )
-        self.assertEqual(
-            [p for _, p, _ in send.sent],
-            [
-                f"{repo}/contents/ui/visual/baselines.lock?ref=refs/pull/990/merge",
-                f"{repo}/contents/ui/visual/baselines.lock?ref={'d' * 40}",
-            ],
         )
 
     def test_propose_is_quiet_when_the_base_already_approved_the_images(self) -> None:
@@ -901,6 +997,32 @@ class BotTests(unittest.TestCase):
         )
         self.assertIn("matches the approved baselines", out)
         self.assertEqual((write.sent, pushed), ([], []))
+
+    def test_no_changes_left_clears_the_open_comment_and_its_continuations(
+        self,
+    ) -> None:
+        approved, pending = "a" * 40, "9" * 40
+        tag = (
+            "GET",
+            f"repos/Bookclerk/bookclerk-visual-baselines/git/ref/tags/approved/{approved}",
+        )
+        body = f"<!-- bookclerk-visual-baselines v1 head={'c' * 40} set={pending} -->\n- [ ] x"
+        more = f"<!-- bookclerk-visual-baselines-more v1 set={pending} part=1 -->\nx"
+        out, write, pushed = self.propose_with(
+            approved.encode() + b"\n",
+            {tag: (200, {"object": {"sha": approved}})},
+            [
+                {"id": 7, "user": {"login": BOT}, "body": body},
+                {"id": 8, "user": {"login": BOT}, "body": more},
+            ],
+        )
+        self.assertIn("matches the approved baselines", out)
+        self.assertEqual(pushed, [])
+        self.assertEqual(
+            [(m, p.rsplit("/", 1)[-1]) for m, p, _ in write.sent],
+            [("PATCH", "7"), ("DELETE", "8")],
+        )
+        self.assertIn("No visual changes left", write.sent[0][2]["body"])
 
     def test_propose_keeps_the_comment_that_approved_the_set(self) -> None:
         approved = "a" * 40
@@ -943,6 +1065,48 @@ class BotTests(unittest.TestCase):
         self.assertEqual(
             write.sent[0][:2], ("PATCH", "repos/Bookclerk/bookclerk/issues/comments/7")
         )
+
+    def test_images_that_do_not_fit_move_to_continuation_comments(self) -> None:
+        """The open comment's old continuations are reused in order, extras deleted."""
+        pending, other = "9" * 40, "8" * 40
+        body = f"<!-- bookclerk-visual-baselines v1 head={'c' * 40} set={pending} -->\n- [ ] x"
+
+        def more(set_commit: str, part: int) -> str:
+            return f"<!-- bookclerk-visual-baselines-more v1 set={set_commit} part={part} -->\nx"
+
+        with unittest.mock.patch.object(vb, "MAX_COMMENT_CHARS", 700):
+            out, write, _ = self.propose_with(
+                b"none\n",
+                {},
+                [
+                    {"id": 7, "user": {"login": BOT}, "body": body},
+                    {"id": 8, "user": {"login": BOT}, "body": more(pending, 2)},
+                    {"id": 10, "user": {"login": BOT}, "body": more(pending, 1)},
+                    {"id": 11, "user": {"login": BOT}, "body": more(other, 1)},
+                    {"id": 12, "user": {"login": "someone"}, "body": more(pending, 3)},
+                ],
+                {pending: {"desktop/x--light.png": b"older"}},
+            )
+        self.assertIn("proposed", out)
+        sent = [(m, p.rsplit("/", 1)[-1]) for m, p, _ in write.sent]
+        self.assertEqual(
+            sent,
+            [
+                ("PATCH", "7"),
+                ("PATCH", "10"),
+                ("DELETE", "8"),
+                ("POST", "requested_reviewers"),
+            ],
+        )
+        review, page = write.sent[0][2]["body"], write.sent[1][2]["body"]
+        self.assertIn("1 row(s) below have no room for their images here", review)
+        self.assertNotIn("![proposed]", review)
+        self.assertTrue(
+            page.startswith(
+                f"<!-- bookclerk-visual-baselines-more v1 set={'e' * 40} part=1 -->"
+            )
+        )
+        self.assertIn("/" + "e" * 40 + "/desktop/x--light.png)", page)
 
     def test_changes_after_an_approval_go_in_a_new_comment(self) -> None:
         approved = "a" * 40

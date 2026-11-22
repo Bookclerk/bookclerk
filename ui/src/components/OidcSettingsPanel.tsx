@@ -230,7 +230,7 @@ function secretHint(source: OidcSecretSource, has: boolean): string {
 
 const fieldLabelClass = "flex flex-col gap-1 text-sm font-medium text-ink";
 const textareaClassName =
-  "min-h-[4.5rem] w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm text-ink shadow-sm placeholder:text-ink/40 focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
+  "min-h-[4.5rem] w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm text-ink shadow-sm placeholder:text-ink/70 focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
 const LOOPBACK_ISSUER = "http://localhost:8787";
 
@@ -387,13 +387,13 @@ function ProviderCard({
           <SsoProviderMark preset={preset} title={title} className="mt-0.5" />
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold text-ink">{title}</span>
-            <span className="mt-0.5 block text-xs text-ink/50">{status}</span>
+            <span className="mt-0.5 block text-xs text-ink/70">{status}</span>
           </span>
           <ChevronDown
             className={
               expanded
-                ? "mt-0.5 h-4 w-4 shrink-0 rotate-180 text-ink/50 transition-transform"
-                : "mt-0.5 h-4 w-4 shrink-0 text-ink/50 transition-transform"
+                ? "mt-0.5 h-4 w-4 shrink-0 rotate-180 text-ink/70 transition-transform"
+                : "mt-0.5 h-4 w-4 shrink-0 text-ink/70 transition-transform"
             }
           />
         </button>
@@ -401,7 +401,7 @@ function ProviderCard({
           <Trash2 className="h-4 w-4" />
         </Button>
       </div>
-      <p className="text-xs text-ink/55">{providerCapabilities(preset)}</p>
+      <p className="text-xs text-ink/70">{providerCapabilities(preset)}</p>
       <div className={expanded ? "grid gap-3 sm:grid-cols-2" : "hidden"}>
         <label className={fieldLabelClass}>
           Preset
@@ -471,7 +471,7 @@ function ProviderCard({
               placeholder={provider.has_client_secret ? "unchanged" : "optional"}
               disabled={provider.clearSecret}
             />
-            <span className="text-xs font-normal text-ink/50">
+            <span className="text-xs font-normal text-ink/70">
               {secretHint(provider.secret_source, provider.has_client_secret)}
             </span>
             {provider.has_client_secret ? (
@@ -497,7 +497,7 @@ function ProviderCard({
           <>
             <label className={`${fieldLabelClass} sm:col-span-2`}>
               Client secret
-              <span className="text-xs font-normal text-ink/50">
+              <span className="text-xs font-normal text-ink/70">
                 Apple mints this from your Team ID, Key ID, and .p8 key. A pasted secret is
                 optional.
               </span>
@@ -601,7 +601,7 @@ function ProviderCard({
             />
             Link by verified email
           </span>
-          <span className="text-xs font-normal text-ink/50">
+          <span className="text-xs font-normal text-ink/70">
             When this provider marks the email verified, attach the login to the existing Bookclerk
             user with that address. On for Google, GitHub, Apple, and Discord; leave off for custom
             issuers that may not verify email.
@@ -645,7 +645,7 @@ function ProviderCard({
                 onChange={(e) => patch({ roleMapText: e.target.value })}
                 placeholder={"bookclerk-owners = owner\nbookclerk-admins = administrator"}
               />
-              <span className="text-xs font-normal text-ink/50">
+              <span className="text-xs font-normal text-ink/70">
                 One <code>claim = owner|administrator|host|member</code> per line. Never{" "}
                 <code>operator</code>.
               </span>
@@ -668,7 +668,7 @@ function ProviderCard({
                 onChange={(e) => patch({ id: e.target.value })}
                 placeholder={meta?.id || "google"}
               />
-              <span className="text-xs font-normal text-ink/50">
+              <span className="text-xs font-normal text-ink/70">
                 Stored as <code>{`oidc:${provider.id.trim() || meta?.id || "id"}`}</code>. Leave as
                 the preset name unless you run more than one app of this kind.
               </span>
@@ -962,13 +962,13 @@ function ClientCard({
         >
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold text-ink">{title}</span>
-            <span className="mt-0.5 block text-xs text-ink/50">{clientStatus(client)}</span>
+            <span className="mt-0.5 block text-xs text-ink/70">{clientStatus(client)}</span>
           </span>
           <ChevronDown
             className={
               open
-                ? "mt-0.5 h-4 w-4 shrink-0 rotate-180 text-ink/50 transition-transform"
-                : "mt-0.5 h-4 w-4 shrink-0 text-ink/50 transition-transform"
+                ? "mt-0.5 h-4 w-4 shrink-0 rotate-180 text-ink/70 transition-transform"
+                : "mt-0.5 h-4 w-4 shrink-0 text-ink/70 transition-transform"
             }
           />
         </button>
@@ -1028,7 +1028,7 @@ function ClientCard({
             placeholder={"https://player.example/callback"}
             readOnly={pluginOwned}
           />
-          <span className="text-xs font-normal text-ink/50">
+          <span className="text-xs font-normal text-ink/70">
             {pluginOwned
               ? "Redirect URIs come from this plugin’s server URL in Settings → Plugins (plus the plugin’s callback path). They cannot be edited here."
               : "One absolute http(s) URL per line. Player callbacks use the player’s own origin and path, not Bookclerk’s listen port."}
@@ -1047,7 +1047,7 @@ function ClientCard({
             {client.plaintextSecret ? (
               <CopyableValue label="Client secret (shown once)" value={client.plaintextSecret} />
             ) : (
-              <p className="text-xs text-ink/55">
+              <p className="text-xs text-ink/70">
                 {client.has_secret
                   ? "A secret is stored. Rotate to mint a new one — the previous value cannot be shown."
                   : "Saving will generate a secret and show it once."}
@@ -1065,7 +1065,7 @@ function ClientCard({
             ) : null}
           </div>
         ) : (
-          <p className="text-xs text-ink/55 sm:col-span-2">
+          <p className="text-xs text-ink/70 sm:col-span-2">
             Public PKCE client (token endpoint auth: none). No client secret is issued.
           </p>
         )}
@@ -1079,7 +1079,7 @@ function ClientCard({
         </label>
         <fieldset className="sm:col-span-2 space-y-1">
           <legend className="text-sm font-medium text-ink">Scopes</legend>
-          <p className="text-xs text-ink/50">
+          <p className="text-xs text-ink/70">
             Access and ID tokens are always issued. Honor these scopes on userinfo / ID token
             claims.
           </p>
@@ -1260,7 +1260,7 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
   }
 
   if (loading) {
-    return <p className="text-sm text-ink/50">Loading sign-in providers…</p>;
+    return <p className="text-sm text-ink/70">Loading sign-in providers…</p>;
   }
 
   const issuer = previewIssuer(publicOrigin, detectedOrigin);
@@ -1269,12 +1269,12 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
   return (
     <form className="flex flex-col gap-8" onSubmit={(e) => void onSave(e)}>
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
       {notice ? (
-        <p className="text-sm font-medium text-teal" role="status">
+        <p className="text-sm font-medium text-teal-text" role="status">
           {notice}
         </p>
       ) : null}
@@ -1289,7 +1289,7 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
         <section className="space-y-3">
           <div className="space-y-1">
             <h2 className="text-lg font-semibold text-ink">Password sign-in</h2>
-            <p className="text-sm text-ink/55">
+            <p className="text-sm text-ink/70">
               Require a passkey or authenticator app instead of a password alone. Users without
               either can still sign in once to enroll. Passkey and SSO sign-in are unchanged.
             </p>
@@ -1316,7 +1316,7 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
         <section className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
             <h2 className="text-lg font-semibold text-ink">SSO into Bookclerk</h2>
-            <p className="text-sm text-ink/55">
+            <p className="text-sm text-ink/70">
               Optional Google, GitHub, Apple, Discord, or company IdP buttons on the Bookclerk
               sign-in page. Bookclerk is the client. The operator token is local break-glass and is
               never an SSO account.
@@ -1337,12 +1337,12 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
               onChange={(e) => setDomains(e.target.value)}
               placeholder="family.example, corp.example"
             />
-            <span className="text-xs font-normal text-ink/50">
+            <span className="text-xs font-normal text-ink/70">
               Extra filter on every SSO provider below. Empty means only each provider’s own policy
               applies.
             </span>
           </label>
-          <p className="text-xs text-ink/55">
+          <p className="text-xs text-ink/70">
             Redirect URI to paste into Google, GitHub, or your IdP:{" "}
             <code className="rounded bg-ink/5 px-1 py-0.5 text-ink">{rpCallback}</code>
           </p>
@@ -1352,7 +1352,7 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-base font-semibold text-ink">SSO providers</h3>
-              <p className="mt-1 text-sm text-ink/55">
+              <p className="mt-1 text-sm text-ink/70">
                 Apps that people use to sign into Bookclerk. Google, GitHub, Apple, and Discord only
                 need a client ID and secret. Custom OIDC still asks for an issuer URL.
               </p>
@@ -1367,7 +1367,7 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
             </Button>
           </div>
           {providers.length === 0 ? (
-            <p className="text-sm text-ink/50">No providers configured yet.</p>
+            <p className="text-sm text-ink/70">No providers configured yet.</p>
           ) : (
             <ul className="flex flex-col gap-4">
               {providers.map((provider, index) => (
@@ -1390,7 +1390,7 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
       <section className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold text-ink">Bookclerk as identity provider</h2>
-          <p className="text-sm text-ink/55">
+          <p className="text-sm text-ink/70">
             Players and other relying parties sign into Bookclerk. Bookclerk is the OpenID issuer.
             Register each app as a client below.
           </p>
@@ -1404,7 +1404,7 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
             placeholder={detectedOrigin || pageOrigin()}
             autoComplete="url"
           />
-          <span className="text-xs font-normal text-ink/50">
+          <span className="text-xs font-normal text-ink/70">
             Leave empty to use a bound loopback origin (
             <code className="rounded bg-ink/5 px-1">{detectedOrigin || pageOrigin()}</code>
             ). Tray and <code className="rounded bg-ink/5 px-1">cargo dev</code> use localhost.
@@ -1426,7 +1426,7 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-base font-semibold text-ink">OIDC clients</h3>
-              <p className="mt-1 text-sm text-ink/55">
+              <p className="mt-1 text-sm text-ink/70">
                 Apps that trust Bookclerk as their identity provider. Installed player plugins
                 contribute a client (disabled until you enable it). Custom clients can still be
                 added. Public PKCE clients omit a secret; confidential clients receive a generated
@@ -1443,7 +1443,7 @@ export function OidcSettingsPanel({ canChange }: OidcSettingsPanelProps) {
             </Button>
           </div>
           {clients.length === 0 ? (
-            <p className="text-sm text-ink/50">No OIDC clients registered yet.</p>
+            <p className="text-sm text-ink/70">No OIDC clients registered yet.</p>
           ) : (
             <ul className="flex flex-col gap-4">
               {clients.map((client, index) => (

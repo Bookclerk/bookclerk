@@ -77,16 +77,16 @@ export function CollectionsEditor({ disabled = false }: CollectionsEditorProps) 
 
   return (
     <section className="space-y-2" aria-label="Collections">
-      <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">Collections</p>
-      <p className="text-xs text-ink/55">
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Collections</p>
+      <p className="text-xs text-ink/70">
         A collection is a set of storage folders, such as kids/. A book with a file under one of
         them is in the collection. Changing collections re-indexes the Library.
       </p>
-      {!loaded && !error ? <p className="text-sm text-ink/50">Loading…</p> : null}
+      {!loaded && !error ? <p className="text-sm text-ink/70">Loading…</p> : null}
       {loaded ? (
         <div className="space-y-2">
           {drafts.length === 0 ? (
-            <p className="text-sm text-ink/50">No collections.</p>
+            <p className="text-sm text-ink/70">No collections.</p>
           ) : (
             <ul className="space-y-1.5">
               {drafts.map((row, index) => (
@@ -137,13 +137,13 @@ export function CollectionsEditor({ disabled = false }: CollectionsEditorProps) 
             >
               Save collections
             </Button>
-            {saved && !dirty ? <span className="text-xs text-ink/55">Saved</span> : null}
+            {saved && !dirty ? <span className="text-xs text-ink/70">Saved</span> : null}
           </div>
-          {dirty && problem ? <p className="text-xs text-brick">{problem}</p> : null}
+          {dirty && problem ? <p className="text-xs text-brick-text">{problem}</p> : null}
         </div>
       ) : null}
       {error ? (
-        <p role="alert" className="text-xs text-brick">
+        <p role="alert" className="text-xs text-brick-text">
           {error}
         </p>
       ) : null}

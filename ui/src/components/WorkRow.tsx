@@ -7,11 +7,11 @@ import { rowOffersPlay } from "@/lib/playTarget";
 import { cn } from "@/lib/utils";
 
 const statusStyles: Record<AcquireStatus, string> = {
-  acquired: "bg-teal/15 text-teal",
+  acquired: "bg-teal/15 text-teal-text",
   not_acquired: "bg-ink/10 text-ink/80",
   queued: "bg-parchment text-ink",
   downloading: "bg-teal/25 text-ink",
-  error: "bg-brick/15 text-brick",
+  error: "bg-brick/15 text-brick-text",
 };
 
 const mediaLabels: Record<MediaKind, string> = {
@@ -97,7 +97,7 @@ export function WorkRow({
           <p className="mt-0.5 truncate text-sm text-ink/70">{work.authors}</p>
         ) : null}
         {series || editions ? (
-          <p className="mt-0.5 truncate text-xs text-ink/50">
+          <p className="mt-0.5 truncate text-xs text-ink/70">
             {[series, editions].filter(Boolean).join(" · ")}
           </p>
         ) : null}

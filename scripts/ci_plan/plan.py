@@ -101,6 +101,10 @@ DOCS_PREFIX = "docs/"
 SITE_PREFIX = "tools/site/"
 BRAND_PREFIX = "assets/brand/"
 COLLECTOR_PREFIX = "tools/diagnostics-collector/"
+# Files outside ui/ the `ui_visual` check reads: the app pages check every
+# sample API answer against the daemon's OpenAPI document
+# (ui/visual/app/openapi.ts).
+VISUAL_INPUT_FILES = ("crates/bookclerkd/openapi.json",)
 DEMO_PREFIX = "tools/demo/"
 # Run by every Worker check to profile its Worker's startup.
 WORKER_STARTUP_FILES = frozenset({"scripts/worker_startup.py", "scripts/worker_startup.toml"})
@@ -1013,6 +1017,8 @@ def build_plan(
             surf.collector.append(path)
             surf.visual.append(path)
             classified = True
+        if path in VISUAL_INPUT_FILES:
+            surf.visual.append(path)
         if path.startswith(DEMO_PREFIX):
             surf.demo.append(path)
             classified = True

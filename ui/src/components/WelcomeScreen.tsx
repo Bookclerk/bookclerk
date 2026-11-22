@@ -148,7 +148,7 @@ export function WelcomeScreen({
           onClick={() => setStartingNew(true)}
         >
           <span className="block font-semibold text-ink">Start a new library</span>
-          <span className="block text-sm text-ink/60">
+          <span className="block text-sm text-ink/70">
             Set up the first Owner, then add your store accounts.
           </span>
         </button>
@@ -158,7 +158,7 @@ export function WelcomeScreen({
           onClick={() => setJoining(true)}
         >
           <span className="block font-semibold text-ink">Join a library</span>
-          <span className="block text-sm text-ink/60">
+          <span className="block text-sm text-ink/70">
             Add this server as a branch of a library you already use.
           </span>
         </button>

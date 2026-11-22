@@ -21,7 +21,7 @@ export function JoinShell({
         <BookclerkLogo className="h-9 w-auto" />
         <div className="space-y-2">
           <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">{title}</h1>
-          {lead ? <div className="text-sm text-ink/65">{lead}</div> : null}
+          {lead ? <div className="text-sm text-ink/70">{lead}</div> : null}
         </div>
         {children}
       </main>

@@ -12,7 +12,7 @@ export type FacetOption = { value: string; label: string };
 function FilterSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-2 border-b border-ink/10 pb-4 last:border-b-0 last:pb-0">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-ink/55">{title}</h3>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-ink/70">{title}</h3>
       {children}
     </section>
   );
@@ -63,9 +63,10 @@ function SearchableCheckList({
         placeholder={placeholder}
         className="w-full rounded-md border border-ink/15 bg-card-strong px-2 py-1.5 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
       />
-      <ul className="space-y-1 text-sm">
+      {/* Rows 28 px apart, so each checkbox keeps a 24 px target. */}
+      <ul className="space-y-2 text-sm">
         {visible.length === 0 ? (
-          <li className="text-ink/45">{emptyLabel}</li>
+          <li className="text-ink/70">{emptyLabel}</li>
         ) : (
           visible.map((opt) => (
             <li key={opt.value}>
@@ -164,8 +165,8 @@ export function DiscoverFilterRail({
     >
       <FilterSection title="Stores">
         {stores.length === 0 ? (
-          <p className="flex items-center gap-2 text-sm text-ink/55">
-            <Ban className="h-4 w-4 shrink-0 text-ink/40" aria-hidden />
+          <p className="flex items-center gap-2 text-sm text-ink/70">
+            <Ban className="h-4 w-4 shrink-0 text-ink/70" aria-hidden />
             <span>None</span>
           </p>
         ) : (

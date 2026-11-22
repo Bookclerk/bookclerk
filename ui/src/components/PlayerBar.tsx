@@ -89,7 +89,7 @@ export function PlayerBarView({
             </span>
             <button
               type="button"
-              className="rounded-md p-1.5 text-ink/60 transition-colors hover:bg-ink/5 hover:text-ink"
+              className="rounded-md p-1.5 text-ink/70 transition-colors hover:bg-ink/5 hover:text-ink"
               onClick={onOpen}
               aria-label="Open the player"
               title="Open the player"
@@ -98,7 +98,7 @@ export function PlayerBarView({
             </button>
             <button
               type="button"
-              className="rounded-md p-1.5 text-ink/60 transition-colors hover:bg-ink/5 hover:text-ink"
+              className="rounded-md p-1.5 text-ink/70 transition-colors hover:bg-ink/5 hover:text-ink"
               onClick={() => void player.stop()}
               aria-label="Stop and close the player"
               title="Stop and close the player"

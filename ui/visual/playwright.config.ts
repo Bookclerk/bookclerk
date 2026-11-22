@@ -2,8 +2,9 @@
  * Playwright configuration for the visual and accessibility checks of every
  * web page Bookclerk ships.
  *
- * Every story in the static Storybook build (stories.spec.ts) and every page
- * of the website and the diagnostics collector (workers.spec.ts) is opened at
+ * Every story in the static Storybook build (stories.spec.ts), every page of
+ * the web app's production build (app.spec.ts) and every page of the website
+ * and the diagnostics collector (workers.spec.ts) is opened at
  * each viewport project below, in light and dark, checked with axe-core and
  * compared with a baseline screenshot. Baselines do not live in this repository: CI checks
  * them out of the baselines repository into `VISUAL_BASELINES_DIR`. See
@@ -11,7 +12,7 @@
  */
 import path from "node:path";
 import { defineConfig } from "@playwright/test";
-import { COLLECTOR_PORT, SITE_PORT, STORYBOOK_PORT } from "./servers.ts";
+import { APP_PORT, COLLECTOR_PORT, SITE_PORT, STORYBOOK_PORT } from "./servers.ts";
 
 /** The repository root. */
 const ROOT = path.join(import.meta.dirname, "..", "..");
@@ -29,6 +30,9 @@ const out = path.resolve(
 export default defineConfig({
   testDir: import.meta.dirname,
   testMatch: "*.spec.ts",
+  // Fails the run when a web app component never rendered (coverage.ts);
+  // only with VISUAL_COVERAGE_CHECK=1, which the CI recording run sets.
+  globalTeardown: path.join(import.meta.dirname, "coverage-check.ts"),
   outputDir: path.join(out, "test-results"),
   snapshotPathTemplate: path.join(baselines, "{projectName}", "{arg}{ext}"),
   fullyParallel: true,
@@ -70,6 +74,16 @@ export default defineConfig({
       command: `npx vite preview --outDir storybook-static --host 127.0.0.1 --port ${STORYBOOK_PORT} --strictPort`,
       cwd: path.join(import.meta.dirname, ".."),
       url: `http://127.0.0.1:${STORYBOOK_PORT}/index.json`,
+      reuseExistingServer: !process.env.CI,
+    },
+    // The web app's production build, unminified so the coverage check
+    // knows its components by name, with no daemon behind it: app.spec.ts
+    // answers its API requests from sample data. Needs `npm run
+    // build:visual` first.
+    {
+      command: `npx vite preview --outDir visual-dist --host 127.0.0.1 --port ${APP_PORT} --strictPort`,
+      cwd: path.join(import.meta.dirname, ".."),
+      url: `http://127.0.0.1:${APP_PORT}/`,
       reuseExistingServer: !process.env.CI,
     },
     // The website through its real Worker under `wrangler dev`, with the

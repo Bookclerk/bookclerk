@@ -43,11 +43,11 @@ import { cn, titleDetailDialogClass } from "@/lib/utils";
 const FALLBACK_COVER = "/bookclerk-mark.svg";
 
 const statusStyles: Record<AcquireStatus, string> = {
-  acquired: "bg-teal/15 text-teal",
+  acquired: "bg-teal/15 text-teal-text",
   not_acquired: "bg-ink/10 text-ink/80",
   queued: "bg-parchment text-ink",
   downloading: "bg-teal/25 text-ink",
-  error: "bg-brick/15 text-brick",
+  error: "bg-brick/15 text-brick-text",
 };
 
 /**
@@ -59,7 +59,7 @@ function MetaRow({ label, value }: { label: string; value: ReactNode }) {
   if (value == null || value === "" || value === "—") return null;
   return (
     <div className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-1 text-sm sm:grid-cols-[9rem_1fr]">
-      <dt className="text-ink/50">{label}</dt>
+      <dt className="text-ink/70">{label}</dt>
       <dd className="min-w-0 break-words text-ink">{value}</dd>
     </div>
   );
@@ -83,7 +83,7 @@ function MetaSearchLink({
   return (
     <button
       type="button"
-      className="text-left font-medium text-teal hover:underline"
+      className="text-left font-medium text-teal-text hover:underline"
       onClick={() => onSearch(kind, value)}
     >
       {label}
@@ -111,7 +111,7 @@ function LinkedListRow({
         <span className="inline">
           {items.map((item, i) => (
             <span key={`${kind}-${item}`}>
-              {i > 0 ? <span className="text-ink/40">, </span> : null}
+              {i > 0 ? <span className="text-ink/70">, </span> : null}
               <MetaSearchLink kind={kind} value={item} onSearch={onSearch}>
                 {item}
               </MetaSearchLink>
@@ -143,7 +143,7 @@ function SeriesRow({
           <MetaSearchLink kind="series" value={name} onSearch={onSearch}>
             {name}
           </MetaSearchLink>
-          {index ? <span className="text-ink/60"> #{index}</span> : null}
+          {index ? <span className="text-ink/70"> #{index}</span> : null}
         </span>
       }
     />
@@ -170,7 +170,7 @@ function GenreTagsRow({
                 key={genre}
                 type="button"
                 onClick={() => onSearch("genres", genre)}
-                className="inline-flex items-center rounded-md bg-ink/8 px-2 py-0.5 text-xs font-medium normal-case tracking-normal text-ink/75 transition-colors hover:bg-teal/15 hover:text-teal"
+                className="inline-flex items-center rounded-md bg-ink/8 px-2 py-0.5 text-xs font-medium normal-case tracking-normal text-ink/75 transition-colors hover:bg-teal/15 hover:text-teal-text"
               >
                 {genre}
               </button>
@@ -329,7 +329,7 @@ function ReviewBlock({ review }: { review: TitleReview }) {
     <div className="space-y-1">
       {title ? <p className="text-sm font-semibold text-ink">{title}</p> : null}
       {review.overall_rating != null || author || submitted ? (
-        <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-ink/50">
+        <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-ink/70">
           {review.overall_rating != null ? <StarRating value={review.overall_rating} /> : null}
           {author ? <span>· {author}</span> : null}
           {submitted ? <span>· {submitted}</span> : null}
@@ -348,11 +348,13 @@ function ReviewBlock({ review }: { review: TitleReview }) {
             return (
               <div key={`${section.type}-${i}`} className="space-y-1">
                 {section.question ? (
-                  <p className="text-[13px] font-medium leading-snug text-teal">
+                  <p className="text-[13px] font-medium leading-snug text-teal-text">
                     {section.question}
                   </p>
                 ) : section.type ? (
-                  <p className="text-[13px] font-medium leading-snug text-teal">{section.type}</p>
+                  <p className="text-[13px] font-medium leading-snug text-teal-text">
+                    {section.type}
+                  </p>
                 ) : null}
                 {answerHtml ? (
                   <div
@@ -377,7 +379,7 @@ function ReviewBlock({ review }: { review: TitleReview }) {
       {needsTruncate || expanded ? (
         <button
           type="button"
-          className="text-sm font-semibold text-teal hover:underline"
+          className="text-sm font-semibold text-teal-text hover:underline"
           onClick={() => setExpanded((v) => !v)}
         >
           {expanded ? "Show less" : "Read more"}
@@ -427,7 +429,7 @@ function DescriptionBlock({
         <button
           type="button"
           onClick={onToggle}
-          className="text-sm font-semibold text-teal hover:underline"
+          className="text-sm font-semibold text-teal-text hover:underline"
         >
           {expanded ? "Show less" : "Read more"}
         </button>
@@ -867,7 +869,7 @@ export function TitleDetailModal({
       >
         <div className="flex items-start justify-between gap-3 border-b border-ink/10 px-4 py-3 sm:px-6 lg:px-8">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">
               Title details
             </p>
             <h2
@@ -876,12 +878,12 @@ export function TitleDetailModal({
             >
               {detail.title}
             </h2>
-            {detail.subtitle ? <p className="mt-1 text-sm text-ink/65">{detail.subtitle}</p> : null}
+            {detail.subtitle ? <p className="mt-1 text-sm text-ink/70">{detail.subtitle}</p> : null}
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md p-1.5 text-ink/60 transition-colors hover:bg-ink/5 hover:text-ink"
+            className="rounded-md p-1.5 text-ink/70 transition-colors hover:bg-ink/5 hover:text-ink"
             aria-label="Close"
           >
             <X className="h-5 w-5" />
@@ -910,7 +912,9 @@ export function TitleDetailModal({
                     {detail.acquire_status.replaceAll("_", " ")}
                   </Badge>
                 ) : null}
-                {wishlisted ? <Badge className="bg-teal/15 text-teal">On wishlist</Badge> : null}
+                {wishlisted ? (
+                  <Badge className="bg-teal/15 text-teal-text">On wishlist</Badge>
+                ) : null}
                 {sourceBadges.map((s) => (
                   <Badge key={s} className="bg-ink/8 text-ink/70">
                     {storeLabel(s)}
@@ -925,7 +929,7 @@ export function TitleDetailModal({
                     max={8}
                     avatarClassName="h-7 w-7 text-[11px]"
                   />
-                  <p className="text-sm text-ink/60">
+                  <p className="text-sm text-ink/70">
                     Wishlisted by{" "}
                     <span className="tabular-nums font-medium text-ink">
                       {detail.wish_count ?? detail.wishers?.length ?? 0}
@@ -990,7 +994,7 @@ export function TitleDetailModal({
                 ) : null;
               })()}
               {detail.error_message ? (
-                <p className="rounded-md bg-brick/10 px-3 py-2 text-sm text-brick">
+                <p className="rounded-md bg-brick/10 px-3 py-2 text-sm text-brick-text">
                   {detail.error_message}
                 </p>
               ) : null}
@@ -1000,15 +1004,15 @@ export function TitleDetailModal({
           {showCommerce ? (
             <div className="mt-5 space-y-2 border-t border-ink/10 pt-4">
               <div className="flex items-baseline justify-between gap-2">
-                <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Where to buy
                 </p>
                 {hintsBusy ? (
-                  <span className="text-[11px] text-ink/40">Checking stores…</span>
+                  <span className="text-[11px] text-ink/70">Checking stores…</span>
                 ) : null}
               </div>
               {commerceHints.length === 0 && !hintsBusy ? (
-                <p className="text-sm text-ink/50">No verified storefront matches yet.</p>
+                <p className="text-sm text-ink/70">No verified storefront matches yet.</p>
               ) : (
                 <ul className="space-y-2">
                   {commerceHints.map((h) => (
@@ -1024,12 +1028,12 @@ export function TitleDetailModal({
                             {(() => {
                               const price = formatPurchasePrices(h);
                               return price ? (
-                                <span className="ml-2 tabular-nums text-teal">{price}</span>
+                                <span className="ml-2 tabular-nums text-teal-text">{price}</span>
                               ) : null;
                             })()}
                           </p>
                           {h.title ? (
-                            <p className="truncate text-xs text-ink/50">{h.title}</p>
+                            <p className="truncate text-xs text-ink/70">{h.title}</p>
                           ) : null}
                         </div>
                       </div>
@@ -1038,7 +1042,7 @@ export function TitleDetailModal({
                           href={h.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex shrink-0 items-center gap-1 text-sm font-semibold text-teal hover:underline"
+                          className="inline-flex shrink-0 items-center gap-1 text-sm font-semibold text-teal-text hover:underline"
                         >
                           <ExternalLink className="h-3.5 w-3.5" />
                           Open
@@ -1071,7 +1075,7 @@ export function TitleDetailModal({
 
           {detail.description ? (
             <div className="mt-5 space-y-1.5 border-t border-ink/10 pt-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">
                 Description
               </p>
               <DescriptionBlock
@@ -1094,12 +1098,12 @@ export function TitleDetailModal({
               )}
             >
               <div className="space-y-1.5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
+                <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">
                   Ratings & reviews
                 </p>
                 {detail.rating_overall != null ? (
                   <p className="text-sm text-ink">
-                    <span className="tabular-nums font-semibold text-teal">
+                    <span className="tabular-nums font-semibold text-teal-text">
                       {detail.rating_overall.toFixed(1)}
                     </span>
                     <span className="text-ink/70"> overall</span>
@@ -1126,7 +1130,7 @@ export function TitleDetailModal({
                   </p>
                 ) : null}
                 {detail.rating_count != null || detail.review_count != null ? (
-                  <p className="text-xs text-ink/50">
+                  <p className="text-xs text-ink/70">
                     {[
                       detail.rating_count != null
                         ? `${formatCount(detail.rating_count)} ratings`
@@ -1140,7 +1144,7 @@ export function TitleDetailModal({
                     {" · Audible"}
                   </p>
                 ) : (
-                  <p className="text-xs text-ink/50">Audible community reviews</p>
+                  <p className="text-xs text-ink/70">Audible community reviews</p>
                 )}
               </div>
               {reviews.length > 0 ? (
@@ -1155,12 +1159,12 @@ export function TitleDetailModal({
                   ))}
                 </ul>
               ) : reviewsLoading ? (
-                <p className="text-xs text-ink/45">Loading reviews…</p>
+                <p className="text-xs text-ink/70">Loading reviews…</p>
               ) : null}
               {reviewAsin && reviewsHasMore ? (
                 <div
                   ref={reviewsSentinelRef}
-                  className="flex h-8 items-center justify-center text-xs text-ink/40"
+                  className="flex h-8 items-center justify-center text-xs text-ink/70"
                   aria-hidden
                 >
                   {reviewsLoading ? "Loading more…" : null}
