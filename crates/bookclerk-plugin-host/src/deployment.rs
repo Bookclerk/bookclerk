@@ -1941,6 +1941,17 @@ async fn spawn_storage(
     request: &DeploymentSpawn,
     prepared: crate::PreparedOpen,
 ) -> SpawnHealth {
+    // The role is fixed for this guest's life: the library refuses to
+    // change it while the instance is deployed. An unreadable role spawns
+    // nothing rather than a destination a drop folder meant to keep out.
+    let role = match crate::host::storage_role(store, &request.plugin_instance_id).await {
+        Ok(role) => role,
+        Err(err) => {
+            return SpawnHealth::SpawnFailed {
+                detail: err.to_string(),
+            }
+        }
+    };
     let tracked_config = prepared.bindings.config.clone();
     let tracked_secrets = prepared.bindings.secrets.clone();
     let instance_id =
@@ -1986,6 +1997,7 @@ async fn spawn_storage(
             &parts.session,
             Arc::clone(&proxy),
             parts.settings,
+            role,
         );
         if let Err(detail) = published {
             crate::OnDemandStatus::retire(proxy.as_ref()).await;
@@ -2007,7 +2019,7 @@ async fn spawn_storage(
     }
     let session = {
         let mut registry = runtime.destinations.write().await;
-        match registry.publish_spawned(&request.plugin_instance_id, spawned) {
+        match registry.publish_spawned(&request.plugin_instance_id, spawned, role) {
             Ok(session) => session,
             Err(detail) => return SpawnHealth::SpawnFailed { detail },
         }

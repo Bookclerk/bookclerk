@@ -109,3 +109,70 @@ export function nearestSpeed(value: unknown): number {
 export function speedLabel(speed: number): string {
   return `${Number(speed.toFixed(2))}×`;
 }
+
+/** A chapter as the web player seeks between them. */
+export interface ChapterMark {
+  /** Where it starts on the edition's timeline, in milliseconds. */
+  start_ms: number;
+  /** Where it ends: the next chapter's start, or the end of the timeline. */
+  end_ms: number;
+}
+
+/**
+ * Milliseconds into a chapter within which "previous chapter" goes to the
+ * chapter before rather than back to this one's start.
+ */
+export const RESTART_CHAPTER_MS = 3000;
+
+/**
+ * The chapter playing at `positionMs`: the last one starting at or before
+ * it, so of chapters sharing a start the innermost (latest in pre-order)
+ * wins.
+ *
+ * @param chapters - The chapters, starts non-decreasing.
+ * @param positionMs - The position on the timeline.
+ * @returns Its index, or -1 before the first chapter or with none.
+ */
+export function chapterAt(chapters: readonly ChapterMark[], positionMs: number): number {
+  let found = -1;
+  for (const [index, chapter] of chapters.entries()) {
+    if (chapter.start_ms > positionMs) break;
+    found = index;
+  }
+  return found;
+}
+
+/**
+ * Where "previous chapter" goes: this chapter's start when more than
+ * {@link RESTART_CHAPTER_MS} into it, else the start of the latest earlier
+ * chapter that starts before it.
+ *
+ * @param chapters - The chapters, starts non-decreasing.
+ * @param positionMs - The position on the timeline.
+ * @returns The position to seek to; 0 with no earlier chapter.
+ */
+export function previousChapterStart(chapters: readonly ChapterMark[], positionMs: number): number {
+  const current = chapterAt(chapters, positionMs);
+  if (current < 0) return 0;
+  const start = chapters[current].start_ms;
+  if (positionMs - start > RESTART_CHAPTER_MS) return start;
+  for (let index = current - 1; index >= 0; index -= 1) {
+    if (chapters[index].start_ms < start) return chapters[index].start_ms;
+  }
+  return 0;
+}
+
+/**
+ * Where "next chapter" goes: the first chapter starting after `positionMs`.
+ *
+ * @param chapters - The chapters, starts non-decreasing.
+ * @param positionMs - The position on the timeline.
+ * @returns The position to seek to, or `null` in the last chapter.
+ */
+export function nextChapterStart(
+  chapters: readonly ChapterMark[],
+  positionMs: number,
+): number | null {
+  const next = chapters.find((chapter) => chapter.start_ms > positionMs);
+  return next ? next.start_ms : null;
+}

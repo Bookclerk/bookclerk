@@ -223,6 +223,7 @@ function world(options: { tracks?: number; startMs?: number; lengths?: number[] 
         tracks: [],
         progress: null,
         bookmarks: snapshot,
+        chapters: [],
       };
     },
     open: async (editionId) => {

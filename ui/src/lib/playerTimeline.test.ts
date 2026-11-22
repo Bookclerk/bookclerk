@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   SPEEDS,
+  chapterAt,
   formatClock,
   formatRemaining,
   locate,
   nearestSpeed,
+  nextChapterStart,
+  previousChapterStart,
   speedLabel,
   trackStarts,
 } from "./playerTimeline";
@@ -88,5 +91,37 @@ describe("speeds", () => {
     expect(speedLabel(1)).toBe("1×");
     expect(speedLabel(1.2)).toBe("1.2×");
     expect(speedLabel(1.75)).toBe("1.75×");
+  });
+});
+
+describe("chapters", () => {
+  // A part holding two chapters, then a second part.
+  const chapters = [
+    { start_ms: 0, end_ms: 0 },
+    { start_ms: 0, end_ms: 600_000 },
+    { start_ms: 600_000, end_ms: 1_800_000 },
+    { start_ms: 1_800_000, end_ms: 3_600_000 },
+  ];
+
+  it("finds the innermost chapter playing", () => {
+    expect(chapterAt(chapters, 0)).toBe(1);
+    expect(chapterAt(chapters, 599_999)).toBe(1);
+    expect(chapterAt(chapters, 600_000)).toBe(2);
+    expect(chapterAt(chapters, 9_999_999)).toBe(3);
+    expect(chapterAt([], 5)).toBe(-1);
+    expect(chapterAt([{ start_ms: 10, end_ms: 20 }], 5)).toBe(-1);
+  });
+
+  it("goes back to this chapter's start, or the one before near it", () => {
+    expect(previousChapterStart(chapters, 700_000)).toBe(600_000);
+    expect(previousChapterStart(chapters, 601_000)).toBe(0);
+    expect(previousChapterStart(chapters, 1_000)).toBe(0);
+    expect(previousChapterStart([], 50_000)).toBe(0);
+  });
+
+  it("goes forward to the next start, or nowhere in the last", () => {
+    expect(nextChapterStart(chapters, 0)).toBe(600_000);
+    expect(nextChapterStart(chapters, 700_000)).toBe(1_800_000);
+    expect(nextChapterStart(chapters, 1_800_000)).toBeNull();
   });
 });
