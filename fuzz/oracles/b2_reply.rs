@@ -42,6 +42,20 @@ fn name_ok(name: &str) -> bool {
         && !name.contains("//")
 }
 
+/// B2's bucket naming rule, written apart from the parser's: letters,
+/// digits, `-` and `.`, no `.` at either end or doubled, not an IPv4
+/// address.
+fn bucket_name_ok(name: &str) -> bool {
+    let labels: Vec<&str> = name.split('.').collect();
+    let ipv4 = labels.len() == 4 && labels.iter().all(|label| label.parse::<u32>().is_ok());
+    (1..=63).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        && labels.iter().all(|label| !label.is_empty())
+        && !ipv4
+}
+
 /// Whether `text` is 40 lowercase hex digits.
 fn sha1_ok(text: &str) -> bool {
     text.len() == 40 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
@@ -130,11 +144,7 @@ pub fn check(data: &[u8]) {
                 assert!(auth.absolute_minimum_part_size > 0);
                 assert!(auth.recommended_part_size >= auth.absolute_minimum_part_size);
                 if let Some(bucket) = &auth.bucket {
-                    assert!(!bucket.name.is_empty() && bucket.name.len() <= 63);
-                    assert!(bucket
-                        .name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+                    assert!(bucket_name_ok(&bucket.name), "{:?}", bucket.name);
                 }
             }
         }
@@ -149,6 +159,7 @@ pub fn check(data: &[u8]) {
                     .expect("accepted reply has buckets");
                 assert_eq!(listed.len(), buckets.len());
                 assert!(listed.iter().all(Value::is_object));
+                assert!(buckets.iter().all(|bucket| bucket_name_ok(&bucket.name)));
             }
         }
         2 => {

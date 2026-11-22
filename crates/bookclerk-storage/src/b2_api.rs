@@ -352,12 +352,25 @@ pub struct Bucket {
     pub name: String,
 }
 
-/// Checks a bucket name: 1 to 63 bytes of ASCII letters, digits and `-`
-/// (B2's rule; names are unique across all of B2).
+/// Checks a bucket name against B2's naming rule: 1 to 63 bytes of ASCII
+/// letters, digits, `-` and `.`, with no `.` at either end, no `..`, and
+/// not shaped like an IPv4 address. (B2 creates names of at least six
+/// bytes; a shorter one is still read, since only the shape matters to
+/// the download path.)
 fn check_bucket_name(name: &str) -> ReplyResult<()> {
+    let ipv4 = name.split('.').count() == 4
+        && name
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
     if name.is_empty()
         || name.len() > 63
-        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+        || name.starts_with('.')
+        || name.ends_with('.')
+        || name.contains("..")
+        || ipv4
     {
         return Err(malformed("bucket name breaks B2's naming rule"));
     }
@@ -1399,9 +1412,20 @@ mod tests {
         )
         .expect("buckets");
         assert_eq!(buckets.len(), 1);
-        assert!(
-            parse_buckets(br#"{"buckets":[{"bucketId":"b1","bucketName":"no_under"}]}"#).is_err()
-        );
+        for (name, ok) in [
+            ("no_under", false),
+            ("my.books", true),
+            ("my-books.2026", true),
+            (".books", false),
+            ("books.", false),
+            ("my..books", false),
+            ("192.168.0.1", false),
+            ("192.168.0.1a", true),
+            ("1.2.3", true),
+        ] {
+            let reply = format!(r#"{{"buckets":[{{"bucketId":"b1","bucketName":"{name}"}}]}}"#);
+            assert_eq!(parse_buckets(reply.as_bytes()).is_ok(), ok, "{name}");
+        }
         let target = parse_upload_target(
             br#"{"bucketId":"b1","uploadUrl":"https://pod-000.backblaze.com/b2api/v3/b2_upload_file/b1/c0","authorizationToken":"t"}"#,
         )
