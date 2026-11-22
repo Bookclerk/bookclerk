@@ -252,6 +252,7 @@ jobs:
           "$PY" scripts/tests/test_dev_env.py
           "$PY" scripts/tests/test_tool_versions.py
           "$PY" scripts/tests/test_visual_baselines.py
+          "$PY" scripts/tests/test_portable_paths.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q
