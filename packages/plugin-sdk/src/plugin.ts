@@ -85,8 +85,10 @@ import {
   type SocketTransportReply,
 } from "./sockets.js";
 import {
+  grantedOriginConnect,
   grantedOriginFetch,
   originBinding,
+  type OriginConnectTransportReply,
   type OriginTransport,
   type OriginTransportReply,
 } from "./origin.js";
@@ -1107,7 +1109,7 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     }
     const sockets = socketsTransportOf(context);
     if (sockets) merged[sockets.name] = socketsBinding(sockets.sockets);
-    if (context.origin) merged.ORIGIN = originBinding(context.origin);
+    if (context.origin) merged.ORIGIN = originBinding(context.origin, sockets?.sockets);
     if (context.webhooks) merged.WEBHOOKS = webhooksBinding(context.webhooks);
     if (context.network && typeof context.network === "object") {
       merged.NETWORK = Object.freeze(normalizeNetworkGrant(context.network));
@@ -4253,6 +4255,17 @@ class GrantedOrigin extends RpcTarget implements OriginTransport {
     body: ReadableStream<Uint8Array> | null,
   ): Promise<OriginTransportReply> {
     return grantedOriginFetch(this.#granted, this.#auth, head, body);
+  }
+
+  /**
+   * Hands one WebSocket upgrade to the library.
+   *
+   * @param head - The upgrade's head.
+   * @param attachment - The socket's initial attachment, base64.
+   * @returns The route's answer, or a typed failure; never throws.
+   */
+  connect(head: OriginRequest, attachment: string): Promise<OriginConnectTransportReply> {
+    return grantedOriginConnect(this.#granted, this.#auth, head, attachment);
   }
 }
 
