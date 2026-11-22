@@ -62,6 +62,7 @@ mod probe;
 mod resample;
 mod tag_worker;
 mod vorbis_tags;
+mod worker_pipe;
 
 pub use archive::{check_report as check_archive_report, extract_archive};
 pub use bookclerk_cover::{CoverSet, CoverSize};

@@ -15298,6 +15298,3320 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/notifications/catalog": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Lists the notification types and the notifier instances the routing\nscreens pick from.",
+        "description": "Types come from the host and from the `[[notifications.types]]` of the\nplugins installed on this server; notifiers are the instances of\ninstalled `notifier` plugins.\n\nAccess: the operator, an Owner or an Administrator.",
+        "operationId": "get_catalog",
+        "responses": {
+          "200": {
+            "description": "The types and notifiers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationCatalog"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/channels": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Lists the library's channels.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "list_channels",
+        "responses": {
+          "200": {
+            "description": "The channels.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Makes a library channel on a notifier instance.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "post_channel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewChannelBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The channel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad label, or an instance that is not a channel notifier. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e does not send to channels"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `plugin_instance_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The channel could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/channels/{id}": {
+      "delete": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Deletes a channel with its routes and delivery-log rows.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "delete_channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The channel is gone."
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such channel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "channel 8a7b6c5d not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The channel could not be deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "patch": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Renames a channel.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "patch_channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The channel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad label. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "a destination label is one line of 1 to 128 bytes"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such channel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "channel 8a7b6c5d not found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `label` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The channel could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/channels/{id}/resume": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Resumes a channel repeated failures paused, and clears its failure\ncount.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "post_channel_resume",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such channel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "channel 8a7b6c5d not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The channel could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/channels/{id}/test": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Sends a test notification to one channel, whatever the routes say.",
+        "description": "The send runs as a job; its outcome lands in the delivery log.\n\nAccess: the operator, an Owner or an Administrator.",
+        "operationId": "post_channel_test",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The test is accepted. Its send job is queued, or, when the queue is full or enqueueing fails, may be queued by a later sweep.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSent"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such channel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "channel 8a7b6c5d not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The channel is paused; resume it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the channel is paused; resume it before testing it"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The test could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/routes": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Lists every routing rule.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "get_routes",
+        "responses": {
+          "200": {
+            "description": "The routes, by type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteTable"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/routes/{type}": {
+      "put": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Replaces the routes of one operational type.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "put_routes",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "path",
+            "description": "Notification type id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The routes are replaced."
+          },
+          "400": {
+            "description": "An unknown or patron type (either may still be cleared with no routes, to remove rules left from before the type changed), a bad severity, a personal destination, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "destination 8a7b6c5d is routed twice"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A destination does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "notification destination 8a7b6c5d not found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `routes` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The routes could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/offers": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Lists which notifiers patrons may pick for each patron type.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "get_offers",
+        "responses": {
+          "200": {
+            "description": "The offers, by type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfferTable"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/offers/{type}": {
+      "put": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Replaces which notifiers patrons may pick for one patron type.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "put_offers",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "path",
+            "description": "Notification type id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OffersBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The offers are replaced."
+          },
+          "400": {
+            "description": "An unknown or operational type (either may still be cleared with no offers, to remove offers left from before the type changed), an instance that is not a personal notifier, a repeat, or more than 32. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e does not send to patrons"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `offers` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The offers could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/deliveries": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Pages the delivery log, newest first.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "list_deliveries",
+        "parameters": [
+          {
+            "name": "destination_id",
+            "in": "query",
+            "description": "Only this destination's deliveries.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 50): a whole number, where 0 is read as 1 and\nanything from 201 up to 18446744073709551615 as 200; a negative or\nnon-numeric value, or one past 18446744073709551615, is refused with\na plain-text 400. A page may hold fewer rows than asked when the\nlibrary's database returns fewer per read.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of deliveries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The cursor is not a valid cursor; pass back this route's own `next_cursor` (JSON). Or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid page cursor"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize query string: limit: invalid digit found in string"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/me/notifications": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Reads the caller's notification settings: the types they can receive\nbeyond the inbox, what they chose, and their destinations.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
+        "operationId": "get_my_settings",
+        "responses": {
+          "200": {
+            "description": "The settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatronSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this session has no library user to keep notification settings for"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/me/notifications/choices/{type}": {
+      "put": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Sets what the caller gets for one patron type, replacing the defaults.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
+        "operationId": "put_my_choice",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "path",
+            "description": "Notification type id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChoiceBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The choice is saved."
+          },
+          "400": {
+            "description": "A bad type id, a repeat, more than 32 destinations, or (when enabled) a destination on a notifier not offered for the type. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "destination 8a7b6c5d is chosen twice"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this session has no library user to keep notification settings for"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A destination is not one of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "notification destination 8a7b6c5d not found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `enabled` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The choice could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "delete": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Drops the caller's choice for one type, so the defaults apply again.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
+        "operationId": "delete_my_choice",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "path",
+            "description": "Notification type id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The defaults apply again."
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this session has no library user to keep notification settings for"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The choice could not be removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/me/notifications/destinations": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Adds a personal destination for the caller.",
+        "description": "The notifier normalises and checks the address first\n(`Notifier.validateDestination`); the host checks its answer again\nagainst the declared fields before saving it.\n\nAccess: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
+        "operationId": "post_my_destination",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewPersonalBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The destination.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad address or label, an instance that does not send to patrons or is not offered for any type, or a patron who already keeps 32 addresses. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "address field `chat_id` is required"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this session has no library user to keep notification settings for"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The notifier is not running on this server.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the notifier is not running on this server"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `plugin_instance_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The destination could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The notifier could not be reached, or the host could not use its reply (for example a normalised address missing a required field).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the notifier could not check the address"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/me/notifications/destinations/{id}": {
+      "delete": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Deletes one of the caller's destinations.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
+        "operationId": "delete_my_destination",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Destination id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The destination is gone."
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this session has no library user to keep notification settings for"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not one of the caller's destinations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "destination 8a7b6c5d not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The destination could not be deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/me/notifications/destinations/{id}/resume": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Resumes one of the caller's destinations that repeated failures paused,\nand clears its failure count.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
+        "operationId": "post_my_destination_resume",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Destination id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The destination.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this session has no library user to keep notification settings for"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not one of the caller's destinations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "destination 8a7b6c5d not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The destination could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/me/notifications/inbox": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Pages the caller's inbox, newest first.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
+        "operationId": "get_my_inbox",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 50): a whole number, where 0 is read as 1 and\nanything from 201 up to 18446744073709551615 as 200; a negative or\nnon-numeric value, or one past 18446744073709551615, is refused with\na plain-text 400. A page may hold fewer rows than asked when the\nlibrary's database returns fewer per read.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the inbox.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The cursor is not a valid cursor; pass back this route's own `next_cursor` (JSON). Or `limit` is not a whole number that fits in 64 bits (plain text, from the query parser).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid page cursor"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize query string: limit: invalid digit found in string"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this session has no library user to keep notification settings for"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/me/notifications/inbox/read": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Marks one inbox entry, or all of them, read.",
+        "description": "Access: any signed-in library user, for their own settings, or an\noperator session acting as a library user; a plain operator session or\nthe operator token has none.",
+        "operationId": "post_my_inbox_read",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What was marked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadMarked"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "this session has no library user to keep notification settings for"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The notification is not in the caller's inbox.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "notification 1b2c3d4e not found"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: notification_id: invalid type: integer `1`, expected a string at line 1 column 20"
+              }
+            }
+          },
+          "500": {
+            "description": "The inbox could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/library/listings/{id}/pin": {
       "put": {
         "tags": [
@@ -47748,6 +51062,38 @@
         },
         "additionalProperties": false
       },
+      "AddressFieldJson": {
+        "type": "object",
+        "description": "One field a patron fills in for a personal destination.",
+        "required": [
+          "key",
+          "label",
+          "required",
+          "secret"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Key in the address document.",
+            "example": "chat_id"
+          },
+          "label": {
+            "type": "string",
+            "description": "Label shown on the form.",
+            "example": "Chat id"
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether a destination must carry it.",
+            "example": true
+          },
+          "secret": {
+            "type": "boolean",
+            "description": "Whether the value is a secret: shown masked, never logged.",
+            "example": false
+          }
+        }
+      },
       "AdminControlOverrides": {
         "type": "object",
         "description": "One Administrator's overrides: a value for some switches, and the\nlibrary's default for the rest (an absent or `null` field).",
@@ -50339,6 +53685,22 @@
           }
         }
       },
+      "ChannelList": {
+        "type": "object",
+        "description": "The library's channels.",
+        "required": [
+          "channels"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DestinationJson"
+            },
+            "description": "Oldest first."
+          }
+        }
+      },
       "Chapter": {
         "type": "object",
         "description": "One chapter of a checked list.",
@@ -50562,6 +53924,32 @@
           "file",
           "part_names"
         ]
+      },
+      "ChoiceBody": {
+        "type": "object",
+        "description": "Body of `PUT /api/me/notifications/choices/{type}`.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "`false` keeps the type in the inbox only.",
+            "example": true
+          },
+          "destination_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The caller's own destinations it goes to; at most 32. Left out or\nempty, the type goes to no destination outside the inbox, even\nwith `enabled: true`; delete the choice to return to the defaults.",
+            "example": [
+              "8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"
+            ],
+            "maxItems": 32
+          }
+        },
+        "additionalProperties": false
       },
       "ClerkAuthorizeParams": {
         "type": "object",
@@ -51960,6 +55348,109 @@
           }
         }
       },
+      "DeliveryJson": {
+        "type": "object",
+        "description": "One delivery-log row.",
+        "required": [
+          "id",
+          "notification_id",
+          "notification_type",
+          "title",
+          "destination_id",
+          "plugin_instance_id",
+          "state",
+          "attempts",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Delivery id.",
+            "example": "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b"
+          },
+          "notification_id": {
+            "type": "string",
+            "description": "The notification.",
+            "example": "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"
+          },
+          "notification_type": {
+            "type": "string",
+            "description": "Its type.",
+            "example": "test"
+          },
+          "title": {
+            "type": "string",
+            "description": "Its title.",
+            "example": "Test notification"
+          },
+          "destination_id": {
+            "type": "string",
+            "description": "The destination.",
+            "example": "8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"
+          },
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "The notifier instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending`, `delivered`, `failed` or `dropped`.",
+            "example": "delivered"
+          },
+          "attempts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Send attempts made.",
+            "example": 1
+          },
+          "provider_id": {
+            "type": "string",
+            "description": "The service's id for the delivered message.",
+            "example": "1700000000.000200",
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "description": "The last failure or retry reason.",
+            "example": "rate_limited: slow down",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When it was made (RFC 3339).",
+            "example": "2026-11-21T10:00:00+00:00"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "When it last changed (RFC 3339).",
+            "example": "2026-11-21T10:00:02+00:00"
+          }
+        }
+      },
+      "DeliveryPage": {
+        "type": "object",
+        "description": "One page of the delivery log.",
+        "required": [
+          "deliveries"
+        ],
+        "properties": {
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliveryJson"
+            },
+            "description": "Newest first."
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Pass as `cursor` for the next page; `null` on the last page, where\npaging stops.",
+            "example": "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0yMVQxMDowMDowMCswMDowMCIsImlkIjoiOWU4ZCJ9",
+            "nullable": true
+          }
+        }
+      },
       "DeploymentConflict": {
         "anyOf": [
           {
@@ -52035,6 +55526,74 @@
             "description": "The filter; no rules take every book."
           }
         }
+      },
+      "DestinationJson": {
+        "type": "object",
+        "description": "A destination as administrators and its owner see it. The address is\nnever returned: it may hold secrets.",
+        "required": [
+          "id",
+          "kind",
+          "plugin_instance_id",
+          "label",
+          "failure_count",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Destination id.",
+            "example": "8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DestinationKind"
+              }
+            ],
+            "description": "`channel` (the library's) or `personal` (a patron's)."
+          },
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "The notifier instance that carries it.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "label": {
+            "type": "string",
+            "description": "Name shown in pickers.",
+            "example": "Ops room"
+          },
+          "failure_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Deliveries in a row that ended `failed`, whether refused for good\nor out of attempts; a delivery, or resuming the destination, resets\nit to 0. It pauses at 5.",
+            "example": 0
+          },
+          "paused_at": {
+            "type": "string",
+            "description": "When repeated failures paused it (RFC 3339); `null` while active.",
+            "example": "2026-11-21T10:00:00+00:00",
+            "nullable": true
+          },
+          "paused_reason": {
+            "type": "string",
+            "description": "Why it was paused.",
+            "example": "unauthenticated: the webhook was deleted",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When it was made (RFC 3339).",
+            "example": "2026-11-20T09:00:00+00:00"
+          }
+        }
+      },
+      "DestinationKind": {
+        "type": "string",
+        "description": "Whether a destination is a library channel or one patron's address.",
+        "enum": [
+          "channel",
+          "personal"
+        ]
       },
       "DeviceInfoBody": {
         "type": "object",
@@ -53578,6 +57137,26 @@
           "preparing"
         ]
       },
+      "FieldJson": {
+        "type": "object",
+        "description": "One labelled value.",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Label.",
+            "example": "Narrator"
+          },
+          "value": {
+            "type": "string",
+            "description": "Value.",
+            "example": "Kate Reading"
+          }
+        }
+      },
       "FileMetadata": {
         "type": "object",
         "description": "A file's name, size and times.",
@@ -54027,6 +57606,100 @@
               }
             ],
             "description": "The user the session now acts as."
+          }
+        }
+      },
+      "InboxEntryJson": {
+        "type": "object",
+        "description": "One inbox entry.",
+        "required": [
+          "id",
+          "notification_type",
+          "severity",
+          "title",
+          "text",
+          "fields",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Notification id.",
+            "example": "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"
+          },
+          "notification_type": {
+            "type": "string",
+            "description": "Type id.",
+            "example": "discover:new_book"
+          },
+          "severity": {
+            "type": "string",
+            "description": "`info`, `warning` or `critical`.",
+            "example": "info"
+          },
+          "title": {
+            "type": "string",
+            "description": "Title.",
+            "example": "A new book you might like"
+          },
+          "text": {
+            "type": "string",
+            "description": "Plain-text body.",
+            "example": "The Way of Kings is on Libro.fm."
+          },
+          "link_path": {
+            "type": "string",
+            "description": "Path inside the library it links to.",
+            "example": "/works/6c1f2e8a",
+            "nullable": true
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldJson"
+            },
+            "description": "Labelled values."
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When it arrived (RFC 3339).",
+            "example": "2026-11-21T10:00:00+00:00"
+          },
+          "read_at": {
+            "type": "string",
+            "description": "When the patron read it (RFC 3339); `null` while unread.",
+            "example": "2026-11-21T10:05:00+00:00",
+            "nullable": true
+          }
+        }
+      },
+      "InboxPage": {
+        "type": "object",
+        "description": "One page of the inbox.",
+        "required": [
+          "entries",
+          "unread"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InboxEntryJson"
+            },
+            "description": "Newest first."
+          },
+          "unread": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unread entries in the whole inbox.",
+            "example": 3,
+            "minimum": 0
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Pass as `cursor` for the next page; `null` on the last page, where\npaging stops.",
+            "example": "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0yMVQxMDowMDowMCswMDowMCIsImlkIjoiMWIyYyJ9",
+            "nullable": true
           }
         }
       },
@@ -54654,6 +58327,7 @@
           "library_index_rebuild",
           "branch_request",
           "ingest_batch",
+          "notify_send",
           "invalid"
         ]
       },
@@ -56830,6 +60504,59 @@
         },
         "additionalProperties": false
       },
+      "NewChannelBody": {
+        "type": "object",
+        "description": "Body of `POST /api/notifications/channels`.",
+        "required": [
+          "plugin_instance_id",
+          "label"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "A notifier instance that sends to channels; its own settings say\nwhere (a webhook URL, a service key).",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "label": {
+            "type": "string",
+            "description": "Name shown in the routing matrix, 1 to 128 bytes on one line.",
+            "example": "Ops room"
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewPersonalBody": {
+        "type": "object",
+        "description": "Body of `POST /api/me/notifications/destinations`.",
+        "required": [
+          "plugin_instance_id",
+          "address"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "A notifier instance that sends to patrons.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "address": {
+            "type": "object",
+            "description": "The address, as the notifier's `address_fields` describe it: a flat\nobject of strings.\nA key written twice is refused (`422`) rather than one value kept.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "chat_id": "123456789"
+            }
+          },
+          "label": {
+            "type": "string",
+            "description": "Name shown in pickers; the notifier's own label for the address,\nor the notifier's name, when absent.",
+            "example": "My phone",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "NewPlayerPasswordBody": {
         "type": "object",
         "description": "`POST /api/auth/player-passwords` body.",
@@ -57708,6 +61435,114 @@
           }
         }
       },
+      "NotificationCatalog": {
+        "type": "object",
+        "description": "Everything the routing screens pick from.",
+        "required": [
+          "types",
+          "notifiers"
+        ],
+        "properties": {
+          "types": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationTypeJson"
+            },
+            "description": "Host types first, then plugin types by id."
+          },
+          "notifiers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotifierJson"
+            },
+            "description": "Notifier instances installed on this server."
+          }
+        }
+      },
+      "NotificationTypeJson": {
+        "type": "object",
+        "description": "One notification type a routing rule or a patron choice can name.",
+        "required": [
+          "id",
+          "audience",
+          "severity",
+          "title",
+          "source"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Qualified id: a host type (`test`) or `<plugin id>:<type>`.",
+            "example": "ntfy_relay:sync_failed"
+          },
+          "audience": {
+            "type": "string",
+            "description": "Who it is for: `operational` (routed to channels) or `patron`\n(offered to patrons).",
+            "example": "operational"
+          },
+          "severity": {
+            "type": "string",
+            "description": "Default severity: `info`, `warning` or `critical`.",
+            "example": "warning"
+          },
+          "title": {
+            "type": "string",
+            "description": "Title shown in the routing matrix and on each notification.",
+            "example": "Sync failed"
+          },
+          "source": {
+            "type": "string",
+            "description": "The plugin that raises it; empty for a host type.",
+            "example": "ntfy_relay"
+          }
+        }
+      },
+      "NotifierJson": {
+        "type": "object",
+        "description": "One notifier instance.",
+        "required": [
+          "plugin_instance_id",
+          "plugin_key",
+          "name",
+          "channel",
+          "personal",
+          "address_fields"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Plugin instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "plugin_key": {
+            "type": "string",
+            "description": "Canonical plugin key.",
+            "example": "plugin:telegram"
+          },
+          "name": {
+            "type": "string",
+            "description": "Name shown in pickers.",
+            "example": "Telegram"
+          },
+          "channel": {
+            "type": "boolean",
+            "description": "Whether administrators can make library channels on it.",
+            "example": false
+          },
+          "personal": {
+            "type": "boolean",
+            "description": "Whether patrons can add their own address on it.",
+            "example": true
+          },
+          "address_fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AddressFieldJson"
+            },
+            "description": "What a patron enters for a personal destination."
+          }
+        }
+      },
       "OAuthEnrollAnswer": {
         "type": "object",
         "description": "`POST /api/node/v1/enroll/oauth` answer.",
@@ -57818,6 +61653,72 @@
             "example": "https://www.amazon.com/ap/signin?openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0&…"
           }
         }
+      },
+      "OfferJson": {
+        "type": "object",
+        "description": "One notifier offered to patrons for a type.",
+        "required": [
+          "plugin_instance_id",
+          "default_on"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "A notifier instance that sends to personal destinations.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "default_on": {
+            "type": "boolean",
+            "description": "Whether a patron who chose nothing gets the type there.",
+            "example": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "OfferTable": {
+        "type": "object",
+        "description": "Every patron offer, by type.",
+        "required": [
+          "offers"
+        ],
+        "properties": {
+          "offers": {
+            "type": "object",
+            "description": "Type id to its offers.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/OfferJson"
+              }
+            },
+            "example": {
+              "discover:new_book": [
+                {
+                  "default_on": true,
+                  "plugin_instance_id": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "OffersBody": {
+        "type": "object",
+        "description": "Body of `PUT /api/notifications/offers/{type}`.",
+        "required": [
+          "offers"
+        ],
+        "properties": {
+          "offers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OfferJson"
+            },
+            "description": "The type's offers, replacing the old ones; at most 32. Empty keeps\nthe type in patrons' inboxes only.",
+            "maxItems": 32
+          }
+        },
+        "additionalProperties": false
       },
       "OidcClientView": {
         "type": "object",
@@ -59763,6 +63664,32 @@
         ],
         "example": "auto"
       },
+      "PatronOfferJson": {
+        "type": "object",
+        "description": "One notifier a patron may pick for a type.",
+        "required": [
+          "plugin_instance_id",
+          "name",
+          "default_on"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "The notifier instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name.",
+            "example": "Telegram"
+          },
+          "default_on": {
+            "type": "boolean",
+            "description": "Whether the type goes there when the patron chose nothing.",
+            "example": true
+          }
+        }
+      },
       "PatronScope": {
         "type": "object",
         "description": "Which part of the library a patron sees.",
@@ -59785,6 +63712,87 @@
           }
         },
         "additionalProperties": false
+      },
+      "PatronSettings": {
+        "type": "object",
+        "description": "A patron's notification settings.",
+        "required": [
+          "types",
+          "destinations",
+          "notifiers"
+        ],
+        "properties": {
+          "types": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PatronTypeJson"
+            },
+            "description": "Patron types administrators offer a notifier for."
+          },
+          "destinations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DestinationJson"
+            },
+            "description": "The patron's own destinations."
+          },
+          "notifiers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotifierJson"
+            },
+            "description": "Notifiers the patron can add a destination on."
+          }
+        }
+      },
+      "PatronTypeJson": {
+        "type": "object",
+        "description": "One patron type and what the patron chose for it.",
+        "required": [
+          "id",
+          "title",
+          "offers",
+          "chosen",
+          "enabled",
+          "destination_ids"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Type id.",
+            "example": "discover:new_book"
+          },
+          "title": {
+            "type": "string",
+            "description": "Title.",
+            "example": "A new book you might like"
+          },
+          "offers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PatronOfferJson"
+            },
+            "description": "Notifiers offered for it."
+          },
+          "chosen": {
+            "type": "boolean",
+            "description": "Whether the patron made a choice; without one the defaults apply.",
+            "example": false
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "The patron's preference, not a delivery result: `false` keeps the\ntype in the inbox only. `true` when nothing is chosen, in which case\nthe offers' defaults pick where it goes.",
+            "example": true
+          },
+          "destination_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The destinations the patron saved for it, when chosen. These are\nsaved choices, not live targets: routing skips one whose notifier is\nno longer offered for the type, so check `offers` before showing one\nas eligible or sending the list back.",
+            "example": []
+          }
+        }
       },
       "Permissions": {
         "type": "object",
@@ -64786,6 +68794,35 @@
           }
         }
       },
+      "ReadBody": {
+        "type": "object",
+        "description": "Body of `POST /api/me/notifications/inbox/read`.",
+        "properties": {
+          "notification_id": {
+            "type": "string",
+            "description": "One notification to mark read; absent or `null` marks the whole inbox\nread.",
+            "example": "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReadMarked": {
+        "type": "object",
+        "description": "How many entries a read marked.",
+        "required": [
+          "marked"
+        ],
+        "properties": {
+          "marked": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Entries that were unread and are now read.",
+            "example": 1,
+            "minimum": 0
+          }
+        }
+      },
       "ReceivedJson": {
         "type": "object",
         "description": "Where a file's bytes stand after a `PATCH`.",
@@ -65337,6 +69374,21 @@
         },
         "additionalProperties": false
       },
+      "RenameBody": {
+        "type": "object",
+        "description": "Body of `PATCH /api/notifications/channels/{id}`.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "The new name, 1 to 128 bytes on one line.",
+            "example": "Ops room"
+          }
+        },
+        "additionalProperties": false
+      },
       "ReplacedCard": {
         "type": "object",
         "description": "The library card a branch join replaced.",
@@ -65683,6 +69735,72 @@
             "nullable": true
           }
         }
+      },
+      "RouteJson": {
+        "type": "object",
+        "description": "One route: a channel and the least severity it takes.",
+        "required": [
+          "destination_id",
+          "min_severity"
+        ],
+        "properties": {
+          "destination_id": {
+            "type": "string",
+            "description": "The channel.",
+            "example": "8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d"
+          },
+          "min_severity": {
+            "type": "string",
+            "description": "`info`, `warning` or `critical`: notifications less urgent than\nthis skip the channel.",
+            "example": "warning"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RouteTable": {
+        "type": "object",
+        "description": "Every routing rule, by type.",
+        "required": [
+          "routes"
+        ],
+        "properties": {
+          "routes": {
+            "type": "object",
+            "description": "Type id to its routes.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RouteJson"
+              }
+            },
+            "example": {
+              "test": [
+                {
+                  "destination_id": "8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d",
+                  "min_severity": "info"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "RoutesBody": {
+        "type": "object",
+        "description": "Body of `PUT /api/notifications/routes/{type}`.",
+        "required": [
+          "routes"
+        ],
+        "properties": {
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteJson"
+            },
+            "description": "The type's routes, replacing the old ones; at most 32. Empty sends\nthe type nowhere.",
+            "maxItems": 32
+          }
+        },
+        "additionalProperties": false
       },
       "RuleEffect": {
         "type": "string",
@@ -67723,6 +71841,26 @@
             "example": [
               443
             ]
+          }
+        }
+      },
+      "TestSent": {
+        "type": "object",
+        "description": "The answer to a test send.",
+        "required": [
+          "notification_id",
+          "delivery_id"
+        ],
+        "properties": {
+          "notification_id": {
+            "type": "string",
+            "description": "The stored test notification.",
+            "example": "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"
+          },
+          "delivery_id": {
+            "type": "string",
+            "description": "Its delivery; follow it in the delivery log.",
+            "example": "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b"
           }
         }
       },
@@ -70826,6 +74964,10 @@
     {
       "name": "Jobs",
       "description": "Queued and running control-plane jobs."
+    },
+    {
+      "name": "Notifications",
+      "description": "Channels, routing rules, patron offers, the delivery log, and each user's own notification settings and inbox."
     },
     {
       "name": "Events",

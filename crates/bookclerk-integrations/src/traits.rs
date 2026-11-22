@@ -361,6 +361,67 @@ pub trait Integration: Send + Sync {
         )))
     }
 
+    /// Whether this integration exports the `notifier` entrypoint (delivers
+    /// notifications to destinations).
+    ///
+    /// Default: `false`.
+    fn supports_notifier(&self) -> bool {
+        false
+    }
+
+    /// Delivers one checked notification through `Notifier.send`.
+    ///
+    /// # Returns
+    ///
+    /// The guest's own answer: a [`bookclerk_plugin_abi::NotifySent`] or
+    /// the [`bookclerk_plugin_abi::PluginError`] it raised, which the send
+    /// job classifies (`rate_limited` and `unavailable` are retried).
+    ///
+    /// # Errors
+    ///
+    /// An [`IntegrationError`] when the guest could not be reached, or by
+    /// default (the integration is not a notifier).
+    async fn notify_send(
+        &self,
+        _params: bookclerk_plugin_abi::NotifySendParams,
+    ) -> Result<
+        std::result::Result<bookclerk_plugin_abi::NotifySent, bookclerk_plugin_abi::PluginError>,
+    > {
+        Err(self.notifier_unsupported())
+    }
+
+    /// Normalises a patron's address document through
+    /// `Notifier.validateDestination`.
+    ///
+    /// # Returns
+    ///
+    /// The guest's own answer: the normalised document or the error it
+    /// raised (`invalid_params` for an address it refuses).
+    ///
+    /// # Errors
+    ///
+    /// An [`IntegrationError`] when the guest could not be reached, or by
+    /// default.
+    async fn notify_validate_destination(
+        &self,
+        _params: bookclerk_plugin_abi::NotifyValidateParams,
+    ) -> Result<
+        std::result::Result<
+            bookclerk_plugin_abi::NotifyValidated,
+            bookclerk_plugin_abi::PluginError,
+        >,
+    > {
+        Err(self.notifier_unsupported())
+    }
+
+    /// The error the default notifier methods return.
+    fn notifier_unsupported(&self) -> IntegrationError {
+        IntegrationError::message(format!(
+            "integration `{}` does not deliver notifications",
+            self.id()
+        ))
+    }
+
     /// Human-readable connectivity probe for CLI / ops (`integrations test`).
     ///
     /// Default: summarizes [`Self::health`].

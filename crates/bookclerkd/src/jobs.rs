@@ -122,7 +122,7 @@ pub(crate) fn requirements_error(err: bookclerk_library::LibraryError) -> anyhow
 
 /// Takes a shared [`AppState::job_runtime`] permit, so a database swap
 /// cannot interleave with admission, waiting at most 15 seconds.
-async fn admission_permit(
+pub(crate) async fn admission_permit(
     state: &AppState,
 ) -> anyhow::Result<tokio::sync::RwLockReadGuard<'_, ()>> {
     tokio::time::timeout(Duration::from_secs(15), state.job_runtime.read())
