@@ -833,9 +833,11 @@ async fn a_host_runs_its_owners_scan_end_to_end() {
     }
 }
 
-/// The lease, in seconds, for the job that survives a reconnect: long
-/// enough that a slow runner reconnects (close, 1.5 s back-off, handshake)
-/// before the host's own renew loop gives the fence up.
+/// The test's job lease, in seconds: long enough that a slow runner
+/// reconnects (close, 1.5 s back-off, handshake) before the host's own
+/// renew loop gives the fence up. Each connection takes the lease when it
+/// opens, so the second job's lease is this long too, and the owner reclaims
+/// it once it runs out while the host is away.
 const RESUME_LEASE_SECS: u64 = 8;
 
 /// A fence still held when the connection drops is resumed on reconnect
@@ -897,8 +899,6 @@ async fn a_reconnecting_host_resumes_live_fences_and_drops_lost_ones() {
     // Phase 2: while the host is away the lease expires and the owner
     // reclaims it; the reconnecting host learns the fence is lost.
     transport.release.store(false, Ordering::SeqCst);
-    // A short lease, so it expires quickly while the host is away.
-    state.config.write().await.jobs.lease_seconds = 3;
     let second = enqueue_scan(&owner).await;
     eventually("the host to start the second job", || async {
         transport.runs().len() == 2
