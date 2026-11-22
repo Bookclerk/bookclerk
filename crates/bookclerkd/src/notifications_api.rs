@@ -709,11 +709,15 @@ pub(crate) async fn post_channel_test(
 
 // --- Routes and patron offers ----------------------------------------------
 
-/// One route: a channel and the least severity it takes.
+/// One route: a channel, or the built-in "In app" target, and the least
+/// severity it takes.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RouteJson {
-    /// The channel.
+    /// The channel's id, or `in-app` for the built-in target that puts the
+    /// notification in every active Owner's and Administrator's inbox
+    /// (the bell in the web app, and browser or desktop notifications where
+    /// they turned them on). `in-app` runs no plugin and is listed first.
     #[schema(example = "8a7b6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d")]
     destination_id: String,
     /// `info`, `warning` or `critical`: notifications less urgent than
