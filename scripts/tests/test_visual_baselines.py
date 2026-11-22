@@ -205,7 +205,8 @@ def oracle_approval(raw: bytes) -> tuple | None | Exception:
     old = ch["body"].get("from")
     if type(old) is not str:
         return ValueError()
-    new = c["body"]
+    new = "\n".join(c["body"].split("\r\n"))
+    old = "\n".join(old.split("\r\n"))
     prefix = "<!-- bookclerk-visual-baselines v1 head="
     if not new.startswith(prefix) or i["number"] <= 0 or c["id"] <= 0:
         return None
@@ -417,7 +418,13 @@ class CorpusTests(unittest.TestCase):
             module_approval(load("approval__tick")),
             (990, 7, "maint", "a" * 40, "b" * 40),
         )
+        # A tick saved from the browser comes back with CRLF line endings.
+        self.assertEqual(
+            module_approval(load("approval__tick_crlf")),
+            module_approval(load("approval__tick")),
+        )
         for ignored in (
+            "approval__tick_crlf_also_edits",
             "approval__untick",
             "approval__other_author",
             "approval__bot_sender",
@@ -903,7 +910,7 @@ class BotTests(unittest.TestCase):
         path.write_text(json.dumps(payload))
         self.env["GITHUB_EVENT_PATH"] = str(path)
 
-    def approval_event(self, sender: str = "maint") -> str:
+    def approval_event(self, sender: str = "maint", crlf: bool = False) -> str:
         body = vb.render_comment(
             "a" * 40,
             "b" * 40,
@@ -918,7 +925,11 @@ class BotTests(unittest.TestCase):
                 "comment": {
                     "id": 7,
                     "user": {"login": BOT, "type": "Bot"},
-                    "body": body.replace("- [ ]", "- [x]"),
+                    "body": (
+                        body.replace("- [ ]", "- [x]").replace("\n", "\r\n")
+                        if crlf
+                        else body.replace("- [ ]", "- [x]")
+                    ),
                 },
                 "issue": {"number": 990, "pull_request": {}},
                 "sender": {"login": sender, "type": "User"},
@@ -1684,7 +1695,15 @@ class BotTests(unittest.TestCase):
         )
 
     def test_approve_by_a_maintainer_tags_and_writes_the_lock(self) -> None:
-        self.approval_event()
+        self.approve_by_a_maintainer(crlf=False)
+
+    def test_a_tick_saved_with_crlf_line_endings_approves(self) -> None:
+        """Regression (#1319): the browser saves a tick with CRLF endings."""
+        self.approve_by_a_maintainer(crlf=True)
+
+    def approve_by_a_maintainer(self, crlf: bool) -> None:
+        """A maintainer's tick tags the set and writes the branch lock."""
+        self.approval_event(crlf=crlf)
         repo, base = (
             "repos/Bookclerk/bookclerk",
             "repos/Bookclerk/bookclerk-visual-baselines",

@@ -348,7 +348,8 @@ The workflow runs from the default branch through `workflow_run` and
 recorded set comes from a run of the pull request's own code, so it is
 untrusted. `scripts/visual_baselines.py` accepts only PNG files with the
 expected names, folders and sizes, and only a comment edit that ticks the
-box and changes nothing else (see
+box and changes nothing else. Line endings don't count as a change: a
+tick saved from the browser comes back with CRLF line endings (see
 [Fuzzing](../fuzzing.md#visual-baselines-python)).
 
 The `ui-visual` job holds no secrets. The workflow's App tokens are

@@ -820,8 +820,9 @@ def parse_approval(raw: bytes, bot_login: str) -> Approval | None:
 
     # Returns
     The approval when a user edited the bot's review comment on a pull
-    request by ticking its checkbox and changing nothing else; ``None`` for
-    any other edit, which the workflow ignores.
+    request by ticking its checkbox and changing nothing else (line endings
+    aside: a tick saved from the browser comes back with CRLF ones);
+    ``None`` for any other edit, which the workflow ignores.
 
     # Errors
     ``VisualBaselinesError`` when the payload has the wrong shape.
@@ -848,6 +849,9 @@ def parse_approval(raw: bytes, bot_login: str) -> Approval | None:
     if not isinstance(changes, dict) or not isinstance(changes.get("body"), dict):
         return None
     old = _field(changes["body"], "from", str, "previous body")
+    # Saving a tick from the browser sends the whole body back with CRLF
+    # line endings, so line endings are not a change.
+    new, old = new.replace("\r\n", "\n"), old.replace("\r\n", "\n")
     match = MARKER.match(new)
     if match is None or number <= 0 or comment_id <= 0:
         return None
