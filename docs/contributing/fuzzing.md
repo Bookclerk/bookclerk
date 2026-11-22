@@ -929,7 +929,8 @@ only that. The others check:
   body is accepted only when it is one object with string `username` and
   `password`, and comes back with the username trimmed, both at most 256
   bytes and the password kept out of `Debug`. A card token is accepted
-  exactly when it is 43 URL-safe Base64 letters. Accepted list and detail
+  exactly when, without surrounding whitespace, it is 43 URL-safe Base64
+  letters, and comes back without that whitespace. Accepted list and detail
   queries are at most 4,096 bytes, with a page size of at most 1,000 and a
   search term of at most 256 bytes with no control character. An author,
   series or narrator id writes back from its key to the same id, and a
