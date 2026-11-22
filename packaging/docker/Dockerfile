@@ -33,6 +33,12 @@ WORKDIR /src/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY ui/ ./
+# `tsc -b` also type-checks ui/visual, which imports the page lists kept with
+# the Workers they describe; each needs its package.json to be read as a module.
+COPY tools/site/package.json /src/tools/site/package.json
+COPY tools/site/audit/pages.ts /src/tools/site/audit/pages.ts
+COPY tools/diagnostics-collector/package.json /src/tools/diagnostics-collector/package.json
+COPY tools/diagnostics-collector/visual/pages.ts /src/tools/diagnostics-collector/visual/pages.ts
 RUN npm run build
 
 FROM rust:1-trixie@sha256:931c2c0531a8b143e044f0f3914dfe802f15bb3d1955f0b657e9359327ac2ffc AS builder
