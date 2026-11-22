@@ -265,6 +265,11 @@ fn fetch_source(host: Host, out: &Path) -> PathBuf {
 /// # Returns
 ///
 /// Every argument after the `configure` script itself, in order.
+///
+/// # Panics
+///
+/// On a Unix cross build whose target-selecting compiler flags contain
+/// whitespace, which `configure` cannot pass through intact.
 fn configure_args(host: Host, prefix: &Path) -> Vec<String> {
     let msvc = host == Host::Msvc;
     let prefix = if msvc {
@@ -330,6 +335,20 @@ fn configure_args(host: Host, prefix: &Path) -> Vec<String> {
             // target-selecting flags the `cc` crate would pass go to both
             // compile and link steps.
             let target_flags = target_selecting_flags(compiler.args());
+            // FFmpeg's `configure` splits these on whitespace and honours
+            // no quoting, so a flag with a space (an SDK under
+            // `/Applications/Xcode Beta.app`) cannot reach the compiler
+            // whole; stop with a clear message instead of building for
+            // the wrong target.
+            if let Some(spaced) = target_flags
+                .iter()
+                .find(|flag| flag.contains(char::is_whitespace))
+            {
+                panic!(
+                    "FFmpeg's configure cannot pass the compiler flag {spaced:?}, which contains \
+                     whitespace; move the SDK or toolchain to a path without spaces"
+                );
+            }
             if !target_flags.is_empty() {
                 let joined = target_flags.join(" ");
                 args.push(format!("--extra-cflags={joined}"));
