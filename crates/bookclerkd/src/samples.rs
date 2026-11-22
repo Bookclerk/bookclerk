@@ -254,11 +254,8 @@ impl SampleService {
         if let Some(bytes) = read_cached(&path).await {
             return Ok(bytes);
         }
-        let flight = {
-            let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(flights.entry(name.clone()).or_default())
-        };
-        let guard = flight.lock().await;
+        let ticket = self.board(&name);
+        let guard = ticket.lock.lock().await;
         // Another request may have made it while this one waited.
         let outcome = match read_cached(&path).await {
             Some(bytes) => Ok(bytes),
@@ -271,30 +268,53 @@ impl SampleService {
             }
         };
         drop(guard);
-        self.land(&name, &flight);
         outcome
     }
 
-    /// Forgets the lock of `name` once no other request holds or waits on
-    /// it. Clones are only taken under the map's lock, so the count read
-    /// here cannot grow before the entry is removed; a waiter keeps the
-    /// entry, and the last one out removes it.
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The sample's cache file name.
-    /// * `flight` - This request's clone of the lock.
-    fn land(&self, name: &str, flight: &Arc<tokio::sync::Mutex<()>>) {
+    /// This request's share of the lock of `name`, registering the lock
+    /// when no other request holds it.
+    fn board(&self, name: &str) -> FlightTicket<'_> {
         let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
-        // The map's reference plus this request's.
-        let unshared = Arc::strong_count(flight) <= 2;
-        if unshared
-            && flights
-                .get(name)
-                .is_some_and(|kept| Arc::ptr_eq(kept, flight))
-        {
-            flights.remove(name);
+        let lock = Arc::clone(flights.entry(name.to_owned()).or_default());
+        FlightTicket {
+            flights: &self.flights,
+            name: name.to_owned(),
+            lock,
         }
+    }
+}
+
+/// One request's share of a sample's lock. Dropping it, when the request
+/// finishes or is cancelled while it waits, releases the share and removes
+/// the lock once no request holds one.
+struct FlightTicket<'a> {
+    /// The service's locks by sample name.
+    flights: &'a Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The sample's cache file name.
+    name: String,
+    /// This request's clone of the lock.
+    lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl Drop for FlightTicket<'_> {
+    /// Releases the share under the map's lock. Clones are taken and
+    /// released only under it, so the count read here is exact: two
+    /// requests ending together see each other, and the last one removes
+    /// the entry, only if the map still holds this same lock.
+    fn drop(&mut self) {
+        let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
+        let lock = std::mem::replace(&mut self.lock, Arc::new(tokio::sync::Mutex::new(())));
+        // The map's reference plus this request's.
+        let last = Arc::strong_count(&lock) <= 2;
+        if last
+            && flights
+                .get(&self.name)
+                .is_some_and(|kept| Arc::ptr_eq(kept, &lock))
+        {
+            flights.remove(&self.name);
+        }
+        drop(lock);
+        drop(flights);
     }
 }
 

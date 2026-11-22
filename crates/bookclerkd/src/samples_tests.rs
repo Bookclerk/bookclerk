@@ -53,27 +53,78 @@ fn only_top_level_chapters_mark_the_opening() {
 #[tokio::test]
 async fn a_flight_lock_is_forgotten_only_by_its_last_holder() {
     let service = SampleService::detached();
-    let first = Arc::clone(
-        service
-            .flights
-            .lock()
-            .unwrap()
-            .entry("a.mp3".into())
-            .or_default(),
+    let first = service.board("a.mp3");
+    let second = service.board("a.mp3");
+    assert!(
+        Arc::ptr_eq(&first.lock, &second.lock),
+        "one lock per sample"
     );
-    let waiter = Arc::clone(service.flights.lock().unwrap().get("a.mp3").unwrap());
-    service.land("a.mp3", &first);
+    drop(first);
     assert!(
         service.flights.lock().unwrap().contains_key("a.mp3"),
         "a waiter still needs the same lock"
     );
-    drop(first);
-    // A lock that is no longer the map's is never removed for it.
-    let stray = Arc::new(tokio::sync::Mutex::new(()));
-    service.land("a.mp3", &stray);
-    assert!(service.flights.lock().unwrap().contains_key("a.mp3"));
-    service.land("a.mp3", &waiter);
+    drop(second);
     assert!(service.flights.lock().unwrap().is_empty());
+
+    // A ticket whose lock the map no longer holds never removes the
+    // entry that replaced it.
+    let stale = service.board("b.mp3");
+    let replacement = Arc::new(tokio::sync::Mutex::new(()));
+    service
+        .flights
+        .lock()
+        .unwrap()
+        .insert("b.mp3".into(), Arc::clone(&replacement));
+    drop(stale);
+    assert!(service.flights.lock().unwrap().contains_key("b.mp3"));
+}
+
+#[tokio::test]
+async fn a_cancelled_waiter_leaves_no_lock_behind() {
+    let service = Arc::new(SampleService::detached());
+    let holder = service.board("c.mp3");
+    let guard = holder.lock.lock().await;
+    let waiting = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move {
+            let ticket = service.board("c.mp3");
+            let _guard = ticket.lock.lock().await;
+        })
+    };
+    // Let the waiter register, then cancel it while it waits.
+    while Arc::strong_count(&holder.lock) < 3 {
+        tokio::task::yield_now().await;
+    }
+    waiting.abort();
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    drop(guard);
+    drop(holder);
+    assert!(service.flights.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn requests_ending_together_leave_no_lock_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = Arc::new(SampleService::open(dir.path().join("samples")).unwrap());
+    for round in 0..50 {
+        let tasks: Vec<_> = (0..8)
+            .map(|_| {
+                let service = Arc::clone(&service);
+                let key = format!("edition\n{round}");
+                tokio::spawn(async move {
+                    service
+                        .sample(&key, || async { Ok(vec![1]) })
+                        .await
+                        .unwrap()
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert!(service.flights.lock().unwrap().is_empty());
+    }
 }
 
 #[tokio::test]
