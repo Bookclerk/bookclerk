@@ -320,6 +320,11 @@ descriptions, model load included:
 A text that falls back is slower as well as weaker, because a word
 spelled with single characters is many more tokens.
 
+The middle row is a stand-in, not a language pack: it holds half of the
+token rows, not chosen for these texts, so every text fell back. It shows
+what a fallback costs. A pack that held every token of a text would embed
+it as fast as the whole vocabulary does.
+
 With the whole vocabulary there is no language to choose, no text is
 embedded again when a language is added, and a vector never depends on
 which packs a node holds.
