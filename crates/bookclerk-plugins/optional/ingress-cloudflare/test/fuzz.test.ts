@@ -53,7 +53,7 @@ import {
  */
 function wholeEnv(name: string, fallback: number, max: number): number {
   const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
+  if (raw === undefined) return fallback;
   const value = /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(raw) ? Number(raw) : Number.NaN;
   if (!Number.isSafeInteger(value) || value > max)
     throw new Error(`${name} must be a whole number from 0 to ${max}, not ${JSON.stringify(raw)}`);
