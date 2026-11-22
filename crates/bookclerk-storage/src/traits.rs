@@ -287,6 +287,18 @@ pub trait StorageBackend: Send + Sync {
     /// file copy). Preserves object metadata when the backend supports it.
     async fn copy(&self, from: &str, to: &str) -> Result<()>;
 
+    /// [`Self::copy`], returning the bytes copied. The default copies and
+    /// then probes the target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::NotFound`] when `from` is missing, and
+    /// backend errors otherwise.
+    async fn copy_sized(&self, from: &str, to: &str) -> Result<u64> {
+        self.copy(from, to).await?;
+        Ok(self.probe(to).await?.size)
+    }
+
     /// Move `from` → `to`, replacing any object at `to`.
     ///
     /// Forwards to [`Self::move_object`], so a backend that renames natively

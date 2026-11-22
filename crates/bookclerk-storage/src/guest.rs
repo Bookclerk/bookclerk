@@ -39,7 +39,7 @@ pub fn plugin_error(err: StorageError) -> PluginError {
         StorageError::Conflict(msg) => PluginError::conflict(msg),
         StorageError::Integrity(msg) => PluginError::internal(format!("integrity: {msg}")),
         StorageError::Io(err) => PluginError::internal(err.to_string()),
-        StorageError::S3(msg) => PluginError::internal(msg),
+        StorageError::S3(msg) | StorageError::Remote(msg) => PluginError::internal(msg),
         StorageError::Other(err) => PluginError::internal(err.to_string()),
     }
 }

@@ -1,6 +1,7 @@
-//! Replays the checked-in `s3_event` and `r2_event` fuzz corpora in PR CI
-//! (no libFuzzer required), so a notification message or queue reply that
-//! once broke a parser stays fixed (`docs/adr/untrusted-input-fuzzing.md`).
+//! Replays the checked-in `s3_event`, `r2_event` and `b2_reply` fuzz
+//! corpora in PR CI (no libFuzzer required), so a notification message,
+//! queue reply or B2 reply that once broke a parser stays fixed
+//! (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing.
 #![allow(clippy::missing_panics_doc, clippy::expect_used, clippy::unwrap_used)]
 
@@ -14,6 +15,9 @@ mod s3_event_oracle;
 
 #[path = "../../../fuzz/oracles/r2_event.rs"]
 mod r2_event_oracle;
+
+#[path = "../../../fuzz/oracles/b2_reply.rs"]
+mod b2_reply_oracle;
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
 /// confined to that directory.
@@ -138,4 +142,82 @@ fn named_r2_seeds_keep_their_meaning() {
     );
     assert!(read_r2_seed("pull_refused").is_err());
     assert!(read_r2_seed("pull_as_array").is_err());
+}
+
+#[test]
+fn fuzz_corpus_b2_reply_holds_the_oracle() {
+    for path in corpus_files("b2_reply") {
+        let data = std::fs::read(&path).expect("read");
+        b2_reply_oracle::check(&data);
+    }
+}
+
+/// Whether the reader byte 0 picks accepts one `b2_reply` seed.
+fn b2_seed_reads(name: &str) -> bool {
+    use bookclerk_storage::b2_api;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/b2_reply")
+        .join(name);
+    let data = std::fs::read(&path).expect("read seed");
+    let (&selector, rest) = data.split_first().expect("non-empty seed");
+    match selector % 9 {
+        0 => b2_api::parse_authorization(rest).is_ok(),
+        1 => b2_api::parse_buckets(rest).is_ok(),
+        2 => b2_api::parse_upload_target(rest).is_ok(),
+        3 => b2_api::parse_file_version(rest).is_ok(),
+        4 => b2_api::parse_names_page(rest).is_ok(),
+        5 => b2_api::parse_versions_page(rest).is_ok(),
+        6 => b2_api::parse_part(rest).is_ok(),
+        7 => !b2_api::parse_api_error(500, rest).code.is_empty(),
+        _ => {
+            let text = std::str::from_utf8(rest).expect("text seed");
+            let lines: Vec<(&str, &[u8])> = text
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .map(|(name, value)| (name.trim(), value.trim().as_bytes()))
+                .collect();
+            b2_api::parse_download_headers(lines).is_ok()
+        }
+    }
+}
+
+#[test]
+fn named_b2_seeds_keep_their_meaning() {
+    for accepted in [
+        "authorize_restricted",
+        "authorize_unrestricted",
+        "buckets",
+        "upload_target",
+        "file_upload",
+        "file_large_sha1",
+        "file_start",
+        "file_folder",
+        "names_page",
+        "names_page_last",
+        "versions_page",
+        "part",
+        "error_html",
+        "download_whole",
+        "download_range",
+    ] {
+        assert!(b2_seed_reads(accepted), "{accepted} should read");
+    }
+    for refused in [
+        "authorize_http_url",
+        "authorize_not_utf8_in_skipped_field",
+        "authorize_deleted_bucket",
+        "buckets_bad_name",
+        "upload_target_userinfo",
+        "file_backslash",
+        "file_unknown_action",
+        "names_page_backwards",
+        "versions_half_continuation",
+        "part_zero",
+        "part_too_many",
+        "download_range_mismatch",
+        "download_no_id",
+        "download_repeated",
+    ] {
+        assert!(!b2_seed_reads(refused), "{refused} should be refused");
+    }
 }

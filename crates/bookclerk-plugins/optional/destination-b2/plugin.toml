@@ -1,0 +1,75 @@
+api_version = 3
+id = "b2"
+name = "Backblaze B2"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=backblaze.com&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-destination-b2"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "outbound"
+tcp = [
+    # Sign-in (api.backblazeb2.com), then the account's API and download
+    # hosts (api<NNN>.backblazeb2.com, f<NNN>.backblazeb2.com).
+    { host = "*.backblazeb2.com", ports = [443] },
+    # Upload URLs (pod-<NNN>-<NNNN>-<NN>.backblaze.com).
+    { host = "*.backblaze.com", ports = [443] },
+]
+
+[vars]
+
+[[settings]]
+key = "bucket"
+label = "Bucket"
+type = "string"
+required = true
+description = "The bucket's name."
+
+[[settings]]
+key = "prefix"
+label = "Key prefix"
+type = "string"
+default = "library/"
+
+[[settings]]
+key = "naming_profile"
+label = "Naming profile"
+type = "enum"
+values = [{ id = "audiobookshelf", label = "Audiobookshelf" }, { id = "classic", label = "Classic Libation" }]
+description = "Overrides [output].naming_profile for this destination only; unset inherits it."
+
+[[settings]]
+key = "folder_template"
+label = "Folder template"
+type = "string"
+
+[[settings]]
+key = "file_template"
+label = "File template"
+type = "string"
+
+[[settings]]
+key = "chapter_file_template"
+label = "Chapter file template"
+type = "string"
+
+[[settings]]
+key = "application_key_id"
+label = "Application key ID"
+type = "secret"
+required = true
+description = "The keyID of a B2 application key with read and write access to the bucket (listFiles, readFiles, writeFiles, deleteFiles)."
+
+[[settings]]
+key = "application_key"
+label = "Application key"
+type = "secret"
+required = true
+
+[secrets]
+
+[work_fs]
+
+[triggers]
+jobs = ["stream_copy"]

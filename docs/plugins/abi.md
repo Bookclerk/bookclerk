@@ -2175,6 +2175,13 @@ It is an ordinary storage guest: its settings and secrets reach it in
 `CONFIG` and `SECRETS`, and its network access is its declared
 `[capabilities.network]` grant.
 
+The optional `b2` destination talks to Backblaze B2's native API. It
+declares only `storage.translateKeys` (with the `s3` key rules) besides
+copies: B2 has no conditional writes, so the host checks before a
+conditional write and reports it as not atomic, and moves, batch deletes
+and batch probes use the host's fallbacks. It has no `changes` feed yet.
+Its replies are read by `bookclerk-storage::b2_api`, a fuzzed boundary.
+
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming
 overrides and credentials are `[[settings]]`. The host runs it wherever

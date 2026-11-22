@@ -22,6 +22,11 @@ pub enum StorageError {
     #[error("S3 error: {0}")]
     S3(String),
 
+    /// An object store's API refused or failed a request (operator-facing
+    /// detail, never credentials).
+    #[error("object store error: {0}")]
+    Remote(String),
+
     /// Scalar get/put exceeded the ABI small-object cap.
     #[error("payload too large: {0}")]
     PayloadTooLarge(String),
