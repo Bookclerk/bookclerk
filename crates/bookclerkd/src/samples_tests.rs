@@ -19,6 +19,14 @@ const TOKEN: &str = "op-token-samples";
 const KEY: &str = "Ann Author/First/First.m4b";
 
 #[test]
+fn chapters_off_the_copys_timeline_are_not_used() {
+    assert!(on_copy_timeline(Some(3_600_000), Some(3_601_500)));
+    assert!(!on_copy_timeline(Some(3_600_000), Some(3_720_000)));
+    assert!(on_copy_timeline(None, Some(3_720_000)));
+    assert!(on_copy_timeline(Some(3_600_000), None));
+}
+
+#[test]
 fn a_short_first_chapter_is_skipped() {
     assert_eq!(sample_start(&[]), 0);
     assert_eq!(sample_start(&[0]), 0);

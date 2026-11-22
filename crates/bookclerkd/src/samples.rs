@@ -47,6 +47,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_cover::token::{self, is_coverable, TokenKey};
 use bookclerk_library::control_plane::plan_playback;
+use bookclerk_library::COPY_RUNTIME_TOLERANCE_MS;
 use bookclerk_media::{ByteSpan, MediaError, RangeSource};
 use bookclerk_node_proto::{parse_copy_range, CopyRange};
 use bookclerk_storage::{ByteRange, StorageBackend};
@@ -507,6 +508,17 @@ pub(crate) fn top_level_starts(chapters: &[bookclerk_library::Chapter]) -> Vec<u
         .collect()
 }
 
+/// Whether a chapter list measured on a `listed_ms` timeline fits a copy
+/// running `own_ms`: within [`COPY_RUNTIME_TOLERANCE_MS`], or either time
+/// unknown (as the player assumes). A copy off the list's timeline that
+/// carries no chapters of its own is sampled from its start.
+pub(crate) fn on_copy_timeline(listed_ms: Option<u64>, own_ms: Option<u64>) -> bool {
+    match (listed_ms, own_ms) {
+        (Some(listed), Some(own)) => listed.abs_diff(own) <= COPY_RUNTIME_TOLERANCE_MS,
+        (None, _) | (_, None) => true,
+    }
+}
+
 /// Where an edition's sample starts: the second chapter when the first is
 /// shorter than [`OPENING_MAX_MS`], else the start.
 ///
@@ -613,7 +625,8 @@ pub(crate) async fn get_edition_sample(
     // Chapter starts are on the copy's timeline, which is the first
     // file's only when there is one file. The chapters are the ones the
     // player shows for this same copy: the edition's list, or the copy's
-    // own when its running time is off the list's timeline.
+    // own when its running time is off the list's timeline. A copy off
+    // the timeline with no chapters of its own starts at zero.
     let start_ms = if single_file {
         let chapters = library
             .chapters_for_copy(
@@ -623,7 +636,15 @@ pub(crate) async fn get_edition_sample(
             )
             .await
             .map_err(|err| read_failed(ROUTE, &err))?;
+        let own_ms = library
+            .edition_audio_files(&edition.edition_id)
+            .await
+            .map_err(|err| read_failed(ROUTE, &err))?
+            .into_iter()
+            .find(|file| file.destination == destination_id && file.storage_key == track_key)
+            .and_then(|file| file.stream.duration_ms);
         let starts: Vec<u64> = chapters
+            .filter(|found| on_copy_timeline(found.runtime_ms, own_ms))
             .map(|found| top_level_starts(found.list.chapters()))
             .unwrap_or_default();
         sample_start(&starts)
