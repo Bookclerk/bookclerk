@@ -51,6 +51,8 @@ boundary extends it.
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
 | `notify_raise` | A plugin's `NOTIFY.raise`: the `/notify/raise` JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert | `bookclerk-plugin-abi::notifications::check_raise_params` |
+| `ai_run_reply` | A model plugin's reply to a run (vector count, length, finite values, revision and fallback indexes, against the run it answers) and its model listing | `bookclerk-plugin-abi::ai::check_run_output`, `check_models` |
+| `ai_run` | A plugin's `AI.run`: the `/ai/run` JSON body and the Cap'n Proto run, their model name and the input for one task | `bookclerk-plugin-abi::ai::check_binding_run_params` |
 | `notify_address_body` | The `address` object of a patron's `POST /api/me/notifications/destinations` body: a flat object of strings with no key written twice | `bookclerk-plugin-abi::notifications::AddressFields` |
 | `notify_cursor` | The `cursor` query parameter of the notification delivery log and a patron's inbox: a token the caller sends back | `bookclerk-library::NotifyCursor::decode` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
@@ -439,6 +441,28 @@ only that. The others check:
   action is not `none`. An accepted raise round-trips through the codec and
   is accepted again. The shared oracle is `fuzz/oracles/notify_raise.rs`,
   replayed from `bookclerk-plugin-abi`.
+- **`ai_run_reply`**: byte 0 modulo 2 picks a reply to a run (0) or a model
+  listing (1). A run case carries the number of texts sent and the vector
+  length the model listed ahead of an `AiRunReply` message. The reply is
+  accepted exactly when an independent restatement agrees: it names no
+  model, carries the listed vector length and revision, holds exactly one
+  vector of finite numbers per text, and its fallback indexes ascend
+  strictly inside the input. An accepted reply splits into that many
+  vectors, and packing them gives its bytes back. A listing is accepted
+  exactly when it has at most 64 models, each id once and well formed, with
+  a printable revision, well-formed languages listed once, a vector length
+  from 1 to 4096 and a token limit above zero. Both round-trip through the
+  codec. The shared oracle is `fuzz/oracles/ai_run_reply.rs`, replayed from
+  `bookclerk-plugin-abi`.
+- **`ai_run`**: byte 0 modulo 2 picks the bridge's JSON body (0) or a
+  Cap'n Proto `AiRunParams` (1). The run is accepted exactly when an
+  independent restatement agrees: a model name of at most 192 bytes that is
+  `@<plugin id>/<model id>` or `@library/text-embeddings`, and 1 to 64
+  texts, none empty and none over 16 KiB. An accepted name prints back as
+  written, the same input under the bare model id passes the check the host
+  runs before the model plugin sees it, and the run round-trips through the
+  codec. The shared oracle is `fuzz/oracles/ai_run.rs`, replayed from
+  `bookclerk-plugin-abi`.
 - **`notify_address_body`**: the input is the `address` object. It is
   accepted exactly when an independent reading that keeps every entry,
   repeats included, finds one JSON object whose values are all strings and

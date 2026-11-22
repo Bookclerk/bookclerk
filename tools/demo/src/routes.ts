@@ -171,11 +171,12 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/database/migrate", "deny"],
   ["GET", "/api/settings", "allow"],
   ["PATCH", "/api/settings", "deny"],
-  // The visitor's own copy's sent diagnostics reports: read-only.
+  // The visitor's own copy's sent diagnostics reports: read-only. Reading
+  // one back asks the collector for that report with the copy's own access
+  // code, which shows only what the copy sent. Deleting it would remove the
+  // collector's copy for everyone working on the demo's bug: refused.
   ["GET", "/api/diagnostics/reports", "allow"],
-  // Reading a report back or deleting it calls the real collector with the
-  // copy's access code: refused.
-  ["GET", "/api/diagnostics/reports/{id}", "deny"],
+  ["GET", "/api/diagnostics/reports/{id}", "allow"],
   ["DELETE", "/api/diagnostics/reports/{id}", "deny"],
 
   // Plugins: the image's own storefronts only; no installs or changes.

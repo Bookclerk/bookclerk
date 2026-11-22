@@ -4,7 +4,7 @@ This page records how well candidate text-embedding models match a
 reader's taste, and what they cost to run, measured in November 2026. It
 is the evidence for choosing the models that Discover's semantic taste
 ranking will offer. Discover still ranks with the local-hash embedder
-today (see [Discovery design](discovery.md#embeddings-small--vps-friendly)).
+today (see [Discovery design](discovery.md#embeddings)).
 
 > [!NOTE]
 > These are research results, not shipped behavior. No model on this
