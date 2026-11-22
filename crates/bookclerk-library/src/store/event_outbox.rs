@@ -3181,7 +3181,7 @@ pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
         write.status,
         write.storage_key,
     )?;
-    update_edition_acquisition_on(
+    let changed = update_edition_acquisition_on(
         db,
         &holding.edition_id,
         &holding.holding_id,
@@ -3190,6 +3190,16 @@ pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
         write.error_message,
     )
     .await?;
+    // A revoke between the check above and the guarded write leaves the
+    // row untouched: report it rather than publish a state never stored.
+    // (No change while the holding still holds the edition is the guard
+    // keeping another live holding's acquired row, which publishes as before.)
+    if changed == 0 && !holding_holds_edition(db, &holding.holding_id, &holding.edition_id).await? {
+        return Err(LibraryError::not_found(
+            crate::EntityKind::Book,
+            holding.holding_id.as_str(),
+        ));
+    }
     crate::control_plane::bump_on(db, crate::control_plane::LiveTopic::Library).await?;
     publish_domain_event_on(db, spec).await?;
     Ok(())
@@ -3261,26 +3271,53 @@ fn owner_gone(owner: edition_acquisitions::Column) -> sea_orm::sea_query::Simple
     )
 }
 
-/// Creates edition `edition_id`'s row from `row` when it has none and
+/// Creates edition `edition_id`'s row from `values` when it has none and
 /// holding `holding_id` holds the edition; an existing row is left alone.
+///
+/// One `INSERT … SELECT … WHERE EXISTS` statement: whether the holding
+/// still holds the edition is read by the insert itself, so a holding a
+/// revoke removed after it was read creates no row.
+///
+/// # Errors
+///
+/// Returns the write error.
 async fn insert_edition_row_if_missing<C: ConnectionTrait>(
     db: &C,
     holding_id: &str,
     edition_id: &str,
-    row: edition_acquisitions::ActiveModel,
+    values: Vec<(edition_acquisitions::Column, sea_orm::sea_query::SimpleExpr)>,
 ) -> Result<()> {
-    if !holding_holds_edition(db, holding_id, edition_id).await? {
-        return Ok(());
-    }
-    edition_acquisitions::Entity::insert(row)
+    let (columns, exprs): (Vec<_>, Vec<_>) = values.into_iter().unzip();
+    let held = Query::select()
+        .expr(Expr::value(1))
+        .from(store_listings::Entity)
+        .and_where(store_listings::Column::EditionId.eq(edition_id))
+        .and_where(
+            store_listings::Column::Id.in_subquery(
+                Query::select()
+                    .column(holdings::Column::ListingId)
+                    .from(holdings::Entity)
+                    .and_where(holdings::Column::Id.eq(holding_id))
+                    .to_owned(),
+            ),
+        )
+        .to_owned();
+    let source = Query::select()
+        .exprs(exprs)
+        .and_where(Expr::exists(held))
+        .to_owned();
+    let insert = Query::insert()
+        .into_table(edition_acquisitions::Entity)
+        .columns(columns)
+        .select_from(source)
+        .map_err(|e| LibraryError::Other(anyhow!("edition row insert: {e}")))?
         .on_conflict(
             OnConflict::column(edition_acquisitions::Column::EditionId)
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(db)
-        .await
-        .map_err(LibraryError::Orm)?;
+        .to_owned();
+    db.execute(&insert).await.map_err(LibraryError::Orm)?;
     Ok(())
 }
 
@@ -3295,9 +3332,14 @@ async fn insert_edition_row_if_missing<C: ConnectionTrait>(
 /// row, are read by the write itself, so a write whose holding was revoked
 /// after it was read changes nothing.
 ///
+/// # Returns
+///
+/// The rows the guarded update changed: 0 when the holding no longer holds
+/// the edition, or another live holding owns the acquired row.
+///
 /// # Errors
 ///
-/// Returns the read or write error.
+/// Returns the write error.
 pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
     db: &C,
     edition_id: &str,
@@ -3305,23 +3347,40 @@ pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
     status: AcquireStatus,
     storage_key: Option<&str>,
     error_message: Option<&str>,
-) -> Result<()> {
+) -> Result<u64> {
     let now = now_str();
     insert_edition_row_if_missing(
         db,
         holding_id,
         edition_id,
-        edition_acquisitions::ActiveModel {
-            edition_id: Set(edition_id.to_string()),
-            status: Set(status.as_str().to_string()),
-            storage_key: Set(storage_key.map(str::to_string)),
-            error_message: Set(error_message.map(str::to_string)),
-            holding_id: Set(holding_id.to_string()),
-            updated_at: Set(now.clone()),
-            // Left to the column defaults: the PDF state is written by
-            // `update_edition_pdf_on`.
-            ..Default::default()
-        },
+        // The PDF columns are left to their defaults: the PDF state is
+        // written by `update_edition_pdf_on`.
+        vec![
+            (
+                edition_acquisitions::Column::EditionId,
+                Expr::value(edition_id),
+            ),
+            (
+                edition_acquisitions::Column::Status,
+                Expr::value(status.as_str()),
+            ),
+            (
+                edition_acquisitions::Column::StorageKey,
+                Expr::value(storage_key.map(str::to_string)),
+            ),
+            (
+                edition_acquisitions::Column::ErrorMessage,
+                Expr::value(error_message.map(str::to_string)),
+            ),
+            (
+                edition_acquisitions::Column::HoldingId,
+                Expr::value(holding_id),
+            ),
+            (
+                edition_acquisitions::Column::UpdatedAt,
+                Expr::value(now.clone()),
+            ),
+        ],
     )
     .await?;
     write_guarded_acquisition(
@@ -3347,8 +3406,8 @@ async fn write_guarded_acquisition<C: ConnectionTrait>(
     storage_key: Option<&str>,
     error_message: Option<&str>,
     now: &str,
-) -> Result<()> {
-    edition_acquisitions::Entity::update_many()
+) -> Result<u64> {
+    let changed = edition_acquisitions::Entity::update_many()
         .col_expr(
             edition_acquisitions::Column::Status,
             Expr::value(status.as_str()),
@@ -3376,8 +3435,9 @@ async fn write_guarded_acquisition<C: ConnectionTrait>(
         )
         .exec(db)
         .await
-        .map_err(LibraryError::Orm)?;
-    Ok(())
+        .map_err(LibraryError::Orm)?
+        .rows_affected;
+    Ok(changed)
 }
 
 /// Records holding `holding_id`'s companion PDF state on its edition's
@@ -3402,17 +3462,36 @@ pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
         db,
         holding_id,
         edition_id,
-        edition_acquisitions::ActiveModel {
-            edition_id: Set(edition_id.to_string()),
-            status: Set(AcquireStatus::NotAcquired.as_str().to_string()),
-            storage_key: Set(None),
-            error_message: Set(None),
-            holding_id: Set(holding_id.to_string()),
-            pdf_status: Set(status.as_str().to_string()),
-            pdf_storage_key: Set(pdf_storage_key.map(str::to_string)),
-            pdf_holding_id: Set(Some(holding_id.to_string())),
-            updated_at: Set(now.clone()),
-        },
+        vec![
+            (
+                edition_acquisitions::Column::EditionId,
+                Expr::value(edition_id),
+            ),
+            (
+                edition_acquisitions::Column::Status,
+                Expr::value(AcquireStatus::NotAcquired.as_str()),
+            ),
+            (
+                edition_acquisitions::Column::HoldingId,
+                Expr::value(holding_id),
+            ),
+            (
+                edition_acquisitions::Column::PdfStatus,
+                Expr::value(status.as_str()),
+            ),
+            (
+                edition_acquisitions::Column::PdfStorageKey,
+                Expr::value(pdf_storage_key.map(str::to_string)),
+            ),
+            (
+                edition_acquisitions::Column::PdfHoldingId,
+                Expr::value(holding_id),
+            ),
+            (
+                edition_acquisitions::Column::UpdatedAt,
+                Expr::value(now.clone()),
+            ),
+        ],
     )
     .await?;
     write_guarded_pdf(db, edition_id, holding_id, status, pdf_storage_key, &now).await

@@ -1,7 +1,10 @@
 //! The in-process edition status writers guard their own update (#1055).
 
-use super::{write_guarded_acquisition, write_guarded_pdf};
-use crate::entities::holdings;
+use super::{
+    update_edition_acquisition_on, update_edition_pdf_on, write_guarded_acquisition,
+    write_guarded_pdf,
+};
+use crate::entities::{edition_acquisitions, holdings};
 use crate::models::AcquireStatus;
 use crate::store::now_str;
 use crate::test_support::{sqlite, Profile};
@@ -61,7 +64,7 @@ async fn a_revoked_holdings_late_write_keeps_another_holdings_acquired_edition()
             .unwrap();
         // A's stale writes land now.
         let now = now_str();
-        write_guarded_acquisition(
+        let changed = write_guarded_acquisition(
             store.db(),
             &edition,
             &a,
@@ -72,6 +75,10 @@ async fn a_revoked_holdings_late_write_keeps_another_holdings_acquired_edition()
         )
         .await
         .unwrap();
+        assert_eq!(
+            changed, 0,
+            "the revoked holding's write changes no row ({name})"
+        );
         write_guarded_pdf(
             store.db(),
             &edition,
@@ -161,5 +168,78 @@ async fn a_live_holding_takes_over_only_from_a_holding_that_is_gone() {
         assert_eq!(row.storage_key.as_deref(), Some("A/a.m4b"), "{name}");
         assert_eq!(row.pdf_holding_id.as_deref(), Some(a.as_str()), "{name}");
         assert_eq!(row.pdf_storage_key.as_deref(), Some("A/a.pdf"), "{name}");
+    }
+}
+
+/// A revoked holding's write to an edition with no row yet creates none,
+/// through the audio and the PDF writer alike: the insert itself reads
+/// whether the holding still holds the edition.
+#[tokio::test]
+async fn a_revoked_holding_creates_no_edition_row() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = sqlite::memory(profile).await.into_store();
+        let (edition, a, b) = two_holders(&store).await;
+        edition_acquisitions::Entity::delete_many()
+            .filter(edition_acquisitions::Column::EditionId.eq(edition.as_str()))
+            .exec(store.db())
+            .await
+            .unwrap();
+        revoke(&store, &a).await;
+        let changed = update_edition_acquisition_on(
+            store.db(),
+            &edition,
+            &a,
+            AcquireStatus::Acquired,
+            Some("A/a.m4b"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(changed, 0, "{name}");
+        update_edition_pdf_on(
+            store.db(),
+            &edition,
+            &a,
+            AcquireStatus::Acquired,
+            Some("A/a.pdf"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            store.edition_acquisition(&edition).await.unwrap().is_none(),
+            "a revoked holding recorded acquisition state ({name})"
+        );
+
+        // A live holding's PDF write creates the row with the audio not
+        // acquired; its audio write then fills the audio columns.
+        update_edition_pdf_on(
+            store.db(),
+            &edition,
+            &b,
+            AcquireStatus::Acquired,
+            Some("B/b.pdf"),
+        )
+        .await
+        .unwrap();
+        let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(row.status, AcquireStatus::NotAcquired, "{name}");
+        assert_eq!(row.pdf_holding_id.as_deref(), Some(b.as_str()), "{name}");
+        assert_eq!(row.pdf_storage_key.as_deref(), Some("B/b.pdf"), "{name}");
+        let changed = update_edition_acquisition_on(
+            store.db(),
+            &edition,
+            &b,
+            AcquireStatus::Acquired,
+            Some("B/b.m4b"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(changed, 1, "{name}");
+        let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(row.status, AcquireStatus::Acquired, "{name}");
+        assert_eq!(row.holding_id, b, "{name}");
+        assert_eq!(row.storage_key.as_deref(), Some("B/b.m4b"), "{name}");
     }
 }
