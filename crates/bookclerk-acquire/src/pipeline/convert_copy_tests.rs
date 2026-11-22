@@ -79,9 +79,13 @@ async fn a_convert_adds_the_copy_beside_the_original() {
         Some(output_copy("m4b:original")),
         "the original stays"
     );
-    let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
+    let title = store
+        .acquire_title("audible", "user-1", "us", "B00CONV")
+        .await
+        .unwrap()
+        .expect("the title");
     assert_eq!(
-        book.storage_key.as_deref(),
+        title.storage_key.as_deref(),
         Some(main_key.as_str()),
         "the title's key is still the original's"
     );
