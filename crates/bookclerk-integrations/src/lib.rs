@@ -7,6 +7,7 @@
 // Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
 #![allow(clippy::cast_possible_wrap)]
 
+mod ai;
 mod brand;
 mod error;
 mod factory;
@@ -18,6 +19,7 @@ mod tickets;
 mod traits;
 mod types;
 
+pub use ai::{AiRouter, RoutedModel, AI_LIST_TIMEOUT, AI_RUN_TIMEOUT};
 pub use bookclerk_plugin_abi::{
     DomainEvent, EventResult, QueueBatch, QueueMessage, QueueResult, QueueRetry,
 };

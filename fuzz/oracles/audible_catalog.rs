@@ -21,6 +21,9 @@
 //!   joined with `; `, and absent when there are none: nothing else in the
 //!   row (such as `thesaurus_subject_keywords`, Audible's internal
 //!   merchandising flags) ever becomes a genre;
+//! - a title's ISBN is the row's string `isbn` without hyphens and spaces,
+//!   upper-cased, when that is thirteen digits or nine digits and a digit
+//!   or `X`, and absent otherwise;
 //! - parsing the same body twice gives the same titles.
 
 use bookclerk_audible_catalog::{parse_catalog_products, CatalogList, CatalogProduct};
@@ -113,6 +116,29 @@ fn expected_abridged(row: &Value) -> Option<bool> {
     }
 }
 
+/// The ISBN a row's `isbn` names, restated: hyphens and spaces dropped,
+/// upper-cased, then exactly thirteen ASCII digits, or nine ASCII digits
+/// followed by a digit or `X`.
+fn expected_isbn(row: &Value) -> Option<String> {
+    let compact: String = row
+        .get("isbn")?
+        .as_str()?
+        .chars()
+        .filter(|c| *c != '-' && *c != ' ')
+        .collect::<String>()
+        .to_ascii_uppercase();
+    let bytes = compact.as_bytes();
+    let ok = match bytes.len() {
+        13 => bytes.iter().all(u8::is_ascii_digit),
+        10 => {
+            bytes[..9].iter().all(u8::is_ascii_digit)
+                && (bytes[9].is_ascii_digit() || bytes[9] == b'X')
+        }
+        _ => false,
+    };
+    ok.then_some(compact)
+}
+
 /// The ASIN of a row that must become a title, or `None` when it is skipped.
 fn expected_asin(row: &Value) -> Option<&str> {
     if !row.is_object() || is_podcast(row) {
@@ -177,6 +203,7 @@ pub fn check(data: &[u8]) {
             expected_abridged(row),
             "abridged flag is not the row's format_type"
         );
+        assert_eq!(title.isbn, expected_isbn(row), "ISBN is not the row's isbn");
     }
     // Compared through `Debug`: a rating of NaN (`"NaN"` parses as one) is
     // not equal to itself under `PartialEq`, but prints the same both times.

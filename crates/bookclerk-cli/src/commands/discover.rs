@@ -32,12 +32,8 @@ pub enum DiscoverCommand {
     /// deployed metadata-provider plugins, such as Open Library.
     #[command(alias = "enrich-openlibrary")]
     EnrichMetadata,
-    /// Embed dirty works.
-    Embed {
-        /// Force the local-hash embedder (no ONNX download).
-        #[arg(long)]
-        hash: bool,
-    },
+    /// Embed dirty works with the built-in word-hash vectors.
+    Embed,
     /// Sync listening progress from all capable integrations into the library DB.
     SyncListening,
     /// Personal wishlist helpers (also feed the shared global queue).
@@ -97,8 +93,8 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
             .await?;
             format_out::line(format!("metadata providers filled {n} book(s)"));
         }
-        DiscoverCommand::Embed { hash } => {
-            let n = embed_works(cfg, &library, !hash && cfg.discovery.embeddings_enabled).await?;
+        DiscoverCommand::Embed => {
+            let n = embed_works(&library).await?;
             format_out::line(format!("embedded {n} work(s)"));
         }
         DiscoverCommand::SyncListening => {
@@ -125,12 +121,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
             no_listening,
             listening_providers,
         } => {
-            let prefer_onnx = cfg.discovery.embeddings_enabled;
-            let mut embedder = bookclerk_discover::open_embedder(
-                &cfg.paths().models_dir,
-                cfg.discovery.embed_intra_threads,
-                prefer_onnx,
-            )?;
+            let mut embedder = bookclerk_discover::open_embedder();
             let model_id = embedder.model_id().to_string();
 
             // Enrich first, so the works it changes are embedded this run.
@@ -171,9 +162,6 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 storefront_max_remote_calls: cfg.discovery.storefront_max_remote_calls,
                 exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
                 disabled_shelves: operator_prefs.disabled_shelves,
-                // Similarity always on; the models dir opts candidates into ONNX.
-                models_dir: prefer_onnx.then(|| cfg.paths().models_dir.clone()),
-                embed_intra_threads: cfg.discovery.embed_intra_threads,
                 embeddings_enabled: true,
             };
             let feed = bookclerk_discover::recommend_feed(&library, &registry, &opts).await?;
@@ -248,13 +236,9 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
     Ok(())
 }
 
-/// Embeds dirty works with ONNX when enabled, otherwise the local-hash embedder.
-async fn embed_works(cfg: &Config, library: &LibraryStore, prefer_onnx: bool) -> Result<usize> {
-    let mut embedder = bookclerk_discover::open_embedder(
-        &cfg.paths().models_dir,
-        cfg.discovery.embed_intra_threads,
-        prefer_onnx,
-    )?;
+/// Embeds dirty works with the local-hash stand-in.
+async fn embed_works(library: &LibraryStore) -> Result<usize> {
+    let mut embedder = bookclerk_discover::open_embedder();
     Ok(bookclerk_discover::embed_dirty_works(library, embedder.as_mut()).await?)
 }
 
@@ -323,7 +307,11 @@ mod tests {
         book.plugin_key = "libro".into();
         book.authors = Some("Frank Herbert".into());
         let book = store.upsert_book(&book).await.unwrap();
-        let dune = store.work_id_for_book(&book.uuid).await.unwrap().unwrap();
+        let dune = store
+            .work_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
 
         let author = || Some("Frank Herbert".to_string());
         let owned = store

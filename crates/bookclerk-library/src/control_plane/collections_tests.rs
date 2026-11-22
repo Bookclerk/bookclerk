@@ -108,7 +108,7 @@ async fn scan(store: &LibraryStore, asin: &str, title: &str, key: Option<&str>) 
         .unwrap();
     if let Some(key) = key {
         let owner = store
-            .file_owner_of_book(&saved.uuid)
+            .file_owner_of_holding(&saved.holding_id)
             .await
             .unwrap()
             .unwrap();
@@ -118,7 +118,7 @@ async fn scan(store: &LibraryStore, asin: &str, title: &str, key: Option<&str>) 
             .unwrap());
     }
     store
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .unwrap()
         .expect("a scanned title has a work")

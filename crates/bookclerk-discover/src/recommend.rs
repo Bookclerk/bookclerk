@@ -35,7 +35,7 @@ pub const WISH_COUNT_WEIGHT: f64 = 40.0;
 pub struct RecommendOptions {
     /// Maximum number of recommendations to return.
     pub limit: usize,
-    /// Embedding model id used for similarity (`all-minilm-l6-v2-q`, …).
+    /// Model id of the vectors compared for similarity (`local-hash-v1`, …).
     pub embedding_model: String,
     /// Marketplace / region code (`us`, `uk`, …) for catalog lookups.
     pub region: String,
@@ -61,14 +61,7 @@ pub struct RecommendOptions {
     /// Shelf kinds / ids to hide (`finish_series`, `author`, `genre`, `from_store`, …).
     /// Empty = offer every shelf Discover can build.
     pub disabled_shelves: Vec<String>,
-    /// Where the ONNX model lives. `Some` means candidates are embedded with
-    /// ONNX MiniLM when it loads (local-hash when it doesn't); `None` means
-    /// local-hash only, without trying ONNX.
-    pub models_dir: Option<std::path::PathBuf>,
-    /// ONNX intra-op thread count for the embedder (clamped ≥ 1).
-    pub embed_intra_threads: usize,
     /// When false, skip embedding similarity and use heuristic ranking only.
-    /// Which embedder scores similarity is chosen by [`Self::models_dir`].
     pub embeddings_enabled: bool,
 }
 
@@ -76,7 +69,7 @@ impl Default for RecommendOptions {
     fn default() -> Self {
         Self {
             limit: 20,
-            embedding_model: String::from(crate::embed::default_embedding_model_id()),
+            embedding_model: String::from(crate::embed::MODEL_LOCAL_HASH_V1),
             region: String::from("us"),
             include_purchase_hints: true,
             external_user_id: None,
@@ -87,8 +80,6 @@ impl Default for RecommendOptions {
             storefront_max_remote_calls: 32,
             exclude_graphicaudio_series_sets: false,
             disabled_shelves: Vec::new(),
-            models_dir: None,
-            embed_intra_threads: 1,
             embeddings_enabled: true,
         }
     }
@@ -206,6 +197,11 @@ pub struct Recommendation {
     #[serde(default)]
     #[schema(example = "en")]
     pub language: Option<String>,
+    /// When `Some(true)`, a storefront marks the edition explicit (adult)
+    /// content; `None` when none said (a wishlist entry says nothing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = false)]
+    pub is_explicit: Option<bool>,
     /// Distinct people who have this title on an open wishlist.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wishers: Vec<bookclerk_library::QueueWisher>,
@@ -515,7 +511,7 @@ pub async fn rank_request_queue_taste(
     let listening = load_listening(library, &opts).await?;
     let profile =
         build_taste_profile(library, &books, &TasteWeights::new(), &listening, &opts).await?;
-    let mut embedder = open_candidate_embedder(&opts)?;
+    let mut embedder = open_candidate_embedder(&opts);
 
     let mut ranks = Vec::with_capacity(queue.len());
     for entry in queue {
@@ -692,7 +688,7 @@ pub(crate) async fn rank_candidates(
     let candidates = retain_reader_languages(candidates, languages);
     let candidates = retain_unowned_works(library, candidates).await?;
     let profile = TasteProfile::from_scores(library, scores, opts).await?;
-    let mut embedder = open_candidate_embedder(opts)?;
+    let mut embedder = open_candidate_embedder(opts);
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
 
     for c in candidates {
@@ -796,6 +792,7 @@ pub(crate) async fn rank_candidates(
             published_at: c.published_at,
             genres: c.categories,
             language: c.language,
+            is_explicit: c.is_explicit,
             seed_title: c.seed_title,
             starter_genre: c.starter_genre,
             ..Default::default()
@@ -1889,16 +1886,10 @@ async fn seed_embedding_centroid(
     }
 }
 
-/// Opens the candidate embedder: none when similarity is off, local-hash
-/// without a models dir, otherwise ONNX with the local-hash fallback.
-fn open_candidate_embedder(opts: &RecommendOptions) -> Result<Option<Box<dyn Embedder>>> {
-    if !opts.embeddings_enabled {
-        return Ok(None);
-    }
-    let Some(dir) = &opts.models_dir else {
-        return Ok(Some(Box::new(crate::embed::HashEmbedder::new(384))));
-    };
-    Ok(Some(open_embedder(dir, opts.embed_intra_threads, true)?))
+/// Opens the candidate embedder: none when similarity is off, otherwise
+/// the local-hash stand-in.
+fn open_candidate_embedder(opts: &RecommendOptions) -> Option<Box<dyn Embedder>> {
+    opts.embeddings_enabled.then(open_embedder)
 }
 
 /// Weight of a liked genre the candidate itself lists.
@@ -2171,15 +2162,9 @@ mod tests {
     }
 
     #[test]
-    fn candidates_use_local_hash_without_a_models_dir() {
-        let opts = RecommendOptions {
-            models_dir: None,
-            embeddings_enabled: true,
-            ..RecommendOptions::default()
-        };
-        let embedder = open_candidate_embedder(&opts)
-            .unwrap()
-            .expect("similarity stays on without ONNX");
+    fn candidates_use_local_hash_when_similarity_is_on() {
+        let embedder = open_candidate_embedder(&RecommendOptions::default())
+            .expect("similarity is on by default");
         assert_eq!(embedder.model_id(), crate::embed::MODEL_LOCAL_HASH_V1);
     }
 
@@ -2189,7 +2174,7 @@ mod tests {
             embeddings_enabled: false,
             ..RecommendOptions::default()
         };
-        assert!(open_candidate_embedder(&opts).unwrap().is_none());
+        assert!(open_candidate_embedder(&opts).is_none());
     }
 
     /// A ranked queue entry names the library work its wishes resolve to, so
@@ -2267,9 +2252,11 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
+                is_explicit: None,
                 store_rank: None,
                 work_id: None,
                 expression_id: None,
+                publisher_votes: Vec::new(),
             };
         let opts = RecommendOptions {
             include_purchase_hints: false,
@@ -2396,7 +2383,11 @@ mod tests {
             .create_user(bookclerk_library::UserRole::Owner, Some("Ada"), None)
             .await
             .unwrap();
-        let work = store.work_id_for_book(&book.uuid).await.unwrap().unwrap();
+        let work = store
+            .work_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         store
             .set_user_title_state(
                 ada.id,

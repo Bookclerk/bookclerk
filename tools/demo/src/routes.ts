@@ -171,11 +171,12 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/database/migrate", "deny"],
   ["GET", "/api/settings", "allow"],
   ["PATCH", "/api/settings", "deny"],
-  // The visitor's own copy's sent diagnostics reports: read-only.
+  // The visitor's own copy's sent diagnostics reports: read-only. Reading
+  // one back asks the collector for that report with the copy's own access
+  // code, which shows only what the copy sent. Deleting it would remove the
+  // collector's copy for everyone working on the demo's bug: refused.
   ["GET", "/api/diagnostics/reports", "allow"],
-  // Reading a report back or deleting it calls the real collector with the
-  // copy's access code: refused.
-  ["GET", "/api/diagnostics/reports/{id}", "deny"],
+  ["GET", "/api/diagnostics/reports/{id}", "allow"],
   ["DELETE", "/api/diagnostics/reports/{id}", "deny"],
 
   // Plugins: the image's own storefronts only; no installs or changes.
@@ -218,11 +219,16 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/events/deliveries/{id}/cancel", "deny"],
   ["POST", "/api/events/deliveries/{id}/resume", "deny"],
   ["POST", "/api/events/deliveries/{id}/retry", "deny"],
+  // Plugin webhooks: the demo hands out no public URL, and a visitor must
+  // not feed a guest deliveries it never asked for.
+  ["POST", "/hooks/{token}/{name}", "deny"],
 
-  // Jobs and the library: scan the visitor's accounts, never acquire.
+  // Jobs and the library: scan the visitor's accounts, never acquire or
+  // convert (a convert writes a new copy to storage, like an acquire).
   ["GET", "/api/jobs", "allow"],
   ["POST", "/api/jobs/{id}/cancel", "allow"],
   ["POST", "/api/library/acquire", "deny"],
+  ["POST", "/api/library/convert", "deny"],
   ["GET", "/api/library/works", "allow"],
   ["GET", "/api/library/works/{id}", "allow"],
   ["PUT", "/api/library/works/{id}/state", "allow"],
@@ -257,6 +263,32 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/playback/sessions/{id}/sync", "allow"],
   ["POST", "/api/playback/sessions/{id}/close", "allow"],
   ["GET", "/api/playback/sessions/{id}/tracks/{index}", "allow"],
+
+  // Notifications. Visitors may read settings, the catalog, the delivery
+  // log and their inbox, and change routing choices. Anything that adds,
+  // tests or resumes a destination is refused: a destination is where the
+  // library would send messages, and the demo must not become a way to
+  // send them anywhere.
+  ["GET", "/api/notifications/catalog", "allow"],
+  ["GET", "/api/notifications/channels", "allow"],
+  ["POST", "/api/notifications/channels", "deny"],
+  ["PATCH", "/api/notifications/channels/{id}", "deny"],
+  ["DELETE", "/api/notifications/channels/{id}", "deny"],
+  ["POST", "/api/notifications/channels/{id}/resume", "deny"],
+  ["POST", "/api/notifications/channels/{id}/test", "deny"],
+  ["GET", "/api/notifications/routes", "allow"],
+  ["PUT", "/api/notifications/routes/{type}", "allow"],
+  ["GET", "/api/notifications/offers", "allow"],
+  ["PUT", "/api/notifications/offers/{type}", "allow"],
+  ["GET", "/api/notifications/deliveries", "allow"],
+  ["GET", "/api/me/notifications", "allow"],
+  ["PUT", "/api/me/notifications/choices/{type}", "allow"],
+  ["DELETE", "/api/me/notifications/choices/{type}", "allow"],
+  ["POST", "/api/me/notifications/destinations", "deny"],
+  ["DELETE", "/api/me/notifications/destinations/{id}", "deny"],
+  ["POST", "/api/me/notifications/destinations/{id}/resume", "deny"],
+  ["GET", "/api/me/notifications/inbox", "allow"],
+  ["POST", "/api/me/notifications/inbox/read", "allow"],
   // Same-origin cover images; the token only names URLs the API handed out.
   ["GET", "/api/covers/{token}/{size}", "allow"],
   // Same-origin Gravatars (fixed host, validated hash) and store icons (from

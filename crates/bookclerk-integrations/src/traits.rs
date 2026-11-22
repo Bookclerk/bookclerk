@@ -14,8 +14,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_abi::{
-    DomainEvent, EventResult, MetadataChapters, MetadataChaptersParams, MetadataLookupParams,
-    MetadataRecord, MetadataSearchParams, QueueBatch, QueueResult,
+    AiModelList, AiRunOk, AiRunParams, DomainEvent, EventResult, MetadataChapters,
+    MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataSearchParams, QueueBatch,
+    QueueResult,
 };
 
 use crate::brand::Brand;
@@ -359,6 +360,105 @@ pub trait Integration: Send + Sync {
             "integration `{}` does not fetch covers",
             self.id()
         )))
+    }
+
+    /// Whether this integration exports the `ai` entrypoint (serves models).
+    ///
+    /// Default: `false`.
+    fn supports_ai(&self) -> bool {
+        false
+    }
+
+    /// The models this integration serves now (`AiModels.models`), already
+    /// checked and limited to the tasks its manifest declares.
+    ///
+    /// Errors keep the plugin's code, so the model router can tell a
+    /// missing model from a plugin that is down.
+    ///
+    /// Default: unsupported.
+    async fn ai_models(
+        &self,
+    ) -> std::result::Result<AiModelList, bookclerk_plugin_abi::PluginError> {
+        Err(bookclerk_plugin_abi::PluginError::unsupported(format!(
+            "integration `{}` does not serve models",
+            self.id()
+        )))
+    }
+
+    /// Runs one of this integration's models (`AiModels.run`);
+    /// `params.model` is the plugin's own model id. The reply is as the
+    /// plugin sent it: the model router checks it against the listing.
+    ///
+    /// Default: unsupported.
+    async fn ai_run(
+        &self,
+        _params: AiRunParams,
+    ) -> std::result::Result<AiRunOk, bookclerk_plugin_abi::PluginError> {
+        Err(bookclerk_plugin_abi::PluginError::unsupported(format!(
+            "integration `{}` does not serve models",
+            self.id()
+        )))
+    }
+
+    /// Whether this integration exports the `notifier` entrypoint (delivers
+    /// notifications to destinations).
+    ///
+    /// Default: `false`.
+    fn supports_notifier(&self) -> bool {
+        false
+    }
+
+    /// Delivers one checked notification through `Notifier.send`.
+    ///
+    /// # Returns
+    ///
+    /// The guest's own answer: a [`bookclerk_plugin_abi::NotifySent`] or
+    /// the [`bookclerk_plugin_abi::PluginError`] it raised, which the send
+    /// job classifies (`rate_limited` and `unavailable` are retried).
+    ///
+    /// # Errors
+    ///
+    /// An [`IntegrationError`] when the guest could not be reached, or by
+    /// default (the integration is not a notifier).
+    async fn notify_send(
+        &self,
+        _params: bookclerk_plugin_abi::NotifySendParams,
+    ) -> Result<
+        std::result::Result<bookclerk_plugin_abi::NotifySent, bookclerk_plugin_abi::PluginError>,
+    > {
+        Err(self.notifier_unsupported())
+    }
+
+    /// Normalises a patron's address document through
+    /// `Notifier.validateDestination`.
+    ///
+    /// # Returns
+    ///
+    /// The guest's own answer: the normalised document or the error it
+    /// raised (`invalid_params` for an address it refuses).
+    ///
+    /// # Errors
+    ///
+    /// An [`IntegrationError`] when the guest could not be reached, or by
+    /// default.
+    async fn notify_validate_destination(
+        &self,
+        _params: bookclerk_plugin_abi::NotifyValidateParams,
+    ) -> Result<
+        std::result::Result<
+            bookclerk_plugin_abi::NotifyValidated,
+            bookclerk_plugin_abi::PluginError,
+        >,
+    > {
+        Err(self.notifier_unsupported())
+    }
+
+    /// The error the default notifier methods return.
+    fn notifier_unsupported(&self) -> IntegrationError {
+        IntegrationError::message(format!(
+            "integration `{}` does not deliver notifications",
+            self.id()
+        ))
     }
 
     /// Human-readable connectivity probe for CLI / ops (`integrations test`).

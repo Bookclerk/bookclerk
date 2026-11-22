@@ -29,7 +29,7 @@ A native guest implements `PluginWorker` (`describe`, and
 stdin and stdout Cap'n Proto runner. The entrypoints it returns are the
 same named entrypoints the other SDKs export as classes: storefront,
 storage, remote library, database adapter, CLI, OIDC, metadata, covers,
-metadata files and notifier. The
+metadata files, notifier and model plugin (`ai`). The
 crate root re-exports the DTOs and helpers a guest needs; prefer
 `use bookclerk_plugin_sdk::…` over reaching into submodules.
 
@@ -119,6 +119,17 @@ host calls `poll_events` right away instead of at its next scheduled
 poll. The Audiobookshelf plugin, written in TypeScript, is a worked
 example of the same conversation
 (`crates/bookclerk-plugins/optional/integration-audiobookshelf/src/push.ts`).
+
+## Inbound webhooks
+
+A plugin that declares `[[webhooks]]` (see
+[Inbound webhooks](../../abi.md#inbound-webhooks-webhooks)) receives
+`Webhooks` on `Bindings::webhooks` in `open` (`url`, `pull` and `ack`,
+with `WebhookPullRequest` and `WebhookAckRequest`), and may return a
+`WebhookHandler` on `Entrypoints::webhook_handler`, whose `delivered` the
+host calls on a running guest once a request is stored.
+`bookclerk_plugin_abi::webhooks` has the checks the host applies, so a
+plugin can validate a pull before sending it.
 
 ## Author tools
 

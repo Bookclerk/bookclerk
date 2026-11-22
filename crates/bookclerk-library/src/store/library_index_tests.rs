@@ -44,7 +44,7 @@ async fn scan(
     book.authors = Some(author.into());
     let saved = store.upsert_book(&book).await.unwrap();
     store
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .unwrap()
         .expect("a scanned title has a work")
@@ -291,7 +291,7 @@ async fn an_acquire_moves_the_works_status_and_a_rebuild_walks_every_work_under(
     let other = scan(&store, "B031", "acct-1", "Also Rebuilt", "E. Author").await;
     store
         .set_acquire_status(
-            &saved.uuid,
+            &saved.holding_id,
             "acct-1",
             AcquireStatus::Acquired,
             Some("k.m4b"),
@@ -338,7 +338,11 @@ async fn an_acquire_moves_the_works_status_and_a_rebuild_walks_every_work_under(
         store.work_of_edition("no-such-edition").await.unwrap(),
         None
     );
-    let edition = store.edition_of_book(&saved.uuid).await.unwrap().unwrap();
+    let edition = store
+        .edition_of_holding(&saved.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
     let work = store.work_of_edition(&edition).await.unwrap().unwrap();
     assert_ne!(work, other);
 }
@@ -541,7 +545,7 @@ async fn scan_full(
     });
     let saved = store.upsert_book(&book).await.unwrap();
     store
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .unwrap()
         .expect("a scanned title has a work")
@@ -889,7 +893,7 @@ async fn one_refresh_of_many_works_writes_each_row_and_its_values_under(profile:
         let saved = store.upsert_book(&book).await.unwrap();
         works.push(
             store
-                .work_id_for_book(&saved.uuid)
+                .work_of_holding(&saved.holding_id)
                 .await
                 .unwrap()
                 .expect("a scanned title has a work"),

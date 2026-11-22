@@ -175,7 +175,7 @@ jailed, after `bookclerk plugins approve` (see
 ## Artifact naming (install without Rust)
 
 **Native:** release each version as a **per-target archive** (`.tar.gz`
-on Unix, `.zip` on Windows) containing at least:
+on Unix, `.zip` on Windows, by convention) containing at least:
 
 ```text
 plugin.toml
@@ -258,6 +258,9 @@ bookclerk-plugin-source-example-0.1.0-windows-x64.zip
 ```
 
 - With Option A, `{ext}` is `tar.gz`, or `zip` for Windows targets.
+- The installer reads an archive's format from its first bytes, not from
+  its name or target, so either format installs on any platform and a
+  file that is neither is refused.
 - `{tag}` is usually `v{version}` when the host uses git-style tags. Hosts
   that key only by version can leave `{tag}` out of the template.
 - Prefer inlining digests in `artifacts[]` (a static registry or Cargo
@@ -395,7 +398,7 @@ This is the preferred portable path:
 1. Extend `BookclerkEntrypoint` for event and job triggers.
 2. Export one `*Entrypoint` subclass per named entrypoint (`Storefront`,
    `Storage`, `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc`,
-   `Metadata`, `Covers`, `MetadataFiles`, `Notifier`).
+   `Metadata`, `Covers`, `MetadataFiles`, `Notifier`, `Ai`).
 3. Ship `plugin.toml` + `modules/`.
 
 Start from

@@ -211,6 +211,21 @@ pub(crate) async fn user_wire(
         .list_user_bookmarks(user.id, MAX_USER_BOOKMARKS)
         .await
         .map_err(|err| PlayerError::failed(ROUTE, &err))?;
+    // The patron's apps learn only of the books their scope shows them.
+    let scope = bookclerk_library::control_plane::work_scope_for_user(library, user)
+        .await
+        .map_err(|err| PlayerError::failed(ROUTE, &err))?;
+    let shown = super::listening::editions_in_scope(
+        library,
+        scope.as_ref(),
+        progress
+            .iter()
+            .map(|p| p.edition_id.clone())
+            .chain(bookmarks.iter().map(|b| b.edition_id.clone()))
+            .collect(),
+    )
+    .await
+    .map_err(|err| PlayerError::failed(ROUTE, &err))?;
     let download = bookclerk_library::control_plane::user_may(
         library,
         user.id,
@@ -229,11 +244,13 @@ pub(crate) async fn user_wire(
         is_old_token: false,
         media_progress: progress
             .into_iter()
+            .filter(|p| shown.contains(&p.edition_id))
             .map(|p| super::listening::progress_wire(user.id, p))
             .collect(),
         series_hide_from_continue_listening: Vec::new(),
         bookmarks: bookmarks
             .into_iter()
+            .filter(|b| shown.contains(&b.edition_id))
             .map(super::listening::bookmark_wire)
             .collect(),
         is_active: true,

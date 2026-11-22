@@ -10,6 +10,7 @@
 import type { DatabaseBinding } from "./db-execute.js";
 import type { OriginBinding } from "./origin.js";
 import type {
+  AiTextRole,
   EventReadPage,
   NetworkGrant,
   NotificationAlertAction,
@@ -198,6 +199,61 @@ export interface EventPublisherBinding {
    *   consumer, `invalid_cursor` for a cursor the host did not issue.
    */
   read(options?: EventReadOptions): Promise<EventReadPage>;
+}
+
+/** Input of a text-embedding model on {@link AiBinding.run}. */
+export interface AiTextEmbeddingsRequest {
+  /** One text or a batch (at most `MAX_AI_EMBED_TEXTS`), none empty. */
+  text: string | string[];
+  /**
+   * What the texts are: `document` (the default) for stored content, `query`
+   * for a search query matched against documents. Some models embed the two
+   * differently.
+   */
+  role?: AiTextRole;
+}
+
+/** Output of a text-embedding model on {@link AiBinding.run}. */
+export interface AiTextEmbeddingsResponse {
+  /** `[number of texts, numbers per vector]`. */
+  shape: [number, number];
+  /** One vector per input text, in input order. */
+  data: number[][];
+  /** Full name of the model that ran, also when an alias was asked for. */
+  model: string;
+  /**
+   * Revision of the model that made the vectors. Vectors are comparable only
+   * when their model and revision match, so store both beside each vector.
+   */
+  revision: string;
+  /**
+   * Indexes of the texts the tokenizer could not cover with the loaded
+   * language packs; their vectors are worth recomputing once a pack is added.
+   */
+  fallbacks: number[];
+}
+
+/**
+ * `AI` binding, present when `plugin.toml` lists tasks under `[ai].calls` and
+ * the operator approved them. The host routes each run to the deployed plugin
+ * that serves the model; the shape follows the `AI` binding of Cloudflare
+ * Workers.
+ */
+export interface AiBinding {
+  /**
+   * Run one model on one input.
+   *
+   * @param model - `@<plugin id>/<model id>`, or a task alias such as
+   *   `@library/text-embeddings` for the model the library chose.
+   * @param input - The input of the model's task.
+   * @returns The model's output.
+   * @throws PluginError `invalid_params` for a malformed run, `not_found` when
+   *   nothing deployed serves the model, `forbidden` for a task that is not
+   *   granted, `rate_limited` past the plugin's budget (work over many items
+   *   belongs in a job), `deadline_exceeded` or `unavailable` when the model
+   *   plugin cannot answer.
+   */
+  run(model: string, input: AiTextEmbeddingsRequest): Promise<AiTextEmbeddingsResponse>;
 }
 
 /** One notification a plugin raises through {@link NotifyBinding.raise}. */
@@ -478,6 +534,95 @@ export interface StorageBinding {
 }
 
 /**
+ * One stored webhook request, leased to the plugin by
+ * {@link WebhooksBinding.pull}. Shaped like a pulled Workers Queue message:
+ * acknowledge it with {@link WebhooksBinding.ack} once handled, or it is
+ * offered again when its lease runs out.
+ */
+export interface WebhookMessage {
+  /** Lease id for `ack`; a new one each time the request is pulled. */
+  leaseId: string;
+  /** When the host stored the request, as a `Date`. */
+  timestamp: Date;
+  /** How many times the request has been pulled, counting this one. */
+  attempts: number;
+  /**
+   * Kept request headers, lowercase names: those the `[[webhooks]]` row
+   * lists, plus `content-type`.
+   */
+  headers: Record<string, string>;
+  /** Request body as received. */
+  body: Uint8Array;
+}
+
+/** What one {@link WebhooksBinding.pull} leased. */
+export interface WebhookPullResult {
+  /** Leased requests, oldest first. */
+  messages: WebhookMessage[];
+  /**
+   * True when the host dropped requests for this webhook since the last
+   * pull (its waiting cap was full, or a request expired unacknowledged):
+   * treat what the requests describe as incomplete and fall back to a full
+   * listing.
+   */
+  missed: boolean;
+}
+
+/** Options for {@link WebhooksBinding.pull}. */
+export interface WebhookPullOptions {
+  /** Most requests to lease, 1 to 100; defaults to 10. */
+  batchSize?: number;
+  /**
+   * How long leased requests stay hidden from the next pull, in
+   * milliseconds, at most 12 hours; defaults to one minute.
+   */
+  visibilityTimeoutMs?: number;
+}
+
+/**
+ * `WEBHOOKS` binding (`[[webhooks]]`): the instance's inbound webhooks. The
+ * host serves each row at a secret URL, checks each request's size, rate
+ * and signature, and stores it until the plugin pulls and acknowledges it.
+ * The default entrypoint's `webhookDelivered(event)` runs when requests
+ * arrive.
+ */
+export interface WebhooksBinding {
+  /**
+   * The URL to register with the outside service for one webhook.
+   *
+   * @param name - `[[webhooks]]` name.
+   * @returns The URL, or `null` when the library cannot be reached from the
+   *   Internet or webhooks are turned off; use the fallback then.
+   */
+  url(name: string): Promise<string | null>;
+  /**
+   * Lease waiting requests for one webhook, oldest first.
+   *
+   * @param name - `[[webhooks]]` name.
+   * @param options - Batch size and lease length.
+   * @returns The leased requests and whether any were missed.
+   */
+  pull(name: string, options?: WebhookPullOptions): Promise<WebhookPullResult>;
+  /**
+   * Finish leased requests: `acks` are deleted, `retries` are offered again
+   * on the next pull.
+   *
+   * @param name - `[[webhooks]]` name.
+   * @param leases - Lease ids to acknowledge and to retry.
+   * @returns Resolves when the host recorded both lists.
+   */
+  ack(name: string, leases: { acks?: string[]; retries?: string[] }): Promise<void>;
+}
+
+/** Argument of the default entrypoint's `webhookDelivered(event)`. */
+export interface WebhookDeliveredEvent {
+  /** `[[webhooks]]` name. */
+  name: string;
+  /** Requests waiting for this webhook when the host called. */
+  waiting: number;
+}
+
+/**
  * Guest `env` bindings for `api_version = 3` manifests. Every host-provided
  * facility is a binding here; there is no `HOST` object. Bindings appear only
  * when `plugin.toml` declares them and the operator has consented.
@@ -498,6 +643,8 @@ export interface BookclerkEnv {
   KV?: KvNamespaceBinding;
   /** `[sockets]` host-brokered WebSockets (default name). */
   SOCKETS?: SocketsBinding;
+  /** `[[webhooks]]` inbound webhooks. */
+  WEBHOOKS?: WebhooksBinding;
   /**
    * The network grant in effect: fetch hosts, TCP destinations, and each
    * network setting's destination with its approval state (`pending` until
@@ -511,6 +658,8 @@ export interface BookclerkEnv {
    * instance is the active ingress.
    */
   ORIGIN?: OriginBinding;
+  /** `[ai].calls` model runner. */
+  AI?: AiBinding;
   /** `[oauth]` loopback helper; surface reserved. */
   OAUTH?: unknown;
   /**

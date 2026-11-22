@@ -10,7 +10,7 @@ use bookclerk_node_proto::{
 };
 use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
-use crate::BookRecord;
+use crate::AcquireTitle;
 
 use super::*;
 use crate::control_plane::{
@@ -68,7 +68,6 @@ async fn add_branch(store: &LibraryStore, node_id: &str, owner: i64) {
 
 fn book(account: &str, asin: &str) -> NewBook {
     NewBook {
-        uuid: None,
         product_id: asin.into(),
         plugin_key: PLUGIN.into(),
         source: "audible".into(),
@@ -94,7 +93,7 @@ fn book(account: &str, asin: &str) -> NewBook {
 }
 
 /// Records `asin` as a book of `user` on `account` and returns its row.
-async fn hold(store: &LibraryStore, user: i64, account: &str, asin: &str) -> BookRecord {
+async fn hold(store: &LibraryStore, user: i64, account: &str, asin: &str) -> AcquireTitle {
     store
         .upsert_account(PLUGIN, account, "us", None, true, "audible")
         .await
@@ -111,8 +110,12 @@ async fn hold(store: &LibraryStore, user: i64, account: &str, asin: &str) -> Boo
 }
 
 /// The work of `book`.
-async fn work_of(store: &LibraryStore, book: &BookRecord) -> String {
-    store.work_id_for_book(&book.uuid).await.unwrap().unwrap()
+async fn work_of(store: &LibraryStore, book: &AcquireTitle) -> String {
+    store
+        .work_of_holding(&book.holding_id)
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 /// Has [`BRANCH`] answer that it can supply `asin` for `work`.
@@ -525,7 +528,7 @@ async fn a_branch_sends_a_requested_members_book_to_the_library_that_asked() {
             "{name}"
         );
 
-        for (uuid, account) in [(&members.uuid, "riley-acct")] {
+        for (uuid, account) in [(&members.holding_id, "riley-acct")] {
             store
                 .set_acquire_status(uuid, account, AcquireStatus::Acquired, Some("m.m4b"), None)
                 .await
@@ -636,9 +639,9 @@ async fn a_library_that_acquires_all_members_books_is_sent_every_listed_one() {
             .await
             .unwrap();
         for (uuid, account) in [
-            (&owners.uuid, "owner-acct"),
-            (&members.uuid, "riley-acct"),
-            (&orphan.uuid, "nobody-acct"),
+            (&owners.holding_id, "owner-acct"),
+            (&members.holding_id, "riley-acct"),
+            (&orphan.holding_id, "nobody-acct"),
         ] {
             store
                 .set_acquire_status(uuid, account, AcquireStatus::Acquired, Some("b.m4b"), None)
@@ -666,7 +669,7 @@ async fn a_library_that_acquires_all_members_books_is_sent_every_listed_one() {
         .await
         .unwrap();
         let keys = store.all_acquired_title_keys().await;
-        let key_of = |book: &crate::models::BookRecord| {
+        let key_of = |book: &AcquireTitle| {
             keys.iter()
                 .find(|k| k.account_id == book.account_id && k.product_id == book.product_id)
                 .unwrap()

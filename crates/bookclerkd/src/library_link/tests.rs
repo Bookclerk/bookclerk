@@ -833,6 +833,13 @@ async fn a_host_runs_its_owners_scan_end_to_end() {
     }
 }
 
+/// The test's job lease, in seconds: long enough that a slow runner
+/// reconnects (close, 1.5 s back-off, handshake) before the host's own
+/// renew loop gives the fence up. Each connection takes the lease when it
+/// opens, so the second job's lease is this long too, and the owner reclaims
+/// it once it runs out while the host is away.
+const RESUME_LEASE_SECS: u64 = 8;
+
 /// A fence still held when the connection drops is resumed on reconnect
 /// and the job finishes under it; a fence reclaimed while the host was
 /// away is lost on reconnect, its run is cancelled and its result
@@ -843,7 +850,7 @@ async fn a_reconnecting_host_resumes_live_fences_and_drops_lost_ones() {
     let owner_files = tempfile::tempdir().unwrap();
     let host_files = tempfile::tempdir().unwrap();
     let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
-    state.config.write().await.jobs.lease_seconds = 3;
+    state.config.write().await.jobs.lease_seconds = RESUME_LEASE_SECS;
     let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
     let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
     let host = host_store(host_files.path()).await;
@@ -877,8 +884,8 @@ async fn a_reconnecting_host_resumes_live_fences_and_drops_lost_ones() {
     crate::node_api::ws::close_node_sessions(&node_id, CLOSE_SUPERSEDED);
     connected(&handle, 2).await;
     assert_eq!(handle.held_fences().len(), 1, "the fence survived");
-    // Renewals carry on past the 3 s lease under the resumed fence.
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    // Renewals carry on past the lease under the resumed fence.
+    tokio::time::sleep(Duration::from_secs(RESUME_LEASE_SECS + 1)).await;
     let running = job(&owner, &first).await;
     assert_eq!(running.state, JobState::Running);
     assert_eq!(running.lease_generation, fence);
@@ -1642,10 +1649,10 @@ mod results_and_uploads {
         }
 
         async fn import_owner_title(&self, copy: super::super::host_jobs::OwnerTitleCopy<'_>) {
-            self.imported.lock().unwrap().push((
-                copy.book.uuid.clone().unwrap_or_default(),
-                copy.files.to_vec(),
-            ));
+            self.imported
+                .lock()
+                .unwrap()
+                .push((copy.holding_id.to_owned(), copy.files.to_vec()));
         }
 
         fn work_dir(&self) -> PathBuf {
@@ -1669,7 +1676,6 @@ mod results_and_uploads {
     /// An owner library row of the store plugin.
     fn owner_book(account_id: &str, product_id: &str) -> NewBook {
         NewBook {
-            uuid: None,
             product_id: product_id.into(),
             plugin_key: PLUGIN.into(),
             source: "test".into(),
@@ -1820,7 +1826,11 @@ mod results_and_uploads {
             "{:?}",
             done.progress
         );
-        let books = world.owner.list_books(Some("riley-acct")).await.unwrap();
+        let books = world
+            .owner
+            .all_acquire_titles(Some("riley-acct"))
+            .await
+            .unwrap();
         for product in ["p1", "p2"] {
             let book = books
                 .iter()
@@ -1854,7 +1864,7 @@ mod results_and_uploads {
         );
         assert!(world
             .owner
-            .list_books(Some("riley-acct"))
+            .all_acquire_titles(Some("riley-acct"))
             .await
             .unwrap()
             .iter()
@@ -2114,14 +2124,14 @@ mod results_and_uploads {
         assert_ne!(job(&world.owner, &job_id).await.state, JobState::Succeeded);
         assert!(world
             .owner
-            .list_books(Some("sam-acct"))
+            .all_acquire_titles(Some("sam-acct"))
             .await
             .unwrap()
             .is_empty());
         assert!(
             world
                 .owner
-                .list_books(Some("riley-acct"))
+                .all_acquire_titles(Some("riley-acct"))
                 .await
                 .unwrap()
                 .is_empty(),
@@ -2173,16 +2183,13 @@ mod results_and_uploads {
         .await;
         let acquired = world
             .owner
-            .get_book_by_uuid(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            acquired.acquire_status,
-            bookclerk_library::AcquireStatus::Acquired
-        );
+        assert_eq!(acquired.status, bookclerk_library::AcquireStatus::Acquired);
         let key = acquired.storage_key.clone().unwrap_or_default();
-        let id = call_number(&world.owner, &book.uuid).await;
+        let id = call_number(&world.owner, &book.holding_id).await;
         assert_eq!(
             key,
             format!("Author/Title t1/Title t1 [{id}].m4b"),
@@ -2198,7 +2205,7 @@ mod results_and_uploads {
             payload,
             "the host's own destination has its copy"
         );
-        let holding = holding_of(&world.owner, &book.uuid).await;
+        let holding = holding_of(&world.owner, &book.holding_id).await;
         assert_eq!(
             guests.imported.lock().unwrap().as_slice(),
             &[(
@@ -2361,7 +2368,7 @@ mod results_and_uploads {
         .await;
         let key = world
             .owner
-            .get_book_by_uuid(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap()
@@ -2422,7 +2429,7 @@ mod results_and_uploads {
         world
             .owner
             .set_acquire_status(
-                &held.uuid,
+                &held.holding_id,
                 "kim-acct",
                 bookclerk_library::AcquireStatus::Acquired,
                 Some(key),
@@ -2444,7 +2451,7 @@ mod results_and_uploads {
         .await;
         let edition = world
             .owner
-            .edition_of_book(&book.uuid)
+            .edition_of_holding(&book.holding_id)
             .await
             .unwrap()
             .expect("the title has an edition");
@@ -2536,7 +2543,7 @@ mod results_and_uploads {
             editions.push(
                 world
                     .owner
-                    .edition_of_book(&book.uuid)
+                    .edition_of_holding(&book.holding_id)
                     .await
                     .unwrap()
                     .expect("the title has an edition"),
@@ -2642,7 +2649,7 @@ mod results_and_uploads {
         assert_eq!(std::fs::read(&s3_files[0]).unwrap(), payload);
         let acquired = world
             .owner
-            .get_book_by_uuid(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
@@ -2847,14 +2854,11 @@ mod results_and_uploads {
         assert!(objects(s3_out.path()).is_empty());
         let row = world
             .owner
-            .get_book_by_uuid(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
-        assert_ne!(
-            row.acquire_status,
-            bookclerk_library::AcquireStatus::Acquired
-        );
+        assert_ne!(row.status, bookclerk_library::AcquireStatus::Acquired);
     }
 
     /// An upload that names a destination whose filter refuses the title is
@@ -2885,7 +2889,7 @@ mod results_and_uploads {
             .request(Body::UploadGrant {
                 job_id: job_id.clone(),
                 fence,
-                holding_id: holding_of(&world.owner, &book.uuid).await,
+                holding_id: holding_of(&world.owner, &book.holding_id).await,
                 primary_key: "Author/Title t1/Title t1.m4b".into(),
                 pdf_key: None,
                 files: vec![file],
@@ -2924,7 +2928,7 @@ mod results_and_uploads {
             local_file("Author/Title t1/cover.jpg", b"jpeg"),
         ];
         let (upload_id, token, _) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &files, &scope).await;
         let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
         assert!(put.starts_with("HTTP/1.1 200"), "{put}");
         exclude_account(&world.owner, "local", "riley-acct").await;
@@ -2958,7 +2962,7 @@ mod results_and_uploads {
         let scope = local_scope("Author/Title t1");
         let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
         let (upload_id, token, _) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &files, &scope).await;
         let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
         assert!(put.starts_with("HTTP/1.1 200"), "{put}");
         exclude_account(&world.owner, "local", "riley-acct").await;
@@ -2971,14 +2975,11 @@ mod results_and_uploads {
         );
         let row = world
             .owner
-            .get_book_by_uuid(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
-        assert_ne!(
-            row.acquire_status,
-            bookclerk_library::AcquireStatus::Acquired
-        );
+        assert_ne!(row.status, bookclerk_library::AcquireStatus::Acquired);
     }
 
     /// The manifest of a title acquired into two destinations: identical
@@ -3189,7 +3190,7 @@ mod results_and_uploads {
             claim.job.lease_generation,
             &owner_node,
             &UploadGrantRequest {
-                holding_id: &holding_of(&world.owner, &title.uuid).await,
+                holding_id: &holding_of(&world.owner, &title.holding_id).await,
                 primary_key: KEY,
                 pdf_key: None,
                 files: std::slice::from_ref(&file),
@@ -3208,7 +3209,7 @@ mod results_and_uploads {
         // The grant's claim is given back and a local acquire of another
         // title records the key, then writes it (an acquire never takes a
         // key a live edition holds).
-        take_granted_key(&world.owner, KEY, &upload_id, &other.uuid).await;
+        take_granted_key(&world.owner, KEY, &upload_id, &other.holding_id).await;
         let mut tcp = tokio::net::TcpStream::connect(world.addr).await.unwrap();
         let head = format!(
             "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
@@ -3317,7 +3318,7 @@ mod results_and_uploads {
             claim.job.lease_generation,
             &owner_node,
             &UploadGrantRequest {
-                holding_id: &holding_of(&world.owner, &second.uuid).await,
+                holding_id: &holding_of(&world.owner, &second.holding_id).await,
                 primary_key: "Author/Title t2/Title t2.m4b",
                 pdf_key: None,
                 files: std::slice::from_ref(&file),
@@ -3389,7 +3390,7 @@ mod results_and_uploads {
         let scope = local_scope("Author/Title t1");
         let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
         let (upload_id, token, _) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &files, &scope).await;
         let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
         assert!(put.starts_with("HTTP/1.1 200"), "{put}");
         assert!(owner_out.path().join("Author/Title t1/t1.m4b").is_file());
@@ -3414,14 +3415,11 @@ mod results_and_uploads {
         assert!(committed.contains("destinations_changed"), "{committed}");
         let row = world
             .owner
-            .get_book_by_uuid(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
-        assert_ne!(
-            row.acquire_status,
-            bookclerk_library::AcquireStatus::Acquired
-        );
+        assert_ne!(row.status, bookclerk_library::AcquireStatus::Acquired);
         assert!(
             !owner_out.path().join("Author/Title t1/t1.m4b").exists(),
             "the refused title's received file is deleted"
@@ -3448,7 +3446,7 @@ mod results_and_uploads {
         let scope = local_scope("Author/Title t1");
         let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
         let (upload_id, token, _) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &files, &scope).await;
         // The node undeploys its only destination before the file arrives.
         crate::node_api::uploads::set_test_destinations(world.owner_files.path(), Vec::new());
         let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
@@ -3503,7 +3501,7 @@ mod results_and_uploads {
         let scope = local_scope("Author/Title t1");
         let files = vec![local_file("Author/Title t1/t1.m4b", bytes)];
         let (upload_id, token, _) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &files, &scope).await;
         (world, owner_out, upload_id, token)
     }
 
@@ -3696,7 +3694,7 @@ mod results_and_uploads {
         let scope = local_scope("Author/Title t1");
         let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
         let (upload_id, token, _) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &files, &scope).await;
         let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
         assert!(put.starts_with("HTTP/1.1 200"), "{put}");
         // The node undeploys its only destination before the commit.
@@ -3706,14 +3704,11 @@ mod results_and_uploads {
         assert!(committed.contains("unavailable"), "{committed}");
         let row = world
             .owner
-            .get_book_by_uuid(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
-        assert_ne!(
-            row.acquire_status,
-            bookclerk_library::AcquireStatus::Acquired
-        );
+        assert_ne!(row.status, bookclerk_library::AcquireStatus::Acquired);
     }
 
     /// A fence lost while a file streams aborts the upload: the owner
@@ -3778,7 +3773,7 @@ mod results_and_uploads {
             claim.job.lease_generation,
             &owner_node,
             &UploadGrantRequest {
-                holding_id: &holding_of(&world.owner, &book.uuid).await,
+                holding_id: &holding_of(&world.owner, &book.holding_id).await,
                 primary_key: "Author/Title t1/t1.m4b",
                 pdf_key: None,
                 files: std::slice::from_ref(&file),
@@ -3946,13 +3941,14 @@ mod results_and_uploads {
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 30).await;
         const KEY: &str = "Author/Title t2/Title t2.m4b";
-        let (upload_id, token) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let (upload_id, token) =
+            grant_one(&world, &job_id, fence, &title.holding_id, KEY, b"abc").await;
         let tcp = put_start(world.addr, &upload_id, &token, 3, b"ab").await;
         eventually("the destination to start writing", || async {
             !files_under(local_out.path()).is_empty()
         })
         .await;
-        take_granted_key(&world.owner, KEY, &upload_id, &other.uuid).await;
+        take_granted_key(&world.owner, KEY, &upload_id, &other.holding_id).await;
         std::fs::write(local_out.path().join(KEY), b"xyz").unwrap();
         let answer = put_finish(tcp, b"c").await;
         assert!(answer.starts_with("HTTP/1.1 422"), "{answer}");
@@ -3983,7 +3979,8 @@ mod results_and_uploads {
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 30).await;
         const KEY: &str = "Author/Title t2/Title t2.m4b";
-        let (upload_id, _) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let (upload_id, _) =
+            grant_one(&world, &job_id, fence, &title.holding_id, KEY, b"abc").await;
         let session = bookclerk_library::control_plane::load_upload(&world.owner, &upload_id)
             .await
             .unwrap()
@@ -4042,7 +4039,8 @@ mod results_and_uploads {
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 30).await;
         const KEY: &str = "Author/Title t2/Title t2.m4b";
-        let (upload_id, token) = grant_one(&world, &job_id, fence, &title.uuid, KEY, b"abc").await;
+        let (upload_id, token) =
+            grant_one(&world, &job_id, fence, &title.holding_id, KEY, b"abc").await;
         let first = put_start(world.addr, &upload_id, &token, 3, b"ab").await;
         eventually("the first attempt to start writing", || async {
             !files_under(local_out.path()).is_empty()
@@ -4088,7 +4086,7 @@ mod results_and_uploads {
     /// upload is granted for); empty when it has none.
     async fn holding_of(store: &LibraryStore, book_uuid: &str) -> String {
         store
-            .title_holding_of_book(book_uuid)
+            .acquire_title_of_holding(book_uuid)
             .await
             .unwrap()
             .map(|title| title.holding_id)
@@ -4201,14 +4199,11 @@ mod results_and_uploads {
         );
         let row = world
             .owner
-            .get_book_by_uuid(&book.uuid)
+            .acquire_title_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
-        assert_ne!(
-            row.acquire_status,
-            bookclerk_library::AcquireStatus::Acquired
-        );
+        assert_ne!(row.status, bookclerk_library::AcquireStatus::Acquired);
     }
 
     /// An upload aborted after some of its files arrived (its fence lost
@@ -4240,7 +4235,7 @@ mod results_and_uploads {
             fence,
             &shared_node_id(&world),
             &UploadGrantRequest {
-                holding_id: &holding_of(&world.owner, &book.uuid).await,
+                holding_id: &holding_of(&world.owner, &book.holding_id).await,
                 primary_key: "Author/Title t1/t1.m4b",
                 pdf_key: None,
                 files: &files,
@@ -4283,7 +4278,7 @@ mod results_and_uploads {
             .await
             .unwrap();
         let dir = "Author/Title t1";
-        let id = call_number(&world.owner, &book.uuid).await;
+        let id = call_number(&world.owner, &book.holding_id).await;
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 60).await;
         let files = vec![
@@ -4299,7 +4294,7 @@ mod results_and_uploads {
             fence,
             &shared_node_id(&world),
             &UploadGrantRequest {
-                holding_id: &holding_of(&world.owner, &book.uuid).await,
+                holding_id: &holding_of(&world.owner, &book.holding_id).await,
                 primary_key: &format!("{dir}/Title t1 [{id}].m4b"),
                 pdf_key: None,
                 files: &files,
@@ -4325,7 +4320,7 @@ mod results_and_uploads {
             .request(Body::UploadGrant {
                 job_id: job_id.clone(),
                 fence,
-                holding_id: holding_of(&world.owner, &book.uuid).await,
+                holding_id: holding_of(&world.owner, &book.holding_id).await,
                 primary_key: format!("{dir}/Title t1 [{id}].m4b"),
                 pdf_key: None,
                 files: vec![files[0].clone()],
@@ -4375,7 +4370,7 @@ mod results_and_uploads {
             fence,
             &shared_node_id(&world),
             &UploadGrantRequest {
-                holding_id: &holding_of(&world.owner, &book.uuid).await,
+                holding_id: &holding_of(&world.owner, &book.holding_id).await,
                 primary_key: "Author/Title t1/t1.m4b",
                 pdf_key: None,
                 files: &files,
@@ -4431,7 +4426,7 @@ mod results_and_uploads {
             .await
             .unwrap();
         let dir = "Author/Title t1";
-        let id = call_number(&world.owner, &book.uuid).await;
+        let id = call_number(&world.owner, &book.holding_id).await;
         let other = world
             .owner
             .scope(PLUGIN, "test")
@@ -4452,7 +4447,7 @@ mod results_and_uploads {
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 60).await;
         let (handle, _stop) = start(&world, StubGuests::default()).await;
-        let holding_id = holding_of(&world.owner, &book.uuid).await;
+        let holding_id = holding_of(&world.owner, &book.holding_id).await;
         let grant = |files: Vec<UploadFile>| {
             let handle = handle.clone();
             let job_id = job_id.clone();
@@ -4502,7 +4497,7 @@ mod results_and_uploads {
             &world.owner,
             "local",
             &format!("{dir}/Title t1 [{id}].cue"),
-            &other.uuid,
+            &other.holding_id,
         )
         .await
         .unwrap();
@@ -4534,7 +4529,7 @@ mod results_and_uploads {
             .request(Body::UploadGrant {
                 job_id: job_id.clone(),
                 fence,
-                holding_id: holding_of(&world.owner, &other.uuid).await,
+                holding_id: holding_of(&world.owner, &other.holding_id).await,
                 primary_key: "Author/Title t2/Title t2.m4b".into(),
                 pdf_key: None,
                 files: vec![local_file("Author/Title t2/Title t2.m4b", b"other")],
@@ -4690,7 +4685,7 @@ mod results_and_uploads {
             local_file("Author/Title t1/old.jpg", b"old jpeg"),
         ];
         let (old_id, old_token, _) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &old_files, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &old_files, &scope).await;
         for (index, body) in [(0, &b"old audio"[..]), (1, &b"old jpeg"[..])] {
             let put = put_raw(world.addr, &old_id, &old_token, index, body).await;
             assert!(put.starts_with("HTTP/1.1 200"), "{put}");
@@ -4698,7 +4693,7 @@ mod results_and_uploads {
         // The replacement claims the audio key and writes it again.
         let new_files = vec![local_file("Author/Title t1/t1.m4b", b"new audio")];
         let (new_id, new_token, superseded) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &new_files, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &new_files, &scope).await;
         let put = put_raw(world.addr, &new_id, &new_token, 0, b"new audio").await;
         assert!(put.starts_with("HTTP/1.1 200"), "{put}");
         // Only now does the old upload's cleanup run.
@@ -4737,7 +4732,7 @@ mod results_and_uploads {
         let scope = local_scope("Author/Title t1");
         let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
         let (upload_id, token, _) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &files, &scope).await;
         let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
         assert!(put.starts_with("HTTP/1.1 200"), "{put}");
         let committed = commit_raw(world.addr, &upload_id, &token, "{}").await;
@@ -4745,7 +4740,7 @@ mod results_and_uploads {
         // A re-send of the title that never commits.
         let extra = vec![local_file("Author/Title t1/extra.jpg", b"jpeg")];
         let (left_id, left_token, _) =
-            grant_direct(&world, &job_id, fence, &book.uuid, &extra, &scope).await;
+            grant_direct(&world, &job_id, fence, &book.holding_id, &extra, &scope).await;
         let put = put_raw(world.addr, &left_id, &left_token, 0, b"jpeg").await;
         assert!(put.starts_with("HTTP/1.1 200"), "{put}");
         assert!(owner_out.path().join("Author/Title t1/extra.jpg").is_file());
@@ -4826,7 +4821,7 @@ mod results_and_uploads {
         let planned: Vec<&str> = targets.iter().map(|t| t.holding_id.as_str()).collect();
         assert_eq!(
             planned,
-            vec![holding_of(&world.owner, &fresh.uuid).await.as_str()]
+            vec![holding_of(&world.owner, &fresh.holding_id).await.as_str()]
         );
     }
 
@@ -4871,7 +4866,7 @@ mod results_and_uploads {
         let Body::AcquireTargets { targets, .. } = answer.body else {
             panic!("expected targets: {answer:?}");
         };
-        let episode_holding = holding_of(&world.owner, &episode.uuid).await;
+        let episode_holding = holding_of(&world.owner, &episode.holding_id).await;
         let target = targets
             .iter()
             .find(|t| t.holding_id == episode_holding)
@@ -4920,7 +4915,7 @@ mod results_and_uploads {
             .unwrap()
             .remove(0)
             .options;
-        let short = bookclerk_acquire::call_number_of(&world.owner, &book.uuid)
+        let short = bookclerk_acquire::call_number_of(&world.owner, &book.holding_id)
             .await
             .unwrap();
         let key = planned_key(
@@ -4928,7 +4923,7 @@ mod results_and_uploads {
             short.as_deref(),
             &options,
         );
-        record_for_book(&world.owner, "local", &key, &other.uuid)
+        record_for_book(&world.owner, "local", &key, &other.holding_id)
             .await
             .unwrap();
         let guests = StubGuests {
@@ -5131,7 +5126,7 @@ mod results_and_uploads {
             .unwrap();
         let owner_of = world
             .owner
-            .file_owner_of_book(&book.uuid)
+            .file_owner_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
@@ -5361,7 +5356,7 @@ mod results_and_uploads {
             .unwrap();
         let owner_of = world
             .owner
-            .file_owner_of_book(&book.uuid)
+            .file_owner_of_holding(&book.holding_id)
             .await
             .unwrap()
             .unwrap();
@@ -5819,7 +5814,7 @@ async fn record_for_book(
     book_uuid: &str,
 ) -> bookclerk_library::Result<()> {
     let owner = store
-        .file_owner_of_book(book_uuid)
+        .file_owner_of_holding(book_uuid)
         .await?
         .expect("the book resolves to an edition");
     store
@@ -5984,7 +5979,7 @@ async fn the_grant_and_the_host_name_a_title_from_the_same_fields() {
     book.series_index = Some("1".into());
     let row = owner.upsert_book(&book).await.unwrap();
     let holding = owner
-        .title_holding_of_book(&row.uuid)
+        .acquire_title_of_holding(&row.holding_id)
         .await
         .unwrap()
         .expect("the title's holding")
@@ -6025,13 +6020,7 @@ async fn the_grant_and_the_host_name_a_title_from_the_same_fields() {
         purchased_at: Some("not a date".into()),
         published_at: Some("2020-01-02T03:04:05+00:00".into()),
     };
-    let insert = scratch_book(
-        &title.plugin_key,
-        &title.account_id,
-        Some(holding.clone()),
-        &target,
-    );
-    assert_eq!(insert.uuid.as_deref(), Some(holding.as_str()));
+    let insert = scratch_book(&title.plugin_key, &title.account_id, &target);
     assert_eq!(insert.series_asin, None);
     assert_eq!(insert.purchased_at, None, "a malformed date is left out");
     assert_eq!(
@@ -6060,10 +6049,13 @@ async fn the_grant_and_the_host_name_a_title_from_the_same_fields() {
         )
     };
     assert_eq!(naming(&granted), naming(&hosted));
-    // The owner records under its holding; the host's scratch row is
-    // written by product id and account.
+    // The owner records under its holding, and the host under its scratch
+    // library's own holding of the title.
     assert_eq!(granted.holding_id.as_deref(), Some(holding.as_str()));
-    assert_eq!(hosted.holding_id, None);
+    assert_eq!(
+        hosted.holding_id.as_deref(),
+        Some(scratch_row.holding_id.as_str())
+    );
 }
 
 /// A title's target set on the host is the plan's destinations its list

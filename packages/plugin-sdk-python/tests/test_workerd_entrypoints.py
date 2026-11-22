@@ -9,6 +9,7 @@ from unittest import mock
 from bookclerk_plugin_sdk import workerd as workerd_module
 from bookclerk_plugin_sdk.workerd import (
     AdapterDatabaseSession,
+    AiEntrypoint,
     BookclerkEntrypoint,
     CliEntrypoint,
     CoverEntrypoint,
@@ -519,6 +520,99 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(echo.seen["list"], [b"x"])
         self.assertIsInstance(echo.seen["bytes"], bytes)
 
+    async def test_ai_defaults_and_dispatch(self) -> None:
+        """AiEntrypoint is healthy, lists nothing, refuses run, and dispatches overrides."""
+        from bookclerk_plugin_sdk.workerd import pack_embedding_vectors, unpack_embedding_vectors
+
+        models = AiEntrypoint()
+        self.assertEqual(await models.health(), {"ok": True, "detail": ""})
+        self.assertEqual(await models.models(), {"models": []})
+        with self.assertRaises(PluginError) as ctx:
+            await models.run({"model": "tiny", "input": {}})
+        self.assertEqual(ctx.exception.code, "unsupported")
+
+        class Tiny(AiEntrypoint):
+            async def run(self, params: dict) -> dict:
+                texts = params["input"]["textEmbeddings"]["texts"]
+                vectors = pack_embedding_vectors([[float(len(t["text"])), 0.5] for t in texts])
+                return {
+                    "output": {
+                        "textEmbeddings": {
+                            "dimensions": 2,
+                            "vectors": vectors,
+                            "revision": "r1",
+                            "fallbacks": [],
+                        }
+                    }
+                }
+
+        ran = await Tiny().bookclerkInvoke(
+            {},
+            "run",
+            {
+                "model": "tiny",
+                "input": {"textEmbeddings": {"texts": [{"text": "abc", "role": "document"}]}},
+            },
+        )
+        out = ran["output"]["textEmbeddings"]
+        self.assertEqual(unpack_embedding_vectors(out["vectors"], 2), [[3.0, 0.5]])
+        with self.assertRaises(PluginError):
+            pack_embedding_vectors([[1.0, 2.0], [3.0]])
+        with self.assertRaises(PluginError):
+            unpack_embedding_vectors(b"\x00" * 6, 2)
+
+    async def test_ai_binding_wraps_the_granted_stub(self) -> None:
+        """``env.AI`` forwards runs in the adapter's shape and refuses a run without a model."""
+        from bookclerk_plugin_sdk.workerd import AiBinding
+
+        class _AiStub:
+            def __init__(self) -> None:
+                self.calls: list[tuple] = []
+
+            async def run(self, model: str, request: dict) -> dict:
+                self.calls.append((model, request))
+                return {
+                    "shape": [1, 2],
+                    "data": [[0.5, -1]],
+                    "model": "@embedder/tiny",
+                    "revision": "r1",
+                    "fallbacks": [0],
+                }
+
+        stub = _AiStub()
+        seen: list = []
+
+        class Tagger(AiEntrypoint):
+            async def run(self, params: dict) -> dict:
+                ai = self.env.AI
+                assert isinstance(ai, AiBinding)
+                seen.append(await ai.run("@library/text-embeddings", text="a query", role="query"))
+                for bad in ({"model": "", "text": "a"}, {"model": "@embedder/tiny", "text": 3}):
+                    try:
+                        await ai.run(bad["model"], text=bad["text"])
+                    except PluginError as err:
+                        seen.append(err.code)
+                return {}
+
+        await Tagger().bookclerkInvoke({"ai": stub}, "run", {"model": "tiny", "input": {}})
+        self.assertEqual(
+            seen,
+            [
+                {
+                    "shape": [1, 2],
+                    "data": [[0.5, -1.0]],
+                    "model": "@embedder/tiny",
+                    "revision": "r1",
+                    "fallbacks": [0],
+                },
+                "invalid_params",
+                "invalid_params",
+            ],
+        )
+        self.assertEqual(
+            stub.calls, [("@library/text-embeddings", {"text": ["a query"], "role": "query"})]
+        )
+
     async def test_notifier_defaults_and_dispatch(self) -> None:
         """NotifierEntrypoint is healthy, refuses send, echoes addresses, and dispatches overrides."""
         notifier = NotifierEntrypoint()
@@ -801,6 +895,84 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("put", "cursor", {"expirationTtl": 60, "metadata": {"page": 7}}), stub.calls)
         self.assertIn(("list", {"prefix": "cur", "limit": 10}), stub.calls)
         self.assertIn(("get", "cursor", "arrayBuffer"), stub.calls)
+
+    async def test_webhooks_binding_pulls_and_acks(self) -> None:
+        from bookclerk_plugin_sdk.workerd import WebhooksBinding
+
+        class _WebhooksStub:
+            def __init__(self) -> None:
+                self.calls: list = []
+
+            async def call(self, op, body):
+                self.calls.append((op, body))
+                if op == "url":
+                    return {"ok": {"url": "https://lib.example.org/hooks/t/events"}}
+                if op == "pull":
+                    return {
+                        "ok": {
+                            "deliveries": [
+                                {
+                                    "leaseId": "l1",
+                                    "receivedAtUnixMs": 1_000,
+                                    "attempt": 2,
+                                    "headers": [{"name": "content-type", "value": "a/b"}],
+                                    "body": "e30=",
+                                }
+                            ],
+                            "missed": True,
+                        }
+                    }
+                if op == "ack" and "bad" in body["acks"]:
+                    return {"err": {"code": "not_found", "message": "gone"}}
+                return {"ok": {}}
+
+        stub = _WebhooksStub()
+        seen: list = []
+
+        class Default(BookclerkEntrypoint):
+            async def scheduled(self, controller) -> None:
+                hooks = self.env.WEBHOOKS
+                assert isinstance(hooks, WebhooksBinding)
+                seen.append(await hooks.url("events"))
+                page = await hooks.pull("events", batch_size=5)
+                message = page.messages[0]
+                seen.append((message.lease_id, message.attempts, message.headers, message.body))
+                seen.append((page.missed, int(message.timestamp.timestamp() * 1000)))
+                await hooks.ack("events", acks=["l1"], retries=[])
+                for bad in (
+                    lambda: hooks.pull("Events"),
+                    lambda: hooks.pull("events", batch_size=0),
+                    lambda: hooks.ack("events", acks=["x"], retries=["x"]),
+                    lambda: hooks.ack("events", acks=["no/slash"]),
+                ):
+                    try:
+                        await bad()
+                    except PluginError as err:
+                        seen.append(err.code)
+
+            async def webhook_delivered(self, name: str, waiting: int) -> None:
+                seen.append(("delivered", name, waiting))
+
+        context = {"webhooks": stub}
+        await Default().bookclerkScheduled(context, {"cron": "* * * * *"})
+        await Default().bookclerkWebhookDelivered(context, {"name": "events", "waiting": 3})
+        self.assertEqual(
+            seen,
+            [
+                "https://lib.example.org/hooks/t/events",
+                ("l1", 2, {"content-type": "a/b"}, b"{}"),
+                (True, 1_000),
+                "invalid_params",
+                "invalid_params",
+                "invalid_params",
+                "invalid_params",
+                ("delivered", "events", 3),
+            ],
+        )
+        self.assertIn(
+            ("pull", {"name": "events", "batchSize": 5, "visibilityTimeoutMs": 0}), stub.calls
+        )
+        self.assertIn(("ack", {"name": "events", "acks": ["l1"], "retries": []}), stub.calls)
 
     async def test_socket_handlers_receive_host_web_sockets(self) -> None:
         from bookclerk_plugin_sdk.workerd import HostWebSocket, SocketsBinding

@@ -2229,6 +2229,144 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Data(
         r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES ('playback', 0)",
     ),
+    // Notifications (`store::notifications`, `docs/adr/notifications.md`).
+    // A destination is where a notifier instance sends: a library channel
+    // the instance's own settings point at (`user_id` NULL, `address_json`
+    // empty) or one patron's personal address (the fields the notifier's
+    // `[[notifier.address_fields]]` declare). Consecutive permanent failures
+    // are counted, and the destination is paused after too many.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_destinations (
+        id TEXT PRIMARY KEY NOT NULL,
+        plugin_instance_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('channel', 'personal')),
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        label TEXT NOT NULL,
+        address_json TEXT NOT NULL DEFAULT '',
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        paused_at TEXT,
+        paused_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_notify_destinations_user ON notify_destinations(user_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_notify_destinations_instance ON notify_destinations(plugin_instance_id)",
+    ),
+    // Administrators' routing of operational types: each row sends a type
+    // to one channel destination at or above a minimum severity.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_routes (
+        notification_type TEXT NOT NULL,
+        destination_id TEXT NOT NULL REFERENCES notify_destinations(id) ON DELETE CASCADE,
+        min_severity TEXT NOT NULL DEFAULT 'info' CHECK (min_severity IN ('info', 'warning', 'critical')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (notification_type, destination_id)
+    )",
+    ),
+    // Which notifier instances patrons may use for each patron type, and
+    // whether a patron who has not chosen gets it there by default.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_patron_offers (
+        notification_type TEXT NOT NULL,
+        plugin_instance_id TEXT NOT NULL,
+        default_on INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (notification_type, plugin_instance_id)
+    )",
+    ),
+    // One patron's choice for one patron type: on or off, and (in
+    // `notify_patron_targets`) the personal destinations it goes to. With
+    // no row the administrators' defaults apply.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_patron_prefs (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        notification_type TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, notification_type)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_patron_targets (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        notification_type TEXT NOT NULL,
+        destination_id TEXT NOT NULL REFERENCES notify_destinations(id) ON DELETE CASCADE,
+        PRIMARY KEY (user_id, notification_type, destination_id)
+    )",
+    ),
+    // Every notification the router accepted, rendered once: the copy each
+    // destination's send job delivers and the inbox shows. `source` is
+    // empty for the host's own types and the raising plugin's id otherwise;
+    // `user_id` is the patron a patron-audience notification is for.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY NOT NULL,
+        notification_type TEXT NOT NULL,
+        audience TEXT NOT NULL CHECK (audience IN ('operational', 'patron', 'account')),
+        severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
+        title TEXT NOT NULL,
+        body_text TEXT NOT NULL,
+        link_path TEXT,
+        fields_json TEXT NOT NULL DEFAULT '[]',
+        group_key TEXT,
+        alert_action TEXT NOT NULL DEFAULT 'none' CHECK (alert_action IN ('none', 'trigger', 'resolve')),
+        alert_key TEXT,
+        source TEXT NOT NULL DEFAULT '',
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at)",
+    ),
+    // The delivery log: one row per notification and destination, written
+    // by the router and finished by that row's `notify_send` job.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_deliveries (
+        id TEXT PRIMARY KEY NOT NULL,
+        notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+        destination_id TEXT NOT NULL REFERENCES notify_destinations(id) ON DELETE CASCADE,
+        plugin_instance_id TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'delivered', 'failed', 'dropped')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        provider_id TEXT,
+        reason TEXT,
+        job_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_notify_deliveries_notification ON notify_deliveries(notification_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_notify_deliveries_state ON notify_deliveries(state, created_at)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_notify_deliveries_destination ON notify_deliveries(destination_id, created_at)",
+    ),
+    // The in-app inbox: every patron-audience notification reaches its
+    // patron here whatever else they set up.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_inbox (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+        read_at TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, notification_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_notify_inbox_user ON notify_inbox(user_id, created_at)",
+    ),
+    // Deleting a notification finds its inbox rows by this column.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_notify_inbox_notification ON notify_inbox(notification_id)",
+    ),
     // A chapter list, stored once and named by the SHA-256 of its
     // canonical encoding (`store::chapters`). The row is written in the
     // last batch of a list's write, after every entry, so a list with a
@@ -2347,6 +2485,71 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_player_card_tokens_session ON player_card_tokens(session_id, kind)",
+    ),
+    // Inbound webhooks (docs/adr/storage-destinations.md, decision 6): one
+    // row per instance and `[[webhooks]]` name, holding the URL token
+    // sealed with the library key and its SHA-256 for the public route's
+    // lookup. `missed` is set when a request was dropped (the waiting cap
+    // was full or a request expired unacknowledged) and cleared by the next
+    // pull, which reports it.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_webhooks (
+        instance_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        token_sealed TEXT NOT NULL,
+        token_nonce TEXT NOT NULL,
+        missed INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (instance_id, name)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_webhooks_token ON plugin_webhooks(token_hash)",
+    ),
+    // Stored webhook requests waiting for their plugin. The kept headers
+    // (as JSON) followed by the body live in `plugin_webhook_chunks` rows
+    // sized from the database plugin's limits,
+    // and this row is written in the same batch as the last chunk, so a
+    // delivery is visible only once its body is complete. `visible_at_ms`
+    // is when the next pull may lease the row (0 when never leased);
+    // `lease_id` names the current lease, empty before the first pull.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_webhook_deliveries (
+        delivery_id TEXT PRIMARY KEY NOT NULL,
+        instance_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        received_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        visible_at_ms INTEGER NOT NULL DEFAULT 0,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        lease_id TEXT NOT NULL DEFAULT '',
+        headers_bytes INTEGER NOT NULL,
+        body_bytes INTEGER NOT NULL,
+        chunk_bytes INTEGER NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_plugin_webhook_deliveries_queue
+        ON plugin_webhook_deliveries(instance_id, name, received_at_ms)",
+    ),
+    // Body chunks of stored webhook requests. They carry the owner and the
+    // expiry of their delivery so a chunk set an unfinished write left
+    // behind is pruned with the expired deliveries.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_webhook_chunks (
+        delivery_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        instance_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        data BLOB NOT NULL,
+        PRIMARY KEY (delivery_id, seq)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_plugin_webhook_chunks_expiry
+        ON plugin_webhook_chunks(instance_id, name, expires_at_ms)",
     ),
 ];
 
@@ -2479,6 +2682,39 @@ mod tests {
             "metadata_claims",
             "quality",
             crate::ClaimQuality::ALL.iter().map(|k| k.as_str()),
+        );
+    }
+
+    #[test]
+    fn notification_checks_match_the_rule_types() {
+        use crate::notifications::{
+            DeliveryState, DestinationKind, ALERT_ACTIONS, AUDIENCES, SEVERITIES,
+        };
+        assert_check(
+            "notify_destinations",
+            "kind",
+            DestinationKind::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "notify_deliveries",
+            "state",
+            DeliveryState::ALL.iter().map(|s| s.as_str()),
+        );
+        assert_check(
+            "notifications",
+            "audience",
+            AUDIENCES.iter().map(|a| a.wire_name()),
+        );
+        for (table, column) in [
+            ("notifications", "severity"),
+            ("notify_routes", "min_severity"),
+        ] {
+            assert_check(table, column, SEVERITIES.iter().map(|s| s.wire_name()));
+        }
+        assert_check(
+            "notifications",
+            "alert_action",
+            ALERT_ACTIONS.iter().map(|a| a.wire_name()),
         );
     }
 }

@@ -135,6 +135,11 @@ pub struct CatalogSearchHit {
     #[serde(default)]
     #[schema(example = false)]
     pub is_abridged: Option<bool>,
+    /// When `Some(true)`, a storefront marks the edition explicit (adult)
+    /// content; `None` when none said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = false)]
+    pub is_explicit: Option<bool>,
     /// Aggregate listener rating on the storefront's scale when known.
     #[serde(default)]
     #[schema(example = 4.5)]
@@ -594,9 +599,11 @@ pub async fn catalog_search_page(
                         rating_overall: hit.rating_overall,
                         rating_count: hit.rating_count,
                         is_abridged: hit.is_abridged,
+                        is_explicit: hit.is_explicit,
                         store_rank,
                         work_id: None,
                         expression_id: None,
+                        publisher_votes: Vec::new(),
                     });
                 }
             }
@@ -924,6 +931,7 @@ fn candidate_to_hit(work_key: String, c: StorefrontCandidate, region: &str) -> C
         genres: c.categories,
         language: c.language,
         is_abridged: c.is_abridged,
+        is_explicit: c.is_explicit,
         rating_overall: c.rating_overall,
         rating_count: c.rating_count,
         price_cents: c.price_cents,
@@ -1113,13 +1121,12 @@ fn passes_filters(c: &StorefrontCandidate, f: &CatalogSearchFilters) -> bool {
         return false;
     }
     if !f.series.is_empty() {
-        let series = c.series.as_deref().unwrap_or("").trim();
+        // Series compare by key, so a filter for `King and Maxwell` keeps
+        // a store's `King & Maxwell` too.
+        let series = bookclerk_resolve::series_key(c.series.as_deref().unwrap_or(""));
         let ok = f.series.iter().any(|want| {
-            let w = want.trim();
-            if w.is_empty() {
-                return false;
-            }
-            series.eq_ignore_ascii_case(w)
+            let w = bookclerk_resolve::series_key(want);
+            !w.is_empty() && series == w
         });
         if !ok {
             return false;
@@ -1259,10 +1266,13 @@ fn decode_cursor(raw: &str) -> Option<SearchCursorV1> {
 ///
 /// Hits are one recording when they share an ISBN or ASIN, are the same
 /// store product, or were resolved into the same expression by the shared
-/// listing pool (see [`attach_pooled_recordings`]). Titles and authors are
-/// never compared, so another recording of the book (a different narrator,
-/// a dramatisation, an abridgement) stays a row of its own with its own
-/// cover and price.
+/// listing pool (see [`attach_pooled_recordings`]). Hits from two stores
+/// that share none of those are one recording when they name the same work
+/// and narrators and their runtimes match (see
+/// [`crate::candidates::same_recording_by_runtime`]). Title and authors
+/// alone never merge hits, so another recording of the book (a different
+/// narrator, a dramatisation, an abridgement) stays a row of its own with
+/// its own cover and price.
 ///
 /// # Arguments
 ///
@@ -1390,9 +1400,11 @@ pub(crate) mod tests {
             rating_overall: None,
             rating_count: None,
             is_abridged: None,
+            is_explicit: None,
             store_rank: Some(0),
             work_id: None,
             expression_id: None,
+            publisher_votes: Vec::new(),
         }
     }
 
@@ -1645,9 +1657,11 @@ pub(crate) mod tests {
                     rating_overall: None,
                     rating_count: None,
                     is_abridged: None,
+                    is_explicit: None,
                     store_rank: None,
                     work_id: None,
                     expression_id: None,
+                    publisher_votes: Vec::new(),
                 },
             }],
         };
@@ -2023,6 +2037,245 @@ pub(crate) mod tests {
         let second: Vec<&String> = second_page.keys().collect();
         assert_ne!(first, second);
         assert!(first[0].ends_with("|chirp:c-1"), "{first:?}");
+    }
+
+    /// One store's listing of David Baldacci's First Family, read by Ron
+    /// McLarty, as the store's catalog reports it (2026-11-22).
+    fn first_family(
+        source: &str,
+        product_id: &str,
+        title: &str,
+        minutes: i64,
+        abridged: bool,
+    ) -> StorefrontCandidate {
+        let mut c = lean_row(source, product_id, None);
+        c.title = title.into();
+        c.authors = Some("David Baldacci".into());
+        c.narrators = Some("Ron McLarty".into());
+        c.length_minutes = Some(minutes);
+        c.is_abridged = Some(abridged);
+        c.language = Some("English".into());
+        c
+    }
+
+    /// The six First Family listings from Audible, Chirp and Libro.fm, with
+    /// no ISBN on any of them.
+    fn first_family_listings() -> Vec<StorefrontCandidate> {
+        let mut audible = first_family("audible", "B002V0QCMW", "First Family", 871, false);
+        audible.asin = Some("B002V0QCMW".into());
+        audible.publisher = Some("Grand Central Publishing".into());
+        audible.series = Some("King and Maxwell".into());
+        let mut audible_abridged = first_family("audible", "B002V8MHXW", "First Family", 370, true);
+        audible_abridged.asin = Some("B002V8MHXW".into());
+        audible_abridged.series = Some("King and Maxwell".into());
+        // Chirp's search row for the unabridged recording had no series,
+        // runtime or publisher before its typeahead asked for them.
+        let mut chirp = first_family("chirp", "279927", "First Family", 871, false);
+        chirp.publisher = None;
+        let chirp_abridged = first_family("chirp", "240409", "First Family (Abridged)", 370, true);
+        let libro = first_family("libro", "9781600245497", "First Family", 871, false);
+        let libro_abridged = first_family(
+            "libro",
+            "9781600245466",
+            "First Family - Abridged",
+            370,
+            true,
+        );
+        vec![
+            audible,
+            audible_abridged,
+            chirp,
+            chirp_abridged,
+            libro,
+            libro_abridged,
+        ]
+    }
+
+    /// Each row's listings as sorted `store:product` labels, rows sorted.
+    fn row_listings(map: &HashMap<String, StorefrontCandidate>) -> Vec<Vec<String>> {
+        let mut rows: Vec<Vec<String>> = map
+            .values()
+            .map(|row| {
+                let mut listings: Vec<String> = row
+                    .store_editions
+                    .iter()
+                    .map(|e| format!("{}:{}", e.source, e.product_id))
+                    .collect();
+                listings.sort();
+                listings
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// The same recording sold by three stores that share no record number
+    /// is one row when its work, narrator and runtime match: First Family
+    /// shows two rows, the unabridged and the abridged recording, and the
+    /// unabridged row takes the runtime and series Chirp's listing lacked.
+    #[test]
+    fn first_family_merges_into_one_row_per_recording_by_runtime() {
+        let mut map = HashMap::new();
+        for hit in first_family_listings() {
+            upsert_hit(&mut map, hit);
+        }
+        assert_eq!(
+            row_listings(&map),
+            vec![
+                vec![
+                    "audible:B002V0QCMW".to_string(),
+                    "chirp:279927".into(),
+                    "libro:9781600245497".into(),
+                ],
+                vec![
+                    "audible:B002V8MHXW".to_string(),
+                    "chirp:240409".into(),
+                    "libro:9781600245466".into(),
+                ],
+            ]
+        );
+        let unabridged = map
+            .values()
+            .find(|row| row.is_abridged == Some(false))
+            .unwrap();
+        assert_eq!(unabridged.length_minutes, Some(871));
+        assert_eq!(unabridged.series.as_deref(), Some("King and Maxwell"));
+        assert!(unabridged.publisher.is_some());
+    }
+
+    /// With the ISBNs the stores give (Audible for the unabridged recording,
+    /// Libro.fm for both, Chirp through its cover file names) the rows are
+    /// the same, and every order of arrival gives them.
+    #[test]
+    fn first_family_merges_the_same_with_store_isbns_in_any_order() {
+        let mut listings = first_family_listings();
+        for c in &mut listings {
+            let isbn = match c.product_id.as_str() {
+                "B002V0QCMW" | "279927" | "9781600245497" => Some("9781600245497"),
+                "240409" | "9781600245466" => Some("9781600245466"),
+                _ => None,
+            };
+            c.isbn = isbn.map(str::to_string);
+        }
+        for rotation in 0..listings.len() {
+            let mut map = HashMap::new();
+            let mut order = listings.clone();
+            order.rotate_left(rotation);
+            for hit in order {
+                upsert_hit(&mut map, hit);
+            }
+            assert_eq!(row_listings(&map).len(), 2, "rotation {rotation}");
+        }
+    }
+
+    /// A merged row shows the publisher most of its stores name, whichever
+    /// store arrived first; on a tie the first name stays.
+    #[test]
+    fn a_merged_row_shows_the_publisher_most_stores_name() {
+        let publisher = |order: &[(&str, &str, Option<&str>)]| {
+            let mut map = HashMap::new();
+            for (source, product, name) in order {
+                let mut hit = first_family(source, product, "First Family", 871, false);
+                hit.publisher = name.map(str::to_string);
+                upsert_hit(&mut map, hit);
+            }
+            assert_eq!(map.len(), 1);
+            map.into_values().next().unwrap().publisher
+        };
+        let audible = ("audible", "B002V0QCMW", Some("Grand Central Publishing"));
+        let chirp = ("chirp", "279927", Some("Hachette Audio"));
+        let libro = ("libro", "9781600245497", Some("hachette audio "));
+        for order in [
+            [audible, chirp, libro],
+            [chirp, audible, libro],
+            [libro, chirp, audible],
+        ] {
+            let shown = publisher(&order).unwrap();
+            assert!(shown.eq_ignore_ascii_case(shown.trim()));
+            assert_eq!(shown.trim().to_lowercase(), "hachette audio", "{order:?}");
+        }
+        // A tie keeps the first name; a listing that names none has no vote.
+        let chirp_silent = ("chirp", "279927", None);
+        assert_eq!(
+            publisher(&[audible, chirp]).as_deref(),
+            Some("Grand Central Publishing")
+        );
+        assert_eq!(
+            publisher(&[chirp_silent, libro, audible]).as_deref(),
+            Some("hachette audio")
+        );
+    }
+
+    /// What tells two listings apart keeps them apart even when the title,
+    /// author, narrator and runtime match.
+    #[test]
+    fn a_runtime_match_never_merges_listings_something_tells_apart() {
+        let base = || first_family("chirp", "279927", "First Family", 871, false);
+        let other = || first_family("libro", "9781600245497", "First Family", 871, false);
+        let rows = |a: StorefrontCandidate, b: StorefrontCandidate| {
+            let mut map = HashMap::new();
+            upsert_hit(&mut map, a);
+            upsert_hit(&mut map, b);
+            map.len()
+        };
+        assert_eq!(rows(base(), other()), 1);
+        // Runtimes too far apart.
+        let mut longer = other();
+        longer.length_minutes = Some(871 + crate::candidates::RUNTIME_TOLERANCE_MINUTES + 1);
+        assert_eq!(rows(base(), longer), 2);
+        // A runtime missing on one side.
+        let mut unknown = other();
+        unknown.length_minutes = None;
+        assert_eq!(rows(base(), unknown), 2);
+        // Another narrator.
+        let mut narrator = other();
+        narrator.narrators = Some("Someone Else".into());
+        assert_eq!(rows(base(), narrator), 2);
+        // Two different ISBNs.
+        let (mut a, mut b) = (base(), other());
+        a.isbn = Some("9781600245497".into());
+        b.isbn = Some("9781600245466".into());
+        assert_eq!(rows(a, b), 2);
+        // Abridged against unabridged.
+        let mut abridged = other();
+        abridged.is_abridged = Some(true);
+        assert_eq!(rows(base(), abridged), 2);
+        // Another language.
+        let mut spanish = other();
+        spanish.language = Some("Spanish".into());
+        assert_eq!(rows(base(), spanish), 2);
+        // The pool placed them in two recordings.
+        let (mut a, mut b) = (base(), other());
+        a.expression_id = Some("e1".into());
+        b.expression_id = Some("e2".into());
+        assert_eq!(rows(a, b), 2);
+        // Two products of one store stay apart.
+        let mut same_store = other();
+        same_store.source = "chirp".into();
+        same_store.product_id = "999".into();
+        same_store.store_editions = vec![StoreEdition::new("chirp", "999")];
+        assert_eq!(rows(base(), same_store), 2);
+        // Another book of the same length by the same narrator.
+        let mut other_book = other();
+        other_book.title = "Last Family".into();
+        assert_eq!(rows(base(), other_book), 2);
+    }
+
+    /// The series filter keeps every store's spelling of the series.
+    #[test]
+    fn the_series_filter_matches_every_spelling_of_a_series() {
+        let filters = CatalogSearchFilters {
+            series: vec!["King and Maxwell".into()],
+            ..Default::default()
+        };
+        for series in ["King and Maxwell", "King & Maxwell", "king & maxwell"] {
+            let mut c = first_family("chirp", "279927", "First Family", 871, false);
+            c.series = Some(series.into());
+            assert!(passes_filters(&c, &filters), "{series}");
+        }
+        let mut c = first_family("chirp", "279927", "First Family", 871, false);
+        c.series = Some("Camel Club".into());
+        assert!(!passes_filters(&c, &filters));
     }
 
     /// Lookups of a store that declared only `detailByIsbn`.

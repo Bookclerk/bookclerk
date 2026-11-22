@@ -400,6 +400,7 @@ mod tests {
                 parts: vec![PathBuf::from("/cache/a.mp3"), PathBuf::from("/cache/b.mp3")],
                 output: PathBuf::from("/out/book.m4b"),
                 chapter_titles: vec![],
+                keep_codec: false,
             }),
         };
         assert_eq!(job.read_paths().len(), 2);

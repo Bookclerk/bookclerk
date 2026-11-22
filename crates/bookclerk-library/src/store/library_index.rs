@@ -274,6 +274,63 @@ pub struct WorkPageQuery {
     pub limit: u64,
 }
 
+/// What a catalog item the library does not hold says about itself, read
+/// by [`WorkScope::admits_unheld`]. People are comma- or
+/// semicolon-separated, genres as the page index splits them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnheldItem<'a> {
+    /// The item's authors, as one comma-separated string.
+    pub authors: Option<&'a str>,
+    /// The item's narrators, as one comma-separated string.
+    pub narrators: Option<&'a str>,
+    /// The series name, without its position.
+    pub series: Option<&'a str>,
+    /// Genre labels, separated by `,`, `;` or `|`.
+    pub genres: Option<&'a str>,
+    /// Whether a store marks the item explicit (adult) content; `None`
+    /// when no store said.
+    pub is_explicit: Option<bool>,
+}
+
+impl UnheldItem<'_> {
+    /// The item's `(facet, key)` pairs, keyed as the page index keys a
+    /// held work's values.
+    fn facet_keys(&self) -> Vec<(WorkFacet, String)> {
+        let people = |text: Option<&str>| -> Vec<String> {
+            text.unwrap_or_default()
+                .split([',', ';'])
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(facet_key)
+                .collect()
+        };
+        let mut keys: Vec<(WorkFacet, String)> = Vec::new();
+        keys.extend(
+            people(self.authors)
+                .into_iter()
+                .map(|k| (WorkFacet::Author, k)),
+        );
+        keys.extend(
+            people(self.narrators)
+                .into_iter()
+                .map(|k| (WorkFacet::Narrator, k)),
+        );
+        if let Some(series) = self.series.map(str::trim).filter(|s| !s.is_empty()) {
+            keys.push((WorkFacet::Series, facet_key(series)));
+        }
+        keys.extend(
+            split_genres(self.genres.unwrap_or_default()).map(|g| (WorkFacet::Genre, facet_key(g))),
+        );
+        if self.is_explicit == Some(true) {
+            keys.push((
+                WorkFacet::Explicit,
+                crate::control_plane::EXPLICIT_FACET_KEY.to_string(),
+            ));
+        }
+        keys
+    }
+}
+
 /// The part of the library a patron may see, as the page index applies it.
 ///
 /// A work passes when one of the patron's own store accounts holds it, or
@@ -297,6 +354,29 @@ impl WorkScope {
     #[must_use]
     pub fn sees_everything(&self) -> bool {
         self.include.is_empty() && self.exclude.is_empty()
+    }
+
+    /// True when a catalog item the library does not hold may be shown to
+    /// the patron: Discover shelves and storefront search results.
+    ///
+    /// The item's own metadata stands in for the page index's facets, with
+    /// the same rule: no exclude value matches and, when there are include
+    /// values, one of them does. An item carries no library tag or
+    /// collection, so a scope that includes only by those admits no
+    /// catalog item, and excludes by them never hide one.
+    ///
+    /// # Arguments
+    ///
+    /// * `item` - What the store listing says about the item.
+    #[must_use]
+    pub fn admits_unheld(&self, item: &UnheldItem<'_>) -> bool {
+        let keys = item.facet_keys();
+        let matches = |pairs: &[(WorkFacet, String)]| {
+            pairs
+                .iter()
+                .any(|(facet, key)| keys.iter().any(|(f, k)| f == facet && k == key))
+        };
+        !matches(&self.exclude) && (self.include.is_empty() || matches(&self.include))
     }
 
     /// The scope's values as `(effect, facet, key)` rows, sorted and
@@ -784,7 +864,7 @@ pub(crate) fn build_work_facets(
 impl LibraryStore {
     /// Most rows one read may return: the database plugin's advertised
     /// `maxResultRows`, or no cap when it advertises none. At least 1.
-    fn result_row_cap(&self) -> u64 {
+    pub(super) fn result_row_cap(&self) -> u64 {
         match self.db_capabilities().max_result_rows {
             0 => u64::MAX,
             rows => u64::from(rows),
@@ -1361,6 +1441,33 @@ impl LibraryStore {
             .is_some())
     }
 
+    /// Whether an edition is inside a patron scope: no scope admits every
+    /// edition, and a scope admits one whose work passes
+    /// [`Self::work_in_scope`]. An edition that belongs to no work is
+    /// outside every scope, so a scoped patron never learns of it.
+    ///
+    /// # Arguments
+    ///
+    /// * `edition_id` - The edition (`editions.id`).
+    /// * `scope` - The patron's filter, `None` when nothing is hidden.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails; callers fail closed.
+    pub async fn edition_in_scope(
+        &self,
+        edition_id: &str,
+        scope: Option<&WorkScope>,
+    ) -> Result<bool> {
+        let Some(scope) = scope else {
+            return Ok(true);
+        };
+        match self.work_of_edition(edition_id).await? {
+            Some(work_id) => self.work_in_scope(&work_id, scope).await,
+            None => Ok(false),
+        }
+    }
+
     /// One page of the values a facet has across the held works, by key.
     ///
     /// # Arguments
@@ -1925,6 +2032,45 @@ fn held_works_subquery(holding: Condition) -> sea_orm::sea_query::SelectStatemen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A catalog item's metadata reads as the page index keys a held
+    /// work's: people split on commas, genres on `;`, keys case-folded,
+    /// and only a store's explicit mark counts as explicit.
+    #[test]
+    fn a_catalog_item_is_judged_by_its_own_metadata() {
+        let item = UnheldItem {
+            authors: Some("Ann Writer, Bo Pen"),
+            narrators: Some("Cy Voice"),
+            series: Some(" The Long Road "),
+            genres: Some("Fantasy; Children"),
+            is_explicit: None,
+        };
+        let scope = |include: &[(WorkFacet, &str)], exclude: &[(WorkFacet, &str)]| WorkScope {
+            include: include.iter().map(|(f, v)| (*f, facet_key(v))).collect(),
+            exclude: exclude.iter().map(|(f, v)| (*f, facet_key(v))).collect(),
+            owner: None,
+        };
+        assert!(WorkScope::default().admits_unheld(&item));
+        assert!(scope(&[(WorkFacet::Genre, "CHILDREN")], &[]).admits_unheld(&item));
+        assert!(scope(&[(WorkFacet::Series, "the long road")], &[]).admits_unheld(&item));
+        assert!(!scope(&[(WorkFacet::Genre, "Mystery")], &[]).admits_unheld(&item));
+        assert!(!scope(&[], &[(WorkFacet::Narrator, "cy voice")]).admits_unheld(&item));
+        assert!(!scope(&[], &[(WorkFacet::Author, "Bo Pen")]).admits_unheld(&item));
+        // Library tags and collections never match an item the library
+        // does not hold.
+        assert!(scope(&[], &[(WorkFacet::Tag, "kids")]).admits_unheld(&item));
+        assert!(!scope(&[(WorkFacet::Collection, "Kids")], &[]).admits_unheld(&item));
+        let hide = scope(&[], &[(WorkFacet::Explicit, "explicit")]);
+        assert!(hide.admits_unheld(&item), "no flag stays visible");
+        assert!(hide.admits_unheld(&UnheldItem {
+            is_explicit: Some(false),
+            ..item
+        }));
+        assert!(!hide.admits_unheld(&UnheldItem {
+            is_explicit: Some(true),
+            ..item
+        }));
+    }
 
     #[test]
     fn sort_titles_drop_one_leading_article() {

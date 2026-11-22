@@ -158,9 +158,9 @@ Request headers:
 | --- | --- |
 | `Authorization` | `Bearer <BRIDGE_TOKEN>` |
 | `Content-Type` | `application/x-capnp` |
-| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `MetadataFiles`, `Notifier`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
+| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `MetadataFiles`, `Notifier`, `AiModels`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
 | `X-Bookclerk-Method` | Method name as declared in `plugin.capnp` (`login`, `event`, `job`, `openSession`, `databaseMigrations`, …) |
-| `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `notifyToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `NOTIFY` / `env.<BINDING>` bindings; authors never see them |
+| `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `notifyToken`, `aiToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `NOTIFY` / `AI` / `env.<BINDING>` bindings; authors never see them |
 | `X-Bookclerk-Caps` | JSON array of capability descriptors for the request message's capability table (only when the `$Params` struct carries interface-typed fields) |
 | `X-Bookclerk-Target` | Isolate-side object id for calls on a capability the isolate returned earlier (`AdapterDatabaseSession.*`) |
 
@@ -234,6 +234,7 @@ reach the launcher through the granted `GET /open` / `PUT /put` routes.
 | `CoverFetcher` | `health`, `fetchCovers` — the `sink` is a `destination` grant token | `Covers extends CoverEntrypoint` |
 | `MetadataFiles` | `health`, `parse`, `render` | `MetadataFiles extends MetadataFilesEntrypoint` |
 | `Notifier` | `health`, `send`, `validateDestination` | `Notifier extends NotifierEntrypoint` |
+| `AiModels` | `health`, `models`, `run` | `Ai extends AiEntrypoint` |
 | `Database` | `openSession` | `DatabaseAdapter extends DatabaseAdapterEntrypoint` |
 | `AdapterDatabaseSession` | all 10 (`X-Bookclerk-Target`) | the `AdapterDatabaseSession` object `openSession` returned |
 
@@ -260,8 +261,10 @@ unknown, expired, or revoked tokens.
 | `GET /db/limits` | `allow_database` | `GuestDatabase.limits`: the session's `DbCapabilities` as a Cap'n `DbCapabilitiesReply` (`401` when the grant has no database, `500` when the reply cannot be encoded) |
 | `POST /events/publish` | `events` present | `env.EVENTS.publish` |
 | `POST /notify/raise` | `notify` present (a notify-only token minted at `open` when `[[notifications.types]]` is declared) | `env.NOTIFY.raise`: a JSON `NotifyRaiseParams` of at most 128 KiB. The launcher applies the ABI raise checks, then the host's `NotificationRaiser` checks the type against the manifest and the patron against the account scope; it answers `{"notificationId": …}` or the typed `PluginError`. The `notify_raise` fuzz target covers the body |
+| `POST /ai/run` | `ai` present (an ai-only token minted at `open` when `[ai].calls` is granted) | `env.AI.run`: a JSON `AiRunParams` of at most 2 MiB (`413` past it). The launcher applies the ABI run checks, then the host's `GrantedAi` checks the task grant, the budget and the deadline and hands the run to the node's model router; it answers the JSON `AiRunOk` (vectors as base64) or the typed error |
 | `POST /sockets/<op>` | `sockets` present (a sockets-only token minted at `open` when `[sockets]` is granted) | `env.SOCKETS`: `connect`, `send`, `close`, `attachment` and `list`, each a JSON object of that operation's fields with frames and attachments in base64. The launcher applies the ABI socket checks before calling the host's `Sockets` (a refused call answers the typed `PluginError` with its status, another operation `404`, a body past one base64 frame plus 64 KiB `413`) and answers the `SocketInfo`, `{"sockets": [...]}` or `{}`. The parser is the `socket_route` fuzz target |
 | `POST /origin/fetch` | `origin` present (an origin-only token minted at `open` for a plugin exporting `ingress` when the host grants `ORIGIN`) | `env.ORIGIN.fetch`: the body is a framed head (a 4-byte big-endian length, then the `OriginRequest` as JSON) followed by the request body, which streams on to the library. The launcher checks the head before the library sees it (a refused head, an oversized frame or a body that ends inside the head answers the typed `PluginError`) and answers `200` with a framed response head (status and header fields as JSON) followed by the response body, chunked; a response body that breaks off drops the connection so the isolate never sees a clean end. The frame and head checks are the `origin_request` fuzz target; the HTTP framing around them is `granted_http` |
+| `POST /webhooks/<op>` | `webhooks` present (a webhooks-only token minted at `open` when `[[webhooks]]` is granted) | `env.WEBHOOKS`: `url`, `pull` and `ack`, each a JSON object of that operation's fields. The launcher applies the ABI webhook checks (names, batch size, visibility timeout, lease ids) before calling the host's `Webhooks` (a refused call answers the typed `PluginError` with its status, another operation `404`, a body past two full ack lists plus 1 KiB `413`) and answers `{"url": ...}`, the `WebhookPullPage` with bodies in base64, or `{}`. The parser is the `webhook_route` fuzz target |
 
 ## Isolate embed
 

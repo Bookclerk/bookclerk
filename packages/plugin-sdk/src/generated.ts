@@ -41,6 +41,8 @@ import type {
   NotificationAudience,
   NotificationAlertAction,
   NotifyDestinationKind,
+  AiTask,
+  AiTextRole,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -77,6 +79,8 @@ export type {
   NotificationAudience,
   NotificationAlertAction,
   NotifyDestinationKind,
+  AiTask,
+  AiTextRole,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -603,6 +607,19 @@ export interface Bindings {
    * Null when the guest does not export this capability.
    */
   origin?: Origin | null;
+  /**
+   * `AI`: runs models other plugins serve; null unless `[ai]` names the
+   * tasks the plugin calls and the operator granted them.
+   * Null when the guest does not export this capability.
+   */
+  ai?: AiRunner | null;
+  /**
+   * `WEBHOOKS`: the instance's inbound webhooks, their URLs and the
+   * deliveries the host stored; null unless `[[webhooks]]` is declared and
+   * granted.
+   * Null when the guest does not export this capability.
+   */
+  webhooks?: Webhooks | null;
 }
 
 /**
@@ -738,6 +755,16 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   ingress?: Ingress | null;
+  /**
+   * `ai` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  ai?: AiModels | null;
+  /**
+   * `[[webhooks]]` handler: called after the host stores deliveries.
+   * Null when the guest does not export this capability.
+   */
+  webhookHandler?: WebhookHandler | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -1656,6 +1683,51 @@ export interface Ingress {
 }
 
 /**
+ * Host-served inbound webhooks, granted through `Bindings.webhooks`.
+ *
+ * The host serves each `[[webhooks]]` row at a secret URL under the
+ * library's public origin, checks every request against the row's body cap,
+ * rate limit and signature rule, stores it and answers at once. The guest
+ * takes stored deliveries with `pull` and settles them with `ack`, in the
+ * manner of a Cloudflare Queues HTTP pull consumer: a pulled delivery stays
+ * leased until acknowledged, retried, or its visibility timeout ends.
+ */
+export interface Webhooks {
+  /**
+   * The URL an outside service should call for one webhook.
+   *
+   * @param name - `[[webhooks]]` name.
+   * @returns {@link WebhookUrlReply}
+   */
+  url(name: string): Promise<WebhookUrlReply>;
+  /**
+   * Lease up to `batchSize` stored deliveries, oldest first.
+   *
+   * @param request - Webhook, batch size, visibility timeout.
+   * @returns {@link WebhookPullReply}
+   */
+  pull(request: WebhookPullRequest): Promise<WebhookPullReply>;
+  /**
+   * Acknowledge finished deliveries and offer retried ones again at once.
+   *
+   * @param request - Webhook and lease ids.
+   * @returns {@link EmptyReply}
+   */
+  ack(request: WebhookAckRequest): Promise<EmptyReply>;
+}
+
+/** Guest handler for inbound webhooks (`Entrypoints.webhookHandler`). */
+export interface WebhookHandler {
+  /**
+   * The host stored deliveries for one webhook; the guest pulls them.
+   *
+   * @param event - Webhook and how many wait.
+   * @returns {@link EmptyReply}
+   */
+  delivered(event: WebhookDelivered): Promise<EmptyReply>;
+}
+
+/**
  * Storefront content source (not byte Source). Every method takes and
  * returns typed structs from the "Typed method payloads" section.
  */
@@ -2015,6 +2087,52 @@ export interface NotificationRaiser {
 }
 
 /**
+ * `ai` entrypoint: serves models. The plugin lists the models it serves,
+ * each with one task, and runs one model on one input. The host routes
+ * every call (its own and other plugins' through the `AI` binding) to the
+ * deployed plugin that serves the named model; a model plugin never learns
+ * who asked. Bulk work arrives as many `run` calls from a host job, each
+ * within the per-call caps.
+ */
+export interface AiModels {
+  /**
+   * Liveness / readiness probe: model files present and loadable.
+   *
+   * @returns {@link HealthReply}
+   */
+  health(): Promise<HealthReply>;
+  /**
+   * The models this plugin serves right now, under its current settings.
+   *
+   * @returns {@link AiModelsReply}
+   */
+  models(): Promise<AiModelsReply>;
+  /**
+   * Run one model on one input.
+   *
+   * @param params - Model name and the task's input.
+   * @returns {@link AiRunReply}
+   */
+  run(params: AiRunParams): Promise<AiRunReply>;
+}
+
+/**
+ * `AI` binding: runs a model by name, as `env.AI.run(model, input)` does on
+ * Cloudflare Workers. The host checks the caller's `[ai]` grant for the
+ * model's task, applies the call's deadline and the caller's budget, and
+ * forwards to the serving plugin's `AiModels.run`.
+ */
+export interface AiRunner {
+  /**
+   * Run one model on one input.
+   *
+   * @param params - Model name or task alias, and the task's input.
+   * @returns {@link AiRunReply}
+   */
+  run(params: AiRunParams): Promise<AiRunReply>;
+}
+
+/**
  * One declared event consumer: a `[[events.consumers]]` row the default
  * entrypoint's `event(batch)` handler accepts.
  */
@@ -2062,6 +2180,12 @@ export interface PluginCapabilities {
    * `Sockets` binding and may export a `SocketHandler` for pushed messages.
    */
   sockets: boolean;
+  /**
+   * True when the guest declared `[[webhooks]]`: it receives the host-served
+   * `Webhooks` binding and may export a `WebhookHandler` the host wakes when
+   * it stores deliveries.
+   */
+  webhooks: boolean;
 }
 
 /**
@@ -4258,6 +4382,135 @@ export type NotifyRaiseReply =
   | { kind: "ok"; value: NotifyRaised } // Accepted by the router.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
+/** One model an `ai` plugin serves. */
+export interface AiModel {
+  /**
+   * Model id within the plugin (`bekko-a8m`): lowercase letters, digits,
+   * `.`, `_` and `-`. Callers name it `@<plugin id>/<model id>`; the whole
+   * name is at most `maxAiModelNameBytes`.
+   */
+  modelId: string;
+  /** The model's one task. */
+  task: AiTask;
+  /**
+   * Digest of everything that decides the output: weights, tokenizer and
+   * the language packs loaded. Outputs are comparable only when it matches.
+   */
+  revision: string;
+  /**
+   * Text embeddings: numbers per vector, at most `maxAiEmbedDimensions`.
+   * Omitted when absent (wire zero value).
+   */
+  dimensions?: number;
+  /**
+   * Text embeddings: tokens read from one text; the rest is cut off.
+   * Omitted when absent (wire zero value).
+   */
+  maxTokens?: number;
+  /**
+   * BCP 47 tags of the languages the model is loaded for, at most
+   * `maxAiLanguages`; empty when it has no language packs.
+   */
+  languages: string[];
+}
+
+/** Success payload of `AiModels.models`. */
+export interface AiModelList {
+  /** Served models, at most `maxAiModels`, each `modelId` once. */
+  models: AiModel[];
+}
+
+/** Result union of `AiModels.models`. */
+export type AiModelsReply =
+  | { kind: "ok"; value: AiModelList } // The served models.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One text to embed. */
+export interface AiEmbedText {
+  /** The text, at most `maxAiEmbedTextBytes`; never empty. */
+  text: string;
+  /** Document or query. */
+  role: AiTextRole;
+}
+
+/** Input of the `textEmbeddings` task. */
+export interface AiTextEmbeddingsInput {
+  /** Texts to embed, 1 to `maxAiEmbedTexts`. */
+  texts: AiEmbedText[];
+}
+
+/** Output of the `textEmbeddings` task. */
+export interface AiTextEmbeddingsOutput {
+  /** Numbers per vector; equals the model's `AiModel.dimensions`. */
+  dimensions: number;
+  /**
+   * One vector per input text, in input order: `dimensions` little-endian
+   * IEEE 754 32-bit floats each, concatenated. Every number is finite.
+   */
+  vectors: Uint8Array;
+  /** `AiModel.revision` of the model that made the vectors. */
+  revision: string;
+  /**
+   * Indexes (into the input texts, ascending, each once) of the texts
+   * where the tokenizer met text outside the loaded language packs and
+   * fell back to smaller pieces; such a vector should be recomputed after
+   * the missing pack is added.
+   */
+  fallbacks: number[];
+}
+
+/**
+ * Input to one model run: one field per `AiTask`, and exactly one is set
+ * (the others are null). A new task appends a field.
+ */
+export interface AiInput {
+  /** `textEmbeddings` task. */
+  textEmbeddings: AiTextEmbeddingsInput;
+}
+
+/**
+ * Output of one model run: one field per `AiTask`, and exactly one is set
+ * (the others are null). A new task appends a field.
+ */
+export interface AiOutput {
+  /** `textEmbeddings` task. */
+  textEmbeddings: AiTextEmbeddingsOutput;
+}
+
+/** Params of `AiModels.run` and `AiRunner.run`. */
+export interface AiRunParams {
+  /**
+   * On `AiModels.run`, the plugin's own `AiModel.modelId`. On
+   * `AiRunner.run`, `@<plugin id>/<model id>` or a task alias
+   * (`@library/text-embeddings`: the model the library chose for the task).
+   */
+  model: string;
+  /** The input; the field set must match the model's task. */
+  input: AiInput;
+}
+
+/** Success payload of a model run. */
+export interface AiRunOk {
+  /** The output; the field set matches the model's task. */
+  output: AiOutput;
+  /**
+   * Full name of the model that ran (`@<plugin id>/<model id>`), so a
+   * caller that used a task alias knows what answered. Set by the host on
+   * `AiRunner.run`; empty on `AiModels.run`.
+   * Omitted when absent (wire zero value).
+   */
+  model?: string;
+}
+
+/**
+ * Result union of `AiModels.run` and `AiRunner.run`. A model the plugin
+ * does not serve is `not_found`; an input for another task is
+ * `invalid_params`; a caller without the grant gets `forbidden`.
+ */
+export type AiRunReply =
+  | { kind: "ok"; value: AiRunOk } // The model ran.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
 /** One WebSocket message. */
 export type SocketFrame =
   | { kind: "text"; value: string } // Text message, UTF-8.
@@ -4424,6 +4677,77 @@ export type IngressStartReply =
   | { kind: "ok"; value: IngressStarted } // Success: the address is up.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
+/** Success payload of `Webhooks.url`. */
+export interface WebhookUrl {
+  /**
+   * Absolute `https://` URL; empty when the library cannot be reached from
+   * the Internet or webhooks are turned off, and the plugin should use its
+   * fallback.
+   * Omitted when absent (wire zero value).
+   */
+  url?: string;
+}
+
+/** Result union of `Webhooks.url`. */
+export type WebhookUrlReply =
+  | { kind: "ok"; value: WebhookUrl } // Success: the URL, or none.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Arguments of `Webhooks.pull`. */
+export interface WebhookPullRequest {
+  /** `[[webhooks]]` name. */
+  name: string;
+  /** Most deliveries to lease, 1 to `maxWebhookPullBatch`. */
+  batchSize: number;
+  /**
+   * How long leased deliveries stay hidden from the next pull, in
+   * milliseconds, at most `maxWebhookVisibilityMs`; zero means one minute.
+   */
+  visibilityTimeoutMs: number;
+}
+
+/** One request header kept with a delivery. */
+export interface WebhookHeader {
+  /** Lowercase header name, one the row's `headers` names or `content-type`. */
+  name: string;
+  /** Header value as received. */
+  value: string;
+}
+
+/** One stored request, leased to the guest. */
+export interface WebhookDelivery {
+  /**
+   * Lease id for `ack`, at most `maxWebhookLeaseIdBytes`; a new one each
+   * time the delivery is pulled.
+   */
+  leaseId: string;
+  /** When the host stored the request, in Unix milliseconds. */
+  receivedAtUnixMs: number;
+  /** How many times this delivery has been pulled, counting this one. */
+  attempt: number;
+  /** Kept request headers, in the order the row names them. */
+  headers: WebhookHeader[];
+  /** Request body as received, at most the row's `max_body_bytes`. */
+  body: Uint8Array;
+}
+
+/** Success payload of `Webhooks.pull`. */
+export interface WebhookPullPage {
+  /** Leased deliveries, oldest first. */
+  deliveries: WebhookDelivery[];
+  /**
+   * True when the host dropped deliveries for this webhook since the last
+   * pull (the waiting cap was full or a delivery expired unacknowledged):
+   * the guest should treat what it follows as incomplete.
+   */
+  missed: boolean;
+}
+
+/** Result union of `Webhooks.pull`. */
+export type WebhookPullReply =
+  | { kind: "ok"; value: WebhookPullPage } // Success: the leased deliveries.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
 /** Success payload of `Ingress.health`. */
 export interface IngressHealth {
   /** True when the address is serving. */
@@ -4439,6 +4763,24 @@ export interface IngressHealth {
 export type IngressHealthReply =
   | { kind: "ok"; value: IngressHealth } // Success: the provider's view of the address.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Arguments of `Webhooks.ack`. */
+export interface WebhookAckRequest {
+  /** `[[webhooks]]` name. */
+  name: string;
+  /** Leases whose deliveries are done and are deleted. */
+  acks: string[];
+  /** Leases whose deliveries the next pull offers again. */
+  retries: string[];
+}
+
+/** Argument of `WebhookHandler.delivered`. */
+export interface WebhookDelivered {
+  /** `[[webhooks]]` name. */
+  name: string;
+  /** Deliveries waiting for this webhook when the host called. */
+  waiting: number;
+}
 
 /** One typed SQL cell or bind parameter. */
 export type DbValue =

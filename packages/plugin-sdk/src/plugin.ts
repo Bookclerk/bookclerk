@@ -53,6 +53,9 @@ import type {
   KvPutOptionsBinding,
   KvValueType,
   KvValueWithMetadata,
+  AiBinding,
+  AiTextEmbeddingsRequest,
+  AiTextEmbeddingsResponse,
   NotifyBinding,
   NotifyRaise,
   PublishEvent,
@@ -61,6 +64,7 @@ import type {
   QueueSendOptions,
   HostWebSocket,
   SocketMessageData,
+  WebhookDeliveredEvent,
 } from "./env.js";
 import { PluginError, parseLimitExceeded } from "./errors.js";
 import { ExecuteStreamFrameCodec, encodeMessage } from "./generated-wire.js";
@@ -86,6 +90,12 @@ import {
   type OriginTransport,
   type OriginTransportReply,
 } from "./origin.js";
+import {
+  webhooksBinding,
+  type WebhookOp,
+  type WebhooksTransport,
+  type WebhookTransportReply,
+} from "./webhooks.js";
 import type { ObjectChangeKind } from "./abi.js";
 import type {
   MoveManyTarget,
@@ -125,6 +135,9 @@ import type {
   MetadataRecord,
   MetadataSearchParams,
   NetworkGrant,
+  AiModelList,
+  AiRunOk,
+  AiRunParams,
   NotificationField,
   NotifyRaised,
   NotifySendParams,
@@ -218,6 +231,17 @@ export type {
   MetadataRecord,
   MetadataSearchParams,
   NetworkGrant,
+  AiEmbedText,
+  AiInput,
+  AiModel,
+  AiModelList,
+  AiOutput,
+  AiRunOk,
+  AiRunParams,
+  AiTask,
+  AiTextEmbeddingsInput,
+  AiTextEmbeddingsOutput,
+  AiTextRole,
   NotificationAlertAction,
   NotificationAudience,
   NotificationField,
@@ -823,6 +847,8 @@ export interface GrantedContext {
   events?: EventPublisherBinding;
   /** `NOTIFY` binding, when `[[notifications.types]]` is declared. */
   notify?: NotifyBinding;
+  /** `AI` binding, when `[ai].calls` is declared and granted. */
+  ai?: AiBinding;
   /** Named `[[databases]]` bindings. */
   databases?: NamedDatabase[];
   /** `[[queues.producers]]` bindings, when granted. */
@@ -836,6 +862,8 @@ export interface GrantedContext {
    * instance is the active ingress.
    */
   origin?: OriginTransport;
+  /** The `WEBHOOKS` grant, when `[[webhooks]]` is declared. */
+  webhooks?: WebhooksTransport;
   /** The network grant in effect, handed to the author as `env.NETWORK`. */
   network?: NetworkGrant;
 }
@@ -957,6 +985,8 @@ export interface BridgeContext extends Omit<
   eventsToken?: string;
   /** Granted-channel bearer for `env.NOTIFY.raise`; stripped before dispatch. */
   notifyToken?: string;
+  /** Granted-channel bearer for `env.AI.run`; stripped before dispatch. */
+  aiToken?: string;
   /** Named `[[databases]]` binding → database-only bearer for `/db/execute`. */
   databases?: Record<string, string>;
   /** `[[queues.producers]]` binding → queue-only bearer for `/queues/send`. */
@@ -967,6 +997,8 @@ export interface BridgeContext extends Omit<
   sockets?: Record<string, string>;
   /** Origin-only bearer for `/origin/fetch`; stripped before dispatch. */
   originToken?: string;
+  /** Webhooks-only bearer for `/webhooks/*`; stripped before dispatch. */
+  webhooksToken?: string;
 }
 
 /** Job-runner bridge context: the durable job id plus {@link GrantedContext}. */
@@ -1050,6 +1082,7 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     if (context.storage) merged.WORK_FS = context.storage;
     if (context.events) merged.EVENTS = context.events;
     if (context.notify) merged.NOTIFY = context.notify;
+    if (context.ai) merged.AI = context.ai;
     if (Array.isArray(context.databases)) {
       for (const entry of context.databases) {
         if (!entry || typeof entry.name !== "string" || !entry.name) continue;
@@ -1075,6 +1108,7 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     const sockets = socketsTransportOf(context);
     if (sockets) merged[sockets.name] = socketsBinding(sockets.sockets);
     if (context.origin) merged.ORIGIN = originBinding(context.origin);
+    if (context.webhooks) merged.WEBHOOKS = webhooksBinding(context.webhooks);
     if (context.network && typeof context.network === "object") {
       merged.NETWORK = Object.freeze(normalizeNetworkGrant(context.network));
     }
@@ -2015,6 +2049,15 @@ export class BookclerkEntrypoint<
   ): Promise<void> | void;
 
   /**
+   * `[[webhooks]]` handler: the host stored requests for one webhook. Pull
+   * them with `env.WEBHOOKS.pull(event.name)`. The host coalesces calls, so
+   * one call may stand for several requests; read until a pull comes back
+   * empty. Without this handler the plugin reads requests on its own
+   * schedule.
+   */
+  webhookDelivered?(event: WebhookDeliveredEvent): Promise<void> | void;
+
+  /**
    * Complete ordered plugin-owned migration sequence for one named binding.
    * The host calls this at binding initialization, before ordinary execute.
    */
@@ -2153,6 +2196,29 @@ export class BookclerkEntrypoint<
       Number(wire?.code ?? 0) || 0,
       String(wire?.reason ?? ""),
       wire?.clean === true,
+    );
+  }
+
+  /**
+   * Adapter dispatch for `WebhookHandler.delivered`. Without a
+   * `webhookDelivered` handler the call is acknowledged and ignored.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `WebhookDelivered`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkWebhookDelivered(
+    context: GrantedContext,
+    wire: Partial<WebhookDeliveredEvent>,
+  ): Promise<void> {
+    if (typeof this.webhookDelivered !== "function") return;
+    applyInvocationEnv(this, context);
+    await this.webhookDelivered(
+      Object.freeze({
+        name: String(wire?.name ?? ""),
+        waiting: Number(wire?.waiting ?? 0) || 0,
+      }),
     );
   }
 
@@ -3083,6 +3149,50 @@ export class MetadataFilesEntrypoint<
 }
 
 /**
+ * `ai` entrypoint (`AiModels`): serves models to the host and, through the
+ * `AI` binding, to every plugin with the grant. `[ai].serves` in
+ * `plugin.toml` declares the tasks. The host checks every listing and every
+ * reply, so a wrong vector count or length fails the run. Export it as
+ * `export class Ai extends AiEntrypoint`.
+ */
+export class AiEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["health", "models", "run"]);
+
+  /**
+   * Reports whether the models can be loaded with the current settings.
+   *
+   * @returns Health flag plus detail.
+   */
+  health(): Promise<HealthOk> {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * Lists the models served now. Must be cheap: do not load a model here.
+   * Change a model's `revision` whenever its weights, tokenizer or loaded
+   * language packs change, because outputs are comparable only within one
+   * revision.
+   *
+   * @returns The served models, each `modelId` once.
+   */
+  models(): Promise<AiModelList> {
+    return Promise.resolve({ models: [] });
+  }
+  /**
+   * Runs one model on one input. Throw `not_found` for a model this plugin
+   * does not serve and `invalid_params` for an input of another task. For
+   * text embeddings return one vector per text, in input order
+   * ({@link packEmbeddingVectors}), with the model's listed `dimensions` and
+   * `revision`.
+   *
+   * @param _params - The plugin's own model id and the input.
+   * @returns The output; leave `model` unset.
+   */
+  run(_params: AiRunParams): Promise<AiRunOk> {
+    return Promise.reject(unsupported("run"));
+  }
+}
+
+/**
  * `notifier` entrypoint (`Notifier`): delivers messages the host already
  * rendered to one outside service (a chat webhook, a mail relay, a paging
  * service). The host decides what to send and where; the entrypoint only
@@ -3184,7 +3294,8 @@ export type EntrypointName =
   | "covers"
   | "metadataFiles"
   | "notifier"
-  | "ingress";
+  | "ingress"
+  | "ai";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -3199,6 +3310,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   metadataFiles: "PLUGIN_METADATA_FILES",
   notifier: "PLUGIN_NOTIFIER",
   ingress: "PLUGIN_INGRESS",
+  ai: "PLUGIN_AI",
 });
 
 /** Exported class name the launcher binds for each named entrypoint. */
@@ -3214,6 +3326,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   metadataFiles: "MetadataFiles",
   notifier: "Notifier",
   ingress: "Ingress",
+  ai: "Ai",
 });
 
 /** Reverse-channel fetcher bound as `GRANTED` on the adapter isolate. */
@@ -3237,6 +3350,7 @@ export type AuthorStub = Pick<
   | "bookclerkScheduled"
   | "bookclerkSocketMessage"
   | "bookclerkSocketClosed"
+  | "bookclerkWebhookDelivered"
   | "bookclerkJob"
   | "bookclerkDatabaseMigrations"
   | "bookclerkShutdown"
@@ -3416,6 +3530,132 @@ function publishPayloadBytes(payload: PublishEvent["payload"]): Uint8Array {
   if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
   if (typeof payload === "string") return new TextEncoder().encode(payload);
   return new TextEncoder().encode(JSON.stringify(payload));
+}
+
+/**
+ * Packs embedding vectors into the wire form of
+ * `AiTextEmbeddingsOutput.vectors`: little-endian 32-bit floats, concatenated.
+ *
+ * @param vectors - One vector per input text, all of one length.
+ * @returns The bytes.
+ */
+export function packEmbeddingVectors(vectors: readonly ArrayLike<number>[]): Uint8Array {
+  const width = vectors.length > 0 ? vectors[0].length : 0;
+  const out = new Uint8Array(vectors.length * width * 4);
+  const view = new DataView(out.buffer);
+  vectors.forEach((vector, row) => {
+    if (vector.length !== width) {
+      throw PluginError.fromWire("internal", "embedding vectors differ in length");
+    }
+    for (let i = 0; i < width; i++) {
+      view.setFloat32((row * width + i) * 4, vector[i], true);
+    }
+  });
+  return out;
+}
+
+/**
+ * Splits the wire form of `AiTextEmbeddingsOutput.vectors` into vectors.
+ *
+ * @param bytes - Little-endian 32-bit floats, concatenated.
+ * @param dimensions - Numbers per vector.
+ * @returns One vector per `dimensions` numbers.
+ * @throws {PluginError} `internal` when the bytes are not whole vectors.
+ */
+export function unpackEmbeddingVectors(bytes: Uint8Array, dimensions: number): number[][] {
+  const width = dimensions * 4;
+  if (!Number.isInteger(dimensions) || dimensions < 1 || bytes.length % width !== 0) {
+    throw PluginError.fromWire("internal", "embedding bytes are not whole vectors");
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const out: number[][] = [];
+  for (let at = 0; at < bytes.length; at += width) {
+    const vector = new Array<number>(dimensions);
+    for (let i = 0; i < dimensions; i++) vector[i] = view.getFloat32(at + i * 4, true);
+    out.push(vector);
+  }
+  return out;
+}
+
+/**
+ * `AI` binding handed to the author: the adapter exchanges the host's ai
+ * grant token on the granted channel, so the author isolate never holds the
+ * bearer itself. The host checks every run, the tasks granted and the
+ * plugin's budget.
+ */
+class GrantedAi extends RpcTarget implements AiBinding {
+  #granted: GrantedFetcher;
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the ai grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Run one model on one input.
+   *
+   * @param model - Model name or task alias.
+   * @param input - The input of the model's task.
+   * @returns The model's output.
+   */
+  async run(model: string, input: AiTextEmbeddingsRequest): Promise<AiTextEmbeddingsResponse> {
+    if (typeof model !== "string" || !model) {
+      throw PluginError.fromWire("invalid_params", "run requires a model name");
+    }
+    const text = input?.text;
+    const list = typeof text === "string" ? [text] : text;
+    if (!Array.isArray(list) || list.some((t) => typeof t !== "string")) {
+      throw PluginError.fromWire(
+        "invalid_params",
+        "run requires input.text as a string or strings",
+      );
+    }
+    const role = input.role ?? "document";
+    const wire = {
+      model,
+      input: { textEmbeddings: { texts: list.map((t) => ({ text: t, role })) } },
+    };
+    const resp = await this.#granted.fetch("http://granted/ai/run", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify(wire),
+    });
+    const value = (await resp.json().catch(() => ({}))) as {
+      error?: { code?: string; message?: string };
+      model?: unknown;
+      output?: {
+        textEmbeddings?: {
+          dimensions?: unknown;
+          vectors?: unknown;
+          revision?: unknown;
+          fallbacks?: unknown;
+        };
+      };
+    };
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `ai run HTTP ${resp.status}`);
+    }
+    const out = value.output?.textEmbeddings ?? {};
+    const dimensions = Number(out.dimensions ?? 0);
+    const bytes = typeof out.vectors === "string" ? base64ToBytes(out.vectors) : new Uint8Array();
+    const data = unpackEmbeddingVectors(bytes, dimensions);
+    return {
+      shape: [data.length, dimensions],
+      data,
+      model: String(value.model ?? model),
+      revision: String(out.revision ?? ""),
+      fallbacks: Array.isArray(out.fallbacks) ? out.fallbacks.map(Number) : [],
+    };
+  }
 }
 
 /**
@@ -4017,6 +4257,63 @@ class GrantedOrigin extends RpcTarget implements OriginTransport {
 }
 
 /**
+ * `WEBHOOKS` grant handed to the author: the adapter exchanges the
+ * webhooks-only grant token on `POST /webhooks/<op>`, so the author isolate
+ * never holds the bearer. Every failure, including a channel that cannot be
+ * reached, comes back as an `err` value rather than a throw, so its code
+ * survives the Workers RPC hop to the author isolate.
+ */
+class GrantedWebhooks extends RpcTarget implements WebhooksTransport {
+  /** Granted reverse channel that serves `POST /webhooks/<op>`. */
+  #granted: GrantedFetcher;
+  /** `Authorization` header carrying the webhooks-only grant token. */
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the webhooks grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Makes one `POST /webhooks/<op>` call on the granted channel.
+   *
+   * @param op - Operation, the path segment after `/webhooks/`.
+   * @param body - That operation's JSON fields, bytes already base64.
+   * @returns `{ ok }` with the route's reply body, or `{ err }` with the
+   *   host's code (`unavailable` when the channel cannot be reached,
+   *   `internal` for a reply that is not JSON); never throws.
+   */
+  async call(op: WebhookOp, body: Record<string, unknown>): Promise<WebhookTransportReply> {
+    let resp: Response;
+    try {
+      resp = await this.#granted.fetch(`http://granted/webhooks/${op}`, {
+        method: "POST",
+        headers: { ...this.#auth, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return { err: { code: "unavailable", message: `webhooks ${op}: ${errorMessage(err)}` } };
+    }
+    const value = (await resp.json().catch(() => null)) as
+      (Record<string, unknown> & { error?: { code?: string; message?: string } }) | null;
+    if (value && value.error) {
+      return {
+        err: { code: value.error.code || "internal", message: value.error.message || "" },
+      };
+    }
+    if (!resp.ok || !value || typeof value !== "object") {
+      return { err: { code: "internal", message: `webhooks ${op} HTTP ${resp.status}` } };
+    }
+    return { ok: value };
+  }
+}
+
+/**
  * Named `[[databases]]` binding transport handed to the author: the adapter
  * exchanges the binding's database-only grant token on `POST /db/execute`,
  * so the author isolate never holds the bearer itself. ABI failures come
@@ -4375,7 +4672,12 @@ export function wrapPluginFromNative() {
 /** Wire names of the trigger families the launcher may ask `openInvocation` about. */
 export const TRIGGER_FAMILIES: Readonly<
   Record<
-    "eventConsumer" | "queueConsumer" | "scheduledHandler" | "jobRunner" | "socketHandler",
+    | "eventConsumer"
+    | "queueConsumer"
+    | "scheduledHandler"
+    | "jobRunner"
+    | "socketHandler"
+    | "webhookHandler",
     string
   >
 > = Object.freeze({
@@ -4384,6 +4686,7 @@ export const TRIGGER_FAMILIES: Readonly<
   scheduledHandler: "scheduledHandler",
   jobRunner: "jobRunner",
   socketHandler: "socketHandler",
+  webhookHandler: "webhookHandler",
 });
 
 /**
@@ -4412,6 +4715,7 @@ export function scheduledControllerOf(
  * `eventConsumer` needs a non-empty `consumes`, `queueConsumer` needs a
  * non-empty `queueConsumers`, `scheduledHandler` needs a non-empty `crons`,
  * `socketHandler` needs `sockets` (`[sockets]` in the manifest),
+ * `webhookHandler` needs `webhooks` (`[[webhooks]]` in the manifest),
  * and `jobRunner` needs `jobs` or the `storage`
  * entrypoint (storage guests run the host `stream_copy` job). Unknown names
  * and a missing manifest fail closed.
@@ -4446,6 +4750,8 @@ export function allowedEntrypointFamilies(
       if (jobs.length > 0 || exportsStorage) out.push(name);
     } else if (name === TRIGGER_FAMILIES.socketHandler) {
       if (capabilities.sockets === true) out.push(name);
+    } else if (name === TRIGGER_FAMILIES.webhookHandler) {
+      if (capabilities.webhooks === true) out.push(name);
     } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name as EntrypointName)) {
       out.push(name);
     }
@@ -4522,8 +4828,18 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx: BridgeContext | undefined): GrantedContext {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, notifyToken, databases, queues, kv, sockets, originToken, ...rest } =
-        source;
+      const {
+        eventsToken,
+        notifyToken,
+        aiToken,
+        databases,
+        queues,
+        kv,
+        sockets,
+        originToken,
+        webhooksToken,
+        ...rest
+      } = source;
       const bound: GrantedContext = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -4534,6 +4850,11 @@ function createInvocationAdapter() {
       if (typeof notifyToken === "string" && notifyToken && granted) {
         bound.notify = new GrantedNotify(granted, {
           Authorization: `Bearer ${notifyToken}`,
+        });
+      }
+      if (typeof aiToken === "string" && aiToken && granted) {
+        bound.ai = new GrantedAi(granted, {
+          Authorization: `Bearer ${aiToken}`,
         });
       }
       if (databases && typeof databases === "object" && !Array.isArray(databases) && granted) {
@@ -4579,6 +4900,11 @@ function createInvocationAdapter() {
       }
       if (typeof originToken === "string" && originToken && granted) {
         bound.origin = new GrantedOrigin(granted, { Authorization: `Bearer ${originToken}` });
+      }
+      if (typeof webhooksToken === "string" && webhooksToken && granted) {
+        bound.webhooks = new GrantedWebhooks(granted, {
+          Authorization: `Bearer ${webhooksToken}`,
+        });
       }
       return bound;
     }

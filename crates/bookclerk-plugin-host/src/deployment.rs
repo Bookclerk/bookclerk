@@ -793,10 +793,12 @@ struct TrackedGuest {
     root: Option<PathBuf>,
     /// `CONFIG` passed to `open`.
     config: ExtensibleConfig,
-    /// `SECRETS` passed to `open`. Tests read this; production keeps the payload
-    /// beside the session that was opened with it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// `SECRETS` passed to `open`; the public webhook route reads a row's
+    /// signing secret from it.
     secrets: ExtensibleConfig,
+    /// The manifest's `[[webhooks]]` rows, which the public route checks
+    /// requests against.
+    webhooks: Arc<Vec<bookclerk_plugin_manifest::WebhookManifest>>,
 }
 
 /// How a tracked deployment's guest process is held.
@@ -852,6 +854,10 @@ pub struct LiveDeploymentRuntime {
     pub integrations: Arc<tokio::sync::RwLock<bookclerk_integrations::IntegrationRegistry>>,
     /// Destination sessions the reconciler owns.
     pub destinations: Arc<tokio::sync::RwLock<crate::DestinationRegistry>>,
+    /// The node's model router over [`Self::integrations`]: behind every
+    /// granted `AI` binding, and what the host's own features run models
+    /// through.
+    pub ai: Arc<bookclerk_integrations::AiRouter>,
     /// Sessions keyed by plugin instance id.
     guests: std::sync::Mutex<HashMap<String, TrackedGuest>>,
     /// Lifecycle context for integrations this process starts.
@@ -890,6 +896,9 @@ impl LiveDeploymentRuntime {
             config,
             store,
             sources,
+            ai: Arc::new(bookclerk_integrations::AiRouter::new(Arc::clone(
+                &integrations,
+            ))),
             integrations,
             destinations,
             guests: std::sync::Mutex::new(HashMap::new()),
@@ -1112,6 +1121,74 @@ impl LiveDeploymentRuntime {
             .and_then(|guest| guest.process.guest_pid())
     }
 
+    /// The `[[webhooks]]` row `name` of the instance this node runs, with
+    /// the row's signing secret when it names one and the operator set it.
+    ///
+    /// # Returns
+    ///
+    /// `None` when this node runs no guest for `plugin_instance_id` or its
+    /// manifest declares no row `name`.
+    #[must_use]
+    pub fn webhook_endpoint(
+        &self,
+        plugin_instance_id: &str,
+        name: &str,
+    ) -> Option<crate::webhook_binding::WebhookEndpoint> {
+        let guests = self
+            .guests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guest = guests.get(plugin_instance_id)?;
+        let row = guest.webhooks.iter().find(|row| row.name == name)?.clone();
+        let secret = match &row.signature {
+            bookclerk_plugin_manifest::WebhookSignature::None => None,
+            bookclerk_plugin_manifest::WebhookSignature::HmacSha256(rule) => {
+                guest.secrets.json_value().ok().and_then(|secrets| {
+                    secrets
+                        .get(&rule.secret_setting)
+                        .and_then(serde_json::Value::as_str)
+                        .map(|value| zeroize::Zeroizing::new(value.as_bytes().to_vec()))
+                })
+            }
+        };
+        Some(crate::webhook_binding::WebhookEndpoint { row, secret })
+    }
+
+    /// Tells the instance's resident guest that requests wait for webhook
+    /// `event.name`, without waiting for its answer.
+    ///
+    /// A sleeping on-demand guest is not started: it pulls on its next call,
+    /// and a storage guest's feed is read on its next sync pass.
+    pub fn wake_webhook(
+        &self,
+        plugin_instance_id: &str,
+        event: bookclerk_plugin_abi::WebhookDelivered,
+    ) {
+        let session = match &self
+            .guests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(plugin_instance_id)
+            .map(|guest| &guest.process)
+        {
+            Some(GuestProcess::Resident(session)) => Arc::clone(session),
+            Some(GuestProcess::OnDemand(_)) | None => return,
+        };
+        if !session.guest_running() {
+            return;
+        }
+        let instance = plugin_instance_id.to_string();
+        tokio::spawn(async move {
+            if let Err(err) = session.deliver_webhook_wake(event).await {
+                tracing::debug!(
+                    plugin_instance_id = %instance,
+                    error = %err,
+                    "webhook wake not delivered"
+                );
+            }
+        });
+    }
+
     /// Replaces the tracked session for one instance and retires the one it
     /// replaces (see [`GuestProcess::retire`]).
     ///
@@ -1274,7 +1351,11 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
     async fn spawn_and_health(&self, request: &DeploymentSpawn) -> SpawnHealth {
         let config = self.config.read().await.clone();
         let store = self.store.read().await.clone();
-        let services = crate::SessionServices::with_event_outbox(store.clone());
+        let mut services = crate::SessionServices::with_event_outbox(store.clone());
+        services.ai = Some(Arc::clone(&self.ai));
+        services.webhooks =
+            bookclerk_library::control_plane::PluginInstanceId::parse(&request.plugin_instance_id)
+                .ok();
         let Some(root) = request.plugin_root.as_deref() else {
             return SpawnHealth::SpawnFailed {
                 detail: "installed plugin was not discovered".into(),
@@ -1441,6 +1522,7 @@ async fn spawn_storefront(
                         root,
                         config: opened_config,
                         secrets: opened_secrets,
+                        webhooks: Arc::new(plugin.manifest.webhooks.clone()),
                     },
                 )
                 .await;
@@ -1599,6 +1681,7 @@ async fn spawn_integration(
                         root,
                         config: opened_config,
                         secrets: opened_secrets,
+                        webhooks: Arc::new(plugin.manifest.webhooks.clone()),
                     },
                 )
                 .await;
@@ -1685,6 +1768,9 @@ async fn spawn_ingress(
                 root: request.plugin_root.clone(),
                 config: opened_config,
                 secrets: opened_secrets,
+                // The ingress session is not handed `WEBHOOKS`, so the
+                // public route takes no requests for it.
+                webhooks: Arc::new(Vec::new()),
             },
         )
         .await;
@@ -1818,6 +1904,8 @@ struct StorageStarter {
     store: LibraryStore,
     /// Resolved `open` bindings for the instance's applied revision.
     prepared: crate::PreparedOpen,
+    /// Deployed instance whose webhooks back the guest's `WEBHOOKS` binding.
+    instance_id: Option<bookclerk_library::control_plane::PluginInstanceId>,
 }
 
 #[async_trait]
@@ -1831,6 +1919,7 @@ impl crate::activation::GuestStarter<dyn crate::on_demand_storage::AwakeStorage>
             &self.plugin,
             &self.config,
             Some(&self.store),
+            self.instance_id.as_ref(),
             self.prepared.clone(),
         )
         .await
@@ -1854,21 +1943,31 @@ async fn spawn_storage(
 ) -> SpawnHealth {
     let tracked_config = prepared.bindings.config.clone();
     let tracked_secrets = prepared.bindings.secrets.clone();
+    let instance_id =
+        bookclerk_library::control_plane::PluginInstanceId::parse(&request.plugin_instance_id).ok();
     let starter = crate::storage_activates_on_demand(&plugin.manifest).then(|| StorageStarter {
         plugin: plugin.clone(),
         config: config.clone(),
         store: store.clone(),
         prepared: prepared.clone(),
+        instance_id: instance_id.clone(),
     });
-    let spawned =
-        match crate::host::spawn_deployed_storage(plugin, config, Some(store), prepared).await {
-            Ok(spawned) => spawned,
-            Err(err) => {
-                return SpawnHealth::SpawnFailed {
-                    detail: err.to_string(),
-                };
-            }
-        };
+    let spawned = match crate::host::spawn_deployed_storage(
+        plugin,
+        config,
+        Some(store),
+        instance_id.as_ref(),
+        prepared,
+    )
+    .await
+    {
+        Ok(spawned) => spawned,
+        Err(err) => {
+            return SpawnHealth::SpawnFailed {
+                detail: err.to_string(),
+            };
+        }
+    };
     // A storage-only guest sleeps behind a proxy that keeps its place in
     // the registry; a guest that also has another family stays resident.
     if let Some(starter) = starter {
@@ -1900,6 +1999,7 @@ async fn spawn_storage(
                     root: request.plugin_root.clone(),
                     config: tracked_config,
                     secrets: tracked_secrets,
+                    webhooks: Arc::new(plugin.manifest.webhooks.clone()),
                 },
             )
             .await;
@@ -1920,6 +2020,7 @@ async fn spawn_storage(
                 root: request.plugin_root.clone(),
                 config: tracked_config,
                 secrets: tracked_secrets,
+                webhooks: Arc::new(plugin.manifest.webhooks.clone()),
             },
         )
         .await;

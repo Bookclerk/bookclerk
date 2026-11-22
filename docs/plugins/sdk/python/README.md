@@ -42,7 +42,8 @@ matching name extending its base: `Storefront(StorefrontEntrypoint)`,
 `DatabaseAdapter(DatabaseAdapterEntrypoint)`, `Cli(CliEntrypoint)`,
 `Oidc(OidcEntrypoint)`, `Metadata(MetadataEntrypoint)`,
 `Covers(CoverEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)`,
-`Notifier(NotifierEntrypoint)` and `Ingress(IngressEntrypoint)`. The Python SDK serves `direct`
+`Notifier(NotifierEntrypoint)`, `Ingress(IngressEntrypoint)` and
+`Ai(AiEntrypoint)`. The Python SDK serves `direct`
 [`[ingress]`](../../manifest.md#ingress-public-address) plugins only; the
 `ORIGIN` binding a relay plugin hands requests to is in the TypeScript SDK.
 
@@ -157,6 +158,31 @@ for the socket's life.
 A remote library whose message announced a new user returns
 `{"poll_events": True}` from `web_socket_message`, and the host calls
 `poll_events` right away instead of at its next scheduled poll.
+
+## Inbound webhooks
+
+A plugin that declares `[[webhooks]]` (see
+[Inbound webhooks](../../abi.md#inbound-webhooks-webhooks)) gets
+`self.env.WEBHOOKS`, a `WebhooksBinding`:
+
+```python
+class Default(BookclerkEntrypoint):
+    async def scheduled(self, controller) -> None:
+        page = await self.env.WEBHOOKS.pull("events", batch_size=50)
+        if page.missed:
+            await self.relist()  # requests expired unread: resynchronize
+        for message in page.messages:
+            await self.handle(json.loads(message.body))
+        await self.env.WEBHOOKS.ack("events", acks=[m.lease_id for m in page.messages])
+
+    async def webhook_delivered(self, name: str, waiting: int) -> None:
+        """Optional: called on a running plugin as soon as a request is stored."""
+```
+
+`await self.env.WEBHOOKS.url("events")` returns the URL to hand the
+outside service, or `None` when the library has no public `https`
+address or webhooks are off. Each `WebhookMessage` has `lease_id`,
+`timestamp` (a UTC `datetime`), `attempts`, `headers` and `body` (`bytes`).
 
 ## Network grant
 

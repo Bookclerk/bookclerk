@@ -359,51 +359,29 @@ Per [Open Library API guidelines](https://openlibrary.org/developers/api):
   work only takes the fields it lacks
 - Editions already enriched are skipped (the edition's `enrich_source`
   `metadata:<provider>`, or the legacy `openlibrary`) — provenance cache.
-  Until the `books` table is retired, the edition's `books` rows are
-  written first, each taking only the fields it lacks; then the work,
-  expression and cover; and the edition is marked last. A failure before
+  The work, expression and cover are written first, each taking only the
+  fields it lacks, and the edition is marked last. A failure before
   the mark keeps whatever was already written and leaves the edition
   unmarked, so a later run asks again while any of its gaps is still open
 - For bulk data, use [monthly dumps](https://openlibrary.org/data), not the API
 
 WorldCat remains reserved (API key + ToS).
 
-## Embeddings (small / VPS-friendly)
+## Embeddings
 
-Discover shelves rank with a **local-hash** 384-d embedder by default
-(`discovery.embeddings_enabled = false`): no download, no extra runtime and
-negligible RAM. AI-assisted recommendations are not designed yet, so ONNX
-scoring is off unless an operator turns it on.
+The host loads no model. Models run in plugins and are called through
+one router (see the [model plugins ADR](../adr/ai-models.md) and
+[Model plugins](../plugins/abi.md#model-plugins)).
 
-The ONNX embedder is not in the default build. Build the hosts with the
-`onnx-embeddings` feature to link it:
+Until Discover is moved onto that router, its shelves rank with the
+**local-hash** embedder (`local-hash-v1`, 384 numbers): a hash of the
+words of a text. It needs no download and no extra runtime, and it
+carries no meaning, so two books score alike only when their texts share
+words. Hash vectors are stored under their own model id and are never
+compared with a model's vectors.
 
-```bash
-cargo build --release -p bookclerkd -p bookclerk-cli --features bookclerkd/onnx-embeddings,bookclerk-cli/onnx-embeddings
-```
-
-The feature pulls `fastembed`, `hf-hub` and `tokenizers` and, through them,
-`onig`, `esaxx`, `ort`, OpenSSL (`native-tls`) and a second `reqwest`: about
-45 crates, two of them C/C++ builds, that every cold build would otherwise
-compile for an experiment that is off by default. A host built without it
-treats `discovery.embeddings_enabled = true` like an ONNX load failure: it
-warns once and ranks with local-hash. CI tests `bookclerk-discover` with its
-`onnx` feature whenever that crate is selected, so the path keeps compiling.
-
-When enabled and built in, discovery uses **quantized MiniLM-L6-v2** via `fastembed` / ONNX Runtime
-(~22 MB model under `models/` plus the ORT shared library, ~50 MB RAM, 1
-intra-thread by default). ORT is **loaded dynamically** (not statically linked)
-so hosts with glibc < 2.38 still build; on first successful load the runtime
-and model are cached under the Bookclerk files dir.
-
-If ONNX cannot load (built without `onnx-embeddings`, offline host, unsupported
-glibc for the ORT dylib, corrupt cache, …), Bookclerk **warns and falls back** to local-hash so recommend still
-works. A failed load is tried once per process: later ranking runs use
-local-hash straight away until the daemon restarts, so a missing runtime
-never holds up Discover again.
-
-`discovery.embeddings_enabled = false` (the default, or CLI `--hash` / `?no`
-paths that pass `prefer_onnx = false`) skips ONNX and uses local-hash directly.
+The [embedding model benchmarks](embedding-benchmarks.md) record what a
+real model adds and which models the first-party plugin will ship.
 
 [Embedding model benchmarks](embedding-benchmarks.md) compares MiniLM with
 newer and multilingual models on taste quality, memory and speed.
@@ -419,10 +397,9 @@ library is neither held in memory at once nor read one hash per work.
 
 ### OSV / `paste`
 
-With the `onnx-embeddings` feature, `fastembed` → `tokenizers` (and related
-crates) pull crates.io `paste` 1.0.15 as a **compile-time proc-macro**. The
-default build does not compile it, but it stays in `Cargo.lock`, which OSV
-scans. That crate is **unmaintained**
+`lofty`, the tag library `bookclerk-media` uses, pulls crates.io `paste`
+1.0.15 as a **compile-time proc-macro**, so it is in `Cargo.lock`, which
+OSV scans. That crate is **unmaintained**
 ([RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html):
 INFO, no CVE, no patched release). There is no crates.io drop-in under the same
 name; renaming to maintained [`pastey`](https://crates.io/crates/pastey) would
@@ -618,9 +595,6 @@ held the Discover gate and slowed every Wishlist load as libraries grew.
 
 ```toml
 [discovery]
-embeddings_enabled = false
-embedding_model = "local-hash-v1"
-embed_intra_threads = 1
 storefront_candidates = true
 storefront_seed_limit = 8
 storefront_max_remote_calls = 32
@@ -654,12 +628,51 @@ disables the hard filter
 
 A row is one recording, never one title. Two stores' hits share a row when
 they share an ISBN or ASIN, or when the shared listing pool resolved both
-store products into the same expression (`LibraryStore::listing_expressions`;
-a product the pool has not listed, or placed in two recordings, merges only on
-its identifiers). Titles and authors are never compared, so a narration and a
-dramatisation of one book, or two narrations whose stores share no identifier
-and that the pool has not seen, are separate rows with their own cover,
-narrators and price.
+store products into the same expression (`LibraryStore::listing_expressions`).
+
+Stores rarely share a record number, so hits from two different stores that
+share none of those still share a row when all of these hold
+(`same_recording_by_runtime` in `bookclerk-discover`):
+
+1. Both report a runtime, and the runtimes differ by at most 1 minute
+   (stores round a recording's length differently, by less than a minute).
+2. They name the same work: the resolver's work key matches. It reads the
+   cleaned title without a trailing edition marker (`First Family - Abridged`
+   and `First Family (Abridged)` both key as `First Family`) and the authors.
+3. They credit the same, non-empty set of narrators.
+4. Nothing tells them apart: no two different ISBNs or ASINs, no abridged
+   against unabridged, no two different languages, and no two different
+   expressions in the pool.
+
+Two products of one store never merge this way, and title and authors alone
+never merge hits. A narration and a dramatisation of one book, or an
+unabridged and an abridged recording, stay separate rows with their own
+cover, narrators and price. Each merged row keeps every store's edition, so
+every store's price is still offered, and a field one store left out (a
+runtime, a series) is filled from another store's hit. Each store listing
+names one publisher, and stores disagree (Audible lists *First Family* under
+Grand Central Publishing, Chirp and Libro.fm under Hachette Audio), so a
+merged row shows the publisher most of its listings name, ignoring case; on
+a tie the first one stays.
+
+> [!NOTE]
+> David Baldacci's *First Family*, read by Ron McLarty, is the reference
+> case: Audible, Chirp and Libro.fm each list an unabridged (871 minutes)
+> and an abridged (370 minutes) recording, and search shows two rows.
+
+Stores give ISBNs where they can: Audible's catalog `isbn` attribute and
+Libro.fm's product ids are ISBNs, and Chirp, which lists none, names a
+publisher's cover image after the edition's ISBN-13, which the Chirp plugin
+reads when the file name is a valid ISBN-13. Chirp's typeahead rows, which
+lead page one of a Chirp search, ask for the runtime, publisher and series
+too.
+
+Series names are cleaned when a hit arrives: a trailing edition marker and
+the word "Series" are removed (`King and Maxwell (abridged)` reads
+`King and Maxwell`, `King & Maxwell Series` reads `King & Maxwell`). The
+`series` filter and the web app's series choices treat `&` and `and`, case
+and accents as the same, so one series is one choice whichever store spelled
+it.
 
 | Param | Notes |
 | --- | --- |
@@ -700,6 +713,16 @@ still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 | CLI | `bookclerk discover recommend` (prints shelves), `embed`, `sync-listening`, `wishlist …` |
 | Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `POST /api/discover/refresh`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
 | GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
+
+A patron's scope ([ADR](../adr/patron-scopes.md)) filters the feed and
+catalog search on each answer, after the stored feed is read or the
+stores have answered. The page index can't judge titles the library
+doesn't hold, so each card or hit is checked by its own metadata
+(`WorkScope::admits_unheld`): authors, narrators, series, genres and the
+store's explicit flag (`is_explicit`, merged across stores so that one
+explicit mark wins). Shelves left empty are dropped. A search page keeps
+its cursor, so it can come back short while more pages follow. When the
+scope can't be read, the answer is refused, never sent unfiltered.
 
 Wishlists are **store-agnostic**. Every wish names the library work it is
 for: adding one resolves its ASIN, ISBN, title and authors the way a scan

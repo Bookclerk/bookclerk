@@ -9,7 +9,7 @@ The default export is a module-level ``Default`` class extending
 :class:`BookclerkEntrypoint` with optional ``event(batch)`` / ``job(job)``
 triggers. Named entrypoints from ``plugin.toml`` ``entrypoints`` are module-level
 classes named after the wire name (``Storefront``, ``Storage``, ``RemoteLibrary``,
-``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``, ``MetadataFiles``, ``Notifier``) extending the matching ``*Entrypoint``
+``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``, ``MetadataFiles``, ``Notifier``, ``Ai``) extending the matching ``*Entrypoint``
 base. The launcher's adapter isolate reaches them only through the
 ``bookclerk*`` dispatch methods; authors neither call nor override those.
 
@@ -25,10 +25,12 @@ import asyncio
 import base64
 import inspect
 import json
+import re
+import struct
 import time
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from .limits import (
@@ -100,6 +102,10 @@ from ._abi import (  # noqa: E402  (re-export)
     MAX_SOCKET_ATTACHMENT_BYTES,
     MAX_SOCKET_FRAME_BYTES,
     MAX_STREAM_WINDOW_BYTES,
+    MAX_WEBHOOK_LEASE_ID_BYTES,
+    MAX_WEBHOOK_NAME_BYTES,
+    MAX_WEBHOOK_PULL_BATCH,
+    MAX_WEBHOOK_VISIBILITY_MS,
     PLUGIN_ERROR_CODES,
     PRODUCT_API_VERSION,
 )
@@ -126,6 +132,10 @@ __all__ = [
     "MAX_SOCKET_ATTACHMENT_BYTES",
     "MAX_SOCKET_FRAME_BYTES",
     "MAX_STREAM_WINDOW_BYTES",
+    "MAX_WEBHOOK_LEASE_ID_BYTES",
+    "MAX_WEBHOOK_NAME_BYTES",
+    "MAX_WEBHOOK_PULL_BATCH",
+    "MAX_WEBHOOK_VISIBILITY_MS",
     "PRODUCT_API_VERSION",
     "AdapterDatabaseSession",
     "BookclerkEntrypoint",
@@ -142,8 +152,12 @@ __all__ = [
     "IngressEntrypoint",
     "MetadataEntrypoint",
     "NamedEntrypoint",
+    "AiBinding",
+    "AiEntrypoint",
     "NotifierEntrypoint",
     "NotifyBinding",
+    "pack_embedding_vectors",
+    "unpack_embedding_vectors",
     "OidcEntrypoint",
     "PluginError",
     "QueueBatch",
@@ -154,6 +168,9 @@ __all__ = [
     "SocketsBinding",
     "StorageEntrypoint",
     "StorefrontEntrypoint",
+    "WebhookMessage",
+    "WebhookPullResult",
+    "WebhooksBinding",
     "cli_args",
     "decode_extensible_config",
     "decode_socket_attachment",
@@ -170,6 +187,7 @@ __all__ = [
     "transport_kv",
     "transport_queue",
     "transport_sockets",
+    "transport_webhooks",
 ]
 
 
@@ -562,6 +580,9 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
     notify = _get(ctx, "notify")
     if notify is not None:
         granted["NOTIFY"] = transport_notify(notify)
+    ai = _get(ctx, "ai")
+    if ai is not None:
+        granted["AI"] = transport_ai(ai)
     databases = _get(ctx, "databases")
     if databases is not None:
         for entry in databases:
@@ -594,6 +615,9 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
     sockets = _sockets_stub(ctx)
     if sockets is not None:
         granted[sockets[0]] = transport_sockets(sockets[1])
+    webhooks = _get(ctx, "webhooks")
+    if webhooks is not None:
+        granted["WEBHOOKS"] = transport_webhooks(webhooks)
     return _EnvView(raw_env, granted)
 
 
@@ -1027,6 +1051,115 @@ def transport_queue(stub: Any) -> QueueBinding:
         The author-facing binding.
     """
     return QueueBinding(stub)
+
+
+def pack_embedding_vectors(vectors: Sequence[Sequence[float]]) -> bytes:
+    """Pack embedding vectors into the wire form of ``AiTextEmbeddingsOutput["vectors"]``.
+
+    Args:
+        vectors: One vector per input text, all of one length.
+
+    Returns:
+        Little-endian 32-bit floats, concatenated.
+
+    Raises:
+        PluginError: ``internal`` when the vectors differ in length.
+    """
+    width = len(vectors[0]) if vectors else 0
+    out = bytearray()
+    for vector in vectors:
+        if len(vector) != width:
+            raise PluginError("internal", "embedding vectors differ in length")
+        out += struct.pack(f"<{width}f", *vector)
+    return bytes(out)
+
+
+def unpack_embedding_vectors(data: bytes, dimensions: int) -> list[list[float]]:
+    """Split the wire form of ``AiTextEmbeddingsOutput["vectors"]`` into vectors.
+
+    Args:
+        data: Little-endian 32-bit floats, concatenated.
+        dimensions: Numbers per vector.
+
+    Returns:
+        One vector per ``dimensions`` numbers.
+
+    Raises:
+        PluginError: ``internal`` when the bytes are not whole vectors.
+    """
+    width = dimensions * 4
+    if dimensions < 1 or len(data) % width != 0:
+        raise PluginError("internal", "embedding bytes are not whole vectors")
+    return [
+        list(struct.unpack_from(f"<{dimensions}f", data, at)) for at in range(0, len(data), width)
+    ]
+
+
+class AiBinding:
+    """``AI`` binding, present when ``plugin.toml`` lists tasks under ``[ai].calls``.
+
+    The host routes each run to the deployed plugin that serves the model.
+    The adapter isolate owns the ai grant; this wrapper converts Python
+    values into the JS values the adapter stub expects.
+    """
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    async def run(
+        self,
+        model: str,
+        *,
+        text: str | list[str],
+        role: abi.AiTextRole = "document",
+    ) -> dict[str, Any]:
+        """Run one text-embedding model on one input (``env.AI.run``).
+
+        Args:
+            model: ``@<plugin id>/<model id>``, or a task alias such as
+                ``@library/text-embeddings`` for the model the library chose.
+            text: One text or a batch (at most ``MAX_AI_EMBED_TEXTS``), none empty.
+            role: ``document`` for stored content, ``query`` for a search
+                query matched against documents.
+
+        Returns:
+            ``{"shape": [texts, dimensions], "data": [[...], ...], "model":
+            ..., "revision": ..., "fallbacks": [...]}``. Vectors are
+            comparable only when their model and revision match.
+
+        Raises:
+            PluginError: ``invalid_params`` for a malformed run, ``not_found``
+                when nothing deployed serves the model, ``forbidden`` for a
+                task that is not granted, ``rate_limited`` past the plugin's
+                budget, ``deadline_exceeded`` or ``unavailable`` when the
+                model plugin cannot answer.
+        """
+        if not isinstance(model, str) or not model:
+            raise PluginError("invalid_params", "run requires a model name")
+        texts = [text] if isinstance(text, str) else text
+        if not isinstance(texts, list) or any(not isinstance(t, str) for t in texts):
+            raise PluginError("invalid_params", "run requires text as a string or strings")
+        reply = py(await self._stub.run(model, js({"text": texts, "role": role}))) or {}
+        shape = [int(n) for n in (_get(reply, "shape") or [0, 0])]
+        return {
+            "shape": shape,
+            "data": [[float(n) for n in row] for row in (_get(reply, "data") or [])],
+            "model": str(_get(reply, "model", model)),
+            "revision": str(_get(reply, "revision", "")),
+            "fallbacks": [int(n) for n in (_get(reply, "fallbacks") or [])],
+        }
+
+
+def transport_ai(stub: Any) -> AiBinding:
+    """Wrap the adapter's granted ai stub as an :class:`AiBinding`.
+
+    Args:
+        stub: ``AiBinding``-shaped JS stub from the granted context.
+
+    Returns:
+        The author-facing binding.
+    """
+    return AiBinding(stub)
 
 
 class NotifyBinding:
@@ -1529,6 +1662,238 @@ def _sockets_stub(context: Any) -> tuple[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
+# ``[[webhooks]]``: inbound webhook requests, read like a pulled queue
+# ---------------------------------------------------------------------------
+
+#: Batch size a pull uses when the author passes none.
+DEFAULT_WEBHOOK_PULL_BATCH = 10
+
+_WEBHOOK_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+_WEBHOOK_LEASE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _check_webhook_name(name: Any) -> str:
+    """Check a webhook name the way the host does.
+
+    Args:
+        name: Name the author passed.
+
+    Returns:
+        The name.
+
+    Raises:
+        PluginError: ``invalid_params`` for a malformed name.
+    """
+    text = str(name or "")
+    if not text or len(text) > MAX_WEBHOOK_NAME_BYTES or not _WEBHOOK_NAME.match(text):
+        raise PluginError.from_wire("invalid_params", "malformed webhook name")
+    return text
+
+
+def _check_webhook_leases(leases: Any) -> list[str]:
+    """Check one list of lease ids.
+
+    Args:
+        leases: Ids the author passed.
+
+    Returns:
+        The ids as strings.
+
+    Raises:
+        PluginError: ``invalid_params`` for a malformed id or too many ids.
+    """
+    out = [str(lease) for lease in (leases or [])]
+    if len(out) > MAX_WEBHOOK_PULL_BATCH:
+        raise PluginError.from_wire(
+            "invalid_params",
+            f"a webhook ack names at most {MAX_WEBHOOK_PULL_BATCH} leases in each list",
+        )
+    for lease in out:
+        if len(lease) > MAX_WEBHOOK_LEASE_ID_BYTES or not _WEBHOOK_LEASE.match(lease):
+            raise PluginError.from_wire("invalid_params", "malformed webhook lease id")
+    return out
+
+
+@dataclass(frozen=True)
+class WebhookMessage:
+    """One stored webhook request, leased to this pull.
+
+    Attributes:
+        lease_id: Pass to :meth:`WebhooksBinding.ack` to finish or retry it.
+        timestamp: When the host received it.
+        attempts: How many pulls have leased it, this one included.
+        headers: The kept headers, lowercase names.
+        body: The request body as sent.
+    """
+
+    lease_id: str
+    timestamp: datetime
+    attempts: int
+    headers: dict[str, str]
+    body: bytes
+
+
+@dataclass(frozen=True)
+class WebhookPullResult:
+    """One pull's leased requests.
+
+    Attributes:
+        messages: Leased requests, oldest first.
+        missed: True when requests expired or were dropped since the last
+            pull, so the plugin should resynchronize another way.
+    """
+
+    messages: list[WebhookMessage]
+    missed: bool
+
+
+def _webhook_message(wire: Any) -> WebhookMessage:
+    """The author view of one route ``deliveries`` entry."""
+    headers: dict[str, str] = {}
+    for header in _get(wire, "headers") or []:
+        name = _get(header, "name")
+        if isinstance(name, str):
+            headers[name] = str(_get(header, "value", "") or "")
+    millis = int(_get(wire, "receivedAtUnixMs", 0) or 0)
+    return WebhookMessage(
+        lease_id=str(_get(wire, "leaseId", "") or ""),
+        timestamp=datetime.fromtimestamp(millis / 1000, tz=UTC),
+        attempts=int(_get(wire, "attempt", 0) or 0),
+        headers=headers,
+        body=_from_b64(_get(wire, "body")),
+    )
+
+
+class WebhooksBinding:
+    """``[[webhooks]]`` binding (``env.WEBHOOKS``).
+
+    Requests outside services send to the webhook's URL wait in the library
+    until the plugin pulls them; each pull leases a batch, and ``ack``
+    finishes or retries each lease.
+    """
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    async def _call(self, op: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Make one ``POST /webhooks/<op>`` call through the adapter's grant.
+
+        Raises:
+            PluginError: ``unavailable`` on a transport failure, otherwise the
+                host's code.
+        """
+        try:
+            raw = await self._stub.call(op, js(body))
+        except PluginError:
+            raise
+        except Exception as err:  # noqa: BLE001 - an RPC failure has no type of its own
+            raise PluginError.from_wire("unavailable", f"webhooks {op}: {err}") from err
+        reply = py(raw) or {}
+        err = _get(reply, "err")
+        if err is not None:
+            raise PluginError.from_wire(
+                str(_get(err, "code", "") or "internal"), str(_get(err, "message", "") or "")
+            )
+        ok = _get(reply, "ok")
+        return ok if isinstance(ok, dict) else {}
+
+    async def url(self, name: str) -> str | None:
+        """The URL an outside service should call for webhook ``name``.
+
+        Returns:
+            The URL, or ``None`` when the library cannot be reached from the
+            Internet or webhooks are turned off.
+        """
+        reply = await self._call("url", {"name": _check_webhook_name(name)})
+        url = reply.get("url")
+        return url if isinstance(url, str) and url else None
+
+    async def pull(
+        self,
+        name: str,
+        *,
+        batch_size: int = DEFAULT_WEBHOOK_PULL_BATCH,
+        visibility_timeout_ms: int = 0,
+    ) -> WebhookPullResult:
+        """Lease up to ``batch_size`` waiting requests, oldest first.
+
+        Args:
+            name: The ``[[webhooks]]`` row.
+            batch_size: 1 to ``MAX_WEBHOOK_PULL_BATCH``.
+            visibility_timeout_ms: How long leased requests stay hidden from
+                the next pull; 0 means one minute.
+
+        Returns:
+            The leased requests and whether any were missed.
+
+        Raises:
+            PluginError: ``invalid_params`` for an out-of-range option.
+        """
+        if not 1 <= int(batch_size) <= MAX_WEBHOOK_PULL_BATCH:
+            raise PluginError.from_wire(
+                "invalid_params", f"webhook batch size must be 1..={MAX_WEBHOOK_PULL_BATCH}"
+            )
+        if not 0 <= int(visibility_timeout_ms) <= MAX_WEBHOOK_VISIBILITY_MS:
+            raise PluginError.from_wire(
+                "invalid_params",
+                f"webhook visibility timeout must be at most {MAX_WEBHOOK_VISIBILITY_MS} ms",
+            )
+        reply = await self._call(
+            "pull",
+            {
+                "name": _check_webhook_name(name),
+                "batchSize": int(batch_size),
+                "visibilityTimeoutMs": int(visibility_timeout_ms),
+            },
+        )
+        deliveries = reply.get("deliveries")
+        return WebhookPullResult(
+            messages=[_webhook_message(d) for d in deliveries]
+            if isinstance(deliveries, list)
+            else [],
+            missed=reply.get("missed") is True,
+        )
+
+    async def ack(
+        self,
+        name: str,
+        *,
+        acks: list[str] | None = None,
+        retries: list[str] | None = None,
+    ) -> None:
+        """Finish or retry leased requests.
+
+        Args:
+            name: The ``[[webhooks]]`` row.
+            acks: Leases whose requests are done and deleted.
+            retries: Leases whose requests the next pull offers again.
+
+        Raises:
+            PluginError: ``invalid_params`` for a malformed lease, too many
+                leases, or a lease in both lists.
+        """
+        done = _check_webhook_leases(acks)
+        again = _check_webhook_leases(retries)
+        if set(done) & set(again):
+            raise PluginError.from_wire(
+                "invalid_params", "a webhook lease is both acknowledged and retried"
+            )
+        await self._call("ack", {"name": _check_webhook_name(name), "acks": done, "retries": again})
+
+
+def transport_webhooks(stub: Any) -> WebhooksBinding:
+    """Wrap the adapter's granted webhooks stub as a :class:`WebhooksBinding`.
+
+    Args:
+        stub: ``WebhooksTransport``-shaped JS stub from the granted context.
+
+    Returns:
+        The author-facing binding.
+    """
+    return WebhooksBinding(stub)
+
+
+# ---------------------------------------------------------------------------
 # Job trigger: ``job(controller)`` shaped like Workers ``scheduled(controller)``
 # ---------------------------------------------------------------------------
 
@@ -1869,6 +2234,23 @@ class BookclerkEntrypoint(WorkerEntrypoint):
                 str(_get(wire, "reason", "") or ""),
                 _get(wire, "clean") is True,
             )
+        )
+
+    async def bookclerkWebhookDelivered(self, context: Any = None, wire: Any = None) -> None:
+        """Adapter dispatch: the host stored requests, to ``webhook_delivered(name, waiting)``.
+
+        Without a handler the call is acknowledged and ignored; the plugin
+        pulls on its own schedule.
+        """
+        handler = getattr(self, "webhook_delivered", None) or getattr(
+            self, "webhookDelivered", None
+        )
+        if not callable(handler):
+            return
+        _apply_invocation_env(self, context)
+        wire = py(wire) or {}
+        await _await_maybe(
+            handler(str(_get(wire, "name", "") or ""), int(_get(wire, "waiting", 0) or 0))
         )
 
     async def bookclerkJob(self, context=None, invocation=None, granted=None):
@@ -2488,6 +2870,41 @@ class MetadataFilesEntrypoint(NamedEntrypoint):
         Everything else in the file is kept; a ``str`` is written as UTF-8.
         """
         raise _unsupported("render")
+
+
+class AiEntrypoint(NamedEntrypoint):
+    """``ai`` entrypoint: serves models to the host and to plugins with the grant.
+
+    ``[ai].serves`` in ``plugin.toml`` declares the tasks. The host checks
+    every listing and every reply, so a wrong vector count or length fails
+    the run.
+    """
+
+    bookclerk_methods = ("health", "models", "run")
+
+    async def health(self) -> abi.HealthOk:
+        """Liveness / readiness probe (``HealthOk``)."""
+        return {"ok": True, "detail": ""}
+
+    async def models(self) -> abi.AiModelList:
+        """The models served now (``AiModelList``).
+
+        Must be cheap: do not load a model here. Change a model's
+        ``revision`` whenever its weights, tokenizer or loaded language packs
+        change, because outputs are comparable only within one revision.
+        """
+        return {"models": []}
+
+    async def run(self, _params: abi.AiRunParams) -> abi.AiRunOk:
+        """Run one model on one input (``AiRunOk``).
+
+        Raise ``not_found`` for a model this plugin does not serve and
+        ``invalid_params`` for an input of another task. For text embeddings
+        return one vector per text, in input order
+        (:func:`pack_embedding_vectors`), with the model's listed
+        ``dimensions`` and ``revision``; leave ``model`` unset.
+        """
+        raise _unsupported("run")
 
 
 class NotifierEntrypoint(NamedEntrypoint):

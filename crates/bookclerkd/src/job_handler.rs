@@ -150,6 +150,22 @@ impl JobTransport for InProcessJobTransport {
                 )
                 .await
             }
+            JobKind::Acquire if cmd.payload.convert.is_some() => {
+                let copy = cmd
+                    .payload
+                    .convert
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("convert job carries no copy"))?;
+                crate::jobs::run_convert(
+                    &self.state,
+                    cmd.payload.title.as_deref(),
+                    cmd.payload.account.as_deref(),
+                    copy,
+                    cmd.payload.force,
+                    Some(&ctx),
+                )
+                .await
+            }
             JobKind::Acquire => {
                 run_acquire(
                     &self.state,
@@ -208,6 +224,9 @@ impl JobTransport for InProcessJobTransport {
             }
             JobKind::IngestBatch => {
                 crate::uploads::run_ingest_batch(&self.state, &cmd.payload, Some(&ctx)).await
+            }
+            JobKind::NotifySend => {
+                crate::notify_jobs::run_notify_send(&self.state, &cmd.payload, Some(&ctx)).await
             }
             // Only its branch takes a request, over `requests.claim`; no
             // claim path of this library hands it to a worker.

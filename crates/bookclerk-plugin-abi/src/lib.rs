@@ -5,7 +5,7 @@
 //! `describe()` advertises typed [`PluginCapabilities`], then
 //! `open(invocation, bindings)` returns the exported [`Entrypoints`]
 //! (`storefront`, `storage`, `databaseAdapter`, `remoteLibrary`, `cli`,
-//! `oidc`, `metadata`, `covers`, `metadataFiles`, `notifier`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
+//! `oidc`, `metadata`, `covers`, `metadataFiles`, `notifier`, `ai`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
 //! [`Bindings`] carry `CONFIG` / `SECRETS`, the `EVENTS` publisher, and named
 //! `[[databases]]` sessions — the Workers `env` idiom.
 //!
@@ -46,6 +46,7 @@
 //!
 //! | Module | Contents |
 //! | --- | --- |
+//! | [`ai`] | Checks on model listings, model runs and their replies |
 //! | [`metadata_files`] | Checks on `metadataFiles` requests and the records dialects return |
 //! | [`methods`] | Capability / consent method name constants (`login`, `event`, …) |
 //! | [`notifications`] | Checks on notification messages, addresses, raises and notifier replies |
@@ -66,6 +67,7 @@
     clippy::unwrap_used
 )]
 
+pub mod ai;
 pub mod backup_ops;
 pub mod db;
 pub mod db_execute;
@@ -108,6 +110,7 @@ mod sql_proof;
 mod sql_text;
 pub mod sql_types;
 mod storage_ops;
+pub mod webhooks;
 
 /// Generated Cap'n Proto RPC interfaces (`schema/plugin.capnp`).
 ///
@@ -259,20 +262,23 @@ pub use features::{
 };
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
-    cover_sink_slot, ScalarLimits, MAX_COVER_BYTES, MAX_COVER_HEADER_BYTES, MAX_COVER_URLS,
-    MAX_CRON_BYTES, MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_INGRESS_ORIGIN_BYTES,
-    MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE,
-    MAX_METADATA_AUDIO_FILES, MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS,
-    MAX_METADATA_FILE_DESCRIPTION_BYTES, MAX_METADATA_FILE_LIST_ENTRIES,
-    MAX_METADATA_FILE_TEXT_BYTES, MAX_NOTIFICATION_FIELDS, MAX_NOTIFICATION_FIELD_BYTES,
-    MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES, MAX_NOTIFICATION_TITLE_BYTES,
-    MAX_NOTIFIER_ADDRESS_BYTES, MAX_ORIGIN_HEADERS, MAX_ORIGIN_HEADER_BYTES,
-    MAX_ORIGIN_TARGET_BYTES, MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
-    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES,
-    MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_SOCKETS_PER_INSTANCE,
-    MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES, MAX_SOCKET_AUTO_RESPONSE_BYTES,
-    MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS, MAX_SOCKET_URL_BYTES, MAX_STREAM_WINDOW_BYTES,
-    PRODUCT_API_VERSION,
+    cover_sink_slot, ScalarLimits, MAX_AI_EMBED_DIMENSIONS, MAX_AI_EMBED_TEXTS,
+    MAX_AI_EMBED_TEXT_BYTES, MAX_AI_LANGUAGES, MAX_AI_MODELS, MAX_AI_MODEL_NAME_BYTES,
+    MAX_COVER_BYTES, MAX_COVER_HEADER_BYTES, MAX_COVER_URLS, MAX_CRON_BYTES,
+    MAX_EVENT_CURSOR_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_INGRESS_ORIGIN_BYTES, MAX_KV_KEY_BYTES,
+    MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_METADATA_AUDIO_FILES,
+    MAX_METADATA_FILE_BYTES, MAX_METADATA_FILE_CHAPTERS, MAX_METADATA_FILE_DESCRIPTION_BYTES,
+    MAX_METADATA_FILE_LIST_ENTRIES, MAX_METADATA_FILE_TEXT_BYTES, MAX_NOTIFICATION_FIELDS,
+    MAX_NOTIFICATION_FIELD_BYTES, MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES,
+    MAX_NOTIFICATION_TITLE_BYTES, MAX_NOTIFIER_ADDRESS_BYTES, MAX_ORIGIN_HEADERS,
+    MAX_ORIGIN_HEADER_BYTES, MAX_ORIGIN_TARGET_BYTES, MAX_PLUGIN_MIGRATION_OPS,
+    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS,
+    MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES, MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS,
+    MAX_SOCKETS_PER_INSTANCE, MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES,
+    MAX_SOCKET_AUTO_RESPONSE_BYTES, MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS,
+    MAX_SOCKET_URL_BYTES, MAX_STREAM_WINDOW_BYTES, MAX_WEBHOOK_BODY_BYTES, MAX_WEBHOOK_HEADERS,
+    MAX_WEBHOOK_HEADER_VALUE_BYTES, MAX_WEBHOOK_LEASE_ID_BYTES, MAX_WEBHOOK_NAME_BYTES,
+    MAX_WEBHOOK_PULL_BATCH, MAX_WEBHOOK_VISIBILITY_MS, PRODUCT_API_VERSION,
 };
 pub use media::{
     check_record_kinds, decode_plain_fetch_bytes, encode_plain_fetch_bytes, media_support_is_empty,
@@ -292,27 +298,30 @@ pub use quality_offers::{
     QualityOffersError, MAX_OFFER_BITRATE_KBPS, MAX_OFFER_CHANNELS, MAX_OFFER_SAMPLE_RATE_HZ,
 };
 pub use roles::{
-    hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, BindingValues, Bindings,
-    ByteRange, Cancellation, ContentSource, CoverFetcher, Database, Destination, Entrypoints,
-    EventConsumer, EventPublisher, GuestDatabase, Ingress, JobController, JobRunner, KvNamespace,
-    MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding, NeverCancel,
-    NotificationRaiser, Notifier, Oidc, Origin, OriginReply, PluginCli, PluginWorker, ProgressSink,
-    QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler, SocketHandler,
-    Sockets, Source, PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
+    hint_result, purchase_hint_results_one_by_one, AdapterDatabaseSession, AiModels, AiRunner,
+    BindingValues, Bindings, ByteRange, Cancellation, ContentSource, CoverFetcher, Database,
+    Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase, Ingress, JobController,
+    JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding,
+    NeverCancel, NotificationRaiser, Notifier, Oidc, Origin, OriginReply, PluginCli, PluginWorker,
+    ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler,
+    SocketHandler, Sockets, Source, WebhookHandler, Webhooks, PURCHASE_HINTS_BUDGET,
+    PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
 pub use rpc::{
     byte_source_from_async_read, connect_plugin, connect_socket_broker, decode_empty_reply_bytes,
     decode_plugin_error_bytes, pull_byte_source_to_writer, roundtrip_event_read_message,
-    roundtrip_socket_message, serve_plugin, serve_plugin_stdio, serve_socket_broker,
-    ContentSourceClient, CoverFetcherClient, DatabaseClient, DestinationClient, DestinationServer,
-    EventConsumerClient, EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings,
-    IngressClient, JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient,
-    NoOrigin, NotificationRaiserClient, NotifierClient, OidcClient, OpenedEntrypoints,
-    OriginClient, PluginCliClient, PluginClient, PluginServer, QueueConsumerClient,
-    QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient, SocketCodec,
-    SocketHandlerClient, SocketWireMessage, SocketsClient, SourceClient, SourceServer,
+    roundtrip_socket_message, roundtrip_webhook_message, serve_plugin, serve_plugin_stdio,
+    serve_socket_broker, AiModelsClient, AiRunnerClient, ContentSourceClient, CoverFetcherClient,
+    DatabaseClient, DestinationClient, DestinationServer, EventConsumerClient,
+    EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings, IngressClient,
+    JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient, NoOrigin,
+    NotificationRaiserClient, NotifierClient, OidcClient, OpenedEntrypoints, OriginClient,
+    PluginCliClient, PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient,
+    RemoteLibraryClient, ScheduledHandlerClient, SocketCodec, SocketHandlerClient,
+    SocketWireMessage, SocketsClient, SourceClient, SourceServer, WebhookCodec,
+    WebhookHandlerClient, WebhookWireMessage, WebhooksClient,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

@@ -1055,7 +1055,15 @@ export function SettingsPage({
           jail_cpu_cores: 0.8,
           extra_processes: 2,
           max_extra_processes: 62,
-          known_bindings: ["config", "secrets", "plugin_kv", "work_fs", "oauth", "sockets"],
+          known_bindings: [
+            "config",
+            "secrets",
+            "plugin_kv",
+            "work_fs",
+            "oauth",
+            "sockets",
+            "webhooks",
+          ],
         },
       });
     }

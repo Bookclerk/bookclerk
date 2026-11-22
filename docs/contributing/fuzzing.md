@@ -41,6 +41,7 @@ boundary extends it.
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
 | `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
+| `media_keep_codec` | Audio parts the media worker copies into an M4B without re-encoding them (`output.keep_codec_in_m4b`): MP4 sample entries and tables, Ogg and FLAC headers and packets | `bookclerk-media::package_keeping_codec` |
 | `media_decode` | Audio the media worker demuxes and decodes before it encodes or repackages it: store downloads, library copies and files on storage, recognised by their bytes, never their names | `bookclerk-media::decode_pcm_bytes` |
 | `media_pcm_wire` | PCM worker frames for the desktop window's player: requests the worker reads, and the worker's whole output (byte-range requests, the stream format, samples, the end) the host reads while the worker decodes untrusted audio | `bookclerk-media::pcm_wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
@@ -51,6 +52,10 @@ boundary extends it.
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
 | `notify_raise` | A plugin's `NOTIFY.raise`: the `/notify/raise` JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert | `bookclerk-plugin-abi::notifications::check_raise_params` |
+| `ai_run_reply` | A model plugin's reply to a run (vector count, length, finite values, revision and fallback indexes, against the run it answers) and its model listing | `bookclerk-plugin-abi::ai::check_run_output`, `check_models` |
+| `ai_run` | A plugin's `AI.run`: the `/ai/run` JSON body and the Cap'n Proto run, their model name and the input for one task | `bookclerk-plugin-abi::ai::check_binding_run_params` |
+| `notify_address_body` | The `address` object of a patron's `POST /api/me/notifications/destinations` body: a flat object of strings with no key written twice | `bookclerk-plugin-abi::notifications::AddressFields` |
+| `notify_cursor` | The `cursor` query parameter of the notification delivery log and a patron's inbox: a token the caller sends back | `bookclerk-library::NotifyCursor::decode` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
@@ -59,6 +64,9 @@ boundary extends it.
 | `origin_request` | What a relay ingress plugin hands the host: the framed `POST /origin/fetch` body on the isolate bridge, request heads (method, target, headers, client address), response heads, and the public origin `Ingress.start` reports | `bookclerk-plugin-abi::origin` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
 | `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
+| `webhook_route` | A workerd plugin's `env.WEBHOOKS` calls on the granted reverse channel: the `POST /webhooks/<op>` JSON body for `url`, `pull` and `ack` | `bookclerk-workerd::granted_webhooks` |
+| `webhook_message` | The Cap'n Proto `Webhooks` messages a native plugin sends the host (pull and ack requests) and the deliveries the host hands out | `bookclerk-plugin-abi::webhooks` |
+| `webhook_request` | A request on the public webhook route `POST /hooks/<token>/<name>` from anyone on the Internet: its body, headers and HMAC-SHA256 signature | `bookclerk-workerd::webhook_request` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
@@ -349,6 +357,16 @@ only that. The others check:
   it. Seeds cover every container and codec the worker reads, including
   HE-AAC, HE-AAC v2, Ogg Opus (mono and stereo) and Ogg Vorbis. The shared oracle is
   `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
+- **`media_keep_codec`**: the input is one audio part, packaged twice
+  over into one M4B keeping its audio. A refused part leaves no file
+  behind. An accepted M4B has two chapters, the first at 0 ms; the
+  independent ISO-BMFF parser in `bookclerk-mp4` reads it, finds an Opus,
+  FLAC, ALAC, E-AC-3 or AC-4 sample entry, and every sample lies inside the
+  file; the second half of the sample table repeats the first; and the
+  same bytes always give the same file. Seeds are Ogg Opus, FLAC and ALAC
+  parts, plus AAC and damaged files the packager refuses. The shared
+  oracle is `fuzz/oracles/media_keep_codec.rs`, replayed from
+  `bookclerk-media`.
 - **`media_pcm_wire`**: the first byte, modulo 3, picks a request body, a
   reply body, or the worker's whole output. An accepted request or reply
   re-encodes to exactly its own bytes, and a reply's fields are within the
@@ -437,6 +455,43 @@ only that. The others check:
   action is not `none`. An accepted raise round-trips through the codec and
   is accepted again. The shared oracle is `fuzz/oracles/notify_raise.rs`,
   replayed from `bookclerk-plugin-abi`.
+- **`ai_run_reply`**: byte 0 modulo 2 picks a reply to a run (0) or a model
+  listing (1). A run case carries the number of texts sent and the vector
+  length the model listed ahead of an `AiRunReply` message. The reply is
+  accepted exactly when an independent restatement agrees: it names no
+  model, carries the listed vector length and revision, holds exactly one
+  vector of finite numbers per text, and its fallback indexes ascend
+  strictly inside the input. An accepted reply splits into that many
+  vectors, and packing them gives its bytes back. A listing is accepted
+  exactly when it has at most 64 models, each id once and well formed, with
+  a printable revision, well-formed languages listed once, a vector length
+  from 1 to 4096 and a token limit above zero. Both round-trip through the
+  codec. The shared oracle is `fuzz/oracles/ai_run_reply.rs`, replayed from
+  `bookclerk-plugin-abi`.
+- **`ai_run`**: byte 0 modulo 2 picks the bridge's JSON body (0) or a
+  Cap'n Proto `AiRunParams` (1). The run is accepted exactly when an
+  independent restatement agrees: a model name of at most 192 bytes that is
+  `@<plugin id>/<model id>` or `@library/text-embeddings`, and 1 to 64
+  texts, none empty and none over 16 KiB. An accepted name prints back as
+  written, the same input under the bare model id passes the check the host
+  runs before the model plugin sees it, and the run round-trips through the
+  codec. The shared oracle is `fuzz/oracles/ai_run.rs`, replayed from
+  `bookclerk-plugin-abi`.
+- **`notify_address_body`**: the input is the `address` object. It is
+  accepted exactly when an independent reading that keeps every entry,
+  repeats included, finds one JSON object whose values are all strings and
+  whose keys are all different, and the accepted fields are the same as
+  that reading's. An accepted address written out again reads back the
+  same. The shared oracle is `fuzz/oracles/notify_address_body.rs`,
+  replayed from `bookclerk-plugin-abi`.
+- **`notify_cursor`**: the input is the token. It is accepted exactly
+  when it is at most 512 bytes of unpadded base64url whose bytes are one
+  JSON object with exactly the keys `created_at` and `id`, each written
+  once, each a string of at most 128 bytes with no U+0000, as the
+  oracle's own base64url
+  decoder and an untyped reading of the JSON agree. An accepted token
+  re-encodes to one that decodes to the same cursor. The shared oracle is
+  `fuzz/oracles/notify_cursor.rs`, replayed from `bookclerk-library`.
 - **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
   a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
   `EventReadPage` (3). The body parser accepts exactly the JSON objects whose
@@ -539,6 +594,31 @@ only that. The others check:
   accepted call written back out in the route's form parses the same way.
   The shared oracle is `fuzz/oracles/socket_route.rs`, replayed from
   `bookclerk-workerd`.
+- **`webhook_route`**: the first byte picks the operation and the rest is
+  the JSON body. An unknown operation is refused as not found, and nothing
+  else is; a body that is not a JSON object, or that carries a field the
+  operation does not define, is refused as invalid; every accepted call is
+  inside restated ABI rules (names, batch size, visibility timeout, lease
+  ids, list sizes, no lease both acknowledged and retried); and an
+  accepted call written back out in the route's form parses the same way.
+  The shared oracle is `fuzz/oracles/webhook_route.rs`, replayed from
+  `bookclerk-workerd`.
+- **`webhook_message`**: byte 0 picks a pull request, an ack request or a
+  delivery, and the rest is the Cap'n Proto message. What decodes
+  re-encodes to an equal value, and the host's pull and ack checks accept
+  a request exactly when it is inside the rules the oracle restates. The
+  shared oracle is `fuzz/oracles/webhook_message.rs`, replayed from
+  `bookclerk-plugin-abi`.
+- **`webhook_request`**: byte 0 picks the row's signature rule and whether
+  the oracle adds a correct signature; the rest is the secret, the body
+  and header pairs. A body over the cap is refused as too large before
+  anything else; a signed row without a secret is unavailable; a signed
+  request is accepted only when its one signature header carries the
+  HMAC-SHA256 the oracle computes from SHA-256 alone (RFC 2104), and the
+  correct signature is accepted unless a header repeats or is malformed;
+  and the kept headers are exactly the ones sent among `content-type` and
+  the row's list, unchanged and well formed. The shared oracle is
+  `fuzz/oracles/webhook_request.rs`, replayed from `bookclerk-workerd`.
 - **`guest_sql_authz`**: every table, column, function and schema action
   that SQLite's own authorizer reports for an admitted statement is inside
   the policy. The shared oracle is `fuzz/oracles/guest_sql_authz.rs`,

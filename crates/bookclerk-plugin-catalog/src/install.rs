@@ -11,7 +11,8 @@ use chrono::Utc;
 use crate::coordinate::{PackageCoordinate, RegistrySource};
 use crate::error::{CatalogError, Result};
 use crate::extract::{
-    extract_archive, require_mutable_child, require_under, safe_join, sha256_file,
+    detect_archive_format, extract_archive, require_mutable_child, require_under, safe_join,
+    sha256_file,
 };
 use crate::identity::{PluginKey, PluginProvenance};
 use crate::kind::RuntimeIdentity;
@@ -19,7 +20,7 @@ use crate::ledger::{record_install, restore_ledger_entry, InstallLedger, Install
 use crate::manifest::{parse_sha256_hex, BookclerkPackageManifest};
 use crate::mutation_lock::{acquire_plugins_lock, PluginMutationLock};
 use crate::receipt::InstallReceipt;
-use crate::target::{host_bookclerk_target, select_target, ArchiveFormat};
+use crate::target::{host_bookclerk_target, select_target};
 use crate::trust::TrustPolicy;
 use bookclerk_plugin_manifest::{NetworkMode, PluginFamily, PluginManifest};
 
@@ -336,11 +337,7 @@ impl Installer {
         let extract_root = staging.join("root");
         let extract_root = require_mutable_child(&opts.plugins_root, &extract_root)?;
         fs::create_dir_all(&extract_root)?;
-        let format = if artifact.url.ends_with(".zip") || target.starts_with("windows-") {
-            ArchiveFormat::Zip
-        } else {
-            ArchiveFormat::TarGz
-        };
+        let format = detect_archive_format(&archive_path)?;
         extract_archive(&archive_path, format, &extract_root)?;
 
         let plugin_src = if artifact.archive_root == "." || artifact.archive_root.is_empty() {
@@ -2984,7 +2981,9 @@ mod tests {
         assert!(
             err.contains("install-ledger")
                 || err.contains("Is a directory")
-                || err.contains("directory"),
+                || err.contains("directory")
+                // Windows refuses to open a directory as a file this way.
+                || err.contains("os error 5"),
             "{err}"
         );
         assert!(
@@ -3005,10 +3004,9 @@ mod tests {
             fs::read(under_tmp(&second.plugin_root, "old-marker")).unwrap(),
             b"v1"
         );
-        assert!(
-            err.contains("directory") || err.contains("install-ledger"),
-            "{err}"
-        );
+        // Windows refuses to open a directory as a file this way (os error 5).
+        let expected = ["directory", "install-ledger", "os error 5"];
+        assert!(expected.iter().any(|text| err.contains(text)), "{err}");
 
         fs::remove_dir_all(under_tmp(tmp.path(), "install-ledger.json.tmp")).unwrap();
         Installer::rollback(&second).unwrap();

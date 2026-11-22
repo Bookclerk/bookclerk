@@ -79,6 +79,7 @@ pub const OUTPUT_SETTING_KEYS: &[&str] = &[
     "output.download_pdf",
     "output.create_cue",
     "output.fixup_metadata",
+    "output.keep_codec_in_m4b",
     "output.chapter_json",
     "output.save_metadata_json",
     "output.cover_size",
@@ -176,6 +177,11 @@ pub struct OutputSettingsV1 {
     /// Write a `.cue` sidecar.
     #[schema(example = false)]
     pub create_cue: bool,
+    /// Keep Opus, FLAC, ALAC, E-AC-3 and AC-4 audio unchanged inside an M4B
+    /// instead of encoding it to AAC (advanced; off by default).
+    #[serde(default)]
+    #[schema(example = false)]
+    pub keep_codec_in_m4b: bool,
     /// Embed tags, cover, and chapters natively.
     #[schema(example = true)]
     pub fixup_metadata: bool,
@@ -500,6 +506,7 @@ impl OutputSettingsV1 {
             download_cover: config.download_cover,
             download_pdf: config.download_pdf,
             create_cue: config.create_cue,
+            keep_codec_in_m4b: config.keep_codec_in_m4b,
             fixup_metadata: config.fixup_metadata,
             chapter_json: config.effective_chapter_json(),
             save_metadata_json: config.save_metadata_json,
@@ -551,6 +558,7 @@ impl OutputSettingsV1 {
         config.download_cover = self.download_cover;
         config.download_pdf = self.download_pdf;
         config.create_cue = self.create_cue;
+        config.keep_codec_in_m4b = self.keep_codec_in_m4b;
         config.fixup_metadata = self.fixup_metadata;
         config.chapter_json = self.chapter_json;
         config.save_chapter_json = None;
@@ -728,6 +736,7 @@ impl OutputSettingsV1 {
             "output.download_cover" => self.download_cover.to_string(),
             "output.download_pdf" => self.download_pdf.to_string(),
             "output.create_cue" => self.create_cue.to_string(),
+            "output.keep_codec_in_m4b" => self.keep_codec_in_m4b.to_string(),
             "output.fixup_metadata" => self.fixup_metadata.to_string(),
             "output.chapter_json" => enum_name(&self.chapter_json),
             "output.save_chapter_json" => self.chapter_json.wants_any().to_string(),
@@ -836,6 +845,7 @@ impl OutputSettingsV1 {
             "output.download_cover" => self.download_cover = bool_value(key, v)?,
             "output.download_pdf" => self.download_pdf = bool_value(key, v)?,
             "output.create_cue" => self.create_cue = bool_value(key, v)?,
+            "output.keep_codec_in_m4b" => self.keep_codec_in_m4b = bool_value(key, v)?,
             "output.fixup_metadata" => self.fixup_metadata = bool_value(key, v)?,
             "output.chapter_json" | "output.save_chapter_json" => {
                 self.chapter_json = ChapterJsonMode::parse(v).ok_or_else(|| {

@@ -35,6 +35,8 @@ bookclerk-tags = { path = "../crates/bookclerk-tags" }
 bookclerk-archive = { path = "../crates/bookclerk-archive" }
 # media_decode drives the media worker's demux and decode path.
 bookclerk-media = { path = "../crates/bookclerk-media" }
+# media_keep_codec writes each input to a scratch file for the packager.
+tempfile = "3"
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
 bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
@@ -195,6 +197,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ai_run_reply"
+path = "fuzz_targets/ai_run_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ai_run"
+path = "fuzz_targets/ai_run.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "event_read"
 path = "fuzz_targets/event_read.rs"
 test = false
@@ -323,6 +339,13 @@ bench = false
 [[bin]]
 name = "media_decode"
 path = "fuzz_targets/media_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media_keep_codec"
+path = "fuzz_targets/media_keep_codec.rs"
 test = false
 doc = false
 bench = false
@@ -650,6 +673,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "notify_address_body"
+path = "fuzz_targets/notify_address_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notify_cursor"
+path = "fuzz_targets/notify_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "chapter_request"
 path = "fuzz_targets/chapter_request.rs"
 test = false
@@ -659,6 +696,27 @@ bench = false
 [[bin]]
 name = "relayed_log_line"
 path = "fuzz_targets/relayed_log_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webhook_route"
+path = "fuzz_targets/webhook_route.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webhook_request"
+path = "fuzz_targets/webhook_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webhook_message"
+path = "fuzz_targets/webhook_message.rs"
 test = false
 doc = false
 bench = false

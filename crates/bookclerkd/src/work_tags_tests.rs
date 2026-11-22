@@ -13,7 +13,7 @@ async fn scan(library: &LibraryStore, asin: &str, title: &str) -> String {
         .await
         .expect("book");
     let work = library
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .expect("work read")
         .expect("a scanned title has a work");

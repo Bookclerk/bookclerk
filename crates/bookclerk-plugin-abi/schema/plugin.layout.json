@@ -930,6 +930,494 @@
         }
       ]
     },
+    "AiEmbedText": {
+      "name": "AiEmbedText",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "text",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "role",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "AiTextRole"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiInput": {
+      "name": "AiInput",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "textEmbeddings",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AiTextEmbeddingsInput"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiModel": {
+      "name": "AiModel",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "modelId",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "task",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "AiTask"
+          },
+          "offset": 0
+        },
+        {
+          "name": "revision",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "dimensions",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 1
+        },
+        {
+          "name": "maxTokens",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 2
+        },
+        {
+          "name": "languages",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "AiModelList": {
+      "name": "AiModelList",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "models",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "AiModel"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiModels.health$Params": {
+      "name": "AiModels.health$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "AiModels.health$Results": {
+      "name": "AiModels.health$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "HealthReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiModels.models$Params": {
+      "name": "AiModels.models$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "AiModels.models$Results": {
+      "name": "AiModels.models$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AiModelsReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiModels.run$Params": {
+      "name": "AiModels.run$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AiRunParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiModels.run$Results": {
+      "name": "AiModels.run$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AiRunReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiModelsReply": {
+      "name": "AiModelsReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "AiModelList"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiOutput": {
+      "name": "AiOutput",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "textEmbeddings",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AiTextEmbeddingsOutput"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiRunOk": {
+      "name": "AiRunOk",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "output",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AiOutput"
+          },
+          "offset": 0
+        },
+        {
+          "name": "model",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "AiRunParams": {
+      "name": "AiRunParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "model",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "input",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AiInput"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "AiRunReply": {
+      "name": "AiRunReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "AiRunOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiRunner.run$Params": {
+      "name": "AiRunner.run$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AiRunParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiRunner.run$Results": {
+      "name": "AiRunner.run$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AiRunReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiTextEmbeddingsInput": {
+      "name": "AiTextEmbeddingsInput",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "texts",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "AiEmbedText"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "AiTextEmbeddingsOutput": {
+      "name": "AiTextEmbeddingsOutput",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "dimensions",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        },
+        {
+          "name": "vectors",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 0
+        },
+        {
+          "name": "revision",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "fallbacks",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "uint32"
+            }
+          },
+          "offset": 2
+        }
+      ]
+    },
     "AuthenticateUserParams": {
       "name": "AuthenticateUserParams",
       "file": "plugin.capnp",
@@ -962,7 +1450,7 @@
       "name": "Bindings",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 13,
+      "pointerCount": 15,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -1104,6 +1592,26 @@
             "name": "Origin"
           },
           "offset": 12
+        },
+        {
+          "name": "ai",
+          "codeOrder": 13,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "AiRunner"
+          },
+          "offset": 13
+        },
+        {
+          "name": "webhooks",
+          "codeOrder": 14,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Webhooks"
+          },
+          "offset": 14
         }
       ]
     },
@@ -5063,7 +5571,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 16,
+      "pointerCount": 18,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -5226,6 +5734,26 @@
             "name": "Ingress"
           },
           "offset": 15
+        },
+        {
+          "name": "ai",
+          "codeOrder": 16,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "AiModels"
+          },
+          "offset": 16
+        },
+        {
+          "name": "webhookHandler",
+          "codeOrder": 17,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "WebhookHandler"
+          },
+          "offset": 17
         }
       ]
     },
@@ -12272,6 +12800,15 @@
             "kind": "bool"
           },
           "offset": 0
+        },
+        {
+          "name": "webhooks",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 1
         }
       ]
     },
@@ -16591,6 +17128,471 @@
         }
       ]
     },
+    "WebhookAckRequest": {
+      "name": "WebhookAckRequest",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "acks",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "retries",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "WebhookDelivered": {
+      "name": "WebhookDelivered",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "waiting",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "WebhookDelivery": {
+      "name": "WebhookDelivery",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "leaseId",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "receivedAtUnixMs",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        },
+        {
+          "name": "attempt",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 2
+        },
+        {
+          "name": "headers",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "WebhookHeader"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "body",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "WebhookHandler.delivered$Params": {
+      "name": "WebhookHandler.delivered$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "event",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "WebhookDelivered"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "WebhookHandler.delivered$Results": {
+      "name": "WebhookHandler.delivered$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "WebhookHeader": {
+      "name": "WebhookHeader",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "value",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "WebhookPullPage": {
+      "name": "WebhookPullPage",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "deliveries",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "WebhookDelivery"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "missed",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "WebhookPullReply": {
+      "name": "WebhookPullReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "WebhookPullPage"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "WebhookPullRequest": {
+      "name": "WebhookPullRequest",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "batchSize",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        },
+        {
+          "name": "visibilityTimeoutMs",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "WebhookUrl": {
+      "name": "WebhookUrl",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "url",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "WebhookUrlReply": {
+      "name": "WebhookUrlReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "WebhookUrl"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Webhooks.ack$Params": {
+      "name": "Webhooks.ack$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "WebhookAckRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Webhooks.ack$Results": {
+      "name": "Webhooks.ack$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Webhooks.pull$Params": {
+      "name": "Webhooks.pull$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "WebhookPullRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Webhooks.pull$Results": {
+      "name": "Webhooks.pull$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "WebhookPullReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Webhooks.url$Params": {
+      "name": "Webhooks.url$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Webhooks.url$Results": {
+      "name": "Webhooks.url$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "WebhookUrlReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "WriteOptions": {
       "name": "WriteOptions",
       "file": "plugin.capnp",
@@ -16673,6 +17675,21 @@
         "unknown",
         "unabridged",
         "abridged"
+      ]
+    },
+    "AiTask": {
+      "name": "AiTask",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "textEmbeddings"
+      ]
+    },
+    "AiTextRole": {
+      "name": "AiTextRole",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "document",
+        "query"
       ]
     },
     "CatalogField": {
@@ -16785,7 +17802,8 @@
         "covers",
         "metadataFiles",
         "notifier",
-        "ingress"
+        "ingress",
+        "ai"
       ]
     },
     "Explicitness": {
@@ -17161,6 +18179,42 @@
           "ordinal": 8,
           "params": "AdapterTransaction.assertRestoreConstraints$Params",
           "results": "AdapterTransaction.assertRestoreConstraints$Results"
+        }
+      ]
+    },
+    "AiModels": {
+      "name": "AiModels",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "health",
+          "ordinal": 0,
+          "params": "AiModels.health$Params",
+          "results": "AiModels.health$Results"
+        },
+        {
+          "name": "models",
+          "ordinal": 1,
+          "params": "AiModels.models$Params",
+          "results": "AiModels.models$Results"
+        },
+        {
+          "name": "run",
+          "ordinal": 2,
+          "params": "AiModels.run$Params",
+          "results": "AiModels.run$Results"
+        }
+      ]
+    },
+    "AiRunner": {
+      "name": "AiRunner",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "run",
+          "ordinal": 0,
+          "params": "AiRunner.run$Params",
+          "results": "AiRunner.run$Results"
         }
       ]
     },
@@ -17895,6 +18949,42 @@
           "results": "Source.open$Results"
         }
       ]
+    },
+    "WebhookHandler": {
+      "name": "WebhookHandler",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "delivered",
+          "ordinal": 0,
+          "params": "WebhookHandler.delivered$Params",
+          "results": "WebhookHandler.delivered$Results"
+        }
+      ]
+    },
+    "Webhooks": {
+      "name": "Webhooks",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "url",
+          "ordinal": 0,
+          "params": "Webhooks.url$Params",
+          "results": "Webhooks.url$Results"
+        },
+        {
+          "name": "pull",
+          "ordinal": 1,
+          "params": "Webhooks.pull$Params",
+          "results": "Webhooks.pull$Results"
+        },
+        {
+          "name": "ack",
+          "ordinal": 2,
+          "params": "Webhooks.ack$Params",
+          "results": "Webhooks.ack$Results"
+        }
+      ]
     }
   },
   "consts": {
@@ -17952,6 +19042,36 @@
       "name": "featureStreams",
       "file": "plugin.capnp",
       "value": "rpc.streams"
+    },
+    "maxAiEmbedDimensions": {
+      "name": "maxAiEmbedDimensions",
+      "file": "plugin.capnp",
+      "value": 4096
+    },
+    "maxAiEmbedTextBytes": {
+      "name": "maxAiEmbedTextBytes",
+      "file": "plugin.capnp",
+      "value": 16384
+    },
+    "maxAiEmbedTexts": {
+      "name": "maxAiEmbedTexts",
+      "file": "plugin.capnp",
+      "value": 64
+    },
+    "maxAiLanguages": {
+      "name": "maxAiLanguages",
+      "file": "plugin.capnp",
+      "value": 64
+    },
+    "maxAiModelNameBytes": {
+      "name": "maxAiModelNameBytes",
+      "file": "plugin.capnp",
+      "value": 192
+    },
+    "maxAiModels": {
+      "name": "maxAiModels",
+      "file": "plugin.capnp",
+      "value": 64
     },
     "maxBatchKeys": {
       "name": "maxBatchKeys",
@@ -18192,6 +19312,41 @@
       "name": "maxStreamWindowBytes",
       "file": "plugin.capnp",
       "value": 1048576
+    },
+    "maxWebhookBodyBytes": {
+      "name": "maxWebhookBodyBytes",
+      "file": "plugin.capnp",
+      "value": 1048576
+    },
+    "maxWebhookHeaderValueBytes": {
+      "name": "maxWebhookHeaderValueBytes",
+      "file": "plugin.capnp",
+      "value": 8192
+    },
+    "maxWebhookHeaders": {
+      "name": "maxWebhookHeaders",
+      "file": "plugin.capnp",
+      "value": 16
+    },
+    "maxWebhookLeaseIdBytes": {
+      "name": "maxWebhookLeaseIdBytes",
+      "file": "plugin.capnp",
+      "value": 128
+    },
+    "maxWebhookNameBytes": {
+      "name": "maxWebhookNameBytes",
+      "file": "plugin.capnp",
+      "value": 32
+    },
+    "maxWebhookPullBatch": {
+      "name": "maxWebhookPullBatch",
+      "file": "plugin.capnp",
+      "value": 100
+    },
+    "maxWebhookVisibilityMs": {
+      "name": "maxWebhookVisibilityMs",
+      "file": "plugin.capnp",
+      "value": 43200000
     }
   }
 }

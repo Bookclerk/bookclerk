@@ -3,7 +3,7 @@
 //! `Cancellation` long poll (`/cancel`), named database sessions
 //! (`/db/execute`, `/db/execute-streamed`), and the `EVENTS` outbox binding
 //! (`/events/publish`, `/events/read`), the `NOTIFY` binding
-//! (`/notify/raise`), and the `SOCKETS` broker binding
+//! (`/notify/raise`), the `AI` binding (`/ai/run`), and the `SOCKETS` broker binding
 //! (`/sockets/*`, parsed in [`crate::granted_sockets`]).
 //!
 //! HTTP accept/read/write runs on the multi-thread runtime (`tokio::spawn`) so
@@ -27,12 +27,12 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_abi::{
     encode_execute_stream_error, encoded_db_capabilities_reply_bytes,
-    encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher, EventReadPage,
-    EventReadRequest, ExecuteStreamLimits, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk,
-    KvListOptions, KvNamespace, KvPutOk, KvPutOptions, NotificationRaiser, NotifyRaiseParams,
-    NotifyRaised, ObjectMetadata, Origin, PluginEvent, ProgressSink, PublishOk, QueueProducer,
-    QueueSendMessage, QueueSendOk, Sockets, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES,
-    MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    encoded_execute_result_reply_bytes, AiRunOk, AiRunParams, AiRunner, Cancellation, Destination,
+    EventPublisher, EventReadPage, EventReadRequest, ExecuteStreamLimits, GuestDatabase,
+    KvDeleteOk, KvGetOk, KvListOk, KvListOptions, KvNamespace, KvPutOk, KvPutOptions,
+    NotificationRaiser, NotifyRaiseParams, NotifyRaised, ObjectMetadata, Origin, PluginEvent,
+    ProgressSink, PublishOk, QueueProducer, QueueSendMessage, QueueSendOk, Sockets, Source,
+    Webhooks, WriteOptions, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -40,6 +40,10 @@ use tokio::sync::{mpsc, oneshot};
 use crate::granted_sockets::{
     parse_socket_call, socket_reply_json, SocketCall, SocketReply, MAX_SOCKET_ROUTE_BODY_BYTES,
     SOCKET_ROUTE_OPS,
+};
+use crate::granted_webhooks::{
+    parse_webhook_call, webhook_reply_json, WebhookCall, WebhookReply,
+    MAX_WEBHOOK_ROUTE_BODY_BYTES, WEBHOOK_ROUTE_OPS,
 };
 
 use crate::granted_http::{
@@ -56,6 +60,12 @@ pub const MAX_EVENT_PUBLISH_BODY_BYTES: u32 = MAX_EVENT_PAYLOAD_BYTES * 2 + 8 * 
 /// `maxNotificationFields` fields at their caps with every character
 /// JSON-escaped to two bytes (about 70 KiB), plus the envelope.
 pub const MAX_NOTIFY_RAISE_BODY_BYTES: u32 = 128 * 1024;
+
+/// Largest `/ai/run` request body: `maxAiEmbedTexts` texts at
+/// `maxAiEmbedTextBytes` each is 1 MiB of text, and ordinary prose grows
+/// little as JSON. A run made mostly of characters that JSON escapes to
+/// several bytes can pass that and is refused with 413; split it.
+pub const MAX_AI_RUN_BODY_BYTES: u32 = 2 * 1024 * 1024;
 
 /// Largest `/events/read` request body: a cursor plus up to `maxListPage`
 /// event types.
@@ -121,12 +131,16 @@ pub struct GrantedSlot {
     pub kv: Option<Rc<dyn KvNamespace>>,
     /// Host socket broker, when this grant is the `SOCKETS` binding.
     pub sockets: Option<Rc<dyn Sockets>>,
+    /// Host webhook store, when this grant is the `WEBHOOKS` binding.
+    pub webhooks: Option<Rc<dyn Webhooks>>,
     /// Host notification router entry, when this grant is the `NOTIFY`
     /// binding.
     pub notify: Option<Rc<dyn NotificationRaiser>>,
     /// The library, when this grant is a relay ingress plugin's `ORIGIN`
     /// binding.
     pub origin: Option<Rc<dyn Origin>>,
+    /// Host model router entry, when this grant is the `AI` binding.
+    pub ai: Option<Rc<dyn AiRunner>>,
 }
 
 impl GrantedSlot {
@@ -159,8 +173,10 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -185,8 +201,38 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: Some(sockets),
+            webhooks: None,
             notify: None,
             origin: None,
+            ai: None,
+        }
+    }
+
+    /// A grant that only reaches the instance's webhook store over
+    /// `/webhooks/*` (no streams, no database, no events, no KV).
+    #[must_use]
+    pub fn webhooks_only(webhooks: Rc<dyn Webhooks>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
+            sockets: None,
+            webhooks: Some(webhooks),
+            notify: None,
+            origin: None,
+            ai: None,
         }
     }
 
@@ -211,8 +257,10 @@ impl GrantedSlot {
             queue: None,
             kv: Some(kv),
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -237,8 +285,10 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -263,7 +313,9 @@ impl GrantedSlot {
             kv: None,
             sockets: None,
             origin: None,
+            webhooks: None,
             notify: None,
+            ai: None,
         }
     }
 
@@ -288,8 +340,38 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: Some(notify),
             origin: None,
+            ai: None,
+        }
+    }
+
+    /// A grant that only runs models over `/ai/run` (no streams, no
+    /// database, no events).
+    #[must_use]
+    pub fn ai_only(ai: Rc<dyn AiRunner>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
+            sockets: None,
+            webhooks: None,
+            notify: None,
+            origin: None,
+            ai: Some(ai),
         }
     }
 
@@ -313,8 +395,10 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -340,8 +424,10 @@ impl GrantedSlot {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 }
@@ -421,6 +507,12 @@ enum GrantedCmd {
         call: SocketCall,
         resp: oneshot::Sender<Result<SocketReply, PluginError>>,
     },
+    /// `env.WEBHOOKS` calls through the grant.
+    Webhooks {
+        invocation: String,
+        call: WebhookCall,
+        resp: oneshot::Sender<Result<WebhookReply, PluginError>>,
+    },
     /// `env.<KV>.get` / `put` / `delete` / `list` through the grant.
     Kv {
         invocation: String,
@@ -440,6 +532,15 @@ enum GrantedCmd {
         params: NotifyRaiseParams,
         /// Where the raised id or the typed error goes.
         resp: oneshot::Sender<Result<NotifyRaised, PluginError>>,
+    },
+    /// `env.AI.run` through the grant.
+    Ai {
+        /// Grant the isolate presented.
+        invocation: String,
+        /// The run, parsed but not yet checked.
+        params: Box<AiRunParams>,
+        /// Where the output or the typed error goes.
+        resp: oneshot::Sender<Result<AiRunOk, PluginError>>,
     },
     /// `env.EVENTS.read` through the grant.
     ReadEvents {
@@ -597,6 +698,13 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                 } => {
                     let _ = resp.send(dispatch_notify(&table, invocation, params).await);
                 }
+                GrantedCmd::Ai {
+                    invocation,
+                    params,
+                    resp,
+                } => {
+                    let _ = resp.send(dispatch_ai(&table, invocation, *params).await);
+                }
                 GrantedCmd::ReadEvents {
                     invocation,
                     request,
@@ -642,6 +750,13 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                             origin_route::dispatch(&table, invocation, request, body_rx).await,
                         );
                     });
+                }
+                GrantedCmd::Webhooks {
+                    invocation,
+                    call,
+                    resp,
+                } => {
+                    let _ = resp.send(dispatch_webhooks(&table, invocation, call).await);
                 }
             }
         });
@@ -768,6 +883,37 @@ async fn dispatch_sockets(
     })
 }
 
+/// `env.WEBHOOKS` through the grant: the slot must carry the instance's
+/// webhook store. The call was checked when it was parsed; the host checks it
+/// again.
+async fn dispatch_webhooks(
+    table: &GrantedTable,
+    invocation: String,
+    call: WebhookCall,
+) -> Result<WebhookReply, PluginError> {
+    let webhooks = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| PluginError::forbidden("unknown or revoked grant"))?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err(PluginError::forbidden("grant expired"));
+        }
+        slot.webhooks
+            .clone()
+            .ok_or_else(|| PluginError::forbidden("webhooks not granted"))?
+    };
+    Ok(match call {
+        WebhookCall::Url(name) => WebhookReply::Url(webhooks.url(name).await?),
+        WebhookCall::Pull(request) => WebhookReply::Pulled(webhooks.pull(request).await?),
+        WebhookCall::Ack(request) => {
+            webhooks.ack(request).await?;
+            WebhookReply::Done
+        }
+    })
+}
+
 /// `EVENTS.publish` through the grant: the slot must carry a publisher and
 /// the payload must fit `maxEventPayloadBytes`; the host publisher applies the
 /// producer allowlist and forces `source` / `accountId`.
@@ -822,6 +968,32 @@ async fn dispatch_notify(
     };
     bookclerk_plugin_abi::notifications::check_raise_params(&params)?;
     notify.raise(params).await
+}
+
+/// `AI.run` through the grant: the slot must carry the `AI` binding, and
+/// the run must pass
+/// [`bookclerk_plugin_abi::ai::check_binding_run_params`] before the
+/// host's model router sees it.
+async fn dispatch_ai(
+    table: &GrantedTable,
+    invocation: String,
+    params: AiRunParams,
+) -> Result<AiRunOk, PluginError> {
+    let ai = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| PluginError::forbidden("unknown or revoked grant"))?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err(PluginError::forbidden("grant expired"));
+        }
+        slot.ai
+            .clone()
+            .ok_or_else(|| PluginError::forbidden("ai not granted"))?
+    };
+    bookclerk_plugin_abi::ai::check_binding_run_params(&params)?;
+    ai.run(params).await
 }
 
 /// `EVENTS.read` through the grant: the slot must carry an `EVENTS`
@@ -1659,6 +1831,56 @@ where
         return Ok(());
     }
 
+    if method == "POST" && path_only == "/ai/run" {
+        if declared_content_length_over_cap(&headers, MAX_AI_RUN_BODY_BYTES) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let rest = match read_content(&mut reader, &headers, prefix, MAX_AI_RUN_BODY_BYTES).await {
+            Ok(body) => body,
+            Err(err) => {
+                let Some((status, reason)) = body_error_response(&err) else {
+                    return Err(err);
+                };
+                write_status(&mut writer, status, &reason).await?;
+                return Ok(());
+            }
+        };
+        let params: AiRunParams = match serde_json::from_slice(&rest) {
+            Ok(params) => params,
+            Err(err) => {
+                write_plugin_error(
+                    &mut writer,
+                    &PluginError::invalid_params(format!("malformed run: {err}")),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::Ai {
+            invocation,
+            params: Box::new(params),
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted ai dropped")? {
+            Ok(ok) => {
+                let payload = serde_json::to_vec(&ok)?;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(&payload).await?;
+                writer.flush().await?;
+            }
+            Err(err) => write_plugin_error(&mut writer, &err).await?,
+        }
+        return Ok(());
+    }
+
     if method == "POST" && path_only == "/notify/raise" {
         if declared_content_length_over_cap(&headers, MAX_NOTIFY_RAISE_BODY_BYTES) {
             write_status(&mut writer, 413, "payload too large").await?;
@@ -1924,6 +2146,57 @@ where
     if method == "POST" && path_only == "/origin/fetch" {
         return origin_route::serve(reader, &mut writer, headers, prefix, invocation, cmds).await;
     }
+    if method == "POST" && path_only.starts_with("/webhooks/") {
+        let op = &path_only["/webhooks/".len()..];
+        if !WEBHOOK_ROUTE_OPS.contains(&op) {
+            write_status(&mut writer, 404, "not found").await?;
+            return Ok(());
+        }
+        if declared_content_length_over_cap(&headers, MAX_WEBHOOK_ROUTE_BODY_BYTES) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let rest =
+            match read_content(&mut reader, &headers, prefix, MAX_WEBHOOK_ROUTE_BODY_BYTES).await {
+                Ok(body) => body,
+                Err(err) => {
+                    let Some((status, reason)) = body_error_response(&err) else {
+                        return Err(err);
+                    };
+                    write_status(&mut writer, status, &reason).await?;
+                    return Ok(());
+                }
+            };
+        let call = match parse_webhook_call(op, &rest) {
+            Ok(call) => call,
+            Err(err) => {
+                write_plugin_error(&mut writer, &err).await?;
+                return Ok(());
+            }
+        };
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::Webhooks {
+            invocation,
+            call,
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted webhooks call dropped")? {
+            Ok(reply) => {
+                let payload = webhook_reply_json(&reply)?;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(&payload).await?;
+                writer.flush().await?;
+            }
+            Err(err) => write_plugin_error(&mut writer, &err).await?,
+        }
+        return Ok(());
+    }
 
     write_status(&mut writer, 404, "not found").await?;
     Ok(())
@@ -2169,8 +2442,10 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         let err = match take_slot_source(&table, "g1") {
@@ -2220,8 +2495,10 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         table.borrow_mut().remove("g-live");
@@ -2258,8 +2535,10 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         let req = ExecuteRequest {
@@ -2331,8 +2610,10 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         let req = ExecuteRequest {
@@ -2427,8 +2708,10 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         let request = |sql: &str| ExecuteRequest {
@@ -2488,8 +2771,10 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         table
@@ -2871,6 +3156,92 @@ mod tests {
         }
     }
 
+    /// Host model runner that counts runs and answers one zero vector per
+    /// text.
+    struct CountingRunner(std::cell::Cell<usize>);
+
+    #[async_trait::async_trait(?Send)]
+    impl AiRunner for CountingRunner {
+        async fn run(&self, params: AiRunParams) -> Result<AiRunOk, PluginError> {
+            self.0.set(self.0.get() + 1);
+            let texts = params.input.text_embeddings.texts.len();
+            Ok(AiRunOk {
+                output: bookclerk_plugin_abi::AiOutput {
+                    text_embeddings: bookclerk_plugin_abi::AiTextEmbeddingsOutput {
+                        dimensions: 2,
+                        vectors: vec![0; texts * 8],
+                        revision: "r1".into(),
+                        fallbacks: Vec::new(),
+                    },
+                },
+                model: Some("@embedder/tiny".into()),
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_requires_a_live_ai_grant_and_a_valid_run() {
+        use bookclerk_plugin_abi::PluginErrorCode;
+        let runner = Rc::new(CountingRunner(std::cell::Cell::new(0)));
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-ai".into(),
+            GrantedSlot::ai_only(runner.clone(), Instant::now() + Duration::from_secs(60)),
+        );
+        table.borrow_mut().insert(
+            "g-expired".into(),
+            GrantedSlot::ai_only(runner.clone(), Instant::now()),
+        );
+        table.borrow_mut().insert(
+            "g-events".into(),
+            GrantedSlot::events_only(
+                Rc::new(CountingPublisher {
+                    published: std::cell::Cell::new(0),
+                }),
+                Instant::now() + Duration::from_secs(60),
+            ),
+        );
+        let run = |model: &str, texts: &[&str]| AiRunParams {
+            model: model.into(),
+            input: bookclerk_plugin_abi::AiInput {
+                text_embeddings: bookclerk_plugin_abi::AiTextEmbeddingsInput {
+                    texts: texts
+                        .iter()
+                        .map(|text| bookclerk_plugin_abi::AiEmbedText {
+                            text: (*text).to_string(),
+                            role: bookclerk_plugin_abi::AiTextRole::Query,
+                        })
+                        .collect(),
+                },
+            },
+        };
+        let ok = dispatch_ai(
+            &table,
+            "g-ai".into(),
+            run("@library/text-embeddings", &["a"]),
+        )
+        .await
+        .expect("granted run");
+        assert_eq!(ok.output.text_embeddings.vectors.len(), 8);
+        for bad in [run("tiny", &["a"]), run("@embedder/tiny", &[])] {
+            let err = dispatch_ai(&table, "g-ai".into(), bad)
+                .await
+                .expect_err("a malformed run");
+            assert_eq!(err.code, PluginErrorCode::InvalidParams);
+        }
+        for (grant, code) in [
+            ("g-expired", PluginErrorCode::Forbidden),
+            ("g-events", PluginErrorCode::Forbidden),
+            ("g-missing", PluginErrorCode::Forbidden),
+        ] {
+            let err = dispatch_ai(&table, grant.into(), run("@embedder/tiny", &["a"]))
+                .await
+                .expect_err(grant);
+            assert_eq!(err.code, code, "{grant}");
+        }
+        assert_eq!(runner.0.get(), 1);
+    }
+
     /// Host raiser that counts raises.
     struct CountingRaiser(std::cell::Cell<usize>);
 
@@ -2965,8 +3336,10 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
 
@@ -3169,8 +3542,10 @@ mod tests {
             queue: None,
             kv: None,
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -3462,8 +3837,10 @@ mod tests {
                 queue: None,
                 kv: None,
                 sockets: None,
+                webhooks: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         (table, session)
@@ -4061,5 +4438,196 @@ Transfer-Encoding: chunked\r\n\
         async fn publish(&self, _event: PluginEvent) -> bookclerk_plugin_abi::Result<PublishOk> {
             Err(PluginError::unsupported("publish"))
         }
+    }
+
+    /// Records each `Webhooks` call the granted route reaches.
+    #[derive(Default)]
+    struct RecordingWebhooks {
+        /// One line per call, in order.
+        calls: RefCell<Vec<String>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl Webhooks for RecordingWebhooks {
+        async fn url(&self, name: String) -> bookclerk_plugin_abi::Result<Option<String>> {
+            self.calls.borrow_mut().push(format!("url {name}"));
+            Ok(Some(format!("https://lib.example.org/hooks/t/{name}")))
+        }
+        async fn pull(
+            &self,
+            request: bookclerk_plugin_abi::WebhookPullRequest,
+        ) -> bookclerk_plugin_abi::Result<bookclerk_plugin_abi::WebhookPullPage> {
+            self.calls
+                .borrow_mut()
+                .push(format!("pull {} {}", request.name, request.batch_size));
+            Ok(bookclerk_plugin_abi::WebhookPullPage::default())
+        }
+        async fn ack(
+            &self,
+            request: bookclerk_plugin_abi::WebhookAckRequest,
+        ) -> bookclerk_plugin_abi::Result<()> {
+            self.calls
+                .borrow_mut()
+                .push(format!("ack {} {}", request.name, request.acks.len()));
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn webhooks_dispatch_forwards_to_the_granted_store_only() {
+        let store = Rc::new(RecordingWebhooks::default());
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        let far = std::time::Instant::now() + Duration::from_secs(60);
+        table.borrow_mut().insert(
+            "hooks".into(),
+            GrantedSlot::webhooks_only(Rc::clone(&store) as Rc<dyn Webhooks>, far),
+        );
+        let url = dispatch_webhooks(&table, "hooks".into(), WebhookCall::Url("events".into()))
+            .await
+            .unwrap();
+        assert!(matches!(url, WebhookReply::Url(Some(_))));
+        let pulled = dispatch_webhooks(
+            &table,
+            "hooks".into(),
+            WebhookCall::Pull(bookclerk_plugin_abi::WebhookPullRequest {
+                name: "events".into(),
+                batch_size: 5,
+                visibility_timeout_ms: 0,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(pulled, WebhookReply::Pulled(_)));
+        let acked = dispatch_webhooks(
+            &table,
+            "hooks".into(),
+            WebhookCall::Ack(bookclerk_plugin_abi::WebhookAckRequest {
+                name: "events".into(),
+                acks: vec!["l1".into()],
+                retries: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(acked, WebhookReply::Done));
+        assert_eq!(
+            *store.calls.borrow(),
+            ["url events", "pull events 5", "ack events 1"]
+        );
+
+        // Another binding's grant, an unknown grant and an expired one are
+        // refused.
+        table.borrow_mut().insert(
+            "events".into(),
+            GrantedSlot::events_only(Rc::new(NoEvents) as Rc<dyn EventPublisher>, far),
+        );
+        for invocation in ["events", "missing"] {
+            let err =
+                dispatch_webhooks(&table, invocation.into(), WebhookCall::Url("events".into()))
+                    .await
+                    .unwrap_err();
+            assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Forbidden);
+        }
+        let past = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        table.borrow_mut().insert(
+            "old".into(),
+            GrantedSlot::webhooks_only(Rc::clone(&store) as Rc<dyn Webhooks>, past),
+        );
+        let err = dispatch_webhooks(&table, "old".into(), WebhookCall::Url("events".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Forbidden);
+        assert!(!table.borrow().contains_key("old"));
+    }
+
+    /// Sends one raw `/webhooks/*` request to `handle_conn`; commands are
+    /// answered by `answer`. Returns the response and whether any reached it.
+    async fn webhooks_exchange(
+        request: String,
+        answer: fn(WebhookCall) -> Result<WebhookReply, PluginError>,
+    ) -> (String, bool) {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+        let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&dispatched);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmds_rx.recv().await {
+                if let GrantedCmd::Webhooks {
+                    invocation,
+                    call,
+                    resp,
+                } = cmd
+                {
+                    assert_eq!(invocation, "grant-1");
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = resp.send(answer(call));
+                }
+            }
+        });
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+        let (mut reader, mut writer) = tokio::io::split(client);
+        writer.write_all(request.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+            .await
+            .expect("http response")
+            .unwrap();
+        drop(writer);
+        let _ = serve.await;
+        (
+            String::from_utf8_lossy(&out).into_owned(),
+            dispatched.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
+    /// `POST /webhooks/<op>` with `body` under the test grant.
+    fn webhooks_request(op: &str, body: &str) -> String {
+        format!(
+            "POST /webhooks/{op} HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn webhooks_route_answers_and_checks_calls() {
+        let (response, dispatched) =
+            webhooks_exchange(webhooks_request("url", r#"{"name":"events"}"#), |call| {
+                assert!(matches!(call, WebhookCall::Url(ref name) if name == "events"));
+                Ok(WebhookReply::Url(Some(
+                    "https://lib.example.org/hooks/t/events".into(),
+                )))
+            })
+            .await;
+        assert!(dispatched);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("lib.example.org"), "{response}");
+
+        let (response, dispatched) = webhooks_exchange(
+            webhooks_request("ack", r#"{"name":"events","acks":["l1"]}"#),
+            |_| Err(PluginError::unavailable("store down")),
+        )
+        .await;
+        assert!(dispatched);
+        assert!(response.contains("unavailable"), "{response}");
+
+        let never = |_| Ok(WebhookReply::Done);
+        let (response, dispatched) =
+            webhooks_exchange(webhooks_request("url", r#"{"name":"Bad Name"}"#), never).await;
+        assert!(!dispatched, "{response}");
+        assert!(response.contains("invalid_params"), "{response}");
+
+        let (response, dispatched) = webhooks_exchange(webhooks_request("open", "{}"), never).await;
+        assert!(!dispatched);
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+
+        let oversized = format!(
+            "POST /webhooks/pull HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n",
+            MAX_WEBHOOK_ROUTE_BODY_BYTES + 1
+        );
+        let (response, dispatched) = webhooks_exchange(oversized, never).await;
+        assert!(!dispatched);
+        assert!(response.contains("413"), "{response}");
     }
 }

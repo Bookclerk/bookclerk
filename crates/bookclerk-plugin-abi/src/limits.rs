@@ -70,6 +70,27 @@ pub const MAX_ORIGIN_TARGET_BYTES: u32 = crate::plugin_capnp::MAX_ORIGIN_TARGET_
 
 /// Longest host name in `IngressStarted.origin`, in bytes.
 pub const MAX_INGRESS_ORIGIN_BYTES: u32 = crate::plugin_capnp::MAX_INGRESS_ORIGIN_BYTES;
+
+/// Most deliveries one `Webhooks.pull` returns.
+pub const MAX_WEBHOOK_PULL_BATCH: u32 = crate::plugin_capnp::MAX_WEBHOOK_PULL_BATCH;
+
+/// Longest `WebhookDelivery.leaseId`, in bytes.
+pub const MAX_WEBHOOK_LEASE_ID_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_LEASE_ID_BYTES;
+
+/// Longest `Webhooks.pull` visibility timeout, in milliseconds (12 hours).
+pub const MAX_WEBHOOK_VISIBILITY_MS: u32 = crate::plugin_capnp::MAX_WEBHOOK_VISIBILITY_MS;
+
+/// Largest stored webhook request body, in bytes (1 MiB).
+pub const MAX_WEBHOOK_BODY_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_BODY_BYTES;
+
+/// Most request headers a `[[webhooks]]` row keeps.
+pub const MAX_WEBHOOK_HEADERS: u32 = crate::plugin_capnp::MAX_WEBHOOK_HEADERS;
+
+/// Longest `[[webhooks]]` name, in bytes.
+pub const MAX_WEBHOOK_NAME_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_NAME_BYTES;
+
+/// Longest kept request header value, in bytes.
+pub const MAX_WEBHOOK_HEADER_VALUE_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_HEADER_VALUE_BYTES;
 /// Most URLs in one `CoverFetcher.fetchCovers` call.
 pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;
 
@@ -118,6 +139,25 @@ pub const MAX_NOTIFICATION_FIELD_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFICAT
 
 /// Longest notifier destination address document, in UTF-8 bytes.
 pub const MAX_NOTIFIER_ADDRESS_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFIER_ADDRESS_BYTES;
+
+/// Longest model name on the `AI` binding (`@<plugin id>/<model id>`), in
+/// UTF-8 bytes.
+pub const MAX_AI_MODEL_NAME_BYTES: u32 = crate::plugin_capnp::MAX_AI_MODEL_NAME_BYTES;
+
+/// Most models one plugin lists on its `ai` entrypoint.
+pub const MAX_AI_MODELS: u32 = crate::plugin_capnp::MAX_AI_MODELS;
+
+/// Most texts in one text-embedding run.
+pub const MAX_AI_EMBED_TEXTS: u32 = crate::plugin_capnp::MAX_AI_EMBED_TEXTS;
+
+/// Longest text in a text-embedding run, in UTF-8 bytes.
+pub const MAX_AI_EMBED_TEXT_BYTES: u32 = crate::plugin_capnp::MAX_AI_EMBED_TEXT_BYTES;
+
+/// Most numbers in one embedding vector.
+pub const MAX_AI_EMBED_DIMENSIONS: u32 = crate::plugin_capnp::MAX_AI_EMBED_DIMENSIONS;
+
+/// Most language tags on one listed model.
+pub const MAX_AI_LANGUAGES: u32 = crate::plugin_capnp::MAX_AI_LANGUAGES;
 
 /// Parses a `CoverFetcher.fetchCovers` sink key into the URL index it names.
 ///

@@ -23,7 +23,7 @@ mod integration {
         let b1 = store.upsert_book(&b1).await.unwrap();
         store
             .update_user_fields(
-                &b1.uuid,
+                &b1.holding_id,
                 "acct",
                 &bookclerk_library::UserBookFields {
                     is_finished: Some(true),
@@ -82,8 +82,6 @@ mod integration {
             storefront_max_remote_calls: 0,
             exclude_graphicaudio_series_sets: false,
             disabled_shelves: Vec::new(),
-            models_dir: None,
-            embed_intra_threads: 1,
             embeddings_enabled: true,
         };
         let registry = bookclerk_source::SourceRegistry::new();

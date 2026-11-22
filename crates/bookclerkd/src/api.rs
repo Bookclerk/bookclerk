@@ -350,19 +350,19 @@ struct StatusResponse {
     /// Count of configured store accounts.
     #[schema(example = 2)]
     accounts: usize,
-    /// Total title rows in the library.
+    /// Held works in the library (the works page index).
     #[schema(example = 412)]
     books: usize,
-    /// Titles whose `acquire_status` is `acquired`.
+    /// Held works whose furthest acquire state is `acquired`.
     #[schema(example = 380)]
     acquired: i64,
-    /// Titles still needing acquire (`not_acquired`).
+    /// Held works still needing acquire (`not_acquired`).
     #[schema(example = 27)]
     pending: i64,
-    /// Titles stuck in `error` after a failed acquire.
+    /// Held works stuck in `error` after a failed acquire.
     #[schema(example = 1)]
     error: i64,
-    /// Titles currently `queued` or `downloading`.
+    /// Held works currently `queued` or `downloading`.
     #[schema(example = 4)]
     in_progress: i64,
     /// Comma-joined `daemon.listen` addresses from live config.
@@ -662,7 +662,7 @@ struct PluginConsentLimits {
     #[schema(example = 62)]
     max_extra_processes: u32,
     /// Suggested / default host bindings operators may grant.
-    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth", "sockets"]))]
+    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth", "sockets", "webhooks"]))]
     known_bindings: Vec<&'static str>,
 }
 
@@ -1129,6 +1129,30 @@ pub struct AcquireRequestBody {
     pub pdf_only: bool,
 }
 
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+/// Body for `POST /api/library/convert`.
+pub struct ConvertRequestBody {
+    /// The copy to add: a format and a quality, as `output.copies` lists
+    /// them. `original` is refused: a convert makes a new encoding.
+    #[schema(example = json!({"format": "mp3", "quality": "64k-mono"}))]
+    pub copy: bookclerk_config::OutputCopy,
+    /// Title ids (uuid, ASIN, ISBN, product id) of stored books; each
+    /// becomes its own job.
+    #[serde(default)]
+    #[schema(example = json!(["8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"]))]
+    pub titles: Vec<String>,
+    /// Editions to convert (`id` of an edition in a work's detail); each
+    /// becomes one job for the title that acquired it.
+    #[serde(default)]
+    #[schema(example = json!(["0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"]))]
+    pub editions: Vec<String>,
+    /// Make the copy again when the book already has it.
+    #[serde(default)]
+    #[schema(example = false)]
+    pub force: bool,
+}
+
 #[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 /// Optional body for `POST /integrations/{id}/scan`.
 pub struct IntegrationScanRequest {
@@ -1220,6 +1244,7 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(trigger_integration_scan))
         .routes(routes!(status))
         .routes(routes!(crate::media_capabilities::media_capabilities))
+        .routes(routes!(trigger_convert))
         .routes(routes!(list_jobs))
         .routes(routes!(cancel_job))
         .routes(routes!(list_events))
@@ -1363,6 +1388,37 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Member to the store accounts linked to them.
         .routes(routes!(trigger_scan))
         .routes(routes!(trigger_acquire))
+        // Notifications: what is sent where, and the delivery log. The
+        // handlers admit only the operator, an Owner or an Administrator.
+        .routes(routes!(crate::notifications_api::get_catalog))
+        .routes(routes!(
+            crate::notifications_api::list_channels,
+            crate::notifications_api::post_channel
+        ))
+        .routes(routes!(
+            crate::notifications_api::patch_channel,
+            crate::notifications_api::delete_channel
+        ))
+        .routes(routes!(crate::notifications_api::post_channel_resume))
+        .routes(routes!(crate::notifications_api::post_channel_test))
+        .routes(routes!(crate::notifications_api::get_routes))
+        .routes(routes!(crate::notifications_api::put_routes))
+        .routes(routes!(crate::notifications_api::get_offers))
+        .routes(routes!(crate::notifications_api::put_offers))
+        .routes(routes!(crate::notifications_api::list_deliveries))
+        // A user's own notification settings and inbox.
+        .routes(routes!(crate::notifications_api::get_my_settings))
+        .routes(routes!(
+            crate::notifications_api::put_my_choice,
+            crate::notifications_api::delete_my_choice
+        ))
+        .routes(routes!(crate::notifications_api::post_my_destination))
+        .routes(routes!(crate::notifications_api::delete_my_destination))
+        .routes(routes!(
+            crate::notifications_api::post_my_destination_resume
+        ))
+        .routes(routes!(crate::notifications_api::get_my_inbox))
+        .routes(routes!(crate::notifications_api::post_my_inbox_read))
         // How listings resolve: the handlers admit only the operator, an
         // Owner or an Administrator.
         .routes(routes!(
@@ -1671,6 +1727,10 @@ pub(crate) fn documented_groups() -> Vec<DocumentedGroup> {
         Access::Public,
     ));
     out.push(DocumentedGroup::new(
+        crate::webhooks::webhook_routes(),
+        Access::Public,
+    ));
+    out.push(DocumentedGroup::new(
         OpenApiRouter::<Arc<utoipa::openapi::OpenApi>>::new()
             .routes(routes!(crate::openapi::get_openapi)),
         Access::Public,
@@ -1709,6 +1769,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     // Branch-node enrollment and socket: never behind the cookie/auth
     // layers; the transport policy runs first.
     app = app.merge(crate::node_api::node_router(state.clone()));
+    // Inbound plugin webhooks: the URL token is the credential.
+    app = app.merge(crate::webhooks::webhook_router(state.clone()));
     app = app.merge(
         OpenApiRouter::new()
             .routes(routes!(crate::openapi::get_openapi))
@@ -2658,6 +2720,7 @@ fn allowed_setting_key(key: &str) -> bool {
             | "events.concurrency"
             | "database.plugin"
             | "plugins.isolation"
+            | "plugins.webhooks"
             | "media.isolation"
             | "plugins.jail.memory_mib"
             | "plugins.jail.cpu_rate_percent"
@@ -2768,6 +2831,9 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         "plugins.isolation" | "media.isolation" => bookclerk_config::Isolation::parse(value)
             .map(|mode| mode.as_str().to_string())
             .ok_or_else(|| format!("{key} must be required, best-effort, or off")),
+        "plugins.webhooks" => bookclerk_config::WebhooksExposure::parse(value)
+            .map(|mode| mode.as_str().to_string())
+            .ok_or_else(|| format!("{key} must be auto or off")),
         "plugins.jail.memory_mib" => {
             let trimmed = value.trim();
             if trimmed.is_empty() {
@@ -2917,6 +2983,10 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings.insert(
         "plugins.isolation".into(),
         config.plugins.isolation.as_str().to_string(),
+    );
+    settings.insert(
+        "plugins.webhooks".into(),
+        config.plugins.webhooks.as_str().to_string(),
     );
     settings.insert(
         "media.isolation".into(),
@@ -4737,7 +4807,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
     let counts = library
-        .count_books_by_status()
+        .count_works_by_status()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let books = usize::try_from(counts.total).unwrap_or(0);
@@ -5108,9 +5178,102 @@ async fn trigger_acquire(
         pdf_only: body.pdf_only,
         // A person asked for it: counted against the pace, never held.
         paced: false,
+        convert: None,
     };
     match enqueue_acquire(state, requester, ask, JobTrigger::Api).await {
         Ok(admits) => plan_response("acquire", admits),
+        Err(err) => match err.downcast_ref::<LibraryError>() {
+            Some(LibraryError::Forbidden(message)) => planner_error_response(None, message),
+            Some(LibraryError::Invalid(message)) => {
+                planner_error_response(Some(StatusCode::BAD_REQUEST), message)
+            }
+            _ => enqueue_error_response(err),
+        },
+    }
+}
+
+/// Queues a convert of stored books into another copy; returns the
+/// accepted job ids.
+///
+/// Each book gets the copy beside its original, made from the copy the
+/// library already stores, on every destination whose filter takes that
+/// copy; the original is left as it is. No store is asked. One job per
+/// title, run like an acquire on a node with the media worker and the
+/// library database. Operator, Owners and Administrators only.
+#[utoipa::path(
+    post,
+    path = "/api/library/convert",
+    request_body = ConvertRequestBody,
+    responses(
+        (status = 200, description = "The convert jobs were accepted.", body = ScanPlanResponse, example = json!({"ok": true, "message": "convert job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b", "job_ids": ["acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"]})),
+        (status = 400, description = "The copy is not one a convert makes, or the body names no book.", body = ActionResponse, example = json!({"ok": false, "message": "a convert makes a new encoding; `original` is not one", "job_id": "", "error": "invalid"})),
+        (status = 403, description = "The caller may not convert these books.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
+        (status = 409, description = "The same convert is already pending or running, or no node can run it.", body = PlanConflict, example = json!({"ok": false, "message": "convert already pending or running", "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"})),
+        (status = 429, description = "The job queue is full.", body = ScanPlanResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "job_ids": [], "error": "queue_full"})),
+        (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
+        (status = 500, description = "The jobs could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
+    ),
+)]
+pub(crate) async fn trigger_convert(
+    State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
+    Json(body): Json<ConvertRequestBody>,
+) -> Response {
+    let Some(axum::Extension(requester)) = requester else {
+        return planner_error_response(None, "convert requester unknown");
+    };
+    if let Err(err) = body.copy.validate() {
+        return planner_error_response(Some(StatusCode::BAD_REQUEST), &err.to_string());
+    }
+    if body.copy.format == bookclerk_config::CopyFormat::Original {
+        return planner_error_response(
+            Some(StatusCode::BAD_REQUEST),
+            "a convert makes a new encoding; `original` is not one",
+        );
+    }
+    let mut titles: Vec<String> = body
+        .titles
+        .into_iter()
+        .map(|title| title.trim().to_owned())
+        .filter(|title| !title.is_empty())
+        .collect();
+    if !body.editions.is_empty() {
+        let library = state.library_snapshot().await;
+        match bookclerk_library::control_plane::acquire_titles_of_editions(
+            &library,
+            requester,
+            None,
+            None,
+            &body.editions,
+        )
+        .await
+        {
+            Ok(of_editions) => titles.extend(of_editions),
+            Err(LibraryError::Forbidden(message)) => return planner_error_response(None, &message),
+            Err(LibraryError::Invalid(message)) => {
+                return planner_error_response(Some(StatusCode::BAD_REQUEST), &message)
+            }
+            Err(err) => return enqueue_error_response(err.into()),
+        }
+    }
+    if titles.is_empty() {
+        return planner_error_response(
+            Some(StatusCode::BAD_REQUEST),
+            "name the books to convert (titles or editions)",
+        );
+    }
+    let ask = crate::jobs::AcquireAsk {
+        titles,
+        account: None,
+        plugin_instance_id: None,
+        force: body.force,
+        pdf_only: false,
+        // No store is asked: nothing to pace.
+        paced: false,
+        convert: Some(body.copy),
+    };
+    match enqueue_acquire(state, requester, ask, JobTrigger::Api).await {
+        Ok(admits) => plan_response("convert", admits),
         Err(err) => match err.downcast_ref::<LibraryError>() {
             Some(LibraryError::Forbidden(message)) => planner_error_response(None, message),
             Some(LibraryError::Invalid(message)) => {
@@ -6142,8 +6305,8 @@ struct CatalogSearchQuery {
     path = "/api/discover/recommendations",
     responses(
         (status = 200, description = "The caller's stored Discover feed.", body = bookclerk_discover::DiscoverFeed),
-        (status = 401, description = "The caller has no portal identity.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 401, description = "The caller has no portal identity, or their session ended.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
+        (status = 500, description = "The lookup failed, or the caller's scope could not be read (no feed is shown unfiltered).", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
 async fn discover_recommendations(
@@ -6153,7 +6316,7 @@ async fn discover_recommendations(
     let library = state.library_snapshot().await;
 
     // Nothing to recommend from: answer at once, queue nothing.
-    let has_books = library.count_books(None).await.map_err(internal_err)? > 0;
+    let has_books = library.has_held_titles().await.map_err(internal_err)?;
     let has_open_requests = !library
         .list_title_requests(Some(RequestStatus::Open))
         .await
@@ -6216,6 +6379,19 @@ async fn discover_recommendations(
     };
     if feed.shelf_kinds.is_empty() {
         feed.shelf_kinds = bookclerk_discover::shelf_kind_catalog();
+    }
+    // A patron sees only cards inside their scope; the feed is shared by
+    // everyone with the same taste subject, so it is filtered per answer.
+    if let Some(scope) = crate::library_works::caller_scope(
+        &state,
+        &library,
+        &headers,
+        "GET /api/discover/recommendations",
+    )
+    .await
+    .map_err(|(status, Json(body))| ErrorResponse::from((status, body.error)))?
+    {
+        feed.retain_in_scope(&scope);
     }
     let files = crate::profile::files_dir(&state).await;
     for shelf in &mut feed.shelves {
@@ -6631,6 +6807,9 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
 }
 
 /// Runs a multi-store catalog search with a 15s wall budget and empty-query short circuit.
+///
+/// A patron only gets hits inside their scope: each hit's authors,
+/// narrators, series, genres and explicit flag are checked against it.
 #[utoipa::path(
     get,
     path = "/api/discover/search",
@@ -6638,6 +6817,8 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
     responses(
         (status = 200, description = "A page of catalog results.", body = bookclerk_discover::CatalogSearchPage),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("catalog query must be 256 bytes or fewer")),
+        (status = 401, description = "The caller's session ended.", body = String, content_type = "text/plain", example = json!("sign in again")),
+        (status = 500, description = "The caller's scope could not be read; no results are shown unfiltered.", body = String, content_type = "text/plain", example = json!("the library could not be read")),
         (status = 504, description = "The stores did not answer within the search budget.", body = String, content_type = "text/plain", example = json!("catalog search timed out")),
     ),
 )]
@@ -6699,6 +6880,12 @@ async fn discover_catalog_search(
         max_length_minutes: q.max_length_minutes.filter(|n| *n > 0),
     };
     let library = state.library_snapshot().await;
+    // Read before the search, so a patron whose scope cannot be read gets
+    // no results rather than unfiltered ones.
+    let scope =
+        crate::library_works::caller_scope(&state, &library, &headers, "GET /api/discover/search")
+            .await
+            .map_err(|(status, Json(body))| (status, body.error))?;
     let sources = state.sources.read().await;
     let page = timeout(
         CATALOG_SEARCH_TIMEOUT,
@@ -6734,6 +6921,9 @@ async fn discover_catalog_search(
     })?
     .map_err(internal_err)?;
     let mut page = page;
+    if let Some(scope) = &scope {
+        page.retain_in_scope(scope);
+    }
     // The PluginKey each hit's storefront pools its listings under, read
     // before the registry lock is released.
     let plugin_keys: std::collections::HashMap<String, String> = page

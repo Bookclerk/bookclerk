@@ -87,14 +87,22 @@ paths = [
     "fuzz/oracles/metadata_file_record.rs",
     "fuzz/corpus/notifier_reply/**",
     "fuzz/oracles/notifier_reply.rs",
+    "fuzz/corpus/notify_address_body/**",
+    "fuzz/oracles/notify_address_body.rs",
     "fuzz/corpus/notify_raise/**",
     "fuzz/oracles/notify_raise.rs",
+    "fuzz/corpus/ai_run_reply/**",
+    "fuzz/oracles/ai_run_reply.rs",
+    "fuzz/corpus/ai_run/**",
+    "fuzz/oracles/ai_run.rs",
     "fuzz/corpus/event_read/**",
     "fuzz/oracles/event_read.rs",
     "fuzz/corpus/socket_request/**",
     "fuzz/oracles/socket_request.rs",
     "fuzz/corpus/storage_reply/**",
     "fuzz/oracles/storage_reply.rs",
+    "fuzz/corpus/webhook_message/**",
+    "fuzz/oracles/webhook_message.rs",
     "fuzz/corpus/origin_request/**",
     "fuzz/oracles/origin_request.rs",
 ]
@@ -104,6 +112,8 @@ paths = [
 [[test_input]]
 package = "bookclerk-library"
 paths = [
+    "fuzz/corpus/notify_cursor/**",
+    "fuzz/oracles/notify_cursor.rs",
     "fuzz/corpus/guest_sql_authz/**",
     "fuzz/oracles/guest_sql_authz.rs",
     "fuzz/corpus/plan_authz/**",
@@ -171,8 +181,8 @@ paths = ["fuzz/corpus/mp4_parse/**"]
 
 [[test_input]]
 package = "bookclerk-workerd"
-# The workerd_control, socket_broker, socket_route, egress_relay_head and
-# egress_bridge oracles are shared with the replay tests through `#[path]`;
+# The workerd_control, socket_broker, socket_route, webhook_route,
+# webhook_request, egress_relay_head and egress_bridge oracles are shared with the replay tests through `#[path]`;
 # the egress_bridge replay compares its result with the SDK's committed
 # vectors.
 paths = [
@@ -188,6 +198,10 @@ paths = [
     "fuzz/oracles/socket_broker.rs",
     "fuzz/corpus/socket_route/**",
     "fuzz/oracles/socket_route.rs",
+    "fuzz/corpus/webhook_route/**",
+    "fuzz/oracles/webhook_route.rs",
+    "fuzz/corpus/webhook_request/**",
+    "fuzz/oracles/webhook_request.rs",
 ]
 
 [[test_input]]
@@ -273,6 +287,14 @@ package = "bookclerk-media"
 paths = [
     "fuzz/corpus/media_decode/**",
     "fuzz/oracles/media_decode.rs",
+]
+
+[[test_input]]
+package = "bookclerk-media"
+# The media_keep_codec oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_keep_codec/**",
+    "fuzz/oracles/media_keep_codec.rs",
 ]
 
 [[test_input]]
@@ -491,12 +513,6 @@ build = ["bookclerk-media-worker", "bookclerk-jail"]
 [[feature_tests]]
 package = "bookclerk-plugin-database-sqlite"
 features = ["host-helpers"]
-
-# The opt-in ONNX embedder (hosts' `onnx-embeddings`); nothing in the default
-# build enables it, so this keeps it compiling and tested.
-[[feature_tests]]
-package = "bookclerk-discover"
-features = ["onnx"]
 
 # PostgreSQL contract steps (commands live in scripts/ci_plan/execute.py).
 # Each runs on every supported major when its owner's tests are selected.

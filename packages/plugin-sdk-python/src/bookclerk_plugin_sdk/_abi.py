@@ -119,6 +119,24 @@ bytes.
 MAX_NOTIFIER_ADDRESS_BYTES: int = 4096
 """Longest destination address document (`addressJson`), in UTF-8 bytes."""
 
+MAX_AI_MODEL_NAME_BYTES: int = 192
+"""Longest `AiModel.name`, in UTF-8 bytes (`@<plugin id>/<model id>`)."""
+
+MAX_AI_MODELS: int = 64
+"""Most models one `AiModels.models` reply lists."""
+
+MAX_AI_EMBED_TEXTS: int = 64
+"""Most texts in one `AiTextEmbeddingsInput`."""
+
+MAX_AI_EMBED_TEXT_BYTES: int = 16384
+"""Longest text in an `AiTextEmbeddingsInput`, in UTF-8 bytes."""
+
+MAX_AI_EMBED_DIMENSIONS: int = 4096
+"""Most numbers in one embedding vector."""
+
+MAX_AI_LANGUAGES: int = 64
+"""Most language tags on one `AiModel`."""
+
 MAX_METADATA_AUDIO_FILES: int = 4096
 """Most entries in `MetadataFileRenderParams.audioFiles`."""
 
@@ -163,6 +181,31 @@ MAX_ORIGIN_TARGET_BYTES: int = 8192
 
 MAX_INGRESS_ORIGIN_BYTES: int = 253
 """Longest `IngressStarted.origin`, in bytes."""
+
+MAX_WEBHOOK_PULL_BATCH: int = 100
+"""Most deliveries one `Webhooks.pull` returns."""
+
+MAX_WEBHOOK_LEASE_ID_BYTES: int = 128
+"""Longest `WebhookDelivery.leaseId`, in bytes."""
+
+MAX_WEBHOOK_VISIBILITY_MS: int = 43200000
+"""Longest `Webhooks.pull` visibility timeout, in milliseconds (12 hours)."""
+
+MAX_WEBHOOK_BODY_BYTES: int = 1048576
+"""Largest stored webhook request body, in bytes (1 MiB); a `[[webhooks]]`
+row may lower its own cap but never raise it past this.
+"""
+
+MAX_WEBHOOK_HEADERS: int = 16
+"""Most request headers a `[[webhooks]]` row keeps; a delivery also carries
+`content-type`, so it holds at most one more.
+"""
+
+MAX_WEBHOOK_NAME_BYTES: int = 32
+"""Longest `[[webhooks]]` name, in bytes."""
+
+MAX_WEBHOOK_HEADER_VALUE_BYTES: int = 8192
+"""Longest kept request header value, in bytes."""
 
 MAX_KV_METADATA_BYTES: int = 1024
 """Largest `KvNamespace` metadata JSON text in bytes."""
@@ -238,7 +281,7 @@ code.
 Wire strings of ``PluginErrorCode`` in ordinal order (snake_case ``Text`` codes).
 """
 
-ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress")
+ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai")
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
 the default entrypoint (`event`, `job`) are declared separately.
@@ -395,6 +438,20 @@ NOTIFY_DESTINATION_KINDS: tuple[str, ...] = ("channel", "personal")
 Ordinal-ordered ``NotifyDestinationKind`` wire names (index = Cap'n Proto ordinal).
 """
 
+AI_TASKS: tuple[str, ...] = ("textEmbeddings")
+"""What a model does. A model has exactly one task, and the task fixes the
+shape of `AiRunParams.input` and of the reply.
+
+Ordinal-ordered ``AiTask`` wire names (index = Cap'n Proto ordinal).
+"""
+
+AI_TEXT_ROLES: tuple[str, ...] = ("document", "query")
+"""What a text is to an embedding model. Some models embed a search query
+differently from the documents it is matched against.
+
+Ordinal-ordered ``AiTextRole`` wire names (index = Cap'n Proto ordinal).
+"""
+
 DB_TYPES: tuple[str, ...] = ("unspecified", "bool", "int64", "float64", "text", "bytes")
 """Universal database cell/parameter domain. Engine-native arrays, enums,
 unsigned integers, and JSON text sentinels are not baseline ABI values.
@@ -464,6 +521,12 @@ __all__ = [
     "MAX_NOTIFICATION_FIELDS",
     "MAX_NOTIFICATION_FIELD_BYTES",
     "MAX_NOTIFIER_ADDRESS_BYTES",
+    "MAX_AI_MODEL_NAME_BYTES",
+    "MAX_AI_MODELS",
+    "MAX_AI_EMBED_TEXTS",
+    "MAX_AI_EMBED_TEXT_BYTES",
+    "MAX_AI_EMBED_DIMENSIONS",
+    "MAX_AI_LANGUAGES",
     "MAX_METADATA_AUDIO_FILES",
     "MAX_KV_KEY_BYTES",
     "MAX_SOCKET_FRAME_BYTES",
@@ -477,6 +540,13 @@ __all__ = [
     "MAX_ORIGIN_HEADER_BYTES",
     "MAX_ORIGIN_TARGET_BYTES",
     "MAX_INGRESS_ORIGIN_BYTES",
+    "MAX_WEBHOOK_PULL_BATCH",
+    "MAX_WEBHOOK_LEASE_ID_BYTES",
+    "MAX_WEBHOOK_VISIBILITY_MS",
+    "MAX_WEBHOOK_BODY_BYTES",
+    "MAX_WEBHOOK_HEADERS",
+    "MAX_WEBHOOK_NAME_BYTES",
+    "MAX_WEBHOOK_HEADER_VALUE_BYTES",
     "MAX_KV_METADATA_BYTES",
     "MAX_NETWORK_GRANT_ENTRIES",
     "MAX_PLUGIN_MIGRATION_OPS",
@@ -519,6 +589,8 @@ __all__ = [
     "NOTIFICATION_AUDIENCES",
     "NOTIFICATION_ALERT_ACTIONS",
     "NOTIFY_DESTINATION_KINDS",
+    "AI_TASKS",
+    "AI_TEXT_ROLES",
     "DB_TYPES",
     "DB_STATEMENT_KINDS",
     "DB_RESULT_SELECTIONS",

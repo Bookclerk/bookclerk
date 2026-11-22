@@ -22,6 +22,8 @@ import {
   MetadataFilesHealthResultsCodec,
   MetadataProviderHealthParamsCodec,
   MetadataProviderHealthResultsCodec,
+  AiModelsHealthParamsCodec,
+  AiModelsHealthResultsCodec,
   NotifierHealthParamsCodec,
   NotifierHealthResultsCodec,
   RemoteLibraryHealthParamsCodec,
@@ -49,7 +51,8 @@ export type HealthInterface =
   | "MetadataProvider"
   | "CoverFetcher"
   | "MetadataFiles"
-  | "Notifier";
+  | "Notifier"
+  | "AiModels";
 
 /** `health` params / results codecs per probed interface. */
 const HEALTH_CODECS: Readonly<
@@ -84,6 +87,10 @@ const HEALTH_CODECS: Readonly<
   Notifier: {
     params: NotifierHealthParamsCodec,
     results: NotifierHealthResultsCodec,
+  },
+  AiModels: {
+    params: AiModelsHealthParamsCodec,
+    results: AiModelsHealthResultsCodec,
   },
 });
 
@@ -158,6 +165,7 @@ const HEALTH_ENTRYPOINTS: readonly (readonly [string, HealthInterface])[] = [
   ["covers", "CoverFetcher"],
   ["metadataFiles", "MetadataFiles"],
   ["notifier", "Notifier"],
+  ["ai", "AiModels"],
 ];
 
 /**

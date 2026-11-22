@@ -42,6 +42,9 @@ use crate::reconcile::{find_existing_for_request, StorageIndex};
 use crate::record::{recording_copy_destinations, recording_destinations};
 use crate::split::split_audio_by_chapters;
 
+mod convert_copy;
+pub use convert_copy::convert_copy;
+
 /// Request to acquire a single title.
 #[derive(Debug, Clone)]
 pub struct AcquireRequest {
@@ -2058,7 +2061,6 @@ struct CopiesProgress {
 /// # Errors
 ///
 /// Returns the first copy's failure; copies already stored stay stored.
-#[cfg(test)]
 async fn store_copies(
     library: &LibraryStore,
     copies: &[CopyTarget],
@@ -2835,6 +2837,10 @@ async fn store_plain_fetch(
             parts: plain.parts.iter().map(|p| p.path.clone()).collect(),
             output: out,
             chapter_titles: titles,
+            // Only an M4B output keeps the source codec; an MP3 or Opus
+            // output decodes this file again, so it gets AAC it can read.
+            keep_codec: req.options.keep_codec_in_m4b
+                && req.options.effective_output() == bookclerk_config::OutputFormat::EnrichedM4b,
         })
         .await?;
         if chapters.is_empty() {
@@ -4091,60 +4097,24 @@ fn resolve_timestamp(
     }
 }
 
-/// The library model's view of the request's title
-/// ([`LibraryStore::acquire_title`]), found through its library row
-/// ([`resolve_book`]) while requests still name one; `None` when the row is
-/// missing or its listing is not resolved yet.
+/// The library model's view of the request's title: its account holding
+/// when the request names one, else the title its account holds that its
+/// id names ([`LibraryStore::held_title`]); `None` when there is none.
 async fn resolve_title(
     library: &LibraryStore,
     req: &AcquireRequest,
 ) -> Option<bookclerk_library::AcquireTitle> {
-    if let Some(holding) = req.holding_id.as_deref().filter(|id| !id.is_empty()) {
-        return match library.acquire_title_of_holding(holding).await {
-            Ok(title) => title,
-            Err(err) => {
-                tracing::warn!(asin = %req.asin, error = %err, "could not read the title from the library model");
-                None
-            }
-        };
-    }
-    let book = resolve_book(library, req).await?;
-    match library
-        .acquire_title(
-            &book.plugin_key,
-            &book.account_id,
-            &book.marketplace,
-            &book.product_id,
-        )
-        .await
-    {
+    let read = match req.holding_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(holding) => library.acquire_title_of_holding(holding).await,
+        None => library.held_title(&req.asin, &req.account_id).await,
+    };
+    match read {
         Ok(title) => title,
         Err(err) => {
             tracing::warn!(asin = %req.asin, error = %err, "could not read the title from the library model");
             None
         }
     }
-}
-
-/// Loads the library row by UUID first, then by product id and account.
-async fn resolve_book(
-    library: &LibraryStore,
-    req: &AcquireRequest,
-) -> Option<bookclerk_library::BookRecord> {
-    if let Some(holding) = req.holding_id.as_deref().filter(|s| !s.is_empty()) {
-        if let Ok(Some(title)) = library.acquire_title_of_holding(holding).await {
-            if let Some(uuid) = title.book_uuid.as_deref() {
-                if let Ok(Some(b)) = library.get_book_by_uuid(uuid).await {
-                    return Some(b);
-                }
-            }
-        }
-    }
-    library
-        .get_book(&req.asin, &req.account_id)
-        .await
-        .ok()
-        .flatten()
 }
 
 /// When liberating plain audio that was enriched with an Audible ASIN, ask the
@@ -4345,24 +4315,25 @@ async fn base_folder_naming_ctx(
     }
 }
 
-/// The short Bookclerk id of the edition `book_uuid` resolves to, for
-/// `<call number>` ([`bookclerk_library::call_number`]).
+/// The short Bookclerk id of the edition account holding `holding_id`
+/// (`holdings.id`) sells, for `<call number>`
+/// ([`bookclerk_library::call_number`]).
 ///
 /// # Returns
 ///
-/// `None` when the title has no edition.
+/// `None` when no account holding has that id.
 ///
 /// # Errors
 ///
-/// Returns an error when the edition cannot be read.
+/// Returns an error when the holding cannot be read.
 pub async fn call_number_of(
     library: &LibraryStore,
-    book_uuid: &str,
+    holding_id: &str,
 ) -> bookclerk_library::Result<Option<String>> {
     Ok(library
-        .edition_of_book(book_uuid)
+        .acquire_title_of_holding(holding_id)
         .await?
-        .and_then(|edition| bookclerk_library::call_number(&edition)))
+        .and_then(|title| bookclerk_library::call_number(&title.edition_id)))
 }
 
 /// The folder and file naming contexts of `req`. Both carry the edition's
@@ -4913,12 +4884,12 @@ async fn owner_of_request(
             .await?
             .map(|owner| (Some(owner), holding.to_string())));
     }
-    let Some(book) = resolve_book(library, req).await else {
+    let Some(title) = library.held_title(&req.asin, &req.account_id).await? else {
         return Ok(None);
     };
     Ok(Some((
-        library.file_owner_of_book(&book.uuid).await?,
-        book.uuid,
+        library.file_owner_of_holding(&title.holding_id).await?,
+        title.holding_id,
     )))
 }
 
@@ -5055,21 +5026,8 @@ fn download_http_client() -> reqwest::Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_library::{BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload};
+    use bookclerk_library::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload};
 
-    /// The library model's acquire view of a stored title.
-    async fn view_of(store: &LibraryStore, book: &BookRecord) -> bookclerk_library::AcquireTitle {
-        store
-            .acquire_title(
-                &book.plugin_key,
-                &book.account_id,
-                &book.marketplace,
-                &book.product_id,
-            )
-            .await
-            .unwrap()
-            .unwrap()
-    }
     /// Answers every URL containing `ok` with a fixed JPEG.
     struct FixedCovers;
 
@@ -5127,7 +5085,7 @@ mod tests {
         assert_eq!(release_year("May 2021"), None);
     }
 
-    async fn test_store() -> LibraryStore {
+    pub(super) async fn test_store() -> LibraryStore {
         LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open_memory()
                 .await
@@ -5135,7 +5093,7 @@ mod tests {
         )
     }
 
-    async fn job_id(store: &LibraryStore) -> String {
+    pub(super) async fn job_id(store: &LibraryStore) -> String {
         let created = store
             .enqueue_job(EnqueueJobSpec {
                 kind: JobKind::Acquire,
@@ -5644,8 +5602,12 @@ mod tests {
             std::fs::read(dest.join(&result.storage_key)).unwrap(),
             audio
         );
-        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
+        let book = store
+            .acquire_title_of_holding(&uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(book.status, AcquireStatus::Acquired);
         // The result says where the audio came from.
         assert_eq!(
             serde_json::to_value(&result).unwrap()["from_library"],
@@ -5868,7 +5830,11 @@ mod tests {
             std::fs::read(dest.join(&result.storage_key)).unwrap(),
             audio
         );
-        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
+        let book = store
+            .acquire_title_of_holding(&uuid)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(book.pdf_status, AcquireStatus::Acquired);
         let pdf_key = book.pdf_storage_key.expect("the PDF was stored");
         assert!(result.written_keys.contains(&pdf_key), "{result:?}");
@@ -5918,7 +5884,11 @@ mod tests {
             .unwrap();
         assert!(result.from_library);
         assert_eq!(copy_fetches.load(Ordering::SeqCst), 1, "the audio alone");
-        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
+        let book = store
+            .acquire_title_of_holding(&uuid)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(book.pdf_storage_key, None);
     }
 
@@ -6333,13 +6303,13 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            book_uuid = book.uuid.clone();
+            book_uuid = book.holding_id.clone();
             let created = store
                 .enqueue_job(EnqueueJobSpec {
                     kind: JobKind::Acquire,
                     payload: JobPayload {
                         account: Some("user-1".into()),
-                        title: Some(book.uuid.clone()),
+                        title: Some(book.holding_id.clone()),
                         ..Default::default()
                     },
                     priority: 0,
@@ -6365,10 +6335,10 @@ mod tests {
                 .expect("claim");
             assert_eq!(claimed.id, id);
 
-            let book_uuid_for_record = book.uuid.clone();
+            let book_uuid_for_record = book.holding_id.clone();
             let mut req = dummy_req(&cache, Some(id.clone()), None);
             req.asin = "B00CRASH".into();
-            req.holding_id = Some(holding_of(&store, &book.uuid).await);
+            req.holding_id = Some(holding_of(&store, &book.holding_id).await);
             req.title = "Crash".into();
             req.options.format = bookclerk_config::OutputFormat::None;
             req.options.fixup_metadata = false;
@@ -6394,7 +6364,7 @@ mod tests {
                 .unwrap()
                 .expect("the acquire records the key it wrote");
             let owner = store
-                .file_owner_of_book(&book_uuid_for_record)
+                .file_owner_of_holding(&book_uuid_for_record)
                 .await
                 .unwrap()
                 .expect("the upsert resolves the book to an edition");
@@ -6457,7 +6427,7 @@ mod tests {
     /// The account holding of book `uuid`, which acquire requests name.
     async fn holding_of(store: &LibraryStore, uuid: &str) -> String {
         store
-            .title_holding_of_book(uuid)
+            .acquire_title_of_holding(uuid)
             .await
             .unwrap()
             .expect("the upsert resolves the book to a holding")
@@ -6466,7 +6436,7 @@ mod tests {
 
     /// Upserts `product_id` as `title` on `account` (creating the account)
     /// and returns the book's uuid.
-    async fn edition_book(
+    pub(super) async fn edition_book(
         store: &LibraryStore,
         product_id: &str,
         account: &str,
@@ -6479,12 +6449,17 @@ mod tests {
             .unwrap();
         let mut book = bookclerk_library::NewBook::minimal(product_id, account, "us", title);
         book.narrators = narrators.map(str::to_owned);
-        store.upsert_book(&book).await.unwrap().uuid
+        store.upsert_book(&book).await.unwrap().holding_id
     }
 
     /// A request for `product_id` on `account` named by `<title>`
     /// alone, so two editions of one title plan the same key.
-    fn edition_req(cache: &Path, job: String, product_id: &str, account: &str) -> AcquireRequest {
+    pub(super) fn edition_req(
+        cache: &Path,
+        job: String,
+        product_id: &str,
+        account: &str,
+    ) -> AcquireRequest {
         let mut req = dummy_req(cache, Some(job), None);
         req.asin = product_id.into();
         req.account_id = account.into();
@@ -6496,7 +6471,7 @@ mod tests {
 
     /// Destinations writing to `root` with titles named
     /// `<title> [<call number>]/<title>`.
-    fn title_named_destinations(
+    pub(super) fn title_named_destinations(
         root: &Path,
         puts: Arc<std::sync::atomic::AtomicUsize>,
     ) -> AcquireDestinations {
@@ -6509,9 +6484,9 @@ mod tests {
     }
 
     /// The `<call number>` of `uuid`'s edition.
-    async fn short_id(store: &LibraryStore, uuid: &str) -> String {
+    pub(super) async fn short_id(store: &LibraryStore, uuid: &str) -> String {
         store
-            .edition_of_book(uuid)
+            .edition_of_holding(uuid)
             .await
             .unwrap()
             .map(|edition| bookclerk_library::call_number(&edition).unwrap())
@@ -6520,16 +6495,16 @@ mod tests {
 
     /// A store that sends real audio: an M4B the media worker decodes,
     /// with a cover and, when set, a companion PDF.
-    struct RealAudioSource {
+    pub(super) struct RealAudioSource {
         /// Fetches asked for.
-        fetches: Arc<std::sync::atomic::AtomicUsize>,
+        pub(super) fetches: Arc<std::sync::atomic::AtomicUsize>,
         /// The companion PDF's address.
-        pdf_url: Option<String>,
+        pub(super) pdf_url: Option<String>,
         /// True when the store sends a lossy MP3 of lower bitrate than the
         /// M4B ([`real_m4b`]) instead of the M4B itself.
-        mp3: bool,
+        pub(super) mp3: bool,
         /// Store track markers the fetch reports, `(title, start ms)`.
-        chapters: Vec<(String, u64)>,
+        pub(super) chapters: Vec<(String, u64)>,
     }
 
     /// Writes four seconds of real AAC audio as an M4B at `path` (about
@@ -6650,7 +6625,7 @@ mod tests {
 
     /// Runs the media worker in this process for the rest of the test
     /// binary, so real audio encodes without the confined helper.
-    fn media_in_process() {
+    pub(super) fn media_in_process() {
         bookclerk_media::replace_pool(bookclerk_media::MediaPool::new(
             bookclerk_media::MediaPoolConfig {
                 confinement: bookclerk_media::Confinement::Off,
@@ -6728,8 +6703,12 @@ mod tests {
             .expect("the stored audio was probed");
         assert_eq!(probe.content_type, "audio/mpeg");
         assert_eq!(probe.source_store.as_deref(), Some("audible"));
-        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
+        let book = store
+            .acquire_title_of_holding(&uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(book.status, AcquireStatus::Acquired);
 
         // A copy from another store that beats the store's MP3 by its
         // probe, and so replaces it, but whose audio does not decode: the
@@ -6869,8 +6848,12 @@ mod tests {
         // The store's cover and companion PDF are kept.
         let cover_key = sidecar_key(&result.storage_key, "jpg");
         assert_eq!(std::fs::read(dest.join(cover_key)).unwrap(), b"store jpeg");
-        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
+        let book = store
+            .acquire_title_of_holding(&uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(book.status, AcquireStatus::Acquired);
         let pdf_key = book.pdf_storage_key.expect("the store's PDF was stored");
         assert_eq!(
             std::fs::read(dest.join(pdf_key)).unwrap(),
@@ -6971,7 +6954,7 @@ mod tests {
     async fn written_audio_is_probed_onto_its_file_row() {
         let store = test_store().await;
         let uuid = edition_book(&store, "B00PROBE", "user-1", "Probed", None).await;
-        let owner = store.file_owner_of_book(&uuid).await.unwrap().unwrap();
+        let owner = store.file_owner_of_holding(&uuid).await.unwrap().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let destinations = counting_destinations(&tmp.path().join("dest"), puts);
@@ -7213,12 +7196,12 @@ mod tests {
     }
 
     /// A copy from its `format:quality` name.
-    fn output_copy(raw: &str) -> bookclerk_config::OutputCopy {
+    pub(super) fn output_copy(raw: &str) -> bookclerk_config::OutputCopy {
         bookclerk_config::OutputCopy::parse(raw).unwrap()
     }
 
     /// A filter of one rule on a copy's format.
-    fn format_filter(
+    pub(super) fn format_filter(
         value: &str,
         effect: bookclerk_config::FilterEffect,
     ) -> bookclerk_config::DestinationFilter {
@@ -7398,7 +7381,7 @@ mod tests {
         media_in_process();
         let store = test_store().await;
         let uuid = edition_book(&store, "B00PDFCOPY", "user-1", "Twin", None).await;
-        let owner = store.file_owner_of_book(&uuid).await.unwrap().unwrap();
+        let owner = store.file_owner_of_holding(&uuid).await.unwrap().unwrap();
         let id = short_id(&store, &uuid).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
@@ -7471,7 +7454,11 @@ mod tests {
         );
         assert!(!phone.join(&main_pdf).exists());
         assert!(result.written_keys.contains(&copy_pdf), "{result:?}");
-        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
+        let book = store
+            .acquire_title_of_holding(&uuid)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(book.pdf_storage_key.as_deref(), Some(main_pdf.as_str()));
         assert_eq!(
             hits.load(Ordering::SeqCst),
@@ -7507,7 +7494,7 @@ mod tests {
     async fn a_copy_no_destination_stores_is_retried_while_the_main_one_stays() {
         let store = test_store().await;
         let uuid = edition_book(&store, "B00COPY", "user-1", "Twin", None).await;
-        let owner = store.file_owner_of_book(&uuid).await.unwrap().unwrap();
+        let owner = store.file_owner_of_holding(&uuid).await.unwrap().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         tokio::fs::create_dir_all(&cache).await.unwrap();
@@ -7619,7 +7606,7 @@ mod tests {
     async fn each_copy_is_stored_and_recorded_as_its_own() {
         let store = test_store().await;
         let uuid = edition_book(&store, "B00COPY", "user-1", "Twin", None).await;
-        let owner = store.file_owner_of_book(&uuid).await.unwrap().unwrap();
+        let owner = store.file_owner_of_holding(&uuid).await.unwrap().unwrap();
         let id = short_id(&store, &uuid).await;
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
@@ -7820,7 +7807,7 @@ mod tests {
 
     /// The bitrate in kbit/s and whether the audio is mono, read from the
     /// first MPEG audio frame header of an MP3 (after any ID3v2 tag).
-    fn mp3_frame_shape(bytes: &[u8]) -> Option<(u32, bool)> {
+    pub(super) fn mp3_frame_shape(bytes: &[u8]) -> Option<(u32, bool)> {
         let mut at = 0;
         if bytes.starts_with(b"ID3") && bytes.len() >= 10 {
             let size = bytes[6..10]
@@ -7848,7 +7835,7 @@ mod tests {
     }
 
     /// Every file under `root`, recursively.
-    fn walk(root: &Path) -> Vec<PathBuf> {
+    pub(super) fn walk(root: &Path) -> Vec<PathBuf> {
         let mut out = Vec::new();
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
@@ -7922,7 +7909,7 @@ mod tests {
         );
         // The store's markers are recorded as the edition's chapters, as
         // track boundaries measured on the delivered part.
-        let edition = store.edition_of_book(&uuid).await.unwrap().unwrap();
+        let edition = store.edition_of_holding(&uuid).await.unwrap().unwrap();
         let chapters = store.edition_chapters(&edition).await.unwrap().unwrap();
         assert_eq!(
             chapters.source_kind,
@@ -7938,7 +7925,7 @@ mod tests {
     /// The copies `store` records for `uuid`'s edition, as
     /// `(destination, state, attempts)`.
     async fn copy_states(store: &LibraryStore, uuid: &str) -> Vec<(String, CopyState, u32)> {
-        let edition = store.edition_of_book(uuid).await.unwrap().unwrap();
+        let edition = store.edition_of_holding(uuid).await.unwrap().unwrap();
         store
             .copies_of_editions(&[edition])
             .await
@@ -8058,7 +8045,7 @@ mod tests {
         let first = acquire_book(&store, &local_only, req, &source)
             .await
             .unwrap();
-        let edition = store.edition_of_book(&uuid).await.unwrap().unwrap();
+        let edition = store.edition_of_holding(&uuid).await.unwrap().unwrap();
         let now = chrono::Utc::now();
         for _ in 0..bookclerk_library::MAX_COPY_ATTEMPTS {
             store
@@ -8159,8 +8146,12 @@ mod tests {
                 ("local".to_owned(), CopyState::Stored, 0),
             ]
         );
-        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
+        let book = store
+            .acquire_title_of_holding(&uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(book.status, AcquireStatus::Acquired);
         assert_eq!(again.store_fetches, 1, "the failed refetch asked the store");
     }
 
@@ -8204,8 +8195,12 @@ mod tests {
             ),
             "unexpected error: {err}"
         );
-        let book = store.get_book_by_uuid(&uuid).await.unwrap().unwrap();
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
+        let book = store
+            .acquire_title_of_holding(&uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(book.status, AcquireStatus::Acquired);
     }
 
     #[tokio::test]
@@ -8237,9 +8232,12 @@ mod tests {
         // One edition bought on two accounts.
         let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
         let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
-        let edition = store.edition_of_book(&first_uuid).await.unwrap();
+        let edition = store.edition_of_holding(&first_uuid).await.unwrap();
         assert!(edition.is_some());
-        assert_eq!(store.edition_of_book(&second_uuid).await.unwrap(), edition);
+        assert_eq!(
+            store.edition_of_holding(&second_uuid).await.unwrap(),
+            edition
+        );
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         tokio::fs::create_dir_all(&cache).await.unwrap();
@@ -8269,8 +8267,12 @@ mod tests {
             "the edition is fetched once"
         );
         assert_eq!(puts.load(Ordering::SeqCst), 1);
-        let shared = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
-        assert_eq!(shared.acquire_status, AcquireStatus::Acquired);
+        let shared = store
+            .acquire_title_of_holding(&second_uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(shared.status, AcquireStatus::Acquired);
         assert_eq!(
             shared.storage_key.as_deref(),
             Some(first.storage_key.as_str())
@@ -8286,7 +8288,7 @@ mod tests {
         assert_eq!(
             Some(acquired.holding_id.clone()),
             store
-                .title_holding_of_book(&first_uuid)
+                .acquire_title_of_holding(&first_uuid)
                 .await
                 .unwrap()
                 .map(|t| t.holding_id)
@@ -8327,8 +8329,8 @@ mod tests {
         let first_uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
         let second_uuid = edition_book(&store, "B00TWO", "user-1", "Twin", Some("Ada")).await;
         assert_ne!(
-            store.edition_of_book(&first_uuid).await.unwrap(),
-            store.edition_of_book(&second_uuid).await.unwrap()
+            store.edition_of_holding(&first_uuid).await.unwrap(),
+            store.edition_of_holding(&second_uuid).await.unwrap()
         );
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
@@ -8354,7 +8356,7 @@ mod tests {
                 "{}",
                 acquired.storage_key
             );
-            let owner = store.file_owner_of_book(uuid).await.unwrap().unwrap();
+            let owner = store.file_owner_of_holding(uuid).await.unwrap().unwrap();
             let recorded = store
                 .edition_file("local", &acquired.storage_key)
                 .await
@@ -8435,8 +8437,12 @@ mod tests {
             refused.is_err(),
             "the second edition adopted the first's file"
         );
-        let book = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
-        assert_ne!(book.acquire_status, AcquireStatus::Acquired);
+        let book = store
+            .acquire_title_of_holding(&second_uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(book.status, AcquireStatus::Acquired);
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
     }
 
@@ -8445,16 +8451,17 @@ mod tests {
         let store = test_store().await;
         let uuid = edition_book(&store, " B00PAD ", "user-1", "Padded", None).await;
         assert!(
-            store.file_owner_of_book(&uuid).await.unwrap().is_some(),
+            store.file_owner_of_holding(&uuid).await.unwrap().is_some(),
             "the title row's raw product id finds the trimmed listing"
         );
-        let edition = store.edition_of_book(&uuid).await.unwrap().unwrap();
+        let edition = store.edition_of_holding(&uuid).await.unwrap().unwrap();
         assert!(
             store
-                .books_of_edition(&edition)
+                .held_titles_of_edition(&edition)
                 .await
                 .unwrap()
-                .contains(&uuid),
+                .iter()
+                .any(|title| title.holding_id == uuid),
             "the edition finds the padded row back"
         );
     }
@@ -8462,11 +8469,15 @@ mod tests {
     #[tokio::test]
     async fn a_book_without_an_edition_acquires_nothing() {
         let store = test_store().await;
-        // A title over the resolver's 4 KiB text limit is stored but never gets
-        // an edition.
+        // A title over the resolver's 4 KiB text limit is refused, so no
+        // edition (and no holding) exists for it.
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
         let long_title = "T".repeat(8 * 1024);
-        let uuid = edition_book(&store, "B00LONG", "user-1", &long_title, None).await;
-        assert!(store.file_owner_of_book(&uuid).await.unwrap().is_none());
+        let book = bookclerk_library::NewBook::minimal("B00LONG", "user-1", "us", &long_title);
+        assert!(store.upsert_book(&book).await.is_err());
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         tokio::fs::create_dir_all(&cache).await.unwrap();
@@ -8540,7 +8551,7 @@ mod tests {
         planned_req.options = destinations.primary_destination().options.clone();
         let planned = planned_storage_key(&store, &planned_req).await;
         let other = store
-            .file_owner_of_book(&second_uuid)
+            .file_owner_of_holding(&second_uuid)
             .await
             .unwrap()
             .unwrap();
@@ -8619,10 +8630,14 @@ mod tests {
             .iter()
             .map(|item| (item.id.as_str(), item.backend.as_ref()))
             .collect();
-        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        let second = store
+            .acquire_title_of_holding(&second_uuid)
+            .await
+            .unwrap()
+            .unwrap();
         // The edition also recorded a part file, since removed.
         let owner = store
-            .file_owner_of_book(&first_uuid)
+            .file_owner_of_holding(&first_uuid)
             .await
             .unwrap()
             .unwrap();
@@ -8637,7 +8652,7 @@ mod tests {
             .await
             .unwrap());
         assert_eq!(
-            share_acquired_sibling(&store, &backends, &view_of(&store, &second).await)
+            share_acquired_sibling(&store, &backends, &second)
                 .await
                 .unwrap(),
             None,
@@ -8679,9 +8694,13 @@ mod tests {
             .iter()
             .map(|item| (item.id.as_str(), item.backend.as_ref()))
             .collect();
-        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        let second = store
+            .acquire_title_of_holding(&second_uuid)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            share_acquired_sibling(&store, &backends, &view_of(&store, &second).await)
+            share_acquired_sibling(&store, &backends, &second)
                 .await
                 .unwrap(),
             Some(first.storage_key),
@@ -8724,20 +8743,31 @@ mod tests {
             .iter()
             .map(|item| (item.id.as_str(), item.backend.as_ref()))
             .collect();
-        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        let second = store
+            .acquire_title_of_holding(&second_uuid)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            share_acquired_sibling(&store, &backends, &view_of(&store, &second).await)
+            share_acquired_sibling(&store, &backends, &second)
                 .await
                 .unwrap(),
             Some(first.storage_key),
             "the audio is still shared"
         );
-        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
-        assert_eq!(second.acquire_status, AcquireStatus::Acquired);
-        assert_ne!(
-            second.pdf_status,
-            AcquireStatus::Acquired,
-            "a missing PDF is not recorded as acquired"
+        let second = store
+            .acquire_title_of_holding(&second_uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.status, AcquireStatus::Acquired);
+        // The PDF state is the edition's: the share leaves it as the first
+        // title recorded it, rather than recording the missing file again
+        // for the second.
+        assert_eq!(
+            second.pdf_acquired_by.as_deref(),
+            Some(first_uuid.as_str()),
+            "a missing PDF is not recorded as acquired by the sibling"
         );
     }
 
@@ -8805,7 +8835,11 @@ mod tests {
                 .as_deref(),
             Some("Twin/twin.pdf")
         );
-        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        let second = store
+            .acquire_title_of_holding(&second_uuid)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(second.pdf_status, AcquireStatus::Acquired);
         assert_eq!(second.pdf_storage_key.as_deref(), Some("Twin/twin.pdf"));
     }
@@ -8838,7 +8872,7 @@ mod tests {
 
         let mut req = dummy_req(&cache, Some(id), Some(16));
         req.asin = "B00PDFQ".into();
-        req.holding_id = Some(holding_of(&store, &book.uuid).await);
+        req.holding_id = Some(holding_of(&store, &book.holding_id).await);
         req.title = "Pdf Quota".into();
         let destinations = counting_destinations_with(&dest_root, puts.clone(), true);
         let source = CountingSource {
@@ -8852,11 +8886,11 @@ mod tests {
         assert_eq!(puts.load(Ordering::SeqCst), 1);
         assert_eq!(pdf_hits.load(Ordering::SeqCst), 1);
         let after_first = store
-            .get_book("B00PDFQ", "user-1")
+            .held_title("B00PDFQ", "user-1")
             .await
             .unwrap()
             .expect("book after first acquire");
-        assert_eq!(after_first.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(after_first.status, AcquireStatus::Acquired);
         assert_eq!(after_first.pdf_status, AcquireStatus::Error);
 
         let second = acquire_book(&store, &destinations, req, &source)
@@ -8870,11 +8904,11 @@ mod tests {
         assert_eq!(puts.load(Ordering::SeqCst), 1);
         assert_eq!(pdf_hits.load(Ordering::SeqCst), 2);
         let after_retry = store
-            .get_book("B00PDFQ", "user-1")
+            .held_title("B00PDFQ", "user-1")
             .await
             .unwrap()
             .expect("book after retry");
-        assert_eq!(after_retry.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(after_retry.status, AcquireStatus::Acquired);
         assert_eq!(after_retry.pdf_status, AcquireStatus::Error);
     }
 
@@ -8964,7 +8998,7 @@ mod tests {
 
         let mut req = dummy_req(&cache, Some(id), Some(16));
         req.asin = "B00PDFT".into();
-        req.holding_id = Some(holding_of(&store, &book.uuid).await);
+        req.holding_id = Some(holding_of(&store, &book.holding_id).await);
         req.title = "Pdf Throttle".into();
         let destinations = counting_destinations_with(&dest_root, puts.clone(), true);
         let source = ThrottlesAfterFirst(CountingSource {
@@ -8986,11 +9020,11 @@ mod tests {
             "unexpected error: {err}"
         );
         let after = store
-            .get_book("B00PDFT", "user-1")
+            .held_title("B00PDFT", "user-1")
             .await
             .unwrap()
             .expect("book after retry");
-        assert_eq!(after.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(after.status, AcquireStatus::Acquired);
         assert_eq!(after.pdf_status, AcquireStatus::Error);
         assert_eq!(puts.load(Ordering::SeqCst), 1);
     }

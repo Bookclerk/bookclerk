@@ -107,6 +107,18 @@ const maxNotificationFields :UInt32 = 25;
 const maxNotificationFieldBytes :UInt32 = 1024;
 # Longest destination address document (`addressJson`), in UTF-8 bytes.
 const maxNotifierAddressBytes :UInt32 = 4096;
+# Longest `AiModel.name`, in UTF-8 bytes (`@<plugin id>/<model id>`).
+const maxAiModelNameBytes :UInt32 = 192;
+# Most models one `AiModels.models` reply lists.
+const maxAiModels :UInt32 = 64;
+# Most texts in one `AiTextEmbeddingsInput`.
+const maxAiEmbedTexts :UInt32 = 64;
+# Longest text in an `AiTextEmbeddingsInput`, in UTF-8 bytes.
+const maxAiEmbedTextBytes :UInt32 = 16384;
+# Most numbers in one embedding vector.
+const maxAiEmbedDimensions :UInt32 = 4096;
+# Most language tags on one `AiModel`.
+const maxAiLanguages :UInt32 = 64;
 # Most entries in `MetadataFileRenderParams.audioFiles`.
 const maxMetadataAudioFiles :UInt32 = 4096;
 # Longest `KvNamespace` key in UTF-8 bytes.
@@ -136,6 +148,22 @@ const maxOriginHeaderBytes :UInt32 = 65536;
 const maxOriginTargetBytes :UInt32 = 8192;
 # Longest `IngressStarted.origin`, in bytes.
 const maxIngressOriginBytes :UInt32 = 253;
+# Most deliveries one `Webhooks.pull` returns.
+const maxWebhookPullBatch :UInt32 = 100;
+# Longest `WebhookDelivery.leaseId`, in bytes.
+const maxWebhookLeaseIdBytes :UInt32 = 128;
+# Longest `Webhooks.pull` visibility timeout, in milliseconds (12 hours).
+const maxWebhookVisibilityMs :UInt32 = 43200000;
+# Largest stored webhook request body, in bytes (1 MiB); a `[[webhooks]]`
+# row may lower its own cap but never raise it past this.
+const maxWebhookBodyBytes :UInt32 = 1048576;
+# Most request headers a `[[webhooks]]` row keeps; a delivery also carries
+# `content-type`, so it holds at most one more.
+const maxWebhookHeaders :UInt32 = 16;
+# Longest `[[webhooks]]` name, in bytes.
+const maxWebhookNameBytes :UInt32 = 32;
+# Longest kept request header value, in bytes.
+const maxWebhookHeaderValueBytes :UInt32 = 8192;
 # Largest `KvNamespace` metadata JSON text in bytes.
 const maxKvMetadataBytes :UInt32 = 1024;
 # Most entries in each list of a `NetworkGrant` (fetch hosts, TCP
@@ -622,6 +650,13 @@ struct Bindings {
   # public requests it carries to; null unless the plugin is the library's
   # active relay ingress.
   origin @12 :Origin;
+  # `AI`: runs models other plugins serve; null unless `[ai]` names the
+  # tasks the plugin calls and the operator granted them.
+  ai @13 :AiRunner;
+  # `WEBHOOKS`: the instance's inbound webhooks, their URLs and the
+  # deliveries the host stored; null unless `[[webhooks]]` is declared and
+  # granted.
+  webhooks @14 :Webhooks;
 }
 
 # The network grant in effect for one `PluginWorker.open`. Read-only
@@ -714,6 +749,10 @@ struct Entrypoints {
   notifier @14 :Notifier;
   # `ingress` entrypoint.
   ingress @15 :Ingress;
+  # `ai` entrypoint.
+  ai @16 :AiModels;
+  # `[[webhooks]]` handler: called after the host stores deliveries.
+  webhookHandler @17 :WebhookHandler;
 }
 
 # Result union of `PluginWorker.open`.
@@ -1548,6 +1587,37 @@ interface Ingress {
   stop @2 () -> (result :EmptyReply);
 }
 
+# Host-served inbound webhooks, granted through `Bindings.webhooks`.
+#
+# The host serves each `[[webhooks]]` row at a secret URL under the
+# library's public origin, checks every request against the row's body cap,
+# rate limit and signature rule, stores it and answers at once. The guest
+# takes stored deliveries with `pull` and settles them with `ack`, in the
+# manner of a Cloudflare Queues HTTP pull consumer: a pulled delivery stays
+# leased until acknowledged, retried, or its visibility timeout ends.
+interface Webhooks {
+  # The URL an outside service should call for one webhook.
+  url @0 (
+      name :Text  # `[[webhooks]]` name.
+  ) -> (result :WebhookUrlReply);
+  # Lease up to `batchSize` stored deliveries, oldest first.
+  pull @1 (
+      request :WebhookPullRequest  # Webhook, batch size, visibility timeout.
+  ) -> (result :WebhookPullReply);
+  # Acknowledge finished deliveries and offer retried ones again at once.
+  ack @2 (
+      request :WebhookAckRequest  # Webhook and lease ids.
+  ) -> (result :EmptyReply);
+}
+
+# Guest handler for inbound webhooks (`Entrypoints.webhookHandler`).
+interface WebhookHandler {
+  # The host stored deliveries for one webhook; the guest pulls them.
+  delivered @0 (
+      event :WebhookDelivered  # Webhook and how many wait.
+  ) -> (result :EmptyReply);
+}
+
 # Storefront content source (not byte Source). Every method takes and
 # returns typed structs from the "Typed method payloads" section.
 interface ContentSource {
@@ -1756,6 +1826,34 @@ interface NotificationRaiser {
   ) -> (result :NotifyRaiseReply);
 }
 
+# `ai` entrypoint: serves models. The plugin lists the models it serves,
+# each with one task, and runs one model on one input. The host routes
+# every call (its own and other plugins' through the `AI` binding) to the
+# deployed plugin that serves the named model; a model plugin never learns
+# who asked. Bulk work arrives as many `run` calls from a host job, each
+# within the per-call caps.
+interface AiModels {
+  # Liveness / readiness probe: model files present and loadable.
+  health @0 () -> (result :HealthReply);
+  # The models this plugin serves right now, under its current settings.
+  models @1 () -> (result :AiModelsReply);
+  # Run one model on one input.
+  run @2 (
+      params :AiRunParams  # Model name and the task's input.
+  ) -> (result :AiRunReply);
+}
+
+# `AI` binding: runs a model by name, as `env.AI.run(model, input)` does on
+# Cloudflare Workers. The host checks the caller's `[ai]` grant for the
+# model's task, applies the call's deadline and the caller's budget, and
+# forwards to the serving plugin's `AiModels.run`.
+interface AiRunner {
+  # Run one model on one input.
+  run @0 (
+      params :AiRunParams  # Model name or task alias, and the task's input.
+  ) -> (result :AiRunReply);
+}
+
 # Marks an enum whose wire strings (where an enum travels as `Text`, e.g.
 # `PluginError.code`) are the snake_case form of the enumerant names
 # (`payloadTooLarge` -> "payload_too_large").
@@ -1845,6 +1943,8 @@ enum Entrypoint {
   notifier @9;
   # Public address provider: `start`, `health` and `stop` (`Ingress`).
   ingress @10;
+  # Model serving: `models` and `run` (`AiModels`).
+  ai @11;
 }
 
 # One declared event consumer: a `[[events.consumers]]` row the default
@@ -1885,6 +1985,10 @@ struct PluginCapabilities {
   # True when the guest declared `[sockets]`: it receives the host-brokered
   # `Sockets` binding and may export a `SocketHandler` for pushed messages.
   sockets @9 :Bool;
+  # True when the guest declared `[[webhooks]]`: it receives the host-served
+  # `Webhooks` binding and may export a `WebhookHandler` the host wakes when
+  # it stores deliveries.
+  webhooks @10 :Bool;
 }
 
 # Catalog behaviours a storefront declares in `describe()`. Catalog search
@@ -3962,6 +4066,134 @@ struct NotifyRaiseReply {
   }
 }
 
+# What a model does. A model has exactly one task, and the task fixes the
+# shape of `AiRunParams.input` and of the reply.
+enum AiTask {
+  # Turns each text into one vector; similar texts get nearby vectors.
+  textEmbeddings @0;
+}
+
+# What a text is to an embedding model. Some models embed a search query
+# differently from the documents it is matched against.
+enum AiTextRole {
+  # Stored content: a description, a passage.
+  document @0;
+  # A search query matched against documents.
+  query @1;
+}
+
+# One model an `ai` plugin serves.
+struct AiModel {
+  # Model id within the plugin (`bekko-a8m`): lowercase letters, digits,
+  # `.`, `_` and `-`. Callers name it `@<plugin id>/<model id>`; the whole
+  # name is at most `maxAiModelNameBytes`.
+  modelId @0 :Text;
+  # The model's one task.
+  task @1 :AiTask;
+  # Digest of everything that decides the output: weights, tokenizer and
+  # the language packs loaded. Outputs are comparable only when it matches.
+  revision @2 :Text;
+  # Text embeddings: numbers per vector, at most `maxAiEmbedDimensions`.
+  dimensions @3 :UInt32 $optional;
+  # Text embeddings: tokens read from one text; the rest is cut off.
+  maxTokens @4 :UInt32 $optional;
+  # BCP 47 tags of the languages the model is loaded for, at most
+  # `maxAiLanguages`; empty when it has no language packs.
+  languages @5 :List(Text);
+}
+
+# Success payload of `AiModels.models`.
+struct AiModelList {
+  # Served models, at most `maxAiModels`, each `modelId` once.
+  models @0 :List(AiModel);
+}
+
+# Result union of `AiModels.models`.
+struct AiModelsReply {
+  union {
+    # The served models.
+    ok @0 :AiModelList;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# One text to embed.
+struct AiEmbedText {
+  # The text, at most `maxAiEmbedTextBytes`; never empty.
+  text @0 :Text;
+  # Document or query.
+  role @1 :AiTextRole;
+}
+
+# Input of the `textEmbeddings` task.
+struct AiTextEmbeddingsInput {
+  # Texts to embed, 1 to `maxAiEmbedTexts`.
+  texts @0 :List(AiEmbedText);
+}
+
+# Output of the `textEmbeddings` task.
+struct AiTextEmbeddingsOutput {
+  # Numbers per vector; equals the model's `AiModel.dimensions`.
+  dimensions @0 :UInt32;
+  # One vector per input text, in input order: `dimensions` little-endian
+  # IEEE 754 32-bit floats each, concatenated. Every number is finite.
+  vectors @1 :Data;
+  # `AiModel.revision` of the model that made the vectors.
+  revision @2 :Text;
+  # Indexes (into the input texts, ascending, each once) of the texts
+  # where the tokenizer met text outside the loaded language packs and
+  # fell back to smaller pieces; such a vector should be recomputed after
+  # the missing pack is added.
+  fallbacks @3 :List(UInt32);
+}
+
+# Input to one model run: one field per `AiTask`, and exactly one is set
+# (the others are null). A new task appends a field.
+struct AiInput {
+  # `textEmbeddings` task.
+  textEmbeddings @0 :AiTextEmbeddingsInput;
+}
+
+# Output of one model run: one field per `AiTask`, and exactly one is set
+# (the others are null). A new task appends a field.
+struct AiOutput {
+  # `textEmbeddings` task.
+  textEmbeddings @0 :AiTextEmbeddingsOutput;
+}
+
+# Params of `AiModels.run` and `AiRunner.run`.
+struct AiRunParams {
+  # On `AiModels.run`, the plugin's own `AiModel.modelId`. On
+  # `AiRunner.run`, `@<plugin id>/<model id>` or a task alias
+  # (`@library/text-embeddings`: the model the library chose for the task).
+  model @0 :Text;
+  # The input; the field set must match the model's task.
+  input @1 :AiInput;
+}
+
+# Success payload of a model run.
+struct AiRunOk {
+  # The output; the field set matches the model's task.
+  output @0 :AiOutput;
+  # Full name of the model that ran (`@<plugin id>/<model id>`), so a
+  # caller that used a task alias knows what answered. Set by the host on
+  # `AiRunner.run`; empty on `AiModels.run`.
+  model @1 :Text $optional;
+}
+
+# Result union of `AiModels.run` and `AiRunner.run`. A model the plugin
+# does not serve is `not_found`; an input for another task is
+# `invalid_params`; a caller without the grant gets `forbidden`.
+struct AiRunReply {
+  union {
+    # The model ran.
+    ok @0 :AiRunOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
 # One WebSocket message.
 struct SocketFrame {
   union {
@@ -4128,6 +4360,78 @@ struct IngressStartReply {
   }
 }
 
+# Success payload of `Webhooks.url`.
+struct WebhookUrl {
+  # Absolute `https://` URL; empty when the library cannot be reached from
+  # the Internet or webhooks are turned off, and the plugin should use its
+  # fallback.
+  url @0 :Text $optional;
+}
+
+# Result union of `Webhooks.url`.
+struct WebhookUrlReply {
+  union {
+    # Success: the URL, or none.
+    ok @0 :WebhookUrl;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Arguments of `Webhooks.pull`.
+struct WebhookPullRequest {
+  # `[[webhooks]]` name.
+  name @0 :Text;
+  # Most deliveries to lease, 1 to `maxWebhookPullBatch`.
+  batchSize @1 :UInt32;
+  # How long leased deliveries stay hidden from the next pull, in
+  # milliseconds, at most `maxWebhookVisibilityMs`; zero means one minute.
+  visibilityTimeoutMs @2 :UInt32;
+}
+
+# One request header kept with a delivery.
+struct WebhookHeader {
+  # Lowercase header name, one the row's `headers` names or `content-type`.
+  name @0 :Text;
+  # Header value as received.
+  value @1 :Text;
+}
+
+# One stored request, leased to the guest.
+struct WebhookDelivery {
+  # Lease id for `ack`, at most `maxWebhookLeaseIdBytes`; a new one each
+  # time the delivery is pulled.
+  leaseId @0 :Text;
+  # When the host stored the request, in Unix milliseconds.
+  receivedAtUnixMs @1 :UInt64;
+  # How many times this delivery has been pulled, counting this one.
+  attempt @2 :UInt32;
+  # Kept request headers, in the order the row names them.
+  headers @3 :List(WebhookHeader);
+  # Request body as received, at most the row's `max_body_bytes`.
+  body @4 :Data;
+}
+
+# Success payload of `Webhooks.pull`.
+struct WebhookPullPage {
+  # Leased deliveries, oldest first.
+  deliveries @0 :List(WebhookDelivery);
+  # True when the host dropped deliveries for this webhook since the last
+  # pull (the waiting cap was full or a delivery expired unacknowledged):
+  # the guest should treat what it follows as incomplete.
+  missed @1 :Bool;
+}
+
+# Result union of `Webhooks.pull`.
+struct WebhookPullReply {
+  union {
+    # Success: the leased deliveries.
+    ok @0 :WebhookPullPage;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
 # Success payload of `Ingress.health`.
 struct IngressHealth {
   # True when the address is serving.
@@ -4144,6 +4448,24 @@ struct IngressHealthReply {
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }
+}
+
+# Arguments of `Webhooks.ack`.
+struct WebhookAckRequest {
+  # `[[webhooks]]` name.
+  name @0 :Text;
+  # Leases whose deliveries are done and are deleted.
+  acks @1 :List(Text);
+  # Leases whose deliveries the next pull offers again.
+  retries @2 :List(Text);
+}
+
+# Argument of `WebhookHandler.delivered`.
+struct WebhookDelivered {
+  # `[[webhooks]]` name.
+  name @0 :Text;
+  # Deliveries waiting for this webhook when the host called.
+  waiting @1 :UInt32;
 }
 
 # --- rust-generated: end ---

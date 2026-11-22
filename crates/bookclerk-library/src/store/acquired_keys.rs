@@ -174,7 +174,7 @@ impl LibraryStore {
                 .map_err(LibraryError::Orm);
             match read {
                 Ok(rows) => break rows,
-                Err(err) if super::books_page::is_result_too_large(&err) && want > 1 => {
+                Err(err) if super::result_cap::is_result_too_large(&err) && want > 1 => {
                     want /= 2;
                 }
                 Err(err) => return Err(err),

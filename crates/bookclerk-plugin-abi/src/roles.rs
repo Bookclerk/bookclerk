@@ -6,18 +6,19 @@ use std::pin::Pin;
 use tokio::io::AsyncRead;
 
 use crate::generated::{
-    AuthenticateUserParams, CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult,
-    CliSchema, CoverFetchParams, CoverImage, DatabaseAdapterConfig, ExpandCandidatesParams,
-    ExternalUser, FetchTitleParams, IngressHealth, Invocation, ListDealsParams, ListeningProgress,
-    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
-    MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed, MetadataFileRenderParams,
-    MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
-    NotifyRaiseParams, NotifyRaised, NotifySendParams, NotifySent, NotifyValidateParams,
-    NotifyValidated, OriginHeader, PlainFetch, PluginEvent, PublishOk, PurchaseHint,
-    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, QualityOffersParams,
-    QualityOffersResult, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams,
-    SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
-    SocketMessage, SocketMessageOk, SourceAccount,
+    AiModelList, AiRunOk, AiRunParams, AuthenticateUserParams, CatalogDetailParams, CatalogHit,
+    CliInvokeParams, CliInvokeResult, CliSchema, CoverFetchParams, CoverImage,
+    DatabaseAdapterConfig, ExpandCandidatesParams, ExternalUser, FetchTitleParams, IngressHealth,
+    Invocation, ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
+    LoginStartResult, MetadataChapters, MetadataChaptersParams, MetadataFileParseParams,
+    MetadataFileParsed, MetadataFileRenderParams, MetadataFileRendered, MetadataLookupParams,
+    MetadataRecord, MetadataSearchParams, NotifyRaiseParams, NotifyRaised, NotifySendParams,
+    NotifySent, NotifyValidateParams, NotifyValidated, OriginHeader, PlainFetch, PluginEvent,
+    PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams,
+    QualityOffersParams, QualityOffersResult, RevokeAccountParams, ScanLibraryParams, ScanPage,
+    ScanParams, SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
+    SocketMessage, SocketMessageOk, SourceAccount, WebhookAckRequest, WebhookDelivered,
+    WebhookPullPage, WebhookPullRequest,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -403,6 +404,23 @@ pub trait NotificationRaiser {
     async fn raise(&self, params: NotifyRaiseParams) -> Result<NotifyRaised>;
 }
 
+/// `AI` binding: runs a model served by a deployed model plugin
+/// ([`Bindings::ai`]).
+///
+/// The host routes the run to the plugin that serves the named model, or
+/// to the model the library chose when the name is a task alias
+/// (`@library/text-embeddings`). The caller must hold a grant for the
+/// model's task. Each run has a deadline and counts against the calling
+/// plugin's budget; work over many items belongs in a job.
+#[async_trait::async_trait(?Send)]
+pub trait AiRunner {
+    /// Runs `params.model` on `params.input`. `not_found` when nothing
+    /// deployed serves the model, `forbidden` without the grant for its
+    /// task, `rate_limited` over budget, `unavailable` when the model
+    /// plugin cannot answer in time.
+    async fn run(&self, params: AiRunParams) -> Result<AiRunOk>;
+}
+
 /// `[[queues.consumers]]` handler ([`Entrypoints::queue_consumer`]).
 ///
 /// Delivery is at-least-once; consume idempotently on
@@ -565,6 +583,36 @@ pub trait Ingress {
     /// Takes the public address down; stopping a stopped one is not an
     /// error.
     async fn stop(&self) -> Result<()>;
+}
+
+/// Host-served inbound webhooks granted on [`Bindings::webhooks`].
+///
+/// The host serves each `[[webhooks]]` row at a secret URL under the
+/// library's public origin, checks and stores each request, and keeps it
+/// until the guest acknowledges it or it expires. The methods are shaped
+/// like a pulled queue so a feed can treat webhook deliveries and queue
+/// messages alike.
+#[async_trait::async_trait(?Send)]
+pub trait Webhooks {
+    /// The URL an outside service should call for webhook `name`; `None`
+    /// when the library cannot be reached from the Internet or webhooks are
+    /// turned off.
+    async fn url(&self, name: String) -> Result<Option<String>>;
+    /// Leases up to `request.batch_size` waiting deliveries, oldest first.
+    async fn pull(&self, request: WebhookPullRequest) -> Result<WebhookPullPage>;
+    /// Deletes acknowledged deliveries and offers retried ones again.
+    async fn ack(&self, request: WebhookAckRequest) -> Result<()>;
+}
+
+/// `[[webhooks]]` handler: told when the host stored deliveries.
+#[async_trait::async_trait(?Send)]
+pub trait WebhookHandler {
+    /// The host stored deliveries for one webhook; the guest pulls them
+    /// through [`Bindings::webhooks`]. The default ignores the call, and the
+    /// plugin reads deliveries on its own schedule.
+    async fn delivered(&self, _event: WebhookDelivered) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// One granted `[[queues.producers]]` binding on [`Bindings::queues`].
@@ -916,6 +964,39 @@ pub trait Notifier {
     }
 }
 
+/// `ai` entrypoint: serves models to the host and, through the `AI`
+/// binding, to every plugin with the grant.
+///
+/// The host checks the listing ([`crate::ai::check_models`]), each run
+/// before it reaches the plugin
+/// ([`crate::ai::check_entrypoint_run_params`]) and each reply
+/// ([`crate::ai::check_run_output`]). Outputs are comparable only while
+/// the model's revision stays the same, so a plugin changes the revision
+/// whenever weights, tokenizer or loaded language packs change.
+#[async_trait::async_trait(?Send)]
+pub trait AiModels {
+    /// Liveness / readiness probe: model files present and loadable.
+    async fn health(&self) -> Result<crate::rpc_types::HealthOk> {
+        Ok(crate::rpc_types::HealthOk {
+            ok: true,
+            detail: String::new(),
+        })
+    }
+
+    /// Lists the models this plugin serves now. Cheap: it must not load a
+    /// model.
+    async fn models(&self) -> Result<AiModelList> {
+        Ok(AiModelList { models: Vec::new() })
+    }
+
+    /// Runs the plugin's model `params.model` on `params.input`.
+    /// `not_found` for a model it does not serve, `invalid_params` for an
+    /// input of another task.
+    async fn run(&self, _params: AiRunParams) -> Result<AiRunOk> {
+        Err(PluginError::unsupported("run"))
+    }
+}
+
 /// `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`.
 #[async_trait::async_trait(?Send)]
 pub trait PluginCli {
@@ -1146,6 +1227,9 @@ pub struct Bindings {
     /// `SOCKETS`: host-brokered WebSockets; `None` unless `[sockets]` is
     /// granted.
     pub sockets: Option<Box<dyn Sockets>>,
+    /// `WEBHOOKS`: the instance's inbound webhooks; `None` unless the
+    /// manifest declares `[[webhooks]]`.
+    pub webhooks: Option<Box<dyn Webhooks>>,
     /// `NETWORK`: the network grant in effect (see
     /// [`BindingValues::network`]).
     pub network: crate::NetworkGrant,
@@ -1155,6 +1239,9 @@ pub struct Bindings {
     /// `ORIGIN`: the library, for the active relay `ingress` plugin; `None`
     /// for every other plugin.
     pub origin: Option<Box<dyn Origin>>,
+    /// `AI`: runs models served by model plugins; `None` unless the
+    /// manifest declares `[ai] calls` and the operator approved it.
+    pub ai: Option<Box<dyn AiRunner>>,
 }
 
 impl Bindings {
@@ -1174,8 +1261,10 @@ impl Bindings {
             queues: Vec::new(),
             kv: Vec::new(),
             sockets: None,
+            webhooks: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -1245,12 +1334,16 @@ pub struct Entrypoints {
     pub covers: Option<Box<dyn CoverFetcher>>,
     /// `[sockets]` handler.
     pub socket_handler: Option<Box<dyn SocketHandler>>,
+    /// `[[webhooks]]` handler.
+    pub webhook_handler: Option<Box<dyn WebhookHandler>>,
     /// `metadataFiles` entrypoint.
     pub metadata_files: Option<Box<dyn MetadataFiles>>,
     /// `notifier` entrypoint.
     pub notifier: Option<Box<dyn Notifier>>,
     /// `ingress` entrypoint.
     pub ingress: Option<Box<dyn Ingress>>,
+    /// `ai` entrypoint.
+    pub ai: Option<Box<dyn AiModels>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

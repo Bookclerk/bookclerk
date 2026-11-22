@@ -948,6 +948,33 @@ describe("sign-in", () => {
     assert.equal(res.status, 502);
   });
 
+  it("opens the dashboard when a spent callback comes back to a signed-in browser", async () => {
+    gh = scriptGitHub([]);
+    const env = makeEnv();
+    const session = await signedIn(env);
+    const res = await call(
+      env,
+      new Request(`${ORIGIN}/auth/callback?code=abc&state=${"a".repeat(43)}`, {
+        headers: { cookie: session },
+      }),
+    );
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /You are signed in\./);
+    assert.equal(gh.calls.length, 0);
+  });
+
+  it("offers a fresh sign-in when a callback has expired", async () => {
+    gh = scriptGitHub([]);
+    const res = await call(
+      makeEnv(),
+      new Request(`${ORIGIN}/auth/callback?code=abc&state=${"a".repeat(43)}`),
+    );
+    assert.equal(res.status, 400);
+    const page = await res.text();
+    assert.match(page, /used already or took too long/);
+    assert.match(page, /href="\/auth\/github">Sign in with GitHub again/);
+  });
+
   it("rejects a callback whose state does not match the cookie", async () => {
     gh = scriptGitHub([]);
     const res = await call(
@@ -998,6 +1025,36 @@ describe("sessions", () => {
     const own = await call(
       env,
       new Request(`${ORIGIN}/auth/logout`, { method: "POST", headers: { cookie, origin: ORIGIN } }),
+    );
+    assert.equal(own.status, 303);
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM sessions")).length, 0);
+  });
+
+  it("logs out from its own button, which posts with Origin: null under no-referrer", async () => {
+    const env = makeEnv();
+    const cookie = await signedIn(env);
+    // A null origin from another site's page (a sandboxed frame, a data:
+    // URL) carries Sec-Fetch-Site: cross-site and stays refused.
+    const framed = await call(
+      env,
+      new Request(`${ORIGIN}/auth/logout`, {
+        method: "POST",
+        headers: { cookie, origin: "null", "sec-fetch-site": "cross-site" },
+      }),
+    );
+    assert.equal(framed.status, 403);
+    const bare = await call(
+      env,
+      new Request(`${ORIGIN}/auth/logout`, { method: "POST", headers: { cookie, origin: "null" } }),
+    );
+    assert.equal(bare.status, 403);
+    assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM sessions")).length, 1);
+    const own = await call(
+      env,
+      new Request(`${ORIGIN}/auth/logout`, {
+        method: "POST",
+        headers: { cookie, origin: "null", "sec-fetch-site": "same-origin" },
+      }),
     );
     assert.equal(own.status, 303);
     assert.equal((await all(env.DASHBOARD_DB, "SELECT * FROM sessions")).length, 0);
@@ -1098,6 +1155,9 @@ describe("pages", () => {
     ).text();
     assert.match(gone, /The report's sender deleted its stored copy on /);
     assert.ok(!gone.includes("could not be read from storage"));
+    // The index keeps the toolchain and commit, so they outlive the copy.
+    assert.ok(gone.includes("1.91.0 stable"));
+    assert.ok(gone.includes("0123456"));
   });
 
   it("counts a report filed twice under the older issue and flags the conflict", async () => {
@@ -4331,14 +4391,12 @@ describe("triage state, mutes and owner close", () => {
     const cookie = await signedIn(env);
 
     let page = await (
-      await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))
+      await call(env, new Request(`${ORIGIN}/dash?source=installs`, { headers: { cookie } }))
     ).text();
     assert.match(page, /Needs triage<\/a><\/h2><div class="v">2</, "the demo report is left out");
     assert.match(page, /Active installs/);
-    page = await (
-      await call(env, new Request(`${ORIGIN}/dash?source=all`, { headers: { cookie } }))
-    ).text();
-    assert.match(page, /Needs triage<\/a><\/h2><div class="v">3</, "all sources count three");
+    page = await (await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))).text();
+    assert.match(page, /Needs triage<\/a><\/h2><div class="v">3</, "all sources by default");
     assert.match(
       page,
       /href="\/reports\?range=[a-z0-9]+&amp;signature=[0-9a-f]{16}&amp;source=all"/,
@@ -4367,7 +4425,10 @@ describe("triage state, mutes and owner close", () => {
       ],
     );
     page = await (
-      await call(env, new Request(`${ORIGIN}/reports?triage=needs`, { headers: { cookie } }))
+      await call(
+        env,
+        new Request(`${ORIGIN}/reports?triage=needs&source=installs`, { headers: { cookie } }),
+      )
     ).text();
     assert.match(page, /0 reports/, "the installs queue is empty");
     page = await (
@@ -4408,6 +4469,74 @@ describe("triage state, mutes and owner close", () => {
       }),
     );
     assert.equal(crossSite.status, 403);
+  });
+
+  it("shows today's triage spend and the last seven days' on the overview", async () => {
+    const day = (offset: number) => new Date(NOW - offset * 86_400_000).toISOString().slice(0, 10);
+    const totals = new Map([
+      [`triage-neurons:${day(0)}`, "7"],
+      [`triage-neurons:${day(3)}`, "13"],
+      [`triage-neurons:${day(6)}`, "19"],
+      [`triage-neurons:${day(7)}`, "500"],
+    ]);
+    const env = makeEnv({
+      TRIAGE_BUDGET: {
+        get: (key: string) => Promise.resolve(totals.get(key) ?? null),
+        put: () => Promise.resolve(),
+      },
+    });
+    const cookie = await signedIn(env);
+    const page = await (
+      await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /neurons used today \(UTC\), 39 in the last 7 days/);
+
+    const broken = makeEnv({
+      TRIAGE_BUDGET: {
+        get: () => Promise.reject(new Error("kv down")),
+        put: () => Promise.resolve(),
+      },
+    });
+    const fallback = await (
+      await call(
+        broken,
+        new Request(`${ORIGIN}/dash`, { headers: { cookie: await signedIn(broken) } }),
+      )
+    ).text();
+    assert.match(fallback, /neurons used today \(UTC\), 0 in the last 7 days/);
+  });
+
+  it("remembers the source filter between the overview and the reports list", async () => {
+    const env = makeEnv();
+    await seed(env, ID1);
+    await seed(env, ID3, NOW - 3_600_000, { deployment: "demo" });
+    const cookie = await signedIn(env);
+    const chose = await call(
+      env,
+      new Request(`${ORIGIN}/dash?source=demo`, { headers: { cookie } }),
+    );
+    const remembered = chose.headers.get("set-cookie") ?? "";
+    assert.match(remembered, /^__Host-bc_source=demo; Path=\/; Secure; HttpOnly; SameSite=Lax/);
+    assert.match(await chose.text(), /<a href="\/dash\?source=demo" aria-current="true">Demo<\/a>/);
+    const both = `${cookie}; __Host-bc_source=demo`;
+    const list = await call(env, new Request(`${ORIGIN}/reports`, { headers: { cookie: both } }));
+    assert.equal(list.headers.get("set-cookie"), null, "no choice in the query, nothing to store");
+    const text = await list.text();
+    assert.match(text, /1 reports/, "only the demo report");
+    assert.match(text, /aria-current="true">Demo</);
+    // An explicit All replaces the remembered choice.
+    const all = await call(
+      env,
+      new Request(`${ORIGIN}/reports?source=all`, { headers: { cookie: both } }),
+    );
+    assert.match(all.headers.get("set-cookie") ?? "", /^__Host-bc_source=all;/);
+    assert.match(await all.text(), /2 reports/);
+    // Junk in the cookie falls back to All.
+    const junk = await call(
+      env,
+      new Request(`${ORIGIN}/reports`, { headers: { cookie: `${cookie}; __Host-bc_source=x` } }),
+    );
+    assert.match(await junk.text(), /2 reports/);
   });
 
   it("mutes a signature out of the queue and the ingest pull, until a version ends it", async () => {

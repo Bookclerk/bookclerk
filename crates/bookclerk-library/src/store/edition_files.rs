@@ -24,15 +24,12 @@
 //! A title a branch shares here is a node holding of an edition, so its
 //! files are that edition's like any other.
 
-use std::collections::BTreeSet;
-
 use sea_orm::sea_query::{Expr, OnConflict, Query};
 use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
 
 use super::{now_str, LibraryStore};
 use crate::entities::{
-    books, edition_acquisitions, edition_files, editions, holdings, node_upload_sessions,
-    store_listings,
+    edition_acquisitions, edition_files, editions, holdings, node_upload_sessions, store_listings,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
@@ -43,8 +40,7 @@ pub const ACQUIRE_WRITER: &str = "acquire";
 /// Who a recorded file key belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FileOwner {
-    /// An edition (`editions.id`): every account row that holds it shares
-    /// the file.
+    /// An edition (`editions.id`): every holding of it shares the file.
     Edition(String),
 }
 
@@ -460,83 +456,6 @@ fn still(file: &EditionFile) -> Condition {
 }
 
 impl LibraryStore {
-    /// The edition a library title (`books.uuid`) resolves to, through its
-    /// store listing; `None` when the title is unknown or not resolved yet.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a read fails.
-    pub async fn edition_of_book(&self, book_uuid: &str) -> Result<Option<String>> {
-        let Some(book) = books::Entity::find()
-            .filter(books::Column::Uuid.eq(book_uuid))
-            .one(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Ok(None);
-        };
-        Ok(store_listings::Entity::find()
-            .filter(store_listings::Column::PluginKey.eq(book.plugin_key))
-            .filter(
-                store_listings::Column::Marketplace
-                    .eq(bookclerk_resolve::stored_marketplace(&book.marketplace)),
-            )
-            .filter(
-                store_listings::Column::ProductId
-                    .eq(bookclerk_resolve::stored_product_id(&book.product_id)),
-            )
-            .one(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(|listing| listing.edition_id))
-    }
-
-    /// The edition a library title (`books.uuid`) sells and its account's
-    /// holding of the listing; `None` when the title is unknown, not
-    /// resolved yet, or no longer held by its account.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a read fails.
-    pub async fn title_holding_of_book(&self, book_uuid: &str) -> Result<Option<TitleHolding>> {
-        let Some(book) = books::Entity::find()
-            .filter(books::Column::Uuid.eq(book_uuid))
-            .one(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Ok(None);
-        };
-        let Some(listing) = store_listings::Entity::find()
-            .filter(store_listings::Column::PluginKey.eq(book.plugin_key.as_str()))
-            .filter(
-                store_listings::Column::Marketplace
-                    .eq(bookclerk_resolve::stored_marketplace(&book.marketplace)),
-            )
-            .filter(
-                store_listings::Column::ProductId
-                    .eq(bookclerk_resolve::stored_product_id(&book.product_id)),
-            )
-            .one(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Ok(None);
-        };
-        Ok(super::holdings::find_holdings()
-            .filter(holdings::Column::ListingId.eq(listing.id.as_str()))
-            .filter(holdings::Column::HolderKind.eq("account"))
-            .filter(holdings::Column::PluginKey.eq(book.plugin_key.as_str()))
-            .filter(holdings::Column::AccountId.eq(book.account_id.as_str()))
-            .one(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(|holding| TitleHolding {
-                edition_id: listing.edition_id,
-                holding_id: holding.id,
-            }))
-    }
-
     /// An edition's acquire state; `None` when no title of it was ever
     /// queued or acquired.
     ///
@@ -556,17 +475,17 @@ impl LibraryStore {
         )
     }
 
-    /// The file owner of a library title: its edition
-    /// ([`Self::edition_of_book`]).
+    /// The edition holding `holding_id` (`holdings.id`) holds: the one its
+    /// listing sells; `None` when the holding or its listing is gone.
     ///
     /// # Errors
     ///
     /// Returns an error when a read fails.
-    pub async fn file_owner_of_book(&self, book_uuid: &str) -> Result<Option<FileOwner>> {
+    pub async fn edition_of_holding(&self, holding_id: &str) -> Result<Option<String>> {
         Ok(self
-            .edition_of_book(book_uuid)
+            .file_owner_of_holding(holding_id)
             .await?
-            .map(FileOwner::Edition))
+            .map(|FileOwner::Edition(edition_id)| edition_id))
     }
 
     /// The file owner of a node holding (`holdings.id`, a title a branch
@@ -589,25 +508,6 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .map(|listing| FileOwner::Edition(listing.edition_id)))
-    }
-
-    /// Every library title (`books.uuid`) whose listing sells `edition_id`:
-    /// the account rows that share the edition's files.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a read fails.
-    pub async fn books_of_edition(&self, edition_id: &str) -> Result<BTreeSet<String>> {
-        let mut uuids = BTreeSet::new();
-        for listing in self.listing_refs_of_edition(edition_id).await? {
-            uuids.extend(
-                self.books_of_listing(&listing)
-                    .await?
-                    .into_iter()
-                    .map(|b| b.uuid),
-            );
-        }
-        Ok(uuids)
     }
 
     /// Records that `owner` writes `key` on `destination` (an acquire run

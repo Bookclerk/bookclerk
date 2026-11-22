@@ -47,9 +47,9 @@ async fn library_with_a_copy(store: &LibraryStore) -> i64 {
         )
         .await
         .unwrap();
-    let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+    let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
     let owner = store
-        .file_owner_of_book(&record.uuid)
+        .file_owner_of_holding(&record.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -206,6 +206,77 @@ async fn a_member_may_take_an_edition_another_member_provided() {
         .id;
     add_branch(&store, "sams-branch", sam).await;
     assert_eq!(planned(&store, "sams-branch").await.person, sam);
+}
+
+/// A person's patron scope decides which copies they may take and play:
+/// a branch whose owner's scope hides the book is not found, its owner
+/// may not play it, and a person keeps their own books whatever their
+/// scope says. Under every database profile.
+#[tokio::test]
+async fn a_patron_scope_decides_the_copies_a_person_may_take_under_every_profile() {
+    use crate::control_plane::{set_patron_scope, PatronScope, RuleEffect, ScopeField, ScopeRule};
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let riley = library_with_a_copy(&store).await;
+        let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
+        let work = store
+            .work_of_holding(&record.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        store.refresh_library_works(&[work]).await.unwrap();
+        let sam = store
+            .create_user(UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap()
+            .id;
+        add_branch(&store, "sams-branch", sam).await;
+        add_branch(&store, BRANCH, riley).await;
+        let no_ann = PatronScope {
+            rules: vec![ScopeRule {
+                field: ScopeField::Author,
+                value: "Ann Author".into(),
+                effect: RuleEffect::Exclude,
+            }],
+            explicit: Default::default(),
+        };
+        let edition = planned(&store, "sams-branch").await.edition_id;
+        for person in [riley, sam] {
+            set_patron_scope(&store, person, Some(no_ann.clone()))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            plan_copy(&store, CopyHolder::Node("sams-branch"), listing(ASIN))
+                .await
+                .unwrap(),
+            CopyPlanned::NotFound,
+            "{name}: outside Sam's scope"
+        );
+        assert!(
+            plan_playback(&store, sam, &edition)
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: Sam may not play it either"
+        );
+        assert_eq!(planned(&store, BRANCH).await.person, riley, "{name}");
+        assert!(
+            plan_playback(&store, riley, &edition)
+                .await
+                .unwrap()
+                .is_some(),
+            "{name}: Riley's own book passes whatever the scope says"
+        );
+        set_patron_scope(&store, sam, None).await.unwrap();
+        assert_eq!(
+            planned(&store, "sams-branch").await.person,
+            sam,
+            "{name}: back to the library default, which hides nothing"
+        );
+    }
 }
 
 /// Anyone who is not a trusted branch is refused; an edition the library
@@ -627,9 +698,9 @@ async fn a_destination_with_its_own_naming_is_planned_from_its_own_primary() {
     let store = memory(Profile::ALL[0]).await.into_store();
     let riley = library_with_a_copy(&store).await;
     add_branch(&store, BRANCH, riley).await;
-    let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+    let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
     let owner = store
-        .file_owner_of_book(&record.uuid)
+        .file_owner_of_holding(&record.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -688,9 +759,9 @@ async fn only_the_primary_audios_own_copy_is_offered() {
     let store = memory(Profile::ALL[0]).await.into_store();
     let riley = library_with_a_copy(&store).await;
     add_branch(&store, BRANCH, riley).await;
-    let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+    let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
     let owner = store
-        .file_owner_of_book(&record.uuid)
+        .file_owner_of_holding(&record.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -772,9 +843,9 @@ async fn a_person_is_planned_an_editions_audio_to_play_under_every_profile() {
     for profile in Profile::ALL {
         let store = memory(profile).await.into_store();
         let riley = library_with_a_copy(&store).await;
-        let record = store.get_book(ASIN, "riley-acct").await.unwrap().unwrap();
+        let record = store.held_title(ASIN, "riley-acct").await.unwrap().unwrap();
         let edition = store
-            .edition_of_book(&record.uuid)
+            .edition_of_holding(&record.holding_id)
             .await
             .unwrap()
             .expect("an edition");
@@ -856,7 +927,7 @@ async fn a_person_is_planned_an_editions_audio_to_play_under_every_profile() {
         // A second part joins the edition: it is a track after the
         // primary, and the earlier digest no longer matches.
         let owner = store
-            .file_owner_of_book(&record.uuid)
+            .file_owner_of_holding(&record.holding_id)
             .await
             .unwrap()
             .unwrap();

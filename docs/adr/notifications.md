@@ -1,6 +1,6 @@
 # ADR: Notifications are routed by the host and sent by plugins
 
-- **Status:** Accepted; not yet built
+- **Status:** Accepted; partly built (routing, delivery log, inbox and web API; no providers or account mail yet)
 - **Date:** 2026-11-20
 - **Related:** [Event delivery model](event-delivery-model.md),
   [First-party identity](first-party-identity.md),

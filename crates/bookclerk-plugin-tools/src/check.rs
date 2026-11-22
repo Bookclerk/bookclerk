@@ -351,7 +351,7 @@ pub fn check_main_module_source(
             "{main_name}: `BookclerkPlugin` was removed in api_version 3; extend `{BASE}` \
              (default export with event()/job() triggers) and export named entrypoint classes \
              (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers, \
-             MetadataFiles, Notifier)"
+             MetadataFiles, Notifier, Ai)"
         )));
     }
     match language {

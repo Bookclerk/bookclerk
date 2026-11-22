@@ -94,6 +94,8 @@ pub enum Entrypoint {
     Notifier,
     /// Public address provider: `start`, `health` and `stop` (`Ingress`).
     Ingress,
+    /// Model serving: `models` and `run` (`AiModels`).
+    Ai,
 }
 
 impl Entrypoint {
@@ -112,6 +114,7 @@ impl Entrypoint {
             Self::MetadataFiles => "metadataFiles",
             Self::Notifier => "notifier",
             Self::Ingress => "ingress",
+            Self::Ai => "ai",
         }
     }
 
@@ -130,6 +133,7 @@ impl Entrypoint {
             "metadataFiles" => Some(Self::MetadataFiles),
             "notifier" => Some(Self::Notifier),
             "ingress" => Some(Self::Ingress),
+            "ai" => Some(Self::Ai),
             _ => None,
         }
     }
@@ -149,6 +153,7 @@ impl From<Entrypoint> for plugin_capnp::Entrypoint {
             Entrypoint::MetadataFiles => Self::MetadataFiles,
             Entrypoint::Notifier => Self::Notifier,
             Entrypoint::Ingress => Self::Ingress,
+            Entrypoint::Ai => Self::Ai,
         }
     }
 }
@@ -167,6 +172,7 @@ impl From<plugin_capnp::Entrypoint> for Entrypoint {
             plugin_capnp::Entrypoint::MetadataFiles => Self::MetadataFiles,
             plugin_capnp::Entrypoint::Notifier => Self::Notifier,
             plugin_capnp::Entrypoint::Ingress => Self::Ingress,
+            plugin_capnp::Entrypoint::Ai => Self::Ai,
         }
     }
 }
@@ -1673,6 +1679,102 @@ impl From<plugin_capnp::NotifyDestinationKind> for NotifyDestinationKind {
     }
 }
 
+/// What a model does. A model has exactly one task, and the task fixes the
+/// shape of `AiRunParams.input` and of the reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiTask {
+    /// Turns each text into one vector; similar texts get nearby vectors.
+    #[default]
+    TextEmbeddings,
+}
+
+impl AiTask {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::TextEmbeddings => "textEmbeddings",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "textEmbeddings" => Some(Self::TextEmbeddings),
+            _ => None,
+        }
+    }
+}
+
+impl From<AiTask> for plugin_capnp::AiTask {
+    fn from(value: AiTask) -> Self {
+        match value {
+            AiTask::TextEmbeddings => Self::TextEmbeddings,
+        }
+    }
+}
+
+impl From<plugin_capnp::AiTask> for AiTask {
+    fn from(value: plugin_capnp::AiTask) -> Self {
+        match value {
+            plugin_capnp::AiTask::TextEmbeddings => Self::TextEmbeddings,
+        }
+    }
+}
+
+/// What a text is to an embedding model. Some models embed a search query
+/// differently from the documents it is matched against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiTextRole {
+    /// Stored content: a description, a passage.
+    #[default]
+    Document,
+    /// A search query matched against documents.
+    Query,
+}
+
+impl AiTextRole {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Document => "document",
+            Self::Query => "query",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "document" => Some(Self::Document),
+            "query" => Some(Self::Query),
+            _ => None,
+        }
+    }
+}
+
+impl From<AiTextRole> for plugin_capnp::AiTextRole {
+    fn from(value: AiTextRole) -> Self {
+        match value {
+            AiTextRole::Document => Self::Document,
+            AiTextRole::Query => Self::Query,
+        }
+    }
+}
+
+impl From<plugin_capnp::AiTextRole> for AiTextRole {
+    fn from(value: plugin_capnp::AiTextRole) -> Self {
+        match value {
+            plugin_capnp::AiTextRole::Document => Self::Document,
+            plugin_capnp::AiTextRole::Query => Self::Query,
+        }
+    }
+}
+
 /// One declared event consumer: a `\[\[events.consumers\]\]` row the default
 /// entrypoint's `event(batch)` handler accepts.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1728,6 +1830,11 @@ pub struct PluginCapabilities {
     /// `Sockets` binding and may export a `SocketHandler` for pushed messages.
     #[serde(default)]
     pub sockets: bool,
+    /// True when the guest declared `\[\[webhooks\]\]`: it receives the host-served
+    /// `Webhooks` binding and may export a `WebhookHandler` the host wakes when
+    /// it stores deliveries.
+    #[serde(default)]
+    pub webhooks: bool,
 }
 
 /// Catalog behaviours a storefront declares in `describe()`. Catalog search
@@ -3964,6 +4071,137 @@ pub struct NotifyRaised {
     pub notification_id: String,
 }
 
+/// One model an `ai` plugin serves.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModel {
+    /// Model id within the plugin (`bekko-a8m`): lowercase letters, digits,
+    /// `.`, `_` and `-`. Callers name it `@<plugin id>/<model id>`; the whole
+    /// name is at most `maxAiModelNameBytes`.
+    #[serde(default)]
+    pub model_id: String,
+    /// The model's one task.
+    #[serde(default)]
+    pub task: AiTask,
+    /// Digest of everything that decides the output: weights, tokenizer and
+    /// the language packs loaded. Outputs are comparable only when it matches.
+    #[serde(default)]
+    pub revision: String,
+    /// Text embeddings: numbers per vector, at most `maxAiEmbedDimensions`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<u32>,
+    /// Text embeddings: tokens read from one text; the rest is cut off.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// BCP 47 tags of the languages the model is loaded for, at most
+    /// `maxAiLanguages`; empty when it has no language packs.
+    #[serde(default)]
+    pub languages: Vec<String>,
+}
+
+/// Success payload of `AiModels.models`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelList {
+    /// Served models, at most `maxAiModels`, each `modelId` once.
+    #[serde(default)]
+    pub models: Vec<AiModel>,
+}
+
+/// One text to embed.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiEmbedText {
+    /// The text, at most `maxAiEmbedTextBytes`; never empty.
+    #[serde(default)]
+    pub text: String,
+    /// Document or query.
+    #[serde(default)]
+    pub role: AiTextRole,
+}
+
+/// Input of the `textEmbeddings` task.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTextEmbeddingsInput {
+    /// Texts to embed, 1 to `maxAiEmbedTexts`.
+    #[serde(default)]
+    pub texts: Vec<AiEmbedText>,
+}
+
+/// Output of the `textEmbeddings` task.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTextEmbeddingsOutput {
+    /// Numbers per vector; equals the model's `AiModel.dimensions`.
+    #[serde(default)]
+    pub dimensions: u32,
+    /// One vector per input text, in input order: `dimensions` little-endian
+    /// IEEE 754 32-bit floats each, concatenated. Every number is finite.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub vectors: Vec<u8>,
+    /// `AiModel.revision` of the model that made the vectors.
+    #[serde(default)]
+    pub revision: String,
+    /// Indexes (into the input texts, ascending, each once) of the texts
+    /// where the tokenizer met text outside the loaded language packs and
+    /// fell back to smaller pieces; such a vector should be recomputed after
+    /// the missing pack is added.
+    #[serde(default)]
+    pub fallbacks: Vec<u32>,
+}
+
+/// Input to one model run: one field per `AiTask`, and exactly one is set
+/// (the others are null). A new task appends a field.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiInput {
+    /// `textEmbeddings` task.
+    #[serde(default)]
+    pub text_embeddings: AiTextEmbeddingsInput,
+}
+
+/// Output of one model run: one field per `AiTask`, and exactly one is set
+/// (the others are null). A new task appends a field.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiOutput {
+    /// `textEmbeddings` task.
+    #[serde(default)]
+    pub text_embeddings: AiTextEmbeddingsOutput,
+}
+
+/// Params of `AiModels.run` and `AiRunner.run`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRunParams {
+    /// On `AiModels.run`, the plugin's own `AiModel.modelId`. On
+    /// `AiRunner.run`, `@<plugin id>/<model id>` or a task alias
+    /// (`@library/text-embeddings`: the model the library chose for the task).
+    #[serde(default)]
+    pub model: String,
+    /// The input; the field set must match the model's task.
+    #[serde(default)]
+    pub input: AiInput,
+}
+
+/// Success payload of a model run.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRunOk {
+    /// The output; the field set matches the model's task.
+    #[serde(default)]
+    pub output: AiOutput,
+    /// Full name of the model that ran (`@<plugin id>/<model id>`), so a
+    /// caller that used a task alias knows what answered. Set by the host on
+    /// `AiRunner.run`; empty on `AiModels.run`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 /// One WebSocket message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
@@ -4151,6 +4389,82 @@ pub struct IngressStarted {
     pub origin: String,
 }
 
+/// Success payload of `Webhooks.url`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookUrl {
+    /// Absolute `https://` URL; empty when the library cannot be reached from
+    /// the Internet or webhooks are turned off, and the plugin should use its
+    /// fallback.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Arguments of `Webhooks.pull`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookPullRequest {
+    /// `\[\[webhooks\]\]` name.
+    #[serde(default)]
+    pub name: String,
+    /// Most deliveries to lease, 1 to `maxWebhookPullBatch`.
+    #[serde(default)]
+    pub batch_size: u32,
+    /// How long leased deliveries stay hidden from the next pull, in
+    /// milliseconds, at most `maxWebhookVisibilityMs`; zero means one minute.
+    #[serde(default)]
+    pub visibility_timeout_ms: u32,
+}
+
+/// One request header kept with a delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookHeader {
+    /// Lowercase header name, one the row's `headers` names or `content-type`.
+    #[serde(default)]
+    pub name: String,
+    /// Header value as received.
+    #[serde(default)]
+    pub value: String,
+}
+
+/// One stored request, leased to the guest.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDelivery {
+    /// Lease id for `ack`, at most `maxWebhookLeaseIdBytes`; a new one each
+    /// time the delivery is pulled.
+    #[serde(default)]
+    pub lease_id: String,
+    /// When the host stored the request, in Unix milliseconds.
+    #[serde(default)]
+    pub received_at_unix_ms: u64,
+    /// How many times this delivery has been pulled, counting this one.
+    #[serde(default)]
+    pub attempt: u32,
+    /// Kept request headers, in the order the row names them.
+    #[serde(default)]
+    pub headers: Vec<WebhookHeader>,
+    /// Request body as received, at most the row's `max_body_bytes`.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub body: Vec<u8>,
+}
+
+/// Success payload of `Webhooks.pull`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookPullPage {
+    /// Leased deliveries, oldest first.
+    #[serde(default)]
+    pub deliveries: Vec<WebhookDelivery>,
+    /// True when the host dropped deliveries for this webhook since the last
+    /// pull (the waiting cap was full or a delivery expired unacknowledged):
+    /// the guest should treat what it follows as incomplete.
+    #[serde(default)]
+    pub missed: bool,
+}
+
 /// Success payload of `Ingress.health`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -4162,6 +4476,33 @@ pub struct IngressHealth {
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+/// Arguments of `Webhooks.ack`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookAckRequest {
+    /// `\[\[webhooks\]\]` name.
+    #[serde(default)]
+    pub name: String,
+    /// Leases whose deliveries are done and are deleted.
+    #[serde(default)]
+    pub acks: Vec<String>,
+    /// Leases whose deliveries the next pull offers again.
+    #[serde(default)]
+    pub retries: Vec<String>,
+}
+
+/// Argument of `WebhookHandler.delivered`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDelivered {
+    /// `\[\[webhooks\]\]` name.
+    #[serde(default)]
+    pub name: String,
+    /// Deliveries waiting for this webhook when the host called.
+    #[serde(default)]
+    pub waiting: u32,
 }
 
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
@@ -4271,6 +4612,7 @@ pub fn write_plugin_capabilities(
         }
     }
     b.set_sockets(v.sockets);
+    b.set_webhooks(v.webhooks);
     Ok(())
 }
 
@@ -4301,6 +4643,7 @@ pub fn read_plugin_capabilities(
         queue_producers: read_text_list(r.get_queue_producers()?)?,
         crons: read_text_list(r.get_crons()?)?,
         sockets: r.get_sockets(),
+        webhooks: r.get_webhooks(),
     })
 }
 
@@ -9244,6 +9587,352 @@ pub fn read_notify_raise_reply(
     }
 }
 
+/// Encode a [`AiModel`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ai_model(
+    mut b: plugin_capnp::ai_model::Builder<'_>,
+    v: &AiModel,
+) -> capnp::Result<()> {
+    b.set_model_id(&v.model_id);
+    b.set_task(v.task.into());
+    b.set_revision(&v.revision);
+    if let Some(value) = v.dimensions {
+        b.set_dimensions(value);
+    }
+    if let Some(value) = v.max_tokens {
+        b.set_max_tokens(value);
+    }
+    {
+        let mut items = b.reborrow().init_languages(list_len(v.languages.len())?);
+        for (i, item) in v.languages.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`AiModel`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ai_model(r: plugin_capnp::ai_model::Reader<'_>) -> capnp::Result<AiModel> {
+    Ok(AiModel {
+        model_id: r.get_model_id()?.to_string()?,
+        task: r.get_task()?.into(),
+        revision: r.get_revision()?.to_string()?,
+        dimensions: opt_num(r.get_dimensions()),
+        max_tokens: opt_num(r.get_max_tokens()),
+        languages: read_text_list(r.get_languages()?)?,
+    })
+}
+
+/// Encode a [`AiModelList`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ai_model_list(
+    mut b: plugin_capnp::ai_model_list::Builder<'_>,
+    v: &AiModelList,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_models(list_len(v.models.len())?);
+        for (i, item) in v.models.iter().enumerate() {
+            write_ai_model(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`AiModelList`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ai_model_list(
+    r: plugin_capnp::ai_model_list::Reader<'_>,
+) -> capnp::Result<AiModelList> {
+    Ok(AiModelList {
+        models: r
+            .get_models()?
+            .iter()
+            .map(|item| read_ai_model(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a `AiModelsReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_ai_models_reply(
+    b: plugin_capnp::ai_models_reply::Builder<'_>,
+    v: &Result<AiModelList, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_ai_model_list(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `AiModelsReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_ai_models_reply(
+    r: plugin_capnp::ai_models_reply::Reader<'_>,
+) -> capnp::Result<Result<AiModelList, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::ai_models_reply::Ok(ok) => Ok(Ok(read_ai_model_list(ok?)?)),
+        plugin_capnp::ai_models_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`AiEmbedText`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ai_embed_text(
+    mut b: plugin_capnp::ai_embed_text::Builder<'_>,
+    v: &AiEmbedText,
+) -> capnp::Result<()> {
+    b.set_text(&v.text);
+    b.set_role(v.role.into());
+    Ok(())
+}
+
+/// Decode a [`AiEmbedText`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ai_embed_text(
+    r: plugin_capnp::ai_embed_text::Reader<'_>,
+) -> capnp::Result<AiEmbedText> {
+    Ok(AiEmbedText {
+        text: r.get_text()?.to_string()?,
+        role: r.get_role()?.into(),
+    })
+}
+
+/// Encode a [`AiTextEmbeddingsInput`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ai_text_embeddings_input(
+    mut b: plugin_capnp::ai_text_embeddings_input::Builder<'_>,
+    v: &AiTextEmbeddingsInput,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_texts(list_len(v.texts.len())?);
+        for (i, item) in v.texts.iter().enumerate() {
+            write_ai_embed_text(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`AiTextEmbeddingsInput`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ai_text_embeddings_input(
+    r: plugin_capnp::ai_text_embeddings_input::Reader<'_>,
+) -> capnp::Result<AiTextEmbeddingsInput> {
+    Ok(AiTextEmbeddingsInput {
+        texts: r
+            .get_texts()?
+            .iter()
+            .map(|item| read_ai_embed_text(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a [`AiTextEmbeddingsOutput`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ai_text_embeddings_output(
+    mut b: plugin_capnp::ai_text_embeddings_output::Builder<'_>,
+    v: &AiTextEmbeddingsOutput,
+) -> capnp::Result<()> {
+    b.set_dimensions(v.dimensions);
+    b.set_vectors(&v.vectors);
+    b.set_revision(&v.revision);
+    {
+        let mut items = b.reborrow().init_fallbacks(list_len(v.fallbacks.len())?);
+        for (i, item) in v.fallbacks.iter().enumerate() {
+            items.set(list_len(i)?, *item);
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`AiTextEmbeddingsOutput`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ai_text_embeddings_output(
+    r: plugin_capnp::ai_text_embeddings_output::Reader<'_>,
+) -> capnp::Result<AiTextEmbeddingsOutput> {
+    Ok(AiTextEmbeddingsOutput {
+        dimensions: r.get_dimensions(),
+        vectors: r.get_vectors()?.to_vec(),
+        revision: r.get_revision()?.to_string()?,
+        fallbacks: r.get_fallbacks()?.iter().collect::<Vec<_>>(),
+    })
+}
+
+/// Encode a [`AiInput`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ai_input(
+    mut b: plugin_capnp::ai_input::Builder<'_>,
+    v: &AiInput,
+) -> capnp::Result<()> {
+    write_ai_text_embeddings_input(b.reborrow().init_text_embeddings(), &v.text_embeddings)?;
+    Ok(())
+}
+
+/// Decode a [`AiInput`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ai_input(r: plugin_capnp::ai_input::Reader<'_>) -> capnp::Result<AiInput> {
+    Ok(AiInput {
+        text_embeddings: read_ai_text_embeddings_input(r.get_text_embeddings()?)?,
+    })
+}
+
+/// Encode a [`AiOutput`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ai_output(
+    mut b: plugin_capnp::ai_output::Builder<'_>,
+    v: &AiOutput,
+) -> capnp::Result<()> {
+    write_ai_text_embeddings_output(b.reborrow().init_text_embeddings(), &v.text_embeddings)?;
+    Ok(())
+}
+
+/// Decode a [`AiOutput`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ai_output(r: plugin_capnp::ai_output::Reader<'_>) -> capnp::Result<AiOutput> {
+    Ok(AiOutput {
+        text_embeddings: read_ai_text_embeddings_output(r.get_text_embeddings()?)?,
+    })
+}
+
+/// Encode a [`AiRunParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ai_run_params(
+    mut b: plugin_capnp::ai_run_params::Builder<'_>,
+    v: &AiRunParams,
+) -> capnp::Result<()> {
+    b.set_model(&v.model);
+    write_ai_input(b.reborrow().init_input(), &v.input)?;
+    Ok(())
+}
+
+/// Decode a [`AiRunParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ai_run_params(
+    r: plugin_capnp::ai_run_params::Reader<'_>,
+) -> capnp::Result<AiRunParams> {
+    Ok(AiRunParams {
+        model: r.get_model()?.to_string()?,
+        input: read_ai_input(r.get_input()?)?,
+    })
+}
+
+/// Encode a [`AiRunOk`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_ai_run_ok(
+    mut b: plugin_capnp::ai_run_ok::Builder<'_>,
+    v: &AiRunOk,
+) -> capnp::Result<()> {
+    write_ai_output(b.reborrow().init_output(), &v.output)?;
+    if let Some(value) = &v.model {
+        b.set_model(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`AiRunOk`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_ai_run_ok(r: plugin_capnp::ai_run_ok::Reader<'_>) -> capnp::Result<AiRunOk> {
+    Ok(AiRunOk {
+        output: read_ai_output(r.get_output()?)?,
+        model: opt_text(r.get_model()?)?,
+    })
+}
+
+/// Encode a `AiRunReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_ai_run_reply(
+    b: plugin_capnp::ai_run_reply::Builder<'_>,
+    v: &Result<AiRunOk, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_ai_run_ok(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `AiRunReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_ai_run_reply(
+    r: plugin_capnp::ai_run_reply::Reader<'_>,
+) -> capnp::Result<Result<AiRunOk, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::ai_run_reply::Ok(ok) => Ok(Ok(read_ai_run_ok(ok?)?)),
+        plugin_capnp::ai_run_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
 /// Encode a `SocketFrame` union.
 ///
 /// # Errors
@@ -9773,6 +10462,234 @@ pub fn read_ingress_start_reply(
     }
 }
 
+/// Encode a [`WebhookUrl`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_url(
+    mut b: plugin_capnp::webhook_url::Builder<'_>,
+    v: &WebhookUrl,
+) -> capnp::Result<()> {
+    if let Some(value) = &v.url {
+        b.set_url(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`WebhookUrl`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_url(r: plugin_capnp::webhook_url::Reader<'_>) -> capnp::Result<WebhookUrl> {
+    Ok(WebhookUrl {
+        url: opt_text(r.get_url()?)?,
+    })
+}
+
+/// Encode a `WebhookUrlReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_webhook_url_reply(
+    b: plugin_capnp::webhook_url_reply::Builder<'_>,
+    v: &Result<WebhookUrl, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_webhook_url(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `WebhookUrlReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_webhook_url_reply(
+    r: plugin_capnp::webhook_url_reply::Reader<'_>,
+) -> capnp::Result<Result<WebhookUrl, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::webhook_url_reply::Ok(ok) => Ok(Ok(read_webhook_url(ok?)?)),
+        plugin_capnp::webhook_url_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`WebhookPullRequest`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_pull_request(
+    mut b: plugin_capnp::webhook_pull_request::Builder<'_>,
+    v: &WebhookPullRequest,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_batch_size(v.batch_size);
+    b.set_visibility_timeout_ms(v.visibility_timeout_ms);
+    Ok(())
+}
+
+/// Decode a [`WebhookPullRequest`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_pull_request(
+    r: plugin_capnp::webhook_pull_request::Reader<'_>,
+) -> capnp::Result<WebhookPullRequest> {
+    Ok(WebhookPullRequest {
+        name: r.get_name()?.to_string()?,
+        batch_size: r.get_batch_size(),
+        visibility_timeout_ms: r.get_visibility_timeout_ms(),
+    })
+}
+
+/// Encode a [`WebhookHeader`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_header(
+    mut b: plugin_capnp::webhook_header::Builder<'_>,
+    v: &WebhookHeader,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_value(&v.value);
+    Ok(())
+}
+
+/// Decode a [`WebhookHeader`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_header(
+    r: plugin_capnp::webhook_header::Reader<'_>,
+) -> capnp::Result<WebhookHeader> {
+    Ok(WebhookHeader {
+        name: r.get_name()?.to_string()?,
+        value: r.get_value()?.to_string()?,
+    })
+}
+
+/// Encode a [`WebhookDelivery`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_delivery(
+    mut b: plugin_capnp::webhook_delivery::Builder<'_>,
+    v: &WebhookDelivery,
+) -> capnp::Result<()> {
+    b.set_lease_id(&v.lease_id);
+    b.set_received_at_unix_ms(v.received_at_unix_ms);
+    b.set_attempt(v.attempt);
+    {
+        let mut items = b.reborrow().init_headers(list_len(v.headers.len())?);
+        for (i, item) in v.headers.iter().enumerate() {
+            write_webhook_header(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    b.set_body(&v.body);
+    Ok(())
+}
+
+/// Decode a [`WebhookDelivery`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_delivery(
+    r: plugin_capnp::webhook_delivery::Reader<'_>,
+) -> capnp::Result<WebhookDelivery> {
+    Ok(WebhookDelivery {
+        lease_id: r.get_lease_id()?.to_string()?,
+        received_at_unix_ms: r.get_received_at_unix_ms(),
+        attempt: r.get_attempt(),
+        headers: r
+            .get_headers()?
+            .iter()
+            .map(|item| read_webhook_header(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        body: r.get_body()?.to_vec(),
+    })
+}
+
+/// Encode a [`WebhookPullPage`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_pull_page(
+    mut b: plugin_capnp::webhook_pull_page::Builder<'_>,
+    v: &WebhookPullPage,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_deliveries(list_len(v.deliveries.len())?);
+        for (i, item) in v.deliveries.iter().enumerate() {
+            write_webhook_delivery(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    b.set_missed(v.missed);
+    Ok(())
+}
+
+/// Decode a [`WebhookPullPage`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_pull_page(
+    r: plugin_capnp::webhook_pull_page::Reader<'_>,
+) -> capnp::Result<WebhookPullPage> {
+    Ok(WebhookPullPage {
+        deliveries: r
+            .get_deliveries()?
+            .iter()
+            .map(|item| read_webhook_delivery(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        missed: r.get_missed(),
+    })
+}
+
+/// Encode a `WebhookPullReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_webhook_pull_reply(
+    b: plugin_capnp::webhook_pull_reply::Builder<'_>,
+    v: &Result<WebhookPullPage, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_webhook_pull_page(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `WebhookPullReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_webhook_pull_reply(
+    r: plugin_capnp::webhook_pull_reply::Reader<'_>,
+) -> capnp::Result<Result<WebhookPullPage, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::webhook_pull_reply::Ok(ok) => Ok(Ok(read_webhook_pull_page(ok?)?)),
+        plugin_capnp::webhook_pull_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
 /// Encode a [`IngressHealth`] onto a Cap'n Proto builder.
 ///
 /// # Errors
@@ -9835,9 +10752,77 @@ pub fn read_ingress_health_reply(
     }
 }
 
+/// Encode a [`WebhookAckRequest`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_ack_request(
+    mut b: plugin_capnp::webhook_ack_request::Builder<'_>,
+    v: &WebhookAckRequest,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    {
+        let mut items = b.reborrow().init_acks(list_len(v.acks.len())?);
+        for (i, item) in v.acks.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    {
+        let mut items = b.reborrow().init_retries(list_len(v.retries.len())?);
+        for (i, item) in v.retries.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`WebhookAckRequest`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_ack_request(
+    r: plugin_capnp::webhook_ack_request::Reader<'_>,
+) -> capnp::Result<WebhookAckRequest> {
+    Ok(WebhookAckRequest {
+        name: r.get_name()?.to_string()?,
+        acks: read_text_list(r.get_acks()?)?,
+        retries: read_text_list(r.get_retries()?)?,
+    })
+}
+
+/// Encode a [`WebhookDelivered`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_webhook_delivered(
+    mut b: plugin_capnp::webhook_delivered::Builder<'_>,
+    v: &WebhookDelivered,
+) -> capnp::Result<()> {
+    b.set_name(&v.name);
+    b.set_waiting(v.waiting);
+    Ok(())
+}
+
+/// Decode a [`WebhookDelivered`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_webhook_delivered(
+    r: plugin_capnp::webhook_delivered::Reader<'_>,
+) -> capnp::Result<WebhookDelivered> {
+    Ok(WebhookDelivered {
+        name: r.get_name()?.to_string()?,
+        waiting: r.get_waiting(),
+    })
+}
+
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 150;
+pub const READ_ANY_COUNT: u8 = 170;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -10452,85 +11437,171 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         132 => {
-            let _ =
-                read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
+            let _ = read_ai_model(reader.get_root::<plugin_capnp::ai_model::Reader<'_>>()?)?;
         }
         133 => {
             let _ =
-                read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
+                read_ai_model_list(reader.get_root::<plugin_capnp::ai_model_list::Reader<'_>>()?)?;
         }
         134 => {
+            let _ = read_ai_models_reply(
+                reader.get_root::<plugin_capnp::ai_models_reply::Reader<'_>>()?,
+            )?;
+        }
+        135 => {
+            let _ =
+                read_ai_embed_text(reader.get_root::<plugin_capnp::ai_embed_text::Reader<'_>>()?)?;
+        }
+        136 => {
+            let _ = read_ai_text_embeddings_input(
+                reader.get_root::<plugin_capnp::ai_text_embeddings_input::Reader<'_>>()?,
+            )?;
+        }
+        137 => {
+            let _ = read_ai_text_embeddings_output(
+                reader.get_root::<plugin_capnp::ai_text_embeddings_output::Reader<'_>>()?,
+            )?;
+        }
+        138 => {
+            let _ = read_ai_input(reader.get_root::<plugin_capnp::ai_input::Reader<'_>>()?)?;
+        }
+        139 => {
+            let _ = read_ai_output(reader.get_root::<plugin_capnp::ai_output::Reader<'_>>()?)?;
+        }
+        140 => {
+            let _ =
+                read_ai_run_params(reader.get_root::<plugin_capnp::ai_run_params::Reader<'_>>()?)?;
+        }
+        141 => {
+            let _ = read_ai_run_ok(reader.get_root::<plugin_capnp::ai_run_ok::Reader<'_>>()?)?;
+        }
+        142 => {
+            let _ =
+                read_ai_run_reply(reader.get_root::<plugin_capnp::ai_run_reply::Reader<'_>>()?)?;
+        }
+        143 => {
+            let _ =
+                read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
+        }
+        144 => {
+            let _ =
+                read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
+        }
+        145 => {
             let _ = read_socket_auto_response(
                 reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
             )?;
         }
-        135 => {
+        146 => {
             let _ = read_socket_connect_request(
                 reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
             )?;
         }
-        136 => {
+        147 => {
             let _ = read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
         }
-        137 => {
+        148 => {
             let _ = read_socket_connect_reply(
                 reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
             )?;
         }
-        138 => {
+        149 => {
             let _ = read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
         }
-        139 => {
+        150 => {
             let _ = read_socket_list_reply(
                 reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
             )?;
         }
-        140 => {
+        151 => {
             let _ = read_socket_message_reply(
                 reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
             )?;
         }
-        141 => {
+        152 => {
             let _ = read_socket_message_ok(
                 reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
             )?;
         }
-        142 => {
+        153 => {
             let _ = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
         }
-        143 => {
+        154 => {
             let _ =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
         }
-        144 => {
+        155 => {
             let _ =
                 read_origin_header(reader.get_root::<plugin_capnp::origin_header::Reader<'_>>()?)?;
         }
-        145 => {
+        156 => {
             let _ = read_origin_request(
                 reader.get_root::<plugin_capnp::origin_request::Reader<'_>>()?,
             )?;
         }
-        146 => {
+        157 => {
             let _ = read_ingress_started(
                 reader.get_root::<plugin_capnp::ingress_started::Reader<'_>>()?,
             )?;
         }
-        147 => {
+        158 => {
             let _ = read_ingress_start_reply(
                 reader.get_root::<plugin_capnp::ingress_start_reply::Reader<'_>>()?,
             )?;
         }
-        148 => {
+        159 => {
+            let _ = read_webhook_url(reader.get_root::<plugin_capnp::webhook_url::Reader<'_>>()?)?;
+        }
+        160 => {
+            let _ = read_webhook_url_reply(
+                reader.get_root::<plugin_capnp::webhook_url_reply::Reader<'_>>()?,
+            )?;
+        }
+        161 => {
+            let _ = read_webhook_pull_request(
+                reader.get_root::<plugin_capnp::webhook_pull_request::Reader<'_>>()?,
+            )?;
+        }
+        162 => {
+            let _ = read_webhook_header(
+                reader.get_root::<plugin_capnp::webhook_header::Reader<'_>>()?,
+            )?;
+        }
+        163 => {
+            let _ = read_webhook_delivery(
+                reader.get_root::<plugin_capnp::webhook_delivery::Reader<'_>>()?,
+            )?;
+        }
+        164 => {
+            let _ = read_webhook_pull_page(
+                reader.get_root::<plugin_capnp::webhook_pull_page::Reader<'_>>()?,
+            )?;
+        }
+        165 => {
+            let _ = read_webhook_pull_reply(
+                reader.get_root::<plugin_capnp::webhook_pull_reply::Reader<'_>>()?,
+            )?;
+        }
+        166 => {
             let _ = read_ingress_health(
                 reader.get_root::<plugin_capnp::ingress_health::Reader<'_>>()?,
             )?;
         }
-        149 => {
+        167 => {
             let _ = read_ingress_health_reply(
                 reader.get_root::<plugin_capnp::ingress_health_reply::Reader<'_>>()?,
+            )?;
+        }
+        168 => {
+            let _ = read_webhook_ack_request(
+                reader.get_root::<plugin_capnp::webhook_ack_request::Reader<'_>>()?,
+            )?;
+        }
+        169 => {
+            let _ = read_webhook_delivered(
+                reader.get_root::<plugin_capnp::webhook_delivered::Reader<'_>>()?,
             )?;
         }
         _ => {
@@ -16220,6 +17291,460 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         132 => {
+            let first = read_ai_model(reader.get_root::<plugin_capnp::ai_model::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_model(
+                message.init_root::<plugin_capnp::ai_model::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_model(again.get_root::<plugin_capnp::ai_model::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_model(
+                    message.init_root::<plugin_capnp::ai_model::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiModel value".to_string(),
+                    ));
+                }
+            }
+        }
+        133 => {
+            let first =
+                read_ai_model_list(reader.get_root::<plugin_capnp::ai_model_list::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_model_list(
+                message.init_root::<plugin_capnp::ai_model_list::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_model_list(again.get_root::<plugin_capnp::ai_model_list::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_model_list(
+                    message.init_root::<plugin_capnp::ai_model_list::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiModelList value".to_string(),
+                    ));
+                }
+            }
+        }
+        134 => {
+            let first = read_ai_models_reply(
+                reader.get_root::<plugin_capnp::ai_models_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_models_reply(
+                message.init_root::<plugin_capnp::ai_models_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_models_reply(again.get_root::<plugin_capnp::ai_models_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_models_reply(
+                    message.init_root::<plugin_capnp::ai_models_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiModelsReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        135 => {
+            let first =
+                read_ai_embed_text(reader.get_root::<plugin_capnp::ai_embed_text::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_embed_text(
+                message.init_root::<plugin_capnp::ai_embed_text::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_embed_text(again.get_root::<plugin_capnp::ai_embed_text::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_embed_text(
+                    message.init_root::<plugin_capnp::ai_embed_text::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiEmbedText value".to_string(),
+                    ));
+                }
+            }
+        }
+        136 => {
+            let first = read_ai_text_embeddings_input(
+                reader.get_root::<plugin_capnp::ai_text_embeddings_input::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_text_embeddings_input(
+                message.init_root::<plugin_capnp::ai_text_embeddings_input::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_text_embeddings_input(
+                    again.get_root::<plugin_capnp::ai_text_embeddings_input::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_text_embeddings_input(
+                    message.init_root::<plugin_capnp::ai_text_embeddings_input::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiTextEmbeddingsInput value".to_string(),
+                    ));
+                }
+            }
+        }
+        137 => {
+            let first = read_ai_text_embeddings_output(
+                reader.get_root::<plugin_capnp::ai_text_embeddings_output::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_text_embeddings_output(
+                message.init_root::<plugin_capnp::ai_text_embeddings_output::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_text_embeddings_output(
+                    again.get_root::<plugin_capnp::ai_text_embeddings_output::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_text_embeddings_output(
+                    message.init_root::<plugin_capnp::ai_text_embeddings_output::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiTextEmbeddingsOutput value".to_string(),
+                    ));
+                }
+            }
+        }
+        138 => {
+            let first = read_ai_input(reader.get_root::<plugin_capnp::ai_input::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_input(
+                message.init_root::<plugin_capnp::ai_input::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_input(again.get_root::<plugin_capnp::ai_input::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_input(
+                    message.init_root::<plugin_capnp::ai_input::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiInput value".to_string(),
+                    ));
+                }
+            }
+        }
+        139 => {
+            let first = read_ai_output(reader.get_root::<plugin_capnp::ai_output::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_output(
+                message.init_root::<plugin_capnp::ai_output::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_output(again.get_root::<plugin_capnp::ai_output::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_output(
+                    message.init_root::<plugin_capnp::ai_output::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiOutput value".to_string(),
+                    ));
+                }
+            }
+        }
+        140 => {
+            let first =
+                read_ai_run_params(reader.get_root::<plugin_capnp::ai_run_params::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_run_params(
+                message.init_root::<plugin_capnp::ai_run_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_run_params(again.get_root::<plugin_capnp::ai_run_params::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_run_params(
+                    message.init_root::<plugin_capnp::ai_run_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiRunParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        141 => {
+            let first = read_ai_run_ok(reader.get_root::<plugin_capnp::ai_run_ok::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_run_ok(
+                message.init_root::<plugin_capnp::ai_run_ok::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_run_ok(again.get_root::<plugin_capnp::ai_run_ok::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_run_ok(
+                    message.init_root::<plugin_capnp::ai_run_ok::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiRunOk value".to_string(),
+                    ));
+                }
+            }
+        }
+        142 => {
+            let first =
+                read_ai_run_reply(reader.get_root::<plugin_capnp::ai_run_reply::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_ai_run_reply(
+                message.init_root::<plugin_capnp::ai_run_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_ai_run_reply(again.get_root::<plugin_capnp::ai_run_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_ai_run_reply(
+                    message.init_root::<plugin_capnp::ai_run_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded AiRunReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        143 => {
             let first =
                 read_socket_frame(reader.get_root::<plugin_capnp::socket_frame::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -16260,7 +17785,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        133 => {
+        144 => {
             let first =
                 read_socket_header(reader.get_root::<plugin_capnp::socket_header::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -16301,7 +17826,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        134 => {
+        145 => {
             let first = read_socket_auto_response(
                 reader.get_root::<plugin_capnp::socket_auto_response::Reader<'_>>()?,
             )?;
@@ -16345,7 +17870,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        135 => {
+        146 => {
             let first = read_socket_connect_request(
                 reader.get_root::<plugin_capnp::socket_connect_request::Reader<'_>>()?,
             )?;
@@ -16389,7 +17914,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        136 => {
+        147 => {
             let first =
                 read_socket_info(reader.get_root::<plugin_capnp::socket_info::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -16430,7 +17955,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        137 => {
+        148 => {
             let first = read_socket_connect_reply(
                 reader.get_root::<plugin_capnp::socket_connect_reply::Reader<'_>>()?,
             )?;
@@ -16474,7 +17999,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        138 => {
+        149 => {
             let first =
                 read_socket_list(reader.get_root::<plugin_capnp::socket_list::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -16515,7 +18040,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        139 => {
+        150 => {
             let first = read_socket_list_reply(
                 reader.get_root::<plugin_capnp::socket_list_reply::Reader<'_>>()?,
             )?;
@@ -16559,7 +18084,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        140 => {
+        151 => {
             let first = read_socket_message_reply(
                 reader.get_root::<plugin_capnp::socket_message_reply::Reader<'_>>()?,
             )?;
@@ -16603,7 +18128,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        141 => {
+        152 => {
             let first = read_socket_message_ok(
                 reader.get_root::<plugin_capnp::socket_message_ok::Reader<'_>>()?,
             )?;
@@ -16647,7 +18172,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        142 => {
+        153 => {
             let first = read_socket_message(
                 reader.get_root::<plugin_capnp::socket_message::Reader<'_>>()?,
             )?;
@@ -16689,7 +18214,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        143 => {
+        154 => {
             let first =
                 read_socket_closed(reader.get_root::<plugin_capnp::socket_closed::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -16730,7 +18255,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        144 => {
+        155 => {
             let first =
                 read_origin_header(reader.get_root::<plugin_capnp::origin_header::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -16771,7 +18296,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        145 => {
+        156 => {
             let first = read_origin_request(
                 reader.get_root::<plugin_capnp::origin_request::Reader<'_>>()?,
             )?;
@@ -16813,7 +18338,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        146 => {
+        157 => {
             let first = read_ingress_started(
                 reader.get_root::<plugin_capnp::ingress_started::Reader<'_>>()?,
             )?;
@@ -16855,7 +18380,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        147 => {
+        158 => {
             let first = read_ingress_start_reply(
                 reader.get_root::<plugin_capnp::ingress_start_reply::Reader<'_>>()?,
             )?;
@@ -16899,7 +18424,310 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        148 => {
+        159 => {
+            let first =
+                read_webhook_url(reader.get_root::<plugin_capnp::webhook_url::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_url(
+                message.init_root::<plugin_capnp::webhook_url::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_url(again.get_root::<plugin_capnp::webhook_url::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_url(
+                    message.init_root::<plugin_capnp::webhook_url::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookUrl value".to_string(),
+                    ));
+                }
+            }
+        }
+        160 => {
+            let first = read_webhook_url_reply(
+                reader.get_root::<plugin_capnp::webhook_url_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_url_reply(
+                message.init_root::<plugin_capnp::webhook_url_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_url_reply(
+                    again.get_root::<plugin_capnp::webhook_url_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_url_reply(
+                    message.init_root::<plugin_capnp::webhook_url_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookUrlReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        161 => {
+            let first = read_webhook_pull_request(
+                reader.get_root::<plugin_capnp::webhook_pull_request::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_pull_request(
+                message.init_root::<plugin_capnp::webhook_pull_request::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_pull_request(
+                    again.get_root::<plugin_capnp::webhook_pull_request::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_pull_request(
+                    message.init_root::<plugin_capnp::webhook_pull_request::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookPullRequest value".to_string(),
+                    ));
+                }
+            }
+        }
+        162 => {
+            let first = read_webhook_header(
+                reader.get_root::<plugin_capnp::webhook_header::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_header(
+                message.init_root::<plugin_capnp::webhook_header::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_header(again.get_root::<plugin_capnp::webhook_header::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_header(
+                    message.init_root::<plugin_capnp::webhook_header::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookHeader value".to_string(),
+                    ));
+                }
+            }
+        }
+        163 => {
+            let first = read_webhook_delivery(
+                reader.get_root::<plugin_capnp::webhook_delivery::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_delivery(
+                message.init_root::<plugin_capnp::webhook_delivery::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_delivery(
+                    again.get_root::<plugin_capnp::webhook_delivery::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_delivery(
+                    message.init_root::<plugin_capnp::webhook_delivery::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookDelivery value".to_string(),
+                    ));
+                }
+            }
+        }
+        164 => {
+            let first = read_webhook_pull_page(
+                reader.get_root::<plugin_capnp::webhook_pull_page::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_pull_page(
+                message.init_root::<plugin_capnp::webhook_pull_page::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_pull_page(
+                    again.get_root::<plugin_capnp::webhook_pull_page::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_pull_page(
+                    message.init_root::<plugin_capnp::webhook_pull_page::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookPullPage value".to_string(),
+                    ));
+                }
+            }
+        }
+        165 => {
+            let first = read_webhook_pull_reply(
+                reader.get_root::<plugin_capnp::webhook_pull_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_pull_reply(
+                message.init_root::<plugin_capnp::webhook_pull_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_pull_reply(
+                    again.get_root::<plugin_capnp::webhook_pull_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_pull_reply(
+                    message.init_root::<plugin_capnp::webhook_pull_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookPullReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        166 => {
             let first = read_ingress_health(
                 reader.get_root::<plugin_capnp::ingress_health::Reader<'_>>()?,
             )?;
@@ -16941,7 +18769,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        149 => {
+        167 => {
             let first = read_ingress_health_reply(
                 reader.get_root::<plugin_capnp::ingress_health_reply::Reader<'_>>()?,
             )?;
@@ -16981,6 +18809,94 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
                         "round trip changed the decoded IngressHealthReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        168 => {
+            let first = read_webhook_ack_request(
+                reader.get_root::<plugin_capnp::webhook_ack_request::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_ack_request(
+                message.init_root::<plugin_capnp::webhook_ack_request::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_ack_request(
+                    again.get_root::<plugin_capnp::webhook_ack_request::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_ack_request(
+                    message.init_root::<plugin_capnp::webhook_ack_request::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookAckRequest value".to_string(),
+                    ));
+                }
+            }
+        }
+        169 => {
+            let first = read_webhook_delivered(
+                reader.get_root::<plugin_capnp::webhook_delivered::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_webhook_delivered(
+                message.init_root::<plugin_capnp::webhook_delivered::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_webhook_delivered(
+                    again.get_root::<plugin_capnp::webhook_delivered::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_webhook_delivered(
+                    message.init_root::<plugin_capnp::webhook_delivered::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded WebhookDelivered value".to_string(),
                     ));
                 }
             }

@@ -268,14 +268,15 @@ async fn job_pin_plugin(store: &LibraryStore, job: &JobRecord) -> Result<Option<
 }
 
 /// True when a `claimant` may run `job` at all, whatever it is trusted
-/// with: a forced, PDF-only or paced acquire runs only on a node that holds
-/// the library database, since the host acquire path does none of them (a
+/// with: a forced, PDF-only, paced or convert acquire runs only on a node
+/// that holds the library database, since the host acquire path does none
+/// of them (a convert reads the edition's recorded files; a
 /// paced acquire checks and records the account's pace in the library
 /// database before each download, `crate::pacing`). An
 /// interlibrary request ([`JobKind::BranchRequest`]) is never run through
 /// the routed claim: only its branch claims it, over `requests.claim`
-/// (`super::claim_branch_requests`). An ingest batch runs only on a node
-/// that holds the library database.
+/// (`super::claim_branch_requests`). An ingest batch and a notification
+/// send run only on a node that holds the library database.
 #[must_use]
 pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
     if job.kind == JobKind::BranchRequest {
@@ -286,9 +287,17 @@ pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
     if job.kind == JobKind::IngestBatch {
         return claimant == Claimant::Local;
     }
+    // A notification send reads the rendered message and the destination's
+    // address from the library database and writes the delivery log.
+    if job.kind == JobKind::NotifySend {
+        return claimant == Claimant::Local;
+    }
     claimant == Claimant::Local
         || !(job.kind == JobKind::Acquire
-            && (job.payload.force || job.payload.pdf_only || job.payload.paced))
+            && (job.payload.force
+                || job.payload.pdf_only
+                || job.payload.paced
+                || job.payload.convert.is_some()))
 }
 
 /// The store accounts a scan or acquire touches: its items.

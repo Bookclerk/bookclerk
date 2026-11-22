@@ -157,6 +157,9 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         }
         "output.download_pdf" => config.output.download_pdf = parse_bool(v).unwrap_or(false),
         "output.create_cue" => config.output.create_cue = parse_bool(v).unwrap_or(false),
+        "output.keep_codec_in_m4b" => {
+            config.output.keep_codec_in_m4b = parse_bool(v).unwrap_or(false);
+        }
         "output.fixup_metadata" => {
             config.output.fixup_metadata = parse_bool(v).unwrap_or(false);
         }
@@ -428,17 +431,6 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 config.events.concurrency = n.max(1);
             }
         }
-        "discovery.embeddings_enabled" => {
-            config.discovery.embeddings_enabled = parse_bool(v).unwrap_or(false);
-        }
-        "discovery.embedding_model" => {
-            config.discovery.embedding_model = v.to_string();
-        }
-        "discovery.embed_intra_threads" => {
-            if let Ok(n) = v.parse::<usize>() {
-                config.discovery.embed_intra_threads = n.max(1);
-            }
-        }
         "discovery.listen_sync_interval_minutes" => {
             if let Ok(n) = v.parse() {
                 config.discovery.listen_sync_interval_minutes = n;
@@ -460,6 +452,11 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "integrations.portal_session_ttl_hours" => {
             if let Ok(n) = v.parse::<u64>() {
                 config.integrations.portal_session_ttl_hours = n.max(1);
+            }
+        }
+        "plugins.webhooks" => {
+            if let Some(exposure) = crate::WebhooksExposure::parse(v) {
+                config.plugins.webhooks = exposure;
             }
         }
         "plugins.isolation" => {
@@ -526,15 +523,6 @@ fn parse_bool(value: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn embeddings_override_defaults_to_off_for_an_unparsable_value() {
-        let mut cfg = Config::default();
-        apply_setting_overrides(&mut cfg, &[("discovery.embeddings_enabled", "true")]);
-        assert!(cfg.discovery.embeddings_enabled);
-        apply_setting_overrides(&mut cfg, &[("discovery.embeddings_enabled", "maybe")]);
-        assert!(!cfg.discovery.embeddings_enabled);
-    }
 
     /// One value per dotted key that differs from the default configuration.
     const NON_DEFAULT_OVERRIDES: &[(&str, &str)] = &[
@@ -613,15 +601,13 @@ mod tests {
         ("events.retention_days", "77"),
         ("events.dead_letter_retention_days", "77"),
         ("events.concurrency", "7"),
-        ("discovery.embeddings_enabled", "true"),
-        ("discovery.embedding_model", "model-77"),
-        ("discovery.embed_intra_threads", "7"),
         ("discovery.listen_sync_interval_minutes", "77"),
         ("discovery.recommend_limit", "77"),
         ("integrations.public_origin", "https://library.example"),
         ("integrations.claim_ticket_ttl_hours", "77"),
         ("integrations.portal_session_ttl_hours", "77"),
         ("plugins.isolation", "off"),
+        ("plugins.webhooks", "off"),
         ("media.isolation", "off"),
         ("plugins.jail.memory_mib", "777"),
         ("plugins.jail.cpu_rate_percent", "7"),
@@ -860,25 +846,17 @@ mod tests {
     }
 
     #[test]
-    fn discovery_overrides_set_threads_and_sync_interval() {
+    fn discovery_overrides_set_the_sync_interval() {
         let mut cfg = Config::default();
         apply_setting_overrides(
             &mut cfg,
-            &[
-                ("discovery.embed_intra_threads", "3"),
-                ("discovery.listen_sync_interval_minutes", "17"),
-            ],
+            &[("discovery.listen_sync_interval_minutes", "17")],
         );
-        assert_eq!(cfg.discovery.embed_intra_threads, 3);
         assert_eq!(cfg.discovery.listen_sync_interval_minutes, 17);
         apply_setting_overrides(
             &mut cfg,
-            &[
-                ("discovery.embed_intra_threads", "0"),
-                ("discovery.listen_sync_interval_minutes", "soon"),
-            ],
+            &[("discovery.listen_sync_interval_minutes", "soon")],
         );
-        assert_eq!(cfg.discovery.embed_intra_threads, 1, "at least one thread");
         assert_eq!(
             cfg.discovery.listen_sync_interval_minutes, 17,
             "unparsable keeps the value"

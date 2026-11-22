@@ -49,7 +49,7 @@ It reads these files:
 
 | Container | Codecs |
 | --- | --- |
-| MP4 (`.m4a`, `.m4b`) | AAC, ALAC |
+| MP4 (`.m4a`, `.m4b`) | AAC, ALAC, FLAC, Opus |
 | MPEG audio (`.mp3`, `.mp2`) | MP3, MP2, MP1 |
 | ADTS (`.aac`) | AAC |
 | FLAC | FLAC |
@@ -69,7 +69,12 @@ at -3 dB, and the LFE channel is left out. Channels with no position go to
 both sides equally. A file whose sample rate changes partway through fails
 to convert rather than losing the audio after the change.
 
-The worker writes AAC-LC M4B, MP3 and Ogg Opus. It writes tags, covers
+The worker writes AAC-LC M4B, MP3 and Ogg Opus. With
+`output.keep_codec_in_m4b` on, an M4B also carries Opus (`Opus` with
+`dOps`), FLAC (`fLaC` with `dfLa`), ALAC, E-AC-3 or AC-4 audio copied
+unchanged from the source, with the Opus pre-skip as an edit list (see
+[Keeping unusual audio in M4B](output.md#keeping-unusual-audio-in-m4b)).
+It writes tags, covers
 and chapters into MP4 and MP3 files, and into FLAC, Ogg Opus and Ogg
 Vorbis files as Vorbis comments: `TITLE`, `ALBUM`, `ARTIST`,
 `ALBUMARTIST`, `COMPOSER` (the narrator), `DATE`, `GENRE`, `PUBLISHER`,

@@ -102,13 +102,31 @@ fn lease_name(destination: &str) -> String {
     format!("destination-sync:{destination}")
 }
 
+/// Shortest time between two sync passes a nudge starts.
+const NUDGE_GAP: Duration = Duration::from_secs(10);
+
+/// Wakes the sync loop before its next scheduled pass.
+static SYNC_NUDGE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Makes the next destination sync pass run now (at most one pass per
+/// [`NUDGE_GAP`]), for example after a storage plugin's webhook stored a
+/// change notification its feed reads.
+pub fn nudge_destination_sync() {
+    SYNC_NUDGE.notify_one();
+}
+
 /// Spawns the loop that syncs this node's deployed destinations every
-/// [`SYNC_INTERVAL`] (jittered), and prunes old tombstones.
+/// [`SYNC_INTERVAL`] (jittered), or sooner when nudged, and prunes old
+/// tombstones.
 pub fn spawn_destination_sync_loop(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(jittered_delay(SYNC_INTERVAL)).await;
+            tokio::select! {
+                () = tokio::time::sleep(jittered_delay(SYNC_INTERVAL)) => {}
+                () = SYNC_NUDGE.notified() => {}
+            }
             sync_deployed_destinations(&state).await;
+            tokio::time::sleep(NUDGE_GAP).await;
         }
     });
 }

@@ -393,8 +393,10 @@ fn run_master_key(
             let exists = format_kind.is_some();
             let kind = format_kind.map_or("missing", MasterKeyFormat::header);
             let store = format_kind.map(|f| f.store().as_str());
-            // Reading a keychain item may prompt; a failure is reported, not fatal.
-            let (wrapped, keychain_error) = match master_key_is_wrapped(files_dir) {
+            // Reading the store may prompt (a keychain) or unseal (systemd-creds).
+            // A failure is still reported in full, then exits non-zero so a
+            // script can tell a key that won't open from a healthy one.
+            let (wrapped, read_error) = match master_key_is_wrapped(files_dir) {
                 Ok(w) => (w, None),
                 Err(err) => (None, Some(err.to_string())),
             };
@@ -404,7 +406,7 @@ fn run_master_key(
                 "format": kind,
                 "store": store,
                 "wrapped": wrapped,
-                "keychain_error": keychain_error,
+                "read_error": read_error,
                 "password_configured": config.auth_password().is_some(),
             });
             emit(format, &payload, || {
@@ -419,10 +421,11 @@ fn run_master_key(
                         "unset"
                     }
                 );
-                if let Some(err) = &keychain_error {
-                    println!("keychain\t{err}");
-                }
-            })
+            })?;
+            match read_error {
+                Some(err) => anyhow::bail!("the key in {path_text} could not be read: {err}"),
+                None => Ok(()),
+            }
         }
         MasterKeyCommand::Wrap => {
             let password = config.auth_password().ok_or_else(|| {
@@ -1348,6 +1351,7 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         "media.isolation" => config.media.isolation.as_str().to_string(),
         "media.worker_bin" => helper_bin(&config.media.worker_bin),
         "plugins.isolation" => config.plugins.isolation.as_str().to_string(),
+        "plugins.webhooks" => config.plugins.webhooks.as_str().to_string(),
         "plugins.jail_bin" => helper_bin(&config.plugins.jail_bin),
         "daemon.listen" => config.daemon.listen.join_comma(),
         "daemon.json_logs" => config.daemon.json_logs.to_string(),
@@ -1519,12 +1523,18 @@ mod tests {
             master_key(MasterKeyCommand::Status, &config, format, "").expect("status");
         }
 
-        // A keychain that fails is reported by status, not fatal.
+        // A keychain that fails is reported by status, which exits non-zero
+        // so a script can tell.
         scope
             .vault
             .fail_with(Some(bookclerk_keystore::KeystoreErrorKind::AccessDenied));
-        master_key(MasterKeyCommand::Status, &config, OutputFormat::Text, "")
-            .expect("status with a locked keychain");
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            let err = master_key(MasterKeyCommand::Status, &config, format, "")
+                .expect_err("status with a locked keychain")
+                .to_string();
+            assert!(err.contains("could not be read"), "{err}");
+            assert!(err.contains("OS keychain access denied"), "{err}");
+        }
         scope.vault.fail_with(None);
 
         master_key(

@@ -57,6 +57,7 @@ Entrypoint = Literal[
     "metadataFiles",
     "notifier",
     "ingress",
+    "ai",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
@@ -199,6 +200,16 @@ close incidents.
 
 NotifyDestinationKind = Literal["channel", "personal"]
 """Kind of destination a `Notifier` sends to."""
+
+AiTask = Literal["textEmbeddings"]
+"""What a model does. A model has exactly one task, and the task fixes the
+shape of `AiRunParams.input` and of the reply.
+"""
+
+AiTextRole = Literal["document", "query"]
+"""What a text is to an embedding model. Some models embed a search query
+differently from the documents it is matched against.
+"""
 
 DbType = Literal["unspecified", "bool", "int64", "float64", "text", "bytes"]
 """Universal database cell/parameter domain. Engine-native arrays, enums,
@@ -811,6 +822,12 @@ class Bindings(TypedDict):
         origin: `ORIGIN`: the library itself, for a relay `ingress` plugin to send the
             public requests it carries to; null unless the plugin is the library's
             active relay ingress. Null when the guest does not export this capability.
+        ai: `AI`: runs models other plugins serve; null unless `[ai]` names the tasks
+            the plugin calls and the operator granted them. Null when the guest does not
+            export this capability.
+        webhooks: `WEBHOOKS`: the instance's inbound webhooks, their URLs and the
+            deliveries the host stored; null unless `[[webhooks]]` is declared and
+            granted. Null when the guest does not export this capability.
     """
 
     config: ExtensibleConfig
@@ -826,6 +843,8 @@ class Bindings(TypedDict):
     notify: NotRequired[NotificationRaiser | None]
     network: NetworkGrant
     origin: NotRequired[Origin | None]
+    ai: NotRequired[AiRunner | None]
+    webhooks: NotRequired[Webhooks | None]
 
 
 class NetworkGrant(TypedDict):
@@ -906,6 +925,9 @@ class Entrypoints(TypedDict):
             capability.
         ingress: `ingress` entrypoint. Null when the guest does not export this
             capability.
+        ai: `ai` entrypoint. Null when the guest does not export this capability.
+        webhookHandler: `[[webhooks]]` handler: called after the host stores deliveries.
+            Null when the guest does not export this capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -924,6 +946,8 @@ class Entrypoints(TypedDict):
     metadataFiles: NotRequired[MetadataFiles | None]
     notifier: NotRequired[Notifier | None]
     ingress: NotRequired[Ingress | None]
+    ai: NotRequired[AiModels | None]
+    webhookHandler: NotRequired[WebhookHandler | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -2873,6 +2897,66 @@ class Ingress(Protocol):
         ...
 
 
+class Webhooks(Protocol):
+    """Host-served inbound webhooks, granted through `Bindings.webhooks`.
+
+    The host serves each `[[webhooks]]` row at a secret URL under the
+    library's public origin, checks every request against the row's body cap,
+    rate limit and signature rule, stores it and answers at once. The guest
+    takes stored deliveries with `pull` and settles them with `ack`, in the
+    manner of a Cloudflare Queues HTTP pull consumer: a pulled delivery stays
+    leased until acknowledged, retried, or its visibility timeout ends.
+    """
+
+    async def url(self, name: str) -> WebhookUrlReply:
+        """The URL an outside service should call for one webhook.
+
+        Args:
+            name: `[[webhooks]]` name.
+
+        Returns:
+            ``WebhookUrlReply``
+        """
+        ...
+
+    async def pull(self, request: WebhookPullRequest) -> WebhookPullReply:
+        """Lease up to `batchSize` stored deliveries, oldest first.
+
+        Args:
+            request: Webhook, batch size, visibility timeout.
+
+        Returns:
+            ``WebhookPullReply``
+        """
+        ...
+
+    async def ack(self, request: WebhookAckRequest) -> EmptyReply:
+        """Acknowledge finished deliveries and offer retried ones again at once.
+
+        Args:
+            request: Webhook and lease ids.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+
+class WebhookHandler(Protocol):
+    """Guest handler for inbound webhooks (`Entrypoints.webhookHandler`)."""
+
+    async def delivered(self, event: WebhookDelivered) -> EmptyReply:
+        """The host stored deliveries for one webhook; the guest pulls them.
+
+        Args:
+            event: Webhook and how many wait.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+
 class ContentSource(Protocol):
     """Storefront content source (not byte Source). Every method takes and
     returns typed structs from the "Typed method payloads" section.
@@ -3354,6 +3438,62 @@ class NotificationRaiser(Protocol):
         ...
 
 
+class AiModels(Protocol):
+    """`ai` entrypoint: serves models. The plugin lists the models it serves,
+    each with one task, and runs one model on one input. The host routes
+    every call (its own and other plugins' through the `AI` binding) to the
+    deployed plugin that serves the named model; a model plugin never learns
+    who asked. Bulk work arrives as many `run` calls from a host job, each
+    within the per-call caps.
+    """
+
+    async def health(self) -> HealthReply:
+        """Liveness / readiness probe: model files present and loadable.
+
+        Returns:
+            ``HealthReply``
+        """
+        ...
+
+    async def models(self) -> AiModelsReply:
+        """The models this plugin serves right now, under its current settings.
+
+        Returns:
+            ``AiModelsReply``
+        """
+        ...
+
+    async def run(self, params: AiRunParams) -> AiRunReply:
+        """Run one model on one input.
+
+        Args:
+            params: Model name and the task's input.
+
+        Returns:
+            ``AiRunReply``
+        """
+        ...
+
+
+class AiRunner(Protocol):
+    """`AI` binding: runs a model by name, as `env.AI.run(model, input)` does on
+    Cloudflare Workers. The host checks the caller's `[ai]` grant for the
+    model's task, applies the call's deadline and the caller's budget, and
+    forwards to the serving plugin's `AiModels.run`.
+    """
+
+    async def run(self, params: AiRunParams) -> AiRunReply:
+        """Run one model on one input.
+
+        Args:
+            params: Model name or task alias, and the task's input.
+
+        Returns:
+            ``AiRunReply``
+        """
+        ...
+
+
 class EventConsumerSpec(TypedDict):
     """One declared event consumer: a `[[events.consumers]]` row the default
     entrypoint's `event(batch)` handler accepts.
@@ -3389,6 +3529,9 @@ class PluginCapabilities(TypedDict):
             spaces.
         sockets: True when the guest declared `[sockets]`: it receives the host-brokered
             `Sockets` binding and may export a `SocketHandler` for pushed messages.
+        webhooks: True when the guest declared `[[webhooks]]`: it receives the host-
+            served `Webhooks` binding and may export a `WebhookHandler` the host wakes
+            when it stores deliveries.
     """
 
     entrypoints: list[Entrypoint]
@@ -3401,6 +3544,7 @@ class PluginCapabilities(TypedDict):
     queueProducers: list[str]
     crons: list[str]
     sockets: bool
+    webhooks: bool
 
 
 class CatalogCapabilities(TypedDict):
@@ -6456,6 +6600,208 @@ NotifyRaiseReply = Union[
 """Result union of `NotificationRaiser.raise`."""
 
 
+class AiModel(TypedDict):
+    """One model an `ai` plugin serves.
+
+    Attributes:
+        modelId: Model id within the plugin (`bekko-a8m`): lowercase letters, digits,
+            `.`, `_` and `-`. Callers name it `@<plugin id>/<model id>`; the whole name
+            is at most `maxAiModelNameBytes`.
+        task: The model's one task.
+        revision: Digest of everything that decides the output: weights, tokenizer and
+            the language packs loaded. Outputs are comparable only when it matches.
+        dimensions: Text embeddings: numbers per vector, at most `maxAiEmbedDimensions`.
+            Omitted when absent (wire zero value).
+        maxTokens: Text embeddings: tokens read from one text; the rest is cut off.
+            Omitted when absent (wire zero value).
+        languages: BCP 47 tags of the languages the model is loaded for, at most
+            `maxAiLanguages`; empty when it has no language packs.
+    """
+
+    modelId: str
+    task: AiTask
+    revision: str
+    dimensions: NotRequired[int]
+    maxTokens: NotRequired[int]
+    languages: list[str]
+
+
+class AiModelList(TypedDict):
+    """Success payload of `AiModels.models`.
+
+    Attributes:
+        models: Served models, at most `maxAiModels`, each `modelId` once.
+    """
+
+    models: list[AiModel]
+
+
+class AiModelsReplyOk(TypedDict):
+    """``AiModelsReply`` member ``ok``.
+
+    The served models.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: The served models.
+    """
+
+    kind: Literal["ok"]
+    value: AiModelList
+
+
+class AiModelsReplyErr(TypedDict):
+    """``AiModelsReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+AiModelsReply = Union[
+    AiModelsReplyOk,
+    AiModelsReplyErr,
+]
+"""Result union of `AiModels.models`."""
+
+
+class AiEmbedText(TypedDict):
+    """One text to embed.
+
+    Attributes:
+        text: The text, at most `maxAiEmbedTextBytes`; never empty.
+        role: Document or query.
+    """
+
+    text: str
+    role: AiTextRole
+
+
+class AiTextEmbeddingsInput(TypedDict):
+    """Input of the `textEmbeddings` task.
+
+    Attributes:
+        texts: Texts to embed, 1 to `maxAiEmbedTexts`.
+    """
+
+    texts: list[AiEmbedText]
+
+
+class AiTextEmbeddingsOutput(TypedDict):
+    """Output of the `textEmbeddings` task.
+
+    Attributes:
+        dimensions: Numbers per vector; equals the model's `AiModel.dimensions`.
+        vectors: One vector per input text, in input order: `dimensions` little-endian
+            IEEE 754 32-bit floats each, concatenated. Every number is finite.
+        revision: `AiModel.revision` of the model that made the vectors.
+        fallbacks: Indexes (into the input texts, ascending, each once) of the texts
+            where the tokenizer met text outside the loaded language packs and fell back
+            to smaller pieces; such a vector should be recomputed after the missing pack
+            is added.
+    """
+
+    dimensions: int
+    vectors: bytes
+    revision: str
+    fallbacks: list[int]
+
+
+class AiInput(TypedDict):
+    """Input to one model run: one field per `AiTask`, and exactly one is set
+    (the others are null). A new task appends a field.
+
+    Attributes:
+        textEmbeddings: `textEmbeddings` task.
+    """
+
+    textEmbeddings: AiTextEmbeddingsInput
+
+
+class AiOutput(TypedDict):
+    """Output of one model run: one field per `AiTask`, and exactly one is set
+    (the others are null). A new task appends a field.
+
+    Attributes:
+        textEmbeddings: `textEmbeddings` task.
+    """
+
+    textEmbeddings: AiTextEmbeddingsOutput
+
+
+class AiRunParams(TypedDict):
+    """Params of `AiModels.run` and `AiRunner.run`.
+
+    Attributes:
+        model: On `AiModels.run`, the plugin's own `AiModel.modelId`. On `AiRunner.run`,
+            `@<plugin id>/<model id>` or a task alias (`@library/text-embeddings`: the
+            model the library chose for the task).
+        input: The input; the field set must match the model's task.
+    """
+
+    model: str
+    input: AiInput
+
+
+class AiRunOk(TypedDict):
+    """Success payload of a model run.
+
+    Attributes:
+        output: The output; the field set matches the model's task.
+        model: Full name of the model that ran (`@<plugin id>/<model id>`), so a caller
+            that used a task alias knows what answered. Set by the host on
+            `AiRunner.run`; empty on `AiModels.run`. Omitted when absent (wire zero
+            value).
+    """
+
+    output: AiOutput
+    model: NotRequired[str]
+
+
+class AiRunReplyOk(TypedDict):
+    """``AiRunReply`` member ``ok``.
+
+    The model ran.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: The model ran.
+    """
+
+    kind: Literal["ok"]
+    value: AiRunOk
+
+
+class AiRunReplyErr(TypedDict):
+    """``AiRunReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+AiRunReply = Union[
+    AiRunReplyOk,
+    AiRunReplyErr,
+]
+"""Result union of `AiModels.run` and `AiRunner.run`. A model the plugin
+does not serve is `not_found`; an input for another task is
+`invalid_params`; a caller without the grant gets `forbidden`.
+"""
+
+
 class SocketFrameText(TypedDict):
     """``SocketFrame`` member ``text``.
 
@@ -6794,6 +7140,148 @@ IngressStartReply = Union[
 """Result union of `Ingress.start`."""
 
 
+class WebhookUrl(TypedDict):
+    """Success payload of `Webhooks.url`.
+
+    Attributes:
+        url: Absolute `https://` URL; empty when the library cannot be reached from the
+            Internet or webhooks are turned off, and the plugin should use its fallback.
+            Omitted when absent (wire zero value).
+    """
+
+    url: NotRequired[str]
+
+
+class WebhookUrlReplyOk(TypedDict):
+    """``WebhookUrlReply`` member ``ok``.
+
+    Success: the URL, or none.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the URL, or none.
+    """
+
+    kind: Literal["ok"]
+    value: WebhookUrl
+
+
+class WebhookUrlReplyErr(TypedDict):
+    """``WebhookUrlReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+WebhookUrlReply = Union[
+    WebhookUrlReplyOk,
+    WebhookUrlReplyErr,
+]
+"""Result union of `Webhooks.url`."""
+
+
+class WebhookPullRequest(TypedDict):
+    """Arguments of `Webhooks.pull`.
+
+    Attributes:
+        name: `[[webhooks]]` name.
+        batchSize: Most deliveries to lease, 1 to `maxWebhookPullBatch`.
+        visibilityTimeoutMs: How long leased deliveries stay hidden from the next pull,
+            in milliseconds, at most `maxWebhookVisibilityMs`; zero means one minute.
+    """
+
+    name: str
+    batchSize: int
+    visibilityTimeoutMs: int
+
+
+class WebhookHeader(TypedDict):
+    """One request header kept with a delivery.
+
+    Attributes:
+        name: Lowercase header name, one the row's `headers` names or `content-type`.
+        value: Header value as received.
+    """
+
+    name: str
+    value: str
+
+
+class WebhookDelivery(TypedDict):
+    """One stored request, leased to the guest.
+
+    Attributes:
+        leaseId: Lease id for `ack`, at most `maxWebhookLeaseIdBytes`; a new one each
+            time the delivery is pulled.
+        receivedAtUnixMs: When the host stored the request, in Unix milliseconds.
+        attempt: How many times this delivery has been pulled, counting this one.
+        headers: Kept request headers, in the order the row names them.
+        body: Request body as received, at most the row's `max_body_bytes`.
+    """
+
+    leaseId: str
+    receivedAtUnixMs: int
+    attempt: int
+    headers: list[WebhookHeader]
+    body: bytes
+
+
+class WebhookPullPage(TypedDict):
+    """Success payload of `Webhooks.pull`.
+
+    Attributes:
+        deliveries: Leased deliveries, oldest first.
+        missed: True when the host dropped deliveries for this webhook since the last
+            pull (the waiting cap was full or a delivery expired unacknowledged): the
+            guest should treat what it follows as incomplete.
+    """
+
+    deliveries: list[WebhookDelivery]
+    missed: bool
+
+
+class WebhookPullReplyOk(TypedDict):
+    """``WebhookPullReply`` member ``ok``.
+
+    Success: the leased deliveries.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the leased deliveries.
+    """
+
+    kind: Literal["ok"]
+    value: WebhookPullPage
+
+
+class WebhookPullReplyErr(TypedDict):
+    """``WebhookPullReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+WebhookPullReply = Union[
+    WebhookPullReplyOk,
+    WebhookPullReplyErr,
+]
+"""Result union of `Webhooks.pull`."""
+
+
 class IngressHealth(TypedDict):
     """Success payload of `Ingress.health`.
 
@@ -6840,6 +7328,32 @@ IngressHealthReply = Union[
     IngressHealthReplyErr,
 ]
 """Result union of `Ingress.health`."""
+
+
+class WebhookAckRequest(TypedDict):
+    """Arguments of `Webhooks.ack`.
+
+    Attributes:
+        name: `[[webhooks]]` name.
+        acks: Leases whose deliveries are done and are deleted.
+        retries: Leases whose deliveries the next pull offers again.
+    """
+
+    name: str
+    acks: list[str]
+    retries: list[str]
+
+
+class WebhookDelivered(TypedDict):
+    """Argument of `WebhookHandler.delivered`.
+
+    Attributes:
+        name: `[[webhooks]]` name.
+        waiting: Deliveries waiting for this webhook when the host called.
+    """
+
+    name: str
+    waiting: int
 
 
 class DbValueNull(TypedDict):
@@ -8211,6 +8725,8 @@ __all__ = [
     "NotificationAudience",
     "NotificationAlertAction",
     "NotifyDestinationKind",
+    "AiTask",
+    "AiTextRole",
     "DbType",
     "DbStatementKind",
     "DbResultSelection",
@@ -8376,6 +8892,8 @@ __all__ = [
     "SocketHandler",
     "Origin",
     "Ingress",
+    "Webhooks",
+    "WebhookHandler",
     "ContentSource",
     "RemoteLibrary",
     "PluginCli",
@@ -8385,6 +8903,8 @@ __all__ = [
     "MetadataFiles",
     "Notifier",
     "NotificationRaiser",
+    "AiModels",
+    "AiRunner",
     "EventConsumerSpec",
     "PluginCapabilities",
     "CatalogCapabilities",
@@ -8581,6 +9101,21 @@ __all__ = [
     "NotifyRaiseReplyOk",
     "NotifyRaiseReplyErr",
     "NotifyRaiseReply",
+    "AiModel",
+    "AiModelList",
+    "AiModelsReplyOk",
+    "AiModelsReplyErr",
+    "AiModelsReply",
+    "AiEmbedText",
+    "AiTextEmbeddingsInput",
+    "AiTextEmbeddingsOutput",
+    "AiInput",
+    "AiOutput",
+    "AiRunParams",
+    "AiRunOk",
+    "AiRunReplyOk",
+    "AiRunReplyErr",
+    "AiRunReply",
     "SocketFrameText",
     "SocketFrameBinary",
     "SocketFrame",
@@ -8607,10 +9142,23 @@ __all__ = [
     "IngressStartReplyOk",
     "IngressStartReplyErr",
     "IngressStartReply",
+    "WebhookUrl",
+    "WebhookUrlReplyOk",
+    "WebhookUrlReplyErr",
+    "WebhookUrlReply",
+    "WebhookPullRequest",
+    "WebhookHeader",
+    "WebhookDelivery",
+    "WebhookPullPage",
+    "WebhookPullReplyOk",
+    "WebhookPullReplyErr",
+    "WebhookPullReply",
     "IngressHealth",
     "IngressHealthReplyOk",
     "IngressHealthReplyErr",
     "IngressHealthReply",
+    "WebhookAckRequest",
+    "WebhookDelivered",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",
