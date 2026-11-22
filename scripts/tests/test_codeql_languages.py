@@ -50,7 +50,7 @@ def _load_reuse() -> ModuleType:
 
 # The oracle's own reading of a Rust input, written without fnmatch.
 ORACLE_NAMES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}
-ORACLE_SUFFIXES = (".rs", ".capnp", ".proto")
+ORACLE_SUFFIXES = (".rs", ".capnp", ".proto", ".c")
 ORACLE_EXACT = {".github/workflows/codeql.yml", "scripts/codeql_languages.py", "scripts/codeql_reuse.py"}
 
 

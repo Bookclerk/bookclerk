@@ -1004,7 +1004,8 @@ input reuses `main`'s Rust results instead:
    (`git diff -z --no-renames --name-only`).
 2. [`scripts/codeql_languages.py`](../../scripts/codeql_languages.py)
    treats a path as a Rust input when it is a `.rs` file, a `.capnp` or
-   `.proto` schema that a build script compiles into Rust, a `Cargo.toml`,
+   `.proto` schema that a build script compiles into Rust, a `.c` file a
+   build script compiles and links (the FFmpeg shim), a `Cargo.toml`,
    `Cargo.lock`, `rust-toolchain.toml`, anything under a `.cargo/`
    directory at any depth, the workflow, or the scripts that choose and
    reuse. A name that isn't UTF-8 also counts. A test fails when a

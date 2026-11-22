@@ -60,6 +60,9 @@ RUST_INPUTS: tuple[str, ...] = (
     "rust-toolchain.toml",
     "*.capnp",
     "*.proto",
+    # C a build script compiles and links into a crate (bookclerk-libav's
+    # FFmpeg shim).
+    "*.c",
     ".github/workflows/codeql.yml",
     "scripts/codeql_languages.py",
     "scripts/codeql_reuse.py",
