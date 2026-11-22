@@ -1898,6 +1898,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-intake"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-config",
+ "hex",
+ "sha2 0.11.1",
+]
+
+[[package]]
 name = "bookclerk-integrations"
 version = "0.1.0"
 dependencies = [
@@ -1966,6 +1975,7 @@ dependencies = [
  "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-db-exec",
+ "bookclerk-intake",
  "bookclerk-keystore",
  "bookclerk-naming",
  "bookclerk-node-proto",
@@ -2838,6 +2848,7 @@ dependencies = [
  "bookclerk-cover",
  "bookclerk-discover",
  "bookclerk-enrich",
+ "bookclerk-intake",
  "bookclerk-integrations",
  "bookclerk-keystore",
  "bookclerk-library",

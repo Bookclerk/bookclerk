@@ -11,6 +11,7 @@
 import { isApiError } from "@/lib/api";
 import type {
   Bookmark,
+  ChapterSpan,
   PlaybackManifest,
   PlaybackReport,
   PlaybackSession,
@@ -166,6 +167,8 @@ export interface PlayerState {
   sleepAt: number | null;
   /** The listener's bookmarks in the loaded edition, in timeline order. */
   bookmarks: Bookmark[];
+  /** The loaded edition's chapters, in pre-order; empty when it has none. */
+  chapters: ChapterSpan[];
   /** True once the listener reached the end in this sitting. */
   finished: boolean;
   /** What went wrong, in words for the listener. */
@@ -208,6 +211,7 @@ function idle(speed: number): PlayerState {
     speed,
     sleepAt: null,
     bookmarks: [],
+    chapters: [],
     finished: false,
     error: null,
   };
@@ -459,8 +463,9 @@ export class Player {
   }
 
   /**
-   * Reads the edition's bookmarks. A list read while the listener added
-   * or removed one may be older than that change, so it is read again.
+   * Reads the edition's bookmarks and chapters. A list read while the
+   * listener added or removed a bookmark may be older than that change,
+   * so it is read again.
    *
    * @param editionId - The loaded edition.
    * @param generation - The load the list belongs to.
@@ -474,7 +479,7 @@ export class Player {
         const manifest = await this.deps.manifest(editionId);
         if (generation !== this.generation) return;
         if (edits === this.bookmarkEdits) {
-          this.set({ bookmarks: manifest.bookmarks });
+          this.set({ bookmarks: manifest.bookmarks, chapters: manifest.chapters });
           return;
         }
       }

@@ -29,6 +29,7 @@ on:
       - "crates/bookclerk-archive/**"
       - "crates/bookclerk-media/**"
       - "crates/bookclerk-config/**"
+      - "crates/bookclerk-intake/**"
       - "crates/bookclerk-storefront/**"
       - "crates/bookclerk-plugins/optional/source-libro/**"
       - "crates/bookclerk-audible-catalog/**"

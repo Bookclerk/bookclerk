@@ -255,6 +255,11 @@ class ScenarioTests(unittest.TestCase):
         self.assertFalse(p.full_suite, p.reasons)
         self.assertIn("collector_test", p.checks)
 
+    def test_plan_corpus_change_runs_the_collector_tests(self) -> None:
+        p = plan("scripts/tests/diagnostics_plan_corpus/empty_plan.txt", "scripts/tests/diagnostics_plan_oracle.py")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertIn("collector_test", p.checks)
+
     def test_demo_image_selects_no_check(self) -> None:
         p = plan("packaging/demo/Dockerfile")
         self.assertFalse(p.full_suite, p.reasons)
