@@ -12051,6 +12051,9 @@ function socketsBinding(transport) {
       const reply = await call(transport, "list", {});
       const sockets = Array.isArray(reply.sockets) ? reply.sockets : [];
       return sockets.map((info) => new HostSocket(transport, info));
+    },
+    getWebSocket(id) {
+      return new HostSocket(transport, { socket: String(id ?? "") });
     }
   });
 }

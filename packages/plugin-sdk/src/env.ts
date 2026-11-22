@@ -133,6 +133,18 @@ export interface SocketsBinding {
    * @returns One handle per open socket.
    */
   getWebSockets(): Promise<HostWebSocket[]>;
+  /**
+   * A handle for one socket by its id, without asking the host: for a
+   * plugin that keeps socket ids (in another socket's attachment, say) and
+   * needs to send on or close that socket. The handle does not carry the
+   * socket's URL, subprotocol or attachment (`deserializeAttachment()`
+   * returns `null`); sending on a socket that has closed fails with
+   * `not_found`.
+   *
+   * @param id - The socket's id, as `HostWebSocket.id` gave it.
+   * @returns The handle.
+   */
+  getWebSocket(id: string): HostWebSocket;
 }
 
 /** Plain JSON object (string keys, JSON values). */

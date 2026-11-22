@@ -438,6 +438,25 @@ function wireQueueMessage(overrides = {}) {
     () => sockets.routeFrame(42),
     (err) => err.wireCode === "invalid_params",
   );
+  // getWebSocket makes a handle by id without asking the host.
+  const asked = [];
+  const binding = sockets.socketsBinding({
+    async call(op, body) {
+      asked.push({ op, body });
+      return op === "send" ? { err: { code: "not_found", message: "gone" } } : { ok: {} };
+    },
+  });
+  const byId = binding.getWebSocket("o7");
+  assert.equal(asked.length, 0);
+  assert.equal(byId.id, "o7");
+  assert.equal(byId.url, "");
+  assert.equal(byId.deserializeAttachment(), null);
+  await byId.close(1000, "bye");
+  assert.deepEqual(asked, [{ op: "close", body: { socket: "o7", code: 1000, reason: "bye" } }]);
+  await assert.rejects(
+    () => byId.send("x"),
+    (err) => err instanceof PluginError && err.wireCode === "not_found",
+  );
   assert.equal(sockets.socketMessageData(undefined), "");
   assert.equal(sockets.socketMessageData({ kind: "text", value: "t" }), "t");
 }
