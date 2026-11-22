@@ -10,6 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+bookclerk-model-pack.workspace = true
 bookclerk-plugin-manifest.workspace = true
 bookclerk-plugin-sdk.workspace = true
 chrono.workspace = true
