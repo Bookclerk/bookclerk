@@ -3,7 +3,7 @@
 //! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
 //! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` /
 //! `MetadataProvider` / `CoverFetcher` / `MetadataFiles` / `Notifier` /
-//! `NotificationRaiser` / `Cli` /
+//! `NotificationRaiser` / `AiModels` / `AiRunner` / `Cli` /
 //! `EventConsumer` / `EventPublisher` / `QueueConsumer` / `QueueProducer` /
 //! `PluginWorker` method in
 //! `schema/plugin.capnp`. Prefer these constants over string literals when
@@ -56,6 +56,8 @@ pub const METHOD_NAMES: &[&str] = &[
     render::NAME,
     validate_destination::NAME,
     raise::NAME,
+    models::NAME,
+    run::NAME,
     put::NAME,
     get::NAME,
     exists::NAME,
@@ -262,6 +264,23 @@ pub mod validate_destination {
 pub mod raise {
     /// Wire method name `"raise"`.
     pub const NAME: &str = "raise";
+}
+
+/// List the models a plugin serves (Cap'n Proto `AiModels.models`).
+///
+/// Result: [`crate::AiModelList`].
+pub mod models {
+    /// Wire method name `"models"`.
+    pub const NAME: &str = "models";
+}
+
+/// Run one model on one input (Cap'n Proto `AiModels.run` on a model
+/// plugin, `AiRunner.run` on the `AI` binding).
+///
+/// Params: [`crate::AiRunParams`]. Result: [`crate::AiRunOk`].
+pub mod run {
+    /// Wire method name `"run"`.
+    pub const NAME: &str = "run";
 }
 
 /// Plugin-provided OIDC client templates (Cap'n Proto `Oidc.clients`).

@@ -231,6 +231,16 @@ impl IntegrationRegistry {
             .collect()
     }
 
+    /// Integrations that export the `ai` entrypoint, in registration order.
+    #[must_use]
+    pub fn model_plugins(&self) -> Vec<Arc<dyn Integration>> {
+        self.integrations
+            .iter()
+            .filter(|i| i.supports_ai())
+            .cloned()
+            .collect()
+    }
+
     /// Integrations that export the `covers` entrypoint, in registration order.
     #[must_use]
     pub fn cover_fetchers(&self) -> Vec<Arc<dyn Integration>> {

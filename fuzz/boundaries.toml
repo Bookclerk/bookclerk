@@ -168,6 +168,20 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.ai_run_reply]
+crate = "bookclerk-plugin-abi"
+boundary = "A model plugin's AiModels.run reply (vector count, length, finite values, revision and fallback indexes against the run it answers) and its AiModels.models listing"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.ai_run]
+crate = "bookclerk-plugin-abi"
+boundary = "A plugin's AI.run: the /ai/run JSON body and the Cap'n Proto run, their model name and the input for one task"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.notify_address_body]
 crate = "bookclerk-plugin-abi"
 boundary = "The address object of a patron's POST /api/me/notifications/destinations body: a flat object of strings with no key written twice"

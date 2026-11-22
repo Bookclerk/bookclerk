@@ -36,7 +36,7 @@
       "description": "Named capabilities this plugin exports from PluginWorker.open.",
       "items": {
         "type": "string",
-        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress"]
+        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai"]
       }
     },
     "media": {
@@ -129,6 +129,25 @@
           "type": "string",
           "enum": ["relay", "direct"],
           "description": "relay: the provider relays each request to the plugin, which hands it to the library through ORIGIN. direct: the public address points at the daemon; the plugin only keeps it current."
+        }
+      }
+    },
+    "ai": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Model tasks the plugin serves on its ai entrypoint and the tasks it calls through env.AI.",
+      "properties": {
+        "serves": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Tasks the plugin's models perform. Required, with at least one task, for a plugin exporting the ai entrypoint; forbidden for every other plugin.",
+          "items": { "$ref": "#/$defs/AiTask" }
+        },
+        "calls": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Tasks the plugin runs through env.AI. Declaring any asks the operator for the AI binding.",
+          "items": { "$ref": "#/$defs/AiTask" }
         }
       }
     },
@@ -276,9 +295,25 @@
       },
       "then": { "required": ["ingress"] },
       "else": { "properties": { "ingress": false } }
+    },
+    {
+      "if": {
+        "properties": { "entrypoints": { "contains": { "const": "ai" } } },
+        "required": ["entrypoints"]
+      },
+      "then": {
+        "required": ["ai"],
+        "properties": { "ai": { "required": ["serves"], "properties": { "serves": { "minItems": 1 } } } }
+      },
+      "else": { "properties": { "ai": { "properties": { "serves": { "maxItems": 0 } } } } }
     }
   ],
   "$defs": {
+    "AiTask": {
+      "type": "string",
+      "enum": ["textEmbeddings"],
+      "description": "What a model does: textEmbeddings turns each text into one vector."
+    },
     "NotifierAddressField": {
       "type": "object",
       "additionalProperties": false,

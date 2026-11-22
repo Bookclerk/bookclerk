@@ -3,7 +3,7 @@
 //! `Cancellation` long poll (`/cancel`), named database sessions
 //! (`/db/execute`, `/db/execute-streamed`), and the `EVENTS` outbox binding
 //! (`/events/publish`, `/events/read`), the `NOTIFY` binding
-//! (`/notify/raise`), and the `SOCKETS` broker binding
+//! (`/notify/raise`), the `AI` binding (`/ai/run`), and the `SOCKETS` broker binding
 //! (`/sockets/*`, parsed in [`crate::granted_sockets`]).
 //!
 //! HTTP accept/read/write runs on the multi-thread runtime (`tokio::spawn`) so
@@ -27,12 +27,12 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_abi::{
     encode_execute_stream_error, encoded_db_capabilities_reply_bytes,
-    encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher, EventReadPage,
-    EventReadRequest, ExecuteStreamLimits, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk,
-    KvListOptions, KvNamespace, KvPutOk, KvPutOptions, NotificationRaiser, NotifyRaiseParams,
-    NotifyRaised, ObjectMetadata, Origin, PluginEvent, ProgressSink, PublishOk, QueueProducer,
-    QueueSendMessage, QueueSendOk, Sockets, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES,
-    MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    encoded_execute_result_reply_bytes, AiRunOk, AiRunParams, AiRunner, Cancellation, Destination,
+    EventPublisher, EventReadPage, EventReadRequest, ExecuteStreamLimits, GuestDatabase,
+    KvDeleteOk, KvGetOk, KvListOk, KvListOptions, KvNamespace, KvPutOk, KvPutOptions,
+    NotificationRaiser, NotifyRaiseParams, NotifyRaised, ObjectMetadata, Origin, PluginEvent,
+    ProgressSink, PublishOk, QueueProducer, QueueSendMessage, QueueSendOk, Sockets, Source,
+    WriteOptions, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -56,6 +56,12 @@ pub const MAX_EVENT_PUBLISH_BODY_BYTES: u32 = MAX_EVENT_PAYLOAD_BYTES * 2 + 8 * 
 /// `maxNotificationFields` fields at their caps with every character
 /// JSON-escaped to two bytes (about 70 KiB), plus the envelope.
 pub const MAX_NOTIFY_RAISE_BODY_BYTES: u32 = 128 * 1024;
+
+/// Largest `/ai/run` request body: `maxAiEmbedTexts` texts at
+/// `maxAiEmbedTextBytes` each is 1 MiB of text, and ordinary prose grows
+/// little as JSON. A run made mostly of characters that JSON escapes to
+/// several bytes can pass that and is refused with 413; split it.
+pub const MAX_AI_RUN_BODY_BYTES: u32 = 2 * 1024 * 1024;
 
 /// Largest `/events/read` request body: a cursor plus up to `maxListPage`
 /// event types.
@@ -127,6 +133,8 @@ pub struct GrantedSlot {
     /// The library, when this grant is a relay ingress plugin's `ORIGIN`
     /// binding.
     pub origin: Option<Rc<dyn Origin>>,
+    /// Host model router entry, when this grant is the `AI` binding.
+    pub ai: Option<Rc<dyn AiRunner>>,
 }
 
 impl GrantedSlot {
@@ -161,6 +169,7 @@ impl GrantedSlot {
             sockets: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -187,6 +196,7 @@ impl GrantedSlot {
             sockets: Some(sockets),
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -213,6 +223,7 @@ impl GrantedSlot {
             sockets: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -239,6 +250,7 @@ impl GrantedSlot {
             sockets: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -264,6 +276,7 @@ impl GrantedSlot {
             sockets: None,
             origin: None,
             notify: None,
+            ai: None,
         }
     }
 
@@ -290,6 +303,34 @@ impl GrantedSlot {
             sockets: None,
             notify: Some(notify),
             origin: None,
+            ai: None,
+        }
+    }
+
+    /// A grant that only runs models over `/ai/run` (no streams, no
+    /// database, no events).
+    #[must_use]
+    pub fn ai_only(ai: Rc<dyn AiRunner>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
+            sockets: None,
+            notify: None,
+            origin: None,
+            ai: Some(ai),
         }
     }
 
@@ -315,6 +356,7 @@ impl GrantedSlot {
             sockets: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -342,6 +384,7 @@ impl GrantedSlot {
             sockets: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 }
@@ -440,6 +483,15 @@ enum GrantedCmd {
         params: NotifyRaiseParams,
         /// Where the raised id or the typed error goes.
         resp: oneshot::Sender<Result<NotifyRaised, PluginError>>,
+    },
+    /// `env.AI.run` through the grant.
+    Ai {
+        /// Grant the isolate presented.
+        invocation: String,
+        /// The run, parsed but not yet checked.
+        params: Box<AiRunParams>,
+        /// Where the output or the typed error goes.
+        resp: oneshot::Sender<Result<AiRunOk, PluginError>>,
     },
     /// `env.EVENTS.read` through the grant.
     ReadEvents {
@@ -596,6 +648,13 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                     resp,
                 } => {
                     let _ = resp.send(dispatch_notify(&table, invocation, params).await);
+                }
+                GrantedCmd::Ai {
+                    invocation,
+                    params,
+                    resp,
+                } => {
+                    let _ = resp.send(dispatch_ai(&table, invocation, *params).await);
                 }
                 GrantedCmd::ReadEvents {
                     invocation,
@@ -822,6 +881,32 @@ async fn dispatch_notify(
     };
     bookclerk_plugin_abi::notifications::check_raise_params(&params)?;
     notify.raise(params).await
+}
+
+/// `AI.run` through the grant: the slot must carry the `AI` binding, and
+/// the run must pass
+/// [`bookclerk_plugin_abi::ai::check_binding_run_params`] before the
+/// host's model router sees it.
+async fn dispatch_ai(
+    table: &GrantedTable,
+    invocation: String,
+    params: AiRunParams,
+) -> Result<AiRunOk, PluginError> {
+    let ai = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| PluginError::forbidden("unknown or revoked grant"))?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err(PluginError::forbidden("grant expired"));
+        }
+        slot.ai
+            .clone()
+            .ok_or_else(|| PluginError::forbidden("ai not granted"))?
+    };
+    bookclerk_plugin_abi::ai::check_binding_run_params(&params)?;
+    ai.run(params).await
 }
 
 /// `EVENTS.read` through the grant: the slot must carry an `EVENTS`
@@ -1659,6 +1744,56 @@ where
         return Ok(());
     }
 
+    if method == "POST" && path_only == "/ai/run" {
+        if declared_content_length_over_cap(&headers, MAX_AI_RUN_BODY_BYTES) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let rest = match read_content(&mut reader, &headers, prefix, MAX_AI_RUN_BODY_BYTES).await {
+            Ok(body) => body,
+            Err(err) => {
+                let Some((status, reason)) = body_error_response(&err) else {
+                    return Err(err);
+                };
+                write_status(&mut writer, status, &reason).await?;
+                return Ok(());
+            }
+        };
+        let params: AiRunParams = match serde_json::from_slice(&rest) {
+            Ok(params) => params,
+            Err(err) => {
+                write_plugin_error(
+                    &mut writer,
+                    &PluginError::invalid_params(format!("malformed run: {err}")),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::Ai {
+            invocation,
+            params: Box::new(params),
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted ai dropped")? {
+            Ok(ok) => {
+                let payload = serde_json::to_vec(&ok)?;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(&payload).await?;
+                writer.flush().await?;
+            }
+            Err(err) => write_plugin_error(&mut writer, &err).await?,
+        }
+        return Ok(());
+    }
+
     if method == "POST" && path_only == "/notify/raise" {
         if declared_content_length_over_cap(&headers, MAX_NOTIFY_RAISE_BODY_BYTES) {
             write_status(&mut writer, 413, "payload too large").await?;
@@ -2171,6 +2306,7 @@ mod tests {
                 sockets: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         let err = match take_slot_source(&table, "g1") {
@@ -2222,6 +2358,7 @@ mod tests {
                 sockets: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         table.borrow_mut().remove("g-live");
@@ -2260,6 +2397,7 @@ mod tests {
                 sockets: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         let req = ExecuteRequest {
@@ -2333,6 +2471,7 @@ mod tests {
                 sockets: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         let req = ExecuteRequest {
@@ -2429,6 +2568,7 @@ mod tests {
                 sockets: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         let request = |sql: &str| ExecuteRequest {
@@ -2490,6 +2630,7 @@ mod tests {
                 sockets: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         table
@@ -2871,6 +3012,92 @@ mod tests {
         }
     }
 
+    /// Host model runner that counts runs and answers one zero vector per
+    /// text.
+    struct CountingRunner(std::cell::Cell<usize>);
+
+    #[async_trait::async_trait(?Send)]
+    impl AiRunner for CountingRunner {
+        async fn run(&self, params: AiRunParams) -> Result<AiRunOk, PluginError> {
+            self.0.set(self.0.get() + 1);
+            let texts = params.input.text_embeddings.texts.len();
+            Ok(AiRunOk {
+                output: bookclerk_plugin_abi::AiOutput {
+                    text_embeddings: bookclerk_plugin_abi::AiTextEmbeddingsOutput {
+                        dimensions: 2,
+                        vectors: vec![0; texts * 8],
+                        revision: "r1".into(),
+                        fallbacks: Vec::new(),
+                    },
+                },
+                model: Some("@embedder/tiny".into()),
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_requires_a_live_ai_grant_and_a_valid_run() {
+        use bookclerk_plugin_abi::PluginErrorCode;
+        let runner = Rc::new(CountingRunner(std::cell::Cell::new(0)));
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-ai".into(),
+            GrantedSlot::ai_only(runner.clone(), Instant::now() + Duration::from_secs(60)),
+        );
+        table.borrow_mut().insert(
+            "g-expired".into(),
+            GrantedSlot::ai_only(runner.clone(), Instant::now()),
+        );
+        table.borrow_mut().insert(
+            "g-events".into(),
+            GrantedSlot::events_only(
+                Rc::new(CountingPublisher {
+                    published: std::cell::Cell::new(0),
+                }),
+                Instant::now() + Duration::from_secs(60),
+            ),
+        );
+        let run = |model: &str, texts: &[&str]| AiRunParams {
+            model: model.into(),
+            input: bookclerk_plugin_abi::AiInput {
+                text_embeddings: bookclerk_plugin_abi::AiTextEmbeddingsInput {
+                    texts: texts
+                        .iter()
+                        .map(|text| bookclerk_plugin_abi::AiEmbedText {
+                            text: (*text).to_string(),
+                            role: bookclerk_plugin_abi::AiTextRole::Query,
+                        })
+                        .collect(),
+                },
+            },
+        };
+        let ok = dispatch_ai(
+            &table,
+            "g-ai".into(),
+            run("@library/text-embeddings", &["a"]),
+        )
+        .await
+        .expect("granted run");
+        assert_eq!(ok.output.text_embeddings.vectors.len(), 8);
+        for bad in [run("tiny", &["a"]), run("@embedder/tiny", &[])] {
+            let err = dispatch_ai(&table, "g-ai".into(), bad)
+                .await
+                .expect_err("a malformed run");
+            assert_eq!(err.code, PluginErrorCode::InvalidParams);
+        }
+        for (grant, code) in [
+            ("g-expired", PluginErrorCode::Forbidden),
+            ("g-events", PluginErrorCode::Forbidden),
+            ("g-missing", PluginErrorCode::Forbidden),
+        ] {
+            let err = dispatch_ai(&table, grant.into(), run("@embedder/tiny", &["a"]))
+                .await
+                .expect_err(grant);
+            assert_eq!(err.code, code, "{grant}");
+        }
+        assert_eq!(runner.0.get(), 1);
+    }
+
     /// Host raiser that counts raises.
     struct CountingRaiser(std::cell::Cell<usize>);
 
@@ -2967,6 +3194,7 @@ mod tests {
                 sockets: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
 
@@ -3171,6 +3399,7 @@ mod tests {
             sockets: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -3464,6 +3693,7 @@ mod tests {
                 sockets: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         (table, session)
