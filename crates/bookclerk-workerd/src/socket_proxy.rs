@@ -1514,10 +1514,16 @@ mod tests {
         }
         let text = String::from_utf8_lossy(&head);
         assert!(text.contains("200"), "{text}");
-        assert!(
-            saw_accept.load(Ordering::SeqCst),
-            "approved dial did not connect"
-        );
+        // The proxy answers 200 once its connect completes, which the
+        // kernel finishes before the listener task's `accept` runs: wait
+        // for the accept rather than reading the flag at once.
+        let accepted = tokio::time::timeout(StdDuration::from_secs(5), async {
+            while !saw_accept.load(Ordering::SeqCst) {
+                tokio::time::sleep(StdDuration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(accepted.is_ok(), "approved dial did not connect");
         fence.store(true, Ordering::SeqCst);
     }
 

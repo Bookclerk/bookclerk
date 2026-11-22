@@ -333,25 +333,26 @@ ALL_CHECKS = tuple(CHECK_JOB)
 # ``check_<name>`` plan output.
 STEP_GATED_JOBS = ("check", "release", "site")
 
-# Jobs that run other jobs' checks on one more OS, each check as its own
-# step gated by its owning job's ``job_<name>`` plan output. The macOS
-# legs of three matrix jobs share one runner so a run asks GitHub for one
-# macOS runner instead of three (docs/contributing/ci.md#macos-job). Such a
-# job is expected to run when any of its owning jobs is.
+# Jobs that run other jobs' checks on more OSes, gated by their owning
+# jobs' ``job_<name>`` plan outputs. The macOS legs of three matrix jobs
+# share one runner so a run asks GitHub for one macOS runner instead of
+# three (docs/contributing/ci.md#macos-job); ``test-os`` runs the ``test``
+# job's whole `rust_test` suite on Windows and macOS
+# (docs/contributing/ci.md#full-suite-on-windows-and-macos). Such a job is
+# expected to run when any of its owning jobs is, outside Linux-only pull
+# request runs.
 OS_LEG_JOBS: dict[str, tuple[str, ...]] = {
     "macos": ("confinement", "native-gateway", "tray"),
+    "test-os": ("test",),
 }
 
 # Jobs that run another job's checks on more OSes and only report: their
-# result never reaches CI Gate, so a failure shows in the run without
-# keeping a pull request out of `main`. ``test-os`` runs the ``test`` job's
-# whole `rust_test` suite on Windows and macOS while the failures that suite
-# finds there are fixed, before it is required
-# (docs/contributing/ci.md#full-suite-on-windows-and-macos). Such a job runs
-# when its owning job does, outside pull request runs.
-REPORT_JOBS: dict[str, tuple[str, ...]] = {
-    "test-os": ("test",),
-}
+# result never reaches CI Gate and their name says "report only", so a
+# failure shows in the run without keeping a pull request out of `main`
+# while the failures a new leg finds are fixed. None today: ``test-os``
+# started here and became an ``OS_LEG_JOBS`` job once each OS had three
+# green runs in a row.
+REPORT_JOBS: dict[str, tuple[str, ...]] = {}
 
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
 # ``python_sdk`` is not one: its tests launch the ``bookclerk-db-testkit``
