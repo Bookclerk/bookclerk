@@ -2,7 +2,10 @@
 
 - **Status:** Accepted (decisions made with the maintainer on 2026-11-19
   and 2026-11-20). Supersedes the "planned" note of decision 8 of the
-  [Playback ADR](playback.md)
+  [Playback ADR](playback.md). Its consequence that chapters are empty
+  is superseded by decision 7 of the
+  [Edition chapters ADR](edition-chapters.md): apps get the chapters the
+  edition plays
 - **Date:** 2026-11-20
 - **Related:** [Playback](playback.md),
   [Patron scopes and linked sign-in](patron-scopes.md),

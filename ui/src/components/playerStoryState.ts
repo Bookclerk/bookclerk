@@ -48,6 +48,7 @@ export const paused: PlayerState = {
   speed: 1,
   sleepAt: null,
   bookmarks: [],
+  chapters: [],
   finished: false,
   error: null,
 };
