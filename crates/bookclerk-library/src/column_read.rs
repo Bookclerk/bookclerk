@@ -121,20 +121,22 @@ mod tests {
     //! Reads through the proxy under every test profile (#854).
 
     use super::*;
-    use crate::entities::books;
+    use crate::entities::store_listings;
     use crate::test_support::{sqlite, Profile};
     use sea_orm::{ConnectionTrait, FromQueryResult, Statement};
 
     /// Two columns whose `SELECT` order is the reverse of their name order.
     #[derive(Debug, PartialEq, Eq, FromQueryResult)]
-    struct UuidAndProductId {
-        /// `books.uuid`, selected first.
-        uuid: String,
-        /// `books.product_id`, selected second and sorted first by name.
+    struct TitleAndProductId {
+        /// `store_listings.title`, selected first.
+        title: String,
+        /// `store_listings.product_id`, selected second and sorted first by
+        /// name.
         product_id: String,
     }
 
-    /// Seeds one book whose `uuid` and `product_id` cannot be confused.
+    /// Seeds one title whose listing's `title` and `product_id` cannot be
+    /// confused.
     async fn seeded(profile: Profile) -> crate::test_support::ProfileStore {
         let kit = sqlite::memory(profile).await;
         let store = kit.store();
@@ -142,8 +144,7 @@ mod tests {
             .upsert_account("audible", "acct", "us", None, false, "audible")
             .await
             .unwrap();
-        let mut book = crate::NewBook::minimal("the-product", "acct", "us", "Title");
-        book.uuid = Some("the-uuid".into());
+        let book = crate::NewBook::minimal("the-product", "acct", "us", "the-title");
         store.upsert_book(&book).await.unwrap();
         kit
     }
@@ -159,14 +160,14 @@ mod tests {
                 .connection()
                 .query_one_raw(Statement::from_string(
                     kit.connection().get_database_backend(),
-                    "SELECT uuid, product_id FROM books",
+                    "SELECT title, product_id FROM store_listings",
                 ))
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(
                 row.column_names(),
-                ["product_id", "uuid"],
+                ["product_id", "title"],
                 "{}",
                 profile.name()
             );
@@ -181,18 +182,18 @@ mod tests {
     async fn a_from_query_result_struct_reads_out_of_order_columns_by_name() {
         for profile in Profile::ALL {
             let kit = seeded(profile).await;
-            let rows = books::Entity::find()
+            let rows = store_listings::Entity::find()
                 .select_only()
-                .column(books::Column::Uuid)
-                .column(books::Column::ProductId)
-                .into_model::<UuidAndProductId>()
+                .column(store_listings::Column::Title)
+                .column(store_listings::Column::ProductId)
+                .into_model::<TitleAndProductId>()
                 .all(kit.connection())
                 .await
                 .unwrap();
             assert_eq!(
                 rows,
-                [UuidAndProductId {
-                    uuid: "the-uuid".into(),
+                [TitleAndProductId {
+                    title: "the-title".into(),
                     product_id: "the-product".into(),
                 }],
                 "{}",
@@ -207,14 +208,14 @@ mod tests {
     async fn into_column_replaces_earlier_columns() {
         for profile in Profile::ALL {
             let kit = seeded(profile).await;
-            let uuids: Vec<String> = books::Entity::find()
+            let titles: Vec<String> = store_listings::Entity::find()
                 .select_only()
-                .column(books::Column::ProductId)
-                .into_column(books::Column::Uuid)
+                .column(store_listings::Column::ProductId)
+                .into_column(store_listings::Column::Title)
                 .all(kit.connection())
                 .await
                 .unwrap();
-            assert_eq!(uuids, ["the-uuid"], "{}", profile.name());
+            assert_eq!(titles, ["the-title"], "{}", profile.name());
         }
     }
 
@@ -228,7 +229,7 @@ mod tests {
                 .connection()
                 .query_one_raw(Statement::from_string(
                     backend,
-                    "SELECT COUNT(*) FROM books",
+                    "SELECT COUNT(*) FROM store_listings",
                 ))
                 .await
                 .unwrap()
@@ -238,14 +239,14 @@ mod tests {
                 .connection()
                 .query_one_raw(Statement::from_string(
                     backend,
-                    "SELECT uuid, product_id FROM books",
+                    "SELECT title, product_id FROM store_listings",
                 ))
                 .await
                 .unwrap()
                 .unwrap();
             let err = only_column::<String>(&two).unwrap_err();
             assert!(
-                err.to_string().contains("product_id, uuid"),
+                err.to_string().contains("product_id, title"),
                 "{}: {err}",
                 profile.name()
             );

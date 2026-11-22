@@ -117,6 +117,7 @@ pub(crate) fn candidate_from_listing(
         rating_overall: detail.rating_overall,
         rating_count: detail.rating_count,
         is_abridged: detail.is_abridged,
+        is_explicit: detail.is_explicit,
         store_rank: None,
         work_id: listing.work_id.clone(),
         expression_id: listing.expression_id.clone(),

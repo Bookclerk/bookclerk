@@ -230,10 +230,6 @@ pub enum DbAtomicParams {
         holding_id: String,
         /// The edition whose `edition_acquisitions` row is written.
         edition_id: String,
-        /// The flat `books` row mirrored until the table is dropped (book
-        /// model step 6); `None` when the holding has none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        book_uuid: Option<String>,
         /// Acquire status string (`acquired`, `downloading`, …).
         status: String,
         /// Object-storage key for the primary audio artifact.

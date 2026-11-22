@@ -700,7 +700,7 @@ mod tests {
 
         store
             .update_user_fields(
-                &book.uuid,
+                &book.holding_id,
                 "shared",
                 &UserBookFields {
                     is_finished: Some(true),
@@ -709,7 +709,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let work = store.work_id_for_book(&book.uuid).await.unwrap().unwrap();
+        let work = store
+            .work_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         let states = store.user_title_states(&[ana.id, ben.id]).await.unwrap();
         assert_eq!(states.len(), 1, "{states:?}");
         assert_eq!(states[0].user_id, ana.id);

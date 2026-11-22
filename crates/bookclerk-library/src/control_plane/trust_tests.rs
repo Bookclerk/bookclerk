@@ -762,7 +762,6 @@ async fn add_book(store: &LibraryStore, account_id: &str, product_id: &str, asin
     store
         .scope(PLUGIN, "test")
         .upsert_book(&crate::store::NewBook {
-            uuid: None,
             product_id: product_id.into(),
             plugin_key: PLUGIN.into(),
             source: "test".into(),
@@ -1580,25 +1579,25 @@ async fn an_acquire_by_edition_picks_a_title_the_requester_may_acquire() {
                     .upsert_book(&crate::NewBook::minimal(product, account, "us", product))
                     .await
                     .unwrap()
-                    .uuid
+                    .holding_id
             }
         };
         let both_a1 = save("B0BOTH", "a1").await;
         let both_a2 = save("B0BOTH", "a2").await;
         let only_sam = save("B0SAM", "a2").await;
-        let both = store.edition_of_book(&both_a1).await.unwrap().unwrap();
+        let both = store.edition_of_holding(&both_a1).await.unwrap().unwrap();
         assert_eq!(
-            store.edition_of_book(&both_a2).await.unwrap().as_deref(),
+            store.edition_of_holding(&both_a2).await.unwrap().as_deref(),
             Some(both.as_str()),
             "one edition, held on two accounts"
         );
-        let sams = store.edition_of_book(&only_sam).await.unwrap().unwrap();
+        let sams = store.edition_of_holding(&only_sam).await.unwrap().unwrap();
         // A title is picked by its account holding.
         let holding = |uuid: String| {
             let store = store.clone();
             async move {
                 store
-                    .title_holding_of_book(&uuid)
+                    .acquire_title_of_holding(&uuid)
                     .await
                     .unwrap()
                     .unwrap()

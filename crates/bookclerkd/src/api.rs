@@ -350,19 +350,19 @@ struct StatusResponse {
     /// Count of configured store accounts.
     #[schema(example = 2)]
     accounts: usize,
-    /// Total title rows in the library.
+    /// Held works in the library (the works page index).
     #[schema(example = 412)]
     books: usize,
-    /// Titles whose `acquire_status` is `acquired`.
+    /// Held works whose furthest acquire state is `acquired`.
     #[schema(example = 380)]
     acquired: i64,
-    /// Titles still needing acquire (`not_acquired`).
+    /// Held works still needing acquire (`not_acquired`).
     #[schema(example = 27)]
     pending: i64,
-    /// Titles stuck in `error` after a failed acquire.
+    /// Held works stuck in `error` after a failed acquire.
     #[schema(example = 1)]
     error: i64,
-    /// Titles currently `queued` or `downloading`.
+    /// Held works currently `queued` or `downloading`.
     #[schema(example = 4)]
     in_progress: i64,
     /// Comma-joined `daemon.listen` addresses from live config.
@@ -1368,6 +1368,37 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         // Member to the store accounts linked to them.
         .routes(routes!(trigger_scan))
         .routes(routes!(trigger_acquire))
+        // Notifications: what is sent where, and the delivery log. The
+        // handlers admit only the operator, an Owner or an Administrator.
+        .routes(routes!(crate::notifications_api::get_catalog))
+        .routes(routes!(
+            crate::notifications_api::list_channels,
+            crate::notifications_api::post_channel
+        ))
+        .routes(routes!(
+            crate::notifications_api::patch_channel,
+            crate::notifications_api::delete_channel
+        ))
+        .routes(routes!(crate::notifications_api::post_channel_resume))
+        .routes(routes!(crate::notifications_api::post_channel_test))
+        .routes(routes!(crate::notifications_api::get_routes))
+        .routes(routes!(crate::notifications_api::put_routes))
+        .routes(routes!(crate::notifications_api::get_offers))
+        .routes(routes!(crate::notifications_api::put_offers))
+        .routes(routes!(crate::notifications_api::list_deliveries))
+        // A user's own notification settings and inbox.
+        .routes(routes!(crate::notifications_api::get_my_settings))
+        .routes(routes!(
+            crate::notifications_api::put_my_choice,
+            crate::notifications_api::delete_my_choice
+        ))
+        .routes(routes!(crate::notifications_api::post_my_destination))
+        .routes(routes!(crate::notifications_api::delete_my_destination))
+        .routes(routes!(
+            crate::notifications_api::post_my_destination_resume
+        ))
+        .routes(routes!(crate::notifications_api::get_my_inbox))
+        .routes(routes!(crate::notifications_api::post_my_inbox_read))
         // How listings resolve: the handlers admit only the operator, an
         // Owner or an Administrator.
         .routes(routes!(
@@ -4742,7 +4773,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
     let counts = library
-        .count_books_by_status()
+        .count_works_by_status()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let books = usize::try_from(counts.total).unwrap_or(0);
@@ -6147,8 +6178,8 @@ struct CatalogSearchQuery {
     path = "/api/discover/recommendations",
     responses(
         (status = 200, description = "The caller's stored Discover feed.", body = bookclerk_discover::DiscoverFeed),
-        (status = 401, description = "The caller has no portal identity.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 401, description = "The caller has no portal identity, or their session ended.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
+        (status = 500, description = "The lookup failed, or the caller's scope could not be read (no feed is shown unfiltered).", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
 async fn discover_recommendations(
@@ -6158,7 +6189,7 @@ async fn discover_recommendations(
     let library = state.library_snapshot().await;
 
     // Nothing to recommend from: answer at once, queue nothing.
-    let has_books = library.count_books(None).await.map_err(internal_err)? > 0;
+    let has_books = library.has_held_titles().await.map_err(internal_err)?;
     let has_open_requests = !library
         .list_title_requests(Some(RequestStatus::Open))
         .await
@@ -6221,6 +6252,19 @@ async fn discover_recommendations(
     };
     if feed.shelf_kinds.is_empty() {
         feed.shelf_kinds = bookclerk_discover::shelf_kind_catalog();
+    }
+    // A patron sees only cards inside their scope; the feed is shared by
+    // everyone with the same taste subject, so it is filtered per answer.
+    if let Some(scope) = crate::library_works::caller_scope(
+        &state,
+        &library,
+        &headers,
+        "GET /api/discover/recommendations",
+    )
+    .await
+    .map_err(|(status, Json(body))| ErrorResponse::from((status, body.error)))?
+    {
+        feed.retain_in_scope(&scope);
     }
     let files = crate::profile::files_dir(&state).await;
     for shelf in &mut feed.shelves {
@@ -6636,6 +6680,9 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
 }
 
 /// Runs a multi-store catalog search with a 15s wall budget and empty-query short circuit.
+///
+/// A patron only gets hits inside their scope: each hit's authors,
+/// narrators, series, genres and explicit flag are checked against it.
 #[utoipa::path(
     get,
     path = "/api/discover/search",
@@ -6643,6 +6690,8 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
     responses(
         (status = 200, description = "A page of catalog results.", body = bookclerk_discover::CatalogSearchPage),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("catalog query must be 256 bytes or fewer")),
+        (status = 401, description = "The caller's session ended.", body = String, content_type = "text/plain", example = json!("sign in again")),
+        (status = 500, description = "The caller's scope could not be read; no results are shown unfiltered.", body = String, content_type = "text/plain", example = json!("the library could not be read")),
         (status = 504, description = "The stores did not answer within the search budget.", body = String, content_type = "text/plain", example = json!("catalog search timed out")),
     ),
 )]
@@ -6704,6 +6753,12 @@ async fn discover_catalog_search(
         max_length_minutes: q.max_length_minutes.filter(|n| *n > 0),
     };
     let library = state.library_snapshot().await;
+    // Read before the search, so a patron whose scope cannot be read gets
+    // no results rather than unfiltered ones.
+    let scope =
+        crate::library_works::caller_scope(&state, &library, &headers, "GET /api/discover/search")
+            .await
+            .map_err(|(status, Json(body))| (status, body.error))?;
     let sources = state.sources.read().await;
     let page = timeout(
         CATALOG_SEARCH_TIMEOUT,
@@ -6739,6 +6794,9 @@ async fn discover_catalog_search(
     })?
     .map_err(internal_err)?;
     let mut page = page;
+    if let Some(scope) = &scope {
+        page.retain_in_scope(scope);
+    }
     // The PluginKey each hit's storefront pools its listings under, read
     // before the registry lock is released.
     let plugin_keys: std::collections::HashMap<String, String> = page

@@ -37,16 +37,18 @@ use crate::entities::{
     holdings, ignored_titles, ingest_batches, ingest_members, intake_items, job_secret_handoffs,
     job_temp_paths, jobs, library_identity, library_links, link_imports, link_requests,
     listening_progress, listing_offers, metadata_claims, node_credentials, node_enrollment_links,
-    node_upload_sessions, nodes, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
-    oidc_rp_states, operator_sessions, patron_controls, patron_scope_keys, patron_scopes,
-    pending_joins, playback_progress, playback_sessions, player_card_tokens, player_cards,
-    player_passwords, plugin_artifacts, plugin_cron_cursors, plugin_deployments, plugin_installs,
-    plugin_instances, plugin_kv, plugin_placements, plugin_schemas, plugin_versions,
-    portal_identities, portal_sessions, remote_plugin_consents, resolution_conflicts,
-    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
-    store_listings, title_request_sources, title_requests, user_invites, user_preferences,
-    user_title_state, user_work_tags, users, webauthn_challenges, webauthn_credentials,
-    window_book_parts, window_books, work_identifiers, work_tags, works,
+    node_upload_sessions, nodes, notifications, notify_deliveries, notify_destinations,
+    notify_inbox, notify_patron_offers, notify_patron_prefs, notify_patron_targets, notify_routes,
+    oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
+    patron_controls, patron_scope_keys, patron_scopes, pending_joins, playback_progress,
+    playback_sessions, player_card_tokens, player_cards, player_passwords, plugin_artifacts,
+    plugin_cron_cursors, plugin_deployments, plugin_installs, plugin_instances, plugin_kv,
+    plugin_placements, plugin_schemas, plugin_versions, portal_identities, portal_sessions,
+    remote_plugin_consents, resolution_conflicts, resolution_overrides, saved_filters,
+    security_audit_events, series, series_entries, store_listings, title_request_sources,
+    title_requests, user_invites, user_preferences, user_title_state, user_work_tags, users,
+    webauthn_challenges, webauthn_credentials, window_book_parts, window_books, work_identifiers,
+    work_tags, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -235,6 +237,16 @@ macro_rules! copied_entities {
         $each!(playback_progress);
         $each!(playback_sessions);
         $each!(bookmarks);
+        // Notification setup, the inbox and the delivery log; the log's
+        // send jobs move with `jobs` below.
+        $each!(notify_destinations);
+        $each!(notify_routes);
+        $each!(notify_patron_offers);
+        $each!(notify_patron_prefs);
+        $each!(notify_patron_targets);
+        $each!(notifications);
+        $each!(notify_deliveries);
+        $each!(notify_inbox);
         $each!(embeddings);
         $each!(user_preferences);
         $each!(patron_controls);

@@ -234,15 +234,12 @@ impl TitleWalk {
     }
 }
 
-/// True when `title` names any of `ids` (its library UUID, store product
+/// True when `title` names any of `ids` (its holding id, store product
 /// id, ISBN or ASIN, any case); an empty `ids` names every title.
 pub(crate) fn title_is_named(title: &AcquireTitle, ids: &[String]) -> bool {
     ids.is_empty()
         || ids.iter().any(|a| {
-            title
-                .book_uuid
-                .as_ref()
-                .is_some_and(|uuid| a.eq_ignore_ascii_case(uuid))
+            a.eq_ignore_ascii_case(&title.holding_id)
                 || a.eq_ignore_ascii_case(&title.product_id)
                 || title
                     .isbn
@@ -340,7 +337,7 @@ async fn reconcile_one(
         }
         TitleUpdate::Cleared => {
             let still_there = match title.storage_key.as_deref() {
-                Some(key) => storage.exists(key).await?,
+                Some(key) => exists_here(storage, key).await?,
                 None => false,
             };
             if still_there {
@@ -413,10 +410,24 @@ async fn key_present(
     key: &str,
 ) -> Result<bool> {
     let _ = index;
-    storage
-        .exists(key)
-        .await
-        .map_err(crate::error::AcquireError::Storage)
+    exists_here(storage, key).await
+}
+
+/// Whether `key` holds an object on `storage`.
+///
+/// Reconcile probes keys spelled under every filesystem's rules, so a key
+/// this backend refuses to spell (a `:` on a Windows disk) cannot hold
+/// anything there and counts as absent instead of failing the pass.
+///
+/// # Errors
+///
+/// Returns any other storage error.
+async fn exists_here(storage: &dyn StorageBackend, key: &str) -> Result<bool> {
+    match storage.exists(key).await {
+        Ok(found) => Ok(found),
+        Err(bookclerk_storage::StorageError::InvalidKey(_)) => Ok(false),
+        Err(err) => Err(crate::error::AcquireError::Storage(err)),
+    }
 }
 
 async fn best_identity(
@@ -460,11 +471,7 @@ async fn first_live_scan_identity(
         }
         let page_len = page.len();
         for (key, rank) in page {
-            if storage
-                .exists(&key)
-                .await
-                .map_err(crate::error::AcquireError::Storage)?
-            {
+            if exists_here(storage, &key).await? {
                 return Ok(Some(key));
             }
             after = Some((rank, key));
@@ -612,11 +619,7 @@ async fn find_pattern(
     pattern: &str,
 ) -> Result<Option<String>> {
     for key in index.keys_matching_pattern(pattern) {
-        if storage
-            .exists(&key)
-            .await
-            .map_err(crate::error::AcquireError::Storage)?
-        {
+        if exists_here(storage, &key).await? {
             return Ok(Some(key));
         }
     }
@@ -650,10 +653,7 @@ async fn find_pattern_in_scan(
         let page_len = page.len();
         for key in page {
             if bookclerk_config::key_matches_reconcile_pattern(pattern, &key)
-                && storage
-                    .exists(&key)
-                    .await
-                    .map_err(crate::error::AcquireError::Storage)?
+                && exists_here(storage, &key).await?
             {
                 return Ok(Some(key));
             }
@@ -931,6 +931,14 @@ mod reconcile_integration {
     use tempfile::tempdir;
 
     #[tokio::test]
+    async fn a_key_the_backend_cannot_spell_is_absent() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().join("books")).unwrap();
+        assert!(!exists_here(&backend, "../outside.m4b").await.unwrap());
+        assert!(exists_here(&BoomStorage, "a.m4b").await.is_err());
+    }
+
+    #[tokio::test]
     async fn matches_existing_file_by_asin_in_path() {
         let dir = tempdir().unwrap();
         let store_root = dir.path().join("books");
@@ -969,11 +977,11 @@ mod reconcile_integration {
         .unwrap();
         assert_eq!(summary.matched, 1);
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(book.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(book.status, AcquireStatus::Acquired);
         assert!(book.storage_key.as_deref().unwrap().contains("B00EXAMPLE1"));
     }
 
@@ -1020,7 +1028,7 @@ mod reconcile_integration {
         .unwrap();
         assert_eq!(summary.matched, 1);
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
@@ -1075,7 +1083,7 @@ mod reconcile_integration {
         .unwrap();
         assert_eq!(summary.matched, 1);
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
@@ -1123,14 +1131,11 @@ mod reconcile_integration {
             "{err}"
         );
         let book = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            book.acquire_status,
-            bookclerk_library::AcquireStatus::Acquired
-        );
+        assert_eq!(book.status, bookclerk_library::AcquireStatus::Acquired);
         assert_eq!(book.storage_key.as_deref(), Some("kept.m4b"));
     }
 
@@ -1357,7 +1362,6 @@ mod reconcile_integration {
             pdf_status: AcquireStatus::NotAcquired,
             pdf_storage_key: None,
             pdf_acquired_by: None,
-            book_uuid: Some("mine".into()),
         };
         let mut walk = TitleWalk::default();
         assert_eq!(
@@ -1371,7 +1375,6 @@ mod reconcile_integration {
         assert_eq!(title_update(&title, &walk, None), TitleUpdate::Cleared);
         let sibling = AcquireTitle {
             holding_id: "other".into(),
-            book_uuid: Some("theirs".into()),
             ..title.clone()
         };
         assert_eq!(title_update(&sibling, &walk, None), TitleUpdate::Unchanged);
@@ -1462,13 +1465,13 @@ mod reconcile_integration {
         book.authors = Some("Jane Doe".into());
         library.upsert_book(&book).await.unwrap();
         let stored = library
-            .get_book("B00EXAMPLE1", "acct")
+            .held_title("B00EXAMPLE1", "acct")
             .await
             .unwrap()
             .unwrap();
         // The default layout names the file after the edition's call number.
         let edition = library
-            .edition_of_book(&stored.uuid)
+            .edition_of_holding(&stored.holding_id)
             .await
             .unwrap()
             .unwrap();

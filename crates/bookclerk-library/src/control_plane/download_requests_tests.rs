@@ -51,7 +51,7 @@ async fn a_held_work_without_a_copy_is_planned() {
 
         let plan = plan_download_request(&store, &works[0]).await.unwrap();
         let book = store
-            .get_book("B0WANTED01", "riley-acct")
+            .held_title("B0WANTED01", "riley-acct")
             .await
             .unwrap()
             .unwrap();
@@ -74,11 +74,15 @@ async fn a_held_work_without_a_copy_is_planned() {
             .await
             .unwrap();
         let have = store
-            .get_book("B0HAVEIT01", "riley-acct")
+            .held_title("B0HAVEIT01", "riley-acct")
             .await
             .unwrap()
             .unwrap();
-        let owner = store.file_owner_of_book(&have.uuid).await.unwrap().unwrap();
+        let owner = store
+            .file_owner_of_holding(&have.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(store
             .record_edition_file("local", "A/Have/Have.m4b", &owner, FileRole::Audio)
             .await

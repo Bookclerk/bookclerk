@@ -51,6 +51,8 @@ boundary extends it.
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
 | `notify_raise` | A plugin's `NOTIFY.raise`: the `/notify/raise` JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert | `bookclerk-plugin-abi::notifications::check_raise_params` |
+| `notify_address_body` | The `address` object of a patron's `POST /api/me/notifications/destinations` body: a flat object of strings with no key written twice | `bookclerk-plugin-abi::notifications::AddressFields` |
+| `notify_cursor` | The `cursor` query parameter of the notification delivery log and a patron's inbox: a token the caller sends back | `bookclerk-library::NotifyCursor::decode` |
 | `event_read` | A plugin's request to read past events (`EVENTS.read`): the `/events/read` JSON body, its cursor, the Cap'n Proto request and page codecs, and the consent, page and time bounds | `bookclerk-plugin-abi::validate_event_read_request` |
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
@@ -462,6 +464,21 @@ only that. The others check:
   action is not `none`. An accepted raise round-trips through the codec and
   is accepted again. The shared oracle is `fuzz/oracles/notify_raise.rs`,
   replayed from `bookclerk-plugin-abi`.
+- **`notify_address_body`**: the input is the `address` object. It is
+  accepted exactly when an independent reading that keeps every entry,
+  repeats included, finds one JSON object whose values are all strings and
+  whose keys are all different, and the accepted fields are the same as
+  that reading's. An accepted address written out again reads back the
+  same. The shared oracle is `fuzz/oracles/notify_address_body.rs`,
+  replayed from `bookclerk-plugin-abi`.
+- **`notify_cursor`**: the input is the token. It is accepted exactly
+  when it is at most 512 bytes of unpadded base64url whose bytes are one
+  JSON object with exactly the keys `created_at` and `id`, each written
+  once, each a string of at most 128 bytes with no U+0000, as the
+  oracle's own base64url
+  decoder and an untyped reading of the JSON agree. An accepted token
+  re-encodes to one that decodes to the same cursor. The shared oracle is
+  `fuzz/oracles/notify_cursor.rs`, replayed from `bookclerk-library`.
 - **`event_read`**: byte 0 modulo 4 picks a `/events/read` JSON body (0),
   a bare cursor (1), or a Cap'n Proto `EventReadRequest` (2) or
   `EventReadPage` (3). The body parser accepts exactly the JSON objects whose

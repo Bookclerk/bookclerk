@@ -702,3 +702,81 @@ async fn a_job_pinned_to_a_node_is_claimed_by_that_node_only() {
     assert_eq!(claim.job.id, pinned);
     assert_eq!(claim.job.kind, JobKind::CacheSweep);
 }
+
+#[tokio::test]
+async fn an_instance_runs_only_where_an_up_guest_has_a_live_database_node() {
+    let (_dir, store, _b) = sqlite_stores().await;
+    let local = create_plugin_instance(&store, &operator(), LOCAL_KEY, "")
+        .await
+        .unwrap();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let running =
+        |now_ms: i64| instance_running_on_database_node(&store, local.id.as_str(), now_ms);
+    assert!(!running(now_ms).await.unwrap(), "no deployment");
+    assert!(
+        !instance_running_on_database_node(&store, "not an id", now_ms)
+            .await
+            .unwrap()
+    );
+    let beat = |node: &'static str| {
+        let store = store.clone();
+        async move {
+            crate::control_plane::node_status::record_node_heartbeat(
+                &store,
+                node,
+                &crate::control_plane::node_status::NodeHeartbeat {
+                    incarnation: "test".into(),
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                    interval: Duration::from_secs(15),
+                    cpu_millicores: 1000,
+                    memory_bytes: None,
+                    cpu_used_millicores: None,
+                    memory_available_bytes: None,
+                    files_dir_free_bytes: None,
+                    cache: None,
+                    public_origin: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+    };
+    deploy(&store, &local.id, "node-a", DeploymentStatus::Error).await;
+    beat("node-a").await;
+    assert!(!running(now_ms).await.unwrap(), "the guest is not up");
+    // A branch with its own database runs it, but cannot run work that
+    // needs the library's database.
+    let now = chrono::Utc::now().to_rfc3339();
+    crate::entities::nodes::ActiveModel {
+        node_id: Set("branch-c".into()),
+        library_id: Set("library".into()),
+        created_at: Set(now.clone()),
+        incarnation: Set("test".into()),
+        heartbeat_at: Set(now),
+        software_version: Set("1.0.0".into()),
+        schema_state: Set("current".into()),
+        compatible: Set(1),
+        target: Set(String::new()),
+        labels_json: Set("[]".into()),
+        kind: Set("branch".into()),
+        ..Default::default()
+    }
+    .insert(store.db())
+    .await
+    .unwrap();
+    deploy(&store, &local.id, "branch-c", DeploymentStatus::Healthy).await;
+    beat("branch-c").await;
+    assert!(!running(now_ms).await.unwrap(), "only on a branch");
+    deploy(&store, &local.id, "node-b", DeploymentStatus::Running).await;
+    assert!(
+        !running(now_ms).await.unwrap(),
+        "node-b never sent a heartbeat"
+    );
+    deploy(&store, &local.id, "node-a", DeploymentStatus::Healthy).await;
+    assert!(running(now_ms).await.unwrap(), "up on a live node");
+    let much_later = now_ms + 60 * 60 * 1000;
+    assert!(
+        !running(much_later).await.unwrap(),
+        "the node's heartbeat went stale"
+    );
+}

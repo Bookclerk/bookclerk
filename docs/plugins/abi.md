@@ -1387,13 +1387,13 @@ names, send one credit per name; split a display string such as
 `"Jane Doe, John Roe"` only when that is all the store gives.
 
 > [!NOTE]
-> Until the library stores works, expressions and editions, the host maps
-> these records onto its current flat title row: names join by role, the
-> first ISBN and ASIN fill the identifier columns, and the first series
-> entry fills the series columns. An episode with no `storeSeriesId` is
-> filed under the show named by `parentProductId`. Ebook and print scan
-> records are not stored yet, since the flat row cannot keep them out of
-> acquire, and records with an unspecified kind are never stored.
+> The host resolves each record into a listing of its work, expression and
+> edition. A record that is not a valid listing is stored from its flat
+> fields instead: names join by role, the first ISBN and ASIN fill the
+> identifiers, and the first series entry fills the series. An episode
+> with no `storeSeriesId` is filed under the show named by
+> `parentProductId`. Ebook and print scan records are not stored yet, and
+> records with an unspecified kind are never stored.
 
 ### Metadata providers
 
@@ -1630,8 +1630,10 @@ The typed methods on `Notifier` and `NotifierEntrypoint` are:
 | `validateDestination` | `({ addressJson })` → `{ addressJson, label? }`. Check and normalise a personal address a patron entered; `label` is a short hint that is never a secret (`a***@example.com`). The default accepts the address as given |
 
 A `NotificationMessage` carries `notificationId` (the same on every
-destination's copy, so use it as an idempotency key where the service
-takes one), `notificationType`, `severity`, `title`, a plain `text` body,
+destination's copy; where the service takes an idempotency key, build it
+from `notificationId` and the destination's `destinationId`, so two
+addresses on one service account both receive it and a retry to the same
+destination reuses the same key), `notificationType`, `severity`, `title`, a plain `text` body,
 optional `markdown` and `html` bodies, an optional `link` into the
 library, labelled `fields`, an optional `groupKey` for threading, and an
 alert action and key for services that open and close incidents. When
@@ -1691,10 +1693,13 @@ export class Notifier extends NotifierEntrypoint<Env> {
 }
 ```
 
-> [!NOTE]
-> The host does not route notifications yet: notifiers answer health
-> probes only. The router, the `notify.send` jobs, the delivery log and
-> the inbox come next, followed by the first providers.
+The host gives `send` 30 seconds and `validateDestination` 6 seconds;
+a call that runs longer is dropped and answers `unavailable`, so a send
+is retried.
+
+The host calls `send` from one `notify_send` job per delivery and
+records the answer in the delivery log; see
+[Notifications](../server/notifications.md) for retries and pausing.
 
 ### Raising notifications
 
@@ -1717,20 +1722,21 @@ await env.NOTIFY.raise({
   the host adds.
 - `fields` are `{ name, value }` rows or a plain object, with the caps of
   a message's fields.
-- `patronId` is required for a `patron` type and must be inside the
-  invocation's account scope.
+- `patronId` is required for a `patron` type: the patron's library
+  user id in decimal (`"42"`, with no sign or leading zero), for a patron
+  who holds the store account the invocation runs for.
 - `linkPath` is a path inside the library (`/books/42`): it starts with
   one `/` and has no space or backslash. The host adds its public origin.
 - `groupKey`, `alertAction` and `alertKey` follow the message rules.
 
 `raise` answers the host's `notificationId`, or `invalid_params` for an
 undeclared type or a malformed raise, `forbidden` for a patron outside
-the scope, and `rate_limited` past the per-instance raise budget.
+the scope, and `rate_limited` past the per-session raise budget.
 Python authors call `env.NOTIFY.raise_(...)` with snake-case keywords.
 Native guests receive the binding as `Bindings.notify`.
-
-> [!NOTE]
-> The host does not hand out `NOTIFY` yet; it comes with the router.
+The binding is handed to the instance's entrypoint calls (not to
+stream copies). A plugin may raise at most 30 notifications a minute per
+session (one per store account the instance works for).
 
 ### Public addresses (`ingress`)
 

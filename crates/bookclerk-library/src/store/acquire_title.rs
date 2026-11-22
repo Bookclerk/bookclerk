@@ -3,22 +3,37 @@
 //!
 //! An [`AcquireTitle`] is built from the account's holding of a store
 //! listing, the listing's store text, the edition it sells, that edition's
-//! identifiers and its acquire state, so acquire can stop reading the flat
-//! `books` row. While `books` still exists the view also names the flat
-//! row's UUID, which the status writes are still keyed by.
+//! identifiers and its acquire state.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use super::LibraryStore;
 use crate::entities::{
-    accounts, books, edition_acquisitions, edition_identifiers, editions, expressions, holdings,
+    accounts, edition_acquisitions, edition_identifiers, editions, expressions, holdings,
     store_listings, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
+
+/// The spellings of `value` an exact, indexed comparison tries: as given,
+/// ASCII-lowercased and ASCII-uppercased, without duplicates.
+///
+/// Store ids are compared case-insensitively by the callers. Stored ids are
+/// uniformly cased in practice (ASINs upper, uuids lower, ISBN digits), so
+/// these three spellings find a row through its index where `lower(col)`
+/// would scan the table; callers still check the match case-insensitively.
+fn case_variants(value: &str) -> Vec<String> {
+    let mut out = vec![value.to_string()];
+    for variant in [value.to_ascii_lowercase(), value.to_ascii_uppercase()] {
+        if !out.contains(&variant) {
+            out.push(variant);
+        }
+    }
+    out
+}
 
 /// One title an account holds, as acquire reads it from the library model.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,7 +84,7 @@ pub struct AcquireTitle {
     pub language: Option<String>,
     /// True when the store or the expression marks it abridged.
     pub is_abridged: bool,
-    /// What the title is, in the flat row's labels: `episode` for a
+    /// What the title is, in the scan's `content_kind` labels: `episode` for a
     /// podcast episode, `podcast` for a show, `book` otherwise.
     pub content_kind: &'static str,
     /// When the account bought the title, when the store reported it.
@@ -96,9 +111,6 @@ pub struct AcquireTitle {
     /// The account holding (`holdings.id`) whose title's write set the
     /// PDF state; `None` as for [`Self::acquired_by`].
     pub pdf_acquired_by: Option<String>,
-    /// The flat `books` row of this account's title, while that table
-    /// exists: writers that still mirror it name it (book model step 6).
-    pub book_uuid: Option<String>,
 }
 
 /// One page of [`LibraryStore::acquire_titles_page`].
@@ -126,7 +138,7 @@ impl AcquireTitle {
     }
 
     /// Naming and display fallback: ASIN, else ISBN, else the store's
-    /// product id (the same order as the flat row's).
+    /// product id.
     #[must_use]
     pub fn asin_or_isbn(&self) -> &str {
         self.asin
@@ -171,8 +183,6 @@ struct TitleRows {
     /// The holdings named by `acquisitions` (audio or PDF writer) that
     /// still exist.
     live_writers: HashSet<String>,
-    /// Flat `books` rows by (plugin key, account, product id).
-    books: HashMap<(String, String, String), books::Model>,
     /// Account display aliases by (plugin key, account).
     sources: HashMap<(String, String), String>,
 }
@@ -278,13 +288,13 @@ impl LibraryStore {
     ///
     /// `id` matches, ignoring ASCII case, a listing's store product id, an
     /// ASIN or ISBN of the listing's edition (every listing of that
-    /// edition), a holding id, or, while `books` exists, a flat row's UUID.
+    /// edition), or a holding id.
     ///
     /// # Arguments
     ///
     /// * `account_id` - Only the titles of the accounts this id or label
     ///   names (ignoring ASCII case), when set.
-    /// * `id` - The product id, ASIN, ISBN, holding id or library UUID.
+    /// * `id` - The product id, ASIN, ISBN, or holding id.
     ///
     /// # Returns
     ///
@@ -318,7 +328,7 @@ impl LibraryStore {
             .flatten()
             .map(|(_, account)| account.clone())
             .collect();
-        let variants = super::book_lookup::case_variants(&id);
+        let variants = case_variants(&id);
         let mut edition_ids: Vec<String> = edition_identifiers::Entity::find()
             .filter(edition_identifiers::Column::Scheme.is_in(["asin", "isbn"]))
             .filter(edition_identifiers::Column::Value.is_in(variants.clone()))
@@ -347,10 +357,7 @@ impl LibraryStore {
             .map(|m| m.id),
         );
         let listing_ids = distinct(listing_ids.into_iter());
-        let mut holding_ids = variants;
-        if let Some(title) = self.title_holding_of_book(&id).await? {
-            holding_ids.push(title.holding_id);
-        }
+        let holding_ids = variants;
         let account = |query: sea_orm::Select<holdings::Entity>| match named {
             Some(_) => query.filter(holdings::Column::AccountId.is_in(account_ids.clone())),
             None => query,
@@ -583,6 +590,32 @@ impl LibraryStore {
         })
     }
 
+    /// Every account title, in holding order: [`Self::acquire_titles_page`]
+    /// walked to its end.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - Only the titles of the accounts this id or label
+    ///   names (ignoring ASCII case), when set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn all_acquire_titles(&self, account_id: Option<&str>) -> Result<Vec<AcquireTitle>> {
+        let mut titles = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let page = self
+                .acquire_titles_page(account_id, after.as_deref(), 64)
+                .await?;
+            titles.extend(page.titles);
+            match page.next {
+                Some(next) => after = Some(next),
+                None => return Ok(titles),
+            }
+        }
+    }
+
     /// The titles of `holdings` (account holdings), in their order, read in
     /// one chunked query per table.
     pub(crate) async fn acquire_titles_of(
@@ -671,44 +704,6 @@ impl LibraryStore {
         .into_iter()
         .map(|m| m.id)
         .collect();
-        // Legacy book rows (until `books` is dropped) are read per account,
-        // for that account's own products only: another account's row for
-        // the same product is never needed, and one too wide to read must
-        // not keep this account's titles out.
-        let mut products_of: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-        for holding in holdings {
-            if let (Some(plugin), Some(account), Some(listing)) = (
-                &holding.plugin_key,
-                &holding.account_id,
-                rows.listings.get(&holding.listing_id),
-            ) {
-                products_of
-                    .entry((plugin.clone(), account.clone()))
-                    .or_default()
-                    .insert(listing.product_id.clone());
-            }
-        }
-        for ((plugin, account), products) in products_of {
-            let products: Vec<String> = products.into_iter().collect();
-            for m in find_chunked_paged::<books::Entity, _>(self, &products, |part| {
-                books::Entity::find()
-                    .filter(books::Column::PluginKey.eq(plugin.as_str()))
-                    .filter(books::Column::AccountId.eq(account.as_str()))
-                    .filter(books::Column::ProductId.is_in(part.to_vec()))
-                    .order_by_asc(books::Column::Id)
-            })
-            .await?
-            {
-                rows.books.insert(
-                    (
-                        m.plugin_key.clone(),
-                        m.account_id.clone(),
-                        m.product_id.clone(),
-                    ),
-                    m,
-                );
-            }
-        }
         let account_ids = distinct(holdings.iter().filter_map(|h| h.account_id.clone()));
         rows.sources = find_chunked_paged::<accounts::Entity, _>(self, &account_ids, |part| {
             accounts::Entity::find()
@@ -739,16 +734,10 @@ impl TitleRows {
             .map(Vec::as_slice)
             .unwrap_or_default();
         let acquisition = self.acquisitions.get(&listing.edition_id);
-        let book = self.books.get(&(
-            plugin_key.clone(),
-            account_id.clone(),
-            listing.product_id.clone(),
-        ));
         let source = self
             .sources
             .get(&(plugin_key.clone(), account_id.clone()))
             .cloned()
-            .or_else(|| book.map(|b| b.source.clone()))
             .unwrap_or_default();
 
         let asins = || identifiers.iter().filter(|m| m.scheme == "asin");
@@ -844,7 +833,6 @@ impl TitleRows {
             pdf_status,
             pdf_storage_key,
             pdf_acquired_by,
-            book_uuid: book.map(|b| b.uuid.clone()),
         })
     }
 }
@@ -853,6 +841,13 @@ impl TitleRows {
 mod tests {
     use super::*;
     use crate::store::NewBook;
+
+    #[test]
+    fn case_variants_keep_the_given_spelling_first_and_drop_duplicates() {
+        assert_eq!(case_variants("b0ABc"), vec!["b0ABc", "b0abc", "B0ABC"]);
+        assert_eq!(case_variants("B0ABC"), vec!["B0ABC", "b0abc"]);
+        assert_eq!(case_variants("9781"), vec!["9781"]);
+    }
 
     #[test]
     fn times_read_as_rfc3339_or_a_date() {
@@ -911,7 +906,10 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(accounts(by_holding), accounts(mine), "{name}");
-            let by_uuid = store.acquire_titles_named(None, &flat.uuid).await.unwrap();
+            let by_uuid = store
+                .acquire_titles_named(None, &flat.holding_id)
+                .await
+                .unwrap();
             assert_eq!(
                 accounts(by_uuid),
                 vec![("acct".to_string(), "9780000000017".to_string())],
@@ -931,7 +929,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_view_matches_the_flat_row_under_every_profile() {
+    async fn the_view_carries_what_was_recorded_under_every_profile() {
         for profile in crate::test_support::Profile::ALL {
             let kit = crate::test_support::sqlite::memory(profile).await;
             let store = kit.store();
@@ -976,45 +974,40 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            let flat = store.get_book_by_uuid(&flat.uuid).await.unwrap().unwrap();
             let name = profile.name();
-            assert_eq!(
-                view.book_uuid.as_deref(),
-                Some(flat.uuid.as_str()),
-                "{name}"
-            );
+            assert_eq!(view.holding_id, flat.holding_id, "{name}");
             assert_eq!(
                 Some(view.edition_id.clone()),
-                store.edition_of_book(&flat.uuid).await.unwrap()
+                store.edition_of_holding(&flat.holding_id).await.unwrap()
             );
-            assert_eq!(view.plugin_key, flat.plugin_key);
-            assert_eq!(view.account_id, flat.account_id);
-            assert_eq!(view.marketplace, flat.marketplace.to_lowercase());
-            assert_eq!(view.product_id, flat.download_product_id());
-            assert_eq!(view.asin, flat.asin, "{name}");
-            assert_eq!(view.isbn, flat.isbn);
-            assert_eq!(view.asin_or_isbn(), flat.asin_or_isbn());
-            assert_eq!(view.title, flat.title);
-            assert_eq!(view.authors, flat.authors);
-            assert_eq!(view.narrators, flat.narrators);
-            assert_eq!(view.series, flat.series);
-            assert_eq!(view.series_index, flat.series_index);
-            assert_eq!(view.series_product_id, flat.series_asin);
-            assert_eq!(view.publisher, flat.publisher);
-            assert_eq!(view.categories, flat.categories);
-            assert_eq!(view.length_minutes, flat.length_minutes, "{name}");
-            assert_eq!(view.is_abridged, flat.is_abridged);
+            assert_eq!(view.plugin_key, "audible");
+            assert_eq!(view.account_id, "acct");
+            assert_eq!(view.marketplace, "us");
+            assert_eq!(view.product_id, "B0VIEW001");
+            assert_eq!(view.asin.as_deref(), Some("B0VIEW001"), "{name}");
+            assert_eq!(view.isbn, None);
+            assert_eq!(view.asin_or_isbn(), "B0VIEW001");
+            assert_eq!(view.title, book.title);
+            assert_eq!(view.authors, book.authors);
+            assert_eq!(view.narrators, book.narrators);
+            assert_eq!(view.series, book.series);
+            assert_eq!(view.series_index, book.series_index);
+            assert_eq!(view.series_product_id, book.series_asin);
+            assert_eq!(view.publisher, book.publisher);
+            assert_eq!(view.categories, book.categories);
+            assert_eq!(view.length_minutes, book.length_minutes, "{name}");
+            assert_eq!(view.is_abridged, book.is_abridged);
             assert_eq!(view.content_kind, "book");
-            assert_eq!(view.purchased_at, flat.purchased_at, "{name}");
+            assert_eq!(view.purchased_at, book.purchased_at, "{name}");
             assert!(
                 view.added_at.is_some(),
                 "{name}: the holding's first record"
             );
-            assert_eq!(view.published_at, flat.published_at, "{name}");
-            assert_eq!(view.status, flat.acquire_status);
-            assert_eq!(view.storage_key, flat.storage_key);
-            assert_eq!(view.pdf_status, flat.pdf_status);
-            assert_eq!(view.pdf_storage_key, flat.pdf_storage_key);
+            assert_eq!(view.published_at, book.published_at, "{name}");
+            assert_eq!(view.status, AcquireStatus::Acquired);
+            assert_eq!(view.storage_key.as_deref(), Some("Ann Author/Viewed.m4b"));
+            assert_eq!(view.pdf_status, AcquireStatus::Queued);
+            assert_eq!(view.pdf_storage_key, None);
             assert!(view.acquired_here(), "{name}");
             assert!(view.pdf_acquired_here(), "{name}");
 
@@ -1161,7 +1154,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(single.as_ref(), Some(title), "{name}");
                 assert_eq!(title.source, "audible", "{name}");
-                assert!(title.book_uuid.is_some(), "{name}");
+                assert!(!title.holding_id.is_empty(), "{name}");
             }
             let mut held: Vec<_> = all
                 .iter()
@@ -1185,7 +1178,7 @@ mod tests {
             // Two accounts' titles of one product share its edition.
             let shared: Vec<_> = all.iter().filter(|t| t.product_id == "B0PAGE002").collect();
             assert_eq!(shared[0].edition_id, shared[1].edition_id, "{name}");
-            assert_ne!(shared[0].book_uuid, shared[1].book_uuid, "{name}");
+            assert_ne!(shared[0].holding_id, shared[1].holding_id, "{name}");
         }
     }
 }

@@ -28,6 +28,8 @@ Bookclerk on your own computer first, see
   plugins; isolation modes.
 - [Libraries and branches](branches.md): join a library, branches on
   its database and consent.
+- [Notifications](notifications.md): channels, routes, patron choices,
+  the inbox and the delivery log.
 - [Public address](ingress.md): reach the library from the internet
   through an ingress plugin, with no port forwarding.
 - [Media worker](media.md): the confined process that handles audio

@@ -80,7 +80,7 @@ async fn world() -> World {
         .await
         .unwrap();
     let owner = store
-        .file_owner_of_book(&saved.uuid)
+        .file_owner_of_holding(&saved.holding_id)
         .await
         .unwrap()
         .unwrap();
@@ -88,9 +88,17 @@ async fn world() -> World {
         .record_edition_file("local", KEY, &owner, FileRole::Audio)
         .await
         .unwrap());
-    let work = store.work_id_for_book(&saved.uuid).await.unwrap().unwrap();
+    let work = store
+        .work_of_holding(&saved.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
     store.refresh_library_works(&[work]).await.unwrap();
-    let item = store.edition_of_book(&saved.uuid).await.unwrap().unwrap();
+    let item = store
+        .edition_of_holding(&saved.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
     World {
         app: crate::api::router(Arc::clone(&state), None),
         riley_cookie: crate::auth::tests::portal_cookie_for(&store, "test", "riley-ext").await,

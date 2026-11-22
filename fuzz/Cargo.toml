@@ -665,6 +665,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "notify_address_body"
+path = "fuzz_targets/notify_address_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notify_cursor"
+path = "fuzz_targets/notify_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "chapter_request"
 path = "fuzz_targets/chapter_request.rs"
 test = false
