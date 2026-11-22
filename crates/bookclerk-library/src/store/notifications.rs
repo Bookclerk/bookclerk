@@ -317,9 +317,10 @@ impl LibraryStore {
     /// # Errors
     ///
     /// [`LibraryError::Invalid`] when the notification breaks a message
-    /// rule; [`LibraryError::NotFound`] when its patron does not exist; an
-    /// error when a read or the batch fails. A failed enqueue is not an
-    /// error: the delivery waits for the sweep.
+    /// rule; [`LibraryError::NotFound`] when its patron does not exist;
+    /// [`LibraryError::Conflict`] when route replacements kept landing while
+    /// it was routed; an error when a read or the batch fails. A failed
+    /// enqueue is not an error: the delivery waits for the sweep.
     pub async fn route_notification(
         &self,
         new: &NewNotification,
@@ -526,7 +527,8 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// An error when a read fails.
+    /// An error when a read fails, and [`LibraryError::Conflict`] when route
+    /// replacements kept landing between the reads.
     async fn route_targets(&self, new: &NewNotification) -> Result<RouteTargets> {
         let mut out: BTreeMap<String, Destination> = BTreeMap::new();
         let mut staff_inbox = false;
@@ -535,9 +537,10 @@ impl LibraryStore {
                 // The channel routes and the In app route are two reads; a
                 // replacement writes both in one batch and restamps every
                 // channel route, so the channel routes are read again after
-                // the In app route and the pair is read afresh (up to three
-                // times) when they moved, so routing follows one complete
-                // configuration.
+                // the In app route and the pair is read afresh when they
+                // moved. Routing follows one complete configuration: after
+                // three reads that each saw a replacement, the notification
+                // is refused rather than routed by a mixed pair.
                 let read_routes = || {
                     notify_routes::Entity::find()
                         .filter(notify_routes::Column::NotificationType.eq(&new.notification_type))
@@ -553,8 +556,14 @@ impl LibraryStore {
                             .await
                             .map_err(LibraryError::Orm)?;
                     let again = read_routes().await.map_err(LibraryError::Orm)?;
-                    if again == routes || attempt >= 3 {
+                    if again == routes {
                         break in_app;
+                    }
+                    if attempt >= 3 {
+                        return Err(LibraryError::Conflict(
+                            "the notification routes changed while this notification was routed"
+                                .into(),
+                        ));
                     }
                     routes = again;
                 };

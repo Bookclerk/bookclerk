@@ -86,8 +86,10 @@ export function NotificationBell({ onNavigate }: { onNavigate: (view: AppView) =
   }, [sink]);
 
   // The bell lives only while someone is signed in: a read that finishes
-  // after it unmounts (a sign-out) must not alert the next person, and only
-  // the newest read may set what the bell shows.
+  // after it unmounts (a sign-out) must not alert the next person. Only the
+  // newest read sets what the bell shows, but every read of this session
+  // feeds the alerts (the tracker announces each entry once), so a newer
+  // read that fails cannot swallow an older one's alerts.
   const mounted = useRef(true);
   const latest = useRef(0);
   useEffect(() => {
@@ -111,10 +113,12 @@ export function NotificationBell({ onNavigate }: { onNavigate: (view: AppView) =
     const current = () => mounted.current && request === latest.current;
     try {
       const page = await fetchInbox({ limit: BELL_PAGE });
-      if (!current()) return;
-      setEntries(page.entries);
-      setUnread(page.unread);
-      setFailed(false);
+      if (!mounted.current) return;
+      if (current()) {
+        setEntries(page.entries);
+        setUnread(page.unread);
+        setFailed(false);
+      }
       const fresh = tracker.current.observe(page.entries);
       // The bell is enough while the person is looking at the app.
       if (alertsRef.current === "on" && !document.hasFocus()) {
