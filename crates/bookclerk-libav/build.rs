@@ -197,19 +197,27 @@ fn msys_command(program: &str) -> Command {
 
 /// Makes `<name>.lib` exist in `lib`, the name Rust links on MSVC.
 ///
-/// FFmpeg's MSVC build names its static libraries `lib<name>.a`; the
-/// archive format is already MSVC's, so a copy under the other name is
-/// enough.
+/// FFmpeg 9's MSVC build installs `<name>.lib` itself; some builds name
+/// the archive `lib<name>.a` instead, and the format is already MSVC's,
+/// so a copy under the other name is enough. When both exist the `.a`
+/// is copied over, so a rebuilt archive never sits behind a stale `.lib`
+/// (the install directory is also cleared before every rebuild).
 ///
 /// # Panics
 ///
 /// When neither file exists or the copy fails.
 fn msvc_library_name(lib: &Path, name: &str) {
-    // Always copied, so a rebuilt `lib<name>.a` never sits behind a stale
-    // `<name>.lib` from an earlier build.
     let want = lib.join(format!("{name}.lib"));
     let made = lib.join(format!("lib{name}.a"));
-    fs::copy(&made, &want).unwrap_or_else(|err| panic!("copy {}: {err}", made.display()));
+    if made.exists() {
+        fs::copy(&made, &want).unwrap_or_else(|err| panic!("copy {}: {err}", made.display()));
+    } else if !want.exists() {
+        panic!(
+            "FFmpeg installed neither {} nor {}",
+            want.display(),
+            made.display()
+        );
+    }
 }
 
 /// Downloads and unpacks the pinned tarball into `out`, returning the
