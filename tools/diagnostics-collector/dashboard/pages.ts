@@ -30,6 +30,7 @@ import { fmtDay, fmtInt, fmtTime, html, isoTime, raw, type SafeHtml } from "./ht
 import type { UsageStats } from "../checkin.ts";
 import type { DemoStats } from "../demo-runs.ts";
 import type { SignatureMute } from "./triage-state.ts";
+import type { Proposal } from "./triage-now.ts";
 import type { Env } from "../env.ts";
 import type { Member } from "./session.ts";
 import { asObject, type JsonObject } from "../json.ts";
@@ -144,8 +145,20 @@ export type ReportData = MemberPage & {
   mute: SignatureMute | null;
   /** Distinct installs (by monthly install key) behind its signature. */
   installs: number;
+  /** What the last **Triage now** press on this report said, if recent. */
+  triageNote: string | null;
+  /** The triage proposal waiting for a member to file, if any. */
+  proposal: ProposalView | null;
   /** Unix ms. */
   now: number;
+};
+
+/** A triage proposal as the report page shows it. */
+export type ProposalView = {
+  /** What triage proposes. */
+  proposal: Proposal;
+  /** For an attachment, the issue's indexed title, if known. */
+  issueTitle: string | null;
 };
 
 /** Query results for the issues board (`issuesPage`). */
@@ -1017,6 +1030,27 @@ export function eventLog(events: unknown): {
 }
 
 /**
+ * A triage proposal on a report page, with the button that files it.
+ *
+ * @param report - Report ID.
+ * @param view - The proposal.
+ * @returns The panel part.
+ */
+function proposalPanel(report: string, view: ProposalView): SafeHtml {
+  const p = view.proposal;
+  const file = (label: string) =>
+    html`<form method="post" action="/reports/ai-triage/file"><input type="hidden" name="report" value="${report}"><button type="submit" class="button small">${label}</button></form>`;
+  switch (p.kind) {
+    case "issue":
+      return html`<div class="proposal"><h3>Proposed issue</h3><p><strong>${p.title}</strong>${p.bug ? html` <span class="chip open">bug</span>` : ""}</p><pre class="proposal-body">${p.body}</pre>${file("Open issue")}<p class="fine">Files this on GitHub with this report listed, as the daily run would.</p></div>`;
+    case "attach":
+      return html`<div class="proposal"><h3>Proposed issue</h3><p>Triage says this report belongs to <a href="/issues/${p.issue}">#${p.issue}${view.issueTitle ? ` ${view.issueTitle}` : ""}</a>.</p>${file(`Attach to #${p.issue}`)}</div>`;
+    case "none":
+      return html`<div class="proposal"><p class="fine">Triage judged this report noise: nothing to file. Mark it noise to take it out of the queue.</p></div>`;
+  }
+}
+
+/**
  * One report.
  *
  * @param d - Query results assembled by routes.ts.
@@ -1062,6 +1096,9 @@ export function reportPage(d: ReportData): SafeHtml {
                 )
               : html`<p class="fine">No issue lists this report yet. Triage may have judged it noise, or ingest has not run since it arrived.</p>`
           }
+          ${d.issues.length === 0 && !r.deleted_at ? html`<form class="link-item" method="post" action="/reports/ai-triage"><input type="hidden" name="report" value="${r.report_id}"><button type="submit" class="button small outline">Triage now</button> <span class="fine">Asks the triage model about this report; you file what it proposes.</span></form>` : ""}
+          ${d.triageNote ? html`<p class="fine" role="status">${d.triageNote}</p>` : ""}
+          ${d.issues.length === 0 && d.proposal ? proposalPanel(String(r.report_id), d.proposal) : ""}
           ${d.issues.length === 0 && d.openIssues?.length ? html`<div class="link-item">${linkForm({ action: "attach", report: String(r.report_id), back: `/reports/${r.report_id}`, label: "Attach", options: d.openIssues, pickerLabel: "Attach to issue", preferred: d.signatureIssues })}</div>` : ""}
           ${d.issues.length > 1 ? html`<p class="fine"><span class="chip crit">Conflict</span> ${d.issues.length} issues list this report; it counts under #${d.issues[0]?.number} until a member detaches it from the others.</p>` : ""}
           ${d.prs.map((pr) => html`<div class="link-item"><span class="chip ${pr.state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[pr.state] ?? pr.state}</span>${externalLink(ghUrl(d.cfg, "pull", pr.pr_number), `#${pr.pr_number} ${pr.title}`)}</div>`)}

@@ -35,7 +35,7 @@ book may listen to it.
 
 | Route                                               | Purpose                                                                                                      |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GET /api/library/editions/{id}/playback`           | Whether this server can play the edition for the caller, its tracks, and the caller's progress and bookmarks |
+| `GET /api/library/editions/{id}/playback`           | Whether this server can play the edition for the caller, its tracks and chapters, and the caller's progress and bookmarks |
 | `POST /api/playback/sessions`                       | Open a play session: tracks with stream paths, and where to start                                            |
 | `POST /api/playback/sessions/{id}/sync`             | Report the position while playing                                                                            |
 | `POST /api/playback/sessions/{id}/close`            | Send the last report and end the session                                                                     |
@@ -158,6 +158,16 @@ over 2 MiB gets `413`.
 When the list an edition plays changes, the host emits `edition_updated`
 with `fields: ["chapters"]`. Media files keep the chapters they were
 written with.
+
+Players read the list from the database:
+
+- The playback manifest's `chapters` holds it in pre-order, each chapter
+  with its depth and an `end_ms` at the next chapter's start (the last
+  ends at the runtime). The web player shows the chapter playing, lists
+  the chapters and skips to the previous or next one.
+- The [player apps](player-apps.md) at `/player` get the same list
+  flattened, as Audiobookshelf answers: an expanded item's
+  `media.chapters` and a play session's `chapters`, in seconds.
 
 ## Events and live updates
 

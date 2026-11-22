@@ -1,0 +1,1 @@
+{"settle_seconds": 120, "scan_interval_seconds": 600, "after_ingest": "move", "attribute_to": "owner", "patron": 7, "ignore": ["*.nzb", "sample?"], "prune_imported_days": 30}

@@ -392,6 +392,20 @@ input_from = "operator"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.intake_settings]
+crate = "bookclerk-config"
+boundary = "A drop folder's settings as an operator sends them: the body of PUT /api/config/plugin-instances/{id}/intake and the stored core.intake document"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.intake_items]
+crate = "bookclerk-intake"
+boundary = "A drop folder's listing: object keys, sizes and change signatures grouped into items and settled"
+input_from = "storage"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.output_copies]
 crate = "bookclerk-config"
 boundary = "A library's extra copies as an operator sends them: the copies array of PUT /api/config/domains/core.output and the stored core.output document"

@@ -709,8 +709,9 @@ compare reads below), on this one repository. The App's installation must
 grant each of them, or the token can't be minted and sign-in fails.
 
 The writes the Worker can ask GitHub for are an issue's summary comment,
-from the owner's **Update GitHub now** button, and closing an issue, from
-the owner's [close buttons](#closing-issues):
+from the owner's **Update GitHub now** button, closing an issue, from the
+owner's [close buttons](#closing-issues), and filing a new issue a member
+confirms after [**Triage now**](#triage-now):
 
 - For each such call it mints a separate token narrowed to `issues: write`
   and nothing else, and keeps no copy.
@@ -728,8 +729,9 @@ The App needs, in its settings:
 - the organization permission **Members: read**, accepted on its
   installation;
 - the repository permission **Issues: write**, for the **Update GitHub
-  now** and close buttons. The App's token is separate from the ingest Action's
-  `GITHUB_TOKEN`, so the Action's permission doesn't cover it;
+  now**, close and **Open issue** buttons. The App's token is separate from
+  the ingest Action's `GITHUB_TOKEN`, so the Action's permission doesn't
+  cover it;
 - the callback URL `https://diagnostics.<DOMAIN>/auth/callback`, or the
   workers.dev URL.
 
@@ -906,6 +908,42 @@ the newest; `/reports?triage=needs` is the whole queue.
 
 Each mark and mute is written to the access log under the member's login,
 and open pages refresh.
+
+### Triage now
+
+A report no issue lists yet has a **Triage now** button on its page, so a
+member need not wait for the daily ingest run:
+
+1. The button posts to `/reports/ai-triage`. The Worker reads the stored
+   report and asks the triage model about it alone, on Workers AI and
+   under the same daily budget as the ingest run, with the open issues it
+   may join.
+2. The page shows what the model proposes: a new issue with its title,
+   labels and body, or the open issue the report belongs to. When the model
+   judges the report noise, the page says so and nothing is proposed.
+3. A member presses **Open issue** or **Attach to #N** (posting to
+   `/reports/ai-triage/file`). The Worker files the issue with the App's
+   Issues: write token and lists it under **Tracked by** at once, or
+   attaches the report to the offered issue, as the ingest run would.
+
+The model's reply is read as the ingest run's plan validator reads it,
+since the issue is public: only this report, a prefixed one-line title,
+a bounded body with no links, mentions, cross-references or raw HTML, and
+the report block written by the Worker. Attachments go only to the issues
+the model was offered.
+
+- A proposal lasts an hour; after that, press **Triage now** again. Nothing
+  is filed until a member confirms it.
+- A report waits 10 minutes between presses, and the dashboard runs
+  triage at most 20 times a day. Each press, filing and attachment is
+  written to the access log.
+- A report whose stored copy was deleted has no button, since triage has
+  nothing to read.
+- When the budget is spent, triage is not configured, or the model's answer
+  can't be used, the page says so and the daily run still triages the
+  report. Without Issues: write on the App's installation, **Open issue**
+  says so and the proposal stays. See
+  [What the Worker holds](#what-the-worker-holds).
 
 ### Closing issues
 

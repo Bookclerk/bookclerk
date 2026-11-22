@@ -1238,3 +1238,18 @@ td.pick {
 .log .run[hidden] {
   display: none;
 }
+
+/* A triage proposal on a report page: the model's issue text, shown as the
+   plain text it will be filed as, wrapped to the panel. */
+.proposal {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.proposal-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 12px;
+}

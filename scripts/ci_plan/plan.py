@@ -137,10 +137,16 @@ SITE_TEST_INPUTS = frozenset(
         "tools/diagnostics-collector/dashboard/session.ts",
     }
 )
-# Files outside tools/diagnostics-collector/ that its tests read: the summary
-# comment renderer's seed corpus and the Python oracle its TypeScript port is
-# fuzzed against (both also run in the plan job's Python tests).
-COLLECTOR_TEST_INPUT_PREFIXES = ("scripts/tests/summary_comment_corpus/", "scripts/tests/summary_comment_oracle.py")
+# Files outside tools/diagnostics-collector/ that its tests read: the seed
+# corpora and Python oracles its TypeScript ports are fuzzed against (the
+# summary comment renderer and the Triage now plan reader; the corpora also
+# run in the plan job's Python tests).
+COLLECTOR_TEST_INPUT_PREFIXES = (
+    "scripts/tests/summary_comment_corpus/",
+    "scripts/tests/summary_comment_oracle.py",
+    "scripts/tests/diagnostics_plan_corpus/",
+    "scripts/tests/diagnostics_plan_oracle.py",
+)
 # The production image and its build context. No PR check builds them; the
 # path-filtered `docker-image.yml` workflow does.
 DOCKER_IMAGE_PREFIX = "packaging/docker/"

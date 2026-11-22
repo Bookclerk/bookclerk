@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use axum::http::{header, Method, StatusCode};
 use base64::Engine as _;
-use bookclerk_library::{AcquireStatus, FileRole, LibraryStore, NewBook};
+use bookclerk_library::{
+    AcquireStatus, ChapterCheck, ChapterClaimWrite, ChapterInput, ChapterList, ChapterSource,
+    FileRole, LibraryStore, NewBook,
+};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sha2::Digest as _;
@@ -505,6 +508,116 @@ async fn audio_streams_with_a_token_in_the_url() {
     )
     .await;
     assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+}
+
+/// Records Bookclerk's aligned chapters for the item: a part holding two
+/// chapters, then a second part.
+async fn record_chapters(world: &World) {
+    let input = |title: &str, start_ms: u64, depth: u32| ChapterInput {
+        title: title.into(),
+        start_ms,
+        depth,
+    };
+    let list = ChapterList::new(
+        vec![
+            input("Part One", 0, 0),
+            input("Opening", 0, 1),
+            input("Middle", 600_000, 1),
+            input("Part Two", 1_800_000, 0),
+        ],
+        ChapterCheck::Strict,
+    )
+    .unwrap();
+    world
+        .store
+        .record_chapter_claim(
+            &world.item,
+            &ChapterClaimWrite {
+                source: ChapterSource::Processed { input: None },
+                list,
+                runtime_ms: Some(36_000_000),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// The item, expanded.
+async fn expanded(world: &World, access: &str) -> Answer {
+    let uri = format!("/player/api/items/{}?expanded=1", world.item);
+    send(world, Method::GET, &uri, As::Card(access), None, &[]).await
+}
+
+#[tokio::test]
+async fn players_read_the_chapters_the_edition_plays() {
+    let world = world().await;
+    let (access, _) = sign_in(&world).await;
+    let before = expanded(&world, &access).await;
+    assert_eq!(before.json()["media"]["chapters"], json!([]));
+    assert_eq!(before.json()["media"]["numChapters"], 0);
+
+    record_chapters(&world).await;
+    let item = expanded(&world, &access).await;
+    assert_eq!(item.status, StatusCode::OK);
+    let media = &item.json()["media"];
+    assert_eq!(media["numChapters"], 4);
+    // Pre-order, each ending at the next start, the last at the runtime.
+    assert_eq!(
+        media["chapters"],
+        json!([
+            { "id": 0, "start": 0.0, "end": 0.0, "title": "Part One" },
+            { "id": 1, "start": 0.0, "end": 600.0, "title": "Opening" },
+            { "id": 2, "start": 600.0, "end": 1800.0, "title": "Middle" },
+            { "id": 3, "start": 1800.0, "end": 36000.0, "title": "Part Two" },
+        ])
+    );
+    let plain = send(
+        &world,
+        Method::GET,
+        &format!("/player/api/items/{}", world.item),
+        As::Card(&access),
+        None,
+        &[],
+    )
+    .await;
+    assert!(
+        plain.json()["media"]["chapters"].is_null(),
+        "a list item carries no chapters"
+    );
+
+    let play = send(
+        &world,
+        Method::POST,
+        &format!("/player/api/items/{}/play", world.item),
+        As::Card(&access),
+        Some(json!({ "deviceInfo": { "clientName": "Absorb" }, "forceDirectPlay": true })),
+        &[],
+    )
+    .await;
+    assert_eq!(play.status, StatusCode::OK, "{:?}", play.json());
+    assert_eq!(play.json()["chapters"], media["chapters"]);
+    assert_eq!(
+        play.json()["libraryItem"]["media"]["chapters"],
+        media["chapters"]
+    );
+
+    let manifest = send(
+        &world,
+        Method::GET,
+        &format!("/api/library/editions/{}/playback", world.item),
+        As::Cookie(&world.riley_cookie),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(manifest.status, StatusCode::OK, "{:?}", manifest.json());
+    let chapters = manifest.json()["chapters"].clone();
+    assert_eq!(chapters.as_array().map(Vec::len), Some(4));
+    assert_eq!(
+        chapters[1],
+        json!({ "title": "Opening", "start_ms": 0, "end_ms": 600_000, "depth": 1 })
+    );
+    assert_eq!(chapters[3]["end_ms"], 36_000_000);
 }
 
 #[tokio::test]
