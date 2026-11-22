@@ -785,6 +785,7 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
         "devcontainer-image.yml": "image",
         "images-publish.yml": "plan",
         "abs-integration.yml": "abs-smoke",
+        "model-packs.yml": "build",
     }
     GATE = "github.event_name != 'pull_request' || !github.event.pull_request.draft"
 

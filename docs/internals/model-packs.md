@@ -7,26 +7,28 @@ was checked against the published models. The decision behind it is in
 [Embedding model benchmarks](embedding-benchmarks.md).
 
 > [!NOTE]
-> The `embedder` plugin ships with Bookclerk and is on by default, but no
-> model is delivered with it yet. Until model delivery lands, the plugin
-> lists no models, and Discover keeps ranking with hashed words.
+> The `embedder` plugin ships with Bookclerk and is on by default, and
+> the packs are built and published, but the host does not download them
+> yet. Until it does, the plugin lists no models, and Discover keeps
+> ranking with hashed words.
 
-## Why a model is cut into packs
+## Why the token table is taken out of the graph
 
 Most of a multilingual embedding model is its token table: one row of
 numbers for each of about 256,000 tokens. bekko-a8m's published file is
-130 MB, of which the transformer is 31 MB. A library that holds books in
-two languages never reads most of those rows.
+130 MB, of which the transformer is 31 MB.
 
-So the table is taken out of the graph and stored as row packs:
+The table is taken out of the graph and stored as **row packs**, files of
+token rows that the plugin looks up itself:
 
-- every text needs the **base rows**: the special tokens, single
-  characters and byte pieces;
-- each language adds a **language row pack** with the tokens its text
-  uses.
+- the **base rows** are loaded for every text;
+- a **language row pack** adds the rows of one language, and is loaded
+  only when it is on disk.
 
-A node stores the graph, the tokenizer, the base rows and the row packs
-of the languages it was given.
+The packs published today put every token's row in the base rows and have
+no language packs, because splitting by language saved little and cost
+accuracy ([measured below](#why-the-published-packs-hold-the-whole-vocabulary)).
+The layout and the plugin still read language packs.
 
 ## The cut graph
 
@@ -60,9 +62,11 @@ models/
     model.json         the model description
     core.onnx          the cut graph
     tokenizer.spm.fb   the SentencePiece Lite model, whole vocabulary
-    base.rows          rows every text needs
-    en.rows            rows for English (one file per language)
+    base.rows          rows every text needs (published packs: every row)
 ```
+
+A pack split by language also has one `<language>.rows` file for each
+language it was given.
 
 `model.json` (`PackManifest` in `bookclerk-model-pack`) holds:
 
@@ -113,13 +117,21 @@ are loaded. The host stores it with each vector.
 - **`health`** reports whether the ONNX Runtime library is beside the
   plugin, how many models are installed, and any directory it skipped.
 
-### Text in a language that is not loaded
+### A token with no row
 
-A token with no row in the loaded packs is spelled with single-character
-pieces, which the base rows always hold. The vector is still returned,
-and the text's index is listed in the reply's `fallbacks`, so the caller
-knows the vector is weaker and can embed the text again once the
-language is added.
+A published pack has a row for every token, so this does not happen with
+one. With a pack split by language, a token with no row in the loaded
+packs is spelled with single-character pieces, which the base rows always
+hold. The vector is still returned, and the text's index is listed in the
+reply's `fallbacks`, so the caller knows the vector is weaker and can
+embed the text again once the language is added.
+
+### Spaces at the start of a text
+
+bekko's tokenizer puts a word boundary before a text and Gemma's
+(Harrier's) does not. The plugin asks the tokenizer which kind it is when
+it loads, and drops a leading space only for the first kind, so both give
+the published tokenizer's ids for a text that starts with a space.
 
 ## ONNX Runtime and the tokenizer
 
@@ -137,38 +149,188 @@ language is added.
 Both are C++ and run only inside the plugin's jail, which has no network
 grant. Neither is linked into a host process.
 
+## How packs are built
+
+`scripts/model_packs.py` builds a pack from a published model. Everything
+it reads is pinned in `scripts/model-packs/models.json`: the Hugging Face
+repository and commit, and the size and SHA-256 of each file.
+
+| Model id | Published model | License |
+| --- | --- | --- |
+| `bekko-a8m` | `hotchpotch/bekko-embedding-v1-a8m`, `onnx/model.onnx` | MIT |
+| `harrier-270m-q4` | `onnx-community/harrier-oss-v1-270m-ONNX`, `onnx/model_q4.onnx` (Microsoft's Harrier 270m, 4-bit) | MIT |
+
+A build has four steps:
+
+1. **`fetch`** downloads the pinned files and refuses any whose size or
+   digest differs.
+2. **`build`** cuts the graph, writes every token's row to `base.rows`,
+   converts `tokenizer.json` to a SentencePiece model and then, with
+   upstream's `spm_to_fb`, to the Lite file, and writes `model.json` and
+   the OCI manifest.
+3. **`check`** tokenizes and embeds every text in
+   `scripts/model-packs/check-texts.json` twice: with the published
+   tokenizer and ONNX graph, and with the plugin's own code from the pack
+   (its `tokens` and `embed` examples). Token ids must be equal, no text
+   may fall back to single characters, and no number of any vector may
+   differ by more than 0.00001.
+4. **`pin`** compares the SHA-256 of the built `model.json` and of the
+   OCI manifest with the ones in `models.json`, and fails when they
+   differ.
+
+The build is reproducible: the same pinned inputs give the same bytes, so
+the digests in `models.json` are reviewed with the change that produces
+them. `spm_to_fb` is built from the google/sentencepiece commit the
+vendored runtime comes from, by `scripts/model-packs/build-spm-to-fb.sh`,
+which also checks the commit of every source that build fetches.
+
+To build a pack on a development machine (Linux):
+
+```bash
+python3 -m venv target/model-packs/venv
+target/model-packs/venv/bin/pip install --require-hashes -r scripts/model-packs/requirements.txt
+scripts/model-packs/build-spm-to-fb.sh target/model-packs/tools
+cargo build --release -p bookclerk-plugin-ai-embedder --example embed --example tokens
+cargo ensure-onnxruntime
+
+py=target/model-packs/venv/bin/python
+$py scripts/model_packs.py fetch --model bekko-a8m
+$py scripts/model_packs.py build --model bekko-a8m --spm-to-fb target/model-packs/tools/spm_to_fb
+$py scripts/model_packs.py check --model bekko-a8m --examples target/release/examples \
+    --onnxruntime target/onnxruntime-1.32.0/libonnxruntime.so
+$py scripts/model_packs.py pin --model bekko-a8m
+```
+
+`pin --write` records new digests after a deliberate change to a model,
+the builder or the layout.
+
+### How a tokenizer is converted
+
+The published models ship a `tokenizer.json`. The builder writes the same
+vocabulary as a SentencePiece model:
+
+- a piece's score is minus the rank of the first merge that makes it, so
+  merges apply in the published order;
+- byte pieces (`<0x41>`) and the unknown piece keep their kinds, and
+  `<bos>`, `<eos>` and `<pad>` become control pieces, which text cannot
+  spell;
+- the tokenizer's other added tokens (newlines, HTML tags) are matched
+  before anything else, as the published tokenizer does. For Harrier,
+  SentencePiece does that itself. bekko's tokenizer also puts a space
+  after each match, which SentencePiece cannot express, so the plugin
+  matches them (`literal_pieces` in `model.json`).
+
+## Where packs are published
+
+[`.github/workflows/model-packs.yml`](../../.github/workflows/model-packs.yml)
+runs the four steps for each model on every pull request that touches the
+builder, the layout, the tokenizer or the plugin. On `main` it also
+publishes each pack to the GitHub Container Registry as an OCI artifact:
+
+```text
+ghcr.io/bookclerk/models/<model id>@sha256:<manifest digest>
+```
+
+- The artifact has one layer per file, named by its
+  `org.opencontainers.image.title` annotation, `model.json` first. A
+  layer's digest is the file's SHA-256, the same one `model.json` lists.
+- The manifest carries no time stamp, so a pack has one digest however
+  often it is built. It is also tagged `sha256-<first 12 characters of
+  the digest>`.
+- `publish` measures the files again and refuses a build that is not the
+  pinned one.
+- Each artifact carries a build-provenance attestation, signed through
+  Sigstore with the workflow's identity:
+
+  ```bash
+  gh attestation verify oci://ghcr.io/bookclerk/models/bekko-a8m@sha256:<digest> --owner bookclerk
+  ```
+
+The digests a node will trust are the ones in `models.json`, in the
+repository it was built from. The attestation lets anyone else check
+where an artifact came from.
+
 ## How it was checked
 
 ### Against the published models
 
-Each model was cut and packed, then 69 texts were embedded twice: once by
-the plugin's code from the pack, and once by the published ONNX file with
-the published tokenizer. The texts were 60 Open Library descriptions, 7
-multilingual and odd texts (Japanese, mixed scripts, emoji, blank lines)
-and 2 queries.
+Every build runs the `check` step. Its 64 texts are book descriptions and
+search queries written for it in English, German, French, Spanish,
+Italian, Portuguese and Japanese, with Russian, Arabic, Korean and Greek
+sentences, and odd input: tabs and blank lines, HTML, emoji, a leading
+space, mixed scripts and a text longer than the token limit.
 
-| Model | Largest difference in any number | Texts equal to 1e-6 |
-| --- | --- | --- |
-| bekko-a8m | 1.8e-7 | 69 of 69 |
-| Harrier 270m (4-bit) | 3.1e-7 | 69 of 69 |
+| Model | Token ids equal | Largest difference in any number | Texts that fell back |
+| --- | --- | --- | --- |
+| bekko-a8m | 64 of 64 | 2.0e-7 | 0 |
+| Harrier 270m (4-bit) | 64 of 64 | 3.9e-7 | 0 |
 
-With half the vocabulary removed from the packs, all 69 texts were
-reported in `fallbacks` and the lowest cosine similarity to the true
-vector was 0.57, which is why a fallback vector is flagged and not
-trusted.
+What a node stores for one model:
 
-What a node stores before any language is added:
-
-| Model | Cut graph | Tokenizer | Base rows | Total |
+| Model | Cut graph | Tokenizer | Token rows | Total |
 | --- | --- | --- | --- | --- |
-| bekko-a8m | 30.8 MB | 9.5 MB | 8.3 MB (21,225 tokens) | 48.6 MB |
-| Harrier 270m (4-bit) | 98.2 MB | 10.5 MB | 10.7 MB (25,895 tokens) | 119 MB |
+| bekko-a8m | 30.8 MB | 9.5 MB | 100.4 MB (256,000 tokens) | 140.6 MB |
+| Harrier 270m (4-bit) | 98.2 MB | 10.4 MB | 108.5 MB (262,144 tokens) | 217.2 MB |
 
-These runs used the pack tools on a development machine. The workflow
-that builds, checks and signs packs in CI comes with model delivery.
+### Why the published packs hold the whole vocabulary
+
+The first design gave each language its own row pack, so a library would
+store only its languages. It was measured on bekko-a8m before the packs
+were built.
+
+Tokens were counted over 4,000 Wikipedia articles per language (the
+`wikimedia/wikipedia` dataset, November 2023), keeping a token for a
+language when it appeared at least three times. Symbols, digits and
+single characters went to the base rows (29,400 tokens, 11 MB).
+
+| Language | Tokens in its pack | Size |
+| --- | --- | --- |
+| English | 80,900 | 31 MB |
+| German | 65,700 | 25 MB |
+| French | 62,500 | 24 MB |
+| Spanish | 62,300 | 24 MB |
+| Italian | 45,700 | 18 MB |
+| Portuguese | 45,300 | 18 MB |
+| Japanese | 27,400 | 11 MB |
+
+Three results decided against it:
+
+- **The packs overlap.** The seven packs add up to 151 MB but hold only
+  146,000 different tokens (57 MB): languages written in Latin letters
+  share most of their tokens. The whole vocabulary is 100 MB.
+- **Real descriptions use words an encyclopedia does not.** Of 765 Open
+  Library descriptions embedded with the English pack, 60% had at least
+  one token with no row (32% when a token was kept after one appearance),
+  from blurb words such as "riveting" and "unforgettable", from names,
+  and from descriptions in another language. A vector from a text with
+  half its rows missing had a cosine similarity as low as 0.57 to the
+  true one.
+- **The saving is small.** An English-only library would store about 85
+  MB in place of 141 MB.
+
+Loading the whole vocabulary costs memory, not time. Peak memory for 200
+descriptions, model load included:
+
+| Rows loaded | Peak memory | Time | Texts that fell back |
+| --- | --- | --- | --- |
+| Whole vocabulary | 211 MB | 7.0 s | 0 of 200 |
+| Half the vocabulary | 167 MB | 16.3 s | 200 of 200 |
+| Base rows only (single characters) | 125 MB | 20.8 s | 200 of 200 |
+
+A text that falls back is slower as well as weaker, because a word
+spelled with single characters is many more tokens.
+
+With the whole vocabulary there is no language to choose, no text is
+embedded again when a language is added, and a vector never depends on
+which packs a node holds.
 
 ### In the test suite
 
+- The builder's tests (`scripts/tests/test_model_packs.py`) cover the
+  pins, the layout, the tokenizer conversion and the registry calls. The
+  `model.json` and row pack they write are also read by
+  `bookclerk-model-pack`'s tests, so the builder and the plugin cannot
+  drift apart.
 - The plugin's tests run a tiny model (a few kilobytes, the same inputs
   as a real one) through the pinned ONNX Runtime and compare every
   vector with numbers worked out apart from the plugin. They cover

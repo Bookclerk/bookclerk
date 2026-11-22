@@ -298,6 +298,34 @@ first appear after the nightly run or a manual run (see
 > GitHub does not let a public package go back to private. Later publishes
 > keep the package's visibility, so this step is needed only once.
 
+## Model packs
+
+[`.github/workflows/model-packs.yml`](../../.github/workflows/model-packs.yml)
+builds the embedding models the `embedder` plugin serves and publishes
+each as an OCI artifact, `ghcr.io/bookclerk/models/<model id>`. A model
+pack is not part of a release package: a node downloads the model its
+library uses.
+
+- The upstream files, and the digests the build must produce, are pinned
+  in `scripts/model-packs/models.json`. A build that produces other
+  bytes fails, on a pull request as on `main`.
+- A pull request that touches the builder, the pack layout, the tokenizer
+  or the plugin builds and checks both models, once it is ready for
+  review. A push to `main` on the same paths, and a manual run from
+  `main`, also publish and attest them.
+- The build job holds `contents: read`. Only the publish job gets
+  `packages: write`, and only the attest job `id-token: write` and
+  `attestations: write`.
+- The first publish creates the packages `models/bekko-a8m` and
+  `models/harrier-270m-q4` as private. An organization owner makes each
+  public once, as for the images
+  ([Making the packages public](#making-the-packages-public)); the
+  settings page of the first is
+  `https://github.com/orgs/bookclerk/packages/container/models%2Fbekko-a8m/settings`.
+
+[Embedding model packs](../internals/model-packs.md) describes the build,
+its checks and how to run it on a development machine.
+
 ## Desktop packages
 
 The desktop app's unsigned packages (see

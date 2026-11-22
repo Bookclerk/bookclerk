@@ -976,6 +976,11 @@ These run outside `CI Gate`:
   builds and checks the contributor image (see below).
 - **ABS Integration** (`.github/workflows/abs-integration.yml`) tests the
   `audiobookshelf` plugin against a real Audiobookshelf server (see below).
+- **Model packs** (`.github/workflows/model-packs.yml`) builds the
+  embedding models, checks them against the published ones and, on `main`,
+  publishes them (see [Model packs](packaging.md#model-packs)). A pull
+  request runs it only when it changes the builder, the pack layout, the
+  tokenizer or the `embedder` plugin, and skips drafts.
 
 ### CodeQL
 

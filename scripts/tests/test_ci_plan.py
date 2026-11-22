@@ -816,6 +816,23 @@ class FullSuiteTests(unittest.TestCase):
                 self.assertEqual(p.test_packages(), [])
                 self.assertFalse(p.selected("rust_test"))
 
+    def test_model_pack_builder_files_select_nothing(self) -> None:
+        # Only model-packs.yml runs the builder, and it triggers on these
+        # paths itself; the plan job's test_model_packs.py covers the script.
+        for path in (
+            "scripts/model_packs.py",
+            "scripts/model-packs/models.json",
+            "scripts/model-packs/check-texts.json",
+            "scripts/model-packs/requirements.in",
+            "scripts/model-packs/requirements.txt",
+            "scripts/model-packs/build-spm-to-fb.sh",
+        ):
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertFalse(p.full_suite, p.reasons)
+                # Prettier formats the JSON files; nothing else reads them.
+                self.assertEqual(sorted(p.checks), ["lint"] if path.endswith(".json") else [])
+
     def test_mutation_testing_files_select_nothing(self) -> None:
         # Only the mutation testing workflow reads them; the plan job's
         # test_mutation_report.py, test_stryker_report.py and

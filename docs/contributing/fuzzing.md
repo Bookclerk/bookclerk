@@ -1234,6 +1234,26 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     only when `configured` is exactly `true` and `version` is 40 lowercase
     hex digits, each checked character by character.
 
+### Model packs (Python)
+
+- **Registry reply readers** (`parse_token_reply` and `upload_target` in
+  `scripts/model_packs.py`). `model-packs.yml` publishes each pack with
+  the registry's HTTP API. The registry's token reply becomes a request
+  header, and its `Location` answer is where the token and the blob are
+  sent next.
+  - Test and corpus: `scripts/tests/test_model_packs.py`,
+    `scripts/tests/model_packs_corpus/` (token replies under `token/`,
+    `Location` values under `location/`).
+  - Oracle: a token only when the reply is a JSON object whose `token` is
+    1 to 8,192 characters, each checked against the bearer-token
+    alphabet; an upload address only when the location is a path, or an
+    https address on the registry's own host, of URL characters checked
+    one by one, never starting with `//`.
+
+The upstream model files the builder reads are not a boundary of this
+kind: each is refused unless its size and SHA-256 match the pin in
+`scripts/model-packs/models.json` before anything parses it.
+
 ### Tool versions bump (Python)
 
 - **Releases listing and digest readers** (`select_release` and

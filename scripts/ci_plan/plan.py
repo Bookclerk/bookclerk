@@ -199,9 +199,17 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # check only runs in merge-queue-requeue.yml; the ClusterFuzzLite artifact
 # lookup only runs inside the cflite-*.yml fuzzing jobs; the demo deploy's
 # registry and health readers only run in demo-deploy.yml; the pull request
-# lane picker runs in the plan job itself, after the plan is resolved).
+# lane picker runs in the plan job itself, after the plan is resolved; the
+# model pack builder, its pins, check texts and Python packages only run in
+# model-packs.yml, which triggers on these paths itself).
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
+        "scripts/model_packs.py",
+        "scripts/model-packs/models.json",
+        "scripts/model-packs/check-texts.json",
+        "scripts/model-packs/requirements.in",
+        "scripts/model-packs/requirements.txt",
+        "scripts/model-packs/build-spm-to-fb.sh",
         "scripts/cla_check.py",
         "scripts/maintainer_review.py",
         "scripts/signed_commits.py",
