@@ -562,8 +562,10 @@ title is **not** in the household library.
   (`GET /api/library/editions/{id}/sample`). Otherwise
   `POST /api/discover/title-sample` takes the title-meta body, asks the
   same stores in the same order for a catalog record with a `sampleUrl`
-  (10 s at most, answers cached six hours), and answers a same-origin
-  `/api/samples/{token}` path the daemon serves. See
+  (10 s at most), and answers a same-origin
+  `/api/samples/{token}` path the daemon serves. A found sample, or every
+  store answering that it has none, is cached six hours; a timeout or a
+  store error is not, so the next press asks again. See
   [Book samples](../adr/book-samples.md).
 
 Multi-region storefronts are deferred (US default for now).

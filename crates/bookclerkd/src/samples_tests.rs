@@ -449,7 +449,16 @@ async fn a_member_hears_a_sample_that_is_not_listening() {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    // Nothing of it is listening state.
+    // Nothing of it is listening state: no play session was opened, not
+    // even one closed straight away, so listening stats see nothing.
+    {
+        use sea_orm::{EntityTrait, PaginatorTrait};
+        let sessions = bookclerk_library::entities::playback_sessions::Entity::find()
+            .count(world.store.db())
+            .await
+            .unwrap();
+        assert_eq!(sessions, 0, "a sample opens no play session");
+    }
     let (status, _, body) = send(
         &world,
         Method::GET,

@@ -175,6 +175,9 @@ pub(crate) struct SampleService {
     /// One lock per sample being made, so concurrent requests for it wait
     /// for one worker instead of starting several.
     flights: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Held while a sample is renamed into the cache and the cache trimmed,
+    /// so two writes never trim from the same stale listing.
+    publishing: Arc<Mutex<()>>,
     /// Bytes the cache may hold.
     budget: u64,
 }
@@ -193,6 +196,7 @@ impl SampleService {
             dir: Some(dir),
             key,
             flights: Mutex::default(),
+            publishing: Arc::default(),
             budget: CACHE_BUDGET_BYTES,
         })
     }
@@ -204,6 +208,7 @@ impl SampleService {
             dir: None,
             key: crate::covers::random_key(),
             flights: Mutex::default(),
+            publishing: Arc::default(),
             budget: CACHE_BUDGET_BYTES,
         }
     }
@@ -255,20 +260,27 @@ impl SampleService {
             return Ok(bytes);
         }
         let ticket = self.board(&name);
-        let guard = ticket.lock.lock().await;
+        let guard = Arc::clone(&ticket.lock).lock_owned().await;
         // Another request may have made it while this one waited.
-        let outcome = match read_cached(&path).await {
-            Some(bytes) => Ok(bytes),
-            None => {
-                let made = make().await;
-                if let Ok(bytes) = &made {
-                    keep(dir, &name, bytes, self.budget).await;
-                }
-                made
-            }
-        };
-        drop(guard);
-        outcome
+        if let Some(bytes) = read_cached(&path).await {
+            return Ok(bytes);
+        }
+        let made = make().await;
+        if let Ok(bytes) = &made {
+            // The write owns the sample's lock until the file is in place
+            // (or the write failed), even if this request is cancelled
+            // meanwhile, so a waiter never cuts the same sample again.
+            keep(
+                dir,
+                &name,
+                bytes,
+                self.budget,
+                Arc::clone(&self.publishing),
+                guard,
+            )
+            .await;
+        }
+        made
     }
 
     /// This request's share of the lock of `name`, registering the lock
@@ -323,15 +335,36 @@ impl Drop for FlightTicket<'_> {
 /// blocking task, so a request dropped mid-write still renames or removes
 /// its temporary file. Failures are logged: the sample is served either
 /// way.
-async fn keep(dir: &std::path::Path, name: &str, bytes: &[u8], budget: u64) {
+///
+/// # Arguments
+///
+/// * `publishing` - Held around the rename and the trim, so concurrent
+///   writes of different samples trim one after another, each from a
+///   fresh listing.
+/// * `flight` - The sample's own lock, released only once the file is in
+///   place or the write failed; a request waiting on it then finds the
+///   file or makes it itself.
+async fn keep(
+    dir: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+    budget: u64,
+    publishing: Arc<Mutex<()>>,
+    flight: tokio::sync::OwnedMutexGuard<()>,
+) {
     let dir = dir.to_path_buf();
     let name = name.to_owned();
     let bytes = bytes.to_vec();
     let _ = tokio::task::spawn_blocking(move || {
+        let _flight = flight;
         let staged = dir.join(format!(".{name}.{:016x}", rand::random::<u64>()));
-        let written = std::fs::write(&staged, &bytes)
-            .and_then(|()| std::fs::rename(&staged, dir.join(&name)));
-        if let Err(err) = written {
+        if let Err(err) = std::fs::write(&staged, &bytes) {
+            let _ = std::fs::remove_file(&staged);
+            tracing::warn!(error = %err, "could not keep a sample");
+            return;
+        }
+        let _publishing = publishing.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Err(err) = std::fs::rename(&staged, dir.join(&name)) {
             let _ = std::fs::remove_file(&staged);
             tracing::warn!(error = %err, "could not keep a sample");
             return;
@@ -553,11 +586,17 @@ pub(crate) async fn get_edition_sample(
         let first = tracks.first().ok_or_else(no_sample)?;
         (destination.id.clone(), first.key.clone(), tracks.len() == 1)
     };
-    // Chapter starts are on the edition's timeline, which is the first
-    // file's only when there is one file.
+    // Chapter starts are on the copy's timeline, which is the first
+    // file's only when there is one file. The chapters are the ones the
+    // player shows for this same copy: the edition's list, or the copy's
+    // own when its running time is off the list's timeline.
     let start_ms = if single_file {
         let chapters = library
-            .edition_chapters(&edition.edition_id)
+            .chapters_for_copy(
+                &edition.edition_id,
+                &destination_id,
+                std::slice::from_ref(&track_key),
+            )
             .await
             .map_err(|err| read_failed(ROUTE, &err))?;
         let starts: Vec<u64> = chapters

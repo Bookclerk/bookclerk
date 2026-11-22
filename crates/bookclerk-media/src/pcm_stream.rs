@@ -91,12 +91,21 @@ pub struct PcmStream {
     /// Payload frames, then the end or an error.
     chunks: mpsc::Receiver<Result<Piece>>,
     /// The task that drives the worker; aborted (killing it) on drop.
-    driver: JoinHandle<()>,
+    _driver: AbortOnDrop,
 }
 
-impl Drop for PcmStream {
+/// A spawned driver task that is aborted, killing its worker, when this
+/// value is dropped.
+///
+/// `drive_request` holds it from the spawn on, so a caller cancelled while
+/// waiting for the worker's format stops the worker too; dropping a bare
+/// `JoinHandle` would detach the task and leave the worker running.
+#[derive(Debug)]
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
     fn drop(&mut self) {
-        self.driver.abort();
+        self.0.abort();
     }
 }
 
@@ -388,7 +397,7 @@ where
     write_frame(&mut input, &open).await?;
     let (header_tx, header_rx) = oneshot::channel();
     let (chunk_tx, chunks) = mpsc::channel(CHUNKS_AHEAD);
-    let driver = tokio::spawn(async move {
+    let driver = AbortOnDrop(tokio::spawn(async move {
         // Held so the worker dies with the driver (kill_on_drop).
         let _child = child;
         let mut session = Session {
@@ -401,28 +410,21 @@ where
             order,
         };
         session.run(header_tx, chunk_tx).await;
-    });
+    }));
+    // Every early return below, and cancellation of this future while it
+    // waits, drops `driver` and so aborts the worker.
     match tokio::time::timeout(ROUND_TIMEOUT, header_rx).await {
         Ok(Ok(Ok(header))) => Ok(PcmStream {
             header,
             chunks,
-            driver,
+            _driver: driver,
         }),
-        Ok(Ok(Err(err))) => {
-            driver.abort();
-            Err(err)
-        }
-        Ok(Err(_)) => {
-            driver.abort();
-            Err(worker_error("pcm worker ended before its format".into()))
-        }
-        Err(_) => {
-            driver.abort();
-            Err(worker_error(format!(
-                "pcm worker stated no format within {}s",
-                ROUND_TIMEOUT.as_secs()
-            )))
-        }
+        Ok(Ok(Err(err))) => Err(err),
+        Ok(Err(_)) => Err(worker_error("pcm worker ended before its format".into())),
+        Err(_) => Err(worker_error(format!(
+            "pcm worker stated no format within {}s",
+            ROUND_TIMEOUT.as_secs()
+        ))),
     }
 }
 
@@ -901,6 +903,30 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].as_ref().unwrap(), &vec![5, 6]);
         assert!(matches!(&chunks[1], Err(MediaError::Native(m)) if m == "broken packet"));
+    }
+
+    #[tokio::test]
+    async fn a_caller_cancelled_before_the_format_stops_the_worker() {
+        use tokio::io::AsyncReadExt;
+        let (host_in, mut worker_in) = tokio::io::duplex(1 << 16);
+        let (_worker_out, host_out) = tokio::io::duplex(1 << 16);
+        // The worker never states a format; the caller gives up first.
+        let waited = tokio::time::timeout(
+            Duration::from_millis(50),
+            drive(host_in, host_out, None, 64, 0, Buffer(vec![0; 64])),
+        )
+        .await;
+        assert!(
+            waited.is_err(),
+            "the worker sent nothing, so nothing opened"
+        );
+        // The driver held the worker's stdin; once it is aborted the pipe
+        // closes, so reading the worker's side reaches the end.
+        let mut seen = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(5), worker_in.read_to_end(&mut seen))
+            .await
+            .expect("the cancelled driver let go of the worker");
+        assert!(read.is_ok());
     }
 
     #[tokio::test]

@@ -1198,7 +1198,7 @@ export function TitleDetailModal({
             </Button>
           ) : null}
           <SampleButton
-            key={`${detail.library_edition_id ?? ""}|${detail.title}`}
+            key={identityKey}
             editionId={detail.library_edition_id}
             query={{
               title: detail.title,

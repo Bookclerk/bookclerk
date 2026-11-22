@@ -931,6 +931,7 @@ fn region_host_suffix(region: &str) -> &'static str {
         "it" => ".it",
         "in" => ".in",
         "es" => ".es",
+        "br" => ".com.br",
         _ => ".com",
     }
 }

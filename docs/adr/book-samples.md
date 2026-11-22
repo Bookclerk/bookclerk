@@ -50,8 +50,8 @@ check: anyone who may see the edition may hear its sample, as with
 streaming. The sample is cut from the first file on a destination this
 node reaches. It starts at the second chapter when the first is shorter
 than 3 minutes (opening credits or a store's announcement), and only for
-single-file editions, whose chapter times are the file's. It runs 5
-minutes.
+single-file editions, whose chapter times are the file's. The chapters
+are the ones the player shows for that copy. It runs 5 minutes.
 
 Samples are cut on demand, the first time someone asks, and kept in
 `cache/samples/` under a digest of what they were cut from, so a changed

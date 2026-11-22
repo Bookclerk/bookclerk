@@ -718,8 +718,11 @@ const SAMPLE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// `detailByProductId` by their own product ids, then the stores that
 /// declared `detailByIsbn` by the title's ISBN. The first catalog record
 /// with a `sample_url` wins; a store that fails is skipped, and the calls
-/// together stop after ten seconds. Answers, misses included,
-/// are cached for six hours.
+/// together stop after ten seconds. A found URL is cached for six hours and
+/// checked against `usable` again on every hit. A miss is cached only when
+/// every store answered and none offered a sample at all; a timeout, a
+/// failed store or a URL `usable` refused leaves nothing cached, so the
+/// next request asks again.
 ///
 /// # Arguments
 ///
@@ -750,18 +753,44 @@ pub async fn resolve_title_sample(
         fill_isbn(query).unwrap_or(""),
         editions.as_str(),
     ]);
-    if let Some(cached) = title_sample_cache().get(&key) {
-        return cached;
+    match title_sample_cache().get(&key) {
+        Some(Some(url)) if usable(url.trim()) => return Some(url),
+        Some(None) => return None,
+        // Not cached, or cached for a caller that accepted a URL this one
+        // does not: ask the stores.
+        Some(Some(_)) | None => {}
     }
     let plan = store_fill_plan(query, sources);
-    let found = tokio::time::timeout(SAMPLE_LOOKUP_TIMEOUT, sample_in_order(plan, usable))
+    let outcome = tokio::time::timeout(SAMPLE_LOOKUP_TIMEOUT, sample_in_order(plan, usable))
         .await
         .unwrap_or_else(|_| {
             tracing::debug!(title = %query.title, "title-sample lookup timed out");
-            None
+            SampleOutcome::Unsettled
         });
-    title_sample_cache().insert(key, found.clone());
-    found
+    match outcome {
+        SampleOutcome::Found(url) => {
+            title_sample_cache().insert(key, Some(url.clone()));
+            Some(url)
+        }
+        SampleOutcome::NoneOffered => {
+            title_sample_cache().insert(key, None);
+            None
+        }
+        SampleOutcome::Unsettled => None,
+    }
+}
+
+/// What a run of the fill plan learned about a title's sample.
+#[derive(Debug, PartialEq, Eq)]
+enum SampleOutcome {
+    /// The first usable sample URL a record carried.
+    Found(String),
+    /// Every store answered and no record carried a sample URL.
+    NoneOffered,
+    /// No usable URL, but a store failed, the lookup timed out, or a record
+    /// carried a URL the caller could not use; another try (or another
+    /// caller) may find one, so this is not cached.
+    Unsettled,
 }
 
 /// Runs a fill plan in order and returns the first `usable` sample URL a
@@ -769,20 +798,22 @@ pub async fn resolve_title_sample(
 async fn sample_in_order(
     plan: Vec<(Arc<dyn ContentSource>, FillLookup)>,
     usable: fn(&str) -> bool,
-) -> Option<String> {
+) -> SampleOutcome {
+    let mut settled = true;
     for (store, lookup) in plan {
         let result = match &lookup {
             FillLookup::Product(product_id) => store.catalog_detail(product_id).await,
             FillLookup::Isbn(isbn) => store.catalog_detail_by_isbn(isbn).await,
         };
         match result {
-            Ok(Some(hit)) => {
-                if let Some(url) = hit.sample_url.filter(|url| usable(url.trim())) {
-                    return Some(url);
-                }
-            }
+            Ok(Some(hit)) => match hit.sample_url {
+                Some(url) if usable(url.trim()) => return SampleOutcome::Found(url),
+                Some(_) => settled = false,
+                None => {}
+            },
             Ok(None) => {}
             Err(err) => {
+                settled = false;
                 tracing::debug!(
                     source = %store.id(),
                     lookup = lookup.kind(),
@@ -792,7 +823,11 @@ async fn sample_in_order(
             }
         }
     }
-    None
+    if settled {
+        SampleOutcome::NoneOffered
+    } else {
+        SampleOutcome::Unsettled
+    }
 }
 
 /// Resolve public metadata for a title detail dialog.
@@ -1353,6 +1388,71 @@ mod tests {
             found.as_deref(),
             Some("https://samples.example/elantris.mp3")
         );
+    }
+
+    /// A cached URL is checked against each caller's rule, and a failed
+    /// store is asked again next time rather than cached as a miss.
+    #[tokio::test]
+    async fn the_sample_cache_keeps_each_callers_rule_and_retries_failures() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = SourceRegistry::new();
+        registry.register(Arc::new(DetailStore {
+            id: "libro",
+            by_isbn: true,
+            by_product_id: false,
+            answer: Some(CatalogHit {
+                product_id: "libro-2".into(),
+                title: "Warbreaker".into(),
+                sample_url: Some("https://samples.example/warbreaker.mp3".into()),
+                ..CatalogHit::default()
+            }),
+            fails: false,
+            calls: calls.clone(),
+            listed: Vec::new(),
+        }));
+        let asked = query(&[], Some("9780000005575"));
+        assert!(resolve_title_sample(&asked, &registry, https)
+            .await
+            .is_some());
+        // A caller that refuses the cached URL is not handed it; the store
+        // is asked again and its refused answer is not cached as a miss.
+        assert!(resolve_title_sample(&asked, &registry, never)
+            .await
+            .is_none());
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert!(resolve_title_sample(&asked, &registry, https)
+            .await
+            .is_some());
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "the found URL stayed cached"
+        );
+
+        let failed_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut failing = SourceRegistry::new();
+        failing.register(Arc::new(DetailStore {
+            id: "libro",
+            by_isbn: true,
+            by_product_id: false,
+            answer: None,
+            fails: true,
+            calls: failed_calls.clone(),
+            listed: Vec::new(),
+        }));
+        let down = query(&[], Some("9780000005582"));
+        assert!(resolve_title_sample(&down, &failing, https).await.is_none());
+        assert!(resolve_title_sample(&down, &failing, https).await.is_none());
+        assert_eq!(
+            failed_calls.lock().unwrap().len(),
+            2,
+            "a failure is not cached"
+        );
+    }
+
+    /// A rule that accepts no sample URL.
+    fn never(_url: &str) -> bool {
+        false
     }
 
     /// The test callers' rule for a usable sample URL: `https` only.

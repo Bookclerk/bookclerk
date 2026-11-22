@@ -7,7 +7,8 @@ import { webPlayer } from "@/lib/webPlayer";
 
 /**
  * Where the sample control is: nothing tried yet, finding audio, playing,
- * paused, none found, or the store lookup failed (pressing again retries).
+ * paused, none offered, or failed (the store lookup or the audio itself
+ * could not be fetched; pressing again retries).
  */
 type SampleStatus = "idle" | "loading" | "playing" | "paused" | "none" | "failed";
 
@@ -20,8 +21,9 @@ type SampleStatus = "idle" | "loading" | "playing" | "paused" | "none" | "failed
  * player, so it reports no listening position and does not count toward
  * recommendations. Starting it pauses a book that is playing.
  *
- * Key it by title so another title starts over. The query is read when
- * the control is pressed, so an ASIN or ISBN that title-meta adds later is
+ * Key it by the open title's identity, so another title starts over while
+ * enrichment of the same title does not. The query is read when the
+ * control is pressed, so an ASIN or ISBN that title-meta adds later is
  * used without restarting a sample.
  *
  * @param props - `editionId` is the held edition, when there is one;
@@ -37,6 +39,9 @@ export function SampleButton({
   const [status, setStatus] = useState<SampleStatus>("idle");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const sourcesRef = useRef<AsyncGenerator<string, void, undefined> | null>(null);
+  // Whether a source's audio failed to load in this attempt, so running
+  // out of sources then reads as a failure to retry, not as no sample.
+  const audioFailedRef = useRef(false);
   // Unmounting (closing the dialog, or another title: the parent keys this
   // control by title) stops the sample.
   useEffect(() => {
@@ -52,8 +57,9 @@ export function SampleButton({
   }, []);
 
   /**
-   * Moves to the next source, settling on "none" when they ran out or on
-   * "failed" when the store lookup did.
+   * Moves to the next source, settling on "failed" when the store lookup
+   * failed or the last source's audio did, and on "none" when every source
+   * was asked and none offered a sample.
    */
   const playNext = async () => {
     const audio = audioRef.current;
@@ -71,7 +77,8 @@ export function SampleButton({
     }
     if (sourcesRef.current !== sources) return;
     if (next.done) {
-      setStatus("none");
+      sourcesRef.current = null;
+      setStatus(audioFailedRef.current ? "failed" : "none");
       return;
     }
     // The book may have resumed (a media key) while the lookup ran; pause
@@ -99,6 +106,7 @@ export function SampleButton({
       void audio.play().catch(() => setStatus("paused"));
       return;
     }
+    audioFailedRef.current = false;
     sourcesRef.current = sampleSources(editionId, query);
     void playNext();
   };
@@ -123,7 +131,7 @@ export function SampleButton({
         aria-pressed={status === "playing"}
         title={
           status === "failed"
-            ? "The stores could not be asked; press to try again"
+            ? "The sample could not be loaded; press to try again"
             : "A short preview; it does not count as listening"
         }
       >
@@ -146,7 +154,9 @@ export function SampleButton({
         onPause={() => setStatus((s) => (s === "playing" ? "paused" : s))}
         onEnded={() => setStatus("paused")}
         onError={() => {
-          if (sourcesRef.current) void playNext();
+          if (!sourcesRef.current) return;
+          audioFailedRef.current = true;
+          void playNext();
         }}
       />
     </>

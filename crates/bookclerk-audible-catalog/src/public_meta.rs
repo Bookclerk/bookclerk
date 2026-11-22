@@ -56,6 +56,7 @@ pub fn region_tld(region: &str) -> &'static str {
         "it" => ".it",
         "in" => ".in",
         "es" => ".es",
+        "br" => ".com.br",
         _ => ".com",
     }
 }
@@ -74,7 +75,7 @@ pub fn normalize_region(region: &str) -> String {
     match region.trim().to_ascii_lowercase().as_str() {
         "gb" => "uk".into(),
         "" => "us".into(),
-        "us" | "ca" | "uk" | "au" | "fr" | "de" | "jp" | "it" | "in" | "es" => {
+        "us" | "ca" | "uk" | "au" | "fr" | "de" | "jp" | "it" | "in" | "es" | "br" => {
             region.trim().to_ascii_lowercase()
         }
         _ => "us".into(),
@@ -1938,6 +1939,20 @@ fn saturating_i64(n: f64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every marketplace a detail lookup tries reaches its own catalog, so
+    /// none silently falls back to the US one.
+    #[test]
+    fn each_marketplace_has_its_own_catalog_origin() {
+        let regions = [
+            "us", "uk", "ca", "au", "de", "fr", "it", "es", "in", "jp", "br",
+        ];
+        let origins: std::collections::BTreeSet<String> =
+            regions.iter().map(|r| catalog_origin(r)).collect();
+        assert_eq!(origins.len(), regions.len(), "{origins:?}");
+        assert_eq!(catalog_origin("br"), "https://api.audible.com.br");
+        assert_eq!(normalize_region(" BR "), "br");
+    }
 
     #[test]
     fn the_sample_url_is_kept_only_when_it_is_https() {
