@@ -6,6 +6,7 @@ import { isDesktopWindow } from "@/lib/desktop";
 import { tauriBridge } from "@/lib/desktopLive";
 import { useLiveRefresh } from "@/lib/live";
 import {
+  ALERTS_STORAGE_KEY,
   AlertTracker,
   alertState,
   browserPermission,
@@ -74,6 +75,28 @@ export function NotificationBell({ onNavigate }: { onNavigate: (view: AppView) =
     alertsRef.current = alerts;
   }, [alerts]);
 
+  // Another tab of the app turning alerts on or off for this device.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== ALERTS_STORAGE_KEY && e.key !== null) return;
+      setAlerts(alertState({ sink, permission: browserPermission, stored: storedAlerts }));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [sink]);
+
+  // The bell lives only while someone is signed in: a read that finishes
+  // after it unmounts (a sign-out) must not alert the next person, and only
+  // the newest read may set what the bell shows.
+  const mounted = useRef(true);
+  const latest = useRef(0);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   const follow = useCallback(
     (entry: InboxEntryView) => {
       const path = safeLinkPath(entry.link_path);
@@ -84,8 +107,11 @@ export function NotificationBell({ onNavigate }: { onNavigate: (view: AppView) =
   );
 
   const refresh = useCallback(async () => {
+    const request = ++latest.current;
+    const current = () => mounted.current && request === latest.current;
     try {
       const page = await fetchInbox({ limit: BELL_PAGE });
+      if (!current()) return;
       setEntries(page.entries);
       setUnread(page.unread);
       setFailed(false);
@@ -95,7 +121,7 @@ export function NotificationBell({ onNavigate }: { onNavigate: (view: AppView) =
         for (const entry of fresh) void showAlert(sink, entry, follow);
       }
     } catch {
-      setFailed(true);
+      if (current()) setFailed(true);
     }
   }, [sink, follow]);
 

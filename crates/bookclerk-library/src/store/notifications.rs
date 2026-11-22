@@ -532,28 +532,42 @@ impl LibraryStore {
         let mut staff_inbox = false;
         match (new.audience, new.patron) {
             (NotificationAudience::Operational, _) => {
-                let routes = notify_routes::Entity::find()
-                    .filter(notify_routes::Column::NotificationType.eq(&new.notification_type))
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?;
+                // The channel routes and the In app route are two reads; a
+                // replacement writes both in one batch and restamps every
+                // channel route, so the channel routes are read again after
+                // the In app route and the pair is read afresh (up to three
+                // times) when they moved, so routing follows one complete
+                // configuration.
+                let read_routes = || {
+                    notify_routes::Entity::find()
+                        .filter(notify_routes::Column::NotificationType.eq(&new.notification_type))
+                        .all(&self.db)
+                };
+                let mut routes = read_routes().await.map_err(LibraryError::Orm)?;
+                let mut attempt = 0;
+                let in_app = loop {
+                    attempt += 1;
+                    let in_app =
+                        notify_inbox_routes::Entity::find_by_id(new.notification_type.clone())
+                            .one(&self.db)
+                            .await
+                            .map_err(LibraryError::Orm)?;
+                    let again = read_routes().await.map_err(LibraryError::Orm)?;
+                    if again == routes || attempt >= 3 {
+                        break in_app;
+                    }
+                    routes = again;
+                };
+                let reaches = |min: &str| {
+                    NotificationSeverity::from_wire_name(min)
+                        .is_some_and(|min| severity_reaches(new.severity, min))
+                };
                 let wanted: Vec<String> = routes
                     .into_iter()
-                    .filter(|r| {
-                        NotificationSeverity::from_wire_name(&r.min_severity)
-                            .is_some_and(|min| severity_reaches(new.severity, min))
-                    })
+                    .filter(|r| reaches(&r.min_severity))
                     .map(|r| r.destination_id)
                     .collect();
-                staff_inbox =
-                    notify_inbox_routes::Entity::find_by_id(new.notification_type.clone())
-                        .one(&self.db)
-                        .await
-                        .map_err(LibraryError::Orm)?
-                        .is_some_and(|r| {
-                            NotificationSeverity::from_wire_name(&r.min_severity)
-                                .is_some_and(|min| severity_reaches(new.severity, min))
-                        });
+                staff_inbox = in_app.is_some_and(|r| reaches(&r.min_severity));
                 if !wanted.is_empty() {
                     for row in super::library_model::find_chunked::<notify_destinations::Entity, _>(
                         self,
