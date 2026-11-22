@@ -3004,13 +3004,9 @@ mod tests {
             fs::read(under_tmp(&second.plugin_root, "old-marker")).unwrap(),
             b"v1"
         );
-        assert!(
-            err.contains("directory")
-                || err.contains("install-ledger")
-                // Windows refuses to open a directory as a file this way.
-                || err.contains("os error 5"),
-            "{err}"
-        );
+        // Windows refuses to open a directory as a file this way (os error 5).
+        let expected = ["directory", "install-ledger", "os error 5"];
+        assert!(expected.iter().any(|text| err.contains(text)), "{err}");
 
         fs::remove_dir_all(under_tmp(tmp.path(), "install-ledger.json.tmp")).unwrap();
         Installer::rollback(&second).unwrap();
