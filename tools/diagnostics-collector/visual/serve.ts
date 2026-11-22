@@ -326,6 +326,7 @@ function renderers(): Record<string, () => SafeHtml> {
         mute: null,
         installs: 6,
         triageNote: null,
+        proposal: null,
         now: NOW,
       }),
     "/issues": () =>

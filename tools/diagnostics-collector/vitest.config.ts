@@ -3,8 +3,9 @@
 // - `workers` runs the Worker's tests inside the Workers runtime through
 //   the Workers Vitest integration, with the Worker's compatibility date and
 //   real D1 databases (test-support/d1.ts) carrying the dashboard migrations.
-// - `node` runs the tests that need the host itself: the summary fuzz test
-//   checks every input against a Python oracle in a subprocess.
+// - `node` runs the tests that need the host itself: the summary and
+//   Triage now fuzz tests check every input against a Python oracle in a
+//   subprocess.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
@@ -21,7 +22,7 @@ const COMPATIBILITY_DATE = /^compatibility_date = "([0-9-]+)"$/m.exec(
 if (COMPATIBILITY_DATE === undefined) throw new Error("wrangler.toml has no compatibility_date");
 
 /** Tests that run outside the Workers runtime. */
-const NODE_TESTS = ["summary.fuzz.test.ts"];
+const NODE_TESTS = ["summary.fuzz.test.ts", "triage-now.fuzz.test.ts"];
 
 /**
  * Tests that read the Worker's source text. The nightly mutation run sets

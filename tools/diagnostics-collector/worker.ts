@@ -140,7 +140,7 @@ export type ReportAnswer = {
   /** Cursor the pull started from: object name. */
   after: string;
   /** Where the starting cursor came from. */
-  cursor_source: "stored" | "query" | "report";
+  cursor_source: "stored" | "query";
   /** Cursor for the next pull: upload time. */
   next_since: number;
   /** Cursor for the next pull: object name. */
@@ -750,16 +750,11 @@ async function handleCheckin(request: Request, env: Env): Promise<Response> {
   return new Response(null, { status: 204 });
 }
 
-/** A bare lowercase report UUID (not an object name). */
-const UUID_ONLY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
 /**
  * `GET /report`: the ingest Action pulls the stored reports after a cursor,
  * passing over versions older than the latest stable release and, with
  * `unfiled=1`, reports an issue already lists or tracks by signature and
- * reports whose signature a member muted. With `report_id=<uuid>` (a
- * member's **Triage now**) it returns that one report wherever it sits,
- * ignoring the cursor.
+ * reports whose signature a member muted.
  *
  * @param request - The Action's request (needs the report key).
  * @param env - Worker bindings.
@@ -773,17 +768,8 @@ async function handleReport(request: Request, env: Env, url: URL): Promise<Respo
 
   let since: number;
   let afterName: string;
-  let cursorSource: "stored" | "query" | "report";
-  // One report by ID: from the start of the listing, whatever the cursor.
-  let only: string | null = null;
-  if (url.searchParams.has("report_id")) {
-    const raw = (url.searchParams.get("report_id") ?? "").toLowerCase();
-    if (!UUID_ONLY_RE.test(raw)) return json({ error: "invalid report_id" }, 400);
-    only = raw;
-    since = 0;
-    afterName = "";
-    cursorSource = "report";
-  } else if (url.searchParams.get("cursor") === "stored" && !url.searchParams.has("since")) {
+  let cursorSource: "stored" | "query";
+  if (url.searchParams.get("cursor") === "stored" && !url.searchParams.has("since")) {
     if (!env.DASHBOARD_DB) return json({ error: "no DASHBOARD_DB binding holding a cursor" }, 503);
     ({ since, after: afterName } = await readCursor(env.DASHBOARD_DB));
     cursorSource = "stored";
@@ -820,7 +806,6 @@ async function handleReport(request: Request, env: Env, url: URL): Promise<Respo
   const files = listed.files;
   const newer = files
     .filter((f) => f.action === "upload" && isAfterCursor(f, since, afterName))
-    .filter((f) => only === null || reportIdOf(f.fileName) === only)
     .sort(compareUploadOrder);
 
   // First pass: pick the objects this pull covers and move the cursor past

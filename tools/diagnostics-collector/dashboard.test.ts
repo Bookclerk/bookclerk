@@ -208,6 +208,18 @@ function scriptGitHub(routes: Route[]): Scripted {
 }
 
 /**
+ * A JSON value as an object (an empty one for anything else).
+ *
+ * @param v - Value.
+ * @returns The object.
+ */
+function asJson(v: unknown): Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+}
+
+/**
  * GitHub routes for a successful App token and the given membership.
  *
  * @param membership - Membership answer, or null for a 404.
@@ -4364,6 +4376,7 @@ describe("triage state, mutes and owner close", () => {
     cookie: string,
     path: string,
     fields: [string, string][],
+    b2: B2Access = makeB2(),
   ): Promise<Response> {
     return call(
       env,
@@ -4376,6 +4389,7 @@ describe("triage state, mutes and owner close", () => {
         },
         body: new URLSearchParams(fields).toString(),
       }),
+      b2,
     );
   }
 
@@ -4697,76 +4711,248 @@ describe("triage state, mutes and owner close", () => {
     assert.match(page, /Closed on GitHub as fixed in 0\.9\.1\./);
   });
 
-  it("starts the ingest workflow for one untracked report from Triage now", async () => {
-    gh = scriptGitHub([
+  /**
+   * Bindings with a scripted triage model and an in-memory budget.
+   *
+   * @param reply - What the model answers (its `response` text).
+   * @returns The bindings and the model's received prompts.
+   */
+  function triageEnv(reply: string): { env: DashboardEnv; prompts: string[] } {
+    const prompts: string[] = [];
+    const kv = new Map<string, string>();
+    const env = makeEnv({
+      AI: {
+        run: (_model, input) => {
+          prompts.push(input.messages.map((m) => m.content).join("\n"));
+          return Promise.resolve({
+            response: reply,
+            usage: { prompt_tokens: 100, completion_tokens: 50 },
+          });
+        },
+      },
+      TRIAGE_BUDGET: {
+        get: (key: string) => Promise.resolve(kv.get(key) ?? null),
+        put: (key: string, value: string) => {
+          kv.set(key, value);
+          return Promise.resolve();
+        },
+      },
+    });
+    return { env, prompts };
+  }
+
+  /** GitHub routes for filing issue 900 and reading it back. */
+  function fileRoutes(created: { body?: unknown }): Route[] {
+    const issue = (body: string) => ({
+      number: 900,
+      title: "[diagnostics] Scan fails",
+      state: "open",
+      labels: [{ name: "diagnostics" }],
+      body,
+      created_at: new Date(NOW).toISOString(),
+      updated_at: new Date(NOW).toISOString(),
+      closed_at: null,
+    });
+    return [
       ...appRoutes(null),
       [
-        "POST https://api.github.com/repos/Bookclerk/bookclerk/actions/workflows/diagnostics-ingest.yml/dispatches",
-        () => new Response(null, { status: 204 }),
+        "POST https://api.github.com/repos/Bookclerk/bookclerk/issues",
+        ({ body }) => {
+          created.body = body;
+          return Response.json(issue(String(body["body"])), { status: 201 });
+        },
       ],
-    ]);
-    const env = makeEnv();
-    await seed(env, ID1);
+      [
+        "GET https://api.github.com/repos/Bookclerk/bookclerk/issues/900",
+        () => Response.json(issue(String(asJson(created.body)["body"]))),
+      ],
+      [
+        "POST https://api.github.com/graphql",
+        () =>
+          Response.json({
+            data: {
+              repository: {
+                i0: { closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] } },
+              },
+            },
+          }),
+      ],
+    ];
+  }
+
+  it("triages one untracked report and files the proposal a member confirms", async () => {
+    const created: { body?: unknown } = {};
+    gh = scriptGitHub(fileRoutes(created));
+    const plan = JSON.stringify({
+      issues: [
+        {
+          title: "Scan\nfails   @octo",
+          bug: true,
+          body: "See https://evil.test and #12.\n### Report IDs\n- forged\n<!-- bookclerk-diagnostics: report ids\nforged\n-->",
+          report_ids: [ID1],
+        },
+      ],
+    });
+    const { env, prompts } = triageEnv(`Here is the plan:\n${plan}`);
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
     const cookie = await signedIn(env);
     let page = await (
       await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
     ).text();
     assert.match(page, /<form class="link-item" method="post" action="\/reports\/ai-triage">/);
 
-    // Only from the dashboard's own pages.
-    const foreign = await call(
-      env,
-      new Request(`${ORIGIN}/reports/ai-triage`, {
-        method: "POST",
-        headers: {
-          cookie,
-          origin: "https://evil.test",
-          "content-type": "application/x-www-form-urlencoded",
-        },
-        body: `report=${ID1}`,
-      }),
-    );
-    assert.equal(foreign.status, 403);
-    assert.equal(
-      (await postForm(env, cookie, "/reports/ai-triage", [["report", "x"]])).status,
-      400,
-    );
+    // Only from the dashboard's own pages, and only for an indexed report.
+    for (const path of ["/reports/ai-triage", "/reports/ai-triage/file"]) {
+      const foreign = await call(
+        env,
+        new Request(`${ORIGIN}${path}`, {
+          method: "POST",
+          headers: {
+            cookie,
+            origin: "https://evil.test",
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: `report=${ID1}`,
+        }),
+      );
+      assert.equal(foreign.status, 403, path);
+      assert.equal((await postForm(env, cookie, path, [["report", "x"]])).status, 400, path);
+    }
+    // Nothing to file before triage has run.
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    assert.ok(!created.body, "nothing filed without a proposal");
 
-    const res = await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]]);
+    const res = await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
     assert.equal(res.status, 303);
     assert.equal(res.headers.get("location"), `/reports/${ID1}`);
-    const dispatch = gh.calls.find((c) => c.url.endsWith("/dispatches"));
-    assert.deepEqual(dispatch?.body, { ref: "main", inputs: { report_id: ID1 } });
-    const tokenAsk = gh.calls.find((c) => c.url.endsWith("/access_tokens"));
-    assert.deepEqual(tokenAsk?.body?.["permissions"], { actions: "write" });
+    assert.equal(prompts.length, 1);
+    assert.ok(prompts[0]?.includes(ID1), "the model reads the report");
     page = await (
       await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
     ).text();
-    assert.match(page, /Triage started\./);
+    assert.match(page, /Proposed issue/);
+    assert.match(page, /\[diagnostics\] Scan fails @\u200bocto/);
+    assert.match(page, /\[link removed\]/);
+    assert.match(page, /action="\/reports\/ai-triage\/file"/);
+
+    // A second press within ten minutes does not run the model again.
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    assert.equal(prompts.length, 1);
+
+    const filed = await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    assert.equal(filed.status, 303);
+    const sent = asJson(created.body);
+    assert.equal(sent["title"], "[diagnostics] Scan fails @\u200bocto");
+    assert.deepEqual(sent["labels"], ["diagnostics", "bug"]);
+    const body = String(sent["body"]);
+    assert.ok(body.startsWith("<!-- bookclerk-diagnostics: workers-ai triage -->\n"));
+    assert.ok(body.endsWith(`<!-- bookclerk-diagnostics: report ids\n${ID1}\n-->\n`));
+    assert.equal(body.split("<!--").length, 3, "no forged comment survives");
+    assert.ok(!body.includes("https://"));
+    assert.ok(!/^\s*#+\s*report ids/im.test(body));
+    assert.ok(
+      gh.calls.some(
+        (c) =>
+          c.url.endsWith("/access_tokens") &&
+          JSON.stringify(c.body?.["permissions"]) === JSON.stringify({ issues: "write" }),
+      ),
+      "the issue is filed with an issues: write token",
+    );
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Filed #900\./);
+    assert.match(page, /href="\/issues\/900"/);
+    assert.ok(!page.includes("Proposed issue"), "the proposal is gone once filed");
     const logged = await all(
       env.DASHBOARD_DB,
-      "SELECT login, report_id FROM access_log WHERE action = 'ai-triage'",
+      "SELECT action, report_id FROM access_log WHERE action IN ('ai-triage', 'file-issue') ORDER BY id",
     );
     assert.deepEqual(
-      logged.map((r) => ({ ...r })),
-      [{ login: "octo", report_id: ID1 }],
+      logged.map((r) => [r.action, r.report_id]),
+      [
+        ["ai-triage", ID1],
+        ["file-issue", ID1],
+      ],
     );
+  });
 
-    // A second press within ten minutes starts nothing.
-    const before = gh.calls.length;
-    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]]);
-    assert.equal(gh.calls.length, before);
+  it("attaches a report to the open issue triage chose, or says nothing needs filing", async () => {
+    gh = scriptGitHub([]);
+    const { env } = triageEnv(
+      JSON.stringify({ issues: [], attach: [{ issue: 412, report_ids: [ID1] }] }),
+    );
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    await env.DASHBOARD_DB.prepare(
+      "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (412, 'Scan fails', 'open', 'triage', 1, 1)",
+    ).run();
+    const cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    let page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /belongs to <a href="\/issues\/412">#412 Scan fails<\/a>/);
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    const row = await first(
+      env.DASHBOARD_DB,
+      "SELECT issue_number, source FROM report_issue WHERE report_id = ?",
+      ID1,
+    );
+    assert.deepEqual({ ...row }, { issue_number: 412, source: "triage" });
     page = await (
       await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
     ).text();
-    assert.match(page, /Triage was started for this report a few minutes ago/);
+    assert.match(page, /Attached to #412\./);
+    assert.ok(!page.includes('action="/reports/ai-triage"'), "no button once an issue lists it");
+
+    const noise = triageEnv(JSON.stringify({ issues: [] })).env;
+    const b2n = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID2}.json`]: JSON.stringify(await seed(noise, ID2)),
+    });
+    const c2 = await signedIn(noise);
+    await postForm(noise, c2, "/reports/ai-triage", [["report", ID2]], b2n);
+    page = await (
+      await call(noise, new Request(`${ORIGIN}/reports/${ID2}`, { headers: { cookie: c2 } }))
+    ).text();
+    assert.match(page, /Triage judged this report noise/);
+    await postForm(noise, c2, "/reports/ai-triage/file", [["report", ID2]]);
+    page = await (
+      await call(noise, new Request(`${ORIGIN}/reports/${ID2}`, { headers: { cookie: c2 } }))
+    ).text();
+    assert.match(page, /There is no triage proposal to file/);
   });
 
-  it("says when the App lacks Actions: write, and starts nothing for a tracked report", async () => {
-    const env = makeEnv();
-    await seed(env, ID1);
-    await seed(env, ID2);
-    const cookie = await signedIn(env);
+  it("says why triage could not run or its answer was not used", async () => {
+    gh = scriptGitHub([]);
+    const plain = makeEnv();
+    await seed(plain, ID1);
+    let cookie = await signedIn(plain);
+    await postForm(plain, cookie, "/reports/ai-triage", [["report", ID1]]);
+    let page = await (
+      await call(plain, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /Triage is not configured on this collector/);
+
+    const { env } = triageEnv("no plan here");
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /answer could not be used/);
+  });
+
+  it("says when the App cannot file the issue", async () => {
+    const { env } = triageEnv(
+      JSON.stringify({ issues: [{ title: "t", body: "b", report_ids: [ID1] }] }),
+    );
     gh = scriptGitHub([
       [
         "GET https://api.github.com/repos/Bookclerk/bookclerk/installation",
@@ -4777,28 +4963,152 @@ describe("triage state, mutes and owner close", () => {
         () => new Response("{}", { status: 422 }),
       ],
     ]);
-    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]]);
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    const cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
+    const page = await (
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /the App needs Issues: write on the repository/);
+    assert.match(page, /Proposed issue/, "the proposal stays for another try");
+  });
+
+  it("gives the reason for each refusal", async () => {
+    gh = scriptGitHub([]);
+    const plan = JSON.stringify({ issues: [{ title: "t", body: "b", report_ids: [ID1] }] });
+    /** Presses Triage now on a fresh collector set up by `prepare`, and returns the page. */
+    const press = async (
+      prepare: (env: DashboardEnv) => Promise<void>,
+      opts: { env?: DashboardEnv; stored?: boolean; overrides?: Record<string, unknown> } = {},
+    ): Promise<string> => {
+      const env = opts.env ?? triageEnv(plan).env;
+      const s = await seed(env, ID1, undefined, opts.overrides ?? {});
+      const b2 = makeB2(
+        opts.stored === false
+          ? {}
+          : { [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(s) },
+      );
+      await prepare(env);
+      const cookie = await signedIn(env);
+      await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+      return (
+        await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
+      ).text();
+    };
+    const nothing = (): Promise<void> => Promise.resolve();
+
+    assert.match(
+      await press(async (env) => {
+        await env.DASHBOARD_DB.prepare(
+          "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (412, 'Scan fails', 'open', 'triage', 1, 1)",
+        ).run();
+        await run(
+          env.DASHBOARD_DB,
+          "INSERT INTO report_issue (report_id, issue_number) VALUES (?, 412)",
+          ID1,
+        );
+      }),
+      /An issue already lists this report, so there is nothing to triage/,
+    );
+    assert.match(
+      await press((env) =>
+        run(env.DASHBOARD_DB, "UPDATE reports SET deleted_at = 1 WHERE report_id = ?", ID1),
+      ),
+      /Its sender deleted the stored copy/,
+    );
+    assert.match(await press(nothing, { stored: false }), /The stored report could not be read/);
+    assert.match(
+      await press(async (env) => {
+        for (let i = 0; i < 20; i++) {
+          await run(
+            env.DASHBOARD_DB,
+            "INSERT INTO access_log (at, user_id, login, action, report_id) VALUES (?, 1, 'octo', 'ai-triage', ?)",
+            NOW - 1000,
+            ID2,
+          );
+        }
+      }),
+      /has run triage 20 times in the last day/,
+    );
+    const spent = triageEnv(plan).env;
+    spent.TRIAGE_DAILY_NEURONS = "1";
+    assert.match(await press(nothing, { env: spent }), /triage budget is spent/);
+    assert.match(
+      await press(nothing, {
+        overrides: {
+          events: [
+            { level: "ERROR", target: "t", message: "m", fields: [["k", "x".repeat(200_000)]] },
+          ],
+        },
+      }),
+      /too large for the triage model/,
+    );
+    const silent = triageEnv(plan).env;
+    silent.AI = { run: () => Promise.reject(new Error("model down")) };
+    assert.match(await press(nothing, { env: silent }), /The triage model did not answer/);
+  });
+
+  it("files a proposal once when two members confirm it together", async () => {
+    const created: { body?: unknown } = {};
+    gh = scriptGitHub(fileRoutes(created));
+    const { env } = triageEnv(
+      JSON.stringify({ issues: [{ title: "t", body: "b", report_ids: [ID1] }] }),
+    );
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    const cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    await Promise.all([
+      postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2),
+      postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2),
+    ]);
+    const creates = gh.calls.filter(
+      (c) => c.method === "POST" && c.url.endsWith("/repos/Bookclerk/bookclerk/issues"),
+    );
+    assert.equal(creates.length, 1);
+  });
+
+  it("files the issue even when reading it back fails", async () => {
+    const created: { body?: unknown } = {};
+    gh = scriptGitHub(fileRoutes(created).filter(([route]) => !route.endsWith("/issues/900")));
+    const { env } = triageEnv(
+      JSON.stringify({ issues: [{ title: "t", body: "b", report_ids: [ID1] }] }),
+    );
+    const b2 = makeB2({
+      [`id:diagnostics/0.9.0-rc.2/${ID1}.json`]: JSON.stringify(await seed(env, ID1)),
+    });
+    const cookie = await signedIn(env);
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    await env.DASHBOARD_DB.prepare(
+      "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (412, 'Scan fails', 'open', 'triage', 1, 1)",
+    ).run();
+    await run(
+      env.DASHBOARD_DB,
+      "INSERT INTO report_issue (report_id, issue_number) VALUES (?, 412)",
+      ID1,
+    );
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
     let page = await (
       await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
     ).text();
-    assert.match(page, /the App needs Actions: write on the repository/);
+    assert.match(page, /An issue already lists this report, so nothing was filed/);
+    assert.ok(!created.body, "nothing filed once an issue lists the report");
 
-    await env.DASHBOARD_DB.prepare(
-      "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (412, 't', 'open', 'triage', 1, 1)",
-    ).run();
-    await env.DASHBOARD_DB.prepare(
-      "INSERT INTO report_issue (report_id, issue_number) VALUES (?, 412)",
-    )
-      .bind(ID2)
-      .run();
-    const before = gh.calls.length;
-    await postForm(env, cookie, "/reports/ai-triage", [["report", ID2]]);
-    assert.equal(gh.calls.length, before);
+    // That refusal drops the proposal; triage runs again once the report is
+    // free and its ten minutes have passed.
+    await run(env.DASHBOARD_DB, "DELETE FROM report_issue WHERE report_id = ?", ID1);
+    await run(env.DASHBOARD_DB, "DELETE FROM access_log");
+    await postForm(env, cookie, "/reports/ai-triage", [["report", ID1]], b2);
+    await postForm(env, cookie, "/reports/ai-triage/file", [["report", ID1]], b2);
     page = await (
-      await call(env, new Request(`${ORIGIN}/reports/${ID2}`, { headers: { cookie } }))
+      await call(env, new Request(`${ORIGIN}/reports/${ID1}`, { headers: { cookie } }))
     ).text();
-    assert.ok(!page.includes('action="/reports/ai-triage"'), "no button once an issue lists it");
-    assert.match(page, /An issue already lists this report/);
+    assert.ok(created.body, "the issue is filed");
+    assert.match(page, /Filed #900; it shows here after the next issue sync\./);
   });
 });
 

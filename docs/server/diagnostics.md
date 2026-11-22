@@ -709,19 +709,15 @@ compare reads below), on this one repository. The App's installation must
 grant each of them, or the token can't be minted and sign-in fails.
 
 The writes the Worker can ask GitHub for are an issue's summary comment,
-from the owner's **Update GitHub now** button, and closing an issue, from
-the owner's [close buttons](#closing-issues):
+from the owner's **Update GitHub now** button, closing an issue, from the
+owner's [close buttons](#closing-issues), and filing a new issue a member
+confirms after [**Triage now**](#triage-now):
 
 - For each such call it mints a separate token narrowed to `issues: write`
   and nothing else, and keeps no copy.
 - It still can't write pull requests, code or workflows.
 - If the installation doesn't grant Issues: write, the button says so. A
   summary comment is then left to the scheduled run.
-
-A member's [**Triage now**](#triage-now) starts the ingest workflow with a
-token narrowed to `actions: write` alone, minted for that call and not
-kept. That permission also covers re-running and cancelling runs and
-deleting their logs, artifacts and caches, but not code or workflow files.
 
 The client secret and private key are Worker secrets only. Neither, nor
 any user token, is logged, stored or sent to a browser.
@@ -733,9 +729,9 @@ The App needs, in its settings:
 - the organization permission **Members: read**, accepted on its
   installation;
 - the repository permission **Issues: write**, for the **Update GitHub
-  now** and close buttons. The App's token is separate from the ingest Action's
-  `GITHUB_TOKEN`, so the Action's permission doesn't cover it;
-- the repository permission **Actions: write**, for **Triage now**;
+  now**, close and **Open issue** buttons. The App's token is separate from
+  the ingest Action's `GITHUB_TOKEN`, so the Action's permission doesn't
+  cover it;
 - the callback URL `https://diagnostics.<DOMAIN>/auth/callback`, or the
   workers.dev URL.
 
@@ -915,30 +911,39 @@ and open pages refresh.
 
 ### Triage now
 
-A report no issue lists yet has a **Triage now** button on its page. It
-posts to `/reports/ai-triage`, and the Worker starts the ingest workflow
-(`workflow_dispatch` with the `report_id` input) instead of waiting for
-the daily run:
+A report no issue lists yet has a **Triage now** button on its page, so a
+member need not wait for the daily ingest run:
 
-1. The workflow pulls only that report (`GET /report?report_id=<uuid>`),
-   whatever its version and wherever the cursor is, and passes it over if
-   an issue lists it by then.
-2. It triages the report on Workers AI under the same daily budget, and
-   files a new issue or attaches the report to an open one, as the daily
-   run would.
-3. It leaves the stored cursor alone, so the scheduled pull is unchanged.
-   Each report's run has its own concurrency group, so one press never
-   cancels another's pending run.
+1. The button posts to `/reports/ai-triage`. The Worker reads the stored
+   report and asks the triage model about it alone, on Workers AI and
+   under the same daily budget as the ingest run, with the open issues it
+   may join.
+2. The page shows what the model proposes: a new issue with its title,
+   labels and body, or the open issue the report belongs to. When the model
+   judges the report noise, the page says so and nothing is proposed.
+3. A member presses **Open issue** or **Attach to #N** (posting to
+   `/reports/ai-triage/file`). The Worker files the issue with the App's
+   Issues: write token and lists it under **Tracked by** at once, or
+   attaches the report to the offered issue, as the ingest run would.
 
-The page notes what happened for 10 minutes. The issue shows up under
-**Tracked by** once the run finishes, usually within a few minutes.
+The model's reply is read as the ingest run's plan validator reads it,
+since the issue is public: only this report, a prefixed one-line title,
+a bounded body with no links, mentions, cross-references or raw HTML, and
+the report block written by the Worker. Attachments go only to the issues
+the model was offered.
 
-- A report waits 10 minutes between presses, and the dashboard starts at
-  most 20 runs a day. Each press is written to the access log.
+- A proposal lasts an hour; after that, press **Triage now** again. Nothing
+  is filed until a member confirms it.
+- A report waits 10 minutes between presses, and the dashboard runs
+  triage at most 20 times a day. Each press, filing and attachment is
+  written to the access log.
 - A report whose stored copy was deleted has no button, since triage has
   nothing to read.
-- Without Actions: write on the App's installation, the page says so and
-  nothing starts. See [What the Worker holds](#what-the-worker-holds).
+- When the budget is spent, triage is not configured, or the model's answer
+  can't be used, the page says so and the daily run still triages the
+  report. Without Issues: write on the App's installation, **Open issue**
+  says so and the proposal stays. See
+  [What the Worker holds](#what-the-worker-holds).
 
 ### Closing issues
 

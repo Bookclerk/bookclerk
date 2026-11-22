@@ -285,35 +285,6 @@ describe("GET /report?unfiled=1", () => {
     assert.equal(out.next_since, 1001);
   });
 
-  it("returns one report by ID whatever the cursor, and refuses a malformed ID", async () => {
-    const db = await setup();
-    const req = (id: string) =>
-      new Request(`https://collector.test/report?report_id=${id}&unfiled=1&baseline_version=`, {
-        headers: { authorization: `Bearer ${KEY}` },
-      });
-    const out = await (
-      await worker.fetch(req(FRESH.toUpperCase()), { ...ENV, DASHBOARD_DB: db }, CTX)
-    ).json<ReportAnswer>();
-    assert.deepEqual(
-      out.reports.map((r) => r.report_id),
-      [FRESH],
-    );
-    assert.equal(out.cursor_source, "report");
-    // A filed report is still passed over, so a press cannot file it twice.
-    const filed = await (
-      await worker.fetch(req(FILED), { ...ENV, DASHBOARD_DB: db }, CTX)
-    ).json<ReportAnswer>();
-    assert.deepEqual(filed.reports, []);
-    for (const bad of ["", "nope", `diagnostics/0.0.0-synthetic/${FRESH}.json`]) {
-      const res = await worker.fetch(
-        req(encodeURIComponent(bad)),
-        { ...ENV, DASHBOARD_DB: db },
-        CTX,
-      );
-      assert.equal(res.status, 400, bad);
-    }
-  });
-
   it("returns every report without the flag", async () => {
     const out = await pull(await setup(), "");
     assert.deepEqual(
