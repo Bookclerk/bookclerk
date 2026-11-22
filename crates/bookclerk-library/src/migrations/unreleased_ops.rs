@@ -2281,6 +2281,15 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         created_at TEXT NOT NULL
     )",
     ),
+    // A fresh revision per replacement of one type's routes, written in the
+    // replacement's batch, so routing can check that its reads of
+    // `notify_routes` and `notify_inbox_routes` saw one configuration.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_route_revisions (
+        notification_type TEXT PRIMARY KEY NOT NULL,
+        revision TEXT NOT NULL
+    )",
+    ),
     // Which notifier instances patrons may use for each patron type, and
     // whether a patron who has not chosen gets it there by default.
     MigrationOp::Schema(

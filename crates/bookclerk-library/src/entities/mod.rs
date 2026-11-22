@@ -84,6 +84,7 @@ pub mod notify_inbox_routes;
 pub mod notify_patron_offers;
 pub mod notify_patron_prefs;
 pub mod notify_patron_targets;
+pub mod notify_route_revisions;
 pub mod notify_routes;
 pub mod oidc_auth_codes;
 pub mod oidc_clients;

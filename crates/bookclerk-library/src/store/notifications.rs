@@ -24,7 +24,7 @@ use crate::control_plane::{batch, bump_if_any, LiveTopic};
 use crate::entities::{
     account_links, jobs, notifications, notify_deliveries, notify_destinations, notify_inbox,
     notify_inbox_routes, notify_patron_offers, notify_patron_prefs, notify_patron_targets,
-    notify_routes, portal_identities, users,
+    notify_route_revisions, notify_routes, portal_identities, users,
 };
 use crate::error::{EntityKind, LibraryError, Result};
 use crate::models::{
@@ -534,30 +534,35 @@ impl LibraryStore {
         let mut staff_inbox = false;
         match (new.audience, new.patron) {
             (NotificationAudience::Operational, _) => {
-                // The channel routes and the In app route are two reads; a
-                // replacement writes both in one batch and restamps every
-                // channel route, so the channel routes are read again after
-                // the In app route and the pair is read afresh when they
-                // moved. Routing follows one complete configuration: after
-                // three reads that each saw a replacement, the notification
-                // is refused rather than routed by a mixed pair.
-                let read_routes = || {
-                    notify_routes::Entity::find()
+                // The channel routes and the In app route are two reads. A
+                // replacement writes both, and a fresh revision, in one
+                // batch; the revision is read before and after them, and
+                // equal revisions (never reused) mean no replacement landed
+                // between the reads. Routing follows one complete
+                // configuration: after three tries that each saw a
+                // replacement, the notification is refused rather than
+                // routed by a mixed pair.
+                let read_revision = || {
+                    notify_route_revisions::Entity::find_by_id(new.notification_type.clone())
+                        .one(&self.db)
+                };
+                let mut attempt = 0;
+                let (routes, in_app) = loop {
+                    attempt += 1;
+                    let before = read_revision().await.map_err(LibraryError::Orm)?;
+                    let routes = notify_routes::Entity::find()
                         .filter(notify_routes::Column::NotificationType.eq(&new.notification_type))
                         .all(&self.db)
-                };
-                let mut routes = read_routes().await.map_err(LibraryError::Orm)?;
-                let mut attempt = 0;
-                let in_app = loop {
-                    attempt += 1;
+                        .await
+                        .map_err(LibraryError::Orm)?;
                     let in_app =
                         notify_inbox_routes::Entity::find_by_id(new.notification_type.clone())
                             .one(&self.db)
                             .await
                             .map_err(LibraryError::Orm)?;
-                    let again = read_routes().await.map_err(LibraryError::Orm)?;
-                    if again == routes {
-                        break in_app;
+                    let after = read_revision().await.map_err(LibraryError::Orm)?;
+                    if before == after {
+                        break (routes, in_app);
                     }
                     if attempt >= 3 {
                         return Err(LibraryError::Conflict(
@@ -565,7 +570,6 @@ impl LibraryStore {
                                 .into(),
                         ));
                     }
-                    routes = again;
                 };
                 let reaches = |min: &str| {
                     NotificationSeverity::from_wire_name(min)
@@ -1709,6 +1713,17 @@ impl LibraryStore {
         }
         let now = super::now_str();
         let mut statements = vec![
+            batch::exec(
+                "DELETE FROM notify_route_revisions WHERE notification_type = ?",
+                vec![batch::text(notification_type)],
+            ),
+            batch::exec(
+                "INSERT INTO notify_route_revisions (notification_type, revision) VALUES (?, ?)",
+                vec![
+                    batch::text(notification_type),
+                    batch::text(&uuid::Uuid::new_v4().to_string()),
+                ],
+            ),
             batch::exec(
                 "DELETE FROM notify_routes WHERE notification_type = ?",
                 vec![batch::text(notification_type)],
