@@ -865,9 +865,10 @@ fails when a web app component rendered in no story or page.
 A change under `ui/`, `tools/site/`, `tools/diagnostics-collector/` or
 `assets/brand/`, or to `SECURITY.md` or the daemon's OpenAPI document,
 selects it; any other change to the host that serves `ui/dist`, or to
-`docs/`, doesn't. Baselines live in a separate repository, named by
-`ui/visual/baselines.lock`; the job records a set every run and compares
-with the locked one when there is one. See
+`docs/`, doesn't. Baselines live in a separate repository, and
+`ui/visual/baselines.lock` names the approved image of each screenshot;
+the job records a set every run and compares with the locked images when
+there are any. See
 [Visual and accessibility testing](ui/visual-testing.md#baselines).
 
 ### Small-VPS envelope
@@ -1886,7 +1887,10 @@ run, so it gets a runner before the jobs that fan out after `plan`. The
 queue also deletes a group's branch after merging it, so the check comes
 after the job's `CI Gate` test, and the job looks again for a started
 `CI Gate` just before it cancels. A transport error counts as the branch
-being present. A cancelled run doesn't trigger
+being present. The step shell runs with `-e`, so the script catches
+`ls-remote`'s exit code with `||`; reading `$?` afterwards ended the step
+with status 2 instead, leaving the dropped group's jobs running to the end
+and the job marked failed. A cancelled run doesn't trigger
 [re-enqueue](#merge-queue-re-enqueue), because its jobs carry no
 not-acquired annotation.
 

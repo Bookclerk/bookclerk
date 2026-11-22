@@ -2,21 +2,22 @@
 #
 # Policy (scripts/visual_baselines_bot.py, docs/contributing/ui/visual-testing.md#baselines):
 # - When CI's `ui-visual` job on a pull request recorded a complete set that
-#   differs from the set its `ui/visual/baselines.lock` names, `propose`
-#   validates the set (PNG screenshots with the expected names and sizes
-#   only), force-pushes it to `pending/pr-<number>` in the public baselines
-#   repository, and posts or updates one review comment with the approved
-#   and proposed images and an approval checkbox, then requests a review
-#   from the `visual-reviewers` team (best effort).
+#   differs from the approved images its `ui/visual/baselines.lock` lists,
+#   `propose` validates the set (PNG screenshots with the expected names and
+#   sizes only), force-pushes the added and changed images to
+#   `pending/pr-<number>` in the public baselines repository, and posts or
+#   updates one review comment with the approved and proposed images and an
+#   approval checkbox, then requests a review from the `visual-reviewers`
+#   team (best effort).
 # - A maintainer (admin or maintain role) or an active member of the
 #   `visual-reviewers` org team approves by ticking that checkbox (which
 #   needs write access) or by replying `@<app> approve-visuals` (the same
 #   mention form as the CLA check's `recheck`). `approve` checks
 #   the approver and that the comment is still for the pull request's head,
-#   tags the set `approved/<commit>` so it is kept, and commits the new lock
-#   to the pull request's branch through the API (signed by GitHub for the
-#   App); for a fork it tells the author the line to commit. Any other tick
-#   is undone with the reason.
+#   tags the set `approved/<commit>` so it is kept, and commits the lock
+#   entries of the screenshots it changed to the pull request's branch
+#   through the API (signed by GitHub for the App); for a fork it tells the
+#   author what to commit. Any other tick is undone with the reason.
 # - Pull request runs reach `propose` through `workflow_run` of CI, which
 #   starts this workflow from the default branch with the App's tokens, fork
 #   pull requests included. It checks out the default branch only and never
