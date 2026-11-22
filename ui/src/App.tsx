@@ -36,6 +36,7 @@ import {
 } from "@/lib/routes";
 import { showStatusNav } from "@/lib/nav";
 import { setPricesVisible } from "@/lib/pricesVisible";
+import { warmPageImages } from "@/lib/pageImageWarm";
 import type { SettingsTab } from "@/components/SettingsPage";
 
 const AccountsPage = lazy(() =>
@@ -254,6 +255,19 @@ export default function App() {
       cancelled = true;
     };
   }, [auth, join, session?.role, session?.impersonating]);
+
+  // Once signed in, load the Library, Wishlist and Accounts images into the
+  // browser's cache behind the first page, so those pages open with their
+  // thumbnails (see pageImageWarm.ts). Again for each person acted as.
+  const warmIdentity = session ? `${session.role}:${session.user?.id ?? ""}` : null;
+  useEffect(() => {
+    if (auth !== "authed" || join != null || warmIdentity === null) return;
+    let cancelled = false;
+    void warmPageImages(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [auth, join, warmIdentity]);
 
   // Signing in on the consent page with SSO leaves the SPA and comes back
   // to `/`: remember where to return.
