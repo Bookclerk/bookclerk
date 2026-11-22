@@ -600,8 +600,9 @@ tcp = ["abs.example.com:443"]
 
 > [!NOTE]
 > The host hands out the `Sockets` binding to deployed integrations (the
-> family Audiobookshelf belongs to) whose grant has the `sockets` token.
-> Storefront and storage deployments don't get it yet. Until a plugin uses
+> family Audiobookshelf belongs to) and to the active ingress (the
+> Cloudflare relay holds its connections this way) whose grant has the
+> `sockets` token. Storefront and storage deployments don't get it yet. Until a plugin uses
 > it, it keeps its polling fallback.
 
 Each SDK shapes the binding like Durable Objects' hibernatable WebSockets:

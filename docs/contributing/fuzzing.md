@@ -1948,6 +1948,35 @@ pick another run.
   condition outside that is refused, and a response header outside it is
   dropped from the answer.
 
+### Cloudflare relay guest
+
+The `cloudflare_relay` guest and the relay Worker it deploys parse what
+the other end sends: the plugin parses the relay's frames, request heads
+and notices, and the relay parses the plugin's frames and response heads.
+Both run `crates/bookclerk-plugins/optional/ingress-cloudflare/src/protocol.ts`.
+Its `test/fuzz.test.ts` replays `fuzz/frame/` (hex bytes), `fuzz/head/`
+and `fuzz/notice/` and runs seeded byte and text mutations in `npm test`
+(the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS` pick
+another run.
+
+- **Frames** (`FrameReader`). Oracle: an independent decoder over the
+  whole input (a 4-byte big-endian length up to `MAX_HEAD_BYTES`, then
+  that many bytes of valid UTF-8). The reader gives the same head and the
+  same remaining bytes whatever the chunk boundaries, and fails on a
+  stream that ends inside the head.
+- **Heads** (`parseRequestHead`, `parseResponseHead`). Oracle, written
+  from RFC 9110's token and `field-value` grammar and the host's origin
+  limits: a method token of at most 32 bytes, a target of one `/` and
+  visible ASCII without `#`, at most 128 lowercase header fields and
+  64 KiB of names and values, no connection fields, no provider or
+  forwarding fields in a request, a status of 200 to 599. An accepted head
+  survives `encodeFrame` and a second parse unchanged.
+- **Notices and client addresses** (`parseNotice`, `isIpAddress`). Oracle
+  for addresses: Node's `net.isIP`, less IPv6 zones, which the host's
+  parser refuses too. A notice is accepted exactly when it is a JSON object
+  of at most 256 characters with `t = "request"` and an id of 1 to 64
+  letters, digits and dashes.
+
 ### Metadata file dialect guests
 
 Two guests read sidecar files from storage the host does not control: the

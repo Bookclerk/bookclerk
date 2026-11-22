@@ -221,6 +221,8 @@ export type {
   ExternalUser,
   HealthOk,
   Identifier,
+  IngressHealth,
+  IngressStarted,
   ListeningProgress,
   MetadataAudioFile,
   MetadataChapter,

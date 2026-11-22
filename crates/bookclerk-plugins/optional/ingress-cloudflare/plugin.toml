@@ -1,0 +1,95 @@
+api_version = 3
+id = "cloudflare_relay"
+name = "Cloudflare relay"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["ingress"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+# Deploying makes five API calls; each relayed request makes two (pull and
+# push), and a start or health check one more per socket check.
+subrequests = 100
+
+# Emitted from `src/` by `npm run build`; CI fails when they drift.
+# `relay-worker.js` is uploaded to Cloudflare as part of the relay and is
+# never loaded here; `relay-source.js` carries it and its imports as text.
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "cloudflare.js"
+path = "cloudflare.js"
+type = "js"
+
+[[modules]]
+name = "protocol.js"
+path = "protocol.js"
+type = "js"
+
+[[modules]]
+name = "relay-core.js"
+path = "relay-core.js"
+type = "js"
+
+[[modules]]
+name = "relay-source.js"
+path = "relay-source.js"
+type = "js"
+
+[[modules]]
+name = "serve.js"
+path = "serve.js"
+type = "js"
+
+[[modules]]
+name = "version.js"
+path = "version.js"
+type = "js"
+
+[ingress]
+kind = "relay"
+
+[capabilities.network]
+mode = "outbound"
+# The Cloudflare API, to deploy the relay Worker, and the relay itself on
+# its `workers.dev` name (`<worker>.<account subdomain>.workers.dev`), for
+# its sockets and each request's pull and push.
+domains = ["api.cloudflare.com", "*.workers.dev"]
+
+# The relay announces each public request on one of these sockets; the host
+# holds them while the plugin waits.
+[sockets]
+
+[vars]
+
+[[settings]]
+key = "account_id"
+label = "Cloudflare account id"
+type = "string"
+required = true
+description = "The 32-character id on the account's Workers & Pages overview."
+
+[[settings]]
+key = "worker_name"
+label = "Relay Worker name"
+type = "string"
+default = "bookclerk-relay"
+description = "Name of the Worker the plugin deploys; it becomes the first label of the library's address."
+
+[[settings]]
+key = "api_token"
+label = "Cloudflare API token"
+type = "secret"
+description = "An API token with the Workers Scripts: Edit permission on this account."
+
+[secrets]

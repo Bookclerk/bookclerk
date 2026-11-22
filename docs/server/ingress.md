@@ -87,6 +87,40 @@ A refused request gets `403` with `"error": "operator_only"` or
 > from the provider's own connection metadata; forwarding headers in the
 > request are dropped.
 
+## Cloudflare relay
+
+The first-party `cloudflare_relay` plugin deploys a small relay Worker into
+your own Cloudflare account and serves the library at
+`https://<worker_name>.<account subdomain>.workers.dev`. It needs a
+Cloudflare account with a `workers.dev` subdomain (open **Workers & Pages**
+in the dashboard once) and an API token with the **Workers Scripts: Edit**
+permission.
+
+1. Install and approve `cloudflare_relay`, then set its account and token:
+
+   ```sh
+   bookclerk plugins config set cloudflare_relay account_id <account id>
+   bookclerk plugins config set cloudflare_relay api_token --secret
+   ```
+
+   `--secret` reads the token from standard input and seals it.
+2. Deploy it on this computer and activate it:
+
+   ```sh
+   bookclerk plugins deploy cloudflare_relay
+   bookclerk ingress activate cloudflare_relay
+   ```
+
+The relay serves six requests at once; more wait up to 30 seconds. Stopping
+the ingress leaves the Worker in your account, so turning it back on keeps
+the same name. The plugin's
+[README](../../crates/bookclerk-plugins/optional/ingress-cloudflare/README.md)
+lists the limits it was tested against.
+
+> [!WARNING]
+> Cloudflare ends TLS at its edge and can read the traffic it carries:
+> sign-ins, cookies and audio.
+
 ## The library's name
 
 `integrations.public_origin` in `config.toml` still wins when it is set.
@@ -118,8 +152,9 @@ Invite links name the public origin, from the daemon and from
 
 ## Not built yet
 
-- No first-party ingress plugin ships yet. The Cloudflare relay comes
-  next, then ngrok, Cloudflare Tunnel and dynamic DNS.
+- The Cloudflare relay is the only first-party ingress plugin. ngrok,
+  Cloudflare Tunnel and dynamic DNS come next, and the relay can't use a
+  custom domain yet.
 - `ORIGIN` carries plain HTTP requests, not WebSocket upgrades. A
   branch's live socket and a clerk's live link need one, so over a relay
   they don't connect yet; enrollment, sign-in, uploads and copies work.

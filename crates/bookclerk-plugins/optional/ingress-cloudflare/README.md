@@ -1,0 +1,90 @@
+# Cloudflare relay
+
+An `ingress` plugin (id `cloudflare_relay`, `[ingress] kind = "relay"`)
+that gives the library a public `https://` address through a small relay
+Worker in the operator's own Cloudflare account. Nothing at home is opened
+to the internet: the plugin dials out to the relay, and the relay passes
+each public request back over that connection.
+
+## How it works
+
+- `start` deploys the relay Worker with one Durable Object (`Relay`)
+  through the Cloudflare API, turns on its `workers.dev` route and opens
+  six host-held WebSockets to it. It answers with
+  `https://<worker_name>.<account subdomain>.workers.dev` once the relay
+  holds them.
+- For each public request, the relay sends a short notice on an idle
+  socket. The plugin pulls the request from the relay, hands it to the
+  library through `env.ORIGIN` with the client address Cloudflare reported,
+  and pushes the answer back. Bodies stream both ways.
+- `health` asks the relay how many sockets it holds and reopens any that
+  closed. `stop` closes the sockets and leaves the Worker deployed, so
+  starting again keeps the same name.
+
+The relay and the plugin share `src/protocol.ts`. Every relay path needs a
+bearer token derived from the API token (an HMAC), deployed with the
+Worker as a secret binding. A new API token gives a new relay token on the
+next start.
+
+## Set it up
+
+1. In the Cloudflare dashboard, open **Workers & Pages** once, so the
+   account has a `workers.dev` subdomain.
+2. Create an API token with the **Workers Scripts: Edit** permission on
+   that account.
+3. Install and approve the plugin, then set its settings:
+
+   ```sh
+   bookclerk plugins config set cloudflare_relay account_id <32-hex account id>
+   bookclerk plugins config set cloudflare_relay api_token --secret   # reads the token from stdin
+   ```
+
+   `worker_name` (default `bookclerk-relay`) is the first label of the
+   address. A Worker of that name that Bookclerk did not create is left
+   alone and `start` fails with a message saying so.
+4. Make it the library's ingress: `bookclerk ingress activate
+   cloudflare_relay`. See [Public address](../../../../docs/server/ingress.md).
+
+> [!WARNING]
+> Cloudflare ends TLS at its edge, so it can read the traffic it carries:
+> sign-ins, cookies and audio. Use dynamic DNS instead when TLS must end at
+> home.
+
+## Limits
+
+Tested against Cloudflare's Workers Free plan on 2026-11-22:
+
+- The plugin serves six requests at once, one per socket; more wait at the
+  relay for up to 30 seconds, then get `503`. A request the library does
+  not start answering within 100 seconds gets `504`.
+- A socket stays busy until the answer's body has reached the client, so a
+  long download holds one of the six.
+- Request bodies are capped at 100 MB by Cloudflare's Free plan.
+- WebSocket upgrades are refused with `501`; a branch's live socket and a
+  clerk's live link don't connect through the relay yet.
+- The relay drops `Content-Length` from answers and streams them, so a
+  client sees no total size.
+- A custom domain is not set up by the plugin yet; the address is always
+  on `workers.dev`.
+
+## Develop
+
+`src/` is the source and `modules/` is what ships. `npm run build` compiles
+`src/`, writes `src/relay-source.ts` (the relay Worker's emitted modules as
+text, for the upload) and compiles again; CI fails when the committed
+`modules/` differs. `relay-worker.js` is uploaded to Cloudflare and never
+loaded by the plugin.
+
+```sh
+cd packages/plugin-sdk && npm ci && npm run build
+cd ../../crates/bookclerk-plugins/optional/ingress-cloudflare
+npm ci
+npm run typecheck
+npm run build
+npm test
+```
+
+`test/relay.test.ts` runs the relay hub and the plugin's request handling
+together under Node, with fake sockets and a fake library.
+`test/fuzz.test.ts` fuzzes the relay protocol (see
+[Fuzzing](../../../../docs/contributing/fuzzing.md#cloudflare-relay-guest)).

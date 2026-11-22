@@ -1,0 +1,1 @@
+{"method": "PROPFIND", "target": "/a/b?c=d&e", "headers": [{"name": "accept", "value": "*/*"}], "client": "2001:db8::1"}
