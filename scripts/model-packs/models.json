@@ -1,5 +1,5 @@
 {
-  "source": "https://github.com/bookclerk/bookclerk",
+  "source": "https://github.com/Bookclerk/bookclerk",
   "registry": "ghcr.io/bookclerk/models",
   "models": {
     "bekko-a8m": {
@@ -28,7 +28,7 @@
       "literal_pieces": "added",
       "pack": {
         "model_json_sha256": "f826a998307bf33fb41522eb8623e116e1a71c5e8384c68c07785cede5cef2eb",
-        "manifest_sha256": "3a3c63e6dab5fb5135bf77078c0aba505a17744e5081b373867280d8edc4ad49"
+        "manifest_sha256": "7b285a4735a775e3780944952731bcd4e569dbddffb415e9bf889de54a62e264"
       }
     },
     "harrier-270m-q4": {
@@ -63,7 +63,7 @@
       "literal_pieces": "none",
       "pack": {
         "model_json_sha256": "3b3435089f0cd8f430a29f5074fe5330763feaccf3f17bcab9ca5643a6753f99",
-        "manifest_sha256": "cc4210973b314add5b0b42589e3e8e99009aea4b5e7aed4cb2194a8b9af8fc6a"
+        "manifest_sha256": "62e434e43efdd36bda8ef372069d0a50b80e1f6ea229d17d61004ed89ed8c2f5"
       }
     }
   }
