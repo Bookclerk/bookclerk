@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { OfferedModelView } from "@/lib/api";
 import { modelCost, modelStatus, modelUnfit } from "@/lib/modelPicker";
 
-/** A model offer with the given overrides. */
+/**
+ * Builds a model offer for a test.
+ *
+ * @param over - Fields that differ from the fitting, not yet installed default.
+ * @returns The offer as the settings API reports it.
+ */
 function model(over: Partial<OfferedModelView> = {}): OfferedModelView {
   return {
     id: "bekko-a8m",
