@@ -315,7 +315,7 @@ impl S3Backend {
         let id = queue.as_str().to_string();
         let client = crate::s3_queue::SqsQueue::new(&self.sdk, queue)?;
         let feed = crate::s3_queue::QueueFeed::open(
-            Box::new(client),
+            Box::new(client) as Box<dyn crate::s3_queue::NotificationQueue>,
             crate::s3_queue::s3_message_parser(&self.bucket, &self.prefix),
             &id,
             &self.bucket,
@@ -385,7 +385,7 @@ impl S3Backend {
             )
         });
         let feed = crate::s3_queue::QueueFeed::open(
-            Box::new(client),
+            Box::new(client) as Box<dyn crate::s3_queue::NotificationQueue>,
             parse,
             &format!("cloudflare:{}:{}", account.as_str(), queue.as_str()),
             &self.bucket,
@@ -449,6 +449,7 @@ impl S3Backend {
         delete_many: true,
         head_many: true,
         conditional_write: true,
+        checked_write: false,
         changes: false,
         translate_keys: true,
     };

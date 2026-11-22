@@ -62,6 +62,7 @@ boundary extends it.
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
 | `b2_reply` | What the `b2` guest reads from Backblaze B2: native API replies (authorization, buckets, upload URLs, file versions, file-name and file-version listings, uploaded parts, errors) and download headers, and the percent-encoding of file names | `bookclerk-storage::b2_api` |
+| `b2_event` | What the `b2` guest reads to serve its change feed: B2 event notification webhook bodies (event types, buckets, object names, times) and `b2_get_bucket_notification_rules` / `b2_set_bucket_notification_rules` replies | `bookclerk-storage::b2_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `origin_request` | What a relay ingress plugin hands the host: the framed `POST /origin/fetch` body on the isolate bridge, request heads (method, target, headers, client address), response heads, and the public origin `Ingress.start` reports | `bookclerk-plugin-abi::origin` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
@@ -606,6 +607,21 @@ only that. The others check:
   and a body no longer than the file. Percent-encoding any text matches
   the oracle's own encoder and decodes back to the text. The shared
   oracle is `fuzz/oracles/b2_reply.rs`, replayed from `bookclerk-storage`.
+- **`b2_event`**: byte 0 picks the boundary (even: one webhook body, with
+  bit 1 picking the destination's key prefix, clear: none, set:
+  `library/`; odd: a notification-rules reply). Parsing never panics and
+  answers the same twice; a body over 1 MiB is refused as too large. An
+  accepted body agrees with an independent walk of the same JSON: the same
+  keys in order, each a non-empty `changed` entry without listing fields,
+  version or sequencer, and the same times; and a body that walk finds
+  well formed is accepted. Events of other types (test events, live
+  reads) or for another bucket, and names outside the prefix, are skipped
+  before the name is checked. An accepted rules reply lists at most 100
+  rules whose names match the walk, in order, are distinct and 1 to 63
+  bytes, every signing secret it reports is 32 letters or digits, and
+  sending back the rules that are not the destination's own keeps each one
+  as listed without B2's computed fields. The shared oracle is
+  `fuzz/oracles/b2_event.rs`, replayed from `bookclerk-storage`.
 - **`socket_request`**: byte 0 modulo 3 picks a socket URL (0), a Cap'n
   Proto `SocketConnectRequest` (1) or a `SocketMessage` (2). Every URL the
   parser accepts is one a WHATWG URL parser (the `url` crate) reads as the

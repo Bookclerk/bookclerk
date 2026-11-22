@@ -1,0 +1,1 @@
+{"events": [{"accountId": "acct", "bucketId": "bid", "bucketName": "books", "eventId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "eventTimestamp": 1684793309123, "eventType": "b2:ObjectCreated:Upload", "eventVersion": 1, "matchedRuleName": "bookclerk-x-created", "objectName": "elsewhere/a", "objectSize": 12, "objectVersionId": "4_zabc"}]}
