@@ -15,7 +15,9 @@
 //! - reading never panics and gives the same answer twice;
 //! - an error reply always reads, with a non-empty code and code and
 //!   message within their caps and free of control characters;
-//! - an accepted JSON reply is a JSON object, and an independent reading
+//! - an accepted JSON reply is a JSON object, as is every struct nested in
+//!   it (`apiInfo`, `storageApi`, each bucket and each listed file), and an
+//!   independent reading
 //!   of the same JSON (a `serde_json::Value` walk) finds the same token, URLs, names, counts and
 //!   part numbers, every file name passes the oracle's own copy of B2's
 //!   naming rules, a listing's continuation name is past every listed
@@ -80,6 +82,7 @@ fn check_version(file: &FileVersion, json: Option<&Value>) {
         assert!(sha1_ok(sha1), "{sha1}");
     }
     if let Some(json) = json {
+        assert!(json.is_object(), "accepted file entry is an object");
         assert_eq!(json["fileName"].as_str(), Some(file.file_name.as_str()));
         if let Some(id) = &file.file_id {
             assert_eq!(json["fileId"].as_str(), Some(id.as_str()));
@@ -118,6 +121,7 @@ pub fn check(data: &[u8]) {
             assert!(first.is_err() || object);
             if let Ok(auth) = first {
                 let json = json.expect("accepted reply is JSON");
+                assert!(json["apiInfo"]["storageApi"].is_object());
                 assert_eq!(
                     json["authorizationToken"].as_str(),
                     Some(auth.token.expose())
@@ -140,10 +144,11 @@ pub fn check(data: &[u8]) {
             assert!(first.is_err() || object);
             if let Ok(buckets) = first {
                 let json = json.expect("accepted reply is JSON");
-                assert_eq!(
-                    json["buckets"].as_array().map(Vec::len),
-                    Some(buckets.len())
-                );
+                let listed = json["buckets"]
+                    .as_array()
+                    .expect("accepted reply has buckets");
+                assert_eq!(listed.len(), buckets.len());
+                assert!(listed.iter().all(Value::is_object));
             }
         }
         2 => {

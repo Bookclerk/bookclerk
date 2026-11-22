@@ -16,8 +16,12 @@
 //! service cannot make the guest hold more than a bounded amount.
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::marker::PhantomData;
 
-use serde::Deserialize;
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 
 /// Largest reply read, in bytes: a full listing of [`MAX_LIST_FILES`]
 /// versions, each with its name and file info, fits well inside.
@@ -391,6 +395,58 @@ impl Authorization {
     }
 }
 
+/// A value that serde reads only from a JSON object.
+///
+/// serde's derived struct readers also take a positional JSON array, which
+/// no B2 reply holds anywhere; every struct in a reply, at the top level or
+/// nested, goes through this wrapper so such an array is refused.
+struct Object<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// Reads the map into `T` and refuses every other JSON type.
+        struct MapOnly<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for MapOnly<T> {
+            type Value = T;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+                T::deserialize(MapAccessDeserializer::new(map))
+            }
+        }
+
+        deserializer
+            .deserialize_map(MapOnly(PhantomData))
+            .map(Object)
+    }
+}
+
+/// Reads a struct field that must be a JSON object (see [`Object`]).
+///
+/// # Errors
+///
+/// Fails when the value is not an object or does not read as `T`.
+fn object<'de, D: Deserializer<'de>, T: Deserialize<'de>>(deserializer: D) -> Result<T, D::Error> {
+    Object::deserialize(deserializer).map(|Object(value)| value)
+}
+
+/// Reads a list field whose entries must be JSON objects (see [`Object`]).
+///
+/// # Errors
+///
+/// Fails when the value is not an array, or an entry is not an object or
+/// does not read as `T`.
+fn objects<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Vec<T>, D::Error> {
+    Vec::<Object<T>>::deserialize(deserializer)
+        .map(|entries| entries.into_iter().map(|Object(value)| value).collect())
+}
+
 /// A `b2_authorize_account` reply (API version 3).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -400,6 +456,7 @@ struct WireAuthorization {
     /// The account authorization token.
     authorization_token: String,
     /// Per-API information.
+    #[serde(deserialize_with = "object")]
     api_info: WireApiInfo,
 }
 
@@ -408,6 +465,7 @@ struct WireAuthorization {
 #[serde(rename_all = "camelCase")]
 struct WireApiInfo {
     /// The storage API's information.
+    #[serde(deserialize_with = "object")]
     storage_api: WireStorageApi,
 }
 
@@ -444,12 +502,11 @@ fn decode<'a, T: Deserialize<'a>>(what: &str, bytes: &'a [u8]) -> ReplyResult<T>
     }
     // JSON is UTF-8 throughout, including fields the reader skips.
     let text = std::str::from_utf8(bytes).map_err(|_| malformed(format!("{what}: not UTF-8")))?;
-    // Every B2 reply is a JSON object; serde would also take a positional
-    // array for a struct, which no B2 reply is.
-    if !text.trim_start().starts_with('{') {
-        return Err(malformed(format!("{what}: not a JSON object")));
-    }
-    serde_json::from_str(text).map_err(|err| malformed(format!("{what}: {err}")))
+    // Every B2 reply is a JSON object; nested structs are read the same way
+    // through `object` / `objects`.
+    serde_json::from_str::<Object<T>>(text)
+        .map(|Object(value)| value)
+        .map_err(|err| malformed(format!("{what}: {err}")))
 }
 
 /// Reads a `b2_authorize_account` reply.
@@ -519,6 +576,7 @@ pub fn parse_authorization(bytes: &[u8]) -> ReplyResult<Authorization> {
 #[serde(rename_all = "camelCase")]
 struct WireBuckets {
     /// The buckets.
+    #[serde(deserialize_with = "objects")]
     buckets: Vec<WireBucket>,
 }
 
@@ -782,6 +840,7 @@ pub struct NamesPage {
 #[serde(rename_all = "camelCase")]
 struct WireNamesPage {
     /// The files.
+    #[serde(deserialize_with = "objects")]
     files: Vec<WireFile>,
     /// The next page's first name.
     #[serde(default)]
@@ -850,6 +909,7 @@ pub struct VersionsPage {
 #[serde(rename_all = "camelCase")]
 struct WireVersionsPage {
     /// The versions.
+    #[serde(deserialize_with = "objects")]
     files: Vec<WireFile>,
     /// The next page's first name.
     #[serde(default)]
