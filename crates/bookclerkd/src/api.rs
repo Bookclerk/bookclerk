@@ -510,6 +510,118 @@ struct PluginSettingColumn {
     required: bool,
 }
 
+/// Where one offered model stands on the answering node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum ModelInstallState {
+    /// Not on this node: another model is chosen.
+    NotInstalled,
+    /// Chosen; the node has not looked at its files yet.
+    Checking,
+    /// Chosen and downloading; `received_bytes` says how far.
+    Downloading,
+    /// Chosen; the last download failed (`detail`) and is tried again.
+    Waiting,
+    /// Chosen but not on this node, which does not download models
+    /// (`plugins.models.download = false`).
+    DownloadsOff,
+    /// On this node, every file verified.
+    Installed,
+}
+
+/// One model a model plugin offers.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+struct OfferedModelView {
+    /// The model id: the value the choosing setting takes.
+    #[schema(example = "bekko-a8m")]
+    id: String,
+    /// Name shown in the picker.
+    #[schema(example = "Bekko (fast)")]
+    label: String,
+    /// One sentence on what the model is good for.
+    #[schema(example = "Small and quick; good results in the seven supported languages.")]
+    summary: String,
+    /// Bytes downloaded and kept on disk.
+    #[schema(example = 140_609_206_u64)]
+    download_bytes: u64,
+    /// Memory the plugin needs while the model is loaded, in bytes.
+    #[schema(example = 230_686_720_u64)]
+    memory_bytes: u64,
+    /// False when the model needs more memory than the plugin may use on
+    /// this node; the picker does not offer it.
+    #[schema(example = true)]
+    fits: bool,
+    /// Where the model stands on this node.
+    state: ModelInstallState,
+    /// Bytes on disk so far, while `state` is `downloading`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 52_428_800_u64)]
+    received_bytes: Option<u64>,
+    /// Why the last download failed, while `state` is `waiting`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "the registry answered 503")]
+    detail: Option<String>,
+}
+
+/// The models a model plugin offers, as this node has them.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+struct PluginModelsView {
+    /// Key of the instance setting that chooses the model.
+    #[schema(example = "model")]
+    setting: String,
+    /// The model the setting names now (the package's default when it
+    /// names none).
+    #[schema(example = "bekko-a8m")]
+    chosen: String,
+    /// Memory the plugin may use on this node, in bytes.
+    #[schema(example = 536_870_912_u64)]
+    memory_ceiling_bytes: u64,
+    /// Every offered model, ascending by id.
+    models: Vec<OfferedModelView>,
+}
+
+impl From<bookclerk_plugin_host::PluginModels> for PluginModelsView {
+    fn from(status: bookclerk_plugin_host::PluginModels) -> Self {
+        use bookclerk_plugin_host::ModelState;
+        let ceiling = status.memory_ceiling_bytes;
+        let models = status
+            .models
+            .into_iter()
+            .map(|model| {
+                let (state, received_bytes, detail) = match model.state {
+                    ModelState::NotInstalled => (ModelInstallState::NotInstalled, None, None),
+                    ModelState::Checking => (ModelInstallState::Checking, None, None),
+                    ModelState::Downloading { received_bytes, .. } => {
+                        (ModelInstallState::Downloading, Some(received_bytes), None)
+                    }
+                    ModelState::Waiting { detail } => {
+                        (ModelInstallState::Waiting, None, Some(detail))
+                    }
+                    ModelState::DownloadsOff => (ModelInstallState::DownloadsOff, None, None),
+                    ModelState::Installed => (ModelInstallState::Installed, None, None),
+                };
+                OfferedModelView {
+                    id: model.model_id,
+                    label: model.offer.label,
+                    summary: model.offer.summary,
+                    download_bytes: model.offer.download_bytes,
+                    memory_bytes: model.offer.memory_bytes,
+                    fits: model.offer.memory_bytes <= ceiling,
+                    state,
+                    received_bytes,
+                    detail,
+                }
+            })
+            .collect();
+        Self {
+            setting: bookclerk_plugin_host::MODEL_SETTING_KEY.to_owned(),
+            chosen: status.chosen,
+            memory_ceiling_bytes: ceiling,
+            models,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Settings UI group for one discovered or loaded plugin.
 struct PluginSettingsGroup {
@@ -563,6 +675,11 @@ struct PluginSettingsGroup {
     /// other plugins and before a destination's first sync pass.
     #[serde(skip_serializing_if = "Option::is_none")]
     storage_sync: Option<crate::config_authority::StorageSyncView>,
+    /// The models a model plugin offers and where each stands on this
+    /// node; absent for other plugins and while the plugin is not deployed
+    /// here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    models: Option<PluginModelsView>,
     /// Nodes whose deployment of the instance is `present`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schema(example = json!(["6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"]))]
@@ -3262,6 +3379,7 @@ fn build_database_settings_group(
         deployment: None,
         placement: None,
         storage_sync: None,
+        models: None,
         present_on: Vec::new(),
     }
 }
@@ -3471,6 +3589,7 @@ fn instance_settings_group(
             .cloned(),
         placement: view.placement.clone(),
         storage_sync: view.storage_sync.clone(),
+        models: None,
         present_on: view
             .deployments
             .iter()
@@ -4388,7 +4507,20 @@ async fn get_settings(
         effective.insert("output.revision".into(), revision.to_string());
     }
     let mut plugins = plugin_settings_snapshot(&cfg, &library, &node_id, &discovered_plugins).await;
+    let mut models: std::collections::HashMap<String, bookclerk_plugin_host::PluginModels> = state
+        .deployment_runtime()
+        .model_delivery()
+        .map(|delivery| delivery.status())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|status| (status.plugin_instance_id.clone(), status))
+        .collect();
     for group in &mut plugins {
+        group.models = group
+            .plugin_instance_id
+            .as_ref()
+            .and_then(|id| models.remove(id))
+            .map(PluginModelsView::from);
         group.logo = group
             .logo
             .take()

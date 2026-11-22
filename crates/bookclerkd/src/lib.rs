@@ -661,9 +661,9 @@ async fn assemble_host(
         ingress
     });
 
-    // Only a listening daemon installs models: set before the first
+    // The host installs its model plugins' models: set before the first
     // reconcile so the first spawn of a model plugin starts its download.
-    if mode == HostMode::Listening {
+    {
         let models = state.config.read().await.plugins.models.clone();
         let runtime = state.deployment_runtime();
         runtime.set_model_delivery(bookclerk_plugin_host::ModelDelivery::new(

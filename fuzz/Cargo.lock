@@ -584,6 +584,7 @@ dependencies = [
  "bookclerk-node-proto",
  "bookclerk-player-api",
  "bookclerk-plugin-abi",
+ "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
@@ -791,6 +792,32 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "bookclerk-plugin-catalog"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-model-pack",
+ "bookclerk-plugin-manifest",
+ "bookclerk-plugin-sdk",
+ "bookclerk-tls",
+ "chrono",
+ "flate2",
+ "fs4",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "tracing",
+ "url",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
@@ -5501,6 +5528,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

@@ -65,13 +65,23 @@ if [ ! -e "$marker" ]; then
 	fi
 fi
 
+# The demo's own config.toml, unless one is mounted (which then wins whole).
+#
+# No model downloads: a visitor's container lives for minutes, so it never
+# fetches the embedding model (docs/internals/model-packs.md) and Discover
+# keeps its stand-in ranking.
+#
 # Problem reports: the demo Worker passes the collector's address when the
 # deploy has one, and the copy then shares redacted reports so the project
-# hears about the demo's bugs (docs/server/diagnostics.md). Without the
-# address, or with a config.toml already there, nothing changes.
-if [ -n "${BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL:-}" ] && [ ! -e "${BOOKCLERK_CONFIG:-$dir/config.toml}" ]; then
-	printf '[diagnostics]\nshare_reports = true\ndemo = true\n' >"${BOOKCLERK_CONFIG:-$dir/config.toml}" ||
-		echo 'demo: could not turn problem reports on' >&2
+# hears about the demo's bugs (docs/server/diagnostics.md).
+config=${BOOKCLERK_CONFIG:-$dir/config.toml}
+if [ ! -e "$config" ]; then
+	{
+		printf '[plugins.models]\ndownload = false\n'
+		if [ -n "${BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL:-}" ]; then
+			printf '\n[diagnostics]\nshare_reports = true\ndemo = true\n'
+		fi
+	} >"$config" || echo 'demo: could not write config.toml' >&2
 fi
 
 exec /opt/bookclerk/bookclerkd

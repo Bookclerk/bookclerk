@@ -1653,7 +1653,12 @@ export async function putDefaultScope(scope: PatronScope): Promise<{ scope: Patr
 
 /** One thing an administrator may allow or refuse a patron. */
 export type MemberControl =
-  "link_accounts" | "download" | "edit_metadata" | "upload" | "request_books" | "see_prices";
+  | "link_accounts"
+  | "download"
+  | "edit_metadata"
+  | "upload"
+  | "request_books"
+  | "see_prices";
 
 /** A value for every member control (`true` = allowed). */
 export type MemberControls = Record<MemberControl, boolean>;
@@ -2306,6 +2311,56 @@ export interface PluginSettingsGroup {
   present_on?: string[];
   /** How a storage destination follows outside changes; absent until its first sync pass. */
   storage_sync?: StorageSyncView;
+  /** The models a model plugin offers, as this node has them; absent for other plugins. */
+  models?: PluginModelsView;
+}
+
+/**
+ * Where one offered model stands on the answering node: `not_installed`
+ * (another model is chosen), `checking`, `downloading`, `waiting` (the last
+ * download failed and is tried again), `downloads_off` (chosen, but this
+ * node does not download models) or `installed`.
+ */
+export type ModelInstallState =
+  | "not_installed"
+  | "checking"
+  | "downloading"
+  | "waiting"
+  | "downloads_off"
+  | "installed";
+
+/** One model a model plugin offers. */
+export interface OfferedModelView {
+  /** The model id: the value the choosing setting takes. */
+  id: string;
+  /** Name shown in the picker. */
+  label: string;
+  /** One sentence on what the model is good for. */
+  summary: string;
+  /** Bytes downloaded and kept on disk. */
+  download_bytes: number;
+  /** Memory the plugin needs while the model is loaded, in bytes. */
+  memory_bytes: number;
+  /** False when the model needs more memory than the plugin may use on this node. */
+  fits: boolean;
+  /** Where the model stands on this node. */
+  state: ModelInstallState;
+  /** Bytes on disk so far, while `state` is `downloading`. */
+  received_bytes?: number;
+  /** Why the last download failed, while `state` is `waiting`. */
+  detail?: string;
+}
+
+/** The models a model plugin offers, as the answering node has them. */
+export interface PluginModelsView {
+  /** Key of the instance setting that chooses the model. */
+  setting: string;
+  /** The model the setting names now. */
+  chosen: string;
+  /** Memory the plugin may use on this node, in bytes. */
+  memory_ceiling_bytes: number;
+  /** Every offered model, ascending by id. */
+  models: OfferedModelView[];
 }
 
 /**
@@ -3121,7 +3176,10 @@ export interface RemoteGrantView {
 
 /** Where an owner plugin's request to run here stands. */
 export type RemoteConsentState =
-  "consented" | "awaiting_host_consent" | "awaiting_host_reapproval" | "invalid_grant";
+  | "consented"
+  | "awaiting_host_consent"
+  | "awaiting_host_reapproval"
+  | "invalid_grant";
 
 /** One owner plugin's request to run on this host, and this host's answer. */
 export interface RemoteConsentView {
@@ -4601,7 +4659,13 @@ export interface CatalogSearchHit {
  * Server-supported Discover catalog sort keys.
  */
 export type CatalogSearchSort =
-  "relevance" | "popularity" | "rating" | "title" | "author" | "price" | "length";
+  | "relevance"
+  | "popularity"
+  | "rating"
+  | "title"
+  | "author"
+  | "price"
+  | "length";
 
 /**
  * Ascending or descending catalog sort direction.

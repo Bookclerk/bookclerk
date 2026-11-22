@@ -77,6 +77,16 @@ fn is_model_id(id: &str) -> bool {
             .all(|b| plain(b) || matches!(b, b'.' | b'_' | b'-'))
 }
 
+/// Whether `bytes` starts a JSON object. The derived readers would also
+/// take a struct written as an array of its fields in order, which no
+/// registry or package sends.
+fn is_json_object(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|b| *b == b'{')
+}
+
 /// The pin of a model: what its `model.json` must be. That file lists the
 /// size and SHA-256 of every other file, so this one digest fixes the
 /// whole model.
@@ -164,6 +174,9 @@ impl ModelOffers {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_MODEL_OFFERS_BYTES {
             return Err(CatalogError::message("the model list is too large"));
+        }
+        if !is_json_object(bytes) {
+            return Err(CatalogError::message("the model list is not a JSON object"));
         }
         let offers: Self = serde_json::from_slice(bytes)
             .map_err(|err| CatalogError::message(format!("the model list is not valid: {err}")))?;
@@ -338,7 +351,12 @@ impl ModelRegistry {
     }
 
     /// URL that hands out a pull token for one model's repository.
-    fn token_url(&self, model_id: &str) -> String {
+    ///
+    /// # Arguments
+    ///
+    /// * `model_id` - The model, one of the offered ids.
+    #[must_use]
+    pub fn token_url(&self, model_id: &str) -> String {
         format!(
             "{}/token?service={}&scope=repository:{}/{}:pull",
             self.base, self.service, self.repository, model_id
@@ -346,7 +364,13 @@ impl ModelRegistry {
     }
 
     /// URL of the blob with a given SHA-256 in a model's repository.
-    fn blob_url(&self, model_id: &str, sha256: &Sha256Hex) -> String {
+    ///
+    /// # Arguments
+    ///
+    /// * `model_id` - The model, one of the offered ids.
+    /// * `sha256` - SHA-256 of the blob's content.
+    #[must_use]
+    pub fn blob_url(&self, model_id: &str, sha256: &Sha256Hex) -> String {
         format!(
             "{}/v2/{}/{}/blobs/sha256:{}",
             self.base,
@@ -402,8 +426,10 @@ pub fn parse_token_reply(body: &[u8]) -> Result<BearerToken> {
             "the registry's token reply is too large",
         ));
     }
-    let reply: TokenReply = serde_json::from_slice(body)
-        .map_err(|_| CatalogError::message("the registry's token reply holds no token"))?;
+    let reply: TokenReply = is_json_object(body)
+        .then(|| serde_json::from_slice(body).ok())
+        .flatten()
+        .ok_or_else(|| CatalogError::message("the registry's token reply holds no token"))?;
     let usable = (1..=MAX_TOKEN_BYTES).contains(&reply.token.len())
         && reply.token.bytes().all(|b| {
             b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'+' | b'/' | b'=' | b'-')
