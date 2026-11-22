@@ -382,6 +382,199 @@ async fn tunnel_requests_reach_the_router_as_public_https() {
     );
 }
 
+/// A router with a WebSocket that echoes each text message with the
+/// request's host, peer and listener.
+fn socket_router() -> axum::Router {
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    async fn socket(
+        upgrade: WebSocketUpgrade,
+        request_parts: axum::http::HeaderMap,
+        ConnectInfo(peer): ConnectInfo<SocketAddr>,
+        axum::Extension(listener): axum::Extension<ListenerKind>,
+    ) -> axum::response::Response {
+        let host = request_parts
+            .get(header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        upgrade
+            .protocols(["bookclerk.v1"])
+            .on_upgrade(move |mut socket| async move {
+                while let Some(Ok(message)) = socket.recv().await {
+                    match message {
+                        Message::Text(text) => {
+                            let echo = format!("{text} {host} {} {listener:?}", peer.ip());
+                            if socket.send(Message::Text(echo.into())).await.is_err() {
+                                return;
+                            }
+                        }
+                        Message::Binary(bytes) if bytes.as_ref() == b"bye" => {
+                            let _ = socket
+                                .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                                    code: 4000,
+                                    reason: "done".into(),
+                                })))
+                                .await;
+                            return;
+                        }
+                        // Reading on answers the close and ends the loop.
+                        _ => {}
+                    }
+                }
+            })
+    }
+    echo_router().route("/api/node/v1/socket", get(socket))
+}
+
+/// The library's side of an accepted upgrade.
+fn accepted(upgrade: OriginUpgrade) -> bookclerk_plugin_host::LocalSocket {
+    match upgrade {
+        OriginUpgrade::Accepted(socket) => socket,
+        OriginUpgrade::Refused(refusal) => panic!("refused with {}", refusal.status),
+    }
+}
+
+/// The library's refusal of an upgrade.
+fn refusal(upgrade: OriginUpgrade) -> bookclerk_plugin_abi::OriginRefusal {
+    match upgrade {
+        OriginUpgrade::Accepted(socket) => panic!("accepted {}", socket.url),
+        OriginUpgrade::Refused(refusal) => refusal,
+    }
+}
+
+#[tokio::test]
+async fn tunnel_upgrades_become_websockets_into_the_library() {
+    use bookclerk_plugin_abi::SocketFrame;
+    use bookclerk_plugin_host::{LocalInbound, LocalOutbound};
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (_state, ingress, instance) = active_library(&files).await;
+    let origin = ingress.origin();
+    let upgrade_head = || {
+        head(
+            "GET",
+            "/api/node/v1/socket?ticket=t",
+            &[("Sec-WebSocket-Protocol", "bookclerk.v1")],
+        )
+    };
+
+    // Not before the library can serve.
+    assert!(origin.upgrade(upgrade_head()).await.is_err());
+    ingress.set_router(socket_router());
+    ingress
+        .started(
+            &instance.to_string(),
+            IngressStarted {
+                origin: "https://lib.example.net".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut socket = accepted(origin.upgrade(upgrade_head()).await.unwrap());
+    assert_eq!(socket.protocol.as_deref(), Some("bookclerk.v1"));
+    assert_eq!(socket.url, "https://lib.example.net/api/node/v1/socket");
+    socket
+        .outbound
+        .send(LocalOutbound::Frame(SocketFrame::Text("hi".into())))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.inbound.recv().await,
+        Some(LocalInbound::Frame(SocketFrame::Text(
+            "hi lib.example.net 203.0.113.7 Tunnel".into()
+        )))
+    );
+    // The library closes: the close arrives last, with its code.
+    socket
+        .outbound
+        .send(LocalOutbound::Frame(SocketFrame::Binary(b"bye".to_vec())))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.inbound.recv().await,
+        Some(LocalInbound::Closed {
+            code: 4000,
+            reason: Some("done".into()),
+            clean: true,
+        })
+    );
+    assert_eq!(socket.inbound.recv().await, None);
+
+    // The plugin closes.
+    let mut socket = accepted(origin.upgrade(upgrade_head()).await.unwrap());
+    socket
+        .outbound
+        .send(LocalOutbound::Close {
+            code: 1000,
+            reason: String::new(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.inbound.recv().await,
+        Some(LocalInbound::Closed {
+            code: 1000,
+            reason: None,
+            clean: true,
+        })
+    );
+}
+
+#[tokio::test]
+async fn tunnel_upgrades_the_library_refuses_come_back_as_answers() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (_state, ingress, instance) = active_library(&files).await;
+    let origin = ingress.origin();
+    ingress.set_router(socket_router());
+    ingress
+        .started(
+            &instance.to_string(),
+            IngressStarted {
+                origin: "https://lib.example.net".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    // A path the branches exposure does not serve.
+    let refused = refusal(
+        origin
+            .upgrade(head("GET", "/api/users", &[]))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(refused.status, 403);
+    assert!(String::from_utf8_lossy(&refused.body).contains("not_exposed"));
+    // The operator's credentials.
+    let refused = refusal(
+        origin
+            .upgrade(head(
+                "GET",
+                "/api/node/v1/socket",
+                &[("Authorization", "Bearer op-token")],
+            ))
+            .await
+            .unwrap(),
+    );
+    assert!(String::from_utf8_lossy(&refused.body).contains("operator_only"));
+    // A route that does not upgrade.
+    let refused = refusal(
+        origin
+            .upgrade(head("GET", "/api/node/v1/echo", &[]))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(refused.status, 405);
+    assert!(field(&refused.headers, "content-length").is_none());
+    // A loopback client never reaches the router.
+    let mut local = head("GET", "/api/node/v1/socket", &[]);
+    local.client = Some("127.0.0.1".parse().unwrap());
+    assert!(origin.upgrade(local).await.is_err());
+}
+
 /// Sends one `POST /api/config/ingress`.
 async fn change(state: &Arc<AppState>, body: IngressChange) -> Result<IngressStatus, StatusCode> {
     post_ingress(axum::extract::State(Arc::clone(state)), axum::Json(body))
