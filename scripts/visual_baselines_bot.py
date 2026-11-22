@@ -1038,7 +1038,7 @@ def approve(
     # Errors
     ``BotError`` or ``VisualBaselinesError`` when a step fails.
     """
-    repository, baselines = env["GITHUB_REPOSITORY"], env["BASELINES_REPOSITORY"]
+    repository = env["GITHUB_REPOSITORY"]
     bot_login = f"{env['APP_SLUG']}[bot]"
     raw = Path(env["GITHUB_EVENT_PATH"]).read_bytes()[: vb.MAX_DOCUMENT_BYTES + 1]
     approval = vb.parse_approval(raw, bot_login)
@@ -1047,22 +1047,103 @@ def approve(
         restore = body.replace(
             vb.checkbox(approval.head, True), vb.checkbox(approval.head, False)
         )
-    else:
-        command = vb.parse_command(raw, bot_login)
-        if command is None:
-            return "not an approval"
-        number, sender = command
-        latest = find_comment(send, repository, number, bot_login)
-        if latest is None:
-            return "no proposed set to approve"
-        comment_id, body = latest
-        match = vb.MARKER.match(body)
-        if match is None or vb.checkbox(match.group(1), False) not in body:
-            return "no proposed set to approve"
-        approval = vb.Approval(
-            number, comment_id, sender, match.group(1), match.group(2)
+        # The approver is looking at this comment: show it was picked up.
+        react(write, repository, approval.comment_id, "eyes")
+        return finish_approval(
+            env, send, write, baselines_write, approval, body, restore
         )
-        restore = body
+    command = vb.parse_command(raw, bot_login)
+    if command is None:
+        return "not an approval"
+    number, sender = command
+    reply_id = vb._json_object(raw, "event")["comment"]["id"]  # type: ignore[index]
+    # A reply is far from the bot's comment, so the outcome goes on the
+    # reply too: a reaction now, and the outcome as a reply when done.
+    react(write, repository, reply_id, "eyes")
+    outcome = approve_by_reply(
+        env, send, write, baselines_write, number, sender, bot_login
+    )
+    call(
+        write,
+        "POST",
+        f"repos/{repository}/issues/{number}/comments",
+        {"body": f"@{sender} {outcome}\n"},
+        ok=(201,),
+    )
+    react(
+        write,
+        repository,
+        reply_id,
+        "rocket" if outcome.startswith("Approved by") else "confused",
+    )
+    return outcome
+
+
+def react(write: Transport, repository: str, comment_id: object, content: str) -> None:
+    """Adds reaction ``content`` to comment ``comment_id``, best effort.
+
+    It only tells people the bot saw their comment, so a refusal is ignored.
+    """
+    if type(comment_id) is int and comment_id > 0:
+        write(
+            "POST",
+            f"repos/{repository}/issues/comments/{comment_id}/reactions",
+            {"content": content},
+        )
+
+
+def approve_by_reply(
+    env: dict[str, str],
+    send: Transport,
+    write: Transport,
+    baselines_write: Transport,
+    number: int,
+    sender: str,
+    bot_login: str,
+) -> str:
+    """Approves the set the bot's latest comment on ``number`` proposes.
+
+    # Returns
+    The outcome, for the log and the reply.
+
+    # Errors
+    ``BotError`` or ``VisualBaselinesError`` when a step fails.
+    """
+    repository = env["GITHUB_REPOSITORY"]
+    latest = find_comment(send, repository, number, bot_login)
+    if latest is None:
+        return "Not approved: no proposed set to approve."
+    comment_id, body = latest
+    match = vb.MARKER.match(body)
+    if match is None or vb.checkbox(match.group(1), False) not in body:
+        return "Not approved: no proposed set to approve."
+    approval = vb.Approval(number, comment_id, sender, match.group(1), match.group(2))
+    return finish_approval(env, send, write, baselines_write, approval, body, body)
+
+
+def finish_approval(
+    env: dict[str, str],
+    send: Transport,
+    write: Transport,
+    baselines_write: Transport,
+    approval: vb.Approval,
+    body: str,
+    restore: str,
+) -> str:
+    """Checks the approver, tags the set and writes the branch's lock.
+
+    # Arguments
+    * ``approval``: what is being approved and by whom.
+    * ``body``: the bot comment's body; the outcome is appended to it.
+    * ``restore``: the body to append a refusal to (unticked for a tick).
+
+    # Returns
+    The outcome, starting with ``Approved by`` when the set was approved.
+
+    # Errors
+    ``BotError`` or ``VisualBaselinesError`` when a step fails.
+    """
+    repository, baselines = env["GITHUB_REPOSITORY"], env["BASELINES_REPOSITORY"]
 
     def refuse(reason: str) -> str:
         call(
@@ -1130,7 +1211,11 @@ def approve(
                 f"Not approved: `{LOCK_PATH}` on this branch cannot be read; "
                 "merge the base branch into it and try again."
             )
-        lock = vb.apply_changes(lock, approval.set_commit, changes)
+        updated = vb.apply_changes(lock, approval.set_commit, changes)
+        if updated == lock:
+            # A second approval of the same set (a repeated reply, say).
+            return f"Approved by {approval.sender}; this branch's lock already has the set."
+        lock = updated
         put = {
             "message": f"Approve visual baselines {approval.set_commit[:12]}\n\nApproved by {approval.sender} in #{approval.number}.",
             "content": base64.b64encode(vb.render_lock(lock).encode()).decode(),

@@ -945,8 +945,14 @@ class FakeGitHub:
     def __init__(self, answers: dict[tuple[str, str], tuple[int, object]]) -> None:
         self.answers = answers
         self.sent: list[tuple[str, str, object]] = []
+        #: Reactions added, as ``(comment path, content)``; kept apart from
+        #: ``sent`` since they only acknowledge a comment.
+        self.reactions: list[tuple[str, object]] = []
 
     def __call__(self, method: str, path: str, body: object) -> tuple[int, bytes]:
+        if method == "POST" and path.endswith("/reactions"):
+            self.reactions.append((path, body))
+            return 201, b"{}"
         self.sent.append((method, path, body))
         status, payload = self.answers.get((method, path), (404, {}))
         return status, json.dumps(payload).encode()
@@ -1717,6 +1723,7 @@ class BotTests(unittest.TestCase):
                     {"state": "active"},
                 ),
                 ("PATCH", f"{repo}/issues/comments/7"): (200, {}),
+                ("POST", f"{repo}/issues/990/comments"): (201, {}),
             }
         )
         baselines = FakeGitHub(
@@ -1733,6 +1740,41 @@ class BotTests(unittest.TestCase):
         self.assertIn("Approved by designer", out)
         self.assertIn("b" * 40, out)  # a fork: the author commits the lock
         self.assertNotIn("PUT", [m for m, _, _ in write.sent])
+        # The reply shows it was picked up, then gets the outcome.
+        reply = f"{repo}/issues/comments/9/reactions"
+        self.assertEqual(
+            write.reactions,
+            [(reply, {"content": "eyes"}), (reply, {"content": "rocket"})],
+        )
+        self.assertEqual(
+            write.sent[-1],
+            ("POST", f"{repo}/issues/990/comments", {"body": f"@designer {out}\n"}),
+        )
+
+    def test_a_repeated_approval_writes_nothing_twice(self) -> None:
+        already = {X: "b" * 40, "phone/kept--dark.png": "a" * 40}
+        out, write = self.run_maintainer_approval(False, already)
+        self.assertIn("already has the set", out)
+        self.assertNotIn("PUT", [m for m, _, _ in write.sent])
+
+    def test_a_reply_with_nothing_to_approve_says_so(self) -> None:
+        self.event(
+            {
+                "action": "created",
+                "comment": {"id": 9, "body": "@bookclerk approve-visuals"},
+                "issue": {"number": 990, "pull_request": {}},
+                "sender": {"login": "maint", "type": "User"},
+            }
+        )
+        repo = "repos/Bookclerk/bookclerk"
+        send = FakeGitHub(
+            {("GET", f"{repo}/issues/990/comments?per_page=100&page=1"): (200, [])}
+        )
+        write = FakeGitHub({("POST", f"{repo}/issues/990/comments"): (201, {})})
+        out = self.bot.approve(self.env, send, write, FakeGitHub({}))
+        self.assertIn("no proposed set", out)
+        self.assertEqual(write.reactions[-1][1], {"content": "confused"})
+        self.assertIn("no proposed set", write.sent[-1][2]["body"])
 
     def test_a_pending_invitation_does_not_approve(self) -> None:
         self.approval_event("invitee")
@@ -1768,7 +1810,39 @@ class BotTests(unittest.TestCase):
 
     def approve_by_a_maintainer(self, crlf: bool) -> None:
         """A maintainer's tick tags the set and writes the branch lock."""
+        out, write = self.run_maintainer_approval(crlf, None)
+        repo = "repos/Bookclerk/bookclerk"
+        self.assertIn("Approved by maint", out)
+        # The ticked comment shows it was picked up.
+        self.assertEqual(
+            write.reactions,
+            [(f"{repo}/issues/comments/7/reactions", {"content": "eyes"})],
+        )
+        put = write.sent[0][2]
+        self.assertEqual(
+            vb.parse_lock(base64.b64decode(put["content"])),
+            {X: "b" * 40, "phone/kept--dark.png": "a" * 40},
+        )
+        self.assertEqual(put["sha"], "f" * 40)
+        self.assertEqual(put["branch"], "feature")
+        self.assertIn("1 screenshot(s) locked to `bbbbbbbbbbbb`", out)
+
+    def run_maintainer_approval(
+        self, crlf: bool, branch_lock: dict[str, str] | None
+    ) -> tuple[str, FakeGitHub]:
+        """Runs a maintainer's tick against ``branch_lock`` (``BRANCH_LOCK``
+        by default) and checks the set was tagged."""
         self.approval_event(crlf=crlf)
+        lock_answer = (
+            BRANCH_LOCK
+            if branch_lock is None
+            else {
+                "sha": "f" * 40,
+                "content": base64.b64encode(
+                    vb.render_lock(branch_lock).encode()
+                ).decode(),
+            }
+        )
         repo, base = (
             "repos/Bookclerk/bookclerk",
             "repos/Bookclerk/bookclerk-visual-baselines",
@@ -1792,7 +1866,7 @@ class BotTests(unittest.TestCase):
                 ),
                 ("GET", f"{repo}/contents/ui/visual/baselines.lock?ref=feature"): (
                     200,
-                    BRANCH_LOCK,
+                    lock_answer,
                 ),
             }
         )
@@ -1813,19 +1887,11 @@ class BotTests(unittest.TestCase):
             }
         )
         out = self.bot.approve(self.env, send, write, baselines)
-        self.assertIn("Approved by maint", out)
         self.assertEqual(
             baselines.sent[0][2],
             {"ref": "refs/tags/approved/" + "b" * 40, "sha": "b" * 40},
         )
-        put = write.sent[0][2]
-        self.assertEqual(
-            vb.parse_lock(base64.b64decode(put["content"])),
-            {X: "b" * 40, "phone/kept--dark.png": "a" * 40},
-        )
-        self.assertEqual(put["sha"], "f" * 40)
-        self.assertEqual(put["branch"], "feature")
-        self.assertIn("1 screenshot(s) locked to `bbbbbbbbbbbb`", out)
+        return out, write
 
     def approve_with(self, head: str, pending: str) -> tuple[str, FakeGitHub]:
         self.approval_event()

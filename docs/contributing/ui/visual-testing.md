@@ -308,7 +308,11 @@ its new screenshots are approved. The `Visual baselines` workflow
    notified.
 2. An approver ticks the checkbox. Ticking needs write access, so a visual
    reviewer without it replies `@bookclerk approve-visuals` instead, the
-   same form as the other bot commands.
+   same form as the other bot commands. The workflow adds an eyes reaction
+   to the ticked comment or the reply as soon as it starts, which can take
+   a few minutes when every runner is busy. A reply also gets a rocket
+   reaction and an answer that mentions the approver once the approval
+   lands, or a confused reaction and the reason when it doesn't.
 3. The workflow checks the approver and that the pull request is open. It
    then tags the set `approved/<commit>` and, in the lock on the pull
    request's branch, points the screenshots the set adds or changes at it
