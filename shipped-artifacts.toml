@@ -25,6 +25,7 @@ not_shipped = [
   { path = "crates/bookclerk-plugins/optional/metadata-files/package-lock.json", why = "the guest's type-check and test tooling (TypeScript, Node types, the SDK's types); its shipped modules/ import nothing from npm" },
   { path = "crates/bookclerk-plugins/optional/metadata-openlibrary/package-lock.json", why = "the guest's type-check and test tooling (TypeScript, Node types, the SDK's types); its shipped modules/ import nothing from npm" },
   { path = "examples/plugins-echo-native-python/requirements-dev.txt", why = "reference example, dev tooling" },
+  { path = "scripts/model-packs/requirements.txt", why = "CI-only tooling that builds and checks the embedding model packs; a pack holds model data and none of these packages" },
   { path = "scripts/tests/requirements.txt", why = "CI test tooling" },
   { path = "tools/codecov/package-lock.json", why = "CI-only Codecov Bundle Analysis uploader for coverage-upload.yml; never deployed or packaged" },
   { path = "tools/lint/package-lock.json", why = "CI-only Prettier and markdownlint for the repository-wide lint check" },
