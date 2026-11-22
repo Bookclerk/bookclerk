@@ -27,7 +27,8 @@ use crate::store::LibraryStore;
 /// A topic of the live socket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LiveTopic {
-    /// The library's titles (`books`).
+    /// The library's titles: holdings, editions and their acquire state.
+    /// No table stamps it; its writes bump it (see [`Self::stamp_column`]).
     Library,
     /// Jobs (`jobs`).
     Jobs,

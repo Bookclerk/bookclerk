@@ -510,7 +510,7 @@ method is an `async fn` returning `Result<…>`.
 
 CRUD runs on typed **SeaORM entities** (see
 [`crate::entities`](../../crates/bookclerk-library/src/entities)): one
-`DeriveEntityModel` per table (`accounts`, `books`, `works`,
+`DeriveEntityModel` per table (`accounts`, `holdings`, `works`,
 `title_requests`, `title_request_sources`, `encrypted_secrets`, …).
 
 - Reads use `Entity::find()` with `QueryFilter` and `QueryOrder`.
@@ -788,7 +788,7 @@ collection deletes unreferenced objects.
 ### Tables
 
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
-`accounts`, `books`, `ignored_titles`, `saved_filters`,
+`accounts`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
 `operator_sessions`, `account_links`, `patron_controls`, `admin_controls`, `patron_scopes`,
 `patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
@@ -954,8 +954,7 @@ library holds as works, expressions and editions:
 - `user_title_state`: one user's finished flag, ratings and tags for a
   work, keyed `(user_id, work_id)`. Fields imported for an account reach
   every user linked to that account, and each user edits their own with
-  `PUT /api/library/works/{id}/state`. Discover reads its taste from here,
-  not from `books`.
+  `PUT /api/library/works/{id}/state`. Discover reads its taste from here.
 - `user_work_tags`: one user's tags on a work, one row per tag, written
   in the same batch as `user_title_state.tags` so the library page can
   filter by a tag.

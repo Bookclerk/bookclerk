@@ -18,7 +18,6 @@ pub mod accounts;
 pub mod admin_controls;
 pub mod bookclerk_receipts;
 pub mod bookmarks;
-pub mod books;
 pub mod catalog_listing_optouts;
 pub mod catalog_lookups;
 pub mod chapter_list_entries;

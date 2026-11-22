@@ -1,7 +1,7 @@
 # Durable job queue
 
 `bookclerkd` admits background work as **durable rows** in the host library
-database (`jobs` + `job_temp_paths` on the same schema as `books` and
+database (`jobs` + `job_temp_paths` on the same schema as `holdings` and
 `accounts`). HTTP and the interval scheduler are producers; leased workers
 claim jobs. There is no external broker and **no dedicated jobs database**.
 

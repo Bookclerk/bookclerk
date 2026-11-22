@@ -111,7 +111,7 @@ operator, a household user, or a portal identity) has a **subject key**
    owned titles out of the candidates) come from the same read. The read
    is one title per **work** the library holds, built from holdings,
    listings, editions and works (a book held on two accounts or from two
-   stores counts once), so it never touches the `books` table. Finished
+   stores counts once). Finished
    flags, ratings and tags come from each user's own state on the work
    (`user_title_state`): a person's own books carry theirs, and household
    books carry everyone's merged (finished when anyone finished it, each
