@@ -59,7 +59,7 @@ env:
   # its own; test_ci_contract.py fails until they match the planner
   # (docs/contributing/ci.md#caches).
   CI_BUILD_PLAN_LINT: "f0db76a66f23e946"
-  CI_BUILD_PLAN_DEBUG: "eb05fa814aa1d09a"
+  CI_BUILD_PLAN_DEBUG: "ccbf610d819d6ea5"
   CI_BUILD_PLAN_RELEASE: "065d3a2b38c07a3a"
   # A failing test's panic prints its backtrace. Library backtraces stay off:
   # with RUST_BACKTRACE alone, every error built by an error library such as
@@ -724,15 +724,13 @@ jobs:
           retention-days: 7
 
   test-os:
-    name: unit + integration tests (${{ matrix.os }}${{ matrix.parts > 1 && format(', {0}/{1}', matrix.part, matrix.parts) || '' }}, report only)
+    name: unit + integration tests (${{ matrix.os }}${{ matrix.parts > 1 && format(', {0}/{1}', matrix.part, matrix.parts) || '' }})
     needs: plan
-    # Runs the whole `rust_test` suite on Windows and macOS, but only
-    # reports: CI Gate doesn't need it, so a failure there doesn't keep a
-    # pull request out of `main` while the failures it finds are fixed
-    # (`REPORT_JOBS`, docs/contributing/ci.md#full-suite-on-windows-and-macos).
+    # Runs the whole `rust_test` suite on Windows and macOS; CI Gate needs
+    # it, so a failure on either keeps the group out of `main`
+    # (`OS_LEG_JOBS`, docs/contributing/ci.md#full-suite-on-windows-and-macos).
     # Not on pull requests (`os_legs`).
     if: needs.plan.outputs.os_legs == 'true' && needs.plan.outputs.job_test == 'true'
-    continue-on-error: true
     runs-on: ${{ matrix.os }}
     # A build-only main push compiles every test binary from scratch when
     # its cache misses, then saves it.
@@ -803,8 +801,8 @@ jobs:
 
       # Its own cache (`debug-tests`), not the `debug` one the other
       # Windows and macOS jobs share: every test binary of the workspace is
-      # far more than they compile, and while this job only reports it must
-      # not change what they restore. Saved by the build-only main push
+      # far more than they compile, and saving it into their key would make
+      # every one of them restore it. Saved by the build-only main push
       # (docs/contributing/ci.md#caches).
       - name: Look up the saved cache
         id: saved
@@ -834,6 +832,14 @@ jobs:
       - name: Install capnproto (macOS)
         if: runner.os == 'macOS' && env.CI_SAVED_CACHE_CURRENT != 'true'
         run: brew install capnp
+
+      # FFmpeg's `configure` for the media worker's decoders runs under the
+      # runner's MSYS2, which has no `make` until it is added
+      # (docs/server/media.md#ffmpeg-decoders).
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
 
       - name: Install capnproto (Windows)
         if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
@@ -1140,6 +1146,11 @@ jobs:
           cache-on-failure: true
           save-if: false
 
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
+
       - name: Confinement clippy + enforcement tests
         run: python scripts/ci-exec.py run confinement
 
@@ -1243,6 +1254,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
+
+      # FFmpeg's `configure` for the media worker's decoders runs under the
+      # runner's MSYS2, which has no `make` until it is added
+      # (docs/server/media.md#ffmpeg-decoders).
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
 
       - name: Install capnproto (Windows)
         if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
@@ -1683,6 +1702,14 @@ jobs:
           cache-on-failure: true
           save-if: false
 
+      # FFmpeg's `configure` for the media worker's decoders runs under the
+      # runner's MSYS2, which has no `make` until it is added
+      # (docs/server/media.md#ffmpeg-decoders).
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
+
       - name: Install capnproto (Windows)
         shell: pwsh
         run: |
@@ -1995,6 +2022,7 @@ jobs:
       - macos
       - postgres
       - windows-cluster
+      - test-os
       - site
       - ui-visual
     if: always()

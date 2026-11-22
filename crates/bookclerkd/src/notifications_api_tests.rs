@@ -161,6 +161,25 @@ async fn an_administrator_routes_tests_and_reads_the_log() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (_, routes) = call(&app, None, "GET", "/api/notifications/routes", None).await;
     assert_eq!(routes["routes"]["test"][0]["min_severity"], "warning");
+    // The built-in In app target routes like a channel and is listed first.
+    let with_inbox = serde_json::json!({"routes": [
+        {"destination_id": ops, "min_severity": "warning"},
+        {"destination_id": "in-app", "min_severity": "critical"},
+    ]})
+    .to_string();
+    let (status, _) = call(
+        &app,
+        None,
+        "PUT",
+        "/api/notifications/routes/test",
+        Some(&with_inbox),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, routes) = call(&app, None, "GET", "/api/notifications/routes", None).await;
+    assert_eq!(routes["routes"]["test"][0]["destination_id"], "in-app");
+    assert_eq!(routes["routes"]["test"][0]["min_severity"], "critical");
+    assert_eq!(routes["routes"]["test"][1]["destination_id"], ops);
     let bad_severity =
         serde_json::json!({"routes": [{"destination_id": ops, "min_severity": "loud"}]})
             .to_string();

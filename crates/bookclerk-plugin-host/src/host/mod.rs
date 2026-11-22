@@ -18,7 +18,8 @@ pub use database::{
 };
 pub(crate) use destination::spawn_deployed_storage;
 pub use destination::{
-    DeployedDestination, DestinationRegistry, DestinationSession, DestinationSettings,
+    storage_role, DeployedDestination, DeployedIntake, DestinationRegistry, DestinationSession,
+    DestinationSettings, StorageRole,
 };
 pub use integration::ExternalIntegration;
 pub use plugin_backups::{export_registered_plugin_units, restore_plugin_backup_units};

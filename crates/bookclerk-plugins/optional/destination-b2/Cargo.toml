@@ -1,0 +1,32 @@
+[package]
+name = "bookclerk-plugin-destination-b2"
+description = "Backblaze B2 output plugin: native guest for Bookclerk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-output", "b2", "backblaze"]
+
+[package.metadata.bookclerk]
+api_version = 3
+kind = "output"
+id = "b2"
+display_name = "Backblaze B2"
+
+[[bin]]
+name = "bookclerk-plugin-destination-b2"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+bookclerk-plugin-sdk.workspace = true
+bookclerk-storage = { workspace = true, features = ["b2"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

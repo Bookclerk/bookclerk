@@ -270,13 +270,15 @@ async fn an_intake_batch_is_queued_ingested_and_announced() {
     let files = tempfile::tempdir().unwrap();
     let storage = tempfile::tempdir().unwrap();
     state.config.write().await.paths = Some(Paths::from_files_dir(files.path().to_path_buf()));
+    let drop = tempfile::tempdir().unwrap();
     crate::node_api::uploads::set_test_destination(files.path(), storage.path());
-    std::fs::create_dir_all(storage.path().join("incoming/Dropped")).unwrap();
-    std::fs::write(storage.path().join("incoming/Dropped/01.mp3"), b"drop").unwrap();
+    crate::node_api::uploads::set_test_intake(files.path(), "local", drop.path());
+    std::fs::create_dir_all(drop.path().join("incoming/Dropped")).unwrap();
+    std::fs::write(drop.path().join("incoming/Dropped/01.mp3"), b"drop").unwrap();
     let owner = first_active_owner(&library).await.unwrap().unwrap();
 
     // Nothing to ingest is refused before anything is queued.
-    let empty = queue_intake_batch(&state, owner, "local", &[]).await;
+    let empty = queue_intake_batch(&state, &IngestBatchId::new(), owner, "local", &[]).await;
     assert!(
         matches!(empty, Err(IntakeError::Refused(CreateRefusal::Empty))),
         "{empty:?}"
@@ -291,8 +293,10 @@ async fn an_intake_batch_is_queued_ingested_and_announced() {
             signature: None,
         }),
     };
-    let id = queue_intake_batch(
+    let id = IngestBatchId::new();
+    queue_intake_batch(
         &state,
+        &id,
         owner,
         "local",
         &[
@@ -429,4 +433,139 @@ async fn an_uploaded_files_chapters_and_running_time_are_recorded() {
     let expected: Vec<_> = tags.chapters.iter().map(|c| c.title.clone()).collect();
     assert_eq!(titles, expected);
     assert_eq!(resolved.runtime_ms, tags.duration.map(|d| d.ms));
+}
+
+#[tokio::test]
+async fn a_drop_folder_item_is_ingested_and_moved_to_imported() {
+    use bookclerk_config::IntakeSettings;
+    use bookclerk_library::control_plane::{
+        create_plugin_instance, first_active_owner, load_batch, load_intake_items, ConfigActor,
+    };
+    let (state, _app, library) = phase2_harness(TOKEN).await;
+    let files = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    state.config.write().await.paths = Some(Paths::from_files_dir(files.path().to_path_buf()));
+    let instance = create_plugin_instance(
+        &library,
+        &ConfigActor::Operator {
+            id: "operator:test".into(),
+        },
+        "local",
+        "Drop folder",
+    )
+    .await
+    .unwrap()
+    .id
+    .as_str()
+    .to_string();
+    let storage = tempfile::tempdir().unwrap();
+    crate::node_api::uploads::set_test_destination(files.path(), storage.path());
+    crate::node_api::uploads::set_test_intake(files.path(), &instance, folder.path());
+    std::fs::create_dir_all(folder.path().join("Dropped")).unwrap();
+    std::fs::write(folder.path().join("Dropped/01.mp3"), b"drop").unwrap();
+    let owner = first_active_owner(&library).await.unwrap().unwrap();
+    let settings = IntakeSettings::for_patron(owner);
+    let backend = bookclerk_storage::LocalFsBackend::new(folder.path().to_path_buf()).unwrap();
+    let handoff = crate::intake::QueueHandOff { state: &state };
+    let drop_folder = crate::intake::Folder {
+        store: &library,
+        instance_id: &instance,
+        backend: &backend,
+        prefix: "",
+        settings: &settings,
+    };
+
+    crate::intake::run_pass(drop_folder, &|| 0, Some(&handoff))
+        .await
+        .unwrap();
+    let ready = crate::intake::run_pass(drop_folder, &|| 60_000, Some(&handoff))
+        .await
+        .unwrap();
+    assert_eq!(ready.queued, ["Dropped"]);
+    let batch_id = load_intake_items(&library, &instance)
+        .await
+        .unwrap()
+        .remove("Dropped")
+        .and_then(|record| record.batch_id)
+        .unwrap();
+
+    // Not finished while the job has not run.
+    assert_eq!(
+        crate::intake::finish_ended(drop_folder, 60_000)
+            .await
+            .unwrap(),
+        0
+    );
+    let batch = load_batch(
+        &library,
+        &bookclerk_library::control_plane::IngestBatchId::parse(&batch_id).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let payload = JobPayload {
+        node_id: Some(batch.node_id.clone()),
+        ingest_batch: Some(batch_id.clone()),
+        ..JobPayload::default()
+    };
+    run_ingest_batch(&state, &payload, None).await.unwrap();
+
+    // 2026-11-20T00:00:00Z.
+    let finished = crate::intake::finish_ended(drop_folder, 1_795_132_800_000)
+        .await
+        .unwrap();
+    assert_eq!(finished, 1);
+    assert!(folder
+        .path()
+        .join("_imported/2026-11-20/Dropped/01.mp3")
+        .is_file());
+    assert!(!folder.path().join("Dropped").join("01.mp3").exists());
+    assert!(load_intake_items(&library, &instance)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn an_intake_file_that_grew_after_settling_fails() {
+    use bookclerk_library::control_plane::{
+        batch_members, first_active_owner, load_batch, IntakeRef, MemberOutcome, MemberSpec,
+    };
+    let (state, _app, library) = phase2_harness(TOKEN).await;
+    let files = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let drop = tempfile::tempdir().unwrap();
+    state.config.write().await.paths = Some(Paths::from_files_dir(files.path().to_path_buf()));
+    crate::node_api::uploads::set_test_destination(files.path(), storage.path());
+    crate::node_api::uploads::set_test_intake(files.path(), "drop", drop.path());
+    std::fs::write(drop.path().join("Growing.mp3"), b"longer than it was").unwrap();
+    let owner = first_active_owner(&library).await.unwrap().unwrap();
+    let id = IngestBatchId::new();
+    queue_intake_batch(
+        &state,
+        &id,
+        owner,
+        "drop",
+        &[MemberSpec {
+            path: bookclerk_archive::EntryPath::admit("Growing.mp3").unwrap(),
+            size: 4,
+            sha256: None,
+            intake: Some(IntakeRef {
+                key: "Growing.mp3".to_string(),
+                signature: None,
+            }),
+        }],
+    )
+    .await
+    .unwrap();
+    let batch = load_batch(&library, &id).await.unwrap().unwrap();
+    let payload = JobPayload {
+        node_id: Some(batch.node_id.clone()),
+        ingest_batch: Some(id.as_str().to_string()),
+        ..JobPayload::default()
+    };
+    run_ingest_batch(&state, &payload, None).await.unwrap();
+    let members = batch_members(&library, &id).await.unwrap();
+    assert_eq!(members[0].outcome, MemberOutcome::Failed);
+    assert_eq!(members[0].reason.as_deref(), Some("intake_changed"));
 }

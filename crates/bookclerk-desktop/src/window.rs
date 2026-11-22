@@ -10,6 +10,7 @@ use tauri::{Manager as _, RunEvent, State, Url, Webview, WebviewUrl, WebviewWind
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
 
+use crate::alert::Alert;
 use crate::player::{NativePlayer, PlayerCommand};
 
 /// The custom scheme the web app is served on.
@@ -143,6 +144,30 @@ fn player_events(
     Ok(())
 }
 
+/// Posts one system notification for an inbox entry (see [`crate::alert`]).
+///
+/// # Arguments
+///
+/// * `webview` - The calling webview; refused unless it is the main window
+///   on one of the app's own pages.
+/// * `title` - The entry's title.
+/// * `body` - The entry's plain-text body.
+///
+/// # Errors
+///
+/// Returns an error for a foreign caller, an empty title, or a system that
+/// did not show it.
+#[tauri::command]
+async fn notify(webview: Webview, title: String, body: String) -> Result<(), String> {
+    own_page(&webview)?;
+    let alert = Alert::new(&title, &body)?;
+    // The notification server answers over D-Bus (or the platform's own
+    // service); keep that wait off the main thread.
+    tauri::async_runtime::spawn_blocking(move || alert.show())
+        .await
+        .map_err(|err| format!("the notification did not run: {err}"))?
+}
+
 /// Starts the host, opens the window and runs until it closes.
 ///
 /// # Errors
@@ -172,7 +197,12 @@ pub fn run() -> anyhow::Result<()> {
     };
     let app = tauri::Builder::default()
         .manage(live_feed)
-        .invoke_handler(tauri::generate_handler![live, player, player_events])
+        .invoke_handler(tauri::generate_handler![
+            live,
+            notify,
+            player,
+            player_events
+        ])
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_ctx, request, responder| {
             let host = scheme_host.clone();
             spawner.spawn(async move {

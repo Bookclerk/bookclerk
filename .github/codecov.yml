@@ -94,6 +94,7 @@ component_management:
         - crates/bookclerk-db-exec/
         - crates/bookclerk-media-worker/
         - crates/bookclerk-mp4/
+        - crates/bookclerk-libav/
     - component_id: daemon
       name: daemon
       paths: [crates/bookclerkd/]

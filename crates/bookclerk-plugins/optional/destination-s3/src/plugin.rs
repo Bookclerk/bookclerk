@@ -26,7 +26,9 @@ type Result<T> = std::result::Result<T, PluginError>;
 ///
 /// Returns invalid_params when the payload is not an S3 context, or internal
 /// when the client cannot be constructed.
-pub async fn destination_from_config(config: &ExtensibleConfig) -> Result<ObjectStoreDestination> {
+pub async fn destination_from_config(
+    config: &ExtensibleConfig,
+) -> Result<ObjectStoreDestination<S3Backend>> {
     let parsed: OutputS3ContextDto = config
         .json_into()
         .map_err(|err| PluginError::invalid_params(format!("s3 destination context: {err}")))?;
@@ -44,7 +46,9 @@ pub async fn destination_from_config(config: &ExtensibleConfig) -> Result<Object
 ///
 /// Returns invalid_params when the payload is not an S3 context, or internal
 /// when the client cannot be constructed.
-pub async fn destination_from_bindings(bindings: &Bindings) -> Result<ObjectStoreDestination> {
+pub async fn destination_from_bindings(
+    bindings: &Bindings,
+) -> Result<ObjectStoreDestination<S3Backend>> {
     let mut parsed: OutputS3ContextDto = bindings
         .config
         .json_into()

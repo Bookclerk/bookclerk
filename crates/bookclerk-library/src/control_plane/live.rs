@@ -27,7 +27,8 @@ use crate::store::LibraryStore;
 /// A topic of the live socket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LiveTopic {
-    /// The library's titles (`books`).
+    /// The library's titles: holdings, editions and their acquire state.
+    /// No table stamps it; its writes bump it (see [`Self::stamp_column`]).
     Library,
     /// Jobs (`jobs`).
     Jobs,
@@ -50,11 +51,14 @@ pub enum LiveTopic {
     /// someone started, stopped or finished an edition, or changed a
     /// bookmark. Position syncs while a session plays do not move it.
     Playback,
+    /// Notification inboxes (`notify_inbox`): a notification reached
+    /// someone's inbox, or someone marked entries read.
+    Notifications,
 }
 
 impl LiveTopic {
     /// Every topic.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Library,
         Self::Jobs,
         Self::Deliveries,
@@ -65,6 +69,7 @@ impl LiveTopic {
         Self::Users,
         Self::Discover,
         Self::Playback,
+        Self::Notifications,
     ];
 
     /// The topic's wire name, also its key in `live_topic_revisions`.
@@ -81,6 +86,7 @@ impl LiveTopic {
             Self::Users => "users",
             Self::Discover => "discover",
             Self::Playback => "playback",
+            Self::Notifications => "notifications",
         }
     }
 
@@ -96,8 +102,9 @@ impl LiveTopic {
     /// `None` for `library`, whose writes span the library model's tables,
     /// for `library_links`, which has no change stamp, for
     /// `configuration_changes`, an append-only log whose stamp is not
-    /// indexed, and for `playback`, which has two tables and moves only
-    /// on some of their writes; their writes bump on a probe or outright
+    /// indexed, for `playback`, which has two tables and moves only on
+    /// some of their writes, and for `notifications`, whose inbox rows
+    /// carry no change stamp; their writes bump on a probe or outright
     /// instead.
     #[must_use]
     pub fn stamp_column(self) -> Option<(&'static str, &'static str)> {
@@ -112,6 +119,7 @@ impl LiveTopic {
             Self::Users => Some(("users", "updated_at")),
             Self::Discover => Some(("discover_feeds", "computed_at")),
             Self::Playback => None,
+            Self::Notifications => None,
         }
     }
 }

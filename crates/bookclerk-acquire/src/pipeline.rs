@@ -6079,7 +6079,8 @@ mod tests {
 
         // A lossy MP4 copy is used by an output that repackages audio
         // only when its encoding is one the media worker decodes: the
-        // same file with an E-AC-3 sample entry is downloaded, read and
+        // same file with an AC-4 sample entry (and, in builds without
+        // the FFmpeg decoders, an E-AC-3 one) is downloaded, read and
         // dropped, and the store's download is kept.
         let bigger_m4b = |entry: &[u8; 4]| {
             let mut file = bookclerk_tags::fixtures::tagged_m4b();
@@ -6093,7 +6094,8 @@ mod tests {
             ));
             file
         };
-        for (entry, used) in [(b"mp4a", true), (b"ec-3", false)] {
+        let eac3 = bookclerk_media::capabilities::decodes(bookclerk_tags::AudioCodec::Eac3);
+        for (entry, used) in [(b"mp4a", true), (b"ec-3", eac3), (b"ac-4", false)] {
             let (mut req, fetched, _) = compare((Some(900), false), bigger_m4b(entry), "Twin.m4b");
             req.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
             let offer = offered_copy(&store, &req).await.unwrap();

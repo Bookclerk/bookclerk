@@ -15,9 +15,11 @@ members = [
     "crates/bookclerk-dev",
     "crates/bookclerk-discover",
     "crates/bookclerk-enrich",
+    "crates/bookclerk-intake",
     "crates/bookclerk-integrations",
     "crates/bookclerk-jail",
     "crates/bookclerk-keystore",
+    "crates/bookclerk-libav",
     "crates/bookclerk-library",
     "crates/bookclerk-media",
     "crates/bookclerk-media-worker",
@@ -43,6 +45,9 @@ members = [
     "crates/bookclerk-storefront",
     "crates/bookclerk-storage",
     "crates/bookclerk-tags",
+    "crates/bookclerk-sentencepiece",
+    "crates/bookclerk-model-pack",
+    "crates/bookclerk-onnxruntime",
     "crates/bookclerk-tls",
     "crates/bookclerk-tray",
     "crates/bookclerk-window-policy",
@@ -91,6 +96,7 @@ authors = ["fritz-fritz <contact@bookclerk.app>"]
 # Internal crates
 bookclerk-audible-catalog = { path = "crates/bookclerk-audible-catalog" }
 bookclerk-config = { path = "crates/bookclerk-config" }
+bookclerk-intake = { path = "crates/bookclerk-intake" }
 bookclerk-db-exec = { path = "crates/bookclerk-db-exec" }
 bookclerk-db-guest = { path = "crates/bookclerk-db-guest" }
 bookclerk-db-testkit = { path = "crates/bookclerk-db-testkit" }
@@ -105,7 +111,11 @@ bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-mp4 = { path = "crates/bookclerk-mp4" }
 bookclerk-cover = { path = "crates/bookclerk-cover" }
 bookclerk-tags = { path = "crates/bookclerk-tags" }
+bookclerk-sentencepiece = { path = "crates/bookclerk-sentencepiece" }
+bookclerk-model-pack = { path = "crates/bookclerk-model-pack" }
+bookclerk-onnxruntime = { path = "crates/bookclerk-onnxruntime" }
 bookclerk-archive = { path = "crates/bookclerk-archive" }
+bookclerk-libav = { path = "crates/bookclerk-libav" }
 bookclerk-media = { path = "crates/bookclerk-media" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }

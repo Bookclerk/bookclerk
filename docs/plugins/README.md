@@ -124,7 +124,7 @@ jail and the workerd front door).
 
 - **Plugin host**: Crate `bookclerk-plugin-host`. Loads guests, and never ships storefront logic by default.
 - **External guest**: Any jailed subprocess plugin (platform, product, example or third-party).
-- **Platform guest**: Bundled in the installer: `sqlite` and `local` only (`plugins/platform/`).
+- **Platform guest**: Bundled in the installer: `sqlite`, `local` and `embedder` only (`plugins/platform/`).
 - **Optional plugin**: Bookclerk-maintained optional guests (storefronts, ABS, s3, d1, postgres under `plugins/optional/`).
 - **Product plugin**: Another name for optional first-party guests (packaged with `cargo package-plugins`).
 - **Reference example**: Echo samples under `examples/`. For CI and `cargo dev --examples` only, never packaged.
@@ -216,6 +216,11 @@ The staged suite lives in `crates/bookclerk-plugin-e2e`, so ordinary
 
 - Set `BOOKCLERK_STAGED_PLUGINS=libro,echo_workerd_ts` to check a subset.
   Platform guests are always checked.
+- A new first-party plugin joins the crate's id list (`PLATFORM_PLUGINS`,
+  `OPTIONAL_PLUGINS` or `EXAMPLE_PLUGINS`). A unit test fails while a
+  `plugin.toml` under `crates/bookclerk-plugins/` or `examples/` is
+  missing from its list, because a run that selects an unlisted id stops
+  with "unknown plugin id".
 - Set `BOOKCLERK_REQUIRE_STAGED_PLUGINS=1` to fail, instead of skipping,
   when staging roots are missing.
 

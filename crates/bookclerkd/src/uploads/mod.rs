@@ -15,6 +15,7 @@
 
 pub(crate) mod chapters;
 pub(crate) mod identify;
+pub(crate) mod intake_copy;
 pub(crate) mod job;
 pub(crate) mod staging;
 
@@ -688,16 +689,13 @@ async fn queue_batch(
 
 /// Why an intake batch was not queued.
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "the drop folder intake reads this; it lands separately"
-)]
 pub(crate) enum IntakeError {
     /// The members were refused (empty, too many, clashing paths, bad
     /// references) or the holder may not upload.
     Refused(CreateRefusal),
-    /// The batch was created but not queued; it stays open until the idle
-    /// prune cancels it.
+    /// The batch may have been created but was not queued; it stays open
+    /// until the drop folder runner cancels it, which it does on its next
+    /// pass because it stored the batch id first.
     Queue(QueueRefusal),
 }
 
@@ -711,39 +709,30 @@ pub(crate) enum IntakeError {
 /// # Arguments
 ///
 /// * `state` - the daemon state.
+/// * `id` - the batch id, chosen and stored by the caller first.
 /// * `user_id` - the patron who holds the books.
 /// * `instance` - the storage plugin instance id the objects live in.
 /// * `specs` - one member per object: relative path, size, optional
 ///   SHA-256 and its [`bookclerk_library::control_plane::IntakeRef`].
 ///
-/// # Returns
-///
-/// The queued batch's id.
-///
 /// # Errors
 ///
 /// [`IntakeError`] when the members are refused or the job cannot be
 /// queued.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the drop folder intake calls this; it lands separately"
-    )
-)]
 pub(crate) async fn queue_intake_batch(
     state: &AppState,
+    id: &IngestBatchId,
     user_id: i64,
     instance: &str,
     specs: &[bookclerk_library::control_plane::MemberSpec],
-) -> Result<IngestBatchId, IntakeError> {
+) -> Result<(), IntakeError> {
     let library = state.library_snapshot().await;
     let files_dir = state.config.read().await.paths().files_dir.clone();
     let node_id = load_or_create_node_identity(&files_dir)
         .map_err(|err| IntakeError::Queue(QueueRefusal::Failed(err.into())))?
         .node_id;
     let batch = bookclerk_library::control_plane::create_intake_batch(
-        &library, user_id, &node_id, instance, specs,
+        &library, id, user_id, &node_id, instance, specs,
     )
     .await
     .map_err(|err| IntakeError::Queue(QueueRefusal::Failed(err.into())))?
@@ -751,7 +740,7 @@ pub(crate) async fn queue_intake_batch(
     queue_batch(state, &library, &batch)
         .await
         .map_err(IntakeError::Queue)?;
-    Ok(batch.id)
+    Ok(())
 }
 
 /// Cancels an upload that has not started ingesting and drops its bytes.

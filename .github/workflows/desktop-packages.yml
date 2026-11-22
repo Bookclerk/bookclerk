@@ -97,6 +97,14 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install capnp
 
+      # FFmpeg's `configure` for the media worker's decoders runs under the
+      # runner's MSYS2, which has no `make` until it is added
+      # (docs/server/media.md#ffmpeg-decoders).
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
+
       - name: Install capnproto (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

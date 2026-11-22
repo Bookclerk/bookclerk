@@ -39,6 +39,7 @@ boundary extends it.
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, Ogg Opus and Vorbis headers and comments, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
+| `model_pack` | Embedding model files in the embedder plugin's data directory: the model description (`model.json`) and the token-row packs | `bookclerk-model-pack::PackManifest::parse`, `Rows::parse` |
 | `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
 | `media_keep_codec` | Audio parts the media worker copies into an M4B without re-encoding them (`output.keep_codec_in_m4b`): MP4 sample entries and tables, Ogg and FLAC headers and packets | `bookclerk-media::package_keeping_codec` |
@@ -60,6 +61,7 @@ boundary extends it.
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
+| `b2_reply` | What the `b2` guest reads from Backblaze B2: native API replies (authorization, buckets, upload URLs, file versions, file-name and file-version listings, uploaded parts, errors) and download headers, and the percent-encoding of file names | `bookclerk-storage::b2_api` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `origin_request` | What a relay ingress plugin hands the host: the framed `POST /origin/fetch` body on the isolate bridge, request heads (method, target, headers, client address), response heads, and the public origin `Ingress.start` reports | `bookclerk-plugin-abi::origin` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
@@ -73,6 +75,8 @@ boundary extends it.
 | `node_frame` | Node-to-node frames on the library socket, including the public origin a branch reports in its heartbeat | `bookclerk-node-proto::Frame`, `BranchOrigin::parse` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
+| `intake_settings` | A drop folder's settings: the body of `PUT /api/config/plugin-instances/{id}/intake` and the stored `core.intake` document | `bookclerk-config::parse_intake_settings` |
+| `intake_items` | A drop folder's listing: object keys, sizes and change signatures grouped into items and settled | `bookclerk-intake::ItemGrouper`, `step` |
 | `output_copies` | A library's extra copies of every book, the `copies` array of the `core.output` document (`PUT /api/config/domains/core.output` and the stored row) | `bookclerk-config::OutputCopy`, `validate_copies` |
 | `destination_id` | A destination id another node sends: an acquire plan's destination and upload records naming the owner's storage plugin instances | `bookclerk-config::DestinationId::new` |
 | `cache_settings` | `cache.*` values from the settings API and CLI: the image caches' budget and unviewed age | `bookclerk-config::parse_cache_setting` |
@@ -261,6 +265,29 @@ only that. The others check:
   JSON round trip, and takes or refuses sample books and sample copies
   exactly as the oracle's reading does. The shared oracle is
   `fuzz/oracles/destination_filter.rs`, replayed from `bookclerk-config`.
+- **`intake_settings`**: the input is the request body. It is accepted
+  exactly when an independent reading, built on `serde_json::Value` and a
+  separate scan for repeated keys, accepts it: at most 16 KiB, one object
+  of the documented keys with none repeated, whole numbers in range, the
+  documented names for `after_ingest` and `attribute_to`, a positive
+  `patron` exactly when `attribute_to` is `owner`, `prune_imported_days`
+  only with `after_ingest = move`, and at most 64 distinct ignore patterns
+  of 1 to 128 bytes with no path separator or control character, with the
+  settings written out with every default at most 12 KiB. Accepted
+  settings equal the oracle's reading and survive a JSON round trip. The
+  shared oracle is `fuzz/oracles/intake_settings.rs`, replayed from
+  `bookclerk-config`.
+- **`intake_items`**: the first byte picks the attribution mode and a quiet
+  period, and the rest is lines of `key<TAB>size<TAB>signature`. Every
+  object is ignored, a stray or a member of the same item as an independent
+  reading of the key rules says (ignore patterns through a reference
+  matcher of its own), the items hold the oracle's members with the member
+  cap flagged exactly when a member past it was listed, the signature does
+  not depend on listing order and moves with any size change or a member
+  past the cap, and `step` makes an item ready only once the quiet period has
+  passed, never past the member cap, and never forgets a queued item. The
+  shared oracle is `fuzz/oracles/intake_items.rs`, replayed from
+  `bookclerk-intake`.
 - **`output_copies`**: the first byte picks the main output's copy and the
   rest is the `copies` array, read as the server reads it (`OutputCopy`'s
   serde derive, then `validate_copies`). It is accepted exactly when an
@@ -347,6 +374,17 @@ only that. The others check:
   `Done` record re-encodes to a frame that decodes to the same record. The
   shared oracle is `fuzz/oracles/tags_wire.rs`, replayed from
   `bookclerk-tags`.
+- **`model_pack`**: the first byte picks the reader: `0` reads the rest as
+  a model description, any other value reads it as a row pack whose rows
+  have that many bytes. An accepted description names only files that stay
+  inside the model directory by a rule written apart from the crate's,
+  each once and none named `model.json`, keeps its limits, and writes back
+  to JSON that reads as the same description. A row pack's verdict equals
+  a layout check written apart from the crate's; an accepted pack gives
+  every listed token the bytes at the position the layout states, nothing
+  for a token it does not list, and re-encodes to exactly its own bytes.
+  The shared oracle is `fuzz/oracles/model_pack.rs`, replayed from
+  `bookclerk-model-pack`.
 - **`media_decode`**: the input is a whole audio file. It is decoded at
   the source's channel count twice and once mixed to mono. An accepted
   stream has a sample rate from 1 Hz to 768 kHz and one or two channels,
@@ -355,7 +393,12 @@ only that. The others check:
   does, with the same rate and length. A plain 16-bit PCM WAV must decode
   to exactly the samples an independent parser in the oracle reads from
   it. Seeds cover every container and codec the worker reads, including
-  HE-AAC, HE-AAC v2, Ogg Opus (mono and stereo) and Ogg Vorbis. The shared oracle is
+  HE-AAC, HE-AAC v2, Ogg Opus (mono and stereo), Ogg Vorbis, and the
+  FFmpeg formats (WMA 1 and 2, raw AC-3 and E-AC-3, E-AC-3 in MP4, raw
+  AMR-NB and AMR-WB, AMR-WB in 3GP). The fuzz build turns on the `libav`
+  feature, so the target drives FFmpeg's demuxers and decoders through the
+  shim; FFmpeg itself is not instrumented for coverage (OSS-Fuzz fuzzes it
+  upstream). The shared oracle is
   `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
 - **`media_keep_codec`**: the input is one audio part, packaged twice
   over into one M4B keeping its audio. A refused part leaves no file
@@ -545,6 +588,24 @@ only that. The others check:
   decoder, JSON; each body is then checked as an event. The reply, each
   message, an event and its object must be JSON objects. The shared oracle
   is `fuzz/oracles/r2_event.rs`, replayed from `bookclerk-storage`.
+- **`b2_reply`**: byte 0 modulo 9 picks the reader: an authorization (0),
+  a bucket list (1), an upload URL (2), one file version (3), a file-name
+  page (4), a file-version page (5), an uploaded part (6), an error reply
+  with bytes 1 and 2 as its status (7), or download headers, one
+  `name: value` per line (8). Reading never panics and answers the same
+  twice. An error reply always reads, with a non-empty code, and code and
+  message cut to 1,024 bytes without control characters. An accepted
+  reply agrees with an independent walk of the same JSON (token, file
+  names and ids, list lengths, part number); its URLs are plain `https`;
+  every file name passes the oracle's own copy of B2's naming rules; a
+  file-name page's continuation is past every listed name; a
+  file-version page continues with a name and a file id together, so it
+  may continue at the last listed name, and lists each name's versions
+  newest first; every SHA-1 is 40 lowercase hex digits; an error code
+  other than `unknown` is exactly the one the error object sent; and accepted download headers name a file id
+  and a body no longer than the file. Percent-encoding any text matches
+  the oracle's own encoder and decodes back to the text. The shared
+  oracle is `fuzz/oracles/b2_reply.rs`, replayed from `bookclerk-storage`.
 - **`socket_request`**: byte 0 modulo 3 picks a socket URL (0), a Cap'n
   Proto `SocketConnectRequest` (1) or a `SocketMessage` (2). Every URL the
   parser accepts is one a WHATWG URL parser (the `url` crate) reads as the
@@ -1247,7 +1308,7 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     `scripts/tests/codeql_languages_corpus/` (files named `rust__<case>`
     or `norust__<case>`).
   - Oracle: Rust is analyzed exactly when some NUL-separated name is not
-    UTF-8, ends in `.rs`, `.capnp` or `.proto`, is named `Cargo.toml`, `Cargo.lock`
+    UTF-8, ends in `.rs`, `.capnp`, `.proto`, `.cc` or `.h`, is named `Cargo.toml`, `Cargo.lock`
     or `rust-toolchain.toml`, sits under a `.cargo/` directory, or is the
     workflow or one of the two scripts, checked with string operations
     rather than glob patterns.

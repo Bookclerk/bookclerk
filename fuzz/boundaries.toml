@@ -224,6 +224,13 @@ input_from = "storage"
 side = "guest"
 artifacts = ["bookclerk"]
 
+[targets.b2_reply]
+crate = "bookclerk-storage"
+boundary = "Backblaze B2 native API replies (authorization, upload URLs, file versions, listings, parts, errors) and download headers, read by the b2 guest"
+input_from = "storage"
+side = "guest"
+artifacts = ["bookclerk"]
+
 [targets.socket_request]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's host-brokered socket request: the Sockets.connect URL, headers, subprotocols, heartbeat pairs and attachment, and the SocketMessage the host delivers to a SocketHandler"
@@ -389,6 +396,20 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-config"
 boundary = "A storage destination's filter as an operator sends it: the body of PUT /api/config/plugin-instances/{id}/filter and the stored core.destination document"
 input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.intake_settings]
+crate = "bookclerk-config"
+boundary = "A drop folder's settings as an operator sends them: the body of PUT /api/config/plugin-instances/{id}/intake and the stored core.intake document"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.intake_items]
+crate = "bookclerk-intake"
+boundary = "A drop folder's listing: object keys, sizes and change signatures grouped into items and settled"
+input_from = "storage"
 side = "host"
 artifacts = ["bookclerk"]
 
@@ -690,4 +711,11 @@ boundary = "Stderr lines from jailed helpers and plugin guests that the host rel
 input_from = "guest"
 # The host parses each line in its own process before logging it.
 side = "host"
+artifacts = ["bookclerk"]
+
+[targets.model_pack]
+crate = "bookclerk-model-pack"
+boundary = "Embedding model files in the embedder plugin's data directory: the model description (model.json) and the token-row packs"
+input_from = "store"
+side = "guest"
 artifacts = ["bookclerk"]
