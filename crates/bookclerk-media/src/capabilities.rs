@@ -4,8 +4,10 @@
 //! own list of formats: the acquire pipeline takes a library's copy from
 //! another store only when an output that re-encodes or repackages audio
 //! can read it. The answers follow the crate's decode front: the
-//! Symphonia features this crate enables, FDK for every AAC profile and
-//! libopus for Opus. The daemon serves the same report at
+//! Symphonia features this crate enables, FDK for every AAC profile,
+//! libopus for Opus and, in builds with the `libav` feature (release and
+//! Docker builds on Linux and macOS), FFmpeg for AC-3, E-AC-3, WMA and
+//! AMR. The daemon serves the same report at
 //! `GET /api/status/media` and the CLI prints it with
 //! `bookclerk media capabilities`.
 
@@ -15,6 +17,10 @@ use bookclerk_tags::AudioCodec;
 /// or ALAC), MPEG audio layers I–III, FLAC, ADTS AAC, WAV, AIFF, Core
 /// Audio Format and Ogg (Opus or Vorbis). The container is still sniffed from the bytes when the
 /// file is opened; this list only says which kinds are worth sending.
+///
+/// Builds with the `libav` feature also open WMA (ASF), raw AC-3 and
+/// E-AC-3, and AMR (raw or in 3GP).
+#[cfg(not(feature = "libav"))]
 pub const READABLE_CONTENT_TYPES: &[&str] = &[
     "audio/mp4",
     "audio/mpeg",
@@ -25,6 +31,31 @@ pub const READABLE_CONTENT_TYPES: &[&str] = &[
     "audio/x-caf",
     "audio/ogg",
     "audio/opus",
+];
+
+/// Media types of whole files the worker opens: MP4 (`.m4a`/`.m4b`, AAC,
+/// ALAC or E-AC-3), MPEG audio layers I–III, FLAC, ADTS AAC, WAV, AIFF,
+/// Core Audio Format, Ogg (Opus or Vorbis), and through FFmpeg WMA (ASF),
+/// raw AC-3 and E-AC-3, and AMR (raw or in 3GP). The container is still
+/// sniffed from the bytes when the file is opened; this list only says
+/// which kinds are worth sending.
+#[cfg(feature = "libav")]
+pub const READABLE_CONTENT_TYPES: &[&str] = &[
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/flac",
+    "audio/aac",
+    "audio/wav",
+    "audio/aiff",
+    "audio/x-caf",
+    "audio/ogg",
+    "audio/opus",
+    "audio/x-ms-wma",
+    "audio/ac3",
+    "audio/eac3",
+    "audio/amr",
+    "audio/amr-wb",
+    "audio/3gpp",
 ];
 
 /// What the worker produces from decoded audio.
@@ -98,6 +129,8 @@ const ALL_CODECS: [AudioCodec; 8] = [
 /// AAC covers every profile (LC, HE, HE v2, xHE). MP3 covers MPEG audio
 /// layers I and II too, which the tag reader reports as MP3. Opus covers
 /// mono and stereo streams; surround Opus (several streams) fails to open.
+/// E-AC-3 decodes in builds with the `libav` feature. No build decodes
+/// AC-4.
 #[must_use]
 pub fn decodes(codec: AudioCodec) -> bool {
     match codec {
@@ -107,7 +140,8 @@ pub fn decodes(codec: AudioCodec) -> bool {
         | AudioCodec::Mp3
         | AudioCodec::Opus
         | AudioCodec::Vorbis => true,
-        AudioCodec::Eac3 | AudioCodec::Ac4 => false,
+        AudioCodec::Eac3 => cfg!(feature = "libav"),
+        AudioCodec::Ac4 => false,
     }
 }
 
@@ -138,17 +172,19 @@ mod tests {
     #[test]
     fn the_report_lists_what_decodes() {
         let report = capabilities();
-        assert_eq!(
-            report.decodes,
-            [
-                AudioCodec::Aac,
-                AudioCodec::Alac,
-                AudioCodec::Flac,
-                AudioCodec::Mp3,
-                AudioCodec::Opus,
-                AudioCodec::Vorbis
-            ]
-        );
+        let mut want = vec![
+            AudioCodec::Aac,
+            AudioCodec::Alac,
+            AudioCodec::Flac,
+            AudioCodec::Mp3,
+            AudioCodec::Opus,
+            AudioCodec::Vorbis,
+        ];
+        if cfg!(feature = "libav") {
+            want.push(AudioCodec::Eac3);
+        }
+        assert_eq!(report.decodes, want);
+        assert!(!decodes(AudioCodec::Ac4));
         assert_eq!(report.encodes, OUTPUT_ENCODINGS);
         let names: Vec<_> = report.encodes.iter().map(|e| e.name()).collect();
         assert_eq!(names, ["m4b", "mp3", "opus"]);
@@ -162,6 +198,10 @@ mod tests {
         assert!(reads_content_type("Audio/MP4; codecs=mp4a.40.2"));
         assert!(reads_content_type("audio/ogg"));
         assert!(!reads_content_type("audio/x-matroska"));
+        assert_eq!(
+            reads_content_type("audio/x-ms-wma"),
+            cfg!(feature = "libav")
+        );
         assert!(!reads_content_type(""));
     }
 }

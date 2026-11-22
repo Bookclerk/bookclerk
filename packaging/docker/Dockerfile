@@ -37,7 +37,8 @@ RUN npm run build
 
 FROM rust:1-trixie@sha256:931c2c0531a8b143e044f0f3914dfe802f15bb3d1955f0b657e9359327ac2ffc AS builder
 # cmake builds the bundled libopus (opusic-sys) for the media worker's Opus
-# encoder.
+# encoder. The base image's curl, xz and make fetch and build the pinned
+# FFmpeg decoders (bookclerk-libav) that package-platform turns on.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends capnproto cmake \
     && rm -rf /var/lib/apt/lists/*

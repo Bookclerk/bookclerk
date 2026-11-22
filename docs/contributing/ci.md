@@ -767,6 +767,13 @@ The release job runs at one of two scopes:
   assertions. It runs when a packaging input changes (`bookclerk-dev`, the
   workerd pins, the platform manifests) or on the full suite.
 
+The `full` scope builds the media worker with its `libav` feature, as
+release archives and the Docker image do, so it also compiles the pinned
+FFmpeg decoders (`bookclerk-libav`; about half a minute on 4 cores). The
+`affected` scope leaves the feature off. Unix test builds turn it on
+through `bookclerk-media`'s dev-dependencies, so the test jobs cover the
+FFmpeg path.
+
 The release profile ships fat LTO with one codegen unit, which links on a
 single core. On pull requests the job sets
 `CARGO_PROFILE_RELEASE_LTO=thin`, which links in parallel and still checks

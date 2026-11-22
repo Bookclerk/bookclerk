@@ -1,0 +1,27 @@
+[package]
+name = "bookclerk-libav"
+description = "Decoders-only FFmpeg (AC-3/E-AC-3, WMA, AMR) for the confined media worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# The build script compiles a pinned FFmpeg release; only one copy may link.
+links = "bookclerk_ffmpeg"
+
+[features]
+# Sample files in every format the crate decodes, for tests. Enabled as a
+# dev-dependency by the crates that test against them, never by a release
+# build.
+fixtures = []
+
+[dependencies]
+thiserror.workspace = true
+
+[build-dependencies]
+cc = "1"
+sha2.workspace = true
+
+[lints]
+workspace = true

@@ -626,6 +626,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-libav"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "sha2 0.11.0",
+ "thiserror",
+]
+
+[[package]]
 name = "bookclerk-library"
 version = "0.1.0"
 dependencies = [
@@ -672,6 +681,7 @@ dependencies = [
  "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-cover",
+ "bookclerk-libav",
  "bookclerk-mp4",
  "bookclerk-sandbox",
  "bookclerk-tags",
@@ -936,6 +946,7 @@ dependencies = [
  "fs4",
  "hex",
  "libc",
+ "same-file",
  "serde",
  "serde_json",
  "sha2 0.11.0",

@@ -18,6 +18,7 @@ members = [
     "crates/bookclerk-integrations",
     "crates/bookclerk-jail",
     "crates/bookclerk-keystore",
+    "crates/bookclerk-libav",
     "crates/bookclerk-library",
     "crates/bookclerk-media",
     "crates/bookclerk-media-worker",
@@ -106,6 +107,7 @@ bookclerk-mp4 = { path = "crates/bookclerk-mp4" }
 bookclerk-cover = { path = "crates/bookclerk-cover" }
 bookclerk-tags = { path = "crates/bookclerk-tags" }
 bookclerk-archive = { path = "crates/bookclerk-archive" }
+bookclerk-libav = { path = "crates/bookclerk-libav" }
 bookclerk-media = { path = "crates/bookclerk-media" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }

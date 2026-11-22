@@ -355,7 +355,12 @@ only that. The others check:
   does, with the same rate and length. A plain 16-bit PCM WAV must decode
   to exactly the samples an independent parser in the oracle reads from
   it. Seeds cover every container and codec the worker reads, including
-  HE-AAC, HE-AAC v2, Ogg Opus (mono and stereo) and Ogg Vorbis. The shared oracle is
+  HE-AAC, HE-AAC v2, Ogg Opus (mono and stereo), Ogg Vorbis, and the
+  FFmpeg formats (WMA 1 and 2, raw AC-3 and E-AC-3, E-AC-3 in MP4, raw
+  AMR-NB and AMR-WB, AMR-WB in 3GP). The fuzz build turns on the `libav`
+  feature, so the target drives FFmpeg's demuxers and decoders through the
+  shim; FFmpeg itself is not instrumented for coverage (OSS-Fuzz fuzzes it
+  upstream). The shared oracle is
   `fuzz/oracles/media_decode.rs`, replayed from `bookclerk-media`.
 - **`media_keep_codec`**: the input is one audio part, packaged twice
   over into one M4B keeping its audio. A refused part leaves no file

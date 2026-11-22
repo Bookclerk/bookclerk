@@ -8,8 +8,15 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# FFmpeg decoders (bookclerk-libav) for AC-3, E-AC-3, WMA and AMR. Release
+# and Docker builds turn it on (bookclerk-dev's release build); the default
+# dev build leaves it off. Linux and macOS only.
+libav = ["dep:bookclerk-libav"]
+
 [dependencies]
 anyhow.workspace = true
+bookclerk-libav = { workspace = true, optional = true }
 bookclerk-config.workspace = true
 # Cover pipeline types and the frames the cover worker speaks.
 bookclerk-cover.workspace = true
@@ -63,6 +70,12 @@ bookclerk-mp4 = { workspace = true, features = ["fixtures"] }
 bookclerk-tags = { workspace = true, features = ["fixtures"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 bookclerk-archive = { workspace = true, features = ["fixtures"] }
+
+# Tests on Linux and macOS run with the FFmpeg decoders and their sample
+# files, so CI covers the `libav` code paths.
+[target.'cfg(unix)'.dev-dependencies]
+bookclerk-media = { workspace = true, features = ["libav"] }
+bookclerk-libav = { workspace = true, features = ["fixtures"] }
 
 [lints]
 workspace = true

@@ -34,7 +34,9 @@ bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-tags = { path = "../crates/bookclerk-tags" }
 bookclerk-archive = { path = "../crates/bookclerk-archive" }
 # media_decode drives the media worker's demux and decode path.
-bookclerk-media = { path = "../crates/bookclerk-media" }
+# With the FFmpeg decoders, so media_decode also fuzzes WMA, AC-3/E-AC-3
+# and AMR input.
+bookclerk-media = { path = "../crates/bookclerk-media", features = ["libav"] }
 # media_keep_codec writes each input to a scratch file for the packager.
 tempfile = "3"
 bookclerk-config = { path = "../crates/bookclerk-config" }
