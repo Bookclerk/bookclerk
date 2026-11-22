@@ -241,9 +241,11 @@ pub(crate) fn empty_metadata(edition_id: &str) -> BookMetadata {
     }
 }
 
-/// The chapters an edition plays, as spans ending where the next starts
-/// and the last at `duration_ms` (or, when that is 0, the end of the
-/// timeline the list was measured on); empty when it has none.
+/// The chapters `planned` plays of an edition, as spans ending where the
+/// next starts and the last at the copy's length (or, when that is 0, the
+/// end of the timeline the list was measured on); empty when it has none.
+/// A copy whose length is far from that timeline plays the chapters in its
+/// own files ([`bookclerk_library::LibraryStore::chapters_for_copy`]).
 ///
 /// # Errors
 ///
@@ -251,16 +253,16 @@ pub(crate) fn empty_metadata(edition_id: &str) -> BookMetadata {
 pub(crate) async fn chapter_spans(
     patron: &Patron,
     edition_id: &str,
-    duration_ms: u64,
+    planned: &Planned,
     route: &str,
 ) -> PlayerResult<Vec<ChapterSpan>> {
     let resolved = patron
         .library
-        .edition_chapters(edition_id)
+        .chapters_for_copy(edition_id, planned.destination(), planned.keys())
         .await
         .map_err(|err| PlayerError::failed(route, &err))?;
     Ok(resolved.map_or_else(Vec::new, |resolved| {
-        let end = Some(duration_ms)
+        let end = Some(planned.duration_ms())
             .filter(|ms| *ms > 0)
             .or(resolved.runtime_ms);
         resolved.list.spans(end)
@@ -1361,8 +1363,7 @@ pub(crate) async fn get_item(
     let wire = item_wire(&item, progress, planned.as_ref());
     match planned {
         Some(planned) => {
-            let spans =
-                chapter_spans(&patron, &item.edition_id, planned.duration_ms(), ROUTE).await?;
+            let spans = chapter_spans(&patron, &item.edition_id, &planned, ROUTE).await?;
             Ok(Json(with_chapters(wire, &spans)))
         }
         None => Ok(Json(wire)),

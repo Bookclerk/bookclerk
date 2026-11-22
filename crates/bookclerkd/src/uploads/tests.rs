@@ -339,3 +339,94 @@ async fn an_intake_batch_is_queued_ingested_and_announced() {
     assert_eq!(body["source"], "intake");
     assert_eq!(body["intakeInstance"], "local");
 }
+
+/// An uploaded file's tags are stored as its probe and stream, and the
+/// chapters it carries become its copy's file claim.
+#[tokio::test]
+async fn an_uploaded_files_chapters_and_running_time_are_recorded() {
+    bookclerk_media::replace_pool(bookclerk_media::MediaPool::new(
+        bookclerk_media::MediaPoolConfig {
+            confinement: bookclerk_media::Confinement::Off,
+            ..bookclerk_media::MediaPoolConfig::default()
+        },
+    ));
+    let (state, app, library) = phase2_harness(TOKEN).await;
+    let files = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    {
+        let mut cfg = state.config.write().await;
+        cfg.paths = Some(Paths::from_files_dir(files.path().to_path_buf()));
+        cfg.uploads.free_disk_floor_percent = 0;
+    }
+    crate::node_api::uploads::set_test_destination(files.path(), storage.path());
+    let bytes: &'static [u8] = Box::leak(bookclerk_tags::fixtures::tagged_m4b().into_boxed_slice());
+    let tags = bookclerk_tags::read_all(bytes).unwrap();
+    let manifest = json!({ "files": [
+        { "path": "Tagged Book/Book.m4b", "size": bytes.len() },
+    ]})
+    .to_string();
+    let (status, created) = send(
+        &app,
+        operator("POST", "/api/uploads")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(manifest))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let (_, body) = send(&app, patch(&id, 0, 0, bytes)).await;
+    assert_eq!(body["complete"], true, "{body}");
+    let (status, _) = send(
+        &app,
+        operator("POST", &format!("/api/uploads/{id}/commit"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let payload = JobPayload {
+        ingest_batch: Some(id.clone()),
+        ..JobPayload::default()
+    };
+    run_ingest_batch(&state, &payload, None).await.unwrap();
+    let (_, done) = send(
+        &app,
+        operator("GET", &format!("/api/uploads/{id}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let edition = done["files"][0]["editionId"].as_str().unwrap().to_string();
+
+    let stored = library.edition_audio_files(&edition).await.unwrap();
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    let file = &stored[0];
+    assert_eq!(file.stream.duration_ms, tags.duration.map(|d| d.ms));
+    assert_eq!(
+        file.probe.as_ref().map(|p| p.content_type.as_str()),
+        Some("audio/mp4")
+    );
+
+    let resolved = library.edition_chapters(&edition).await.unwrap().unwrap();
+    assert_eq!(
+        resolved.source_kind,
+        bookclerk_library::ChapterSourceKind::File
+    );
+    assert_eq!(
+        resolved.source_id,
+        bookclerk_library::copy_source_id(
+            &file.destination,
+            std::slice::from_ref(&file.storage_key)
+        )
+    );
+    let titles: Vec<_> = resolved
+        .list
+        .chapters()
+        .iter()
+        .map(|c| c.title.clone())
+        .collect();
+    let expected: Vec<_> = tags.chapters.iter().map(|c| c.title.clone()).collect();
+    assert_eq!(titles, expected);
+    assert_eq!(resolved.runtime_ms, tags.duration.map(|d| d.ms));
+}

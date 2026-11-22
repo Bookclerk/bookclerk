@@ -130,12 +130,24 @@ pub(crate) struct Planned {
     digest: String,
     /// The tracks, in play order.
     pub(crate) tracks: Vec<PlannedTrack>,
+    /// The tracks' storage keys, in play order.
+    keys: Vec<String>,
 }
 
 impl Planned {
     /// The whole length in milliseconds.
     pub(crate) fn duration_ms(&self) -> u64 {
         self.tracks.iter().map(|t| t.duration_ms).sum()
+    }
+
+    /// The destination the tracks are read from.
+    pub(crate) fn destination(&self) -> &str {
+        &self.destination
+    }
+
+    /// The tracks' storage keys, in play order.
+    pub(crate) fn keys(&self) -> &[String] {
+        &self.keys
     }
 
     /// Bytes in all the tracks.
@@ -213,6 +225,7 @@ pub(crate) async fn plan_tracks(
         destination: destination.id.clone(),
         digest: digest.to_owned(),
         tracks: planned,
+        keys,
     }))
 }
 
@@ -484,7 +497,7 @@ pub(crate) async fn post_play(
     }
     crate::live::poke(LiveTopic::Playback);
     tracing::info!(session_id = %session.id, edition_id = %item.edition_id, "a player app opened a play session");
-    let chapters = chapter_spans(&patron, &item.edition_id, planned.duration_ms(), ROUTE).await?;
+    let chapters = chapter_spans(&patron, &item.edition_id, &planned, ROUTE).await?;
     Ok(Json(session_wire(
         &patron,
         &session,

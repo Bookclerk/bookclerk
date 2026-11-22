@@ -446,17 +446,24 @@ pub(crate) async fn get_edition_playback(
     let plan = plan_playback(&library, user_id, &edition.edition_id)
         .await
         .map_err(|err| read_failed(ROUTE, &err))?;
-    let tracks = match plan {
+    // The copy this node plays: its destination and its tracks' keys.
+    let (tracks, copy) = match plan {
         Some(plan) => match owner_destinations(&state).await {
             Ok(destinations) => playable_here(&plan, &destinations)
-                .map(|(_, tracks)| tracks_json(tracks, None))
+                .map(|(destination, tracks)| {
+                    let keys: Vec<String> = tracks.iter().map(|track| track.key.clone()).collect();
+                    (
+                        tracks_json(tracks, None),
+                        Some((destination.id.clone(), keys)),
+                    )
+                })
                 .unwrap_or_default(),
             Err(err) => {
                 tracing::warn!(error = %err, route = ROUTE, "no output destination to play from");
-                Vec::new()
+                (Vec::new(), None)
             }
         },
-        None => Vec::new(),
+        None => (Vec::new(), None),
     };
     let progress = library
         .playback_progress(user_id, &edition.edition_id)
@@ -470,15 +477,20 @@ pub(crate) async fn get_edition_playback(
         .as_ref()
         .and_then(|progress| progress.duration)
         .or(edition.runtime);
-    let chapters = library
-        .edition_chapters(&edition.edition_id)
-        .await
-        .map_err(|err| read_failed(ROUTE, &err))?
-        .map(|resolved| {
-            let end = duration.map(PlaybackMs::get).or(resolved.runtime_ms);
-            resolved.list.spans(end)
-        })
-        .unwrap_or_default();
+    let chapters = match &copy {
+        Some((destination, keys)) => {
+            library
+                .chapters_for_copy(&edition.edition_id, destination, keys)
+                .await
+        }
+        None => library.edition_chapters(&edition.edition_id).await,
+    }
+    .map_err(|err| read_failed(ROUTE, &err))?
+    .map(|resolved| {
+        let end = duration.map(PlaybackMs::get).or(resolved.runtime_ms);
+        resolved.list.spans(end)
+    })
+    .unwrap_or_default();
     Ok(Json(PlaybackManifestJson {
         chapters,
         playable: !tracks.is_empty(),
