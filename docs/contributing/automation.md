@@ -50,9 +50,23 @@ digest within the pinned major.
 
 Packages that must share one version are grouped so they move in one pull
 request: `capnp`, `capnp-rpc`, `capnpc` and `capnp-futures` in Cargo, and
-`vitest` with its `@vitest/*` plugins in each Worker under `tools/`
+`vitest` with its `@vitest/*` plugins in the Workers under `tools/`
 (`@vitest/coverage-v8` accepts only the vitest release it shipped with, so
 bumping either one alone fails `npm ci`).
+
+Most other minor and patch releases are grouped too, so a weekly round
+opens a handful of pull requests rather than one per package. Each one
+takes a full suite in the merge queue, and bumps that edit the same
+lockfile conflict with each other as they land. The three Workers under
+`tools/` (`diagnostics-collector`, `demo` and `site`) share one entry, so
+wrangler, `@cloudflare/vitest-plugin` and `@cloudflare/workers-types`
+move in all three lockfiles in one pull request. Major releases still
+arrive one per pull request.
+
+Dependabot leaves Playwright in `ui/` alone: the
+[UI visual job](ui/visual-testing.md) runs in a Playwright image pinned in
+`ci.yml` whose version must match `@playwright/test`, and a new browser
+renders the approved baselines differently. Bump both by hand together.
 
 `examples/` lockfiles are left out, because they are reference plugins and
 never packaged. The full OSV scan still reports them.

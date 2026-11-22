@@ -55,8 +55,17 @@ updates:
         patterns:
           - "*"
 
+  # The three Cloudflare Workers: the diagnostics collector, the hosted demo
+  # (Containers library) and the bookclerk.app website. They share their
+  # tooling (wrangler, @cloudflare/vitest-plugin, @cloudflare/workers-types),
+  # which releases together, so one pull request a week moves it in all three
+  # lockfiles; separate per-package PRs conflicted with each other on every
+  # merge (docs/contributing/automation.md#what-dependabot-updates).
   - package-ecosystem: npm
-    directory: "/tools/diagnostics-collector"
+    directories:
+      - "/tools/diagnostics-collector"
+      - "/tools/demo"
+      - "/tools/site"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -69,38 +78,10 @@ updates:
         patterns:
           - "vitest"
           - "@vitest/*"
-
-  # The hosted demo Worker (Containers library, wrangler).
-  - package-ecosystem: npm
-    directory: "/tools/demo"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    cooldown:
-      default-days: 7
-    groups:
-      # @vitest/coverage-v8 requires the exact vitest version it was
-      # released with, so bumping either one alone fails `npm ci`.
-      vitest:
-        patterns:
-          - "vitest"
-          - "@vitest/*"
-
-  # Deploy tooling (wrangler) for the bookclerk.app website.
-  - package-ecosystem: npm
-    directory: "/tools/site"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    cooldown:
-      default-days: 7
-    groups:
-      # @vitest/coverage-v8 requires the exact vitest version it was
-      # released with, so bumping either one alone fails `npm ci`.
-      vitest:
-        patterns:
-          - "vitest"
-          - "@vitest/*"
+      workers-tooling-minor-patch:
+        update-types:
+          - minor
+          - patch
 
   # Lighthouse and axe-core for the website's CI audit.
   - package-ecosystem: npm
@@ -157,6 +138,13 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    # The UI visual job runs in the Playwright image pinned in ci.yml, whose
+    # version must match @playwright/test, and a new browser re-renders the
+    # approved baselines. Playwright moves by hand with the image
+    # (docs/contributing/ui/visual-testing.md).
+    ignore:
+      - dependency-name: "@playwright/test"
+      - dependency-name: "playwright-core"
     groups:
       # Vite / ESLint / TypeScript tooling releases often; one PR a week.
       ui-minor-patch:

@@ -216,6 +216,9 @@ It runs inside the pinned Playwright image
 run renders with the same browser, fonts and system libraries. The image's
 version must match `@playwright/test` in `ui/package.json`. When they
 differ, Playwright can't find its browser and the job fails.
+Dependabot doesn't bump Playwright in `ui/` for that reason: move the image
+(tag and digest) and `@playwright/test` together by hand, and expect to
+approve a new baseline set if the browser renders differently.
 
 Each run first records a full set of screenshots, then, once a set is
 approved, compares with it. The job uploads a `ui-visual` artifact:
