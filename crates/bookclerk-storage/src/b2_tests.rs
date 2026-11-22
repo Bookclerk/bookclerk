@@ -81,6 +81,10 @@ struct World {
     lose_finish_reply: bool,
     /// Ids `b2_delete_file_version` removed, in order.
     deleted: Vec<String>,
+    /// Rows per `b2_list_file_versions` page, when set: the fake then
+    /// pages with `nextFileName` / `nextFileId`, and may return fewer rows
+    /// than `maxFileCount`, as B2 does.
+    versions_page: Option<usize>,
 }
 
 impl World {
@@ -421,6 +425,25 @@ fn api(world: &mut World, op: &str, request: &Value) -> Reply {
                 .filter(|file| file.name.starts_with(&prefix) && file.name >= start)
                 .collect();
             sorted.sort_by(|a, b| a.name.cmp(&b.name).then(b.ts.cmp(&a.ts)));
+            if let Some(size) = world.versions_page {
+                let start_id = text("startFileId");
+                let from = sorted
+                    .iter()
+                    .position(|file| file.id == start_id)
+                    .unwrap_or(0);
+                let rest = &sorted[from..];
+                let page: Vec<Value> = rest
+                    .iter()
+                    .take(size)
+                    .map(|f| World::file_json(f))
+                    .collect();
+                let mut reply = json!({ "files": page });
+                if let Some(next) = rest.get(size) {
+                    reply["nextFileName"] = json!(next.name);
+                    reply["nextFileId"] = json!(next.id);
+                }
+                return reply_json(200, &reply);
+            }
             let mut files: Vec<Value> = sorted.iter().map(|f| World::file_json(f)).collect();
             for (id, large) in &world.large {
                 if large.name.starts_with(&prefix) {
@@ -830,6 +853,40 @@ async fn listings_page_under_the_prefix() {
     let rest = bare.list_page("", Some(&cursor), 3).await.expect("page");
     let keys: Vec<_> = rest.objects.iter().map(|o| o.key.as_str()).collect();
     assert_eq!(keys, ["lib/b/1"]);
+}
+
+#[tokio::test]
+async fn a_name_with_too_many_versions_is_refused_before_any_delete() {
+    let world = serve().await;
+    let backend = open(&world, "").await;
+    {
+        let mut world = world.lock().await;
+        // Short pages: ten pages of 999 rows leave 9,990 versions with a
+        // continuation, and the last page brings the walk to 10,001
+        // without one.
+        world.versions_page = Some(999);
+        for _ in 0..10_001 {
+            let id = world.id();
+            let ts = world.next_id;
+            world.files.push(Stored {
+                id,
+                name: "many".into(),
+                data: Vec::new(),
+                content_type: "application/octet-stream".into(),
+                info: BTreeMap::new(),
+                ts,
+                action: "upload",
+            });
+        }
+    }
+    let err = backend.delete("many").await.expect_err("too many versions");
+    assert!(
+        err.to_string().contains("more than 10000 versions"),
+        "{err}"
+    );
+    let world = world.lock().await;
+    assert!(world.deleted.is_empty());
+    assert_eq!(world.files.len(), 10_001);
 }
 
 #[tokio::test]

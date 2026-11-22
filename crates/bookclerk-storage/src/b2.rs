@@ -16,8 +16,10 @@
 //! - A delete removes every version of the name, oldest first, so nothing
 //!   stays billed behind a hide marker and a delete that fails part way
 //!   never uncovers an older version.
-//! - Requests have a deadline for their reply headers and bodies an idle
-//!   timeout, so a long transfer that keeps moving is never cut off.
+//! - Downloads have a deadline for their reply headers and an idle timeout
+//!   on the body, so a long download that keeps moving is never cut off.
+//!   An upload's deadline covers sending its body too, so it grows with
+//!   the body's size (one second per 64 KiB on top of five minutes).
 //!
 //! Conditional writes are not declared: B2 has none, so the host checks
 //! before it writes and reports that the write was not atomic.
@@ -76,9 +78,13 @@ const MAX_VERSIONS_WALKED: usize = 10_000;
 /// that keeps answering empty pages cannot loop forever.
 const MAX_VERSION_PAGES: usize = 4 * (MAX_VERSIONS_WALKED / VERSIONS_PAGE as usize) + 4;
 
-/// Longest wait for a request's reply headers, upload body included (an
-/// upload is at most one part), in seconds.
+/// Longest wait for a request's reply headers. An upload adds time for
+/// its body (see [`upload_deadline`]).
 const SEND_DEADLINE: Duration = Duration::from_secs(300);
+
+/// Slowest upload rate allowed for, in bytes per second: an upload's
+/// deadline grows by one second for every this many bytes it sends.
+const MIN_UPLOAD_BYTES_PER_SEC: u64 = 64 * 1024;
 
 /// Longest wait for the next chunk of a reply body.
 const BODY_IDLE: Duration = Duration::from_secs(60);
@@ -192,10 +198,33 @@ async fn backoff(attempt: u32) {
     tokio::time::sleep(Duration::from_millis(millis)).await;
 }
 
+/// The error for a name with more than [`MAX_VERSIONS_WALKED`] versions,
+/// returned before any of them is deleted.
+fn too_many_versions(name: &str) -> StorageError {
+    remote(
+        "version listing",
+        format!("{name} has more than {MAX_VERSIONS_WALKED} versions"),
+    )
+}
+
 /// Sends `request`, waiting at most [`SEND_DEADLINE`] for the reply
 /// headers.
 async fn send(request: RequestBuilder, what: &str) -> Result<Response> {
-    match tokio::time::timeout(SEND_DEADLINE, request.send()).await {
+    send_within(request, what, SEND_DEADLINE).await
+}
+
+/// The deadline for an upload of `len` bytes: [`SEND_DEADLINE`] plus the
+/// body's time at [`MIN_UPLOAD_BYTES_PER_SEC`], so a slow but progressing
+/// upload of a full part still finishes.
+fn upload_deadline(len: usize) -> Duration {
+    let len = u64::try_from(len).unwrap_or(u64::MAX);
+    SEND_DEADLINE.saturating_add(Duration::from_secs(len / MIN_UPLOAD_BYTES_PER_SEC))
+}
+
+/// Sends `request`, waiting at most `deadline` for the reply headers (the
+/// request body is sent inside that time).
+async fn send_within(request: RequestBuilder, what: &str, deadline: Duration) -> Result<Response> {
+    match tokio::time::timeout(deadline, request.send()).await {
         Ok(sent) => sent.map_err(|err| remote(what, err)),
         Err(_) => Err(remote(what, "no reply before the deadline")),
     }
@@ -623,7 +652,8 @@ impl B2Backend {
             for (name, value) in headers {
                 request = request.header(name.as_str(), value.as_str());
             }
-            let settled = match send(request.body(data.to_vec()), "upload").await {
+            let deadline = upload_deadline(data.len());
+            let settled = match send_within(request.body(data.to_vec()), "upload", deadline).await {
                 Ok(reply) => settle(reply).await,
                 Err(err) => Err(err),
             };
@@ -1019,16 +1049,18 @@ impl B2Backend {
                     past = true;
                 }
             }
+            // A page may hold fewer rows than asked for, so the cap is
+            // checked on every page, not only when a continuation follows.
+            if versions.len() > MAX_VERSIONS_WALKED {
+                return Err(too_many_versions(name));
+            }
             if past {
                 return Ok(versions);
             }
             match page.next {
                 Some((next_name, next_id)) if next_name == name => {
                     if versions.len() >= MAX_VERSIONS_WALKED {
-                        return Err(remote(
-                            "version listing",
-                            format!("{name} has more than {MAX_VERSIONS_WALKED} versions"),
-                        ));
+                        return Err(too_many_versions(name));
                     }
                     let next = (next_name, next_id.as_str().to_string());
                     if start.as_ref() == Some(&next) {
