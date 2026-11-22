@@ -2,6 +2,7 @@ import { normalizeThemePreference, type ThemePreference } from "@/lib/theme";
 import { coversSettled } from "@/lib/coverLoads";
 import { createLookupBatcher } from "@/lib/lookupBatcher";
 import { clearLookupCaches, createLookupCache, lookupGeneration } from "@/lib/lookupCache";
+import { parseInboxPage, type InboxPageView } from "@/lib/notifications";
 
 /**
  * Pipeline acquire state for a library book row.
@@ -5258,4 +5259,38 @@ export async function removeWishlistItem(uuid: string): Promise<TitleRequest> {
     credentials: "include",
   });
   return parseJson(res);
+}
+
+/**
+ * Reads one page of the signed-in person's notification inbox.
+ *
+ * @param options - `cursor` from the previous page and a page size.
+ * @returns The page, malformed entries dropped.
+ */
+export async function fetchInbox(
+  options: { cursor?: string | null; limit?: number } = {},
+): Promise<InboxPageView> {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set("cursor", options.cursor);
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  const res = await fetch(`/api/me/notifications/inbox${suffix}`, { credentials: "include" });
+  return parseInboxPage(await parseJson<unknown>(res));
+}
+
+/**
+ * Marks one inbox entry read, or the whole inbox when no id is given.
+ *
+ * @param notificationId - The entry to mark, or `null` for all of them.
+ * @returns How many entries changed.
+ */
+export async function markInboxRead(notificationId: string | null): Promise<number> {
+  const res = await fetch("/api/me/notifications/inbox/read", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notification_id: notificationId }),
+  });
+  const body = await parseJson<{ marked?: unknown }>(res);
+  return typeof body.marked === "number" ? body.marked : 0;
 }

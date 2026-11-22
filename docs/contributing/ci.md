@@ -105,13 +105,15 @@ they leave out (#1228, #1229). The `test-os` job runs the whole
   feature runs after it still run, and the job fails once all of them
   have reported. Setup and prerequisite failures still stop it. Running
   `rust_test` on Windows or macOS without it keeps the usual behavior.
-- **It only reports for now.** The job is listed in `REPORT_JOBS`
-  (`scripts/ci_plan/plan.py`), has `continue-on-error`, says "report only"
-  in its name, and `CI Gate` doesn't need it. The merge-queue fail-fast
-  watcher ignores it, so its failure cancels nothing, and a group can land
-  while its legs still run. Once only report-only jobs are left in a
-  merge group's run, the [lent lanes](#pull-request-lanes) open again. It becomes required, in place of the curated
-  Windows and macOS legs, once each OS has three green runs in a row.
+- **`CI Gate` needs it.** The job is listed in `OS_LEG_JOBS`
+  (`scripts/ci_plan/plan.py`) with `test` as its owning job, so the gate
+  expects it wherever `test` runs outside a Linux-only pull request run, and
+  a failing leg keeps the group out of `main`. The merge-queue fail-fast
+  watcher cancels the run when a leg fails, as it does for any other job.
+  It ran report-only (`REPORT_JOBS`, "report only" in its name) from
+  20 November 2026 until each OS had three green runs in a row, on
+  22 November 2026; `REPORT_JOBS` stays for the next new leg. The curated
+  Windows and macOS jobs above still run beside it.
 
 ### Pull request lanes
 
@@ -313,8 +315,8 @@ cargo install cargo-nextest --locked
 
 ### Caches
 
-Rust dependency caches use three shared keys, plus one for a report-only
-job. Each is saved by one job on `main` and restored by the others:
+Rust dependency caches use three shared keys, plus one for the full
+suite on Windows and macOS. Each is saved by one job on `main` and restored by the others:
 
 - **`lint`**: saved by `check`.
 - **`debug`**: saved by `test` on Linux (its first part), by `native-gateway` on Windows
@@ -325,8 +327,8 @@ job. Each is saved by one job on `main` and restored by the others:
 - **`debug-tests`**: saved by the first leg of `test-os` on Windows and on
   macOS (see [Full suite on Windows and macOS](#full-suite-on-windows-and-macos)).
   Every test binary of the workspace is far more than the other jobs on
-  those systems compile, and while `test-os` only reports it must not
-  change what they restore. It is keyed by `CI_BUILD_PLAN_DEBUG`, since it
+  those systems compile, and saving it into their key would make every one
+  of them restore it. It is keyed by `CI_BUILD_PLAN_DEBUG`, since it
   compiles a `debug` check.
 
 Fewer entries keep the repository under the Actions cache limit, so jobs
@@ -577,7 +579,7 @@ test step excludes it (`--exclude bookclerk-plugin-e2e` on the full suite).
   every workerd-runtime guest. Shared host runtime changes add the
   `runtime_smoke` guests (native Rust, workerd TS, workerd Python).
 - **Combination.** Full wins over subsets, subsets are unioned, and
-  prerequisites add nothing. Platform guests (`sqlite`, `local`) are always
+  prerequisites add nothing. Platform guests (`sqlite`, `local`, `embedder`) are always
   installed and checked.
 
 An embedded SDK change marks `bookclerk-workerd` affected *through the
@@ -997,7 +999,8 @@ input reuses `main`'s Rust results instead:
    (`git diff -z --no-renames --name-only`).
 2. [`scripts/codeql_languages.py`](../../scripts/codeql_languages.py)
    treats a path as a Rust input when it is a `.rs` file, a `.capnp` or
-   `.proto` schema that a build script compiles into Rust, a `Cargo.toml`,
+   `.proto` schema that a build script compiles into Rust, a `.cc` or `.h`
+   file (C++ a build script compiles into a crate), a `Cargo.toml`,
    `Cargo.lock`, `rust-toolchain.toml`, anything under a `.cargo/`
    directory at any depth, the workflow, or the scripts that choose and
    reuse. A name that isn't UTF-8 also counts. A test fails when a
@@ -1043,7 +1046,7 @@ The Docker image job builds `packaging/docker/Dockerfile` and runs
 `packaging/docker/smoke.sh`, which boots the image twice on one fresh
 `/config` volume:
 
-1. The first boot must install the bundled `sqlite` and `local` plugins
+1. The first boot must install the bundled `sqlite`, `local` and `embedder` plugins
    and load the database guest under the default isolation.
 2. The second must reinstall nothing.
 3. The image must not override `BOOKCLERK_PLUGIN_ISOLATION` or
@@ -1817,8 +1820,7 @@ with its whole fan-out running at once it takes about 35 to 40 minutes.
 Build concurrency 2 lands about 3 pull requests an hour, against about 1.7
 at 1. It is the highest that fits: the organization may run only 5 macOS jobs
 at once. Each group runs the macOS job and two macOS `test-os` legs, so
-while `test-os` only reports, one of six macOS jobs can wait for a runner
-where two groups overlap. Once `test-os` replaces the macOS job, two groups
+one of six macOS jobs can wait for a runner where two groups overlap. Once `test-os` replaces the macOS job, two groups
 need 4; a third group would always wait.
 
 On GitHub Free (20 runners, until 20 November 2026) these docs advised

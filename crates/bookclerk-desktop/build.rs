@@ -1,6 +1,6 @@
 //! Generates the Tauri context (`tauri.conf.json`, and the capability in
-//! `capabilities/` that allows the page its commands: `live`, `player` and
-//! `player_events`) when the
+//! `capabilities/` that allows the page its commands: `live`, `notify`,
+//! `player` and `player_events`) when the
 //! `window` feature is on; does nothing otherwise.
 
 fn main() {
@@ -10,7 +10,12 @@ fn main() {
         // capabilities, so they run only where `capabilities/main.json`
         // allows it.
         let attributes = tauri_build::Attributes::new().app_manifest(
-            tauri_build::AppManifest::new().commands(&["live", "player", "player_events"]),
+            tauri_build::AppManifest::new().commands(&[
+                "live",
+                "notify",
+                "player",
+                "player_events",
+            ]),
         );
         if let Err(err) = tauri_build::try_build(attributes) {
             // A build script reports failure by panicking.

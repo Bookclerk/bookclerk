@@ -55,6 +55,12 @@ pub const PLATFORM_ARTIFACTS: &[PlatformArtifact] = &[
         allowed_entrypoints: &["storage"],
         allowed_bindings: &["config", "work_fs"],
     },
+    PlatformArtifact {
+        package_name: "bookclerk-plugin-ai-embedder",
+        manifest_id: "embedder",
+        allowed_entrypoints: &["ai"],
+        allowed_bindings: &["config"],
+    },
 ];
 
 /// Host-controlled first-party database adapter identities.

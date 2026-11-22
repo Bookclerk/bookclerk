@@ -12,7 +12,7 @@ artifact layout (see [Plugin registry](../plugins/registry.md)).
 | Artifact | crates.io role | Installed automatically? |
 | --- | --- | --- |
 | **Host** (`bookclerk`, `bookclerkd`) | Not on crates.io today | No: an OS installer or GitHub Release |
-| **Platform plugins** (`sqlite`, `local`) | May publish metadata crates later | **Bundled** in the platform install (`cargo package-platform`) |
+| **Platform plugins** (`sqlite`, `local`, `embedder`) | May publish metadata crates later | **Bundled** in the platform install (`cargo package-platform`) |
 | **Storefront plugins** (Audible, Libro, …) | A discovery index, when published | **Opt-in**, through `bookclerk plugins install` (which records a library install) |
 
 crates.io is a **catalog**, not a runtime dependency resolver. Nothing is
@@ -33,7 +33,7 @@ or a Rust toolchain:
 - the hosts;
 - `bookclerk-jail`, `bookclerk-workerd` and `bookclerk-media-worker`;
 - the pinned Cloudflare `workerd` binary;
-- the platform plugins (sqlite and local) under
+- the platform plugins (sqlite, local and embedder) under
   `plugins/<plugin-key-fs-id>/`, recorded in `install-ledger.json`.
 
 On startup the host installs those bundled plugins from the `plugins/`
@@ -83,6 +83,22 @@ python3 scripts/sync-workerd-pin.py --check
 ```
 
 #### The Pyodide bundle
+
+The `embedder` plugin loads the ONNX Runtime shared library from beside
+its own executable. The library is the upstream build, pinned by version
+and SHA-256 for each platform in
+`crates/bookclerk-onnxruntime/onnxruntime-pin.json`:
+
+- `cargo ensure-onnxruntime` downloads it into
+  `target/onnxruntime-<version>/` and checks the digest. Staging,
+  `cargo install-platform` and `cargo package-platform` do the same and
+  copy it into the plugin's folder, so platform packages carry it.
+- Upstream publishes no build for Intel macOS. There the plugin is still
+  packaged, reports itself unhealthy and serves no model.
+- The library and the plugin need the C++ runtime (`libstdc++` on Linux),
+  which the Docker image and every supported distribution already have.
+
+See [Embedding model packs](../internals/model-packs.md).
 
 Python isolates load the Pyodide runtime bundle when they start. workerd
 would download it on its own connection, but the jail gives workerd no

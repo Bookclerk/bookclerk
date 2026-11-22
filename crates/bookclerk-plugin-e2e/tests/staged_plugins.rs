@@ -26,6 +26,85 @@ use bookclerk_plugin_sdk::{
 const STAGED_SPAWN_TIMEOUT: Duration = Duration::from_secs(45);
 const STAGED_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The tiny model of the model plugin's own tests, for the jailed run.
+#[path = "../../bookclerk-plugins/platform/ai-embedder/tests/support/tiny_model.rs"]
+mod tiny_model;
+
+/// Puts the tiny model, with every language pack, where the staged
+/// `embedder` guest looks for models: `models/` in its data directory.
+// Test helper: a failure here is the test failing.
+#[allow(clippy::expect_used)]
+fn install_tiny_model(config: &Config, plugin: &bookclerk_plugin_host::DiscoveredPlugin) {
+    let models = bookclerk_plugin_host::plugin_data_dir(config, plugin)
+        .expect("embedder data directory")
+        .join("models");
+    let _ = std::fs::remove_dir_all(&models);
+    let model = tiny_model::write_model(&models, "tiny", bookclerk_model_pack::Pooling::Mean, "");
+    model.add_even();
+    model.add_odd();
+}
+
+/// The staged `embedder` guest, inside its jail, lists the tiny model and
+/// gives the vectors the model's arithmetic gives: the jail lets it read
+/// its model files, load the ONNX Runtime library beside its binary and
+/// run a graph.
+// Test helper: a failure here is the test failing.
+#[allow(clippy::expect_used)]
+async fn check_embedder(session: &PluginSession) {
+    use bookclerk_plugin_sdk::ai::{check_models, check_run_output, embedding_vectors};
+    use bookclerk_plugin_sdk::{AiEmbedText, AiInput, AiRunParams, AiTextEmbeddingsInput};
+
+    let list = tokio::time::timeout(
+        STAGED_RPC_TIMEOUT,
+        session.ai(|stub| async move { stub.models().await }),
+    )
+    .await
+    .expect("embedder models timed out")
+    .expect("embedder models");
+    check_models(&list).expect("embedder listing");
+    let model = list
+        .models
+        .iter()
+        .find(|model| model.model_id == "tiny")
+        .unwrap_or_else(|| panic!("embedder must list the tiny model: {list:?}"))
+        .clone();
+    assert_eq!(model.languages, ["even", "odd"]);
+
+    let texts = [
+        "A detective in Victorian London",
+        "探偵が指輪を守っている。",
+    ];
+    let input = AiInput {
+        text_embeddings: AiTextEmbeddingsInput {
+            texts: texts
+                .iter()
+                .map(|text| AiEmbedText {
+                    text: (*text).to_owned(),
+                    ..AiEmbedText::default()
+                })
+                .collect(),
+        },
+    };
+    let params = AiRunParams {
+        model: model.model_id.clone(),
+        input: input.clone(),
+    };
+    let reply = tokio::time::timeout(
+        STAGED_RPC_TIMEOUT,
+        session.ai(|stub| async move { stub.run(params).await }),
+    )
+    .await
+    .expect("embedder run timed out")
+    .expect("embedder run");
+    check_run_output(&model, &input, &reply).expect("embedder reply");
+    let output = &reply.output.text_embeddings;
+    assert!(output.fallbacks.is_empty(), "{:?}", output.fallbacks);
+    for (vector, text) in embedding_vectors(output).iter().zip(texts) {
+        tiny_model::assert_close(vector, &tiny_model::expected(&tiny_model::framed(text)));
+    }
+    eprintln!("staged_plugins: embedder ran the tiny model in its jail");
+}
+
 fn artifacts_dir() -> Option<PathBuf> {
     std::env::var_os("BOOKCLERK_PLUGIN_ARTIFACTS").map(PathBuf::from)
 }
@@ -129,6 +208,9 @@ async fn staged_first_party_plugins_describe() {
                 plugin.manifest.id
             );
             continue;
+        }
+        if plugin.manifest.id == "embedder" {
+            install_tiny_model(&config, plugin);
         }
         eprintln!(
             "staged_plugins: spawn {} ({})",
@@ -260,6 +342,10 @@ async fn staged_first_party_plugins_describe() {
                     );
                 }
             }
+        }
+
+        if plugin.manifest.id == "embedder" {
+            check_embedder(&session).await;
         }
 
         // `[[databases]]` conformance: the registration the guest answers for

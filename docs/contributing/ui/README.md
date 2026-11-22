@@ -87,8 +87,9 @@ network can reach this host's web API.
   return (to `http://localhost/join/callback` or
   `http://localhost/clerk/callback`) is handed to the app scheme. Navigation
   anywhere else is refused.
-- The page may call three Tauri commands: `live`, which takes nothing from
-  the page but its channel, and `player` and `player_events` for the
+- The page may call four Tauri commands: `live`, which takes nothing from
+  the page but its channel, `notify`, which posts one system notification
+  for a new inbox entry (below), and `player` and `player_events` for the
   window's own audio player (below). The capability in
   `crates/bookclerk-desktop/capabilities/main.json` allows them for the
   main window's own pages only, so the library's sign-in pages, which are
@@ -107,6 +108,15 @@ network can reach this host's web API.
   and `cpal` plays it on the default output device. `souvlaki` drives
   MPRIS (over zbus), the Windows media overlay and Now Playing. See
   [Playback](../../server/playback.md#the-desktop-window).
+- The bell's alerts ([Notifications](../../server/notifications.md#the-bell-browser-and-desktop-notifications))
+  use the system's notifications in the window: `ui/src/lib/notifications.ts`
+  calls `notify` with the entry's title and text, and
+  `crates/bookclerk-desktop/src/alert.rs` folds the title to one line,
+  trims both to what a notification shows (120 and 500 characters) and
+  posts it with `notify-rust` (D-Bus on Linux over the zbus that `souvlaki`
+  already brings, the notification center on macOS, a toast on Windows).
+  The title and text were bounded by the library's notification rules
+  before they reached the inbox.
 - These rules (which requests are refused, the headers the router sees,
   where the window may go, who may start the live feed) live in the `bookclerk-window-policy` crate,
   which the `window_policy` fuzz target checks (see

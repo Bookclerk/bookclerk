@@ -39,6 +39,7 @@ boundary extends it.
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, Ogg Opus and Vorbis headers and comments, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
+| `model_pack` | Embedding model files in the embedder plugin's data directory: the model description (`model.json`) and the token-row packs | `bookclerk-model-pack::PackManifest::parse`, `Rows::parse` |
 | `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
 | `media_keep_codec` | Audio parts the media worker copies into an M4B without re-encoding them (`output.keep_codec_in_m4b`): MP4 sample entries and tables, Ogg and FLAC headers and packets | `bookclerk-media::package_keeping_codec` |
@@ -373,6 +374,17 @@ only that. The others check:
   `Done` record re-encodes to a frame that decodes to the same record. The
   shared oracle is `fuzz/oracles/tags_wire.rs`, replayed from
   `bookclerk-tags`.
+- **`model_pack`**: the first byte picks the reader: `0` reads the rest as
+  a model description, any other value reads it as a row pack whose rows
+  have that many bytes. An accepted description names only files that stay
+  inside the model directory by a rule written apart from the crate's,
+  each once and none named `model.json`, keeps its limits, and writes back
+  to JSON that reads as the same description. A row pack's verdict equals
+  a layout check written apart from the crate's; an accepted pack gives
+  every listed token the bytes at the position the layout states, nothing
+  for a token it does not list, and re-encodes to exactly its own bytes.
+  The shared oracle is `fuzz/oracles/model_pack.rs`, replayed from
+  `bookclerk-model-pack`.
 - **`media_decode`**: the input is a whole audio file. It is decoded at
   the source's channel count twice and once mixed to mono. An accepted
   stream has a sample rate from 1 Hz to 768 kHz and one or two channels,
@@ -1288,7 +1300,7 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     `scripts/tests/codeql_languages_corpus/` (files named `rust__<case>`
     or `norust__<case>`).
   - Oracle: Rust is analyzed exactly when some NUL-separated name is not
-    UTF-8, ends in `.rs`, `.capnp` or `.proto`, is named `Cargo.toml`, `Cargo.lock`
+    UTF-8, ends in `.rs`, `.capnp`, `.proto`, `.cc` or `.h`, is named `Cargo.toml`, `Cargo.lock`
     or `rust-toolchain.toml`, sits under a `.cargo/` directory, or is the
     workflow or one of the two scripts, checked with string operations
     rather than glob patterns.

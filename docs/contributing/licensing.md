@@ -20,6 +20,7 @@ may be used. The reasons behind these choices are in
 | `match_score` in `bookclerk-enrich`, ported from audiobookshelf | GPL-3.0-only |
 | `normalize` in `bookclerk-resolve`, ported from audiobookshelf (title and author cleaning moved out of `match_score`) | GPL-3.0-only |
 | Vendored code under `third_party/` and fonts under `ui/public/fonts/` | Their own licenses, next to them |
+| The ONNX Runtime shared library that packages carry beside the `embedder` plugin (downloaded at build time, not in the repository) | MIT |
 
 The plugin SDKs and everything a third-party plugin built on them links
 are permissive so plugin authors can license their plugins however they

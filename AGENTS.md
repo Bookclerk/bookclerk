@@ -358,6 +358,7 @@ cargo dev --skip-build        # install/stage + exec when target/ is already war
 cargo dev-cli -- version      # same platform build, then CLI
 cargo build-app --platform --optional --examples
 cargo ensure-workerd          # pinned Cloudflare workerd beside helpers
+cargo ensure-onnxruntime      # pinned ONNX Runtime library for the embedder plugin
 cargo install-platform --skip-build
 cargo stage-plugins --optional --examples --skip-build
 cargo stage-plugins --plugin libro --skip-build   # individual guest(s) by plugin.toml id

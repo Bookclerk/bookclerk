@@ -4,8 +4,8 @@
 //! binaries (the desktop app keeps it in its packaged runtime). Before the database adapter is discovered, the host installs any
 //! of those trees that `$BOOKCLERK_FILES_DIR` lacks (or holds an untrusted or
 //! different build of) and records them in the install ledger, so a fresh
-//! files directory, such as a container volume, starts with working `sqlite`
-//! and `local` plugins. See [`bookclerk_plugin_catalog::sync_bundled_platform`].
+//! files directory, such as a container volume, starts with working `sqlite`,
+//! `local` and `embedder` plugins. See [`bookclerk_plugin_catalog::sync_bundled_platform`].
 
 use std::path::{Path, PathBuf};
 

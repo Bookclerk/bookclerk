@@ -578,6 +578,7 @@ dependencies = [
  "bookclerk-discover",
  "bookclerk-library",
  "bookclerk-media",
+ "bookclerk-model-pack",
  "bookclerk-mp4",
  "bookclerk-node-proto",
  "bookclerk-player-api",
@@ -688,6 +689,17 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "bookclerk-model-pack"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror",
 ]
 
 [[package]]
@@ -936,6 +948,7 @@ dependencies = [
  "fs4",
  "hex",
  "libc",
+ "same-file",
  "serde",
  "serde_json",
  "sha2 0.11.0",
